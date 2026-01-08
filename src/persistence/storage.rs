@@ -1,6 +1,6 @@
 use directories::ProjectDirs;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::error::{Result, TuicrError};
 use crate::model::ReviewSession;
@@ -51,7 +51,7 @@ pub fn load_session(path: &PathBuf) -> Result<ReviewSession> {
     Ok(session)
 }
 
-pub fn find_session_for_repo(repo_path: &PathBuf) -> Result<Option<PathBuf>> {
+pub fn find_session_for_repo(repo_path: &Path) -> Result<Option<PathBuf>> {
     let reviews_dir = get_reviews_dir()?;
 
     let repo_name = repo_path

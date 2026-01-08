@@ -7,7 +7,7 @@ use ratatui::{
 };
 
 use crate::app::{App, FocusedPanel, InputMode};
-use crate::model::LineOrigin;
+use crate::model::{LineOrigin, LineSide};
 use crate::ui::{comment_panel, help_popup, status_bar, styles};
 
 pub fn render(frame: &mut Frame, app: &mut App) {
@@ -106,7 +106,7 @@ fn render_file_list(frame: &mut Frame, app: &App, area: Rect) {
             };
 
             Line::from(vec![
-                Span::styled(format!("{}", pointer), style),
+                Span::styled(pointer.to_string(), style),
                 Span::styled(
                     format!("[{}]", review_mark),
                     if is_reviewed {
@@ -215,7 +215,7 @@ fn render_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {
                 let indicator = if is_current { "▶ " } else { "  " };
                 lines.push(Line::from(vec![
                     Span::styled(indicator, styles::current_line_indicator_style()),
-                    Span::styled(format!("{}", hunk.header), styles::diff_hunk_header_style()),
+                    Span::styled(hunk.header.to_string(), styles::diff_hunk_header_style()),
                 ]));
                 line_idx += 1;
 
@@ -252,15 +252,44 @@ fn render_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {
                     ]));
                     line_idx += 1;
 
-                    // Show line comments after the relevant line
-                    let source_line = diff_line.new_lineno.or(diff_line.old_lineno);
-                    if let Some(ln) = source_line {
-                        if let Some(comments) = line_comments.get(&ln) {
-                            for comment in comments {
+                    // Show line comments for both old side (deleted lines) and new side (added/context)
+                    // Old side comments (for deleted lines)
+                    if let Some(old_ln) = diff_line.old_lineno
+                        && let Some(comments) = line_comments.get(&old_ln)
+                    {
+                        for comment in comments {
+                            if comment.side == Some(LineSide::Old) {
                                 let comment_lines = comment_panel::format_comment_lines(
                                     comment.comment_type,
                                     &comment.content,
-                                    Some(ln),
+                                    Some(old_ln),
+                                );
+                                for mut comment_line in comment_lines {
+                                    let is_current = line_idx == current_line_idx;
+                                    let indicator = if is_current { "▶" } else { " " };
+                                    comment_line.spans.insert(
+                                        0,
+                                        Span::styled(
+                                            indicator,
+                                            styles::current_line_indicator_style(),
+                                        ),
+                                    );
+                                    lines.push(comment_line);
+                                    line_idx += 1;
+                                }
+                            }
+                        }
+                    }
+                    // New side comments (for added/context lines)
+                    if let Some(new_ln) = diff_line.new_lineno
+                        && let Some(comments) = line_comments.get(&new_ln)
+                    {
+                        for comment in comments {
+                            if comment.side != Some(LineSide::Old) {
+                                let comment_lines = comment_panel::format_comment_lines(
+                                    comment.comment_type,
+                                    &comment.content,
+                                    Some(new_ln),
                                 );
                                 for mut comment_line in comment_lines {
                                     let is_current = line_idx == current_line_idx;

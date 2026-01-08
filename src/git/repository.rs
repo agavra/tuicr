@@ -16,7 +16,7 @@ impl RepoInfo {
 
         let root_path = repo
             .workdir()
-            .ok_or_else(|| TuicrError::NotARepository)?
+            .ok_or(TuicrError::NotARepository)?
             .to_path_buf();
 
         let head_commit = repo

@@ -3,7 +3,10 @@ use std::fmt::Write;
 use arboard::Clipboard;
 
 use crate::error::{Result, TuicrError};
-use crate::model::ReviewSession;
+use crate::model::{LineSide, ReviewSession};
+
+/// (file_path, line_number, side, comment_type, content)
+type CommentEntry<'a> = (String, Option<u32>, Option<LineSide>, &'a str, &'a str);
 
 pub fn export_to_clipboard(session: &ReviewSession) -> Result<()> {
     let content = generate_markdown(session);
@@ -40,7 +43,7 @@ fn generate_markdown(session: &ReviewSession) -> String {
     }
 
     // Collect all comments into a flat list
-    let mut all_comments: Vec<(String, Option<u32>, &str, &str)> = Vec::new();
+    let mut all_comments: Vec<CommentEntry> = Vec::new();
 
     // Sort files by path for consistent output
     let mut files: Vec<_> = session.files.iter().collect();
@@ -53,6 +56,7 @@ fn generate_markdown(session: &ReviewSession) -> String {
         for comment in &review.file_comments {
             all_comments.push((
                 path_str.clone(),
+                None,
                 None,
                 comment.comment_type.as_str(),
                 &comment.content,
@@ -68,6 +72,7 @@ fn generate_markdown(session: &ReviewSession) -> String {
                 all_comments.push((
                     path_str.clone(),
                     Some(*line),
+                    comment.side,
                     comment.comment_type.as_str(),
                     &comment.content,
                 ));
@@ -76,10 +81,14 @@ fn generate_markdown(session: &ReviewSession) -> String {
     }
 
     // Output numbered list
-    for (i, (file, line, comment_type, content)) in all_comments.iter().enumerate() {
-        let location = match line {
-            Some(l) => format!("`{}:{}`", file, l),
-            None => format!("`{}`", file),
+    for (i, (file, line, side, comment_type, content)) in all_comments.iter().enumerate() {
+        let location = match (line, side) {
+            // Deleted line: use ~N to indicate old line
+            (Some(l), Some(LineSide::Old)) => format!("`{}:~{}`", file, l),
+            // New/context line: use normal format
+            (Some(l), _) => format!("`{}:{}`", file, l),
+            // File comment
+            (None, _) => format!("`{}`", file),
         };
         let _ = writeln!(
             md,
@@ -97,7 +106,7 @@ fn generate_markdown(session: &ReviewSession) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Comment, CommentType, FileStatus};
+    use crate::model::{Comment, CommentType, FileStatus, LineSide};
     use std::path::PathBuf;
 
     fn create_test_session() -> ReviewSession {
@@ -111,12 +120,14 @@ mod tests {
             review.add_file_comment(Comment::new(
                 "Consider adding documentation".to_string(),
                 CommentType::Suggestion,
+                None,
             ));
             review.add_line_comment(
                 42,
                 Comment::new(
                     "Magic number should be a constant".to_string(),
                     CommentType::Issue,
+                    Some(LineSide::New),
                 ),
             );
         }

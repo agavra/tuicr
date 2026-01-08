@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use crate::error::Result;
 use crate::git::{RepoInfo, get_working_tree_diff};
-use crate::model::{Comment, CommentType, DiffFile, ReviewSession};
+use crate::model::{Comment, CommentType, DiffFile, LineSide, ReviewSession};
 use crate::persistence::{find_session_for_repo, load_session};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,7 +40,7 @@ pub struct App {
     pub comment_cursor: usize,
     pub comment_type: CommentType,
     pub comment_is_file_level: bool,
-    pub comment_line: Option<u32>,
+    pub comment_line: Option<(u32, LineSide)>,
 
     pub should_quit: bool,
     pub dirty: bool,
@@ -71,6 +71,7 @@ enum CommentLocation {
     LineComment {
         path: std::path::PathBuf,
         line: u32,
+        side: LineSide,
         index: usize,
     },
 }
@@ -138,11 +139,11 @@ impl App {
     }
 
     pub fn toggle_reviewed(&mut self) {
-        if let Some(path) = self.current_file_path().cloned() {
-            if let Some(review) = self.session.get_file_mut(&path) {
-                review.reviewed = !review.reviewed;
-                self.dirty = true;
-            }
+        if let Some(path) = self.current_file_path().cloned()
+            && let Some(review) = self.session.get_file_mut(&path)
+        {
+            review.reviewed = !review.reviewed;
+            self.dirty = true;
         }
     }
 
@@ -361,8 +362,8 @@ impl App {
         2 + content_lines // header + content lines + footer
     }
 
-    /// Returns the source line number at the current cursor position, if on a diff line
-    pub fn get_line_at_cursor(&self) -> Option<u32> {
+    /// Returns the source line number and side at the current cursor position, if on a diff line
+    pub fn get_line_at_cursor(&self) -> Option<(u32, LineSide)> {
         let target = self.diff_state.cursor_line;
         let mut line_idx = 0;
 
@@ -399,16 +400,33 @@ impl App {
                     // Diff lines
                     for diff_line in &hunk.lines {
                         if line_idx == target {
-                            // Found cursor position - return the line number
-                            return diff_line.new_lineno.or(diff_line.old_lineno);
+                            // Found cursor position - return line number and side
+                            // Deleted lines use old_lineno with LineSide::Old
+                            // Added/context lines use new_lineno with LineSide::New
+                            return diff_line
+                                .new_lineno
+                                .map(|ln| (ln, LineSide::New))
+                                .or_else(|| diff_line.old_lineno.map(|ln| (ln, LineSide::Old)));
                         }
                         line_idx += 1;
 
-                        // Line comments after this diff line (now multiline with box)
-                        let source_line = diff_line.new_lineno.or(diff_line.old_lineno);
-                        if let Some(ln) = source_line {
-                            if let Some(comments) = line_comments.get(&ln) {
-                                for comment in comments {
+                        // Count line comments for both sides
+                        // Old side (deleted lines)
+                        if let Some(old_ln) = diff_line.old_lineno
+                            && let Some(comments) = line_comments.get(&old_ln)
+                        {
+                            for comment in comments {
+                                if comment.side == Some(LineSide::Old) {
+                                    line_idx += Self::comment_display_lines(comment);
+                                }
+                            }
+                        }
+                        // New side (added/context lines)
+                        if let Some(new_ln) = diff_line.new_lineno
+                            && let Some(comments) = line_comments.get(&new_ln)
+                        {
+                            for comment in comments {
+                                if comment.side != Some(LineSide::Old) {
                                     line_idx += Self::comment_display_lines(comment);
                                 }
                             }
@@ -464,16 +482,38 @@ impl App {
                         // Skip the diff line itself
                         line_idx += 1;
 
-                        // Check line comments
-                        let source_line = diff_line.new_lineno.or(diff_line.old_lineno);
-                        if let Some(ln) = source_line {
-                            if let Some(comments) = line_comments.get(&ln) {
-                                for (idx, comment) in comments.iter().enumerate() {
+                        // Check comments on old side (deleted lines)
+                        if let Some(old_ln) = diff_line.old_lineno
+                            && let Some(comments) = line_comments.get(&old_ln)
+                        {
+                            for (idx, comment) in comments.iter().enumerate() {
+                                if comment.side == Some(LineSide::Old) {
                                     let comment_lines = Self::comment_display_lines(comment);
                                     if target >= line_idx && target < line_idx + comment_lines {
                                         return Some(CommentLocation::LineComment {
                                             path,
-                                            line: ln,
+                                            line: old_ln,
+                                            side: LineSide::Old,
+                                            index: idx,
+                                        });
+                                    }
+                                    line_idx += comment_lines;
+                                }
+                            }
+                        }
+
+                        // Check comments on new side (added/context lines)
+                        if let Some(new_ln) = diff_line.new_lineno
+                            && let Some(comments) = line_comments.get(&new_ln)
+                        {
+                            for (idx, comment) in comments.iter().enumerate() {
+                                if comment.side != Some(LineSide::Old) {
+                                    let comment_lines = Self::comment_display_lines(comment);
+                                    if target >= line_idx && target < line_idx + comment_lines {
+                                        return Some(CommentLocation::LineComment {
+                                            path,
+                                            line: new_ln,
+                                            side: LineSide::New,
                                             index: idx,
                                         });
                                     }
@@ -506,10 +546,30 @@ impl App {
                     return true;
                 }
             }
-            Some(CommentLocation::LineComment { path, line, index }) => {
-                if let Some(review) = self.session.get_file_mut(&path) {
-                    if let Some(comments) = review.line_comments.get_mut(&line) {
-                        comments.remove(index);
+            Some(CommentLocation::LineComment {
+                path,
+                line,
+                side,
+                index,
+            }) => {
+                if let Some(review) = self.session.get_file_mut(&path)
+                    && let Some(comments) = review.line_comments.get_mut(&line)
+                {
+                    // Find the actual index by counting comments with matching side
+                    let mut side_idx = 0;
+                    let mut actual_idx = None;
+                    for (i, comment) in comments.iter().enumerate() {
+                        let comment_side = comment.side.unwrap_or(LineSide::New);
+                        if comment_side == side {
+                            if side_idx == index {
+                                actual_idx = Some(i);
+                                break;
+                            }
+                            side_idx += 1;
+                        }
+                    }
+                    if let Some(idx) = actual_idx {
+                        comments.remove(idx);
                         if comments.is_empty() {
                             review.line_comments.remove(&line);
                         }
@@ -535,7 +595,7 @@ impl App {
         self.command_buffer.clear();
     }
 
-    pub fn enter_comment_mode(&mut self, file_level: bool, line: Option<u32>) {
+    pub fn enter_comment_mode(&mut self, file_level: bool, line: Option<(u32, LineSide)>) {
         self.input_mode = InputMode::Comment;
         self.comment_buffer.clear();
         self.comment_cursor = 0;
@@ -557,23 +617,25 @@ impl App {
         }
 
         let content = self.comment_buffer.trim().to_string();
-        let comment = Comment::new(content, self.comment_type);
 
-        if let Some(path) = self.current_file_path().cloned() {
-            if let Some(review) = self.session.get_file_mut(&path) {
-                if self.comment_is_file_level {
-                    review.add_file_comment(comment);
-                    self.set_message("File comment added");
-                } else if let Some(line) = self.comment_line {
-                    review.add_line_comment(line, comment);
-                    self.set_message(format!("Comment added to line {}", line));
-                } else {
-                    // Fallback to file comment if no line specified
-                    review.add_file_comment(comment);
-                    self.set_message("File comment added");
-                }
-                self.dirty = true;
+        if let Some(path) = self.current_file_path().cloned()
+            && let Some(review) = self.session.get_file_mut(&path)
+        {
+            if self.comment_is_file_level {
+                let comment = Comment::new(content, self.comment_type, None);
+                review.add_file_comment(comment);
+                self.set_message("File comment added");
+            } else if let Some((line, side)) = self.comment_line {
+                let comment = Comment::new(content, self.comment_type, Some(side));
+                review.add_line_comment(line, comment);
+                self.set_message(format!("Comment added to line {}", line));
+            } else {
+                // Fallback to file comment if no line specified
+                let comment = Comment::new(content, self.comment_type, None);
+                review.add_file_comment(comment);
+                self.set_message("File comment added");
             }
+            self.dirty = true;
         }
 
         self.exit_comment_mode();

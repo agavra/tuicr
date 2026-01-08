@@ -12,7 +12,7 @@ use crate::ui::styles;
 pub fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     let branch = app.repo_info.branch_name.as_deref().unwrap_or("detached");
 
-    let title = format!(" tuicr - Code Review ");
+    let title = " tuicr - Code Review ".to_string();
     let branch_info = format!("[{}] ", branch);
     let progress = format!("{}/{} reviewed ", app.reviewed_count(), app.file_count());
 

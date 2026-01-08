@@ -76,7 +76,7 @@ tuicr
 #### Comment Mode
 | Key | Action |
 |-----|--------|
-| `1-4` | Set type: Note/Suggestion/Issue/Praise |
+| `Tab` | Cycle comment type Note/Suggestion/Issue/Praise |
 | `Ctrl-S` | Save comment |
 | `Ctrl-C/Esc` | Cancel |
 

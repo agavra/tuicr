@@ -19,7 +19,7 @@ pub fn render_comment_input(frame: &mut Frame, app: &App) {
         "File Comment".to_string()
     } else {
         match app.comment_line {
-            Some(line) => format!("Line {} Comment", line),
+            Some((line, _)) => format!("Line {} Comment", line),
             None => "Line Comment".to_string(),
         }
     };
