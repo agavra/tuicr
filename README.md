@@ -36,7 +36,7 @@ to clipboard in a format ready to paste back to the agent.
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/tuicr.git
+git clone https://github.com/agavra/tuicr.git
 cd tuicr
 
 # Build and install
