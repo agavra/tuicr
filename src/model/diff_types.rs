@@ -28,7 +28,6 @@ pub enum LineOrigin {
     Context,
     Addition,
     Deletion,
-    HunkHeader,
 }
 
 #[derive(Debug, Clone)]
@@ -41,10 +40,6 @@ pub struct DiffLine {
 
 #[derive(Debug, Clone)]
 pub struct DiffHunk {
-    pub old_start: u32,
-    pub old_lines: u32,
-    pub new_start: u32,
-    pub new_lines: u32,
     pub header: String,
     pub lines: Vec<DiffLine>,
 }

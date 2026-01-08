@@ -94,14 +94,7 @@ fn parse_hunks(diff: &Diff, delta_idx: usize) -> Result<Vec<DiffHunk>> {
                 });
             }
 
-            hunks.push(DiffHunk {
-                old_start: hunk.old_start(),
-                old_lines: hunk.old_lines(),
-                new_start: hunk.new_start(),
-                new_lines: hunk.new_lines(),
-                header,
-                lines,
-            });
+            hunks.push(DiffHunk { header, lines });
         }
     }
 

@@ -3,4 +3,3 @@ pub mod keybindings;
 pub mod mode;
 
 pub use keybindings::{Action, map_key_to_action};
-pub use mode::InputMode;

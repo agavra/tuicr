@@ -41,12 +41,4 @@ impl RepoInfo {
             branch_name,
         })
     }
-
-    pub fn short_commit(&self) -> &str {
-        if self.head_commit.len() >= 7 {
-            &self.head_commit[..7]
-        } else {
-            &self.head_commit
-        }
-    }
 }

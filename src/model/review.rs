@@ -66,16 +66,8 @@ impl ReviewSession {
         }
     }
 
-    pub fn touch(&mut self) {
-        self.updated_at = Utc::now();
-    }
-
     pub fn reviewed_count(&self) -> usize {
         self.files.values().filter(|f| f.reviewed).count()
-    }
-
-    pub fn total_files(&self) -> usize {
-        self.files.len()
     }
 
     pub fn add_file(&mut self, path: PathBuf, status: FileStatus) {

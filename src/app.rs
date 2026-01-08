@@ -50,7 +50,6 @@ pub struct App {
 #[derive(Debug, Default)]
 pub struct FileListState {
     pub selected: usize,
-    pub offset: usize,
 }
 
 #[derive(Debug, Default)]
@@ -120,12 +119,6 @@ impl App {
         }
     }
 
-    pub fn is_current_file_reviewed(&self) -> bool {
-        self.current_file_path()
-            .and_then(|p| self.session.files.get(p))
-            .is_some_and(|r| r.reviewed)
-    }
-
     pub fn file_count(&self) -> usize {
         self.diff_files.len()
     }
@@ -136,10 +129,6 @@ impl App {
 
     pub fn set_message(&mut self, msg: impl Into<String>) {
         self.message = Some(msg.into());
-    }
-
-    pub fn clear_message(&mut self) {
-        self.message = None;
     }
 
     pub fn cursor_down(&mut self, lines: usize) {

@@ -75,26 +75,8 @@ pub fn find_session_for_repo(repo_path: &PathBuf) -> Result<Option<PathBuf>> {
     Ok(matching_sessions.first().map(|e| e.path()))
 }
 
-pub fn list_sessions() -> Result<Vec<PathBuf>> {
-    let reviews_dir = get_reviews_dir()?;
-
-    let mut sessions: Vec<_> = fs::read_dir(&reviews_dir)?
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| {
-            entry
-                .file_name()
-                .to_str()
-                .is_some_and(|name| name.ends_with(".json"))
-        })
-        .map(|e| e.path())
-        .collect();
-
-    sessions.sort_by_key(|p| std::cmp::Reverse(p.metadata().ok().and_then(|m| m.modified().ok())));
-
-    Ok(sessions)
-}
-
-pub fn delete_session(path: &PathBuf) -> Result<()> {
+#[cfg(test)]
+fn delete_session(path: &PathBuf) -> Result<()> {
     fs::remove_file(path)?;
     Ok(())
 }

@@ -17,7 +17,6 @@ pub enum Action {
     PrevFile,
     NextHunk,
     PrevHunk,
-    CenterView,
     PendingZCommand,
 
     // Panel focus
@@ -34,15 +33,10 @@ pub enum Action {
     DeleteComment,
 
     // Session
-    Save,
-    Export,
     Quit,
-    ForceQuit,
-    SaveAndQuit,
 
     // Mode changes
     EnterCommandMode,
-    EnterCommentMode,
     ExitMode,
     ToggleHelp,
 

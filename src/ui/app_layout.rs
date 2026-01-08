@@ -223,7 +223,6 @@ fn render_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {
                         LineOrigin::Addition => ("+", styles::diff_add_style()),
                         LineOrigin::Deletion => ("-", styles::diff_del_style()),
                         LineOrigin::Context => (" ", styles::diff_context_style()),
-                        LineOrigin::HunkHeader => ("@", styles::diff_hunk_header_style()),
                     };
 
                     let line_num = match diff_line.origin {

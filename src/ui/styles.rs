@@ -1,8 +1,6 @@
 use ratatui::style::{Color, Modifier, Style};
 
 // Base colors
-pub const BG_PRIMARY: Color = Color::Reset;
-pub const BG_SECONDARY: Color = Color::Rgb(30, 30, 30);
 pub const BG_HIGHLIGHT: Color = Color::Rgb(50, 50, 50);
 
 pub const FG_PRIMARY: Color = Color::White;
@@ -98,17 +96,6 @@ pub fn mode_style() -> Style {
         .fg(Color::Black)
         .bg(Color::Cyan)
         .add_modifier(Modifier::BOLD)
-}
-
-pub fn comment_type_style(comment_type: &str) -> Style {
-    let color = match comment_type {
-        "NOTE" => COMMENT_NOTE,
-        "SUGGESTION" => COMMENT_SUGGESTION,
-        "ISSUE" => COMMENT_ISSUE,
-        "PRAISE" => COMMENT_PRAISE,
-        _ => FG_SECONDARY,
-    };
-    Style::default().fg(color).add_modifier(Modifier::BOLD)
 }
 
 pub fn file_status_style(status: char) -> Style {

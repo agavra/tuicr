@@ -11,7 +11,7 @@ use std::io;
 use std::time::Duration;
 
 use crossterm::{
-    event::{self, Event, KeyCode},
+    event::{self, Event},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -92,9 +92,6 @@ fn main() -> anyhow::Result<()> {
                     Action::PageUp => app.scroll_up(30),
                     Action::PendingZCommand => {
                         pending_z = true;
-                    }
-                    Action::CenterView => {
-                        app.center_cursor();
                     }
                     Action::GoToTop => app.jump_to_file(0),
                     Action::GoToBottom => {

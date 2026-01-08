@@ -17,14 +17,8 @@ pub enum TuicrError {
     #[error("No changes to review")]
     NoChanges,
 
-    #[error("Terminal error: {0}")]
-    Terminal(String),
-
     #[error("Review session corrupted: {0}")]
     CorruptedSession(String),
-
-    #[error("Session not found: {0}")]
-    SessionNotFound(String),
 
     #[error("Clipboard error: {0}")]
     Clipboard(String),

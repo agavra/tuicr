@@ -47,9 +47,4 @@ impl Comment {
             line_context: None,
         }
     }
-
-    pub fn with_line_context(mut self, context: LineContext) -> Self {
-        self.line_context = Some(context);
-        self
-    }
 }
