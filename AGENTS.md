@@ -77,7 +77,8 @@ src/
 2. **Render**: `ui::render()` draws the TUI based on `App` state
 3. **Input**: `crossterm` events → `map_key_to_action` → match on Action in main loop
 4. **Persistence**: `:w` calls `save_session()`, writes JSON to `~/.local/share/tuicr/reviews/`
-5. **Export**: `:e` calls `export_to_clipboard()`, generates markdown, copies to system clipboard
+5. **Reload diff**: `:e` re-runs `get_working_tree_diff()` to refresh the displayed files
+6. **Export**: `:clip` (alias `:export`) calls `export_to_clipboard()`, generating markdown and copying it to the clipboard
 
 ### Important Implementation Details
 

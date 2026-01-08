@@ -149,7 +149,14 @@ pub fn render_help(frame: &mut Frame) {
                 "  :e        ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Export to markdown"),
+            Span::raw("Reload diff files"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :clip     ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Copy review to clipboard"),
         ]),
         Line::from(vec![
             Span::styled(

@@ -198,7 +198,8 @@ pub struct Comment {
 | Key | Action |
 |-----|--------|
 | `:w` | Save session |
-| `:e` | Export markdown |
+| `:e` | Reload diff files |
+| `:clip` (`:export`) | Export markdown |
 | `:q` | Quit |
 | `:wq` / `ZZ` | Save and quit |
 | `?` | Show help |
@@ -308,7 +309,7 @@ Auto-saves every 60 seconds and on file navigation.
    - Add line comments with `c`, file comments with `C`
    - Mark files reviewed with `r`
    - Save with `:w`, verify JSON file created
-   - Export with `:e`, verify markdown output
+   - Export with `:clip`, verify markdown output
    - Quit with `:q`, restart, verify session loads with scroll position
 
 ---

@@ -132,6 +132,75 @@ impl App {
         })
     }
 
+    pub fn reload_diff_files(&mut self) -> Result<usize> {
+        let current_path = self.current_file_path().cloned();
+        let prev_file_idx = self.diff_state.current_file_idx;
+        let prev_cursor_line = self.diff_state.cursor_line;
+        let prev_viewport_offset = self
+            .diff_state
+            .cursor_line
+            .saturating_sub(self.diff_state.scroll_offset);
+        let prev_relative_line = if self.diff_files.is_empty() {
+            0
+        } else {
+            let start = self.calculate_file_scroll_offset(self.diff_state.current_file_idx);
+            prev_cursor_line.saturating_sub(start)
+        };
+
+        let diff_files = get_working_tree_diff(&self.repo_info.repo)?;
+
+        for file in &diff_files {
+            let path = file.display_path().clone();
+            self.session.add_file(path, file.status);
+        }
+
+        self.diff_files = diff_files;
+
+        if self.diff_files.is_empty() {
+            self.diff_state.current_file_idx = 0;
+            self.diff_state.cursor_line = 0;
+            self.diff_state.scroll_offset = 0;
+            self.file_list_state.selected = 0;
+        } else {
+            let target_idx = if let Some(path) = current_path {
+                self.diff_files
+                    .iter()
+                    .position(|file| file.display_path() == &path)
+                    .unwrap_or_else(|| prev_file_idx.min(self.diff_files.len().saturating_sub(1)))
+            } else {
+                prev_file_idx.min(self.diff_files.len().saturating_sub(1))
+            };
+
+            self.jump_to_file(target_idx);
+
+            let file_start = self.calculate_file_scroll_offset(target_idx);
+            let file_height = self.file_render_height(&self.diff_files[target_idx]);
+            let relative_line = prev_relative_line.min(file_height.saturating_sub(1));
+            self.diff_state.cursor_line = file_start.saturating_add(relative_line);
+
+            let viewport = self.diff_state.viewport_height.max(1);
+            let max_relative = viewport.saturating_sub(1);
+            let relative_offset = prev_viewport_offset.min(max_relative);
+            let total_lines = self.total_lines();
+            if total_lines == 0 {
+                self.diff_state.scroll_offset = 0;
+            } else {
+                let max_scroll = total_lines.saturating_sub(1);
+                let desired = self
+                    .diff_state
+                    .cursor_line
+                    .saturating_sub(relative_offset)
+                    .min(max_scroll);
+                self.diff_state.scroll_offset = desired;
+            }
+
+            self.ensure_cursor_visible();
+            self.update_current_file_from_cursor();
+        }
+
+        Ok(self.diff_files.len())
+    }
+
     pub fn current_file(&self) -> Option<&DiffFile> {
         self.diff_files.get(self.diff_state.current_file_idx)
     }

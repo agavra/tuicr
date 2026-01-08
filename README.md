@@ -85,14 +85,15 @@ tuicr
 | Key | Action |
 |-----|--------|
 | `:w` | Save session |
-| `:e` | Copy review to clipboard |
+| `:e` | Reload diff files |
+| `:clip` (`:export`) | Copy review to clipboard |
 | `:q` | Quit |
 | `:x` / `:wq` | Save and quit (prompts to copy if comments exist) |
 | `?` | Show help |
 
 ## Review Output
 
-When you export your review (`:e` or confirm on `:wq`), `tuicr` copies structured Markdown to your clipboard. The format is optimized for pasting into AI agent conversations:
+When you export your review (`:clip` or confirm on `:wq`), `tuicr` copies structured Markdown to your clipboard. The format is optimized for pasting into AI agent conversations:
 
 ```markdown
 I reviewed your code and have the following comments. Please address them.
@@ -108,4 +109,3 @@ Each comment is numbered and self-contained with its file path and line number (
 ## Session Persistence
 
 Sessions are automatically saved to `~/.local/share/tuicr/reviews/` (XDG compliant). When you reopen `tuicr` in the same repository, your previous review progress (comments, reviewed status) is restored.
-

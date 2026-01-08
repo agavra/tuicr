@@ -267,7 +267,15 @@ fn main() -> anyhow::Result<()> {
                                     app.set_message(format!("Save failed: {}", e));
                                 }
                             },
-                            "e" | "export" => match export_to_clipboard(&app.session) {
+                            "e" | "reload" => match app.reload_diff_files() {
+                                Ok(count) => {
+                                    app.set_message(format!("Reloaded {} files", count));
+                                }
+                                Err(e) => {
+                                    app.set_message(format!("Reload failed: {}", e));
+                                }
+                            },
+                            "clip" | "export" => match export_to_clipboard(&app.session) {
                                 Ok(()) => {
                                     app.set_message("Review copied to clipboard");
                                 }
