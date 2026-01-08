@@ -11,9 +11,15 @@ use std::io;
 use std::time::Duration;
 
 use crossterm::{
-    event::{self, Event},
+    event::{
+        self, Event, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+        PushKeyboardEnhancementFlags,
+    },
     execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    terminal::{
+        EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+        supports_keyboard_enhancement,
+    },
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
 
@@ -26,14 +32,21 @@ fn main() -> anyhow::Result<()> {
     // Setup panic hook to restore terminal on panic
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
+        let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
         let _ = disable_raw_mode();
         let _ = execute!(io::stdout(), LeaveAlternateScreen);
         original_hook(panic_info);
     }));
 
+    // Check keyboard enhancement support before enabling raw mode
+    let keyboard_enhancement_supported = matches!(supports_keyboard_enhancement(), Ok(true));
+
     // Initialize app
     let mut app = match App::new() {
-        Ok(app) => app,
+        Ok(mut app) => {
+            app.supports_keyboard_enhancement = keyboard_enhancement_supported;
+            app
+        }
         Err(e) => {
             eprintln!("Error: {}", e);
             eprintln!("\nMake sure you're in a git repository with uncommitted changes.");
@@ -45,6 +58,15 @@ fn main() -> anyhow::Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
+
+    // Enable keyboard enhancement for better modifier key detection (e.g., Alt+Enter)
+    // This is supported by modern terminals like Kitty, iTerm2, WezTerm, etc.
+    if keyboard_enhancement_supported {
+        let _ = execute!(
+            stdout,
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        );
+    }
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -294,6 +316,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     // Restore terminal
+    let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
 

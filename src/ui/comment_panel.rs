@@ -24,11 +24,17 @@ pub fn render_comment_input(frame: &mut Frame, app: &App) {
         }
     };
 
+    let newline_hint = if app.supports_keyboard_enhancement {
+        "Shift-Enter"
+    } else {
+        "Ctrl-J"
+    };
     let block = Block::default()
         .title(format!(
-            " {} [{}] (Ctrl-S to save, Ctrl-C/Esc to cancel) ",
+            " {} [{}] (Enter to save, {} for newline) ",
             comment_kind,
-            app.comment_type.as_str()
+            app.comment_type.as_str(),
+            newline_hint
         ))
         .borders(Borders::ALL)
         .border_style(styles::border_style(true));

@@ -133,10 +133,13 @@ fn map_comment_mode(key: KeyEvent) -> Action {
         // Cancel: Esc, Ctrl+C
         (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
         (KeyCode::Char('c'), KeyModifiers::CONTROL) => Action::ExitMode,
-        // Submit: Ctrl+Enter, Ctrl+S, Shift+Enter
+        // Submit: Enter without shift (Ctrl+Enter and Ctrl+S also work)
+        (KeyCode::Enter, KeyModifiers::NONE) => Action::SubmitInput,
         (KeyCode::Enter, KeyModifiers::CONTROL) => Action::SubmitInput,
         (KeyCode::Char('s'), KeyModifiers::CONTROL) => Action::SubmitInput,
-        (KeyCode::Enter, KeyModifiers::SHIFT) => Action::SubmitInput,
+        // Newline: Shift+Enter (modern terminals) or Ctrl+J (universal fallback)
+        (KeyCode::Enter, mods) if mods.contains(KeyModifiers::SHIFT) => Action::InsertChar('\n'),
+        (KeyCode::Char('j'), KeyModifiers::CONTROL) => Action::InsertChar('\n'),
         // Comment type: Tab to cycle
         (KeyCode::Tab, KeyModifiers::NONE) => Action::CycleCommentType,
         // Cursor movement
@@ -147,7 +150,6 @@ fn map_comment_mode(key: KeyEvent) -> Action {
         (KeyCode::Char('w'), KeyModifiers::CONTROL) => Action::DeleteWord,
         (KeyCode::Char('u'), KeyModifiers::CONTROL) => Action::ClearLine,
         (KeyCode::Char(c), _) => Action::InsertChar(c),
-        (KeyCode::Enter, KeyModifiers::NONE) => Action::InsertChar('\n'),
         _ => Action::None,
     }
 }

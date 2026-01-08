@@ -46,6 +46,7 @@ pub struct App {
     pub dirty: bool,
     pub message: Option<String>,
     pub pending_confirm: Option<ConfirmAction>,
+    pub supports_keyboard_enhancement: bool,
 }
 
 #[derive(Debug, Default)]
@@ -127,6 +128,7 @@ impl App {
             dirty: false,
             message: None,
             pending_confirm: None,
+            supports_keyboard_enhancement: false,
         })
     }
 

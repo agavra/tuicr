@@ -77,7 +77,8 @@ tuicr
 | Key | Action |
 |-----|--------|
 | `Tab` | Cycle comment type Note/Suggestion/Issue/Praise |
-| `Ctrl-S` | Save comment |
+| `Enter` | Save comment |
+| `Shift-Enter` / `Ctrl-J` | Insert newline |
 | `Ctrl-C/Esc` | Cancel |
 
 #### Commands
