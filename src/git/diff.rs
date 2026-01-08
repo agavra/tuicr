@@ -9,6 +9,7 @@ pub fn get_working_tree_diff(repo: &Repository) -> Result<Vec<DiffFile>> {
 
     let mut opts = DiffOptions::new();
     opts.include_untracked(true);
+    opts.show_untracked_content(true);
     opts.recurse_untracked_dirs(true);
 
     let diff = repo.diff_tree_to_workdir_with_index(Some(&head), Some(&mut opts))?;
@@ -21,7 +22,7 @@ fn parse_diff(diff: &Diff) -> Result<Vec<DiffFile>> {
 
     for (delta_idx, delta) in diff.deltas().enumerate() {
         let status = match delta.status() {
-            Delta::Added => FileStatus::Added,
+            Delta::Added | Delta::Untracked => FileStatus::Added,
             Delta::Deleted => FileStatus::Deleted,
             Delta::Modified => FileStatus::Modified,
             Delta::Renamed => FileStatus::Renamed,
