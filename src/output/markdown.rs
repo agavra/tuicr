@@ -8,7 +8,7 @@ use crate::model::{LineSide, ReviewSession};
 /// (file_path, line_number, side, comment_type, content)
 type CommentEntry<'a> = (String, Option<u32>, Option<LineSide>, &'a str, &'a str);
 
-pub fn export_to_clipboard(session: &ReviewSession) -> Result<()> {
+pub fn export_to_clipboard(session: &ReviewSession) -> Result<String> {
     // Check if there are any comments to export
     if !session.has_comments() {
         return Err(TuicrError::NoComments);
@@ -23,7 +23,7 @@ pub fn export_to_clipboard(session: &ReviewSession) -> Result<()> {
         .set_text(content)
         .map_err(|e| TuicrError::Clipboard(format!("Failed to copy to clipboard: {}", e)))?;
 
-    Ok(())
+    Ok("Review copied to clipboard".to_string())
 }
 
 fn generate_markdown(session: &ReviewSession) -> String {

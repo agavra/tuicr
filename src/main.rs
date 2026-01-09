@@ -276,12 +276,8 @@ fn main() -> anyhow::Result<()> {
                                 }
                             },
                             "clip" | "export" => match export_to_clipboard(&app.session) {
-                                Ok(()) => {
-                                    app.set_message("Review copied to clipboard");
-                                }
-                                Err(e) => {
-                                    app.set_warning(format!("{}", e));
-                                }
+                                Ok(msg) => app.set_message(msg),
+                                Err(e) => app.set_warning(format!("{}", e)),
                             },
                             _ => {
                                 app.set_message(format!("Unknown command: {}", cmd));
@@ -296,12 +292,8 @@ fn main() -> anyhow::Result<()> {
                     if app.input_mode == app::InputMode::Confirm {
                         if let Some(app::ConfirmAction::CopyAndQuit) = app.pending_confirm {
                             match export_to_clipboard(&app.session) {
-                                Ok(()) => {
-                                    app.set_message("Review copied to clipboard");
-                                }
-                                Err(e) => {
-                                    app.set_warning(format!("{}", e));
-                                }
+                                Ok(msg) => app.set_message(msg),
+                                Err(e) => app.set_warning(format!("{}", e)),
                             }
                         }
                         app.exit_confirm_mode();
@@ -314,6 +306,10 @@ fn main() -> anyhow::Result<()> {
                         app.should_quit = true;
                     }
                 }
+                Action::ExportToClipboard => match export_to_clipboard(&app.session) {
+                    Ok(msg) => app.set_message(msg),
+                    Err(e) => app.set_warning(format!("{}", e)),
+                },
                 _ => {}
             }
         }

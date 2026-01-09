@@ -104,6 +104,13 @@ pub fn render_help(frame: &mut Frame) {
             ),
             Span::raw("Add file comment"),
         ]),
+        Line::from(vec![
+            Span::styled(
+                "  y         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Yank (copy) review to clipboard"),
+        ]),
         Line::from(""),
         Line::from(Span::styled(
             "Comment Mode",

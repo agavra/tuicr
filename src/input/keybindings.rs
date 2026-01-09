@@ -34,6 +34,7 @@ pub enum Action {
 
     // Session
     Quit,
+    ExportToClipboard,
 
     // Mode changes
     EnterCommandMode,
@@ -103,6 +104,7 @@ fn map_normal_mode(key: KeyEvent) -> Action {
         (KeyCode::Char('C'), _) => Action::AddFileComment,
         (KeyCode::Char('e'), KeyModifiers::NONE) => Action::EditComment,
         (KeyCode::Char('d'), KeyModifiers::NONE) => Action::PendingDCommand,
+        (KeyCode::Char('y'), KeyModifiers::NONE) => Action::ExportToClipboard,
 
         // Mode changes (use _ for shifted characters like : and ?)
         (KeyCode::Char(':'), _) => Action::EnterCommandMode,
