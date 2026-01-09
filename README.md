@@ -34,11 +34,17 @@ to clipboard in a format ready to paste back to the agent.
 
 ## Installation
 
+### Pre-built binaries
+
+Download the latest release for your platform from [GitHub Releases](https://github.com/agavra/tuicr/releases).
+
+### From crates.io
+
 ```bash
 cargo install tuicr
 ```
 
-Or build from source:
+### From source
 
 ```bash
 git clone https://github.com/agavra/tuicr.git
