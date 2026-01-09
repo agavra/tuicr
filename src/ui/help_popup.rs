@@ -106,7 +106,7 @@ pub fn render_help(frame: &mut Frame) {
         ]),
         Line::from(vec![
             Span::styled(
-                "  e         ",
+                "  i         ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("Edit comment at cursor"),

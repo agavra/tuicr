@@ -110,7 +110,7 @@ fn map_normal_mode(key: KeyEvent) -> Action {
         (KeyCode::Char('r'), KeyModifiers::NONE) => Action::ToggleReviewed,
         (KeyCode::Char('c'), KeyModifiers::NONE) => Action::AddLineComment,
         (KeyCode::Char('C'), _) => Action::AddFileComment,
-        (KeyCode::Char('e'), KeyModifiers::NONE) => Action::EditComment,
+        (KeyCode::Char('i'), KeyModifiers::NONE) => Action::EditComment,
         (KeyCode::Char('d'), KeyModifiers::NONE) => Action::PendingDCommand,
         (KeyCode::Char('v'), KeyModifiers::NONE) => Action::ToggleDiffView,
         (KeyCode::Char('y'), KeyModifiers::NONE) => Action::ExportToClipboard,
