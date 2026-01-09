@@ -25,6 +25,19 @@ pub enum FocusedPanel {
     Diff,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MessageType {
+    Info,
+    Warning,
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Message {
+    pub content: String,
+    pub message_type: MessageType,
+}
+
 pub struct App {
     pub repo_info: RepoInfo,
     pub session: ReviewSession,
@@ -44,7 +57,7 @@ pub struct App {
 
     pub should_quit: bool,
     pub dirty: bool,
-    pub message: Option<String>,
+    pub message: Option<Message>,
     pub pending_confirm: Option<ConfirmAction>,
     pub supports_keyboard_enhancement: bool,
 }
@@ -233,7 +246,24 @@ impl App {
     }
 
     pub fn set_message(&mut self, msg: impl Into<String>) {
-        self.message = Some(msg.into());
+        self.message = Some(Message {
+            content: msg.into(),
+            message_type: MessageType::Info,
+        });
+    }
+
+    pub fn set_warning(&mut self, msg: impl Into<String>) {
+        self.message = Some(Message {
+            content: msg.into(),
+            message_type: MessageType::Warning,
+        });
+    }
+
+    pub fn set_error(&mut self, msg: impl Into<String>) {
+        self.message = Some(Message {
+            content: msg.into(),
+            message_type: MessageType::Error,
+        });
     }
 
     pub fn cursor_down(&mut self, lines: usize) {

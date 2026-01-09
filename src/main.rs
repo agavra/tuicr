@@ -248,7 +248,7 @@ fn main() -> anyhow::Result<()> {
                                     app.set_message(format!("Saved to {}", path.display()));
                                 }
                                 Err(e) => {
-                                    app.set_message(format!("Save failed: {}", e));
+                                    app.set_error(format!("Save failed: {}", e));
                                 }
                             },
                             "x" | "wq" => match save_session(&app.session) {
@@ -264,7 +264,7 @@ fn main() -> anyhow::Result<()> {
                                     }
                                 }
                                 Err(e) => {
-                                    app.set_message(format!("Save failed: {}", e));
+                                    app.set_error(format!("Save failed: {}", e));
                                 }
                             },
                             "e" | "reload" => match app.reload_diff_files() {
@@ -272,7 +272,7 @@ fn main() -> anyhow::Result<()> {
                                     app.set_message(format!("Reloaded {} files", count));
                                 }
                                 Err(e) => {
-                                    app.set_message(format!("Reload failed: {}", e));
+                                    app.set_error(format!("Reload failed: {}", e));
                                 }
                             },
                             "clip" | "export" => match export_to_clipboard(&app.session) {
@@ -280,7 +280,7 @@ fn main() -> anyhow::Result<()> {
                                     app.set_message("Review copied to clipboard");
                                 }
                                 Err(e) => {
-                                    app.set_message(format!("Export failed: {}", e));
+                                    app.set_warning(format!("{}", e));
                                 }
                             },
                             _ => {
@@ -300,7 +300,7 @@ fn main() -> anyhow::Result<()> {
                                     app.set_message("Review copied to clipboard");
                                 }
                                 Err(e) => {
-                                    app.set_message(format!("Export failed: {}", e));
+                                    app.set_warning(format!("{}", e));
                                 }
                             }
                         }

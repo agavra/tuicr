@@ -6,7 +6,7 @@ use ratatui::{
     widgets::{Block, Paragraph},
 };
 
-use crate::app::{App, InputMode};
+use crate::app::{App, InputMode, MessageType};
 use crate::ui::styles;
 
 pub fn render_header(frame: &mut Frame, app: &App, area: Rect) {
@@ -63,11 +63,14 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let message = if let Some(msg) = &app.message {
+        let color = match msg.message_type {
+            MessageType::Info => styles::FG_PRIMARY,
+            MessageType::Warning => styles::PENDING, // Amber/yellow
+            MessageType::Error => styles::COMMENT_ISSUE, // Red
+        };
         Span::styled(
-            format!(" {} ", msg),
-            Style::default()
-                .fg(styles::FG_PRIMARY)
-                .add_modifier(Modifier::ITALIC),
+            format!(" {} ", msg.content),
+            Style::default().fg(color).add_modifier(Modifier::ITALIC),
         )
     } else {
         Span::raw("")

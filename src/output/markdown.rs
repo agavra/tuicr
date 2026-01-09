@@ -9,6 +9,11 @@ use crate::model::{LineSide, ReviewSession};
 type CommentEntry<'a> = (String, Option<u32>, Option<LineSide>, &'a str, &'a str);
 
 pub fn export_to_clipboard(session: &ReviewSession) -> Result<()> {
+    // Check if there are any comments to export
+    if !session.has_comments() {
+        return Err(TuicrError::NoComments);
+    }
+
     let content = generate_markdown(session);
 
     let mut clipboard = Clipboard::new()
@@ -166,5 +171,18 @@ mod tests {
         // Should have 2 numbered comments
         assert!(markdown.contains("1. **[SUGGESTION]**"));
         assert!(markdown.contains("2. **[ISSUE]**"));
+    }
+
+    #[test]
+    fn should_fail_export_when_no_comments() {
+        // given
+        let session = ReviewSession::new(PathBuf::from("/tmp/test-repo"), "abc1234def".to_string());
+
+        // when
+        let result = export_to_clipboard(&session);
+
+        // then
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), TuicrError::NoComments));
     }
 }

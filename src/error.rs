@@ -17,6 +17,9 @@ pub enum TuicrError {
     #[error("No changes to review")]
     NoChanges,
 
+    #[error("No comments to export - skipping copy")]
+    NoComments,
+
     #[error("Review session corrupted: {0}")]
     CorruptedSession(String),
 
