@@ -87,14 +87,7 @@ fn render_file_list(frame: &mut Frame, app: &App, area: Rect) {
             let path = file.display_path();
             let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
             let status = file.status.as_char();
-
-            let is_reviewed = app
-                .session
-                .files
-                .get(path)
-                .map(|r| r.reviewed)
-                .unwrap_or(false);
-
+            let is_reviewed = app.session.is_file_reviewed(path);
             let review_mark = if is_reviewed { "✓" } else { " " };
             let is_current = i == app.diff_state.current_file_idx;
             let pointer = if is_current { "▶" } else { " " };
@@ -148,19 +141,29 @@ fn render_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {
     for file in &app.diff_files {
         let path = file.display_path();
         let status = file.status.as_char();
+        let is_reviewed = app.session.is_file_reviewed(path);
 
         // File header
         let is_current = line_idx == current_line_idx;
         let indicator = if is_current { "▶ " } else { "  " };
+        
+        // Add checkmark if reviewed (using same character as file list)
+        let review_mark = if is_reviewed { "✓ " } else { "" };
+        
         lines.push(Line::from(vec![
             Span::styled(indicator, styles::current_line_indicator_style()),
             Span::styled(
-                format!("═══ {} [{}] ", path.display(), status),
+                format!("═══ {}{} [{}] ", review_mark, path.display(), status),
                 styles::file_header_style(),
             ),
             Span::styled("═".repeat(40), styles::file_header_style()),
         ]));
         line_idx += 1;
+
+        // If file is reviewed, skip rendering the body (fold it away)
+        if is_reviewed {
+            continue;
+        }
 
         // Show file-level comments right after the header
         if let Some(review) = app.session.files.get(path) {

@@ -83,4 +83,8 @@ impl ReviewSession {
     pub fn has_comments(&self) -> bool {
         self.files.values().any(|f| f.comment_count() > 0)
     }
+
+    pub fn is_file_reviewed(&self, path: &PathBuf) -> bool {
+        self.files.get(path).map(|r| r.reviewed).unwrap_or(false)
+    }
 }

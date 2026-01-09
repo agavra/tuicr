@@ -215,6 +215,12 @@ impl App {
         {
             review.reviewed = !review.reviewed;
             self.dirty = true;
+            
+            // Move cursor to the file header line
+            let file_idx = self.diff_state.current_file_idx;
+            let header_line = self.calculate_file_scroll_offset(file_idx);
+            self.diff_state.cursor_line = header_line;
+            self.ensure_cursor_visible();
         }
     }
 
@@ -321,10 +327,18 @@ impl App {
         // Find the next hunk header position after current cursor
         let mut cumulative = 0;
         for file in &self.diff_files {
+            let path = file.display_path();
+
             // File header
             cumulative += 1;
+            
+            // If file is reviewed, skip all content
+            if self.session.is_file_reviewed(path) {
+                continue;
+            }
+            
             // File comments
-            if let Some(review) = self.session.files.get(file.display_path()) {
+            if let Some(review) = self.session.files.get(path) {
                 cumulative += review.file_comments.len();
             }
 
@@ -353,8 +367,16 @@ impl App {
         let mut cumulative = 0;
 
         for file in &self.diff_files {
+            let path = file.display_path();
+
             cumulative += 1; // File header
-            if let Some(review) = self.session.files.get(file.display_path()) {
+            
+            // If file is reviewed, skip all content
+            if self.session.is_file_reviewed(path) {
+                continue;
+            }
+            
+            if let Some(review) = self.session.files.get(path) {
                 cumulative += review.file_comments.len();
             }
 
@@ -398,6 +420,13 @@ impl App {
     }
 
     fn file_render_height(&self, file: &DiffFile) -> usize {
+        let path = file.display_path();
+        
+        // If reviewed, only show header (1 line total)
+        if self.session.is_file_reviewed(path) {
+            return 1;
+        }
+        
         let header_lines = 2;
         let content_lines: usize = file.hunks.iter().map(|h| h.lines.len() + 1).sum();
         header_lines + content_lines.max(1)
@@ -443,6 +472,11 @@ impl App {
 
             // File header
             line_idx += 1;
+
+            // If file is reviewed, skip all content
+            if self.session.is_file_reviewed(path) {
+                continue;
+            }
 
             // File comments (now multiline with box)
             if let Some(review) = self.session.files.get(path) {
@@ -523,6 +557,11 @@ impl App {
 
             // File header
             line_idx += 1;
+
+            // If file is reviewed, skip all content
+            if self.session.is_file_reviewed(&path) {
+                continue;
+            }
 
             // File comments - check if cursor is on one
             if let Some(review) = self.session.files.get(&path) {
