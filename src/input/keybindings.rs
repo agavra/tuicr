@@ -31,6 +31,7 @@ pub enum Action {
     AddFileComment,
     EditComment,
     PendingDCommand,
+    ToggleDiffView,
 
     // Session
     Quit,
@@ -104,6 +105,7 @@ fn map_normal_mode(key: KeyEvent) -> Action {
         (KeyCode::Char('C'), _) => Action::AddFileComment,
         (KeyCode::Char('e'), KeyModifiers::NONE) => Action::EditComment,
         (KeyCode::Char('d'), KeyModifiers::NONE) => Action::PendingDCommand,
+        (KeyCode::Char('v'), KeyModifiers::NONE) => Action::ToggleDiffView,
         (KeyCode::Char('y'), KeyModifiers::NONE) => Action::ExportToClipboard,
 
         // Mode changes (use _ for shifted characters like : and ?)

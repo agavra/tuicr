@@ -144,6 +144,7 @@ fn main() -> anyhow::Result<()> {
                 Action::NextHunk => app.next_hunk(),
                 Action::PrevHunk => app.prev_hunk(),
                 Action::ToggleReviewed => app.toggle_reviewed(),
+                Action::ToggleDiffView => app.toggle_diff_view_mode(),
                 Action::ToggleFocus => {
                     app.focused_panel = match app.focused_panel {
                         app::FocusedPanel::FileList => app::FocusedPanel::Diff,

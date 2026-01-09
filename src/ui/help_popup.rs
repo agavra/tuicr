@@ -111,6 +111,13 @@ pub fn render_help(frame: &mut Frame) {
             ),
             Span::raw("Yank (copy) review to clipboard"),
         ]),
+        Line::from(vec![
+            Span::styled(
+                "  v         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Toggle unified/side-by-side diff view"),
+        ]),
         Line::from(""),
         Line::from(Span::styled(
             "Comment Mode",

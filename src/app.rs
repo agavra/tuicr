@@ -25,6 +25,12 @@ pub enum FocusedPanel {
     Diff,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffViewMode {
+    Unified,
+    SideBySide,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MessageType {
     Info,
@@ -45,6 +51,7 @@ pub struct App {
 
     pub input_mode: InputMode,
     pub focused_panel: FocusedPanel,
+    pub diff_view_mode: DiffViewMode,
 
     pub file_list_state: FileListState,
     pub diff_state: DiffState,
@@ -129,6 +136,7 @@ impl App {
             diff_files,
             input_mode: InputMode::Normal,
             focused_panel: FocusedPanel::Diff,
+            diff_view_mode: DiffViewMode::Unified,
             file_list_state: FileListState::default(),
             diff_state: DiffState::default(),
             command_buffer: String::new(),
@@ -503,11 +511,6 @@ impl App {
             // File header
             line_idx += 1;
 
-            // If file is reviewed, skip all content
-            if self.session.is_file_reviewed(path) {
-                continue;
-            }
-
             // File comments (now multiline with box)
             if let Some(review) = self.session.files.get(path) {
                 for comment in &review.file_comments {
@@ -587,11 +590,6 @@ impl App {
 
             // File header
             line_idx += 1;
-
-            // If file is reviewed, skip all content
-            if self.session.is_file_reviewed(&path) {
-                continue;
-            }
 
             // File comments - check if cursor is on one
             if let Some(review) = self.session.files.get(&path) {
@@ -806,5 +804,17 @@ impl App {
     pub fn exit_confirm_mode(&mut self) {
         self.input_mode = InputMode::Normal;
         self.pending_confirm = None;
+    }
+
+    pub fn toggle_diff_view_mode(&mut self) {
+        self.diff_view_mode = match self.diff_view_mode {
+            DiffViewMode::Unified => DiffViewMode::SideBySide,
+            DiffViewMode::SideBySide => DiffViewMode::Unified,
+        };
+        let mode_name = match self.diff_view_mode {
+            DiffViewMode::Unified => "unified",
+            DiffViewMode::SideBySide => "side-by-side",
+        };
+        self.set_message(format!("Diff view mode: {}", mode_name));
     }
 }
