@@ -3,14 +3,19 @@ name: Release
 on:
   workflow_dispatch:
     inputs:
-      bump:
-        description: 'Version bump type'
+      action:
+        description: 'Action to perform'
         required: true
         type: choice
         options:
-          - patch
-          - minor
-          - major
+          - bump-patch
+          - bump-minor
+          - bump-major
+          - build-binaries
+      version:
+        description: 'Version to build (only for build-binaries, e.g., 0.1.1)'
+        required: false
+        type: string
 
   pull_request:
     types: [closed]
@@ -22,7 +27,7 @@ env:
 jobs:
   create-release-pr:
     name: Create Release PR
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && startsWith(github.event.inputs.action, 'bump-')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -45,17 +50,17 @@ jobs:
         id: new
         run: |
           IFS='.' read -r major minor patch <<< "${{ steps.current.outputs.version }}"
-          case "${{ inputs.bump }}" in
-            major)
+          case "${{ inputs.action }}" in
+            bump-major)
               major=$((major + 1))
               minor=0
               patch=0
               ;;
-            minor)
+            bump-minor)
               minor=$((minor + 1))
               patch=0
               ;;
-            patch)
+            bump-patch)
               patch=$((patch + 1))
               ;;
           esac
@@ -88,8 +93,9 @@ jobs:
 
             Once merged, this will automatically:
             - Create git tag `v${{ steps.new.outputs.version }}`
+            - Build binaries for Linux, macOS, Windows
             - Publish to crates.io
-            - Create GitHub Release
+            - Create GitHub Release with binaries
 
   publish:
     name: Publish Release
@@ -97,6 +103,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -126,3 +134,80 @@ jobs:
           tag_name: v${{ steps.version.outputs.version }}
           name: v${{ steps.version.outputs.version }}
           generate_release_notes: true
+          draft: false
+
+  build-binaries:
+    name: Build ${{ matrix.target }}
+    needs: [publish]
+    if: |
+      always() &&
+      (needs.publish.result == 'success' ||
+       (github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'build-binaries' && github.event.inputs.version != ''))
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            use_cross: true
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            use_cross: true
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            use_cross: false
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            use_cross: false
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            use_cross: false
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v${{ needs.publish.outputs.version || github.event.inputs.version }}
+
+      - name: Set version
+        id: version
+        run: echo "version=${{ needs.publish.outputs.version || github.event.inputs.version }}" >> $GITHUB_OUTPUT
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.use_cross
+        uses: taiki-e/install-action@cross
+
+      - name: Build with cross
+        if: matrix.use_cross
+        run: cross build --release --target ${{ matrix.target }}
+
+      - name: Build native
+        if: "!matrix.use_cross"
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package binary (unix)
+        if: matrix.os != 'windows-latest'
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar -czvf ../../../tuicr-${{ steps.version.outputs.version }}-${{ matrix.target }}.tar.gz tuicr
+          cd ../../..
+
+      - name: Package binary (windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          cd target/${{ matrix.target }}/release
+          7z a ../../../tuicr-${{ steps.version.outputs.version }}-${{ matrix.target }}.zip tuicr.exe
+          cd ../../..
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          files: |
+            tuicr-*.tar.gz
+            tuicr-*.zip

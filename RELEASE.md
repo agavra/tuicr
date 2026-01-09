@@ -5,16 +5,31 @@ This project uses an automated release workflow via GitHub Actions.
 ## How to Release
 
 1. **Go to Actions** → **Release** → **Run workflow**
-2. **Select version bump type:**
-   - `patch` (0.1.0 → 0.1.1) - bug fixes
-   - `minor` (0.1.0 → 0.2.0) - new features
-   - `major` (0.1.0 → 1.0.0) - breaking changes
+2. **Select action:**
+   - `bump-patch` (0.1.0 → 0.1.1) - bug fixes
+   - `bump-minor` (0.1.0 → 0.2.0) - new features
+   - `bump-major` (0.1.0 → 1.0.0) - breaking changes
 3. **Click "Run workflow"**
 4. **Review and merge** the auto-created PR
 5. **Done!** Merging automatically:
    - Creates git tag `vX.Y.Z`
    - Publishes to crates.io
    - Creates GitHub Release with release notes
+   - Builds and uploads binaries for:
+     - `x86_64-unknown-linux-gnu` (Linux x64)
+     - `aarch64-unknown-linux-gnu` (Linux ARM64)
+     - `x86_64-apple-darwin` (macOS Intel)
+     - `aarch64-apple-darwin` (macOS Apple Silicon)
+     - `x86_64-pc-windows-msvc` (Windows x64)
+
+## Build Binaries for Existing Release
+
+If you need to rebuild binaries for an existing release:
+
+1. **Go to Actions** → **Release** → **Run workflow**
+2. **Select action:** `build-binaries`
+3. **Enter version:** e.g., `0.1.1` (without the `v` prefix)
+4. **Click "Run workflow"**
 
 ## What Gets Updated
 
