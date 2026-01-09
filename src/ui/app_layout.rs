@@ -146,10 +146,10 @@ fn render_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {
         // File header
         let is_current = line_idx == current_line_idx;
         let indicator = if is_current { "▶ " } else { "  " };
-        
+
         // Add checkmark if reviewed (using same character as file list)
         let review_mark = if is_reviewed { "✓ " } else { "" };
-        
+
         lines.push(Line::from(vec![
             Span::styled(indicator, styles::current_line_indicator_style()),
             Span::styled(

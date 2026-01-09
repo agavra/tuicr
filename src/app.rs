@@ -215,7 +215,7 @@ impl App {
         {
             review.reviewed = !review.reviewed;
             self.dirty = true;
-            
+
             // Move cursor to the file header line
             let file_idx = self.diff_state.current_file_idx;
             let header_line = self.calculate_file_scroll_offset(file_idx);
@@ -331,12 +331,12 @@ impl App {
 
             // File header
             cumulative += 1;
-            
+
             // If file is reviewed, skip all content
             if self.session.is_file_reviewed(path) {
                 continue;
             }
-            
+
             // File comments
             if let Some(review) = self.session.files.get(path) {
                 cumulative += review.file_comments.len();
@@ -370,12 +370,12 @@ impl App {
             let path = file.display_path();
 
             cumulative += 1; // File header
-            
+
             // If file is reviewed, skip all content
             if self.session.is_file_reviewed(path) {
                 continue;
             }
-            
+
             if let Some(review) = self.session.files.get(path) {
                 cumulative += review.file_comments.len();
             }
@@ -421,12 +421,12 @@ impl App {
 
     fn file_render_height(&self, file: &DiffFile) -> usize {
         let path = file.display_path();
-        
+
         // If reviewed, only show header (1 line total)
         if self.session.is_file_reviewed(path) {
             return 1;
         }
-        
+
         let header_lines = 2;
         let content_lines: usize = file.hunks.iter().map(|h| h.lines.len() + 1).sum();
         header_lines + content_lines.max(1)
