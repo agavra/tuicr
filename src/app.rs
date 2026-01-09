@@ -71,6 +71,7 @@ pub struct App {
     pub comment_type: CommentType,
     pub comment_is_file_level: bool,
     pub comment_line: Option<(u32, LineSide)>,
+    pub editing_comment_id: Option<String>,
 
     // Commit selection state
     pub commit_list: Vec<CommitInfo>,
@@ -146,6 +147,7 @@ impl App {
                     comment_type: CommentType::Note,
                     comment_is_file_level: true,
                     comment_line: None,
+                    editing_comment_id: None,
                     commit_list: Vec::new(),
                     commit_list_cursor: 0,
                     commit_selected: Vec::new(),
@@ -183,6 +185,7 @@ impl App {
                     comment_type: CommentType::Note,
                     comment_is_file_level: true,
                     comment_line: None,
+                    editing_comment_id: None,
                     commit_list: commits,
                     commit_list_cursor: 0,
                     commit_selected: vec![false; commit_count],
@@ -790,6 +793,61 @@ impl App {
         false
     }
 
+    /// Enter edit mode for the comment at the current cursor position
+    /// Returns true if a comment was found and edit mode entered
+    pub fn enter_edit_mode(&mut self) -> bool {
+        let location = self.find_comment_at_cursor();
+
+        match location {
+            Some(CommentLocation::FileComment { path, index }) => {
+                if let Some(review) = self.session.files.get(&path)
+                    && let Some(comment) = review.file_comments.get(index)
+                {
+                    self.input_mode = InputMode::Comment;
+                    self.comment_buffer = comment.content.clone();
+                    self.comment_cursor = self.comment_buffer.len();
+                    self.comment_type = comment.comment_type;
+                    self.comment_is_file_level = true;
+                    self.comment_line = None;
+                    self.editing_comment_id = Some(comment.id.clone());
+                    return true;
+                }
+            }
+            Some(CommentLocation::LineComment {
+                path,
+                line,
+                side,
+                index,
+            }) => {
+                if let Some(review) = self.session.files.get(&path)
+                    && let Some(comments) = review.line_comments.get(&line)
+                {
+                    // Find the actual comment by counting comments with matching side
+                    let mut side_idx = 0;
+                    for comment in comments.iter() {
+                        let comment_side = comment.side.unwrap_or(LineSide::New);
+                        if comment_side == side {
+                            if side_idx == index {
+                                self.input_mode = InputMode::Comment;
+                                self.comment_buffer = comment.content.clone();
+                                self.comment_cursor = self.comment_buffer.len();
+                                self.comment_type = comment.comment_type;
+                                self.comment_is_file_level = false;
+                                self.comment_line = Some((line, side));
+                                self.editing_comment_id = Some(comment.id.clone());
+                                return true;
+                            }
+                            side_idx += 1;
+                        }
+                    }
+                }
+            }
+            None => {}
+        }
+
+        false
+    }
+
     pub fn enter_command_mode(&mut self) {
         self.input_mode = InputMode::Command;
         self.command_buffer.clear();
@@ -813,6 +871,7 @@ impl App {
         self.input_mode = InputMode::Normal;
         self.comment_buffer.clear();
         self.comment_cursor = 0;
+        self.editing_comment_id = None;
     }
 
     pub fn save_comment(&mut self) {
@@ -826,21 +885,62 @@ impl App {
         if let Some(path) = self.current_file_path().cloned()
             && let Some(review) = self.session.get_file_mut(&path)
         {
-            if self.comment_is_file_level {
-                let comment = Comment::new(content, self.comment_type, None);
-                review.add_file_comment(comment);
-                self.set_message("File comment added");
-            } else if let Some((line, side)) = self.comment_line {
-                let comment = Comment::new(content, self.comment_type, Some(side));
-                review.add_line_comment(line, comment);
-                self.set_message(format!("Comment added to line {}", line));
+            let message: String;
+
+            // Check if we're editing an existing comment
+            if let Some(editing_id) = &self.editing_comment_id {
+                // Update existing comment
+                // Search in file comments
+                if let Some(comment) = review
+                    .file_comments
+                    .iter_mut()
+                    .find(|c| &c.id == editing_id)
+                {
+                    comment.content = content.clone();
+                    comment.comment_type = self.comment_type;
+                    message = "Comment updated".to_string();
+                } else {
+                    // If not found in file comments, search in line comments
+                    let mut found_comment = None;
+                    for comments in review.line_comments.values_mut() {
+                        if let Some(comment) = comments.iter_mut().find(|c| &c.id == editing_id) {
+                            found_comment = Some(comment);
+                            break;
+                        }
+                    }
+
+                    if let Some(comment) = found_comment {
+                        comment.content = content.clone();
+                        comment.comment_type = self.comment_type;
+                        message = if let Some((line, _)) = self.comment_line {
+                            format!("Comment on line {} updated", line)
+                        } else {
+                            "Comment updated".to_string()
+                        };
+                    } else {
+                        message = "Error: Comment to edit not found".to_string();
+                    }
+                }
             } else {
-                // Fallback to file comment if no line specified
-                let comment = Comment::new(content, self.comment_type, None);
-                review.add_file_comment(comment);
-                self.set_message("File comment added");
+                // Create new comment
+                if self.comment_is_file_level {
+                    let comment = Comment::new(content, self.comment_type, None);
+                    review.add_file_comment(comment);
+                    message = "File comment added".to_string();
+                } else if let Some((line, side)) = self.comment_line {
+                    let comment = Comment::new(content, self.comment_type, Some(side));
+                    review.add_line_comment(line, comment);
+                    message = format!("Comment added to line {}", line);
+                } else {
+                    // Fallback to file comment if no line specified
+                    let comment = Comment::new(content, self.comment_type, None);
+                    review.add_file_comment(comment);
+                    message = "File comment added".to_string();
+                }
             }
+
             self.dirty = true;
+            self.set_message(message);
         }
 
         self.exit_comment_mode();

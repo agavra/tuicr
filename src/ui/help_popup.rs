@@ -106,6 +106,20 @@ pub fn render_help(frame: &mut Frame) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  e         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Edit comment at cursor"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  dd        ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Delete comment at cursor"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  y         ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),

@@ -15,6 +15,12 @@ pub fn render_comment_input(frame: &mut Frame, app: &App) {
 
     frame.render_widget(Clear, area);
 
+    let action = if app.editing_comment_id.is_some() {
+        "Edit"
+    } else {
+        "Add"
+    };
+
     let comment_kind = if app.comment_is_file_level {
         "File Comment".to_string()
     } else {
@@ -31,7 +37,8 @@ pub fn render_comment_input(frame: &mut Frame, app: &App) {
     };
     let block = Block::default()
         .title(format!(
-            " {} [{}] (Enter to save, {} for newline) ",
+            " {} {} [{}] (Enter to save, {} for newline) ",
+            action,
             comment_kind,
             app.comment_type.as_str(),
             newline_hint

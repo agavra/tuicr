@@ -176,6 +176,11 @@ fn main() -> anyhow::Result<()> {
                 Action::AddFileComment => {
                     app.enter_comment_mode(true, None);
                 }
+                Action::EditComment => {
+                    if !app.enter_edit_mode() {
+                        app.set_message("No comment at cursor");
+                    }
+                }
                 Action::InsertChar(c) => {
                     if app.input_mode == app::InputMode::Command {
                         app.command_buffer.push(c);
