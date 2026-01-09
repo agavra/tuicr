@@ -11,6 +11,12 @@ use crate::model::{LineOrigin, LineSide};
 use crate::ui::{comment_panel, help_popup, status_bar, styles};
 
 pub fn render(frame: &mut Frame, app: &mut App) {
+    // Special handling for commit selection mode
+    if app.input_mode == InputMode::CommitSelect {
+        render_commit_select(frame, app);
+        return;
+    }
+
     let show_command_line = app.input_mode == InputMode::Command;
 
     let chunks = Layout::default()
@@ -52,6 +58,90 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // Render confirm dialog if in confirm mode
     if app.input_mode == InputMode::Confirm {
         comment_panel::render_confirm_dialog(frame, "Copy review to clipboard?");
+    }
+}
+
+fn render_commit_select(frame: &mut Frame, app: &App) {
+    let area = frame.area();
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // Header
+            Constraint::Min(0),    // Commit list
+            Constraint::Length(1), // Footer hints
+        ])
+        .split(area);
+
+    // Header
+    let header = Paragraph::new(" Select commits to review ")
+        .style(styles::header_style())
+        .block(Block::default());
+    frame.render_widget(header, chunks[0]);
+
+    // Commit list
+    let block = Block::default()
+        .title(" Recent Commits ")
+        .borders(Borders::ALL)
+        .border_style(styles::border_style(true));
+
+    let inner = block.inner(chunks[1]);
+    frame.render_widget(block, chunks[1]);
+
+    let items: Vec<Line> = app
+        .commit_list
+        .iter()
+        .enumerate()
+        .map(|(i, commit)| {
+            let is_selected = app.commit_selected.get(i).copied().unwrap_or(false);
+            let is_cursor = i == app.commit_list_cursor;
+
+            let checkbox = if is_selected { "[x]" } else { "[ ]" };
+            let pointer = if is_cursor { ">" } else { " " };
+
+            let style = if is_cursor {
+                styles::selected_style()
+            } else {
+                Style::default()
+            };
+
+            let checkbox_style = if is_selected {
+                styles::reviewed_style()
+            } else {
+                styles::pending_style()
+            };
+
+            // Format: > [x] abc1234  Commit message (author, date)
+            let time_str = commit.time.format("%Y-%m-%d").to_string();
+            Line::from(vec![
+                Span::styled(format!("{} ", pointer), style),
+                Span::styled(format!("{} ", checkbox), checkbox_style),
+                Span::styled(format!("{} ", commit.short_id), styles::hash_style()),
+                Span::styled(truncate_str(&commit.summary, 50), style),
+                Span::styled(
+                    format!(" ({}, {})", commit.author, time_str),
+                    Style::default().fg(styles::FG_SECONDARY),
+                ),
+            ])
+        })
+        .collect();
+
+    let list = Paragraph::new(items);
+    frame.render_widget(list, inner);
+
+    // Footer hints
+    let hints = " j/k:navigate  Space:select  Enter:confirm  q:quit ";
+    let footer = Paragraph::new(hints)
+        .style(styles::status_bar_style())
+        .block(Block::default());
+    frame.render_widget(footer, chunks[2]);
+}
+
+fn truncate_str(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..max_len.saturating_sub(3)])
     }
 }
 

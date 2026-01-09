@@ -58,6 +58,12 @@ pub enum Action {
     ConfirmYes,
     ConfirmNo,
 
+    // Commit selection
+    CommitSelectUp,
+    CommitSelectDown,
+    ToggleCommitSelect,
+    ConfirmCommitSelect,
+
     // No-op
     None,
 }
@@ -69,6 +75,7 @@ pub fn map_key_to_action(key: KeyEvent, mode: InputMode) -> Action {
         InputMode::Comment => map_comment_mode(key),
         InputMode::Help => map_help_mode(key),
         InputMode::Confirm => map_confirm_mode(key),
+        InputMode::CommitSelect => map_commit_select_mode(key),
     }
 }
 
@@ -169,6 +176,17 @@ fn map_confirm_mode(key: KeyEvent) -> Action {
     match key.code {
         KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => Action::ConfirmYes,
         KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => Action::ConfirmNo,
+        _ => Action::None,
+    }
+}
+
+fn map_commit_select_mode(key: KeyEvent) -> Action {
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down => Action::CommitSelectDown,
+        KeyCode::Char('k') | KeyCode::Up => Action::CommitSelectUp,
+        KeyCode::Char(' ') => Action::ToggleCommitSelect,
+        KeyCode::Enter => Action::ConfirmCommitSelect,
+        KeyCode::Char('q') | KeyCode::Esc => Action::Quit,
         _ => Action::None,
     }
 }

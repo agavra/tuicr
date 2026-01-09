@@ -17,6 +17,36 @@ pub fn get_working_tree_diff(repo: &Repository) -> Result<Vec<DiffFile>> {
     parse_diff(&diff)
 }
 
+/// Get the diff for a range of commits.
+/// `commit_ids` should be ordered from oldest to newest.
+/// The diff compares the oldest commit's parent to the newest commit.
+pub fn get_commit_range_diff(repo: &Repository, commit_ids: &[String]) -> Result<Vec<DiffFile>> {
+    if commit_ids.is_empty() {
+        return Err(TuicrError::NoChanges);
+    }
+
+    // Find the oldest commit (last in our list since commits are oldest to newest)
+    let oldest_id = git2::Oid::from_str(&commit_ids[0])?;
+    let oldest_commit = repo.find_commit(oldest_id)?;
+
+    // Find the newest commit (first in our list)
+    let newest_id = git2::Oid::from_str(commit_ids.last().unwrap())?;
+    let newest_commit = repo.find_commit(newest_id)?;
+
+    // Get the parent of the oldest commit, or use an empty tree if it's the initial commit
+    let old_tree = if oldest_commit.parent_count() > 0 {
+        Some(oldest_commit.parent(0)?.tree()?)
+    } else {
+        None
+    };
+
+    let new_tree = newest_commit.tree()?;
+
+    let diff = repo.diff_tree_to_tree(old_tree.as_ref(), Some(&new_tree), None)?;
+
+    parse_diff(&diff)
+}
+
 fn parse_diff(diff: &Diff) -> Result<Vec<DiffFile>> {
     let mut files: Vec<DiffFile> = Vec::new();
 

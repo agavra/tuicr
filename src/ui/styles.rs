@@ -113,3 +113,7 @@ pub fn file_status_style(status: char) -> Style {
 pub fn current_line_indicator_style() -> Style {
     Style::default().fg(BORDER_FOCUSED)
 }
+
+pub fn hash_style() -> Style {
+    Style::default().fg(Color::Yellow)
+}

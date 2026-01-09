@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 
-use crate::error::Result;
-use crate::git::{RepoInfo, get_working_tree_diff};
+use crate::error::{Result, TuicrError};
+use crate::git::{
+    CommitInfo, RepoInfo, get_commit_range_diff, get_recent_commits, get_working_tree_diff,
+};
 use crate::model::{Comment, CommentType, DiffFile, LineSide, ReviewSession};
 use crate::persistence::{find_session_for_repo, load_session};
 
@@ -12,6 +14,13 @@ pub enum InputMode {
     Command,
     Help,
     Confirm,
+    CommitSelect,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiffSource {
+    WorkingTree,
+    CommitRange(Vec<String>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +57,7 @@ pub struct App {
     pub repo_info: RepoInfo,
     pub session: ReviewSession,
     pub diff_files: Vec<DiffFile>,
+    pub diff_source: DiffSource,
 
     pub input_mode: InputMode,
     pub focused_panel: FocusedPanel,
@@ -61,6 +71,11 @@ pub struct App {
     pub comment_type: CommentType,
     pub comment_is_file_level: bool,
     pub comment_line: Option<(u32, LineSide)>,
+
+    // Commit selection state
+    pub commit_list: Vec<CommitInfo>,
+    pub commit_list_cursor: usize,
+    pub commit_selected: Vec<bool>,
 
     pub should_quit: bool,
     pub dirty: bool,
@@ -100,10 +115,90 @@ enum CommentLocation {
 impl App {
     pub fn new() -> Result<Self> {
         let repo_info = RepoInfo::discover()?;
-        let diff_files = get_working_tree_diff(&repo_info.repo)?;
 
-        // Try to load existing session, or create new one
-        let mut session = match find_session_for_repo(&repo_info.root_path) {
+        // Try to get working tree diff first
+        let diff_result = get_working_tree_diff(&repo_info.repo);
+
+        match diff_result {
+            Ok(diff_files) => {
+                // We have unstaged changes - normal flow
+                let mut session = Self::load_or_create_session(&repo_info);
+
+                // Ensure all current diff files are in the session
+                for file in &diff_files {
+                    let path = file.display_path().clone();
+                    session.add_file(path, file.status);
+                }
+
+                Ok(Self {
+                    repo_info,
+                    session,
+                    diff_files,
+                    diff_source: DiffSource::WorkingTree,
+                    input_mode: InputMode::Normal,
+                    focused_panel: FocusedPanel::Diff,
+                    diff_view_mode: DiffViewMode::Unified,
+                    file_list_state: FileListState::default(),
+                    diff_state: DiffState::default(),
+                    command_buffer: String::new(),
+                    comment_buffer: String::new(),
+                    comment_cursor: 0,
+                    comment_type: CommentType::Note,
+                    comment_is_file_level: true,
+                    comment_line: None,
+                    commit_list: Vec::new(),
+                    commit_list_cursor: 0,
+                    commit_selected: Vec::new(),
+                    should_quit: false,
+                    dirty: false,
+                    message: None,
+                    pending_confirm: None,
+                    supports_keyboard_enhancement: false,
+                })
+            }
+            Err(TuicrError::NoChanges) => {
+                // No unstaged changes - try to get recent commits
+                let commits = get_recent_commits(&repo_info.repo, 5)?;
+                if commits.is_empty() {
+                    return Err(TuicrError::NoChanges);
+                }
+
+                let commit_count = commits.len();
+                let session =
+                    ReviewSession::new(repo_info.root_path.clone(), repo_info.head_commit.clone());
+
+                Ok(Self {
+                    repo_info,
+                    session,
+                    diff_files: Vec::new(),
+                    diff_source: DiffSource::WorkingTree,
+                    input_mode: InputMode::CommitSelect,
+                    focused_panel: FocusedPanel::Diff,
+                    diff_view_mode: DiffViewMode::Unified,
+                    file_list_state: FileListState::default(),
+                    diff_state: DiffState::default(),
+                    command_buffer: String::new(),
+                    comment_buffer: String::new(),
+                    comment_cursor: 0,
+                    comment_type: CommentType::Note,
+                    comment_is_file_level: true,
+                    comment_line: None,
+                    commit_list: commits,
+                    commit_list_cursor: 0,
+                    commit_selected: vec![false; commit_count],
+                    should_quit: false,
+                    dirty: false,
+                    message: None,
+                    pending_confirm: None,
+                    supports_keyboard_enhancement: false,
+                })
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    fn load_or_create_session(repo_info: &RepoInfo) -> ReviewSession {
+        match find_session_for_repo(&repo_info.root_path) {
             Ok(Some(path)) => match load_session(&path) {
                 Ok(s) => {
                     // Delete stale session file if base commit doesn't match
@@ -122,35 +217,7 @@ impl App {
                 }
             },
             _ => ReviewSession::new(repo_info.root_path.clone(), repo_info.head_commit.clone()),
-        };
-
-        // Ensure all current diff files are in the session
-        for file in &diff_files {
-            let path = file.display_path().clone();
-            session.add_file(path, file.status);
         }
-
-        Ok(Self {
-            repo_info,
-            session,
-            diff_files,
-            input_mode: InputMode::Normal,
-            focused_panel: FocusedPanel::Diff,
-            diff_view_mode: DiffViewMode::Unified,
-            file_list_state: FileListState::default(),
-            diff_state: DiffState::default(),
-            command_buffer: String::new(),
-            comment_buffer: String::new(),
-            comment_cursor: 0,
-            comment_type: CommentType::Note,
-            comment_is_file_level: true,
-            comment_line: None,
-            should_quit: false,
-            dirty: false,
-            message: None,
-            pending_confirm: None,
-            supports_keyboard_enhancement: false,
-        })
     }
 
     pub fn reload_diff_files(&mut self) -> Result<usize> {
@@ -816,5 +883,71 @@ impl App {
             DiffViewMode::SideBySide => "side-by-side",
         };
         self.set_message(format!("Diff view mode: {}", mode_name));
+    }
+
+    // Commit selection methods
+
+    pub fn commit_select_up(&mut self) {
+        if self.commit_list_cursor > 0 {
+            self.commit_list_cursor -= 1;
+        }
+    }
+
+    pub fn commit_select_down(&mut self) {
+        if self.commit_list_cursor < self.commit_list.len().saturating_sub(1) {
+            self.commit_list_cursor += 1;
+        }
+    }
+
+    pub fn toggle_commit_selection(&mut self) {
+        if self.commit_list_cursor < self.commit_selected.len() {
+            self.commit_selected[self.commit_list_cursor] =
+                !self.commit_selected[self.commit_list_cursor];
+        }
+    }
+
+    pub fn confirm_commit_selection(&mut self) -> Result<()> {
+        // Collect selected commit IDs (in order from oldest to newest)
+        let selected_ids: Vec<String> = self
+            .commit_list
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| self.commit_selected.get(*i).copied().unwrap_or(false))
+            .map(|(_, c)| c.id.clone())
+            .collect();
+
+        if selected_ids.is_empty() {
+            self.set_message("Select at least one commit");
+            return Ok(());
+        }
+
+        // Get the diff for the selected commits
+        let diff_files = get_commit_range_diff(&self.repo_info.repo, &selected_ids)?;
+
+        if diff_files.is_empty() {
+            self.set_message("No changes in selected commits");
+            return Ok(());
+        }
+
+        // Update session with the newest commit as base
+        let newest_commit_id = selected_ids.last().unwrap().clone();
+        self.session = ReviewSession::new(self.repo_info.root_path.clone(), newest_commit_id);
+
+        // Add files to session
+        for file in &diff_files {
+            let path = file.display_path().clone();
+            self.session.add_file(path, file.status);
+        }
+
+        // Update app state
+        self.diff_files = diff_files;
+        self.diff_source = DiffSource::CommitRange(selected_ids);
+        self.input_mode = InputMode::Normal;
+
+        // Reset navigation state
+        self.diff_state = DiffState::default();
+        self.file_list_state = FileListState::default();
+
+        Ok(())
     }
 }

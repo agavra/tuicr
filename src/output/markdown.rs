@@ -2,19 +2,20 @@ use std::fmt::Write;
 
 use arboard::Clipboard;
 
+use crate::app::DiffSource;
 use crate::error::{Result, TuicrError};
 use crate::model::{LineSide, ReviewSession};
 
 /// (file_path, line_number, side, comment_type, content)
 type CommentEntry<'a> = (String, Option<u32>, Option<LineSide>, &'a str, &'a str);
 
-pub fn export_to_clipboard(session: &ReviewSession) -> Result<String> {
+pub fn export_to_clipboard(session: &ReviewSession, diff_source: &DiffSource) -> Result<String> {
     // Check if there are any comments to export
     if !session.has_comments() {
         return Err(TuicrError::NoComments);
     }
 
-    let content = generate_markdown(session);
+    let content = generate_markdown(session, diff_source);
 
     let mut clipboard = Clipboard::new()
         .map_err(|e| TuicrError::Clipboard(format!("Failed to access clipboard: {}", e)))?;
@@ -26,7 +27,7 @@ pub fn export_to_clipboard(session: &ReviewSession) -> Result<String> {
     Ok("Review copied to clipboard".to_string())
 }
 
-fn generate_markdown(session: &ReviewSession) -> String {
+fn generate_markdown(session: &ReviewSession, diff_source: &DiffSource) -> String {
     let mut md = String::new();
 
     // Intro for agents
@@ -35,6 +36,25 @@ fn generate_markdown(session: &ReviewSession) -> String {
         "I reviewed your code and have the following comments. Please address them."
     );
     let _ = writeln!(md);
+
+    // Include commit range info if reviewing commits
+    match diff_source {
+        DiffSource::WorkingTree => {}
+        DiffSource::CommitRange(commits) => {
+            if commits.len() == 1 {
+                let _ = writeln!(
+                    md,
+                    "Reviewing commit: {}",
+                    &commits[0][..7.min(commits[0].len())]
+                );
+            } else {
+                let short_ids: Vec<&str> = commits.iter().map(|c| &c[..7.min(c.len())]).collect();
+                let _ = writeln!(md, "Reviewing commits: {}", short_ids.join(", "));
+            }
+            let _ = writeln!(md);
+        }
+    }
+
     let _ = writeln!(
         md,
         "Comment types: ISSUE (problems to fix), SUGGESTION (improvements), NOTE (observations), PRAISE (positive feedback)"
@@ -144,9 +164,10 @@ mod tests {
     fn should_generate_valid_markdown() {
         // given
         let session = create_test_session();
+        let diff_source = DiffSource::WorkingTree;
 
         // when
-        let markdown = generate_markdown(&session);
+        let markdown = generate_markdown(&session, &diff_source);
 
         // then
         assert!(markdown.contains("I reviewed your code and have the following comments"));
@@ -163,9 +184,10 @@ mod tests {
     fn should_number_comments_sequentially() {
         // given
         let session = create_test_session();
+        let diff_source = DiffSource::WorkingTree;
 
         // when
-        let markdown = generate_markdown(&session);
+        let markdown = generate_markdown(&session, &diff_source);
 
         // then
         // Should have 2 numbered comments
@@ -177,12 +199,42 @@ mod tests {
     fn should_fail_export_when_no_comments() {
         // given
         let session = ReviewSession::new(PathBuf::from("/tmp/test-repo"), "abc1234def".to_string());
+        let diff_source = DiffSource::WorkingTree;
 
         // when
-        let result = export_to_clipboard(&session);
+        let result = export_to_clipboard(&session, &diff_source);
 
         // then
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), TuicrError::NoComments));
+    }
+
+    #[test]
+    fn should_include_commit_range_in_markdown() {
+        // given
+        let session = create_test_session();
+        let diff_source = DiffSource::CommitRange(vec![
+            "abc1234567890".to_string(),
+            "def4567890123".to_string(),
+        ]);
+
+        // when
+        let markdown = generate_markdown(&session, &diff_source);
+
+        // then
+        assert!(markdown.contains("Reviewing commits: abc1234, def4567"));
+    }
+
+    #[test]
+    fn should_include_single_commit_in_markdown() {
+        // given
+        let session = create_test_session();
+        let diff_source = DiffSource::CommitRange(vec!["abc1234567890".to_string()]);
+
+        // when
+        let markdown = generate_markdown(&session, &diff_source);
+
+        // then
+        assert!(markdown.contains("Reviewing commit: abc1234"));
     }
 }

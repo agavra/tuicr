@@ -276,10 +276,12 @@ fn main() -> anyhow::Result<()> {
                                     app.set_error(format!("Reload failed: {}", e));
                                 }
                             },
-                            "clip" | "export" => match export_to_clipboard(&app.session) {
-                                Ok(msg) => app.set_message(msg),
-                                Err(e) => app.set_warning(format!("{}", e)),
-                            },
+                            "clip" | "export" => {
+                                match export_to_clipboard(&app.session, &app.diff_source) {
+                                    Ok(msg) => app.set_message(msg),
+                                    Err(e) => app.set_warning(format!("{}", e)),
+                                }
+                            }
                             _ => {
                                 app.set_message(format!("Unknown command: {}", cmd));
                             }
@@ -292,7 +294,7 @@ fn main() -> anyhow::Result<()> {
                 Action::ConfirmYes => {
                     if app.input_mode == app::InputMode::Confirm {
                         if let Some(app::ConfirmAction::CopyAndQuit) = app.pending_confirm {
-                            match export_to_clipboard(&app.session) {
+                            match export_to_clipboard(&app.session, &app.diff_source) {
                                 Ok(msg) => app.set_message(msg),
                                 Err(e) => app.set_warning(format!("{}", e)),
                             }
@@ -307,10 +309,20 @@ fn main() -> anyhow::Result<()> {
                         app.should_quit = true;
                     }
                 }
-                Action::ExportToClipboard => match export_to_clipboard(&app.session) {
-                    Ok(msg) => app.set_message(msg),
-                    Err(e) => app.set_warning(format!("{}", e)),
-                },
+                Action::ExportToClipboard => {
+                    match export_to_clipboard(&app.session, &app.diff_source) {
+                        Ok(msg) => app.set_message(msg),
+                        Err(e) => app.set_warning(format!("{}", e)),
+                    }
+                }
+                Action::CommitSelectUp => app.commit_select_up(),
+                Action::CommitSelectDown => app.commit_select_down(),
+                Action::ToggleCommitSelect => app.toggle_commit_selection(),
+                Action::ConfirmCommitSelect => {
+                    if let Err(e) = app.confirm_commit_selection() {
+                        app.set_error(format!("Failed to load commits: {}", e));
+                    }
+                }
                 _ => {}
             }
         }
