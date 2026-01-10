@@ -668,21 +668,40 @@ fn render_context_line_side_by_side(
         .map(|n| format!("{:>4}", n))
         .unwrap_or_else(|| "    ".to_string());
 
-    let content = truncate_or_pad(&diff_line.content, ctx.content_width);
-
     let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
 
-    lines.push(Line::from(vec![
+    let mut spans = vec![
         Span::styled(indicator, styles::current_line_indicator_style()),
         Span::styled(format!("{} ", line_num), styles::dim_style()),
-        Span::styled(
-            format!(" {}", content.clone()),
-            styles::diff_context_style(),
-        ),
-        Span::styled(" │ ", styles::dim_style()),
-        Span::styled(format!("{} ", line_num), styles::dim_style()),
-        Span::styled(format!(" {}", content), styles::diff_context_style()),
-    ]));
+        Span::styled(" ".to_string(), styles::diff_context_style()),
+    ];
+
+    // Left side content - use syntax highlighting if available
+    if let Some(ref highlighted) = diff_line.highlighted_spans {
+        let content_spans =
+            truncate_or_pad_spans(highlighted, ctx.content_width, styles::diff_context_style());
+        spans.extend(content_spans);
+    } else {
+        let content = truncate_or_pad(&diff_line.content, ctx.content_width);
+        spans.push(Span::styled(content, styles::diff_context_style()));
+    }
+
+    // Separator
+    spans.push(Span::styled(" │ ", styles::dim_style()));
+    spans.push(Span::styled(format!("{} ", line_num), styles::dim_style()));
+    spans.push(Span::styled(" ".to_string(), styles::diff_context_style()));
+
+    // Right side content - use same highlighting
+    if let Some(ref highlighted) = diff_line.highlighted_spans {
+        let content_spans =
+            truncate_or_pad_spans(highlighted, ctx.content_width, styles::diff_context_style());
+        spans.extend(content_spans);
+    } else {
+        let content = truncate_or_pad(&diff_line.content, ctx.content_width);
+        spans.push(Span::styled(content, styles::diff_context_style()));
+    }
+
+    lines.push(Line::from(spans));
     line_idx += 1;
 
     // Add comments if any
@@ -822,12 +841,20 @@ fn add_deletion_spans(
         .old_lineno
         .map(|n| format!("{:>4}", n))
         .unwrap_or_else(|| "    ".to_string());
-    let content = truncate_or_pad(&diff_line.content, content_width);
+
     spans.push(Span::styled(format!("{} ", line_num), styles::dim_style()));
-    spans.push(Span::styled(
-        format!("-{}", content),
-        styles::diff_del_style(),
-    ));
+    spans.push(Span::styled("-".to_string(), styles::diff_del_style()));
+
+    // Use syntax highlighting if available
+    if let Some(ref highlighted) = diff_line.highlighted_spans {
+        let content_spans =
+            truncate_or_pad_spans(highlighted, content_width, styles::diff_del_style());
+        spans.extend(content_spans);
+    } else {
+        // Fall back to plain text
+        let content = truncate_or_pad(&diff_line.content, content_width);
+        spans.push(Span::styled(content, styles::diff_del_style()));
+    }
 }
 
 /// Add addition line spans to the spans vector
@@ -840,12 +867,20 @@ fn add_addition_spans(
         .new_lineno
         .map(|n| format!("{:>4}", n))
         .unwrap_or_else(|| "    ".to_string());
-    let content = truncate_or_pad(&diff_line.content, content_width);
+
     spans.push(Span::styled(format!("{} ", line_num), styles::dim_style()));
-    spans.push(Span::styled(
-        format!("+{}", content),
-        styles::diff_add_style(),
-    ));
+    spans.push(Span::styled("+".to_string(), styles::diff_add_style()));
+
+    // Use syntax highlighting if available
+    if let Some(ref highlighted) = diff_line.highlighted_spans {
+        let content_spans =
+            truncate_or_pad_spans(highlighted, content_width, styles::diff_add_style());
+        spans.extend(content_spans);
+    } else {
+        // Fall back to plain text
+        let content = truncate_or_pad(&diff_line.content, content_width);
+        spans.push(Span::styled(content, styles::diff_add_style()));
+    }
 }
 
 /// Add empty column spans (for when one side has no content)
@@ -899,6 +934,61 @@ fn truncate_or_pad(s: &str, width: usize) -> String {
         s.chars().take(width.saturating_sub(3)).collect::<String>() + "..."
     } else {
         format!("{:width$}", s, width = width)
+    }
+}
+
+/// Truncate or pad highlighted spans to a specific width
+/// Returns a vector of spans that fits exactly within the width
+fn truncate_or_pad_spans(
+    spans: &[(Style, String)],
+    width: usize,
+    base_style: Style,
+) -> Vec<Span<'static>> {
+    // Count total characters
+    let total_chars: usize = spans.iter().map(|(_, text)| text.chars().count()).sum();
+
+    if total_chars > width {
+        // Need to truncate
+        let mut result = Vec::new();
+        let mut remaining = width.saturating_sub(3); // Reserve space for "..."
+
+        for (style, text) in spans {
+            if remaining == 0 {
+                break;
+            }
+
+            let text_len = text.chars().count();
+            if text_len <= remaining {
+                result.push(Span::styled(text.clone(), *style));
+                remaining -= text_len;
+            } else {
+                // Truncate this span
+                let truncated: String = text.chars().take(remaining).collect();
+                result.push(Span::styled(truncated, *style));
+                remaining = 0;
+            }
+        }
+
+        // Add ellipsis
+        result.push(Span::styled("...".to_string(), base_style));
+        result
+    } else if total_chars < width {
+        // Need to pad
+        let mut result: Vec<Span> = spans
+            .iter()
+            .map(|(style, text)| Span::styled(text.clone(), *style))
+            .collect();
+
+        // Add padding
+        let padding = " ".repeat(width - total_chars);
+        result.push(Span::styled(padding, base_style));
+        result
+    } else {
+        // Perfect fit
+        spans
+            .iter()
+            .map(|(style, text)| Span::styled(text.clone(), *style))
+            .collect()
     }
 }
 

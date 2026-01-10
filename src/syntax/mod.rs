@@ -1,7 +1,7 @@
 use ratatui::style::{Color, Modifier, Style};
 use std::path::Path;
-use syntect::highlighting::{ThemeSet};
-use syntect::parsing::{SyntaxSet};
+use syntect::highlighting::ThemeSet;
+use syntect::parsing::SyntaxSet;
 
 use crate::model::diff_types::LineOrigin;
 
@@ -41,30 +41,34 @@ impl SyntaxHighlighter {
 
         for line in lines {
             // Highlight the line
-            let ranges = highlighter
-                .highlight_line(line, &self.syntax_set)
-                .ok()?;
+            let ranges = highlighter.highlight_line(line, &self.syntax_set).ok()?;
 
             // Convert syntect styles to ratatui styles
             let spans: Vec<(Style, String)> = ranges
                 .into_iter()
                 .map(|(style, text)| {
-                    let fg_color = Color::Rgb(
-                        style.foreground.r,
-                        style.foreground.g,
-                        style.foreground.b,
-                    );
+                    let fg_color =
+                        Color::Rgb(style.foreground.r, style.foreground.g, style.foreground.b);
 
                     let mut ratatui_style = Style::default().fg(fg_color);
 
                     // Apply font style modifiers
-                    if style.font_style.contains(syntect::highlighting::FontStyle::BOLD) {
+                    if style
+                        .font_style
+                        .contains(syntect::highlighting::FontStyle::BOLD)
+                    {
                         ratatui_style = ratatui_style.add_modifier(Modifier::BOLD);
                     }
-                    if style.font_style.contains(syntect::highlighting::FontStyle::ITALIC) {
+                    if style
+                        .font_style
+                        .contains(syntect::highlighting::FontStyle::ITALIC)
+                    {
                         ratatui_style = ratatui_style.add_modifier(Modifier::ITALIC);
                     }
-                    if style.font_style.contains(syntect::highlighting::FontStyle::UNDERLINE) {
+                    if style
+                        .font_style
+                        .contains(syntect::highlighting::FontStyle::UNDERLINE)
+                    {
                         ratatui_style = ratatui_style.add_modifier(Modifier::UNDERLINED);
                     }
 
@@ -103,9 +107,9 @@ impl SyntaxHighlighter {
         origin: LineOrigin,
     ) -> Vec<(Style, String)> {
         let bg_color = match origin {
-            LineOrigin::Addition => Color::Rgb(0, 40, 0),  // Dark green
-            LineOrigin::Deletion => Color::Rgb(40, 0, 0),  // Dark red
-            LineOrigin::Context => return spans,            // No background for context
+            LineOrigin::Addition => Color::Rgb(0, 40, 0), // Dark green
+            LineOrigin::Deletion => Color::Rgb(40, 0, 0), // Dark red
+            LineOrigin::Context => return spans,          // No background for context
         };
 
         spans
