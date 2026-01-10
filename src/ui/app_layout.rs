@@ -5,6 +5,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
 };
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, DiffViewMode, FocusedPanel, InputMode};
 use crate::model::{LineOrigin, LineSide};
@@ -937,17 +938,18 @@ fn truncate_or_pad(s: &str, width: usize) -> String {
     }
 }
 
-/// Truncate or pad highlighted spans to a specific width
+/// Truncate or pad highlighted spans to a specific display width
+/// Uses unicode width to properly handle wide characters (CJK, emoji, etc.)
 /// Returns a vector of spans that fits exactly within the width
 fn truncate_or_pad_spans(
     spans: &[(Style, String)],
     width: usize,
     base_style: Style,
 ) -> Vec<Span<'static>> {
-    // Count total characters
-    let total_chars: usize = spans.iter().map(|(_, text)| text.chars().count()).sum();
+    // Count total display width
+    let total_width: usize = spans.iter().map(|(_, text)| text.width()).sum();
 
-    if total_chars > width {
+    if total_width > width {
         // Need to truncate
         let mut result = Vec::new();
         let mut remaining = width.saturating_sub(3); // Reserve space for "..."
@@ -957,14 +959,25 @@ fn truncate_or_pad_spans(
                 break;
             }
 
-            let text_len = text.chars().count();
-            if text_len <= remaining {
+            let text_width = text.width();
+            if text_width <= remaining {
                 result.push(Span::styled(text.clone(), *style));
-                remaining -= text_len;
+                remaining -= text_width;
             } else {
-                // Truncate this span
-                let truncated: String = text.chars().take(remaining).collect();
-                result.push(Span::styled(truncated, *style));
+                // Truncate this span character by character to fit remaining width
+                let mut truncated = String::new();
+                let mut current_width = 0;
+                for c in text.chars() {
+                    let char_width = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+                    if current_width + char_width > remaining {
+                        break;
+                    }
+                    truncated.push(c);
+                    current_width += char_width;
+                }
+                if !truncated.is_empty() {
+                    result.push(Span::styled(truncated, *style));
+                }
                 remaining = 0;
             }
         }
@@ -972,7 +985,7 @@ fn truncate_or_pad_spans(
         // Add ellipsis
         result.push(Span::styled("...".to_string(), base_style));
         result
-    } else if total_chars < width {
+    } else if total_width < width {
         // Need to pad
         let mut result: Vec<Span> = spans
             .iter()
@@ -980,7 +993,7 @@ fn truncate_or_pad_spans(
             .collect();
 
         // Add padding
-        let padding = " ".repeat(width - total_chars);
+        let padding = " ".repeat(width - total_width);
         result.push(Span::styled(padding, base_style));
         result
     } else {

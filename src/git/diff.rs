@@ -1,9 +1,12 @@
 use git2::{Delta, Diff, DiffOptions, Repository};
 use std::path::PathBuf;
+use std::sync::LazyLock;
 
 use crate::error::{Result, TuicrError};
 use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin};
 use crate::syntax::SyntaxHighlighter;
+
+static HIGHLIGHTER: LazyLock<SyntaxHighlighter> = LazyLock::new(SyntaxHighlighter::new);
 
 pub fn get_working_tree_diff(repo: &Repository) -> Result<Vec<DiffFile>> {
     let head = repo.head()?.peel_to_tree()?;
@@ -50,7 +53,6 @@ pub fn get_commit_range_diff(repo: &Repository, commit_ids: &[String]) -> Result
 
 fn parse_diff(diff: &Diff) -> Result<Vec<DiffFile>> {
     let mut files: Vec<DiffFile> = Vec::new();
-    let highlighter = SyntaxHighlighter::new();
 
     for (delta_idx, delta) in diff.deltas().enumerate() {
         let status = match delta.status() {
@@ -72,7 +74,7 @@ fn parse_diff(diff: &Diff) -> Result<Vec<DiffFile>> {
         let hunks = if is_binary {
             Vec::new()
         } else {
-            parse_hunks(diff, delta_idx, file_path, &highlighter)?
+            parse_hunks(diff, delta_idx, file_path, &HIGHLIGHTER)?
         };
 
         files.push(DiffFile {
