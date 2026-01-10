@@ -5,6 +5,7 @@ mod input;
 mod model;
 mod output;
 mod persistence;
+mod syntax;
 mod ui;
 
 use std::io;

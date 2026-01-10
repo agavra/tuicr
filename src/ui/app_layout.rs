@@ -339,11 +339,26 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
                     };
 
                     let indicator = cursor_indicator(line_idx, current_line_idx);
-                    lines.push(Line::from(vec![
+
+                    // Build line spans - use syntax highlighting if available
+                    let mut line_spans = vec![
                         Span::styled(indicator, styles::current_line_indicator_style()),
                         Span::styled(line_num, styles::dim_style()),
-                        Span::styled(format!("{} {}", prefix, diff_line.content), style),
-                    ]));
+                        Span::styled(format!("{} ", prefix), style),
+                    ];
+
+                    // Add content spans
+                    if let Some(ref highlighted) = diff_line.highlighted_spans {
+                        // Use syntax-highlighted spans
+                        for (span_style, span_text) in highlighted {
+                            line_spans.push(Span::styled(span_text.clone(), *span_style));
+                        }
+                    } else {
+                        // Fall back to default diff styling
+                        line_spans.push(Span::styled(diff_line.content.clone(), style));
+                    }
+
+                    lines.push(Line::from(line_spans));
                     line_idx += 1;
 
                     // Show line comments for both old side (deleted lines) and new side (added/context)

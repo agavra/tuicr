@@ -1,3 +1,4 @@
+use ratatui::style::Style;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -36,6 +37,9 @@ pub struct DiffLine {
     pub content: String,
     pub old_lineno: Option<u32>,
     pub new_lineno: Option<u32>,
+    /// Optional syntax-highlighted spans for this line
+    /// If None, use the default diff coloring
+    pub highlighted_spans: Option<Vec<(Style, String)>>,
 }
 
 #[derive(Debug, Clone)]

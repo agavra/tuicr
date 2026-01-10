@@ -34,3 +34,7 @@ directories = "5.0"
 unicode-width = "0.2"
 uuid = { version = "1.0", features = ["v4"] }
 arboard = "3.4"
+
+# Syntax highlighting
+syntect = "5.2"
+syntect-tui = "3.0"
