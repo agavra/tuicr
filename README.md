@@ -1,4 +1,4 @@
-# tuicr
+# tuicr: Terminal UI for Code Review
 
 Review AI-generated diffs like a GitHub pull request, right from your terminal.
 
@@ -16,6 +16,9 @@ normal PR, drop comments where needed, and export everything as structured
 feedback Claude can act on in one pass.
 
 It makes my AI-assisted development go brrrrrr.
+
+> [!TIP]
+> I pronounce it "tweaker"
 
 ## Overview
 
@@ -60,7 +63,7 @@ cargo install --path .
 
 ## Usage
 
-Run `tuicr` in any git repository with uncommitted changes:
+Run `tuicr` in any git repository:
 
 ```bash
 cd /path/to/your/repo
@@ -70,41 +73,78 @@ tuicr
 ### Keybindings
 
 #### Navigation
+
 | Key | Action |
 |-----|--------|
-| `j/k` | Scroll down/up |
-| `Ctrl-d/u` | Half page down/up |
-| `Ctrl-f/b` | Full page down/up |
-| `g/G` | Go to first/last file |
-| `{/}` | Jump to previous/next file |
-| `[/]` | Jump to previous/next hunk |
+| `j` / `↓` | Scroll down |
+| `k` / `↑` | Scroll up |
+| `h` / `←` | Scroll left |
+| `l` / `→` | Scroll right |
+| `Ctrl-d` / `Ctrl-u` | Half page down/up |
+| `Ctrl-f` / `Ctrl-b` | Full page down/up |
+| `g` / `G` | Go to first/last file |
+| `{` / `}` | Jump to previous/next file |
+| `[` / `]` | Jump to previous/next hunk |
+| `zz` | Center cursor on screen |
+
+#### Panel Focus
+
+| Key | Action |
+|-----|--------|
 | `Tab` | Toggle focus between file list and diff |
-| `h/l` | Focus file list / diff panel |
+| `Enter` | Select file (when file list is focused) |
 
 #### Review Actions
+
 | Key | Action |
 |-----|--------|
 | `r` | Toggle file reviewed |
-| `c` | Add line comment |
+| `c` | Add line comment (or file comment if not on a diff line) |
 | `C` | Add file comment |
+| `dd` | Delete comment at cursor |
+| `i` | Edit comment at cursor |
+| `v` | Toggle diff view (unified / side-by-side) |
+| `y` | Copy review to clipboard |
 
 #### Comment Mode
+
 | Key | Action |
 |-----|--------|
-| `Tab` | Cycle comment type Note/Suggestion/Issue/Praise |
-| `Enter` | Save comment |
-| `Shift-Enter` / `Ctrl-J` | Insert newline |
-| `Ctrl-C/Esc` | Cancel |
+| `Tab` | Cycle comment type (Note → Suggestion → Issue → Praise) |
+| `Enter` / `Ctrl-Enter` / `Ctrl-s` | Save comment |
+| `Shift-Enter` / `Ctrl-j` | Insert newline |
+| `←` / `→` | Move cursor |
+| `Ctrl-w` | Delete word |
+| `Ctrl-u` | Clear line |
+| `Esc` / `Ctrl-c` | Cancel |
 
 #### Commands
+
 | Key | Action |
 |-----|--------|
 | `:w` | Save session |
-| `:e` | Reload diff files |
+| `:e` (`:reload`) | Reload diff files |
 | `:clip` (`:export`) | Copy review to clipboard |
 | `:q` | Quit |
 | `:x` / `:wq` | Save and quit (prompts to copy if comments exist) |
-| `?` | Show help |
+| `?` | Toggle help |
+| `q` | Quick quit |
+
+#### Commit Selection (when no unstaged changes)
+
+| Key | Action |
+|-----|--------|
+| `j` / `k` | Move selection |
+| `Space` | Toggle commit selection |
+| `Enter` | Confirm and load diff |
+| `q` / `Esc` | Quit |
+
+#### Confirm Dialogs
+
+| Key | Action |
+|-----|--------|
+| `y` / `Enter` | Yes |
+| `n` / `Esc` | No |
 
 ## Review Output
 
