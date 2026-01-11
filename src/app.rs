@@ -1063,7 +1063,10 @@ impl App {
         }
 
         if let Some(path) = current_path
-            && let Some(idx) = self.diff_files.iter().position(|f| f.display_path() == &path)
+            && let Some(idx) = self
+                .diff_files
+                .iter()
+                .position(|f| f.display_path() == &path)
         {
             self.jump_to_file(idx);
             return;
