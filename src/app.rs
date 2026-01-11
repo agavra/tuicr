@@ -84,6 +84,7 @@ pub struct App {
     pub pending_confirm: Option<ConfirmAction>,
     pub supports_keyboard_enhancement: bool,
     pub show_file_list: bool,
+    pub group_by_directory: bool,
 }
 
 #[derive(Default)]
@@ -177,6 +178,7 @@ impl App {
                     pending_confirm: None,
                     supports_keyboard_enhancement: false,
                     show_file_list: true,
+                    group_by_directory: false,
                 })
             }
             Err(TuicrError::NoChanges) => {
@@ -216,6 +218,7 @@ impl App {
                     pending_confirm: None,
                     supports_keyboard_enhancement: false,
                     show_file_list: true,
+                    group_by_directory: false,
                 })
             }
             Err(e) => Err(e),
@@ -268,6 +271,10 @@ impl App {
         }
 
         self.diff_files = diff_files;
+
+        if self.group_by_directory {
+            self.sort_files_by_directory(false);
+        }
 
         if self.diff_files.is_empty() {
             self.diff_state.current_file_idx = 0;
@@ -424,12 +431,12 @@ impl App {
 
     pub fn file_list_down(&mut self, n: usize) {
         let max_idx = self.diff_files.len().saturating_sub(1);
-        let new_idx = (self.file_list_state.selected() + n).min(max_idx);
+        let new_idx = (self.diff_state.current_file_idx + n).min(max_idx);
         self.jump_to_file(new_idx);
     }
 
     pub fn file_list_up(&mut self, n: usize) {
-        let new_idx = self.file_list_state.selected().saturating_sub(n);
+        let new_idx = self.diff_state.current_file_idx.saturating_sub(n);
         self.jump_to_file(new_idx);
     }
 
@@ -438,7 +445,6 @@ impl App {
             self.diff_state.current_file_idx = idx;
             self.diff_state.cursor_line = self.calculate_file_scroll_offset(idx);
             self.diff_state.scroll_offset = self.diff_state.cursor_line;
-            self.file_list_state.select(idx);
         }
     }
 
@@ -1015,6 +1021,55 @@ impl App {
             "hidden"
         };
         self.set_message(format!("File list: {}", status));
+    }
+
+    pub fn toggle_directory_grouping(&mut self) {
+        self.group_by_directory = !self.group_by_directory;
+
+        if self.group_by_directory {
+            self.sort_files_by_directory(true);
+        }
+    }
+
+    fn sort_files_by_directory(&mut self, reset_position: bool) {
+        use std::collections::BTreeMap;
+        use std::path::Path;
+
+        let current_path = if !reset_position {
+            self.current_file_path().cloned()
+        } else {
+            None
+        };
+
+        let mut dir_map: BTreeMap<String, Vec<DiffFile>> = BTreeMap::new();
+
+        for file in self.diff_files.drain(..) {
+            let path = file.display_path();
+            let dir = if let Some(parent) = path.parent() {
+                if parent == Path::new("") {
+                    ".".to_string()
+                } else {
+                    parent.to_string_lossy().to_string()
+                }
+            } else {
+                ".".to_string()
+            };
+
+            dir_map.entry(dir).or_default().push(file);
+        }
+
+        for (_dir, files) in dir_map {
+            self.diff_files.extend(files);
+        }
+
+        if let Some(path) = current_path
+            && let Some(idx) = self.diff_files.iter().position(|f| f.display_path() == &path)
+        {
+            self.jump_to_file(idx);
+            return;
+        }
+
+        self.jump_to_file(0);
     }
 
     // Commit selection methods

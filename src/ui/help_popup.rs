@@ -146,6 +146,13 @@ pub fn render_help(frame: &mut Frame) {
             ),
             Span::raw("Toggle unified/side-by-side diff view"),
         ]),
+        Line::from(vec![
+            Span::styled(
+                "  t         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Toggle directory grouping in file list"),
+        ]),
         Line::from(""),
         Line::from(Span::styled(
             "Comment Mode",

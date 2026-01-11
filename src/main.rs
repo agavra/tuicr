@@ -178,6 +178,7 @@ fn main() -> anyhow::Result<()> {
                 Action::PrevHunk => app.prev_hunk(),
                 Action::ToggleReviewed => app.toggle_reviewed(),
                 Action::ToggleDiffView => app.toggle_diff_view_mode(),
+                Action::ToggleDirectoryGrouping => app.toggle_directory_grouping(),
                 Action::ToggleFocus => {
                     app.focused_panel = match app.focused_panel {
                         app::FocusedPanel::FileList => app::FocusedPanel::Diff,

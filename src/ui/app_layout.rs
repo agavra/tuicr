@@ -146,6 +146,32 @@ fn truncate_str(s: &str, max_len: usize) -> String {
     }
 }
 
+fn truncate_path(path: &str, max_len: usize) -> String {
+    if path.len() <= max_len {
+        return path.to_string();
+    }
+    
+    let ellipsis = "...";
+    if max_len < 10 {
+        return format!("{}...", &path[..max_len.saturating_sub(3)]);
+    }
+    
+    let parts: Vec<&str> = path.split('/').collect();
+    if parts.len() <= 2 {
+        return format!("...{}", &path[path.len().saturating_sub(max_len - 3)..]);
+    }
+    
+    let keep_end = 2;
+    let end_parts = &parts[parts.len().saturating_sub(keep_end)..];
+    let end_str = end_parts.join("/");
+    
+    if end_str.len() + 3 > max_len {
+        return format!("...{}", &path[path.len().saturating_sub(max_len - 3)..]);
+    }
+    
+    format!("{}/{}", ellipsis, end_str)
+}
+
 fn render_main_content(frame: &mut Frame, app: &mut App, area: Rect) {
     if app.show_file_list {
         let chunks = Layout::default()
@@ -172,14 +198,27 @@ fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
         .border_style(styles::border_style(focused));
 
     let current_idx = app.diff_state.current_file_idx;
-    if app.file_list_state.selected() != current_idx {
-        app.file_list_state.select(current_idx);
+    
+    let (items, visual_idx) = if app.group_by_directory {
+        let inner_width = block.inner(area).width as usize;
+        render_grouped_file_list(app, current_idx, inner_width)
+    } else {
+        (render_flat_file_list(app, current_idx), current_idx)
+    };
+
+    if app.file_list_state.selected() != visual_idx {
+        app.file_list_state.select(visual_idx);
     }
 
+    let list = List::new(items).block(block);
+
+    frame.render_stateful_widget(list, area, &mut app.file_list_state.list_state);
+}
+
+fn render_flat_file_list(app: &App, current_idx: usize) -> Vec<ListItem<'static>> {
     let scroll_x = app.file_list_state.scroll_x;
 
-    let items: Vec<ListItem> = app
-        .diff_files
+    app.diff_files
         .iter()
         .enumerate()
         .map(|(i, file)| {
@@ -213,11 +252,85 @@ fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
 
             ListItem::new(apply_horizontal_scroll(line, scroll_x))
         })
-        .collect();
+        .collect()
+}
 
-    let list = List::new(items).block(block);
+fn render_grouped_file_list(app: &App, current_idx: usize, max_path_width: usize) -> (Vec<ListItem<'static>>, usize) {
+    use std::path::Path;
 
-    frame.render_stateful_widget(list, area, &mut app.file_list_state.list_state);
+    let mut items = Vec::new();
+    let mut last_dir: Option<String> = None;
+    let mut visual_idx = 0;
+    let mut current_visual_idx = 0;
+    let mut current_dir_header_idx = 0;
+    
+    for (i, file) in app.diff_files.iter().enumerate() {
+        let path = file.display_path();
+        let dir = if let Some(parent) = path.parent() {
+            if parent == Path::new("") {
+                ".".to_string()
+            } else {
+                parent.to_string_lossy().to_string()
+            }
+        } else {
+            ".".to_string()
+        };
+        
+        if last_dir.as_ref() != Some(&dir) {
+            let display_dir = truncate_path(&dir, max_path_width.saturating_sub(6));
+            items.push(ListItem::new(Line::from(vec![
+                Span::styled("  ", Style::default()),
+                Span::styled(
+                    format!("📁 {}/", display_dir),
+                    styles::file_header_style(),
+                ),
+            ])));
+            current_dir_header_idx = visual_idx;
+            visual_idx += 1;
+            last_dir = Some(dir);
+        }
+        
+        let is_current = i == current_idx;
+        if is_current {
+            current_visual_idx = visual_idx;
+        }
+        
+        let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+        let status = file.status.as_char();
+        let is_reviewed = app.session.is_file_reviewed(path);
+        let review_mark = if is_reviewed { "✓" } else { " " };
+        let pointer = if is_current { "▶" } else { " " };
+
+        let style = if is_current {
+            styles::selected_style()
+        } else {
+            Style::default()
+        };
+
+        items.push(ListItem::new(Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled(pointer.to_string(), style),
+            Span::styled(
+                format!("[{}]", review_mark),
+                if is_reviewed {
+                    styles::reviewed_style()
+                } else {
+                    styles::pending_style()
+                },
+            ),
+            Span::styled(format!(" {} ", status), styles::file_status_style(status)),
+            Span::styled(filename.to_string(), style),
+        ])));
+        visual_idx += 1;
+    }
+    
+    let select_idx = if current_visual_idx == current_dir_header_idx + 1 {
+        current_dir_header_idx
+    } else {
+        current_visual_idx
+    };
+    
+    (items, select_idx)
 }
 
 fn render_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {
