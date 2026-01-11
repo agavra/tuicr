@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>tuicr - Terminal UI for Code Review</title>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
     <style>
         * {
             margin: 0;
@@ -13,8 +14,8 @@
 
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
-            background-color: #0d1117;
-            color: #e6edf3;
+            background-color: #f5f5f5;
+            color: #171717;
             line-height: 1.6;
             min-height: 100vh;
         }
@@ -22,42 +23,45 @@
         .container {
             max-width: 900px;
             margin: 0 auto;
-            padding: 2rem 1.5rem;
+            padding: 1rem 1.5rem;
         }
 
         /* Hero */
         .hero {
             text-align: center;
-            padding: 3rem 0;
+            padding: 1.5rem 0 1rem;
         }
 
         .hero h1 {
+            font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
             font-size: 3.5rem;
-            font-weight: 700;
-            letter-spacing: -0.02em;
-            margin-bottom: 0.5rem;
+            font-weight: 600;
+            letter-spacing: -0.05em;
+            margin-bottom: 0.75rem;
         }
 
-        .hero .tagline {
-            font-size: 1.25rem;
-            color: #8b949e;
-            margin-bottom: 1rem;
-        }
-
-        .hero .description {
+        .hero .subtitle {
             font-size: 1.1rem;
-            color: #8b949e;
-            max-width: 600px;
+            color: #525252;
+            max-width: 550px;
             margin: 0 auto;
+            line-height: 1.5;
+        }
+
+        .hero .subtitle strong {
+            color: #171717;
+            font-weight: 600;
         }
 
         /* Demo */
         .demo {
-            margin: 2.5rem 0;
-            border-radius: 12px;
+            margin: 1.25rem 0;
             overflow: hidden;
-            border: 1px solid #30363d;
-            background: #161b22;
+            border: 1px solid #d4d4d4;
+            background: #ffffff;
+            max-width: 720px;
+            margin-left: auto;
+            margin-right: auto;
         }
 
         .demo img {
@@ -67,92 +71,107 @@
 
         /* Features */
         .features {
-            padding: 2rem 0;
+            padding: 1rem 0;
         }
 
         .features ul {
             list-style: none;
-            display: grid;
-            gap: 1rem;
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 0.5rem;
         }
 
         .features li {
+            background: #ffffff;
+            border: 1px solid #d4d4d4;
+            padding: 0.4rem 0.75rem;
+            font-size: 0.875rem;
+            color: #404040;
             display: flex;
-            align-items: flex-start;
-            gap: 0.75rem;
-            font-size: 1.05rem;
+            align-items: center;
+            gap: 0.5rem;
         }
 
         .features li::before {
-            content: ">";
-            color: #58a6ff;
-            font-family: monospace;
-            font-weight: bold;
+            content: "";
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+
+        .features li:nth-child(1)::before {
+            background: #22c55e;
+        }
+
+        .features li:nth-child(2)::before {
+            background: #3b82f6;
+        }
+
+        .features li:nth-child(3)::before {
+            background: #a855f7;
         }
 
         /* Install */
         .install {
-            padding: 2rem 0;
+            padding: 0.75rem 0;
             text-align: center;
-        }
-
-        .install h2 {
-            font-size: 1.5rem;
-            margin-bottom: 1.5rem;
-            color: #e6edf3;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 1rem;
+            flex-wrap: wrap;
         }
 
         .install-option {
-            margin-bottom: 1rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
         }
 
         .install-option code {
             display: inline-block;
-            background: #161b22;
-            border: 1px solid #30363d;
-            border-radius: 8px;
-            padding: 0.75rem 1.5rem;
+            background: #ffffff;
+            border: 1px solid #d4d4d4;
+            padding: 0.5rem 1rem;
             font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
-            font-size: 0.95rem;
-            color: #79c0ff;
+            font-size: 0.85rem;
+            color: #171717;
         }
 
         .install-option .label {
-            display: block;
-            font-size: 0.85rem;
-            color: #8b949e;
-            margin-top: 0.5rem;
+            font-size: 0.8rem;
+            color: #737373;
         }
 
         .divider {
-            color: #484f58;
-            font-size: 0.9rem;
-            margin: 0.75rem 0;
+            color: #a3a3a3;
+            font-size: 0.85rem;
         }
 
         /* Links */
         .links {
             text-align: center;
-            padding: 2rem 0;
+            padding: 0.75rem 0;
         }
 
         .links a {
             display: inline-flex;
             align-items: center;
             gap: 0.5rem;
-            color: #e6edf3;
+            color: #171717;
             text-decoration: none;
-            background: #21262d;
-            border: 1px solid #30363d;
+            background: #ffffff;
+            border: 1px solid #d4d4d4;
             padding: 0.75rem 1.5rem;
-            border-radius: 8px;
             font-size: 1rem;
             transition: background 0.2s, border-color 0.2s;
         }
 
         .links a:hover {
-            background: #30363d;
-            border-color: #8b949e;
+            background: #e5e5e5;
+            border-color: #a3a3a3;
         }
 
         .links a svg {
@@ -164,9 +183,17 @@
         /* Footer */
         footer {
             text-align: center;
-            padding: 2rem 0;
-            color: #484f58;
-            font-size: 0.85rem;
+            padding: 0.75rem 0;
+            font-size: 0.8rem;
+        }
+
+        footer a {
+            color: #737373;
+            text-decoration: none;
+        }
+
+        footer a:hover {
+            text-decoration: underline;
         }
 
         /* Responsive */
@@ -175,13 +202,18 @@
                 font-size: 2.5rem;
             }
 
-            .hero .tagline {
-                font-size: 1.1rem;
+            .hero .subtitle {
+                font-size: 1rem;
+            }
+
+            .install {
+                flex-direction: column;
+                gap: 0.5rem;
             }
 
             .install-option code {
-                font-size: 0.85rem;
-                padding: 0.6rem 1rem;
+                font-size: 0.8rem;
+                padding: 0.5rem 0.75rem;
             }
         }
     </style>
@@ -190,32 +222,28 @@
     <div class="container">
         <header class="hero">
             <h1>tuicr</h1>
-            <p class="tagline">Terminal UI for Code Review</p>
-            <p class="description">Review AI-generated diffs like a GitHub PR, right in your terminal.</p>
+            <p class="subtitle"><strong><u>T</u>erminal <u>UI</u> for <u>C</u>ode <u>R</u>eview.</strong> Review AI-generated diffs like a GitHub PR, right in your terminal.</p>
         </header>
+
+        <section class="features">
+            <ul>
+                <li>Vim keybindings</li>
+                <li>Line & file comments</li>
+                <li>Export feedback for AI</li>
+            </ul>
+        </section>
 
         <div class="demo">
             <img src="demo.gif" alt="tuicr demo showing code review in terminal">
         </div>
 
-        <section class="features">
-            <ul>
-                <li>Vim keybindings for fast navigation</li>
-                <li>Leave comments on any line or file</li>
-                <li>Export structured feedback for AI agents</li>
-            </ul>
-        </section>
-
         <section class="install">
-            <h2>Install</h2>
             <div class="install-option">
                 <code>brew install agavra/tap/tuicr</code>
-                <span class="label">Homebrew</span>
             </div>
-            <div class="divider">or</div>
+            <span class="divider">or</span>
             <div class="install-option">
                 <code>cargo install tuicr</code>
-                <span class="label">Cargo</span>
             </div>
         </section>
 
@@ -224,12 +252,18 @@
                 <svg viewBox="0 0 16 16" aria-hidden="true">
                     <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
                 </svg>
-                View on GitHub
+                View on GitHub <span id="stars"></span>
             </a>
         </section>
 
+        <script>
+            fetch('https://api.github.com/repos/agavra/tuicr')
+                .then(r => r.json())
+                .then(d => document.getElementById('stars').textContent = '[' + d.stargazers_count + ' ★]');
+        </script>
+
         <footer>
-            MIT License
+            &copy; Almog Gavra &middot; <a href="https://github.com/agavra/tuicr/blob/main/LICENSE">MIT License</a>
         </footer>
     </div>
 </body>
