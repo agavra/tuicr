@@ -176,6 +176,8 @@ fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
         app.file_list_state.select(current_idx);
     }
 
+    let scroll_x = app.file_list_state.scroll_x;
+
     let items: Vec<ListItem> = app
         .diff_files
         .iter()
@@ -195,7 +197,7 @@ fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
                 Style::default()
             };
 
-            ListItem::new(Line::from(vec![
+            let line = Line::from(vec![
                 Span::styled(pointer.to_string(), style),
                 Span::styled(
                     format!("[{}]", review_mark),
@@ -207,7 +209,9 @@ fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
                 ),
                 Span::styled(format!(" {} ", status), styles::file_status_style(status)),
                 Span::styled(filename.to_string(), style),
-            ]))
+            ]);
+
+            ListItem::new(apply_horizontal_scroll(line, scroll_x))
         })
         .collect();
 

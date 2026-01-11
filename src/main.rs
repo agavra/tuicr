@@ -111,12 +111,23 @@ fn main() -> anyhow::Result<()> {
                 // Otherwise fall through to normal handling
             }
 
-            // Handle pending ; command for ;e toggle file list
+            // Handle pending ; command for ;e toggle file list, ;h/;l panel focus
             if pending_semicolon {
                 pending_semicolon = false;
-                if key.code == crossterm::event::KeyCode::Char('e') {
-                    app.toggle_file_list();
-                    continue;
+                match key.code {
+                    crossterm::event::KeyCode::Char('e') => {
+                        app.toggle_file_list();
+                        continue;
+                    }
+                    crossterm::event::KeyCode::Char('h') => {
+                        app.focused_panel = app::FocusedPanel::FileList;
+                        continue;
+                    }
+                    crossterm::event::KeyCode::Char('l') => {
+                        app.focused_panel = app::FocusedPanel::Diff;
+                        continue;
+                    }
+                    _ => {}
                 }
                 // Otherwise fall through to normal handling
             }
@@ -139,8 +150,14 @@ fn main() -> anyhow::Result<()> {
                 Action::HalfPageUp => app.scroll_up(15),
                 Action::PageDown => app.scroll_down(30),
                 Action::PageUp => app.scroll_up(30),
-                Action::ScrollLeft(n) => app.scroll_left(n),
-                Action::ScrollRight(n) => app.scroll_right(n),
+                Action::ScrollLeft(n) => match app.focused_panel {
+                    app::FocusedPanel::FileList => app.file_list_state.scroll_left(n),
+                    app::FocusedPanel::Diff => app.scroll_left(n),
+                },
+                Action::ScrollRight(n) => match app.focused_panel {
+                    app::FocusedPanel::FileList => app.file_list_state.scroll_right(n),
+                    app::FocusedPanel::Diff => app.scroll_right(n),
+                },
                 Action::PendingZCommand => {
                     pending_z = true;
                 }

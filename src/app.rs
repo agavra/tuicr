@@ -89,6 +89,7 @@ pub struct App {
 #[derive(Default)]
 pub struct FileListState {
     pub list_state: ratatui::widgets::ListState,
+    pub scroll_x: usize,
 }
 
 impl FileListState {
@@ -98,6 +99,14 @@ impl FileListState {
 
     pub fn select(&mut self, index: usize) {
         self.list_state.select(Some(index));
+    }
+
+    pub fn scroll_left(&mut self, cols: usize) {
+        self.scroll_x = self.scroll_x.saturating_sub(cols);
+    }
+
+    pub fn scroll_right(&mut self, cols: usize) {
+        self.scroll_x = self.scroll_x.saturating_add(cols);
     }
 }
 
