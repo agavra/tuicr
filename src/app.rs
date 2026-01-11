@@ -85,16 +85,9 @@ pub struct App {
     pub supports_keyboard_enhancement: bool,
 }
 
+#[derive(Default)]
 pub struct FileListState {
     pub list_state: ratatui::widgets::ListState,
-}
-
-impl Default for FileListState {
-    fn default() -> Self {
-        Self {
-            list_state: ratatui::widgets::ListState::default(),
-        }
-    }
 }
 
 impl FileListState {
