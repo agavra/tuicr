@@ -18,6 +18,7 @@ pub enum Action {
     NextHunk,
     PrevHunk,
     PendingZCommand,
+    PendingSemicolonCommand,
     ScrollLeft(usize),
     ScrollRight(usize),
 
@@ -91,6 +92,7 @@ fn map_normal_mode(key: KeyEvent) -> Action {
         (KeyCode::Char('g'), KeyModifiers::NONE) => Action::GoToTop,
         (KeyCode::Char('G'), _) => Action::GoToBottom,
         (KeyCode::Char('z'), KeyModifiers::NONE) => Action::PendingZCommand,
+        (KeyCode::Char(';'), _) => Action::PendingSemicolonCommand,
 
         // File navigation (use _ for modifiers since shift is implicit in the character)
         (KeyCode::Char('}'), _) => Action::NextFile,

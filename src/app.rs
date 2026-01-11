@@ -83,6 +83,7 @@ pub struct App {
     pub message: Option<Message>,
     pub pending_confirm: Option<ConfirmAction>,
     pub supports_keyboard_enhancement: bool,
+    pub show_file_list: bool,
 }
 
 #[derive(Default)]
@@ -166,6 +167,7 @@ impl App {
                     message: None,
                     pending_confirm: None,
                     supports_keyboard_enhancement: false,
+                    show_file_list: true,
                 })
             }
             Err(TuicrError::NoChanges) => {
@@ -204,6 +206,7 @@ impl App {
                     message: None,
                     pending_confirm: None,
                     supports_keyboard_enhancement: false,
+                    show_file_list: true,
                 })
             }
             Err(e) => Err(e),
@@ -993,6 +996,16 @@ impl App {
             DiffViewMode::SideBySide => "side-by-side",
         };
         self.set_message(format!("Diff view mode: {}", mode_name));
+    }
+
+    pub fn toggle_file_list(&mut self) {
+        self.show_file_list = !self.show_file_list;
+        let status = if self.show_file_list {
+            "visible"
+        } else {
+            "hidden"
+        };
+        self.set_message(format!("File list: {}", status));
     }
 
     // Commit selection methods

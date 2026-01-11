@@ -75,6 +75,8 @@ fn main() -> anyhow::Result<()> {
     let mut pending_z = false;
     // Track pending d command for dd delete
     let mut pending_d = false;
+    // Track pending ; command for ;e toggle file list
+    let mut pending_semicolon = false;
 
     // Main loop
     loop {
@@ -109,6 +111,16 @@ fn main() -> anyhow::Result<()> {
                 // Otherwise fall through to normal handling
             }
 
+            // Handle pending ; command for ;e toggle file list
+            if pending_semicolon {
+                pending_semicolon = false;
+                if key.code == crossterm::event::KeyCode::Char('e') {
+                    app.toggle_file_list();
+                    continue;
+                }
+                // Otherwise fall through to normal handling
+            }
+
             let action = map_key_to_action(key, app.input_mode);
 
             match action {
@@ -134,6 +146,9 @@ fn main() -> anyhow::Result<()> {
                 }
                 Action::PendingDCommand => {
                     pending_d = true;
+                }
+                Action::PendingSemicolonCommand => {
+                    pending_semicolon = true;
                 }
                 Action::GoToTop => app.jump_to_file(0),
                 Action::GoToBottom => {

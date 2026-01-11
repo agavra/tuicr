@@ -147,16 +147,20 @@ fn truncate_str(s: &str, max_len: usize) -> String {
 }
 
 fn render_main_content(frame: &mut Frame, app: &mut App, area: Rect) {
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(20), // File list
-            Constraint::Percentage(80), // Diff view
-        ])
-        .split(area);
+    if app.show_file_list {
+        let chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(20), // File list
+                Constraint::Percentage(80), // Diff view
+            ])
+            .split(area);
 
-    render_file_list(frame, app, chunks[0]);
-    render_diff_view(frame, app, chunks[1]);
+        render_file_list(frame, app, chunks[0]);
+        render_diff_view(frame, app, chunks[1]);
+    } else {
+        render_diff_view(frame, app, area);
+    }
 }
 
 fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {

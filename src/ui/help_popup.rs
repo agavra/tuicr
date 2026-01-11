@@ -77,6 +77,13 @@ pub fn render_help(frame: &mut Frame) {
             ),
             Span::raw("Toggle focus file list/diff"),
         ]),
+        Line::from(vec![
+            Span::styled(
+                "  ;e        ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Toggle file list visibility"),
+        ]),
         Line::from(""),
         Line::from(Span::styled(
             "Review Actions",
