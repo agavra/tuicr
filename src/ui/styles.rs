@@ -117,3 +117,7 @@ pub fn current_line_indicator_style() -> Style {
 pub fn hash_style() -> Style {
     Style::default().fg(Color::Yellow)
 }
+
+pub fn dir_icon_style() -> Style {
+    Style::default().fg(DIFF_HUNK_HEADER)
+}

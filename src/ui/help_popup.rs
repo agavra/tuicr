@@ -93,6 +93,40 @@ pub fn render_help(frame: &mut Frame) {
         ]),
         Line::from(""),
         Line::from(Span::styled(
+            "File Tree",
+            Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                "  Space     ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Toggle expand directory"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  Enter     ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Expand dir / Jump to file"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  o         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Expand all directories"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  O         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Collapse all directories"),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
             "Review Actions",
             Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
         )),
@@ -145,13 +179,6 @@ pub fn render_help(frame: &mut Frame) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("Toggle unified/side-by-side diff view"),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "  t         ",
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("Toggle directory grouping in file list"),
         ]),
         Line::from(""),
         Line::from(Span::styled(

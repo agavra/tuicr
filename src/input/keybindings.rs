@@ -33,7 +33,6 @@ pub enum Action {
     EditComment,
     PendingDCommand,
     ToggleDiffView,
-    ToggleDirectoryGrouping,
 
     // Session
     Quit,
@@ -65,6 +64,10 @@ pub enum Action {
     CommitSelectDown,
     ToggleCommitSelect,
     ConfirmCommitSelect,
+
+    ToggleExpand,
+    ExpandAll,
+    CollapseAll,
 
     // No-op
     None,
@@ -116,7 +119,6 @@ fn map_normal_mode(key: KeyEvent) -> Action {
         (KeyCode::Char('i'), KeyModifiers::NONE) => Action::EditComment,
         (KeyCode::Char('d'), KeyModifiers::NONE) => Action::PendingDCommand,
         (KeyCode::Char('v'), KeyModifiers::NONE) => Action::ToggleDiffView,
-        (KeyCode::Char('t'), KeyModifiers::NONE) => Action::ToggleDirectoryGrouping,
         (KeyCode::Char('y'), KeyModifiers::NONE) => Action::ExportToClipboard,
 
         // Mode changes (use _ for shifted characters like : and ?)
@@ -126,6 +128,10 @@ fn map_normal_mode(key: KeyEvent) -> Action {
 
         // Quick quit
         (KeyCode::Char('q'), KeyModifiers::NONE) => Action::Quit,
+
+        (KeyCode::Char(' '), KeyModifiers::NONE) => Action::ToggleExpand,
+        (KeyCode::Char('o'), KeyModifiers::NONE) => Action::ExpandAll,
+        (KeyCode::Char('O'), _) => Action::CollapseAll,
 
         _ => Action::None,
     }

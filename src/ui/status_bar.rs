@@ -63,9 +63,7 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     let mode_span = Span::styled(mode_str, styles::mode_style());
 
     let hints = match app.input_mode {
-        InputMode::Normal => {
-            " j/k:scroll  {/}:file  r:reviewed  c:comment  t:tree  ?:help  :q:quit "
-        }
+        InputMode::Normal => " j/k:scroll  {/}:file  r:reviewed  c:comment  ?:help  :q:quit ",
         InputMode::Command => " Enter:execute  Esc:cancel ",
         InputMode::Comment => " Ctrl-S:save  Esc:cancel ",
         InputMode::Help => " q/?/Esc:close ",

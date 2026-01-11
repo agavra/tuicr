@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use crate::error::{Result, TuicrError};
@@ -6,6 +7,19 @@ use crate::git::{
 };
 use crate::model::{Comment, CommentType, DiffFile, LineSide, ReviewSession};
 use crate::persistence::{find_session_for_repo, load_session};
+
+#[derive(Debug, Clone)]
+pub enum FileTreeItem {
+    Directory {
+        path: String,
+        depth: usize,
+        expanded: bool,
+    },
+    File {
+        file_idx: usize,
+        depth: usize,
+    },
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputMode {
@@ -84,7 +98,7 @@ pub struct App {
     pub pending_confirm: Option<ConfirmAction>,
     pub supports_keyboard_enhancement: bool,
     pub show_file_list: bool,
-    pub group_by_directory: bool,
+    pub expanded_dirs: HashSet<String>,
 }
 
 #[derive(Default)]
@@ -152,7 +166,7 @@ impl App {
                     session.add_file(path, file.status);
                 }
 
-                Ok(Self {
+                let mut app = Self {
                     repo_info,
                     session,
                     diff_files,
@@ -178,8 +192,11 @@ impl App {
                     pending_confirm: None,
                     supports_keyboard_enhancement: false,
                     show_file_list: true,
-                    group_by_directory: false,
-                })
+                    expanded_dirs: HashSet::new(),
+                };
+                app.sort_files_by_directory(true);
+                app.expand_all_dirs();
+                Ok(app)
             }
             Err(TuicrError::NoChanges) => {
                 // No unstaged changes - try to get recent commits
@@ -218,7 +235,7 @@ impl App {
                     pending_confirm: None,
                     supports_keyboard_enhancement: false,
                     show_file_list: true,
-                    group_by_directory: false,
+                    expanded_dirs: HashSet::new(),
                 })
             }
             Err(e) => Err(e),
@@ -272,9 +289,8 @@ impl App {
 
         self.diff_files = diff_files;
 
-        if self.group_by_directory {
-            self.sort_files_by_directory(false);
-        }
+        self.sort_files_by_directory(false);
+        self.expand_all_dirs();
 
         if self.diff_files.is_empty() {
             self.diff_state.current_file_idx = 0;
@@ -430,33 +446,79 @@ impl App {
     }
 
     pub fn file_list_down(&mut self, n: usize) {
-        let max_idx = self.diff_files.len().saturating_sub(1);
-        let new_idx = (self.diff_state.current_file_idx + n).min(max_idx);
-        self.jump_to_file(new_idx);
+        let visible_items = self.build_visible_items();
+        let max_idx = visible_items.len().saturating_sub(1);
+        let new_idx = (self.file_list_state.selected() + n).min(max_idx);
+        self.file_list_state.select(new_idx);
     }
 
     pub fn file_list_up(&mut self, n: usize) {
-        let new_idx = self.diff_state.current_file_idx.saturating_sub(n);
-        self.jump_to_file(new_idx);
+        let new_idx = self.file_list_state.selected().saturating_sub(n);
+        self.file_list_state.select(new_idx);
     }
 
     pub fn jump_to_file(&mut self, idx: usize) {
+        use std::path::Path;
+
         if idx < self.diff_files.len() {
             self.diff_state.current_file_idx = idx;
             self.diff_state.cursor_line = self.calculate_file_scroll_offset(idx);
             self.diff_state.scroll_offset = self.diff_state.cursor_line;
+
+            let file_path = self.diff_files[idx].display_path().clone();
+            let mut current = file_path.parent();
+            while let Some(parent) = current {
+                if parent != Path::new("") {
+                    self.expanded_dirs
+                        .insert(parent.to_string_lossy().to_string());
+                }
+                current = parent.parent();
+            }
+
+            if let Some(tree_idx) = self.file_idx_to_tree_idx(idx) {
+                self.file_list_state.select(tree_idx);
+            }
         }
     }
 
     pub fn next_file(&mut self) {
-        let next =
-            (self.diff_state.current_file_idx + 1).min(self.diff_files.len().saturating_sub(1));
-        self.jump_to_file(next);
+        let visible_items = self.build_visible_items();
+        let current_file_idx = self.diff_state.current_file_idx;
+
+        for item in &visible_items {
+            if let FileTreeItem::File { file_idx, .. } = item
+                && *file_idx > current_file_idx
+            {
+                self.jump_to_file(*file_idx);
+                return;
+            }
+        }
     }
 
     pub fn prev_file(&mut self) {
-        let prev = self.diff_state.current_file_idx.saturating_sub(1);
-        self.jump_to_file(prev);
+        let visible_items = self.build_visible_items();
+        let current_file_idx = self.diff_state.current_file_idx;
+
+        for item in visible_items.iter().rev() {
+            if let FileTreeItem::File { file_idx, .. } = item
+                && *file_idx < current_file_idx
+            {
+                self.jump_to_file(*file_idx);
+                return;
+            }
+        }
+    }
+
+    fn file_idx_to_tree_idx(&self, target_file_idx: usize) -> Option<usize> {
+        let visible_items = self.build_visible_items();
+        for (tree_idx, item) in visible_items.iter().enumerate() {
+            if let FileTreeItem::File { file_idx, .. } = item
+                && *file_idx == target_file_idx
+            {
+                return Some(tree_idx);
+            }
+        }
+        None
     }
 
     pub fn next_hunk(&mut self) {
@@ -1023,58 +1085,6 @@ impl App {
         self.set_message(format!("File list: {}", status));
     }
 
-    pub fn toggle_directory_grouping(&mut self) {
-        self.group_by_directory = !self.group_by_directory;
-
-        if self.group_by_directory {
-            self.sort_files_by_directory(true);
-        }
-    }
-
-    fn sort_files_by_directory(&mut self, reset_position: bool) {
-        use std::collections::BTreeMap;
-        use std::path::Path;
-
-        let current_path = if !reset_position {
-            self.current_file_path().cloned()
-        } else {
-            None
-        };
-
-        let mut dir_map: BTreeMap<String, Vec<DiffFile>> = BTreeMap::new();
-
-        for file in self.diff_files.drain(..) {
-            let path = file.display_path();
-            let dir = if let Some(parent) = path.parent() {
-                if parent == Path::new("") {
-                    ".".to_string()
-                } else {
-                    parent.to_string_lossy().to_string()
-                }
-            } else {
-                ".".to_string()
-            };
-
-            dir_map.entry(dir).or_default().push(file);
-        }
-
-        for (_dir, files) in dir_map {
-            self.diff_files.extend(files);
-        }
-
-        if let Some(path) = current_path
-            && let Some(idx) = self
-                .diff_files
-                .iter()
-                .position(|f| f.display_path() == &path)
-        {
-            self.jump_to_file(idx);
-            return;
-        }
-
-        self.jump_to_file(0);
-    }
-
     // Commit selection methods
 
     pub fn commit_select_up(&mut self) {
@@ -1138,6 +1148,372 @@ impl App {
         self.diff_state = DiffState::default();
         self.file_list_state = FileListState::default();
 
+        self.sort_files_by_directory(true);
+        self.expand_all_dirs();
+
         Ok(())
+    }
+
+    fn sort_files_by_directory(&mut self, reset_position: bool) {
+        use std::collections::BTreeMap;
+        use std::path::Path;
+
+        let current_path = if !reset_position {
+            self.current_file_path().cloned()
+        } else {
+            None
+        };
+
+        let mut dir_map: BTreeMap<String, Vec<DiffFile>> = BTreeMap::new();
+
+        for file in self.diff_files.drain(..) {
+            let path = file.display_path();
+            let dir = if let Some(parent) = path.parent() {
+                if parent == Path::new("") {
+                    ".".to_string()
+                } else {
+                    parent.to_string_lossy().to_string()
+                }
+            } else {
+                ".".to_string()
+            };
+
+            dir_map.entry(dir).or_default().push(file);
+        }
+
+        for (_dir, files) in dir_map {
+            self.diff_files.extend(files);
+        }
+
+        if let Some(path) = current_path
+            && let Some(idx) = self
+                .diff_files
+                .iter()
+                .position(|f| f.display_path() == &path)
+        {
+            self.jump_to_file(idx);
+            return;
+        }
+
+        self.jump_to_file(0);
+    }
+
+    pub fn expand_all_dirs(&mut self) {
+        use std::path::Path;
+
+        self.expanded_dirs.clear();
+        for file in &self.diff_files {
+            let path = file.display_path();
+            let mut current = path.parent();
+            while let Some(parent) = current {
+                if parent != Path::new("") {
+                    self.expanded_dirs
+                        .insert(parent.to_string_lossy().to_string());
+                }
+                current = parent.parent();
+            }
+        }
+        self.ensure_valid_tree_selection();
+    }
+
+    pub fn collapse_all_dirs(&mut self) {
+        self.expanded_dirs.clear();
+        self.ensure_valid_tree_selection();
+    }
+
+    pub fn toggle_directory(&mut self, dir_path: &str) {
+        if self.expanded_dirs.contains(dir_path) {
+            self.expanded_dirs.remove(dir_path);
+            self.ensure_valid_tree_selection();
+        } else {
+            self.expanded_dirs.insert(dir_path.to_string());
+        }
+    }
+
+    fn ensure_valid_tree_selection(&mut self) {
+        use std::path::Path;
+
+        let visible_items = self.build_visible_items();
+        if visible_items.is_empty() {
+            self.file_list_state.select(0);
+            return;
+        }
+
+        let current_file_idx = self.diff_state.current_file_idx;
+        let file_visible = visible_items.iter().any(|item| {
+            matches!(item, FileTreeItem::File { file_idx, .. } if *file_idx == current_file_idx)
+        });
+
+        if file_visible {
+            if let Some(tree_idx) = self.file_idx_to_tree_idx(current_file_idx) {
+                self.file_list_state.select(tree_idx);
+            }
+        } else {
+            if let Some(file) = self.diff_files.get(current_file_idx) {
+                let file_path = file.display_path();
+                let mut current = file_path.parent();
+                while let Some(parent) = current {
+                    if parent != Path::new("") {
+                        let parent_str = parent.to_string_lossy().to_string();
+                        for (tree_idx, item) in visible_items.iter().enumerate() {
+                            if let FileTreeItem::Directory { path, .. } = item
+                                && *path == parent_str
+                            {
+                                self.file_list_state.select(tree_idx);
+                                return;
+                            }
+                        }
+                    }
+                    current = parent.parent();
+                }
+            }
+            self.file_list_state.select(0);
+        }
+    }
+
+    pub fn build_visible_items(&self) -> Vec<FileTreeItem> {
+        use std::path::Path;
+
+        let mut items = Vec::new();
+        let mut seen_dirs: HashSet<String> = HashSet::new();
+
+        for (file_idx, file) in self.diff_files.iter().enumerate() {
+            let path = file.display_path();
+
+            let mut ancestors: Vec<String> = Vec::new();
+            let mut current = path.parent();
+            while let Some(parent) = current {
+                if parent != Path::new("") {
+                    ancestors.push(parent.to_string_lossy().to_string());
+                }
+                current = parent.parent();
+            }
+            ancestors.reverse();
+
+            let mut visible = true;
+            for (depth, dir) in ancestors.iter().enumerate() {
+                if !seen_dirs.contains(dir) && visible {
+                    let expanded = self.expanded_dirs.contains(dir);
+                    items.push(FileTreeItem::Directory {
+                        path: dir.clone(),
+                        depth,
+                        expanded,
+                    });
+                    seen_dirs.insert(dir.clone());
+                }
+
+                if !self.expanded_dirs.contains(dir) {
+                    visible = false;
+                }
+            }
+
+            if visible {
+                items.push(FileTreeItem::File {
+                    file_idx,
+                    depth: ancestors.len(),
+                });
+            }
+        }
+
+        items
+    }
+
+    pub fn get_selected_tree_item(&self) -> Option<FileTreeItem> {
+        let visible_items = self.build_visible_items();
+        let selected_idx = self.file_list_state.selected();
+        visible_items.get(selected_idx).cloned()
+    }
+}
+
+#[cfg(test)]
+mod tree_tests {
+    use super::*;
+    use crate::model::{DiffFile, FileStatus};
+
+    fn make_file(path: &str) -> DiffFile {
+        DiffFile {
+            old_path: None,
+            new_path: Some(PathBuf::from(path)),
+            status: FileStatus::Modified,
+            hunks: vec![],
+            is_binary: false,
+        }
+    }
+
+    struct TreeTestHarness {
+        diff_files: Vec<DiffFile>,
+        expanded_dirs: HashSet<String>,
+    }
+
+    impl TreeTestHarness {
+        fn new(paths: &[&str]) -> Self {
+            Self {
+                diff_files: paths.iter().map(|p| make_file(p)).collect(),
+                expanded_dirs: HashSet::new(),
+            }
+        }
+
+        fn expand_all(&mut self) {
+            use std::path::Path;
+            for file in &self.diff_files {
+                let path = file.display_path();
+                let mut current = path.parent();
+                while let Some(parent) = current {
+                    if parent != Path::new("") {
+                        self.expanded_dirs
+                            .insert(parent.to_string_lossy().to_string());
+                    }
+                    current = parent.parent();
+                }
+            }
+        }
+
+        fn collapse_all(&mut self) {
+            self.expanded_dirs.clear();
+        }
+
+        fn toggle(&mut self, dir: &str) {
+            if self.expanded_dirs.contains(dir) {
+                self.expanded_dirs.remove(dir);
+            } else {
+                self.expanded_dirs.insert(dir.to_string());
+            }
+        }
+
+        fn build_visible_items(&self) -> Vec<FileTreeItem> {
+            use std::path::Path;
+            let mut items = Vec::new();
+            let mut seen_dirs: HashSet<String> = HashSet::new();
+
+            for (file_idx, file) in self.diff_files.iter().enumerate() {
+                let path = file.display_path();
+                let mut ancestors: Vec<String> = Vec::new();
+                let mut current = path.parent();
+                while let Some(parent) = current {
+                    if parent != Path::new("") {
+                        ancestors.push(parent.to_string_lossy().to_string());
+                    }
+                    current = parent.parent();
+                }
+                ancestors.reverse();
+
+                let mut visible = true;
+                for (depth, dir) in ancestors.iter().enumerate() {
+                    if !seen_dirs.contains(dir) && visible {
+                        let expanded = self.expanded_dirs.contains(dir);
+                        items.push(FileTreeItem::Directory {
+                            path: dir.clone(),
+                            depth,
+                            expanded,
+                        });
+                        seen_dirs.insert(dir.clone());
+                    }
+                    if !self.expanded_dirs.contains(dir) {
+                        visible = false;
+                    }
+                }
+
+                if visible {
+                    items.push(FileTreeItem::File {
+                        file_idx,
+                        depth: ancestors.len(),
+                    });
+                }
+            }
+            items
+        }
+
+        fn visible_file_count(&self) -> usize {
+            self.build_visible_items()
+                .iter()
+                .filter(|i| matches!(i, FileTreeItem::File { .. }))
+                .count()
+        }
+
+        fn visible_dir_count(&self) -> usize {
+            self.build_visible_items()
+                .iter()
+                .filter(|i| matches!(i, FileTreeItem::Directory { .. }))
+                .count()
+        }
+    }
+
+    #[test]
+    fn test_expand_all_shows_all_files() {
+        let mut h = TreeTestHarness::new(&["src/ui/app.rs", "src/ui/help.rs", "src/main.rs"]);
+        h.expand_all();
+
+        assert_eq!(h.visible_file_count(), 3);
+    }
+
+    #[test]
+    fn test_collapse_all_hides_all_files() {
+        let mut h = TreeTestHarness::new(&["src/ui/app.rs", "src/main.rs"]);
+        h.expand_all();
+        h.collapse_all();
+
+        assert_eq!(h.visible_file_count(), 0);
+        assert_eq!(h.visible_dir_count(), 1); // only "src" visible
+    }
+
+    #[test]
+    fn test_collapse_parent_hides_nested_dirs() {
+        let mut h = TreeTestHarness::new(&["src/ui/components/button.rs"]);
+        h.expand_all();
+        assert_eq!(h.visible_dir_count(), 3); // src, src/ui, src/ui/components
+
+        h.toggle("src");
+        let items = h.build_visible_items();
+        assert_eq!(items.len(), 1); // only collapsed "src" dir
+        assert!(matches!(
+            &items[0],
+            FileTreeItem::Directory {
+                expanded: false,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_root_files_always_visible() {
+        let mut h = TreeTestHarness::new(&["README.md", "Cargo.toml"]);
+        h.collapse_all();
+
+        assert_eq!(h.visible_file_count(), 2);
+    }
+
+    #[test]
+    fn test_tree_depth_correct() {
+        let mut h = TreeTestHarness::new(&["a/b/c/file.rs"]);
+        h.expand_all();
+
+        let items = h.build_visible_items();
+        assert!(matches!(&items[0], FileTreeItem::Directory { depth: 0, path, .. } if path == "a"));
+        assert!(
+            matches!(&items[1], FileTreeItem::Directory { depth: 1, path, .. } if path == "a/b")
+        );
+        assert!(
+            matches!(&items[2], FileTreeItem::Directory { depth: 2, path, .. } if path == "a/b/c")
+        );
+        assert!(matches!(&items[3], FileTreeItem::File { depth: 3, .. }));
+    }
+
+    #[test]
+    fn test_toggle_expands_collapsed_dir() {
+        let mut h = TreeTestHarness::new(&["src/main.rs"]);
+        h.collapse_all();
+        assert_eq!(h.visible_file_count(), 0);
+
+        h.toggle("src");
+        assert_eq!(h.visible_file_count(), 1);
+    }
+
+    #[test]
+    fn test_sibling_dirs_independent() {
+        let mut h = TreeTestHarness::new(&["src/app.rs", "tests/test.rs"]);
+        h.expand_all();
+        h.toggle("src"); // collapse src
+
+        assert_eq!(h.visible_file_count(), 1); // only tests/test.rs
     }
 }

@@ -24,7 +24,7 @@ use crossterm::{
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
 
-use app::App;
+use app::{App, FileTreeItem};
 use input::{Action, map_key_to_action};
 use output::export_to_clipboard;
 use persistence::save_session;
@@ -178,7 +178,6 @@ fn main() -> anyhow::Result<()> {
                 Action::PrevHunk => app.prev_hunk(),
                 Action::ToggleReviewed => app.toggle_reviewed(),
                 Action::ToggleDiffView => app.toggle_diff_view_mode(),
-                Action::ToggleDirectoryGrouping => app.toggle_directory_grouping(),
                 Action::ToggleFocus => {
                     app.focused_panel = match app.focused_panel {
                         app::FocusedPanel::FileList => app::FocusedPanel::Diff,
@@ -186,9 +185,40 @@ fn main() -> anyhow::Result<()> {
                     };
                 }
                 Action::SelectFile => {
-                    if app.focused_panel == app::FocusedPanel::FileList {
-                        app.jump_to_file(app.file_list_state.selected());
+                    if app.focused_panel == app::FocusedPanel::FileList
+                        && let Some(item) = app.get_selected_tree_item()
+                    {
+                        match item {
+                            FileTreeItem::Directory { path, .. } => {
+                                app.toggle_directory(&path);
+                            }
+                            FileTreeItem::File { file_idx, .. } => {
+                                app.jump_to_file(file_idx);
+                            }
+                        }
                     }
+                }
+                Action::ToggleExpand => {
+                    if app.focused_panel == app::FocusedPanel::FileList
+                        && let Some(item) = app.get_selected_tree_item()
+                    {
+                        match item {
+                            FileTreeItem::Directory { path, .. } => {
+                                app.toggle_directory(&path);
+                            }
+                            FileTreeItem::File { file_idx, .. } => {
+                                app.jump_to_file(file_idx);
+                            }
+                        }
+                    }
+                }
+                Action::ExpandAll => {
+                    app.expand_all_dirs();
+                    app.set_message("All directories expanded");
+                }
+                Action::CollapseAll => {
+                    app.collapse_all_dirs();
+                    app.set_message("All directories collapsed");
                 }
                 Action::ToggleHelp => app.toggle_help(),
                 Action::EnterCommandMode => app.enter_command_mode(),
