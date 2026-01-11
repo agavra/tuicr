@@ -1,4 +1,8 @@
-# tuicr: Terminal UI for Code Review
+# tuicr: TUI for Code Review
+
+<a href="https://crates.io/crates/tuicr" target="_blank"><img src="https://img.shields.io/crates/v/tuicr" alt="Crates.io"></a>
+<a href="https://github.com/agavra/tuicr/blob/main/LICENSE" target="_blank"><img src="https://img.shields.io/crates/l/tuicr" alt="License"></a>
+<a href="https://tuicr.dev" target="_blank"><img src="https://img.shields.io/badge/website-tuicr.dev-green" alt="Website"></a>
 
 Review AI-generated diffs like a GitHub pull request, right from your terminal.
 
