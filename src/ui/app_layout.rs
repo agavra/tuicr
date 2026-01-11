@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::Style,
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, List, ListItem, Paragraph},
 };
 use unicode_width::UnicodeWidthStr;
 
@@ -159,7 +159,7 @@ fn render_main_content(frame: &mut Frame, app: &mut App, area: Rect) {
     render_diff_view(frame, app, chunks[1]);
 }
 
-fn render_file_list(frame: &mut Frame, app: &App, area: Rect) {
+fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focused_panel == FocusedPanel::FileList;
 
     let block = Block::default()
@@ -167,10 +167,12 @@ fn render_file_list(frame: &mut Frame, app: &App, area: Rect) {
         .borders(Borders::ALL)
         .border_style(styles::border_style(focused));
 
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let current_idx = app.diff_state.current_file_idx;
+    if app.file_list_state.selected() != current_idx {
+        app.file_list_state.select(current_idx);
+    }
 
-    let items: Vec<Line> = app
+    let items: Vec<ListItem> = app
         .diff_files
         .iter()
         .enumerate()
@@ -180,7 +182,7 @@ fn render_file_list(frame: &mut Frame, app: &App, area: Rect) {
             let status = file.status.as_char();
             let is_reviewed = app.session.is_file_reviewed(path);
             let review_mark = if is_reviewed { "✓" } else { " " };
-            let is_current = i == app.diff_state.current_file_idx;
+            let is_current = i == current_idx;
             let pointer = if is_current { "▶" } else { " " };
 
             let style = if is_current {
@@ -189,7 +191,7 @@ fn render_file_list(frame: &mut Frame, app: &App, area: Rect) {
                 Style::default()
             };
 
-            Line::from(vec![
+            ListItem::new(Line::from(vec![
                 Span::styled(pointer.to_string(), style),
                 Span::styled(
                     format!("[{}]", review_mark),
@@ -201,12 +203,13 @@ fn render_file_list(frame: &mut Frame, app: &App, area: Rect) {
                 ),
                 Span::styled(format!(" {} ", status), styles::file_status_style(status)),
                 Span::styled(filename.to_string(), style),
-            ])
+            ]))
         })
         .collect();
 
-    let list = Paragraph::new(items);
-    frame.render_widget(list, inner);
+    let list = List::new(items).block(block);
+
+    frame.render_stateful_widget(list, area, &mut app.file_list_state.list_state);
 }
 
 fn render_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {

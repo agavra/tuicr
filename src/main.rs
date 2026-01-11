@@ -154,7 +154,7 @@ fn main() -> anyhow::Result<()> {
                 }
                 Action::SelectFile => {
                     if app.focused_panel == app::FocusedPanel::FileList {
-                        app.jump_to_file(app.file_list_state.selected);
+                        app.jump_to_file(app.file_list_state.selected());
                     }
                 }
                 Action::ToggleHelp => app.toggle_help(),

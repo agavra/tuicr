@@ -85,9 +85,26 @@ pub struct App {
     pub supports_keyboard_enhancement: bool,
 }
 
-#[derive(Debug, Default)]
 pub struct FileListState {
-    pub selected: usize,
+    pub list_state: ratatui::widgets::ListState,
+}
+
+impl Default for FileListState {
+    fn default() -> Self {
+        Self {
+            list_state: ratatui::widgets::ListState::default(),
+        }
+    }
+}
+
+impl FileListState {
+    pub fn selected(&self) -> usize {
+        self.list_state.selected().unwrap_or(0)
+    }
+
+    pub fn select(&mut self, index: usize) {
+        self.list_state.select(Some(index));
+    }
 }
 
 #[derive(Debug, Default)]
@@ -251,7 +268,7 @@ impl App {
             self.diff_state.current_file_idx = 0;
             self.diff_state.cursor_line = 0;
             self.diff_state.scroll_offset = 0;
-            self.file_list_state.selected = 0;
+            self.file_list_state.select(0);
         } else {
             let target_idx = if let Some(path) = current_path {
                 self.diff_files
@@ -402,12 +419,12 @@ impl App {
 
     pub fn file_list_down(&mut self, n: usize) {
         let max_idx = self.diff_files.len().saturating_sub(1);
-        let new_idx = (self.file_list_state.selected + n).min(max_idx);
+        let new_idx = (self.file_list_state.selected() + n).min(max_idx);
         self.jump_to_file(new_idx);
     }
 
     pub fn file_list_up(&mut self, n: usize) {
-        let new_idx = self.file_list_state.selected.saturating_sub(n);
+        let new_idx = self.file_list_state.selected().saturating_sub(n);
         self.jump_to_file(new_idx);
     }
 
@@ -416,7 +433,7 @@ impl App {
             self.diff_state.current_file_idx = idx;
             self.diff_state.cursor_line = self.calculate_file_scroll_offset(idx);
             self.diff_state.scroll_offset = self.diff_state.cursor_line;
-            self.file_list_state.selected = idx;
+            self.file_list_state.select(idx);
         }
     }
 
@@ -546,14 +563,14 @@ impl App {
             let height = self.file_render_height(file);
             if cumulative + height > self.diff_state.cursor_line {
                 self.diff_state.current_file_idx = i;
-                self.file_list_state.selected = i;
+                self.file_list_state.select(i);
                 return;
             }
             cumulative += height;
         }
         if !self.diff_files.is_empty() {
             self.diff_state.current_file_idx = self.diff_files.len() - 1;
-            self.file_list_state.selected = self.diff_files.len() - 1;
+            self.file_list_state.select(self.diff_files.len() - 1);
         }
     }
 
