@@ -1,7 +1,7 @@
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Paragraph},
 };
@@ -51,50 +51,75 @@ pub fn render_header(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
-    let mode_str = match app.input_mode {
-        InputMode::Normal => " NORMAL ",
-        InputMode::Command => " COMMAND ",
-        InputMode::Comment => " COMMENT ",
-        InputMode::Help => " HELP ",
-        InputMode::Confirm => " CONFIRM ",
-        InputMode::CommitSelect => " SELECT ",
-    };
-
-    let mode_span = Span::styled(mode_str, styles::mode_style());
-
-    let hints = match app.input_mode {
-        InputMode::Normal => " j/k:scroll  {/}:file  r:reviewed  c:comment  ?:help  :q:quit ",
-        InputMode::Command => " Enter:execute  Esc:cancel ",
-        InputMode::Comment => " Ctrl-S:save  Esc:cancel ",
-        InputMode::Help => " q/?/Esc:close ",
-        InputMode::Confirm => " y:yes  n:no ",
-        InputMode::CommitSelect => " j/k:navigate  Space:select  Enter:confirm  q:quit ",
-    };
-    let hints_span = Span::styled(hints, Style::default().fg(styles::FG_SECONDARY));
-
-    let dirty_indicator = if app.dirty {
-        Span::styled(" [modified] ", Style::default().fg(styles::PENDING))
+    // In command mode, show the command input on the left (vim-style)
+    let left_spans = if app.input_mode == InputMode::Command {
+        let command_text = format!(":{}", app.command_buffer);
+        vec![Span::styled(
+            command_text,
+            Style::default().fg(styles::FG_PRIMARY),
+        )]
     } else {
-        Span::raw("")
+        let mode_str = match app.input_mode {
+            InputMode::Normal => " NORMAL ",
+            InputMode::Command => " COMMAND ",
+            InputMode::Comment => " COMMENT ",
+            InputMode::Help => " HELP ",
+            InputMode::Confirm => " CONFIRM ",
+            InputMode::CommitSelect => " SELECT ",
+        };
+
+        let mode_span = Span::styled(mode_str, styles::mode_style());
+
+        let hints = match app.input_mode {
+            InputMode::Normal => " j/k:scroll  {/}:file  r:reviewed  c:comment  ?:help  :q:quit ",
+            InputMode::Command => " Enter:execute  Esc:cancel ",
+            InputMode::Comment => " Ctrl-S:save  Esc:cancel ",
+            InputMode::Help => " q/?/Esc:close ",
+            InputMode::Confirm => " y:yes  n:no ",
+            InputMode::CommitSelect => " j/k:navigate  Space:select  Enter:confirm  q:quit ",
+        };
+        let hints_span = Span::styled(hints, Style::default().fg(styles::FG_SECONDARY));
+
+        let dirty_indicator = if app.dirty {
+            Span::styled(" [modified] ", Style::default().fg(styles::PENDING))
+        } else {
+            Span::raw("")
+        };
+
+        vec![mode_span, hints_span, dirty_indicator]
     };
 
-    let message = if let Some(msg) = &app.message {
-        let color = match msg.message_type {
-            MessageType::Info => styles::FG_PRIMARY,
-            MessageType::Warning => styles::PENDING, // Amber/yellow
-            MessageType::Error => styles::COMMENT_ISSUE, // Red
+    let left_width: usize = left_spans.iter().map(|s| s.content.len()).sum();
+
+    // Build message span for right side with highlighted background
+    let (message_span, message_width) = if let Some(msg) = &app.message {
+        let (fg, bg) = match msg.message_type {
+            MessageType::Info => (Color::Black, Color::Cyan),
+            MessageType::Warning => (Color::Black, styles::PENDING),
+            MessageType::Error => (Color::White, styles::COMMENT_ISSUE),
         };
-        Span::styled(
-            format!(" {} ", msg.content),
-            Style::default().fg(color).add_modifier(Modifier::ITALIC),
+        let content = format!(" {} ", msg.content);
+        let width = content.len();
+        (
+            Span::styled(
+                content,
+                Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD),
+            ),
+            width,
         )
     } else {
-        Span::raw("")
+        (Span::raw(""), 0)
     };
 
-    let mut spans = vec![mode_span, hints_span, dirty_indicator];
-    if !message.content.is_empty() {
-        spans.push(message);
+    // Calculate padding to push message to the right
+    let total_width = area.width as usize;
+    let padding_width = total_width.saturating_sub(left_width + message_width);
+    let padding = Span::raw(" ".repeat(padding_width));
+
+    let mut spans = left_spans;
+    spans.push(padding);
+    if message_width > 0 {
+        spans.push(message_span);
     }
 
     let line = Line::from(spans);
@@ -104,17 +129,4 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         .block(Block::default());
 
     frame.render_widget(status, area);
-}
-
-pub fn render_command_line(frame: &mut Frame, app: &App, area: Rect) {
-    let content = match app.input_mode {
-        InputMode::Command => format!(":{}", app.command_buffer),
-        _ => String::new(),
-    };
-
-    let line = Paragraph::new(content)
-        .style(Style::default().fg(styles::FG_PRIMARY))
-        .block(Block::default());
-
-    frame.render_widget(line, area);
 }

@@ -18,33 +18,18 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         return;
     }
 
-    let show_command_line = app.input_mode == InputMode::Command;
-
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(if show_command_line {
-            vec![
-                Constraint::Length(1), // Header
-                Constraint::Min(0),    // Main content
-                Constraint::Length(1), // Status bar
-                Constraint::Length(1), // Command line
-            ]
-        } else {
-            vec![
-                Constraint::Length(1), // Header
-                Constraint::Min(0),    // Main content
-                Constraint::Length(1), // Status bar
-            ]
-        })
+        .constraints(vec![
+            Constraint::Length(1), // Header
+            Constraint::Min(0),    // Main content
+            Constraint::Length(1), // Status bar (also shows command input in command mode)
+        ])
         .split(frame.area());
 
     status_bar::render_header(frame, app, chunks[0]);
     render_main_content(frame, app, chunks[1]);
     status_bar::render_status_bar(frame, app, chunks[2]);
-
-    if show_command_line {
-        status_bar::render_command_line(frame, app, chunks[3]);
-    }
 
     // Render help popup on top if in help mode
     if app.input_mode == InputMode::Help {
