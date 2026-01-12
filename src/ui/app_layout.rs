@@ -48,7 +48,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     // Render help popup on top if in help mode
     if app.input_mode == InputMode::Help {
-        help_popup::render_help(frame);
+        help_popup::render_help(frame, app);
     }
 
     // Render comment input popup if in comment mode

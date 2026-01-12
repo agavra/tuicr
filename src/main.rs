@@ -138,18 +138,54 @@ fn main() -> anyhow::Result<()> {
                 Action::Quit => {
                     app.should_quit = true;
                 }
-                Action::CursorDown(n) => match app.focused_panel {
-                    app::FocusedPanel::FileList => app.file_list_down(n),
-                    app::FocusedPanel::Diff => app.cursor_down(n),
-                },
-                Action::CursorUp(n) => match app.focused_panel {
-                    app::FocusedPanel::FileList => app.file_list_up(n),
-                    app::FocusedPanel::Diff => app.cursor_up(n),
-                },
-                Action::HalfPageDown => app.scroll_down(15),
-                Action::HalfPageUp => app.scroll_up(15),
-                Action::PageDown => app.scroll_down(30),
-                Action::PageUp => app.scroll_up(30),
+                Action::CursorDown(n) => {
+                    if app.input_mode == app::InputMode::Help {
+                        app.help_scroll_down(n);
+                    } else {
+                        match app.focused_panel {
+                            app::FocusedPanel::FileList => app.file_list_down(n),
+                            app::FocusedPanel::Diff => app.cursor_down(n),
+                        }
+                    }
+                }
+                Action::CursorUp(n) => {
+                    if app.input_mode == app::InputMode::Help {
+                        app.help_scroll_up(n);
+                    } else {
+                        match app.focused_panel {
+                            app::FocusedPanel::FileList => app.file_list_up(n),
+                            app::FocusedPanel::Diff => app.cursor_up(n),
+                        }
+                    }
+                }
+                Action::HalfPageDown => {
+                    if app.input_mode == app::InputMode::Help {
+                        app.help_scroll_down(app.help_state.viewport_height / 2);
+                    } else {
+                        app.scroll_down(15);
+                    }
+                }
+                Action::HalfPageUp => {
+                    if app.input_mode == app::InputMode::Help {
+                        app.help_scroll_up(app.help_state.viewport_height / 2);
+                    } else {
+                        app.scroll_up(15);
+                    }
+                }
+                Action::PageDown => {
+                    if app.input_mode == app::InputMode::Help {
+                        app.help_scroll_down(app.help_state.viewport_height);
+                    } else {
+                        app.scroll_down(30);
+                    }
+                }
+                Action::PageUp => {
+                    if app.input_mode == app::InputMode::Help {
+                        app.help_scroll_up(app.help_state.viewport_height);
+                    } else {
+                        app.scroll_up(30);
+                    }
+                }
                 Action::ScrollLeft(n) => match app.focused_panel {
                     app::FocusedPanel::FileList => app.file_list_state.scroll_left(n),
                     app::FocusedPanel::Diff => app.scroll_left(n),
@@ -167,10 +203,20 @@ fn main() -> anyhow::Result<()> {
                 Action::PendingSemicolonCommand => {
                     pending_semicolon = true;
                 }
-                Action::GoToTop => app.jump_to_file(0),
+                Action::GoToTop => {
+                    if app.input_mode == app::InputMode::Help {
+                        app.help_scroll_to_top();
+                    } else {
+                        app.jump_to_file(0);
+                    }
+                }
                 Action::GoToBottom => {
-                    let last = app.file_count().saturating_sub(1);
-                    app.jump_to_file(last);
+                    if app.input_mode == app::InputMode::Help {
+                        app.help_scroll_to_bottom();
+                    } else {
+                        let last = app.file_count().saturating_sub(1);
+                        app.jump_to_file(last);
+                    }
                 }
                 Action::NextFile => app.next_file(),
                 Action::PrevFile => app.prev_file(),

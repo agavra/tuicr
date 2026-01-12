@@ -1,21 +1,22 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Flex, Layout, Rect},
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
 };
 
+use crate::app::App;
 use crate::ui::styles;
 
-pub fn render_help(frame: &mut Frame) {
+pub fn render_help(frame: &mut Frame, app: &mut App) {
     let area = centered_rect(60, 70, frame.area());
 
     // Clear the area behind the popup
     frame.render_widget(Clear, area);
 
     let block = Block::default()
-        .title(" Help - Press ? or Esc to close ")
+        .title(" Help (j/k to scroll) - Press ? or Esc to close ")
         .borders(Borders::ALL)
         .border_style(styles::border_style(true));
 
@@ -258,8 +259,50 @@ pub fn render_help(frame: &mut Frame) {
         ]),
     ];
 
-    let paragraph = Paragraph::new(help_text);
+    // Update help state with total lines and viewport height
+    let total_lines = help_text.len();
+    let viewport_height = inner.height as usize;
+    app.help_state.total_lines = total_lines;
+    app.help_state.viewport_height = viewport_height;
+
+    // Calculate if we can scroll
+    let can_scroll_up = app.help_state.scroll_offset > 0;
+    let can_scroll_down = app.help_state.scroll_offset + viewport_height < total_lines;
+
+    // Apply scroll offset
+    let visible_lines: Vec<Line> = help_text
+        .into_iter()
+        .skip(app.help_state.scroll_offset)
+        .take(viewport_height)
+        .collect();
+
+    let paragraph = Paragraph::new(visible_lines);
     frame.render_widget(paragraph, inner);
+
+    // Render scroll indicators
+    let indicator_style = Style::default().fg(Color::DarkGray);
+
+    if can_scroll_up {
+        let up_indicator = Paragraph::new(Line::from(Span::styled("▲ more", indicator_style)));
+        let up_area = Rect {
+            x: inner.x + inner.width.saturating_sub(8),
+            y: inner.y,
+            width: 7,
+            height: 1,
+        };
+        frame.render_widget(up_indicator, up_area);
+    }
+
+    if can_scroll_down {
+        let down_indicator = Paragraph::new(Line::from(Span::styled("▼ more", indicator_style)));
+        let down_area = Rect {
+            x: inner.x + inner.width.saturating_sub(8),
+            y: inner.y + inner.height.saturating_sub(1),
+            width: 7,
+            height: 1,
+        };
+        frame.render_widget(down_indicator, down_area);
+    }
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {

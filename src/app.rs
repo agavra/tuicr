@@ -79,6 +79,7 @@ pub struct App {
 
     pub file_list_state: FileListState,
     pub diff_state: DiffState,
+    pub help_state: HelpState,
     pub command_buffer: String,
     pub comment_buffer: String,
     pub comment_cursor: usize,
@@ -134,6 +135,13 @@ pub struct DiffState {
     pub viewport_height: usize, // Set during render
 }
 
+#[derive(Debug, Default)]
+pub struct HelpState {
+    pub scroll_offset: usize,
+    pub viewport_height: usize,
+    pub total_lines: usize, // Set during render
+}
+
 /// Represents a comment location for deletion
 enum CommentLocation {
     FileComment {
@@ -176,6 +184,7 @@ impl App {
                     diff_view_mode: DiffViewMode::Unified,
                     file_list_state: FileListState::default(),
                     diff_state: DiffState::default(),
+                    help_state: HelpState::default(),
                     command_buffer: String::new(),
                     comment_buffer: String::new(),
                     comment_cursor: 0,
@@ -219,6 +228,7 @@ impl App {
                     diff_view_mode: DiffViewMode::Unified,
                     file_list_state: FileListState::default(),
                     diff_state: DiffState::default(),
+                    help_state: HelpState::default(),
                     command_buffer: String::new(),
                     comment_buffer: String::new(),
                     comment_cursor: 0,
@@ -1050,7 +1060,32 @@ impl App {
             self.input_mode = InputMode::Normal;
         } else {
             self.input_mode = InputMode::Help;
+            self.help_state.scroll_offset = 0;
         }
+    }
+
+    pub fn help_scroll_down(&mut self, lines: usize) {
+        let max_offset = self
+            .help_state
+            .total_lines
+            .saturating_sub(self.help_state.viewport_height);
+        self.help_state.scroll_offset = (self.help_state.scroll_offset + lines).min(max_offset);
+    }
+
+    pub fn help_scroll_up(&mut self, lines: usize) {
+        self.help_state.scroll_offset = self.help_state.scroll_offset.saturating_sub(lines);
+    }
+
+    pub fn help_scroll_to_top(&mut self) {
+        self.help_state.scroll_offset = 0;
+    }
+
+    pub fn help_scroll_to_bottom(&mut self) {
+        let max_offset = self
+            .help_state
+            .total_lines
+            .saturating_sub(self.help_state.viewport_height);
+        self.help_state.scroll_offset = max_offset;
     }
 
     pub fn enter_confirm_mode(&mut self, action: ConfirmAction) {
