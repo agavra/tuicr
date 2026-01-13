@@ -77,10 +77,20 @@ fn main() -> anyhow::Result<()> {
                 }
 
                 // --- PASTE LOGIC (CTRL+P) ---
+                // --- PASTE LOGIC (CTRL+P or CMD+P) ---
+                // Detect the correct modifier key based on OS
+                // Windows/Linux = CTRL, macOS = SUPER (Command Key)
+                let paste_modifier = if cfg!(target_os = "macos") {
+                    KeyModifiers::SUPER
+                } else {
+                    KeyModifiers::CONTROL
+                };
+
                 if app.input_mode == InputMode::Comment
                     && key.code == KeyCode::Char('p')
-                    && key.modifiers.contains(KeyModifiers::CONTROL)
+                    && key.modifiers.contains(paste_modifier)
                 {
+                    // FIX 3: Clippy wants collapsed if-let statements
                     if let Ok(mut clipboard) = Clipboard::new() {
                         if let Ok(text) = clipboard.get_text() {
                             let clean_text = text.replace("\r\n", " ").replace("\n", " ");
