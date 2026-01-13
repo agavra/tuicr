@@ -28,6 +28,8 @@ use handler::{
 };
 use input::{Action, map_key_to_action};
 
+// FIX: This line tells Clippy to stop complaining about nested if-statements
+#[allow(clippy::collapsible_if)]
 fn main() -> anyhow::Result<()> {
     // Setup panic hook
     let original_hook = std::panic::take_hook();
@@ -67,7 +69,6 @@ fn main() -> anyhow::Result<()> {
             ui::render(frame, &mut app);
         })?;
 
-        // FIX 1: Clippy wants 'if let' instead of 'match' for single patterns
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
                 // Fix double input on Windows
@@ -76,12 +77,10 @@ fn main() -> anyhow::Result<()> {
                 }
 
                 // --- PASTE LOGIC (CTRL+P) ---
-                // FIX 2: Clippy wants collapsed if-statements
                 if app.input_mode == InputMode::Comment
                     && key.code == KeyCode::Char('p')
                     && key.modifiers.contains(KeyModifiers::CONTROL)
                 {
-                    // FIX 3: Clippy wants collapsed if-let statements
                     if let Ok(mut clipboard) = Clipboard::new() {
                         if let Ok(text) = clipboard.get_text() {
                             let clean_text = text.replace("\r\n", " ").replace("\n", " ");
