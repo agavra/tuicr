@@ -154,6 +154,8 @@ pub struct App {
 pub struct FileListState {
     pub list_state: ratatui::widgets::ListState,
     pub scroll_x: usize,
+    pub viewport_width: usize,    // Set during render
+    pub max_content_width: usize, // Set during render
 }
 
 impl FileListState {
@@ -170,17 +172,20 @@ impl FileListState {
     }
 
     pub fn scroll_right(&mut self, cols: usize) {
-        self.scroll_x = self.scroll_x.saturating_add(cols);
+        let max_scroll_x = self.max_content_width.saturating_sub(self.viewport_width);
+        self.scroll_x = (self.scroll_x.saturating_add(cols)).min(max_scroll_x);
     }
 }
 
 #[derive(Debug, Default)]
 pub struct DiffState {
     pub scroll_offset: usize,
-    pub scroll_x: usize,    // Horizontal scroll offset
-    pub cursor_line: usize, // Absolute position in the line list
+    pub scroll_x: usize,
+    pub cursor_line: usize,
     pub current_file_idx: usize,
-    pub viewport_height: usize, // Set during render
+    pub viewport_height: usize,
+    pub viewport_width: usize,
+    pub max_content_width: usize,
 }
 
 #[derive(Debug, Default)]
@@ -386,7 +391,7 @@ impl App {
             if total_lines == 0 {
                 self.diff_state.scroll_offset = 0;
             } else {
-                let max_scroll = total_lines.saturating_sub(1);
+                let max_scroll = total_lines.saturating_sub(viewport);
                 let desired = self
                     .diff_state
                     .cursor_line
@@ -471,9 +476,12 @@ impl App {
 
     pub fn scroll_down(&mut self, lines: usize) {
         // For half-page/page scrolling, move both cursor and scroll
-        let max_line = self.total_lines().saturating_sub(1);
+        let total = self.total_lines();
+        let viewport = self.diff_state.viewport_height.max(1);
+        let max_line = total.saturating_sub(1);
+        let max_scroll = total.saturating_sub(viewport);
         self.diff_state.cursor_line = (self.diff_state.cursor_line + lines).min(max_line);
-        self.diff_state.scroll_offset = (self.diff_state.scroll_offset + lines).min(max_line);
+        self.diff_state.scroll_offset = (self.diff_state.scroll_offset + lines).min(max_scroll);
         self.ensure_cursor_visible();
         self.update_current_file_from_cursor();
     }
@@ -491,25 +499,35 @@ impl App {
     }
 
     pub fn scroll_right(&mut self, cols: usize) {
-        self.diff_state.scroll_x = self.diff_state.scroll_x.saturating_add(cols);
+        let max_scroll_x = self
+            .diff_state
+            .max_content_width
+            .saturating_sub(self.diff_state.viewport_width);
+        self.diff_state.scroll_x =
+            (self.diff_state.scroll_x.saturating_add(cols)).min(max_scroll_x);
     }
 
     fn ensure_cursor_visible(&mut self) {
         let viewport = self.diff_state.viewport_height.max(1);
-        // If cursor is above the viewport, scroll up
+        let max_scroll = self.total_lines().saturating_sub(viewport);
         if self.diff_state.cursor_line < self.diff_state.scroll_offset {
             self.diff_state.scroll_offset = self.diff_state.cursor_line;
         }
-        // If cursor is below the viewport, scroll down
         if self.diff_state.cursor_line >= self.diff_state.scroll_offset + viewport {
-            self.diff_state.scroll_offset = self.diff_state.cursor_line - viewport + 1;
+            self.diff_state.scroll_offset =
+                (self.diff_state.cursor_line - viewport + 1).min(max_scroll);
         }
     }
 
     pub fn center_cursor(&mut self) {
         let viewport = self.diff_state.viewport_height.max(1);
         let half_viewport = viewport / 2;
-        self.diff_state.scroll_offset = self.diff_state.cursor_line.saturating_sub(half_viewport);
+        let max_scroll = self.total_lines().saturating_sub(viewport);
+        self.diff_state.scroll_offset = self
+            .diff_state
+            .cursor_line
+            .saturating_sub(half_viewport)
+            .min(max_scroll);
     }
 
     pub fn file_list_down(&mut self, n: usize) {
@@ -530,7 +548,9 @@ impl App {
         if idx < self.diff_files.len() {
             self.diff_state.current_file_idx = idx;
             self.diff_state.cursor_line = self.calculate_file_scroll_offset(idx);
-            self.diff_state.scroll_offset = self.diff_state.cursor_line;
+            let viewport = self.diff_state.viewport_height.max(1);
+            let max_scroll = self.total_lines().saturating_sub(viewport);
+            self.diff_state.scroll_offset = self.diff_state.cursor_line.min(max_scroll);
 
             let file_path = self.diff_files[idx].display_path().clone();
             let mut current = file_path.parent();

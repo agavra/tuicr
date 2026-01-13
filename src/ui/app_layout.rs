@@ -193,8 +193,40 @@ fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
         .borders(Borders::ALL)
         .border_style(styles::border_style(focused));
 
-    let scroll_x = app.file_list_state.scroll_x;
+    let inner = block.inner(area);
     let visible_items = app.build_visible_items();
+
+    let max_content_width = visible_items
+        .iter()
+        .map(|item| match item {
+            FileTreeItem::Directory { path, depth, .. } => {
+                let dir_name = Path::new(path)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(path);
+                depth * 2 + 2 + dir_name.width() + 1
+            }
+            FileTreeItem::File { file_idx, depth } => {
+                let file = &app.diff_files[*file_idx];
+                let filename = file
+                    .display_path()
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("?");
+                depth * 2 + 3 + 3 + filename.width()
+            }
+        })
+        .max()
+        .unwrap_or(0);
+
+    app.file_list_state.viewport_width = inner.width as usize;
+    app.file_list_state.max_content_width = max_content_width;
+
+    let max_scroll_x = max_content_width.saturating_sub(inner.width as usize);
+    if app.file_list_state.scroll_x > max_scroll_x {
+        app.file_list_state.scroll_x = max_scroll_x;
+    }
+    let scroll_x = app.file_list_state.scroll_x;
 
     if app.focused_panel == FocusedPanel::Diff {
         let current_file_idx = app.diff_state.current_file_idx;
@@ -557,12 +589,34 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
         line_idx += 1;
     }
 
-    // Apply scroll offset
-    let scroll_x = app.diff_state.scroll_x;
-    let visible_lines: Vec<Line> = lines
+    let visible_lines_unscrolled: Vec<Line> = lines
         .into_iter()
         .skip(app.diff_state.scroll_offset)
         .take(inner.height as usize)
+        .collect();
+
+    let max_content_width = visible_lines_unscrolled
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.width())
+                .sum::<usize>()
+        })
+        .max()
+        .unwrap_or(0);
+
+    app.diff_state.viewport_width = inner.width as usize;
+    app.diff_state.max_content_width = max_content_width;
+
+    let max_scroll_x = max_content_width.saturating_sub(inner.width as usize);
+    if app.diff_state.scroll_x > max_scroll_x {
+        app.diff_state.scroll_x = max_scroll_x;
+    }
+
+    let scroll_x = app.diff_state.scroll_x;
+    let visible_lines: Vec<Line> = visible_lines_unscrolled
+        .into_iter()
         .map(|line| apply_horizontal_scroll(line, scroll_x))
         .collect();
 
@@ -782,12 +836,34 @@ fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
         line_idx += 1;
     }
 
-    // Apply scroll offset
-    let scroll_x = app.diff_state.scroll_x;
-    let visible_lines: Vec<Line> = lines
+    let visible_lines_unscrolled: Vec<Line> = lines
         .into_iter()
         .skip(app.diff_state.scroll_offset)
         .take(inner.height as usize)
+        .collect();
+
+    let max_content_width = visible_lines_unscrolled
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.width())
+                .sum::<usize>()
+        })
+        .max()
+        .unwrap_or(0);
+
+    app.diff_state.viewport_width = inner.width as usize;
+    app.diff_state.max_content_width = max_content_width;
+
+    let max_scroll_x = max_content_width.saturating_sub(inner.width as usize);
+    if app.diff_state.scroll_x > max_scroll_x {
+        app.diff_state.scroll_x = max_scroll_x;
+    }
+
+    let scroll_x = app.diff_state.scroll_x;
+    let visible_lines: Vec<Line> = visible_lines_unscrolled
+        .into_iter()
         .map(|line| apply_horizontal_scroll(line, scroll_x))
         .collect();
 
