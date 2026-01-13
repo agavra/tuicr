@@ -73,6 +73,20 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  /         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Search within diff"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  n/N       ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Next/prev search match"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  Enter     ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),

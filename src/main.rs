@@ -29,6 +29,7 @@ use app::{App, FocusedPanel, InputMode};
 use handler::{
     handle_command_action, handle_comment_action, handle_commit_select_action,
     handle_confirm_action, handle_diff_action, handle_file_list_action, handle_help_action,
+    handle_search_action,
 };
 use input::{Action, map_key_to_action};
 
@@ -158,6 +159,7 @@ fn main() -> anyhow::Result<()> {
             match app.input_mode {
                 InputMode::Help => handle_help_action(&mut app, action),
                 InputMode::Command => handle_command_action(&mut app, action),
+                InputMode::Search => handle_search_action(&mut app, action),
                 InputMode::Comment => handle_comment_action(&mut app, action),
                 InputMode::Confirm => handle_confirm_action(&mut app, action),
                 InputMode::CommitSelect => handle_commit_select_action(&mut app, action),

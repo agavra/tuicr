@@ -72,6 +72,48 @@ pub fn handle_command_action(app: &mut App, action: Action) {
     }
 }
 
+/// Handle actions in Search mode (text input for /pattern)
+pub fn handle_search_action(app: &mut App, action: Action) {
+    match action {
+        Action::InsertChar(c) => app.search_buffer.push(c),
+        Action::DeleteChar => {
+            app.search_buffer.pop();
+        }
+        Action::DeleteWord => {
+            if !app.search_buffer.is_empty() {
+                while app
+                    .search_buffer
+                    .chars()
+                    .last()
+                    .map(|c| c.is_whitespace())
+                    .unwrap_or(false)
+                {
+                    app.search_buffer.pop();
+                }
+                while app
+                    .search_buffer
+                    .chars()
+                    .last()
+                    .map(|c| !c.is_whitespace())
+                    .unwrap_or(false)
+                {
+                    app.search_buffer.pop();
+                }
+            }
+        }
+        Action::ClearLine => {
+            app.search_buffer.clear();
+        }
+        Action::ExitMode => app.exit_search_mode(),
+        Action::SubmitInput => {
+            app.search_in_diff_from_cursor();
+            app.exit_search_mode();
+        }
+        Action::Quit => app.should_quit = true,
+        _ => {}
+    }
+}
+
 /// Handle actions in Comment mode (text input for comments)
 pub fn handle_comment_action(app: &mut App, action: Action) {
     match action {
@@ -251,6 +293,7 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
         }
         Action::ToggleHelp => app.toggle_help(),
         Action::EnterCommandMode => app.enter_command_mode(),
+        Action::EnterSearchMode => app.enter_search_mode(),
         Action::AddLineComment => {
             let line = app.get_line_at_cursor();
             if line.is_some() {
@@ -269,6 +312,12 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
             Ok(msg) => app.set_message(msg),
             Err(e) => app.set_warning(format!("{}", e)),
         },
+        Action::SearchNext => {
+            app.search_next_in_diff();
+        }
+        Action::SearchPrev => {
+            app.search_prev_in_diff();
+        }
         _ => {}
     }
 }

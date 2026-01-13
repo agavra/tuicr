@@ -51,9 +51,19 @@ pub fn render_header(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
-    // In command mode, show the command input on the left (vim-style)
-    let left_spans = if app.input_mode == InputMode::Command {
-        let command_text = format!(":{}", app.command_buffer);
+    // In command/search mode, show the input on the left (vim-style)
+    let left_spans = if matches!(app.input_mode, InputMode::Command | InputMode::Search) {
+        let prefix = if app.input_mode == InputMode::Command {
+            ":"
+        } else {
+            "/"
+        };
+        let buffer = if app.input_mode == InputMode::Command {
+            &app.command_buffer
+        } else {
+            &app.search_buffer
+        };
+        let command_text = format!("{}{}", prefix, buffer);
         vec![Span::styled(
             command_text,
             Style::default().fg(styles::FG_PRIMARY),
@@ -62,6 +72,7 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         let mode_str = match app.input_mode {
             InputMode::Normal => " NORMAL ",
             InputMode::Command => " COMMAND ",
+            InputMode::Search => " SEARCH ",
             InputMode::Comment => " COMMENT ",
             InputMode::Help => " HELP ",
             InputMode::Confirm => " CONFIRM ",
@@ -71,8 +82,11 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         let mode_span = Span::styled(mode_str, styles::mode_style());
 
         let hints = match app.input_mode {
-            InputMode::Normal => " j/k:scroll  {/}:file  r:reviewed  c:comment  ?:help  :q:quit ",
+            InputMode::Normal => {
+                " j/k:scroll  {/}:file  r:reviewed  c:comment  /:search  n/N:next/prev  ?:help  :q:quit "
+            }
             InputMode::Command => " Enter:execute  Esc:cancel ",
+            InputMode::Search => " Enter:search  Esc:cancel ",
             InputMode::Comment => " Ctrl-S:save  Esc:cancel ",
             InputMode::Help => " q/?/Esc:close ",
             InputMode::Confirm => " y:yes  n:no ",

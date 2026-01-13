@@ -34,17 +34,20 @@ pub struct GapId {
 #[derive(Debug, Clone)]
 pub enum AnnotatedLine {
     /// File header line
-    FileHeader,
+    FileHeader { file_idx: usize },
     /// A file-level comment line (part of a multi-line comment box)
     FileComment { file_idx: usize, comment_idx: usize },
     /// Expander line showing hidden context
     Expander { gap_id: GapId },
     /// Expanded context line (muted text)
-    ExpandedContext { gap_id: GapId },
+    ExpandedContext { gap_id: GapId, line_idx: usize },
     /// Hunk header (@@...@@)
-    HunkHeader,
+    HunkHeader { file_idx: usize, hunk_idx: usize },
     /// Actual diff line with line numbers
     DiffLine {
+        file_idx: usize,
+        hunk_idx: usize,
+        line_idx: usize,
         old_lineno: Option<u32>,
         new_lineno: Option<u32>,
     },
@@ -56,7 +59,7 @@ pub enum AnnotatedLine {
         comment_idx: usize,
     },
     /// Binary or empty file indicator
-    BinaryOrEmpty,
+    BinaryOrEmpty { file_idx: usize },
     /// Spacing between files
     Spacing,
 }
@@ -66,6 +69,7 @@ pub enum InputMode {
     Normal,
     Comment,
     Command,
+    Search,
     Help,
     Confirm,
     CommitSelect,
@@ -121,6 +125,8 @@ pub struct App {
     pub diff_state: DiffState,
     pub help_state: HelpState,
     pub command_buffer: String,
+    pub search_buffer: String,
+    pub last_search_pattern: Option<String>,
     pub comment_buffer: String,
     pub comment_cursor: usize,
     pub comment_type: CommentType,
@@ -239,6 +245,8 @@ impl App {
                     diff_state: DiffState::default(),
                     help_state: HelpState::default(),
                     command_buffer: String::new(),
+                    search_buffer: String::new(),
+                    last_search_pattern: None,
                     comment_buffer: String::new(),
                     comment_cursor: 0,
                     comment_type: CommentType::Note,
@@ -286,6 +294,8 @@ impl App {
                     diff_state: DiffState::default(),
                     help_state: HelpState::default(),
                     command_buffer: String::new(),
+                    search_buffer: String::new(),
+                    last_search_pattern: None,
                     comment_buffer: String::new(),
                     comment_cursor: 0,
                     comment_type: CommentType::Note,
@@ -517,6 +527,173 @@ impl App {
             self.diff_state.scroll_offset =
                 (self.diff_state.cursor_line - viewport + 1).min(max_scroll);
         }
+    }
+
+    pub fn search_in_diff_from_cursor(&mut self) -> bool {
+        let pattern = self.search_buffer.clone();
+        if pattern.trim().is_empty() {
+            self.set_message("Search pattern is empty");
+            return false;
+        }
+
+        self.last_search_pattern = Some(pattern.clone());
+        self.search_in_diff(&pattern, self.diff_state.cursor_line, true, true)
+    }
+
+    pub fn search_next_in_diff(&mut self) -> bool {
+        let Some(pattern) = self.last_search_pattern.clone() else {
+            self.set_message("No previous search");
+            return false;
+        };
+        self.search_in_diff(&pattern, self.diff_state.cursor_line, true, false)
+    }
+
+    pub fn search_prev_in_diff(&mut self) -> bool {
+        let Some(pattern) = self.last_search_pattern.clone() else {
+            self.set_message("No previous search");
+            return false;
+        };
+        self.search_in_diff(&pattern, self.diff_state.cursor_line, false, false)
+    }
+
+    fn search_in_diff(
+        &mut self,
+        pattern: &str,
+        start_idx: usize,
+        forward: bool,
+        include_current: bool,
+    ) -> bool {
+        let total_lines = self.total_lines();
+        if total_lines == 0 {
+            self.set_message("No diff content to search");
+            return false;
+        }
+
+        if forward {
+            let mut idx = start_idx.min(total_lines.saturating_sub(1));
+            if !include_current {
+                idx = idx.saturating_add(1);
+            }
+            for line_idx in idx..total_lines {
+                if let Some(text) = self.line_text_for_search(line_idx)
+                    && text.contains(pattern)
+                {
+                    self.diff_state.cursor_line = line_idx;
+                    self.ensure_cursor_visible();
+                    self.center_cursor();
+                    self.update_current_file_from_cursor();
+                    return true;
+                }
+            }
+        } else {
+            let mut idx = start_idx.min(total_lines.saturating_sub(1));
+            if !include_current {
+                idx = idx.saturating_sub(1);
+            }
+            let mut line_idx = idx;
+            loop {
+                if let Some(text) = self.line_text_for_search(line_idx)
+                    && text.contains(pattern)
+                {
+                    self.diff_state.cursor_line = line_idx;
+                    self.ensure_cursor_visible();
+                    self.center_cursor();
+                    self.update_current_file_from_cursor();
+                    return true;
+                }
+                if line_idx == 0 {
+                    break;
+                }
+                line_idx = line_idx.saturating_sub(1);
+            }
+        }
+
+        self.set_message(format!("No matches for \"{}\"", pattern));
+        false
+    }
+
+    fn line_text_for_search(&self, line_idx: usize) -> Option<String> {
+        match self.line_annotations.get(line_idx)? {
+            AnnotatedLine::FileHeader { file_idx } => {
+                let file = self.diff_files.get(*file_idx)?;
+                Some(format!(
+                    "{} [{}]",
+                    file.display_path().display(),
+                    file.status.as_char()
+                ))
+            }
+            AnnotatedLine::FileComment {
+                file_idx,
+                comment_idx,
+            } => {
+                let path = self.diff_files.get(*file_idx)?.display_path();
+                let review = self.session.files.get(path)?;
+                let comment = review.file_comments.get(*comment_idx)?;
+                Some(comment.content.clone())
+            }
+            AnnotatedLine::LineComment {
+                file_idx,
+                line,
+                comment_idx,
+                ..
+            } => {
+                let path = self.diff_files.get(*file_idx)?.display_path();
+                let review = self.session.files.get(path)?;
+                let comments = review.line_comments.get(line)?;
+                let comment = comments.get(*comment_idx)?;
+                Some(comment.content.clone())
+            }
+            AnnotatedLine::Expander { gap_id } => {
+                let gap = self.gap_size(gap_id)?;
+                Some(format!("... expand ({} lines) ...", gap))
+            }
+            AnnotatedLine::ExpandedContext {
+                gap_id,
+                line_idx: context_idx,
+            } => {
+                let content = self.expanded_content.get(gap_id)?.get(*context_idx)?;
+                Some(content.content.clone())
+            }
+            AnnotatedLine::HunkHeader { file_idx, hunk_idx } => {
+                let file = self.diff_files.get(*file_idx)?;
+                let hunk = file.hunks.get(*hunk_idx)?;
+                Some(hunk.header.clone())
+            }
+            AnnotatedLine::DiffLine {
+                file_idx,
+                hunk_idx,
+                line_idx: diff_idx,
+                ..
+            } => {
+                let file = self.diff_files.get(*file_idx)?;
+                let hunk = file.hunks.get(*hunk_idx)?;
+                let line = hunk.lines.get(*diff_idx)?;
+                Some(line.content.clone())
+            }
+            AnnotatedLine::BinaryOrEmpty { file_idx } => {
+                let file = self.diff_files.get(*file_idx)?;
+                if file.is_binary {
+                    Some("(binary file)".to_string())
+                } else {
+                    Some("(no changes)".to_string())
+                }
+            }
+            AnnotatedLine::Spacing => None,
+        }
+    }
+
+    fn gap_size(&self, gap_id: &GapId) -> Option<u32> {
+        let file = self.diff_files.get(gap_id.file_idx)?;
+        let hunk = file.hunks.get(gap_id.hunk_idx)?;
+        let prev_hunk = if gap_id.hunk_idx > 0 {
+            file.hunks.get(gap_id.hunk_idx - 1)
+        } else {
+            None
+        };
+        Some(calculate_gap(
+            prev_hunk.map(|h| (&h.new_start, &h.new_count)),
+            hunk.new_start,
+        ))
     }
 
     pub fn center_cursor(&mut self) {
@@ -790,6 +967,7 @@ impl App {
             Some(AnnotatedLine::DiffLine {
                 old_lineno,
                 new_lineno,
+                ..
             }) => {
                 // Prefer new line number (for added/context lines), fall back to old (for deleted)
                 new_lineno
@@ -950,6 +1128,16 @@ impl App {
     pub fn exit_command_mode(&mut self) {
         self.input_mode = InputMode::Normal;
         self.command_buffer.clear();
+    }
+
+    pub fn enter_search_mode(&mut self) {
+        self.input_mode = InputMode::Search;
+        self.search_buffer.clear();
+    }
+
+    pub fn exit_search_mode(&mut self) {
+        self.input_mode = InputMode::Normal;
+        self.search_buffer.clear();
     }
 
     pub fn enter_comment_mode(&mut self, file_level: bool, line: Option<(u32, LineSide)>) {
@@ -1385,7 +1573,8 @@ impl App {
             let path = file.display_path();
 
             // File header
-            self.line_annotations.push(AnnotatedLine::FileHeader);
+            self.line_annotations
+                .push(AnnotatedLine::FileHeader { file_idx });
 
             // If reviewed, skip all content for this file
             if self.session.is_file_reviewed(path) {
@@ -1406,7 +1595,8 @@ impl App {
             }
 
             if file.is_binary || file.hunks.is_empty() {
-                self.line_annotations.push(AnnotatedLine::BinaryOrEmpty);
+                self.line_annotations
+                    .push(AnnotatedLine::BinaryOrEmpty { file_idx });
             } else {
                 // Get line comments for this file
                 let line_comments = self
@@ -1435,9 +1625,10 @@ impl App {
                         if self.expanded_gaps.contains(&gap_id) {
                             // Expanded content lines
                             if let Some(content) = self.expanded_content.get(&gap_id) {
-                                for _ in 0..content.len() {
+                                for (content_idx, _) in content.iter().enumerate() {
                                     self.line_annotations.push(AnnotatedLine::ExpandedContext {
                                         gap_id: gap_id.clone(),
+                                        line_idx: content_idx,
                                     });
                                 }
                             }
@@ -1450,11 +1641,14 @@ impl App {
                     }
 
                     // Hunk header
-                    self.line_annotations.push(AnnotatedLine::HunkHeader);
+                    self.line_annotations.push(AnnotatedLine::HunkHeader { file_idx, hunk_idx });
 
                     // Diff lines
-                    for diff_line in &hunk.lines {
+                    for (line_idx, diff_line) in hunk.lines.iter().enumerate() {
                         self.line_annotations.push(AnnotatedLine::DiffLine {
+                            file_idx,
+                            hunk_idx,
+                            line_idx,
                             old_lineno: diff_line.old_lineno,
                             new_lineno: diff_line.new_lineno,
                         });
@@ -1511,7 +1705,7 @@ impl App {
         let target = self.diff_state.cursor_line;
         match self.line_annotations.get(target) {
             Some(AnnotatedLine::Expander { gap_id, .. }) => Some((gap_id.clone(), false)),
-            Some(AnnotatedLine::ExpandedContext { gap_id }) => Some((gap_id.clone(), true)),
+            Some(AnnotatedLine::ExpandedContext { gap_id, .. }) => Some((gap_id.clone(), true)),
             _ => None,
         }
     }

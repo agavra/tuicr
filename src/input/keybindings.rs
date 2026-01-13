@@ -33,6 +33,8 @@ pub enum Action {
     EditComment,
     PendingDCommand,
     ToggleDiffView,
+    SearchNext,
+    SearchPrev,
 
     // Session
     Quit,
@@ -40,6 +42,7 @@ pub enum Action {
 
     // Mode changes
     EnterCommandMode,
+    EnterSearchMode,
     ExitMode,
     ToggleHelp,
 
@@ -77,6 +80,7 @@ pub fn map_key_to_action(key: KeyEvent, mode: InputMode) -> Action {
     match mode {
         InputMode::Normal => map_normal_mode(key),
         InputMode::Command => map_command_mode(key),
+        InputMode::Search => map_search_mode(key),
         InputMode::Comment => map_comment_mode(key),
         InputMode::Help => map_help_mode(key),
         InputMode::Confirm => map_confirm_mode(key),
@@ -120,9 +124,12 @@ fn map_normal_mode(key: KeyEvent) -> Action {
         (KeyCode::Char('d'), KeyModifiers::NONE) => Action::PendingDCommand,
         (KeyCode::Char('v'), KeyModifiers::NONE) => Action::ToggleDiffView,
         (KeyCode::Char('y'), KeyModifiers::NONE) => Action::ExportToClipboard,
+        (KeyCode::Char('n'), KeyModifiers::NONE) => Action::SearchNext,
+        (KeyCode::Char('N'), _) => Action::SearchPrev,
 
         // Mode changes (use _ for shifted characters like : and ?)
         (KeyCode::Char(':'), _) => Action::EnterCommandMode,
+        (KeyCode::Char('/'), _) => Action::EnterSearchMode,
         (KeyCode::Char('?'), _) => Action::ToggleHelp,
         (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
 
@@ -138,6 +145,18 @@ fn map_normal_mode(key: KeyEvent) -> Action {
 }
 
 fn map_command_mode(key: KeyEvent) -> Action {
+    match (key.code, key.modifiers) {
+        (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
+        (KeyCode::Enter, KeyModifiers::NONE) => Action::SubmitInput,
+        (KeyCode::Backspace, KeyModifiers::NONE) => Action::DeleteChar,
+        (KeyCode::Char('w'), KeyModifiers::CONTROL) => Action::DeleteWord,
+        (KeyCode::Char('u'), KeyModifiers::CONTROL) => Action::ClearLine,
+        (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => Action::InsertChar(c),
+        _ => Action::None,
+    }
+}
+
+fn map_search_mode(key: KeyEvent) -> Action {
     match (key.code, key.modifiers) {
         (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
         (KeyCode::Enter, KeyModifiers::NONE) => Action::SubmitInput,
