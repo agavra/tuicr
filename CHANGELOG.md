@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.0] - 2026-01-13
+
+### Bug Fixes
+
+- Support wayland clipboard. update arboard dependency to include wayland-data-control feature (#54)
+
+### Features
+
+- Add horizontal scroll to file list and ;h/;l panel navigation (#56)
+- Add hierarchical file tree with expand/collapse (#50)
+- Add support for expanding/collapsing files (#69)
+- Enforce contiguous commit range selection (#70)
+
+### Refactor
+
+- Improve signal handling (#65)
 ## [0.1.3] - 2026-01-11
 
 ### Features
