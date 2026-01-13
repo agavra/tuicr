@@ -75,19 +75,33 @@ fn render_commit_select(frame: &mut Frame, app: &App) {
     let inner = block.inner(chunks[1]);
     frame.render_widget(block, chunks[1]);
 
+    // Get range info for visual indicators
+    let range = app.commit_selection_range;
+
     let items: Vec<Line> = app
         .commit_list
         .iter()
         .enumerate()
         .map(|(i, commit)| {
-            let is_selected = app.commit_selected.get(i).copied().unwrap_or(false);
+            let is_selected = app.is_commit_selected(i);
             let is_cursor = i == app.commit_list_cursor;
+
+            // Range boundary indicators
+            let range_marker = match range {
+                Some((start, end)) if i == start && i == end => "─",
+                Some((start, _)) if i == start => "┌",
+                Some((_, end)) if i == end => "└",
+                Some((start, end)) if i > start && i < end => "│",
+                _ => " ",
+            };
 
             let checkbox = if is_selected { "[x]" } else { "[ ]" };
             let pointer = if is_cursor { ">" } else { " " };
 
             let style = if is_cursor {
                 styles::selected_style()
+            } else if is_selected {
+                Style::default().fg(styles::FG_SECONDARY)
             } else {
                 Style::default()
             };
@@ -98,10 +112,17 @@ fn render_commit_select(frame: &mut Frame, app: &App) {
                 styles::pending_style()
             };
 
-            // Format: > [x] abc1234  Commit message (author, date)
+            let range_style = if is_selected {
+                styles::reviewed_style()
+            } else {
+                Style::default().fg(styles::FG_SECONDARY)
+            };
+
+            // Format: > ┌ [x] abc1234  Commit message (author, date)
             let time_str = commit.time.format("%Y-%m-%d").to_string();
             Line::from(vec![
                 Span::styled(format!("{} ", pointer), style),
+                Span::styled(format!("{} ", range_marker), range_style),
                 Span::styled(format!("{} ", checkbox), checkbox_style),
                 Span::styled(format!("{} ", commit.short_id), styles::hash_style()),
                 Span::styled(truncate_str(&commit.summary, 50), style),
@@ -116,8 +137,20 @@ fn render_commit_select(frame: &mut Frame, app: &App) {
     let list = Paragraph::new(items);
     frame.render_widget(list, inner);
 
-    // Footer hints
-    let hints = " j/k:navigate  Space:select  Enter:confirm  q:quit ";
+    // Footer hints with selection count
+    let selected_count = match range {
+        Some((start, end)) => end - start + 1,
+        None => 0,
+    };
+    let selection_info = if selected_count > 0 {
+        format!(" ({} selected)", selected_count)
+    } else {
+        String::new()
+    };
+    let hints = format!(
+        " j/k:navigate  Space:select range  Enter:confirm  q:quit{}",
+        selection_info
+    );
     let footer = Paragraph::new(hints)
         .style(styles::status_bar_style())
         .block(Block::default());

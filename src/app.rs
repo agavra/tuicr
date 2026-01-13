@@ -131,7 +131,9 @@ pub struct App {
     // Commit selection state
     pub commit_list: Vec<CommitInfo>,
     pub commit_list_cursor: usize,
-    pub commit_selected: Vec<bool>,
+    /// Selected commit range as (start_idx, end_idx) inclusive, where start <= end.
+    /// Indices refer to positions in commit_list (0 = newest/HEAD, higher = older).
+    pub commit_selection_range: Option<(usize, usize)>,
 
     pub should_quit: bool,
     pub dirty: bool,
@@ -240,7 +242,7 @@ impl App {
                     editing_comment_id: None,
                     commit_list: Vec::new(),
                     commit_list_cursor: 0,
-                    commit_selected: Vec::new(),
+                    commit_selection_range: None,
                     should_quit: false,
                     dirty: false,
                     message: None,
@@ -264,7 +266,6 @@ impl App {
                     return Err(TuicrError::NoChanges);
                 }
 
-                let commit_count = commits.len();
                 let session =
                     ReviewSession::new(repo_info.root_path.clone(), repo_info.head_commit.clone());
 
@@ -288,7 +289,7 @@ impl App {
                     editing_comment_id: None,
                     commit_list: commits,
                     commit_list_cursor: 0,
-                    commit_selected: vec![false; commit_count],
+                    commit_selection_range: None,
                     should_quit: false,
                     dirty: false,
                     message: None,
@@ -1109,20 +1110,62 @@ impl App {
     }
 
     pub fn toggle_commit_selection(&mut self) {
-        if self.commit_list_cursor < self.commit_selected.len() {
-            self.commit_selected[self.commit_list_cursor] =
-                !self.commit_selected[self.commit_list_cursor];
+        let cursor = self.commit_list_cursor;
+        if cursor >= self.commit_list.len() {
+            return;
+        }
+
+        match self.commit_selection_range {
+            None => {
+                // No selection yet - select just this commit
+                self.commit_selection_range = Some((cursor, cursor));
+            }
+            Some((start, end)) => {
+                if cursor >= start && cursor <= end {
+                    // Cursor is within the range - shrink or deselect
+                    if start == end {
+                        // Only one commit selected, deselect all
+                        self.commit_selection_range = None;
+                    } else if cursor == start {
+                        // At start edge - shrink from start
+                        self.commit_selection_range = Some((start + 1, end));
+                    } else if cursor == end {
+                        // At end edge - shrink from end
+                        self.commit_selection_range = Some((start, end - 1));
+                    } else {
+                        // In the middle - shrink towards cursor (exclude everything after cursor)
+                        // This makes the cursor the new end of the range
+                        self.commit_selection_range = Some((start, cursor));
+                    }
+                } else {
+                    // Cursor is outside the range - extend to include it
+                    let new_start = start.min(cursor);
+                    let new_end = end.max(cursor);
+                    self.commit_selection_range = Some((new_start, new_end));
+                }
+            }
+        }
+    }
+
+    /// Check if a commit at the given index is selected
+    pub fn is_commit_selected(&self, index: usize) -> bool {
+        match self.commit_selection_range {
+            Some((start, end)) => index >= start && index <= end,
+            None => false,
         }
     }
 
     pub fn confirm_commit_selection(&mut self) -> Result<()> {
-        // Collect selected commit IDs (in order from oldest to newest)
-        let selected_ids: Vec<String> = self
-            .commit_list
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| self.commit_selected.get(*i).copied().unwrap_or(false))
-            .map(|(_, c)| c.id.clone())
+        let Some((start, end)) = self.commit_selection_range else {
+            self.set_message("Select at least one commit");
+            return Ok(());
+        };
+
+        // Collect selected commit IDs (in order from oldest to newest, i.e., end to start)
+        // commit_list[0] is newest (HEAD), commit_list[end] is oldest selected
+        let selected_ids: Vec<String> = (start..=end)
+            .rev()
+            .filter_map(|i| self.commit_list.get(i).map(|c| c.id.clone()))
             .collect();
 
         if selected_ids.is_empty() {
