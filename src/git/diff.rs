@@ -108,6 +108,10 @@ fn parse_hunks(
             let (hunk, _) = patch.hunk(hunk_idx)?;
 
             let header = String::from_utf8_lossy(hunk.header()).trim().to_string();
+            let old_start = hunk.old_start();
+            let old_count = hunk.old_lines();
+            let new_start = hunk.new_start();
+            let new_count = hunk.new_lines();
 
             let mut lines: Vec<DiffLine> = Vec::new();
 
@@ -167,7 +171,14 @@ fn parse_hunks(
                 });
             }
 
-            hunks.push(DiffHunk { header, lines });
+            hunks.push(DiffHunk {
+                header,
+                lines,
+                old_start,
+                old_count,
+                new_start,
+                new_count,
+            });
         }
     }
 

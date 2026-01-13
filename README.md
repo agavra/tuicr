@@ -34,6 +34,7 @@ to clipboard in a format ready to paste back to the agent.
 
 - **Infinite scroll diff view** - All changed files in one continuous scroll (GitHub-style)
 - **Vim keybindings** - Navigate with `j/k`, `Ctrl-d/u`, `g/G`, `{/}`, `[/]`
+- **Expandable context** - Press Enter on "... expand (N lines) ..." to reveal hidden context between hunks
 - **Comments** - Add file-level or line-level comments with types
 - **Review tracking** - Mark files as reviewed, persist progress to disk
 - **Clipboard export** - Copy structured Markdown optimized for LLM consumption
@@ -89,6 +90,7 @@ tuicr
 | `g` / `G` | Go to first/last file |
 | `{` / `}` | Jump to previous/next file |
 | `[` / `]` | Jump to previous/next hunk |
+| `Enter` | Expand/collapse hidden context between hunks |
 | `zz` | Center cursor on screen |
 
 #### Panel Focus

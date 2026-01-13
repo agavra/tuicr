@@ -198,6 +198,20 @@ pub fn handle_diff_action(app: &mut App, action: Action) {
         Action::CursorUp(n) => app.cursor_up(n),
         Action::ScrollLeft(n) => app.scroll_left(n),
         Action::ScrollRight(n) => app.scroll_right(n),
+        Action::SelectFile => {
+            // Check if cursor is on an expander line or expanded content
+            if let Some((gap_id, is_expanded)) = app.get_gap_at_cursor() {
+                if is_expanded {
+                    // Collapse expanded content
+                    app.collapse_gap(gap_id);
+                } else {
+                    // Expand the gap
+                    if let Err(e) = app.expand_gap(gap_id) {
+                        app.set_error(format!("Failed to expand: {}", e));
+                    }
+                }
+            }
+        }
         _ => handle_shared_normal_action(app, action),
     }
 }

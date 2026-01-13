@@ -73,6 +73,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  Enter     ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Expand/collapse hidden context"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  Tab       ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),

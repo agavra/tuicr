@@ -7,7 +7,8 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, DiffViewMode, FileTreeItem, FocusedPanel, InputMode};
+use crate::app::{App, DiffViewMode, FileTreeItem, FocusedPanel, GapId, InputMode};
+use crate::git::calculate_gap;
 use crate::model::{LineOrigin, LineSide};
 use crate::ui::{comment_panel, help_popup, status_bar, styles};
 
@@ -279,7 +280,7 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
     let mut line_idx: usize = 0;
     let current_line_idx = app.diff_state.cursor_line;
 
-    for file in &app.diff_files {
+    for (file_idx, file) in app.diff_files.iter().enumerate() {
         let path = file.display_path();
         let status = file.status.as_char();
         let is_reviewed = app.session.is_file_reviewed(path);
@@ -349,7 +350,58 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
                 .cloned()
                 .unwrap_or_default();
 
-            for hunk in &file.hunks {
+            for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
+                // Calculate and render gap before this hunk
+                let prev_hunk = if hunk_idx > 0 {
+                    file.hunks.get(hunk_idx - 1)
+                } else {
+                    None
+                };
+                let gap = calculate_gap(
+                    prev_hunk.map(|h| (&h.new_start, &h.new_count)),
+                    hunk.new_start,
+                );
+
+                let gap_id = GapId { file_idx, hunk_idx };
+
+                if gap > 0 {
+                    if app.is_gap_expanded(&gap_id) {
+                        // Render expanded context lines
+                        if let Some(expanded_lines) = app.expanded_content.get(&gap_id) {
+                            for expanded_line in expanded_lines {
+                                let indicator = cursor_indicator(line_idx, current_line_idx);
+                                let line_num = expanded_line
+                                    .new_lineno
+                                    .map(|n| format!("{:>4} ", n))
+                                    .unwrap_or_else(|| "     ".to_string());
+
+                                let line_spans = vec![
+                                    Span::styled(indicator, styles::current_line_indicator_style()),
+                                    Span::styled(line_num, styles::expanded_context_style()),
+                                    Span::styled("  ", styles::expanded_context_style()),
+                                    Span::styled(
+                                        expanded_line.content.clone(),
+                                        styles::expanded_context_style(),
+                                    ),
+                                ];
+                                lines.push(Line::from(line_spans));
+                                line_idx += 1;
+                            }
+                        }
+                    } else {
+                        // Render expander line
+                        let indicator = cursor_indicator_spaced(line_idx, current_line_idx);
+                        lines.push(Line::from(vec![
+                            Span::styled(indicator, styles::current_line_indicator_style()),
+                            Span::styled(
+                                format!("       ... expand ({} lines) ...", gap),
+                                styles::dim_style(),
+                            ),
+                        ]));
+                        line_idx += 1;
+                    }
+                }
+
                 // Hunk header
                 let indicator = cursor_indicator_spaced(line_idx, current_line_idx);
                 lines.push(Line::from(vec![
@@ -538,7 +590,7 @@ fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
     let mut lines: Vec<Line> = Vec::new();
     let mut line_idx: usize = 0;
 
-    for file in &app.diff_files {
+    for (file_idx, file) in app.diff_files.iter().enumerate() {
         let path = file.display_path();
         let status = file.status.as_char();
         let is_reviewed = app.session.is_file_reviewed(path);
@@ -606,7 +658,69 @@ fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
                 .cloned()
                 .unwrap_or_default();
 
-            for hunk in &file.hunks {
+            for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
+                // Calculate and render gap before this hunk
+                let prev_hunk = if hunk_idx > 0 {
+                    file.hunks.get(hunk_idx - 1)
+                } else {
+                    None
+                };
+                let gap = calculate_gap(
+                    prev_hunk.map(|h| (&h.new_start, &h.new_count)),
+                    hunk.new_start,
+                );
+
+                let gap_id = GapId { file_idx, hunk_idx };
+
+                if gap > 0 {
+                    if app.is_gap_expanded(&gap_id) {
+                        // Render expanded context lines
+                        if let Some(expanded_lines) = app.expanded_content.get(&gap_id) {
+                            for expanded_line in expanded_lines {
+                                let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
+                                let line_num = expanded_line
+                                    .new_lineno
+                                    .map(|n| format!("{:>4} ", n))
+                                    .unwrap_or_else(|| "     ".to_string());
+
+                                // In side-by-side, show context on both sides
+                                let line_spans = vec![
+                                    Span::styled(indicator, styles::current_line_indicator_style()),
+                                    Span::styled(
+                                        line_num.clone(),
+                                        styles::expanded_context_style(),
+                                    ),
+                                    Span::styled("  ", styles::expanded_context_style()),
+                                    Span::styled(
+                                        truncate_or_pad(&expanded_line.content, ctx.content_width),
+                                        styles::expanded_context_style(),
+                                    ),
+                                    Span::styled(" │ ", styles::dim_style()),
+                                    Span::styled(line_num, styles::expanded_context_style()),
+                                    Span::styled("  ", styles::expanded_context_style()),
+                                    Span::styled(
+                                        truncate_or_pad(&expanded_line.content, ctx.content_width),
+                                        styles::expanded_context_style(),
+                                    ),
+                                ];
+                                lines.push(Line::from(line_spans));
+                                line_idx += 1;
+                            }
+                        }
+                    } else {
+                        // Render expander line
+                        let indicator = cursor_indicator_spaced(line_idx, ctx.current_line_idx);
+                        lines.push(Line::from(vec![
+                            Span::styled(indicator, styles::current_line_indicator_style()),
+                            Span::styled(
+                                format!("       ... expand ({} lines) ...", gap),
+                                styles::dim_style(),
+                            ),
+                        ]));
+                        line_idx += 1;
+                    }
+                }
+
                 // Hunk header
                 let indicator = cursor_indicator_spaced(line_idx, ctx.current_line_idx);
                 lines.push(Line::from(vec![

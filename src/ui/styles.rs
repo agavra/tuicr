@@ -14,6 +14,7 @@ pub const DIFF_DEL: Color = Color::Red;
 pub const DIFF_DEL_BG: Color = Color::Rgb(40, 0, 0);
 pub const DIFF_CONTEXT: Color = Color::Gray;
 pub const DIFF_HUNK_HEADER: Color = Color::Cyan;
+pub const EXPANDED_CONTEXT_FG: Color = Color::Rgb(90, 90, 90);
 
 // File status colors
 pub const FILE_ADDED: Color = Color::Green;
@@ -60,6 +61,10 @@ pub fn diff_del_style() -> Style {
 
 pub fn diff_context_style() -> Style {
     Style::default().fg(DIFF_CONTEXT)
+}
+
+pub fn expanded_context_style() -> Style {
+    Style::default().fg(EXPANDED_CONTEXT_FG)
 }
 
 pub fn diff_hunk_header_style() -> Style {

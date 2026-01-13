@@ -1,11 +1,12 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use crate::error::{Result, TuicrError};
 use crate::git::{
-    CommitInfo, RepoInfo, get_commit_range_diff, get_recent_commits, get_working_tree_diff,
+    CommitInfo, RepoInfo, calculate_gap, fetch_context_lines, get_commit_range_diff,
+    get_recent_commits, get_working_tree_diff,
 };
-use crate::model::{Comment, CommentType, DiffFile, LineSide, ReviewSession};
+use crate::model::{Comment, CommentType, DiffFile, DiffLine, LineSide, ReviewSession};
 use crate::persistence::{find_session_for_repo, load_session};
 
 #[derive(Debug, Clone)]
@@ -19,6 +20,45 @@ pub enum FileTreeItem {
         file_idx: usize,
         depth: usize,
     },
+}
+
+/// Identifies a gap between hunks in a file (for context expansion)
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct GapId {
+    pub file_idx: usize,
+    /// Index of the hunk that this gap precedes (0 = gap before first hunk)
+    pub hunk_idx: usize,
+}
+
+/// Describes what a rendered line represents - built once and used for O(1) cursor queries
+#[derive(Debug, Clone)]
+pub enum AnnotatedLine {
+    /// File header line
+    FileHeader,
+    /// A file-level comment line (part of a multi-line comment box)
+    FileComment { file_idx: usize, comment_idx: usize },
+    /// Expander line showing hidden context
+    Expander { gap_id: GapId },
+    /// Expanded context line (muted text)
+    ExpandedContext { gap_id: GapId },
+    /// Hunk header (@@...@@)
+    HunkHeader,
+    /// Actual diff line with line numbers
+    DiffLine {
+        old_lineno: Option<u32>,
+        new_lineno: Option<u32>,
+    },
+    /// A line comment (part of a multi-line comment box)
+    LineComment {
+        file_idx: usize,
+        line: u32,
+        side: LineSide,
+        comment_idx: usize,
+    },
+    /// Binary or empty file indicator
+    BinaryOrEmpty,
+    /// Spacing between files
+    Spacing,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,6 +140,12 @@ pub struct App {
     pub supports_keyboard_enhancement: bool,
     pub show_file_list: bool,
     pub expanded_dirs: HashSet<String>,
+    /// Tracks which hunk gaps have been expanded to show more context
+    pub expanded_gaps: HashSet<GapId>,
+    /// Stores the expanded context lines for each gap
+    pub expanded_content: HashMap<GapId, Vec<DiffLine>>,
+    /// Cached annotations describing what each rendered line represents
+    pub line_annotations: Vec<AnnotatedLine>,
 }
 
 #[derive(Default)]
@@ -202,9 +248,13 @@ impl App {
                     supports_keyboard_enhancement: false,
                     show_file_list: true,
                     expanded_dirs: HashSet::new(),
+                    expanded_gaps: HashSet::new(),
+                    expanded_content: HashMap::new(),
+                    line_annotations: Vec::new(),
                 };
                 app.sort_files_by_directory(true);
                 app.expand_all_dirs();
+                app.rebuild_annotations();
                 Ok(app)
             }
             Err(TuicrError::NoChanges) => {
@@ -246,6 +296,9 @@ impl App {
                     supports_keyboard_enhancement: false,
                     show_file_list: true,
                     expanded_dirs: HashSet::new(),
+                    expanded_gaps: HashSet::new(),
+                    expanded_content: HashMap::new(),
+                    line_annotations: Vec::new(),
                 })
             }
             Err(e) => Err(e),
@@ -298,6 +351,7 @@ impl App {
         }
 
         self.diff_files = diff_files;
+        self.clear_expanded_gaps();
 
         self.sort_files_by_directory(false);
         self.expand_all_dirs();
@@ -320,7 +374,7 @@ impl App {
             self.jump_to_file(target_idx);
 
             let file_start = self.calculate_file_scroll_offset(target_idx);
-            let file_height = self.file_render_height(&self.diff_files[target_idx]);
+            let file_height = self.file_render_height(target_idx, &self.diff_files[target_idx]);
             let relative_line = prev_relative_line.min(file_height.saturating_sub(1));
             self.diff_state.cursor_line = file_start.saturating_add(relative_line);
 
@@ -344,6 +398,7 @@ impl App {
             self.update_current_file_from_cursor();
         }
 
+        self.rebuild_annotations();
         Ok(self.diff_files.len())
     }
 
@@ -361,6 +416,7 @@ impl App {
         {
             review.reviewed = !review.reviewed;
             self.dirty = true;
+            self.rebuild_annotations();
 
             // Move cursor to the file header line
             let file_idx = self.diff_state.current_file_idx;
@@ -622,12 +678,12 @@ impl App {
             if i == file_idx {
                 break;
             }
-            offset += self.file_render_height(file);
+            offset += self.file_render_height(i, file);
         }
         offset
     }
 
-    fn file_render_height(&self, file: &DiffFile) -> usize {
+    fn file_render_height(&self, file_idx: usize, file: &DiffFile) -> usize {
         let path = file.display_path();
 
         // If reviewed, only show header (1 line total)
@@ -635,15 +691,50 @@ impl App {
             return 1;
         }
 
-        let header_lines = 2;
-        let content_lines: usize = file.hunks.iter().map(|h| h.lines.len() + 1).sum();
-        header_lines + content_lines.max(1)
+        let header_lines = 2; // File header + spacing after
+        let mut content_lines = 0;
+
+        if file.is_binary || file.hunks.is_empty() {
+            content_lines = 1;
+        } else {
+            for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
+                // Calculate gap before this hunk
+                let prev_hunk = if hunk_idx > 0 {
+                    file.hunks.get(hunk_idx - 1)
+                } else {
+                    None
+                };
+                let gap = calculate_gap(
+                    prev_hunk.map(|h| (&h.new_start, &h.new_count)),
+                    hunk.new_start,
+                );
+
+                let gap_id = GapId { file_idx, hunk_idx };
+
+                if gap > 0 {
+                    if self.expanded_gaps.contains(&gap_id) {
+                        // Expanded content lines
+                        if let Some(expanded) = self.expanded_content.get(&gap_id) {
+                            content_lines += expanded.len();
+                        }
+                    } else {
+                        // Expander line
+                        content_lines += 1;
+                    }
+                }
+
+                // Hunk header + diff lines
+                content_lines += 1 + hunk.lines.len();
+            }
+        }
+
+        header_lines + content_lines.max(1) - 1 // -1 because spacing is counted separately
     }
 
     fn update_current_file_from_cursor(&mut self) {
         let mut cumulative = 0;
         for (i, file) in self.diff_files.iter().enumerate() {
-            let height = self.file_render_height(file);
+            let height = self.file_render_height(i, file);
             if cumulative + height > self.diff_state.cursor_line {
                 self.diff_state.current_file_idx = i;
                 self.file_list_state.select(i);
@@ -660,7 +751,8 @@ impl App {
     pub fn total_lines(&self) -> usize {
         self.diff_files
             .iter()
-            .map(|f| self.file_render_height(f))
+            .enumerate()
+            .map(|(i, f)| self.file_render_height(i, f))
             .sum()
     }
 
@@ -673,171 +765,50 @@ impl App {
     /// Returns the source line number and side at the current cursor position, if on a diff line
     pub fn get_line_at_cursor(&self) -> Option<(u32, LineSide)> {
         let target = self.diff_state.cursor_line;
-        let mut line_idx = 0;
-
-        for file in &self.diff_files {
-            let path = file.display_path();
-
-            // File header
-            line_idx += 1;
-
-            // File comments (now multiline with box)
-            if let Some(review) = self.session.files.get(path) {
-                for comment in &review.file_comments {
-                    line_idx += Self::comment_display_lines(comment);
-                }
+        match self.line_annotations.get(target) {
+            Some(AnnotatedLine::DiffLine {
+                old_lineno,
+                new_lineno,
+            }) => {
+                // Prefer new line number (for added/context lines), fall back to old (for deleted)
+                new_lineno
+                    .map(|ln| (ln, LineSide::New))
+                    .or_else(|| old_lineno.map(|ln| (ln, LineSide::Old)))
             }
-
-            if file.is_binary || file.hunks.is_empty() {
-                // Binary file or no changes line
-                line_idx += 1;
-            } else {
-                // Get line comments for counting
-                let line_comments = self
-                    .session
-                    .files
-                    .get(path)
-                    .map(|r| &r.line_comments)
-                    .cloned()
-                    .unwrap_or_default();
-
-                for hunk in &file.hunks {
-                    // Hunk header
-                    line_idx += 1;
-
-                    // Diff lines
-                    for diff_line in &hunk.lines {
-                        if line_idx == target {
-                            // Found cursor position - return line number and side
-                            // Deleted lines use old_lineno with LineSide::Old
-                            // Added/context lines use new_lineno with LineSide::New
-                            return diff_line
-                                .new_lineno
-                                .map(|ln| (ln, LineSide::New))
-                                .or_else(|| diff_line.old_lineno.map(|ln| (ln, LineSide::Old)));
-                        }
-                        line_idx += 1;
-
-                        // Count line comments for both sides
-                        // Old side (deleted lines)
-                        if let Some(old_ln) = diff_line.old_lineno
-                            && let Some(comments) = line_comments.get(&old_ln)
-                        {
-                            for comment in comments {
-                                if comment.side == Some(LineSide::Old) {
-                                    line_idx += Self::comment_display_lines(comment);
-                                }
-                            }
-                        }
-                        // New side (added/context lines)
-                        if let Some(new_ln) = diff_line.new_lineno
-                            && let Some(comments) = line_comments.get(&new_ln)
-                        {
-                            for comment in comments {
-                                if comment.side != Some(LineSide::Old) {
-                                    line_idx += Self::comment_display_lines(comment);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Spacing line
-            line_idx += 1;
+            _ => None,
         }
-
-        None
     }
 
     /// Find the comment at the current cursor position
     fn find_comment_at_cursor(&self) -> Option<CommentLocation> {
         let target = self.diff_state.cursor_line;
-        let mut line_idx = 0;
-
-        for file in &self.diff_files {
-            let path = file.display_path().clone();
-
-            // File header
-            line_idx += 1;
-
-            // File comments - check if cursor is on one
-            if let Some(review) = self.session.files.get(&path) {
-                for (idx, comment) in review.file_comments.iter().enumerate() {
-                    let comment_lines = Self::comment_display_lines(comment);
-                    if target >= line_idx && target < line_idx + comment_lines {
-                        return Some(CommentLocation::FileComment { path, index: idx });
-                    }
-                    line_idx += comment_lines;
-                }
+        match self.line_annotations.get(target) {
+            Some(AnnotatedLine::FileComment {
+                file_idx,
+                comment_idx,
+            }) => {
+                let path = self.diff_files.get(*file_idx)?.display_path().clone();
+                Some(CommentLocation::FileComment {
+                    path,
+                    index: *comment_idx,
+                })
             }
-
-            if file.is_binary || file.hunks.is_empty() {
-                line_idx += 1;
-            } else {
-                let line_comments = self
-                    .session
-                    .files
-                    .get(&path)
-                    .map(|r| r.line_comments.clone())
-                    .unwrap_or_default();
-
-                for hunk in &file.hunks {
-                    // Hunk header
-                    line_idx += 1;
-
-                    for diff_line in &hunk.lines {
-                        // Skip the diff line itself
-                        line_idx += 1;
-
-                        // Check comments on old side (deleted lines)
-                        if let Some(old_ln) = diff_line.old_lineno
-                            && let Some(comments) = line_comments.get(&old_ln)
-                        {
-                            for (idx, comment) in comments.iter().enumerate() {
-                                if comment.side == Some(LineSide::Old) {
-                                    let comment_lines = Self::comment_display_lines(comment);
-                                    if target >= line_idx && target < line_idx + comment_lines {
-                                        return Some(CommentLocation::LineComment {
-                                            path,
-                                            line: old_ln,
-                                            side: LineSide::Old,
-                                            index: idx,
-                                        });
-                                    }
-                                    line_idx += comment_lines;
-                                }
-                            }
-                        }
-
-                        // Check comments on new side (added/context lines)
-                        if let Some(new_ln) = diff_line.new_lineno
-                            && let Some(comments) = line_comments.get(&new_ln)
-                        {
-                            for (idx, comment) in comments.iter().enumerate() {
-                                if comment.side != Some(LineSide::Old) {
-                                    let comment_lines = Self::comment_display_lines(comment);
-                                    if target >= line_idx && target < line_idx + comment_lines {
-                                        return Some(CommentLocation::LineComment {
-                                            path,
-                                            line: new_ln,
-                                            side: LineSide::New,
-                                            index: idx,
-                                        });
-                                    }
-                                    line_idx += comment_lines;
-                                }
-                            }
-                        }
-                    }
-                }
+            Some(AnnotatedLine::LineComment {
+                file_idx,
+                line,
+                side,
+                comment_idx,
+            }) => {
+                let path = self.diff_files.get(*file_idx)?.display_path().clone();
+                Some(CommentLocation::LineComment {
+                    path,
+                    line: *line,
+                    side: *side,
+                    index: *comment_idx,
+                })
             }
-
-            // Spacing line
-            line_idx += 1;
+            _ => None,
         }
-
-        None
     }
 
     /// Delete the comment at the current cursor position, if any
@@ -851,6 +822,7 @@ impl App {
                     review.file_comments.remove(index);
                     self.dirty = true;
                     self.set_message("Comment deleted");
+                    self.rebuild_annotations();
                     return true;
                 }
             }
@@ -883,6 +855,7 @@ impl App {
                         }
                         self.dirty = true;
                         self.set_message(format!("Comment on line {} deleted", line));
+                        self.rebuild_annotations();
                         return true;
                     }
                 }
@@ -1041,6 +1014,7 @@ impl App {
 
             self.dirty = true;
             self.set_message(message);
+            self.rebuild_annotations();
         }
 
         self.exit_comment_mode();
@@ -1185,6 +1159,7 @@ impl App {
 
         self.sort_files_by_directory(true);
         self.expand_all_dirs();
+        self.rebuild_annotations();
 
         Ok(())
     }
@@ -1262,6 +1237,223 @@ impl App {
             self.ensure_valid_tree_selection();
         } else {
             self.expanded_dirs.insert(dir_path.to_string());
+        }
+    }
+
+    /// Check if a hunk gap has been expanded
+    pub fn is_gap_expanded(&self, gap_id: &GapId) -> bool {
+        self.expanded_gaps.contains(gap_id)
+    }
+
+    /// Expand a gap to show hidden context lines
+    pub fn expand_gap(&mut self, gap_id: GapId) -> Result<()> {
+        if self.expanded_gaps.contains(&gap_id) {
+            return Ok(()); // Already expanded
+        }
+
+        let file = self.diff_files.get(gap_id.file_idx).ok_or_else(|| {
+            TuicrError::CorruptedSession(format!("Invalid file index: {}", gap_id.file_idx))
+        })?;
+
+        let hunk = file.hunks.get(gap_id.hunk_idx).ok_or_else(|| {
+            TuicrError::CorruptedSession(format!("Invalid hunk index: {}", gap_id.hunk_idx))
+        })?;
+
+        // Get previous hunk to calculate gap boundaries
+        let prev_hunk = if gap_id.hunk_idx > 0 {
+            file.hunks.get(gap_id.hunk_idx - 1)
+        } else {
+            None
+        };
+
+        // Calculate line range to fetch
+        let (start_line, end_line) = match prev_hunk {
+            None => (1, hunk.new_start.saturating_sub(1)),
+            Some(prev) => {
+                let prev_end = prev.new_start + prev.new_count;
+                (prev_end, hunk.new_start.saturating_sub(1))
+            }
+        };
+
+        if start_line > end_line {
+            return Ok(()); // No gap to expand
+        }
+
+        let file_path = file.display_path().clone();
+        let file_status = file.status;
+
+        // Fetch the context lines
+        let lines = fetch_context_lines(
+            &self.repo_info.repo,
+            &file_path,
+            file_status,
+            start_line,
+            end_line,
+        )?;
+
+        self.expanded_content.insert(gap_id.clone(), lines);
+        self.expanded_gaps.insert(gap_id);
+        self.rebuild_annotations();
+
+        Ok(())
+    }
+
+    /// Collapse an expanded gap
+    pub fn collapse_gap(&mut self, gap_id: GapId) {
+        self.expanded_gaps.remove(&gap_id);
+        self.expanded_content.remove(&gap_id);
+        self.rebuild_annotations();
+    }
+
+    /// Clear all expanded gaps (called when reloading diffs)
+    pub fn clear_expanded_gaps(&mut self) {
+        self.expanded_gaps.clear();
+        self.expanded_content.clear();
+    }
+
+    /// Rebuild the line annotations cache. Call this when:
+    /// - Diff files change (load/reload)
+    /// - Expansion state changes (expand/collapse gap)
+    /// - Comments are added/removed
+    pub fn rebuild_annotations(&mut self) {
+        self.line_annotations.clear();
+
+        for (file_idx, file) in self.diff_files.iter().enumerate() {
+            let path = file.display_path();
+
+            // File header
+            self.line_annotations.push(AnnotatedLine::FileHeader);
+
+            // If reviewed, skip all content for this file
+            if self.session.is_file_reviewed(path) {
+                continue;
+            }
+
+            // File comments
+            if let Some(review) = self.session.files.get(path) {
+                for (comment_idx, comment) in review.file_comments.iter().enumerate() {
+                    let comment_lines = Self::comment_display_lines(comment);
+                    for _ in 0..comment_lines {
+                        self.line_annotations.push(AnnotatedLine::FileComment {
+                            file_idx,
+                            comment_idx,
+                        });
+                    }
+                }
+            }
+
+            if file.is_binary || file.hunks.is_empty() {
+                self.line_annotations.push(AnnotatedLine::BinaryOrEmpty);
+            } else {
+                // Get line comments for this file
+                let line_comments = self
+                    .session
+                    .files
+                    .get(path)
+                    .map(|r| &r.line_comments)
+                    .cloned()
+                    .unwrap_or_default();
+
+                for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
+                    // Calculate gap before this hunk
+                    let prev_hunk = if hunk_idx > 0 {
+                        file.hunks.get(hunk_idx - 1)
+                    } else {
+                        None
+                    };
+                    let gap = calculate_gap(
+                        prev_hunk.map(|h| (&h.new_start, &h.new_count)),
+                        hunk.new_start,
+                    );
+
+                    let gap_id = GapId { file_idx, hunk_idx };
+
+                    if gap > 0 {
+                        if self.expanded_gaps.contains(&gap_id) {
+                            // Expanded content lines
+                            if let Some(content) = self.expanded_content.get(&gap_id) {
+                                for _ in 0..content.len() {
+                                    self.line_annotations.push(AnnotatedLine::ExpandedContext {
+                                        gap_id: gap_id.clone(),
+                                    });
+                                }
+                            }
+                        } else {
+                            // Expander line
+                            self.line_annotations.push(AnnotatedLine::Expander {
+                                gap_id: gap_id.clone(),
+                            });
+                        }
+                    }
+
+                    // Hunk header
+                    self.line_annotations.push(AnnotatedLine::HunkHeader);
+
+                    // Diff lines
+                    for diff_line in &hunk.lines {
+                        self.line_annotations.push(AnnotatedLine::DiffLine {
+                            old_lineno: diff_line.old_lineno,
+                            new_lineno: diff_line.new_lineno,
+                        });
+
+                        // Line comments on old side (deleted lines)
+                        if let Some(old_ln) = diff_line.old_lineno {
+                            if let Some(comments) = line_comments.get(&old_ln) {
+                                for (idx, comment) in comments.iter().enumerate() {
+                                    if comment.side == Some(LineSide::Old) {
+                                        let comment_lines = Self::comment_display_lines(comment);
+                                        for _ in 0..comment_lines {
+                                            self.line_annotations.push(
+                                                AnnotatedLine::LineComment {
+                                                    file_idx,
+                                                    line: old_ln,
+                                                    side: LineSide::Old,
+                                                    comment_idx: idx,
+                                                },
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Line comments on new side (added/context lines)
+                        if let Some(new_ln) = diff_line.new_lineno {
+                            if let Some(comments) = line_comments.get(&new_ln) {
+                                for (idx, comment) in comments.iter().enumerate() {
+                                    if comment.side != Some(LineSide::Old) {
+                                        let comment_lines = Self::comment_display_lines(comment);
+                                        for _ in 0..comment_lines {
+                                            self.line_annotations.push(
+                                                AnnotatedLine::LineComment {
+                                                    file_idx,
+                                                    line: new_ln,
+                                                    side: LineSide::New,
+                                                    comment_idx: idx,
+                                                },
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Spacing line
+            self.line_annotations.push(AnnotatedLine::Spacing);
+        }
+    }
+
+    /// Check if cursor is on an expander line or expanded content and return GapId and whether expanded
+    /// Returns (GapId, is_expanded) - is_expanded is true if cursor is on expanded content
+    pub fn get_gap_at_cursor(&self) -> Option<(GapId, bool)> {
+        let target = self.diff_state.cursor_line;
+        match self.line_annotations.get(target) {
+            Some(AnnotatedLine::Expander { gap_id, .. }) => Some((gap_id.clone(), false)),
+            Some(AnnotatedLine::ExpandedContext { gap_id }) => Some((gap_id.clone(), true)),
+            _ => None,
         }
     }
 

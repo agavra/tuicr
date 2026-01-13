@@ -46,6 +46,16 @@ pub struct DiffLine {
 pub struct DiffHunk {
     pub header: String,
     pub lines: Vec<DiffLine>,
+    /// Starting line number in the old file (from @@ header)
+    #[allow(dead_code)]
+    pub old_start: u32,
+    /// Number of lines from the old file in this hunk
+    #[allow(dead_code)]
+    pub old_count: u32,
+    /// Starting line number in the new file (from @@ header)
+    pub new_start: u32,
+    /// Number of lines from the new file in this hunk
+    pub new_count: u32,
 }
 
 #[derive(Debug, Clone)]
