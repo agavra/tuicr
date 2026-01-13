@@ -1641,7 +1641,8 @@ impl App {
                     }
 
                     // Hunk header
-                    self.line_annotations.push(AnnotatedLine::HunkHeader { file_idx, hunk_idx });
+                    self.line_annotations
+                        .push(AnnotatedLine::HunkHeader { file_idx, hunk_idx });
 
                     // Diff lines
                     for (line_idx, diff_line) in hunk.lines.iter().enumerate() {
