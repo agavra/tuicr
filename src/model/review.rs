@@ -84,6 +84,16 @@ impl ReviewSession {
         self.files.values().any(|f| f.comment_count() > 0)
     }
 
+    pub fn clear_comments(&mut self) -> usize {
+        let mut cleared = 0;
+        for file in self.files.values_mut() {
+            cleared += file.comment_count();
+            file.file_comments.clear();
+            file.line_comments.clear();
+        }
+        cleared
+    }
+
     pub fn is_file_reviewed(&self, path: &PathBuf) -> bool {
         self.files.get(path).map(|r| r.reviewed).unwrap_or(false)
     }

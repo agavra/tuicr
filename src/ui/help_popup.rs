@@ -258,6 +258,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  :clear    ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Clear all comments"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  :q        ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),

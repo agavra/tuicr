@@ -60,6 +60,7 @@ pub fn handle_command_action(app: &mut App, action: Action) {
                     Ok(msg) => app.set_message(msg),
                     Err(e) => app.set_warning(format!("{}", e)),
                 },
+                "clear" => app.clear_all_comments(),
                 "version" => {
                     app.set_message(format!("tuicr v{}", env!("CARGO_PKG_VERSION")));
                 }

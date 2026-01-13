@@ -1065,6 +1065,18 @@ impl App {
         false
     }
 
+    pub fn clear_all_comments(&mut self) {
+        let cleared = self.session.clear_comments();
+        if cleared == 0 {
+            self.set_message("No comments to clear");
+            return;
+        }
+
+        self.dirty = true;
+        self.rebuild_annotations();
+        self.set_message(format!("Cleared {} comments", cleared));
+    }
+
     /// Enter edit mode for the comment at the current cursor position
     /// Returns true if a comment was found and edit mode entered
     pub fn enter_edit_mode(&mut self) -> bool {
