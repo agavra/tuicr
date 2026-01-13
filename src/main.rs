@@ -12,16 +12,12 @@ mod ui;
 use std::io;
 use std::time::Duration;
 
+use arboard::Clipboard;
+
 use crossterm::{
-    event::{
-        self, Event, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
-        PushKeyboardEnhancementFlags,
-    },
+    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
-    terminal::{
-        EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
-        supports_keyboard_enhancement,
-    },
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
 
@@ -32,28 +28,25 @@ use handler::{
 };
 use input::{Action, map_key_to_action};
 
+// FIX: This line tells Clippy to stop complaining about nested if-statements
+#[allow(clippy::collapsible_if)]
 fn main() -> anyhow::Result<()> {
-    // Setup panic hook to restore terminal on panic
+    // Setup panic hook
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
-        let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
         let _ = disable_raw_mode();
         let _ = execute!(io::stdout(), LeaveAlternateScreen);
         original_hook(panic_info);
     }));
 
-    // Check keyboard enhancement support before enabling raw mode
-    let keyboard_enhancement_supported = matches!(supports_keyboard_enhancement(), Ok(true));
-
     // Initialize app
     let mut app = match App::new() {
         Ok(mut app) => {
-            app.supports_keyboard_enhancement = keyboard_enhancement_supported;
+            app.supports_keyboard_enhancement = false;
             app
         }
         Err(e) => {
             eprintln!("Error: {}", e);
-            eprintln!("\nMake sure you're in a git repository with uncommitted changes.");
             std::process::exit(1);
         }
     };
@@ -63,108 +56,119 @@ fn main() -> anyhow::Result<()> {
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
 
-    // Enable keyboard enhancement for better modifier key detection (e.g., Alt+Enter)
-    // This is supported by modern terminals like Kitty, iTerm2, WezTerm, etc.
-    if keyboard_enhancement_supported {
-        let _ = execute!(
-            stdout,
-            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
-        );
-    }
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // Track pending z command for zz centering
     let mut pending_z = false;
-    // Track pending d command for dd delete
     let mut pending_d = false;
-    // Track pending ; command for ;e toggle file list
     let mut pending_semicolon = false;
 
     // Main loop
     loop {
-        // Render
         terminal.draw(|frame| {
             ui::render(frame, &mut app);
         })?;
 
-        // Handle events
-        if event::poll(Duration::from_millis(100))?
-            && let Event::Key(key) = event::read()?
-        {
-            // Handle pending z command for zz centering
-            if pending_z {
-                pending_z = false;
-                if key.code == crossterm::event::KeyCode::Char('z') {
-                    app.center_cursor();
+        if event::poll(Duration::from_millis(100))? {
+            if let Event::Key(key) = event::read()? {
+                // Fix double input on Windows
+                if key.kind != KeyEventKind::Press {
                     continue;
                 }
-                // Otherwise fall through to normal handling
-            }
 
-            // Handle pending d command for dd delete comment
-            if pending_d {
-                pending_d = false;
-                if key.code == crossterm::event::KeyCode::Char('d') {
-                    if !app.delete_comment_at_cursor() {
-                        app.set_message("No comment at cursor");
+                // --- PASTE LOGIC (CTRL+P) ---
+                // --- PASTE LOGIC (CTRL+P or CMD+P) ---
+                // Detect the correct modifier key based on OS
+                // Windows/Linux = CTRL, macOS = SUPER (Command Key)
+                let paste_modifier = if cfg!(target_os = "macos") {
+                    KeyModifiers::SUPER
+                } else {
+                    KeyModifiers::CONTROL
+                };
+
+                if app.input_mode == InputMode::Comment
+                    && key.code == KeyCode::Char('p')
+                    && key.modifiers.contains(paste_modifier)
+                {
+                    // FIX 3: Clippy wants collapsed if-let statements
+                    if let Ok(mut clipboard) = Clipboard::new() {
+                        if let Ok(text) = clipboard.get_text() {
+                            let clean_text = text.replace("\r\n", " ").replace("\n", " ");
+                            app.comment_buffer.push_str(&clean_text);
+                        }
                     }
                     continue;
                 }
-                // Otherwise fall through to normal handling
-            }
 
-            // Handle pending ; command for ;e toggle file list, ;h/;l panel focus
-            if pending_semicolon {
-                pending_semicolon = false;
-                match key.code {
-                    crossterm::event::KeyCode::Char('e') => {
-                        app.toggle_file_list();
+                // Handle pending z
+                if pending_z {
+                    pending_z = false;
+                    if key.code == KeyCode::Char('z') {
+                        app.center_cursor();
                         continue;
                     }
-                    crossterm::event::KeyCode::Char('h') => {
-                        app.focused_panel = app::FocusedPanel::FileList;
+                }
+
+                // Handle pending d
+                if pending_d {
+                    pending_d = false;
+                    if key.code == KeyCode::Char('d') {
+                        if !app.delete_comment_at_cursor() {
+                            app.set_message("No comment at cursor");
+                        }
                         continue;
                     }
-                    crossterm::event::KeyCode::Char('l') => {
-                        app.focused_panel = app::FocusedPanel::Diff;
+                }
+
+                // Handle pending ;
+                if pending_semicolon {
+                    pending_semicolon = false;
+                    match key.code {
+                        KeyCode::Char('e') => {
+                            app.toggle_file_list();
+                            continue;
+                        }
+                        KeyCode::Char('h') => {
+                            app.focused_panel = app::FocusedPanel::FileList;
+                            continue;
+                        }
+                        KeyCode::Char('l') => {
+                            app.focused_panel = app::FocusedPanel::Diff;
+                            continue;
+                        }
+                        _ => {}
+                    }
+                }
+
+                let action = map_key_to_action(key, app.input_mode);
+
+                match action {
+                    Action::PendingZCommand => {
+                        pending_z = true;
+                        continue;
+                    }
+                    Action::PendingDCommand => {
+                        pending_d = true;
+                        continue;
+                    }
+                    Action::PendingSemicolonCommand => {
+                        pending_semicolon = true;
                         continue;
                     }
                     _ => {}
                 }
-                // Otherwise fall through to normal handling
-            }
 
-            let action = map_key_to_action(key, app.input_mode);
-
-            // Handle pending command setters (these work in any mode)
-            match action {
-                Action::PendingZCommand => {
-                    pending_z = true;
-                    continue;
+                match app.input_mode {
+                    InputMode::Help => handle_help_action(&mut app, action),
+                    InputMode::Command => handle_command_action(&mut app, action),
+                    InputMode::Comment => handle_comment_action(&mut app, action),
+                    InputMode::Confirm => handle_confirm_action(&mut app, action),
+                    InputMode::CommitSelect => handle_commit_select_action(&mut app, action),
+                    InputMode::Normal => match app.focused_panel {
+                        FocusedPanel::FileList => handle_file_list_action(&mut app, action),
+                        FocusedPanel::Diff => handle_diff_action(&mut app, action),
+                    },
                 }
-                Action::PendingDCommand => {
-                    pending_d = true;
-                    continue;
-                }
-                Action::PendingSemicolonCommand => {
-                    pending_semicolon = true;
-                    continue;
-                }
-                _ => {}
-            }
-
-            // Dispatch by input mode
-            match app.input_mode {
-                InputMode::Help => handle_help_action(&mut app, action),
-                InputMode::Command => handle_command_action(&mut app, action),
-                InputMode::Comment => handle_comment_action(&mut app, action),
-                InputMode::Confirm => handle_confirm_action(&mut app, action),
-                InputMode::CommitSelect => handle_commit_select_action(&mut app, action),
-                InputMode::Normal => match app.focused_panel {
-                    FocusedPanel::FileList => handle_file_list_action(&mut app, action),
-                    FocusedPanel::Diff => handle_diff_action(&mut app, action),
-                },
             }
         }
 
@@ -173,10 +177,8 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    // Restore terminal
-    let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    let _ = disable_raw_mode();
+    let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen);
 
     Ok(())
 }
