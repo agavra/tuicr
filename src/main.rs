@@ -12,16 +12,12 @@ mod ui;
 use std::io;
 use std::time::Duration;
 
-use arboard::Clipboard; 
+use arboard::Clipboard;
 
 use crossterm::{
-    event::{
-        self, Event, KeyCode, KeyModifiers, KeyEventKind,
-    },
+    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
-    terminal::{
-        EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
-    },
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
 
@@ -80,12 +76,14 @@ fn main() -> anyhow::Result<()> {
                     }
 
                     // --- PASTE LOGIC (CTRL+P) ---
-                    if app.input_mode == InputMode::Comment { 
-                        if key.code == KeyCode::Char('p') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                    if app.input_mode == InputMode::Comment {
+                        if key.code == KeyCode::Char('p')
+                            && key.modifiers.contains(KeyModifiers::CONTROL)
+                        {
                             if let Ok(mut clipboard) = Clipboard::new() {
                                 if let Ok(text) = clipboard.get_text() {
                                     let clean_text = text.replace("\r\n", " ").replace("\n", " ");
-                                    app.comment_buffer.push_str(&clean_text); 
+                                    app.comment_buffer.push_str(&clean_text);
                                 }
                             }
                             continue;
