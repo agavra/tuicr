@@ -1397,42 +1397,38 @@ impl App {
                         });
 
                         // Line comments on old side (deleted lines)
-                        if let Some(old_ln) = diff_line.old_lineno {
-                            if let Some(comments) = line_comments.get(&old_ln) {
-                                for (idx, comment) in comments.iter().enumerate() {
-                                    if comment.side == Some(LineSide::Old) {
-                                        let comment_lines = Self::comment_display_lines(comment);
-                                        for _ in 0..comment_lines {
-                                            self.line_annotations.push(
-                                                AnnotatedLine::LineComment {
-                                                    file_idx,
-                                                    line: old_ln,
-                                                    side: LineSide::Old,
-                                                    comment_idx: idx,
-                                                },
-                                            );
-                                        }
+                        if let Some(old_ln) = diff_line.old_lineno
+                            && let Some(comments) = line_comments.get(&old_ln)
+                        {
+                            for (idx, comment) in comments.iter().enumerate() {
+                                if comment.side == Some(LineSide::Old) {
+                                    let comment_lines = Self::comment_display_lines(comment);
+                                    for _ in 0..comment_lines {
+                                        self.line_annotations.push(AnnotatedLine::LineComment {
+                                            file_idx,
+                                            line: old_ln,
+                                            side: LineSide::Old,
+                                            comment_idx: idx,
+                                        });
                                     }
                                 }
                             }
                         }
 
                         // Line comments on new side (added/context lines)
-                        if let Some(new_ln) = diff_line.new_lineno {
-                            if let Some(comments) = line_comments.get(&new_ln) {
-                                for (idx, comment) in comments.iter().enumerate() {
-                                    if comment.side != Some(LineSide::Old) {
-                                        let comment_lines = Self::comment_display_lines(comment);
-                                        for _ in 0..comment_lines {
-                                            self.line_annotations.push(
-                                                AnnotatedLine::LineComment {
-                                                    file_idx,
-                                                    line: new_ln,
-                                                    side: LineSide::New,
-                                                    comment_idx: idx,
-                                                },
-                                            );
-                                        }
+                        if let Some(new_ln) = diff_line.new_lineno
+                            && let Some(comments) = line_comments.get(&new_ln)
+                        {
+                            for (idx, comment) in comments.iter().enumerate() {
+                                if comment.side != Some(LineSide::Old) {
+                                    let comment_lines = Self::comment_display_lines(comment);
+                                    for _ in 0..comment_lines {
+                                        self.line_annotations.push(AnnotatedLine::LineComment {
+                                            file_idx,
+                                            line: new_ln,
+                                            side: LineSide::New,
+                                            comment_idx: idx,
+                                        });
                                     }
                                 }
                             }
