@@ -67,100 +67,99 @@ fn main() -> anyhow::Result<()> {
             ui::render(frame, &mut app);
         })?;
 
+        // FIX 1: Clippy wants 'if let' instead of 'match' for single patterns
         if event::poll(Duration::from_millis(100))? {
-            match event::read()? {
-                Event::Key(key) => {
-                    // Fix double input on Windows
-                    if key.kind != KeyEventKind::Press {
+            if let Event::Key(key) = event::read()? {
+                // Fix double input on Windows
+                if key.kind != KeyEventKind::Press {
+                    continue;
+                }
+
+                // --- PASTE LOGIC (CTRL+P) ---
+                // FIX 2: Clippy wants collapsed if-statements
+                if app.input_mode == InputMode::Comment
+                    && key.code == KeyCode::Char('p')
+                    && key.modifiers.contains(KeyModifiers::CONTROL)
+                {
+                    // FIX 3: Clippy wants collapsed if-let statements
+                    if let Ok(mut clipboard) = Clipboard::new() {
+                        if let Ok(text) = clipboard.get_text() {
+                            let clean_text = text.replace("\r\n", " ").replace("\n", " ");
+                            app.comment_buffer.push_str(&clean_text);
+                        }
+                    }
+                    continue;
+                }
+
+                // Handle pending z
+                if pending_z {
+                    pending_z = false;
+                    if key.code == KeyCode::Char('z') {
+                        app.center_cursor();
                         continue;
                     }
+                }
 
-                    // --- PASTE LOGIC (CTRL+P) ---
-                    if app.input_mode == InputMode::Comment {
-                        if key.code == KeyCode::Char('p')
-                            && key.modifiers.contains(KeyModifiers::CONTROL)
-                        {
-                            if let Ok(mut clipboard) = Clipboard::new() {
-                                if let Ok(text) = clipboard.get_text() {
-                                    let clean_text = text.replace("\r\n", " ").replace("\n", " ");
-                                    app.comment_buffer.push_str(&clean_text);
-                                }
-                            }
-                            continue;
+                // Handle pending d
+                if pending_d {
+                    pending_d = false;
+                    if key.code == KeyCode::Char('d') {
+                        if !app.delete_comment_at_cursor() {
+                            app.set_message("No comment at cursor");
                         }
+                        continue;
                     }
+                }
 
-                    // Handle pending z
-                    if pending_z {
-                        pending_z = false;
-                        if key.code == KeyCode::Char('z') {
-                            app.center_cursor();
+                // Handle pending ;
+                if pending_semicolon {
+                    pending_semicolon = false;
+                    match key.code {
+                        KeyCode::Char('e') => {
+                            app.toggle_file_list();
                             continue;
                         }
-                    }
-
-                    // Handle pending d
-                    if pending_d {
-                        pending_d = false;
-                        if key.code == KeyCode::Char('d') {
-                            if !app.delete_comment_at_cursor() {
-                                app.set_message("No comment at cursor");
-                            }
+                        KeyCode::Char('h') => {
+                            app.focused_panel = app::FocusedPanel::FileList;
                             continue;
                         }
-                    }
-
-                    // Handle pending ;
-                    if pending_semicolon {
-                        pending_semicolon = false;
-                        match key.code {
-                            KeyCode::Char('e') => {
-                                app.toggle_file_list();
-                                continue;
-                            }
-                            KeyCode::Char('h') => {
-                                app.focused_panel = app::FocusedPanel::FileList;
-                                continue;
-                            }
-                            KeyCode::Char('l') => {
-                                app.focused_panel = app::FocusedPanel::Diff;
-                                continue;
-                            }
-                            _ => {}
-                        }
-                    }
-
-                    let action = map_key_to_action(key, app.input_mode);
-
-                    match action {
-                        Action::PendingZCommand => {
-                            pending_z = true;
-                            continue;
-                        }
-                        Action::PendingDCommand => {
-                            pending_d = true;
-                            continue;
-                        }
-                        Action::PendingSemicolonCommand => {
-                            pending_semicolon = true;
+                        KeyCode::Char('l') => {
+                            app.focused_panel = app::FocusedPanel::Diff;
                             continue;
                         }
                         _ => {}
                     }
-
-                    match app.input_mode {
-                        InputMode::Help => handle_help_action(&mut app, action),
-                        InputMode::Command => handle_command_action(&mut app, action),
-                        InputMode::Comment => handle_comment_action(&mut app, action),
-                        InputMode::Confirm => handle_confirm_action(&mut app, action),
-                        InputMode::CommitSelect => handle_commit_select_action(&mut app, action),
-                        InputMode::Normal => match app.focused_panel {
-                            FocusedPanel::FileList => handle_file_list_action(&mut app, action),
-                            FocusedPanel::Diff => handle_diff_action(&mut app, action),
-                        },
-                    }
                 }
-                _ => {}
+
+                let action = map_key_to_action(key, app.input_mode);
+
+                match action {
+                    Action::PendingZCommand => {
+                        pending_z = true;
+                        continue;
+                    }
+                    Action::PendingDCommand => {
+                        pending_d = true;
+                        continue;
+                    }
+                    Action::PendingSemicolonCommand => {
+                        pending_semicolon = true;
+                        continue;
+                    }
+                    _ => {}
+                }
+
+                match app.input_mode {
+                    InputMode::Help => handle_help_action(&mut app, action),
+                    InputMode::Command => handle_command_action(&mut app, action),
+                    InputMode::Comment => handle_comment_action(&mut app, action),
+                    InputMode::Confirm => handle_confirm_action(&mut app, action),
+                    InputMode::CommitSelect => handle_commit_select_action(&mut app, action),
+                    InputMode::Normal => match app.focused_panel {
+                        FocusedPanel::FileList => handle_file_list_action(&mut app, action),
+                        FocusedPanel::Diff => handle_diff_action(&mut app, action),
+                    },
+                }
             }
         }
 
