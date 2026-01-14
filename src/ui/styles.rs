@@ -1,42 +1,42 @@
 use ratatui::style::{Color, Modifier, Style};
 
 // Base colors
-pub const BG_HIGHLIGHT: Color = Color::Rgb(50, 50, 50);
+pub const BG_HIGHLIGHT: Color = Color::Rgb(70, 70, 70);
 
 pub const FG_PRIMARY: Color = Color::White;
-pub const FG_SECONDARY: Color = Color::Gray;
-pub const FG_DIM: Color = Color::DarkGray;
+pub const FG_SECONDARY: Color = Color::Rgb(210, 210, 210);
+pub const FG_DIM: Color = Color::Rgb(160, 160, 160);
 
 // Diff colors
-pub const DIFF_ADD: Color = Color::Green;
-pub const DIFF_ADD_BG: Color = Color::Rgb(0, 40, 0);
-pub const DIFF_DEL: Color = Color::Red;
-pub const DIFF_DEL_BG: Color = Color::Rgb(40, 0, 0);
-pub const DIFF_CONTEXT: Color = Color::Gray;
-pub const DIFF_HUNK_HEADER: Color = Color::Cyan;
-pub const EXPANDED_CONTEXT_FG: Color = Color::Rgb(90, 90, 90);
+pub const DIFF_ADD: Color = Color::Rgb(80, 220, 120);
+pub const DIFF_ADD_BG: Color = Color::Rgb(0, 60, 20);
+pub const DIFF_DEL: Color = Color::Rgb(240, 90, 90);
+pub const DIFF_DEL_BG: Color = Color::Rgb(70, 0, 0);
+pub const DIFF_CONTEXT: Color = Color::Rgb(200, 200, 200);
+pub const DIFF_HUNK_HEADER: Color = Color::Rgb(90, 200, 255);
+pub const EXPANDED_CONTEXT_FG: Color = Color::Rgb(140, 140, 140);
 
 // File status colors
-pub const FILE_ADDED: Color = Color::Green;
-pub const FILE_MODIFIED: Color = Color::Yellow;
-pub const FILE_DELETED: Color = Color::Red;
-pub const FILE_RENAMED: Color = Color::Magenta;
+pub const FILE_ADDED: Color = Color::Rgb(80, 220, 120);
+pub const FILE_MODIFIED: Color = Color::Rgb(255, 210, 90);
+pub const FILE_DELETED: Color = Color::Rgb(240, 90, 90);
+pub const FILE_RENAMED: Color = Color::Rgb(255, 140, 220);
 
 // Review status colors
-pub const REVIEWED: Color = Color::Green;
-pub const PENDING: Color = Color::Yellow;
+pub const REVIEWED: Color = Color::Rgb(80, 220, 120);
+pub const PENDING: Color = Color::Rgb(255, 210, 90);
 
 // Comment type colors
-pub const COMMENT_NOTE: Color = Color::Blue;
-pub const COMMENT_SUGGESTION: Color = Color::Cyan;
-pub const COMMENT_ISSUE: Color = Color::Red;
-pub const COMMENT_PRAISE: Color = Color::Green;
+pub const COMMENT_NOTE: Color = Color::Rgb(90, 170, 255);
+pub const COMMENT_SUGGESTION: Color = Color::Rgb(90, 220, 240);
+pub const COMMENT_ISSUE: Color = Color::Rgb(240, 90, 90);
+pub const COMMENT_PRAISE: Color = Color::Rgb(80, 220, 120);
 
 // UI element colors
-pub const BORDER_FOCUSED: Color = Color::Cyan;
-pub const BORDER_UNFOCUSED: Color = Color::DarkGray;
-pub const STATUS_BAR_BG: Color = Color::Rgb(40, 40, 40);
-pub const CURSOR_COLOR: Color = Color::Yellow;
+pub const BORDER_FOCUSED: Color = Color::Rgb(90, 200, 255);
+pub const BORDER_UNFOCUSED: Color = Color::Rgb(110, 110, 110);
+pub const STATUS_BAR_BG: Color = Color::Rgb(30, 30, 30);
+pub const CURSOR_COLOR: Color = Color::Rgb(255, 210, 90);
 
 // Styles
 pub fn header_style() -> Style {
@@ -100,7 +100,7 @@ pub fn status_bar_style() -> Style {
 pub fn mode_style() -> Style {
     Style::default()
         .fg(Color::Black)
-        .bg(Color::Cyan)
+        .bg(Color::Rgb(90, 200, 255))
         .add_modifier(Modifier::BOLD)
 }
 
@@ -120,7 +120,7 @@ pub fn current_line_indicator_style() -> Style {
 }
 
 pub fn hash_style() -> Style {
-    Style::default().fg(Color::Yellow)
+    Style::default().fg(Color::Rgb(255, 210, 90))
 }
 
 pub fn dir_icon_style() -> Style {
