@@ -149,6 +149,8 @@ pub fn handle_command_action(app: &mut App, action: Action) {
                 "version" => {
                     app.set_message(format!("tuicr v{}", env!("CARGO_PKG_VERSION")));
                 }
+                "set wrap" => app.set_diff_wrap(true),
+                "set wrap!" => app.toggle_diff_wrap(),
                 _ => app.set_message(format!("Unknown command: {}", cmd)),
             }
             app.exit_command_mode();

@@ -183,7 +183,7 @@ impl FileListState {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct DiffState {
     pub scroll_offset: usize,
     pub scroll_x: usize,
@@ -192,6 +192,22 @@ pub struct DiffState {
     pub viewport_height: usize,
     pub viewport_width: usize,
     pub max_content_width: usize,
+    pub wrap_lines: bool,
+}
+
+impl Default for DiffState {
+    fn default() -> Self {
+        Self {
+            scroll_offset: 0,
+            scroll_x: 0,
+            cursor_line: 0,
+            current_file_idx: 0,
+            viewport_height: 0,
+            viewport_width: 0,
+            max_content_width: 0,
+            wrap_lines: true,
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -518,16 +534,40 @@ impl App {
     }
 
     pub fn scroll_left(&mut self, cols: usize) {
+        if self.diff_state.wrap_lines {
+            return;
+        }
         self.diff_state.scroll_x = self.diff_state.scroll_x.saturating_sub(cols);
     }
 
     pub fn scroll_right(&mut self, cols: usize) {
+        if self.diff_state.wrap_lines {
+            return;
+        }
         let max_scroll_x = self
             .diff_state
             .max_content_width
             .saturating_sub(self.diff_state.viewport_width);
         self.diff_state.scroll_x =
             (self.diff_state.scroll_x.saturating_add(cols)).min(max_scroll_x);
+    }
+
+    pub fn toggle_diff_wrap(&mut self) {
+        let enabled = !self.diff_state.wrap_lines;
+        self.set_diff_wrap(enabled);
+    }
+
+    pub fn set_diff_wrap(&mut self, enabled: bool) {
+        self.diff_state.wrap_lines = enabled;
+        if enabled {
+            self.diff_state.scroll_x = 0;
+        }
+        let status = if self.diff_state.wrap_lines {
+            "on"
+        } else {
+            "off"
+        };
+        self.set_message(format!("Diff wrapping: {}", status));
     }
 
     fn ensure_cursor_visible(&mut self) {

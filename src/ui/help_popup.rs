@@ -210,10 +210,10 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         Line::from(""),
         Line::from(vec![
             Span::styled(
-                "  1-4       ",
+                "  Tab       ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Set type: Note/Suggestion/Issue/Praise"),
+            Span::raw("Toggle type: Note/Suggestion/Issue/Praise"),
         ]),
         Line::from(vec![
             Span::styled(
@@ -276,6 +276,20 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("Copy review to clipboard"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :set wrap ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Enable line wrap in diff view"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :set wrap!",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Toggle line wrap in diff view"),
         ]),
         Line::from(vec![
             Span::styled(

@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::Style,
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
+    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
 };
 use unicode_width::UnicodeWidthStr;
 
@@ -613,14 +613,24 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
     if app.diff_state.scroll_x > max_scroll_x {
         app.diff_state.scroll_x = max_scroll_x;
     }
+    if app.diff_state.wrap_lines {
+        app.diff_state.scroll_x = 0;
+    }
 
     let scroll_x = app.diff_state.scroll_x;
-    let visible_lines: Vec<Line> = visible_lines_unscrolled
-        .into_iter()
-        .map(|line| apply_horizontal_scroll(line, scroll_x))
-        .collect();
+    let visible_lines: Vec<Line> = if app.diff_state.wrap_lines {
+        visible_lines_unscrolled
+    } else {
+        visible_lines_unscrolled
+            .into_iter()
+            .map(|line| apply_horizontal_scroll(line, scroll_x))
+            .collect()
+    };
 
-    let diff = Paragraph::new(visible_lines);
+    let mut diff = Paragraph::new(visible_lines);
+    if app.diff_state.wrap_lines {
+        diff = diff.wrap(Wrap { trim: false });
+    }
     frame.render_widget(diff, inner);
 }
 
@@ -860,14 +870,24 @@ fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
     if app.diff_state.scroll_x > max_scroll_x {
         app.diff_state.scroll_x = max_scroll_x;
     }
+    if app.diff_state.wrap_lines {
+        app.diff_state.scroll_x = 0;
+    }
 
     let scroll_x = app.diff_state.scroll_x;
-    let visible_lines: Vec<Line> = visible_lines_unscrolled
-        .into_iter()
-        .map(|line| apply_horizontal_scroll(line, scroll_x))
-        .collect();
+    let visible_lines: Vec<Line> = if app.diff_state.wrap_lines {
+        visible_lines_unscrolled
+    } else {
+        visible_lines_unscrolled
+            .into_iter()
+            .map(|line| apply_horizontal_scroll(line, scroll_x))
+            .collect()
+    };
 
-    let diff = Paragraph::new(visible_lines);
+    let mut diff = Paragraph::new(visible_lines);
+    if app.diff_state.wrap_lines {
+        diff = diff.wrap(Wrap { trim: false });
+    }
     frame.render_widget(diff, inner);
 }
 
