@@ -54,6 +54,10 @@ pub enum Action {
     SubmitInput,
     TextCursorLeft,
     TextCursorRight,
+    TextCursorLineStart,
+    TextCursorLineEnd,
+    TextCursorWordLeft,
+    TextCursorWordRight,
 
     // Comment type
     CycleCommentType,
@@ -183,6 +187,30 @@ fn map_comment_mode(key: KeyEvent) -> Action {
         // Comment type: Tab to cycle
         (KeyCode::Tab, KeyModifiers::NONE) => Action::CycleCommentType,
         // Cursor movement
+        (KeyCode::Char('a'), KeyModifiers::CONTROL) => Action::TextCursorLineStart,
+        (KeyCode::Char('e'), KeyModifiers::CONTROL) => Action::TextCursorLineEnd,
+        (KeyCode::Left, mods)
+            if mods.contains(KeyModifiers::ALT) || mods.contains(KeyModifiers::CONTROL) =>
+        {
+            Action::TextCursorWordLeft
+        }
+        (KeyCode::Right, mods)
+            if mods.contains(KeyModifiers::ALT) || mods.contains(KeyModifiers::CONTROL) =>
+        {
+            Action::TextCursorWordRight
+        }
+        (KeyCode::Home, _) => Action::TextCursorLineStart,
+        (KeyCode::End, _) => Action::TextCursorLineEnd,
+        (KeyCode::Left, mods)
+            if mods.contains(KeyModifiers::SUPER) || mods.contains(KeyModifiers::META) =>
+        {
+            Action::TextCursorLineStart
+        }
+        (KeyCode::Right, mods)
+            if mods.contains(KeyModifiers::SUPER) || mods.contains(KeyModifiers::META) =>
+        {
+            Action::TextCursorLineEnd
+        }
         (KeyCode::Left, KeyModifiers::NONE) => Action::TextCursorLeft,
         (KeyCode::Right, KeyModifiers::NONE) => Action::TextCursorRight,
         // Editing

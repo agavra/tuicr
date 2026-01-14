@@ -3,6 +3,94 @@ use crate::input::Action;
 use crate::output::export_to_clipboard;
 use crate::persistence::save_session;
 
+fn comment_line_start(buffer: &str, cursor: usize) -> usize {
+    let cursor = cursor.min(buffer.len());
+    match buffer[..cursor].rfind('\n') {
+        Some(pos) => pos + 1,
+        None => 0,
+    }
+}
+
+fn comment_line_end(buffer: &str, cursor: usize) -> usize {
+    let cursor = cursor.min(buffer.len());
+    match buffer[cursor..].find('\n') {
+        Some(pos) => cursor + pos,
+        None => buffer.len(),
+    }
+}
+
+fn comment_word_left(buffer: &str, cursor: usize) -> usize {
+    let cursor = cursor.min(buffer.len());
+    if cursor == 0 {
+        return 0;
+    }
+    let before = &buffer[..cursor];
+    let mut iter = before.char_indices().rev();
+
+    let mut idx = 0;
+    let mut found_word = false;
+    while let Some((pos, ch)) = iter.next() {
+        if !ch.is_whitespace() {
+            idx = pos;
+            found_word = true;
+            break;
+        }
+    }
+
+    if !found_word {
+        return 0;
+    }
+
+    let mut iter = before[..idx].char_indices().rev();
+    while let Some((pos, ch)) = iter.next() {
+        if ch.is_whitespace() {
+            return pos + ch.len_utf8();
+        }
+        idx = pos;
+    }
+
+    idx
+}
+
+fn comment_word_right(buffer: &str, cursor: usize) -> usize {
+    let cursor = cursor.min(buffer.len());
+    if cursor >= buffer.len() {
+        return buffer.len();
+    }
+
+    let mut chars = buffer[cursor..].char_indices();
+    if let Some((_, ch)) = chars.next() {
+        if ch.is_whitespace() {
+            for (pos, ch) in buffer[cursor..].char_indices() {
+                if !ch.is_whitespace() {
+                    return cursor + pos;
+                }
+            }
+            return buffer.len();
+        }
+    }
+
+    let mut word_end = buffer.len();
+    for (pos, ch) in buffer[cursor..].char_indices() {
+        if ch.is_whitespace() {
+            word_end = cursor + pos;
+            break;
+        }
+    }
+
+    if word_end >= buffer.len() {
+        return buffer.len();
+    }
+
+    for (pos, ch) in buffer[word_end..].char_indices() {
+        if !ch.is_whitespace() {
+            return word_end + pos;
+        }
+    }
+
+    buffer.len()
+}
+
 /// Handle actions in Help mode (scrolling only)
 pub fn handle_help_action(app: &mut App, action: Action) {
     match action {
@@ -140,6 +228,18 @@ pub fn handle_comment_action(app: &mut App, action: Action) {
             if app.comment_cursor < app.comment_buffer.len() {
                 app.comment_cursor += 1;
             }
+        }
+        Action::TextCursorLineStart => {
+            app.comment_cursor = comment_line_start(&app.comment_buffer, app.comment_cursor);
+        }
+        Action::TextCursorLineEnd => {
+            app.comment_cursor = comment_line_end(&app.comment_buffer, app.comment_cursor);
+        }
+        Action::TextCursorWordLeft => {
+            app.comment_cursor = comment_word_left(&app.comment_buffer, app.comment_cursor);
+        }
+        Action::TextCursorWordRight => {
+            app.comment_cursor = comment_word_right(&app.comment_buffer, app.comment_cursor);
         }
         Action::DeleteWord => {
             if app.comment_cursor > 0 {

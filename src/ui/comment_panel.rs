@@ -78,15 +78,14 @@ pub fn render_comment_input(frame: &mut Frame, app: &App) {
     // Build content lines with cursor
     let mut lines = vec![type_hint, separator, Line::from("")];
 
+    let cursor_style = Style::default()
+        .fg(styles::CURSOR_COLOR)
+        .add_modifier(Modifier::UNDERLINED);
+
     if app.comment_buffer.is_empty() {
         // Show placeholder with cursor at start
         lines.push(Line::from(vec![
-            Span::styled(
-                "│",
-                Style::default()
-                    .fg(styles::CURSOR_COLOR)
-                    .add_modifier(Modifier::BOLD),
-            ),
+            Span::styled(" ", cursor_style),
             Span::styled("Type your comment...", styles::dim_style()),
         ]));
     } else {
@@ -106,23 +105,23 @@ pub fn render_comment_input(frame: &mut Frame, app: &App) {
 
             if cursor_on_this_line {
                 let cursor_pos_in_line = app.comment_cursor - line_start;
-                let before_cursor = &text[..cursor_pos_in_line.min(text.len())];
-                let after_cursor = if cursor_pos_in_line < text.len() {
-                    &text[cursor_pos_in_line..]
+                let cursor_pos_in_line = cursor_pos_in_line.min(text.len());
+                let (before_cursor, after_cursor) = text.split_at(cursor_pos_in_line);
+                if after_cursor.is_empty() {
+                    lines.push(Line::from(vec![
+                        Span::raw(before_cursor.to_string()),
+                        Span::styled(" ", cursor_style),
+                    ]));
                 } else {
-                    ""
-                };
-
-                lines.push(Line::from(vec![
-                    Span::raw(before_cursor.to_string()),
-                    Span::styled(
-                        "│",
-                        Style::default()
-                            .fg(styles::CURSOR_COLOR)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw(after_cursor.to_string()),
-                ]));
+                    let mut chars = after_cursor.chars();
+                    let cursor_char = chars.next().unwrap();
+                    let remaining = chars.as_str();
+                    lines.push(Line::from(vec![
+                        Span::raw(before_cursor.to_string()),
+                        Span::styled(cursor_char.to_string(), cursor_style),
+                        Span::raw(remaining.to_string()),
+                    ]));
+                }
             } else {
                 lines.push(Line::from(Span::raw(text.to_string())));
             }

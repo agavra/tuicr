@@ -224,6 +224,27 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  Ctrl-A/E  ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Line start/end"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  Ctrl/Alt-Left/Right",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Word left/right"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  Cmd-Left/Right",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Line start/end (macOS)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  Esc/Ctrl-C",
                 Style::default().add_modifier(Modifier::BOLD),
             ),

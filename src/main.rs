@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use crossterm::{
     event::{
-        self, Event, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+        self, Event, KeyEventKind, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
         PushKeyboardEnhancementFlags,
     },
     execute,
@@ -92,6 +92,7 @@ fn main() -> anyhow::Result<()> {
         // Handle events
         if event::poll(Duration::from_millis(100))?
             && let Event::Key(key) = event::read()?
+            && key.kind == KeyEventKind::Press
         {
             // Handle pending z command for zz centering
             if pending_z {
