@@ -16,8 +16,13 @@ impl SyntaxHighlighter {
         let syntax_set = SyntaxSet::load_defaults_newlines();
         let theme_set = ThemeSet::load_defaults();
 
-        // Use a dark theme that works well in terminals
-        let theme = theme_set.themes["base16-ocean.dark"].clone();
+        // Prefer a higher-contrast built-in theme, fall back to the previous default.
+        let theme = theme_set
+            .themes
+            .get("base16-eighties.dark")
+            .or_else(|| theme_set.themes.get("base16-ocean.dark"))
+            .cloned()
+            .unwrap_or_default();
 
         Self { syntax_set, theme }
     }
@@ -107,9 +112,9 @@ impl SyntaxHighlighter {
         origin: LineOrigin,
     ) -> Vec<(Style, String)> {
         let bg_color = match origin {
-            LineOrigin::Addition => Color::Rgb(0, 40, 0), // Dark green
-            LineOrigin::Deletion => Color::Rgb(40, 0, 0), // Dark red
-            LineOrigin::Context => return spans,          // No background for context
+            LineOrigin::Addition => Color::Rgb(0, 35, 12),
+            LineOrigin::Deletion => Color::Rgb(45, 0, 0),
+            LineOrigin::Context => return spans, // No background for context
         };
 
         spans
