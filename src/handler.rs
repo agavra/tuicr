@@ -25,11 +25,9 @@ fn comment_word_left(buffer: &str, cursor: usize) -> usize {
         return 0;
     }
     let before = &buffer[..cursor];
-    let mut iter = before.char_indices().rev();
-
     let mut idx = 0;
     let mut found_word = false;
-    while let Some((pos, ch)) = iter.next() {
+    for (pos, ch) in before.char_indices().rev() {
         if !ch.is_whitespace() {
             idx = pos;
             found_word = true;
@@ -41,8 +39,7 @@ fn comment_word_left(buffer: &str, cursor: usize) -> usize {
         return 0;
     }
 
-    let mut iter = before[..idx].char_indices().rev();
-    while let Some((pos, ch)) = iter.next() {
+    for (pos, ch) in before[..idx].char_indices().rev() {
         if ch.is_whitespace() {
             return pos + ch.len_utf8();
         }
@@ -59,15 +56,15 @@ fn comment_word_right(buffer: &str, cursor: usize) -> usize {
     }
 
     let mut chars = buffer[cursor..].char_indices();
-    if let Some((_, ch)) = chars.next() {
-        if ch.is_whitespace() {
-            for (pos, ch) in buffer[cursor..].char_indices() {
-                if !ch.is_whitespace() {
-                    return cursor + pos;
-                }
+    if let Some((_, ch)) = chars.next()
+        && ch.is_whitespace()
+    {
+        for (pos, ch) in buffer[cursor..].char_indices() {
+            if !ch.is_whitespace() {
+                return cursor + pos;
             }
-            return buffer.len();
         }
+        return buffer.len();
     }
 
     let mut word_end = buffer.len();
