@@ -427,18 +427,28 @@ impl App {
     }
 
     pub fn toggle_reviewed(&mut self) {
-        if let Some(path) = self.current_file_path().cloned()
-            && let Some(review) = self.session.get_file_mut(&path)
-        {
+        let file_idx = self.diff_state.current_file_idx;
+        self.toggle_reviewed_for_file_idx(file_idx, true);
+    }
+
+    pub fn toggle_reviewed_for_file_idx(&mut self, file_idx: usize, adjust_cursor: bool) {
+        let Some(path) = self.diff_files.get(file_idx).map(|file| file.display_path().clone())
+        else {
+            return;
+        };
+
+        if let Some(review) = self.session.get_file_mut(&path) {
             review.reviewed = !review.reviewed;
             self.dirty = true;
             self.rebuild_annotations();
 
-            // Move cursor to the file header line
-            let file_idx = self.diff_state.current_file_idx;
-            let header_line = self.calculate_file_scroll_offset(file_idx);
-            self.diff_state.cursor_line = header_line;
-            self.ensure_cursor_visible();
+            if adjust_cursor {
+                self.diff_state.current_file_idx = file_idx;
+                // Move cursor to the file header line
+                let header_line = self.calculate_file_scroll_offset(file_idx);
+                self.diff_state.cursor_line = header_line;
+                self.ensure_cursor_visible();
+            }
         }
     }
 
