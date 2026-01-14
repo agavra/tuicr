@@ -432,7 +432,10 @@ impl App {
     }
 
     pub fn toggle_reviewed_for_file_idx(&mut self, file_idx: usize, adjust_cursor: bool) {
-        let Some(path) = self.diff_files.get(file_idx).map(|file| file.display_path().clone())
+        let Some(path) = self
+            .diff_files
+            .get(file_idx)
+            .map(|file| file.display_path().clone())
         else {
             return;
         };
