@@ -105,7 +105,7 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             InputMode::Comment => " Ctrl-S:save  Esc:cancel ",
             InputMode::Help => " q/?/Esc:close ",
             InputMode::Confirm => " y:yes  n:no ",
-            InputMode::CommitSelect => " j/k:navigate  Space:select  Enter:confirm  q:quit ",
+            InputMode::CommitSelect => " j/k:navigate  Space:select  Enter:confirm  Esc:back  q:quit ",
             InputMode::VisualSelect => " j/k:extend  c/Enter:comment  Esc/V:cancel ",
         };
         let hints_span = Span::styled(hints, Style::default().fg(theme.fg_secondary));
