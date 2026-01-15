@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Result, TuicrError};
-use crate::model::ReviewSession;
+use crate::model::{ReviewSession, SessionDiffSource};
 
 fn get_reviews_dir() -> Result<PathBuf> {
     let proj_dirs = ProjectDirs::from("", "", "tuicr").ok_or_else(|| {
@@ -73,6 +73,52 @@ pub fn find_session_for_repo(repo_path: &Path) -> Result<Option<PathBuf>> {
         .sort_by_key(|e| std::cmp::Reverse(e.metadata().ok().and_then(|m| m.modified().ok())));
 
     Ok(matching_sessions.first().map(|e| e.path()))
+}
+
+/// Find a session that matches the given repo, commit, and diff source
+pub fn find_session_for_commit(
+    repo_path: &Path,
+    base_commit: &str,
+    diff_source: SessionDiffSource,
+) -> Result<Option<PathBuf>> {
+    let reviews_dir = get_reviews_dir()?;
+
+    let repo_name = repo_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unknown");
+
+    // Find all session files for this repo
+    let mut matching_sessions: Vec<PathBuf> = fs::read_dir(&reviews_dir)?
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with(repo_name) && name.ends_with(".json"))
+        })
+        .filter_map(|entry| {
+            let path = entry.path();
+            // Load and check if this session matches our criteria
+            if let Ok(session) = load_session(&path) {
+                if session.base_commit == base_commit && session.diff_source == diff_source {
+                    return Some(path);
+                }
+            }
+            None
+        })
+        .collect();
+
+    // Sort by modification time, most recent first
+    matching_sessions.sort_by_key(|path| {
+        std::cmp::Reverse(
+            fs::metadata(path)
+                .ok()
+                .and_then(|m| m.modified().ok())
+        )
+    });
+
+    Ok(matching_sessions.first().cloned())
 }
 
 #[cfg(test)]
