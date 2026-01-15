@@ -117,10 +117,11 @@ pub fn find_session_for_commit(
 
     // Load sessions in order and return first match
     for (path, _) in matching_files {
-        if let Ok(session) = load_session(&path) {
-            if session.base_commit == base_commit && session.diff_source == diff_source {
-                return Ok(Some(path));
-            }
+        if let Ok(session) = load_session(&path)
+            && session.base_commit == base_commit
+            && session.diff_source == diff_source
+        {
+            return Ok(Some(path));
         }
     }
 
