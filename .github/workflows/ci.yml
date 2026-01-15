@@ -18,6 +18,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo check
+      - run: cargo check --features hg
 
   fmt:
     name: Format
@@ -40,6 +41,7 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy -- -D warnings
+      - run: cargo clippy --features hg -- -D warnings
 
   test:
     name: Test
@@ -50,3 +52,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test
+      - name: Install Mercurial (if missing)
+        run: command -v hg || (sudo apt-get update && sudo apt-get install -y mercurial)
+      - run: cargo test --features hg

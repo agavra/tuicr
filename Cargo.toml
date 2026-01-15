@@ -10,6 +10,10 @@ readme = "README.md"
 keywords = ["tui", "git", "code-review", "diff", "cli"]
 categories = ["command-line-utilities", "development-tools"]
 
+[features]
+default = []
+hg = []  # Enable Mercurial (hg) support
+
 [dependencies]
 # TUI framework
 ratatui = "0.30"
@@ -38,3 +42,6 @@ arboard = { version = "3.4", features = ["wayland-data-control"] }
 # Syntax highlighting
 syntect = "5.2"
 syntect-tui = "3.0"
+
+[dev-dependencies]
+tempfile = "3.24.0"

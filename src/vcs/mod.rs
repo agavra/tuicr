@@ -1,24 +1,40 @@
 //! VCS abstraction layer for supporting multiple version control systems.
 //!
-//! This module provides a unified interface for interacting with different
-//! version control systems. Currently supports Git, with the architecture
-//! designed to easily add support for other VCS like Mercurial (hg) or Jujutsu (jj).
+//! Currently supports:
+//! - Git (always enabled)
+//! - Mercurial (optional, via `hg` feature flag)
+//!
+//! ## Detection Order
+//!
+//! When auto-detecting the VCS type, Git is tried first since it's the most
+//! common. This means that in a directory that is both a Git and Mercurial
+//! repository, Git will be used. If Git detection fails and the `hg` feature
+//! is enabled, Mercurial is tried next.
 
 pub mod git;
+#[cfg(feature = "hg")]
+mod hg;
 mod traits;
 
 pub use git::GitBackend;
+#[cfg(feature = "hg")]
+pub use hg::HgBackend;
 pub use traits::{CommitInfo, VcsBackend, VcsInfo};
 
 use crate::error::{Result, TuicrError};
 
 /// Detect the VCS type and return the appropriate backend.
 ///
-/// Currently only supports Git. Future versions may add support for
-/// other VCS like Mercurial or Jujutsu.
+/// Tries Git first (most common), then Mercurial if the `hg` feature is enabled.
 pub fn detect_vcs() -> Result<Box<dyn VcsBackend>> {
-    // Try git first (currently the only supported VCS)
+    // Try git first
     if let Ok(backend) = GitBackend::discover() {
+        return Ok(Box::new(backend));
+    }
+
+    // Try hg if feature is enabled
+    #[cfg(feature = "hg")]
+    if let Ok(backend) = HgBackend::discover() {
         return Ok(Box::new(backend));
     }
 

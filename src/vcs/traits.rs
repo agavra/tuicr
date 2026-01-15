@@ -8,12 +8,16 @@ use crate::model::{DiffFile, DiffLine, FileStatus};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VcsType {
     Git,
+    #[cfg(feature = "hg")]
+    Mercurial,
 }
 
 impl std::fmt::Display for VcsType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             VcsType::Git => write!(f, "git"),
+            #[cfg(feature = "hg")]
+            VcsType::Mercurial => write!(f, "hg"),
         }
     }
 }
@@ -81,9 +85,20 @@ mod tests {
         assert_eq!(format!("{}", VcsType::Git), "git");
     }
 
+    #[cfg(feature = "hg")]
+    #[test]
+    fn vcs_type_display_mercurial() {
+        assert_eq!(format!("{}", VcsType::Mercurial), "hg");
+    }
+
     #[test]
     fn vcs_type_equality() {
         assert_eq!(VcsType::Git, VcsType::Git);
+        #[cfg(feature = "hg")]
+        {
+            assert_eq!(VcsType::Mercurial, VcsType::Mercurial);
+            assert_ne!(VcsType::Git, VcsType::Mercurial);
+        }
     }
 
     #[test]

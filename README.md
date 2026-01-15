@@ -39,6 +39,7 @@ to clipboard in a format ready to paste back to the agent.
 - **Review tracking** - Mark files as reviewed, persist progress to disk
 - **Clipboard export** - Copy structured Markdown optimized for LLM consumption
 - **Session persistence** - Reviews auto-save and reload on restart
+- **Mercurial support** - Optional hg support via `--features hg` (Git is tried first)
 
 ## Installation
 
@@ -66,14 +67,22 @@ cd tuicr
 cargo install --path .
 ```
 
+To enable Mercurial (hg) support:
+
+```bash
+cargo install --path . --features hg
+```
+
 ## Usage
 
-Run `tuicr` in any git repository:
+Run `tuicr` in any git repository (or hg repository if built with `--features hg`):
 
 ```bash
 cd /path/to/your/repo
 tuicr
 ```
+
+When both Git and Mercurial are available in a directory, Git takes precedence.
 
 ### Keybindings
 

@@ -54,6 +54,11 @@ fn main() -> anyhow::Result<()> {
         }
         Err(e) => {
             eprintln!("Error: {}", e);
+            #[cfg(feature = "hg")]
+            eprintln!(
+                "\nMake sure you're in a git or mercurial repository with uncommitted changes."
+            );
+            #[cfg(not(feature = "hg"))]
             eprintln!("\nMake sure you're in a git repository with uncommitted changes.");
             std::process::exit(1);
         }

@@ -17,13 +17,16 @@ src/
 ├── error.rs             # Error types (TuicrError enum)
 │
 ├── vcs/                 # VCS abstraction layer
-│   ├── mod.rs           # detect_vcs(): auto-detect VCS type
+│   ├── mod.rs           # detect_vcs(): auto-detect VCS (git first, then hg)
 │   ├── traits.rs        # VcsBackend trait, VcsInfo, VcsType, CommitInfo
-│   └── git/             # Git backend
-│       ├── mod.rs       # GitBackend: wraps git2 library
-│       ├── repository.rs # CommitInfo, get_recent_commits()
-│       ├── diff.rs      # get_working_tree_diff(), get_commit_range_diff()
-│       └── context.rs   # fetch_context_lines() for gap expansion
+│   ├── git/             # Git backend
+│   │   ├── mod.rs       # GitBackend: wraps git2 library
+│   │   ├── repository.rs # CommitInfo, get_recent_commits()
+│   │   ├── diff.rs      # get_working_tree_diff(), get_commit_range_diff()
+│   │   └── context.rs   # fetch_context_lines() for gap expansion
+│   └── hg/              # Mercurial backend (optional, --features hg)
+│       ├── mod.rs       # HgBackend: uses hg CLI commands
+│       └── diff_parser.rs # Parse unified diff from `hg diff`
 │
 ├── model/
 │   ├── mod.rs
@@ -63,7 +66,7 @@ src/
 **VcsBackend** (`src/vcs/traits.rs`):
 - Trait abstracting VCS operations
 - Methods: `info()`, `get_working_tree_diff()`, `fetch_context_lines()`, `get_recent_commits()`, `get_commit_range_diff()`
-- Implementations: `GitBackend`
+- Implementations: `GitBackend` (always available), `HgBackend` (--features hg)
 
 **InputMode** (`src/app.rs`):
 - `Normal` - default navigation mode
@@ -82,7 +85,7 @@ src/
 
 ### Data Flow
 
-1. **Startup**: `App::new()` calls `detect_vcs()` to find the repository, parses diff, loads existing session if any
+1. **Startup**: `App::new()` calls `detect_vcs()` which tries Git first, then Mercurial (if `--features hg`). Parses diff and loads existing session if any
 2. **Render**: `ui::render()` draws the TUI based on `App` state
 3. **Input**: `crossterm` events → `map_key_to_action` → match on Action in main loop
 4. **Persistence**: `:w` calls `save_session()`, writes JSON to `~/.local/share/tuicr/reviews/`

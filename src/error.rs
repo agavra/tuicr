@@ -26,6 +26,11 @@ pub enum TuicrError {
     #[error("Clipboard error: {0}")]
     Clipboard(String),
 
+    /// Used by Mercurial backend (hg feature)
+    #[cfg_attr(not(feature = "hg"), allow(dead_code))]
+    #[error("VCS command failed: {0}")]
+    VcsCommand(String),
+
     #[error("Unsupported operation: {0}")]
     UnsupportedOperation(String),
 }
