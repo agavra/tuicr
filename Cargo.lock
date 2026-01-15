@@ -2237,6 +2237,7 @@ version = "0.3.0"
 dependencies = [
  "anyhow",
  "arboard",
+ "base64",
  "chrono",
  "crossterm 0.29.0",
  "directories",

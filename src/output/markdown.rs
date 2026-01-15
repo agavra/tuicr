@@ -1,6 +1,8 @@
 use std::fmt::Write;
+use std::io::Write as IoWrite;
 
 use arboard::Clipboard;
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 
 use crate::app::DiffSource;
 use crate::error::{Result, TuicrError};
@@ -17,14 +19,34 @@ pub fn export_to_clipboard(session: &ReviewSession, diff_source: &DiffSource) ->
 
     let content = generate_markdown(session, diff_source);
 
-    let mut clipboard = Clipboard::new()
-        .map_err(|e| TuicrError::Clipboard(format!("Failed to access clipboard: {}", e)))?;
+    // Try arboard (system clipboard) first, fall back to OSC 52 for SSH/remote sessions
+    match Clipboard::new().and_then(|mut cb| cb.set_text(&content)) {
+        Ok(_) => Ok("Review copied to clipboard".to_string()),
+        Err(_) => {
+            // Fall back to OSC 52 escape sequence (works over SSH)
+            copy_osc52(&content)?;
+            Ok("Review copied to clipboard (via terminal)".to_string())
+        }
+    }
+}
 
-    clipboard
-        .set_text(content)
-        .map_err(|e| TuicrError::Clipboard(format!("Failed to copy to clipboard: {}", e)))?;
+/// Copy text to clipboard using OSC 52 escape sequence.
+/// This works over SSH as the escape sequence is interpreted by the local terminal.
+fn copy_osc52(text: &str) -> Result<()> {
+    let mut stdout = std::io::stdout().lock();
+    write_osc52(&mut stdout, text)
+}
 
-    Ok("Review copied to clipboard".to_string())
+/// Write OSC 52 escape sequence to the given writer.
+/// Separated for testability.
+fn write_osc52<W: IoWrite>(writer: &mut W, text: &str) -> Result<()> {
+    let encoded = BASE64.encode(text);
+    write!(writer, "\x1b]52;c;{}\x07", encoded)
+        .map_err(|e| TuicrError::Clipboard(format!("Failed to write OSC 52: {}", e)))?;
+    writer
+        .flush()
+        .map_err(|e| TuicrError::Clipboard(format!("Failed to flush: {}", e)))?;
+    Ok(())
 }
 
 fn generate_markdown(session: &ReviewSession, diff_source: &DiffSource) -> String {
@@ -236,5 +258,76 @@ mod tests {
 
         // then
         assert!(markdown.contains("Reviewing commit: abc1234"));
+    }
+
+    #[test]
+    fn should_write_osc52_escape_sequence() {
+        // given
+        let text = "Hello, World!";
+        let mut buffer: Vec<u8> = Vec::new();
+
+        // when
+        write_osc52(&mut buffer, text).unwrap();
+
+        // then
+        let output = String::from_utf8(buffer).unwrap();
+        // OSC 52 format: ESC ] 52 ; c ; <base64> BEL
+        assert!(output.starts_with("\x1b]52;c;"));
+        assert!(output.ends_with("\x07"));
+        // Verify the base64 content
+        let base64_content = &output[7..output.len() - 1];
+        assert_eq!(BASE64.encode(text), base64_content);
+    }
+
+    #[test]
+    fn should_encode_empty_string_in_osc52() {
+        // given
+        let text = "";
+        let mut buffer: Vec<u8> = Vec::new();
+
+        // when
+        write_osc52(&mut buffer, text).unwrap();
+
+        // then
+        let output = String::from_utf8(buffer).unwrap();
+        assert_eq!(output, "\x1b]52;c;\x07");
+    }
+
+    #[test]
+    fn should_encode_unicode_in_osc52() {
+        // given
+        let text = "こんにちは 🦀";
+        let mut buffer: Vec<u8> = Vec::new();
+
+        // when
+        write_osc52(&mut buffer, text).unwrap();
+
+        // then
+        let output = String::from_utf8(buffer).unwrap();
+        let base64_content = &output[7..output.len() - 1];
+        // Decode and verify it matches original
+        let decoded = String::from_utf8(BASE64.decode(base64_content).unwrap()).unwrap();
+        assert_eq!(decoded, text);
+    }
+
+    #[test]
+    fn should_encode_markdown_content_in_osc52() {
+        // given - simulate what would be copied during export
+        let session = create_test_session();
+        let diff_source = DiffSource::WorkingTree;
+        let markdown = generate_markdown(&session, &diff_source);
+        let mut buffer: Vec<u8> = Vec::new();
+
+        // when
+        write_osc52(&mut buffer, &markdown).unwrap();
+
+        // then
+        let output = String::from_utf8(buffer).unwrap();
+        assert!(output.starts_with("\x1b]52;c;"));
+        assert!(output.ends_with("\x07"));
+        // Verify we can decode the base64 back to the original markdown
+        let base64_content = &output[7..output.len() - 1];
+        let decoded = String::from_utf8(BASE64.decode(base64_content).unwrap()).unwrap();
+        assert_eq!(decoded, markdown);
     }
 }
