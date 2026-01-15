@@ -32,8 +32,7 @@ pub struct VcsInfo {
     pub root_path: PathBuf,
     pub head_commit: String,
     pub branch_name: Option<String>,
-    /// VCS type - kept for future status bar display
-    #[allow(dead_code)]
+    /// VCS type - displayed in status bar header
     pub vcs_type: VcsType,
 }
 

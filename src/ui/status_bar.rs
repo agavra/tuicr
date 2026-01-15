@@ -10,10 +10,11 @@ use crate::app::{App, DiffSource, InputMode, MessageType};
 use crate::ui::styles;
 
 pub fn render_header(frame: &mut Frame, app: &App, area: Rect) {
+    let vcs_type = &app.vcs_info.vcs_type;
     let branch = app.vcs_info.branch_name.as_deref().unwrap_or("detached");
 
     let title = " tuicr - Code Review ".to_string();
-    let branch_info = format!("[{}] ", branch);
+    let vcs_info = format!("[{}:{}] ", vcs_type, branch);
 
     // Show diff source info
     let source_info = match &app.diff_source {
@@ -30,7 +31,7 @@ pub fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     let progress = format!("{}/{} reviewed ", app.reviewed_count(), app.file_count());
 
     let title_span = Span::styled(title, styles::header_style());
-    let branch_span = Span::styled(branch_info, Style::default().fg(styles::FG_SECONDARY));
+    let vcs_span = Span::styled(vcs_info, Style::default().fg(styles::FG_SECONDARY));
     let source_span = Span::styled(source_info, Style::default().fg(styles::DIFF_HUNK_HEADER));
     let progress_span = Span::styled(
         progress,
@@ -41,7 +42,7 @@ pub fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         },
     );
 
-    let line = Line::from(vec![title_span, branch_span, source_span, progress_span]);
+    let line = Line::from(vec![title_span, vcs_span, source_span, progress_span]);
 
     let header = Paragraph::new(line)
         .style(styles::status_bar_style())
