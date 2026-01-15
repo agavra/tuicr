@@ -280,19 +280,6 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(""),
         Line::from(Span::styled(
-            "Review Modes",
-            Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-        )),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled(
-                "  m         ",
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("Switch to commit selection mode"),
-        ]),
-        Line::from(""),
-        Line::from(Span::styled(
             "Commands",
             Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
         )),

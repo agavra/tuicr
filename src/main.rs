@@ -27,13 +27,15 @@ use crossterm::{
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
 
-use app::{App, FocusedPanel, InputMode};
+use app::{App, FileTreeItem, FocusedPanel, InputMode};
 use handler::{
     handle_command_action, handle_comment_action, handle_commit_select_action,
     handle_confirm_action, handle_diff_action, handle_file_list_action, handle_help_action,
     handle_search_action, handle_visual_action,
 };
 use input::{Action, map_key_to_action};
+use output::markdown::export_to_clipboard;
+use persistence::storage::save_session;
 use theme::{parse_cli_args, resolve_theme};
 
 /// Timeout for the "press Ctrl+C again to exit" feature
@@ -347,20 +349,11 @@ fn main() -> anyhow::Result<()> {
                 }
                 Action::ToggleHelp => app.toggle_help(),
                 Action::EnterCommandMode => app.enter_command_mode(),
-                Action::EnterCommitSelectMode => {
-                    if let Err(e) = app.enter_commit_select_mode() {
-                        app.set_error(format!("Failed to load commits: {}", e));
-                    }
-                }
                 Action::ExitMode => {
                     if app.input_mode == app::InputMode::Command {
                         app.exit_command_mode();
                     } else if app.input_mode == app::InputMode::Comment {
                         app.exit_comment_mode();
-                    } else if app.input_mode == app::InputMode::CommitSelect {
-                        if let Err(e) = app.exit_commit_select_mode() {
-                            app.set_error(format!("Failed to reload working tree: {}", e));
-                        }
                     }
                 }
                 Action::AddLineComment => {

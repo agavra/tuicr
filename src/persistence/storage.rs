@@ -1,23 +1,13 @@
 use directories::ProjectDirs;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use crate::error::{Result, TuicrError};
 use crate::model::ReviewSession;
 use crate::model::review::SessionDiffSource;
 
-#[derive(Debug, Clone)]
-struct CachedSession {
-    repo_path: String,
-    branch_name: Option<String>,
-    diff_source: SessionDiffSource,
-    session_path: PathBuf,
-    session: ReviewSession,
-}
-
-static SESSION_CACHE: OnceLock<Mutex<Option<CachedSession>>> = OnceLock::new();
+const SESSION_MAX_AGE_DAYS: u64 = 7;
 
 struct SessionFilenameParts {
     repo_fingerprint: String,
@@ -39,17 +29,6 @@ fn parse_session_filename(filename: &str) -> Option<SessionFilenameParts> {
 }
 
 fn get_reviews_dir() -> Result<PathBuf> {
-    if let Some(dir) = std::env::var_os("TUICR_REVIEWS_DIR") {
-        let dir = PathBuf::from(dir);
-        if dir.as_os_str().is_empty() {
-            return Err(TuicrError::Io(std::io::Error::other(
-                "TUICR_REVIEWS_DIR is empty",
-            )));
-        }
-        fs::create_dir_all(&dir)?;
-        return Ok(dir);
-    }
-
     let proj_dirs = ProjectDirs::from("", "", "tuicr").ok_or_else(|| {
         TuicrError::Io(std::io::Error::other("Could not determine data directory"))
     })?;
@@ -144,10 +123,6 @@ pub fn save_session(session: &ReviewSession) -> Result<PathBuf> {
     let json = serde_json::to_string_pretty(session)?;
     fs::write(&path, json)?;
 
-    if let Ok(mut cache) = SESSION_CACHE.get_or_init(|| Mutex::new(None)).lock() {
-        *cache = None;
-    }
-
     Ok(path)
 }
 
@@ -171,19 +146,9 @@ pub fn load_latest_session_for_context(
         SessionDiffSource::CommitRange => "commits",
     };
 
-    let cache = SESSION_CACHE.get_or_init(|| Mutex::new(None));
-    if let Ok(cache_guard) = cache.lock() {
-        if let Some(cached) = cache_guard.as_ref() {
-            if cached.repo_path == current_repo_path
-                && cached.branch_name.as_deref() == branch_name
-                && cached.diff_source == diff_source
-            {
-                return Ok(Some((cached.session_path.clone(), cached.session.clone())));
-            }
-        }
-    }
-
     let reviews_dir = get_reviews_dir()?;
+    let now = SystemTime::now();
+    let max_age = Duration::from_secs(SESSION_MAX_AGE_DAYS * 24 * 60 * 60);
 
     let mut session_files: Vec<_> = fs::read_dir(&reviews_dir)?
         .filter_map(|entry| entry.ok())
@@ -196,6 +161,18 @@ pub fn load_latest_session_for_context(
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
             {
                 return false;
+            }
+
+            // Delete sessions older than 7 days
+            if let Ok(metadata) = entry.metadata() {
+                if let Ok(modified) = metadata.modified() {
+                    if let Ok(age) = now.duration_since(modified) {
+                        if age > max_age {
+                            let _ = fs::remove_file(&path);
+                            return false;
+                        }
+                    }
+                }
             }
 
             let Some(filename) = path.file_name().and_then(|f| f.to_str()) else {
@@ -255,16 +232,6 @@ pub fn load_latest_session_for_context(
                 continue;
             }
 
-            if let Ok(mut cache_guard) = cache.lock() {
-                *cache_guard = Some(CachedSession {
-                    repo_path: current_repo_path.clone(),
-                    branch_name: branch_name.map(|s| s.to_string()),
-                    diff_source,
-                    session_path: path.clone(),
-                    session: session.clone(),
-                });
-            }
-
             return Ok(Some((path, session)));
         }
 
@@ -274,18 +241,6 @@ pub fn load_latest_session_for_context(
             && session.base_commit == head_commit;
         if eligible_legacy {
             legacy_candidate = Some((path, session));
-        }
-    }
-
-    if let Some((ref path, ref session)) = legacy_candidate {
-        if let Ok(mut cache_guard) = cache.lock() {
-            *cache_guard = Some(CachedSession {
-                repo_path: current_repo_path,
-                branch_name: branch_name.map(|s| s.to_string()),
-                diff_source,
-                session_path: path.clone(),
-                session: session.clone(),
-            });
         }
     }
 
@@ -304,7 +259,7 @@ mod tests {
     use crate::model::FileStatus;
     use std::path::PathBuf;
     use std::sync::{Mutex, OnceLock};
-    use std::time::Duration;
+    use std::time::{Duration, SystemTime};
 
     fn create_test_session() -> ReviewSession {
         let mut session = ReviewSession::new(

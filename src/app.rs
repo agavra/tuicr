@@ -1697,7 +1697,6 @@ impl App {
         Ok(())
     }
 
-
     pub fn toggle_diff_view_mode(&mut self) {
         self.diff_view_mode = match self.diff_view_mode {
             DiffViewMode::Unified => DiffViewMode::SideBySide,
