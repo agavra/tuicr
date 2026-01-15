@@ -11,7 +11,7 @@ pub enum TuicrError {
     #[error("JSON serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
 
-    #[error("Not a git repository")]
+    #[error("Not a repository")]
     NotARepository,
 
     #[error("No changes to review")]
@@ -25,6 +25,9 @@ pub enum TuicrError {
 
     #[error("Clipboard error: {0}")]
     Clipboard(String),
+
+    #[error("Unsupported operation: {0}")]
+    UnsupportedOperation(String),
 }
 
 pub type Result<T> = std::result::Result<T, TuicrError>;

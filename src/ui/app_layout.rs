@@ -8,9 +8,9 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, DiffViewMode, FileTreeItem, FocusedPanel, GapId, InputMode};
-use crate::git::calculate_gap;
 use crate::model::{LineOrigin, LineSide};
 use crate::ui::{comment_panel, help_popup, status_bar, styles};
+use crate::vcs::git::calculate_gap;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     // Special handling for commit selection mode

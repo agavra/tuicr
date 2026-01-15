@@ -16,10 +16,14 @@ src/
 ├── app.rs               # Application state (App struct, InputMode, etc.)
 ├── error.rs             # Error types (TuicrError enum)
 │
-├── git/
-│   ├── mod.rs
-│   ├── repository.rs    # RepoInfo: git repo discovery, HEAD commit, branch
-│   └── diff.rs          # get_working_tree_diff(): parse git diff into DiffFile structs
+├── vcs/                 # VCS abstraction layer
+│   ├── mod.rs           # detect_vcs(): auto-detect VCS type
+│   ├── traits.rs        # VcsBackend trait, VcsInfo, VcsType, CommitInfo
+│   └── git/             # Git backend
+│       ├── mod.rs       # GitBackend: wraps git2 library
+│       ├── repository.rs # CommitInfo, get_recent_commits()
+│       ├── diff.rs      # get_working_tree_diff(), get_commit_range_diff()
+│       └── context.rs   # fetch_context_lines() for gap expansion
 │
 ├── model/
 │   ├── mod.rs
@@ -53,8 +57,13 @@ src/
 
 **App** (`src/app.rs`):
 - Central application state
-- Contains: `repo_info`, `session`, `diff_files`, `input_mode`, scroll/cursor state
+- Contains: `vcs` (Box<dyn VcsBackend>), `vcs_info`, `session`, `diff_files`, `input_mode`, scroll/cursor state
 - Methods: `scroll_down/up`, `next/prev_file`, `next/prev_hunk`, `toggle_reviewed`, `save_comment`
+
+**VcsBackend** (`src/vcs/traits.rs`):
+- Trait abstracting VCS operations
+- Methods: `info()`, `get_working_tree_diff()`, `fetch_context_lines()`, `get_recent_commits()`, `get_commit_range_diff()`
+- Implementations: `GitBackend`
 
 **InputMode** (`src/app.rs`):
 - `Normal` - default navigation mode
@@ -73,11 +82,11 @@ src/
 
 ### Data Flow
 
-1. **Startup**: `App::new()` discovers repo, parses diff, loads existing session if any
+1. **Startup**: `App::new()` calls `detect_vcs()` to find the repository, parses diff, loads existing session if any
 2. **Render**: `ui::render()` draws the TUI based on `App` state
 3. **Input**: `crossterm` events → `map_key_to_action` → match on Action in main loop
 4. **Persistence**: `:w` calls `save_session()`, writes JSON to `~/.local/share/tuicr/reviews/`
-5. **Reload diff**: `:e` re-runs `get_working_tree_diff()` to refresh the displayed files
+5. **Reload diff**: `:e` re-runs `vcs.get_working_tree_diff()` to refresh the displayed files
 6. **Export**: `:clip` (alias `:export`) calls `export_to_clipboard()`, generating markdown and copying it to the clipboard
 
 ### Important Implementation Details

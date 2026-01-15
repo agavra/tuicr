@@ -10,7 +10,7 @@ use crate::app::{App, DiffSource, InputMode, MessageType};
 use crate::ui::styles;
 
 pub fn render_header(frame: &mut Frame, app: &App, area: Rect) {
-    let branch = app.repo_info.branch_name.as_deref().unwrap_or("detached");
+    let branch = app.vcs_info.branch_name.as_deref().unwrap_or("detached");
 
     let title = " tuicr - Code Review ".to_string();
     let branch_info = format!("[{}] ", branch);

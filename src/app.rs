@@ -2,12 +2,10 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use crate::error::{Result, TuicrError};
-use crate::git::{
-    CommitInfo, RepoInfo, calculate_gap, fetch_context_lines, get_commit_range_diff,
-    get_recent_commits, get_working_tree_diff,
-};
 use crate::model::{Comment, CommentType, DiffFile, DiffLine, LineSide, ReviewSession};
 use crate::persistence::{find_session_for_repo, load_session};
+use crate::vcs::git::calculate_gap;
+use crate::vcs::{CommitInfo, VcsBackend, VcsInfo, detect_vcs};
 
 #[derive(Debug, Clone)]
 pub enum FileTreeItem {
@@ -112,7 +110,8 @@ pub struct Message {
 }
 
 pub struct App {
-    pub repo_info: RepoInfo,
+    pub vcs: Box<dyn VcsBackend>,
+    pub vcs_info: VcsInfo,
     pub session: ReviewSession,
     pub diff_files: Vec<DiffFile>,
     pub diff_source: DiffSource,
@@ -233,15 +232,16 @@ enum CommentLocation {
 
 impl App {
     pub fn new() -> Result<Self> {
-        let repo_info = RepoInfo::discover()?;
+        let vcs = detect_vcs()?;
+        let vcs_info = vcs.info().clone();
 
         // Try to get working tree diff first
-        let diff_result = get_working_tree_diff(&repo_info.repo);
+        let diff_result = vcs.get_working_tree_diff();
 
         match diff_result {
             Ok(diff_files) => {
                 // We have unstaged changes - normal flow
-                let mut session = Self::load_or_create_session(&repo_info);
+                let mut session = Self::load_or_create_session(&vcs_info);
 
                 // Ensure all current diff files are in the session
                 for file in &diff_files {
@@ -250,7 +250,8 @@ impl App {
                 }
 
                 let mut app = Self {
-                    repo_info,
+                    vcs,
+                    vcs_info,
                     session,
                     diff_files,
                     diff_source: DiffSource::WorkingTree,
@@ -290,16 +291,17 @@ impl App {
             }
             Err(TuicrError::NoChanges) => {
                 // No unstaged changes - try to get recent commits
-                let commits = get_recent_commits(&repo_info.repo, 5)?;
+                let commits = vcs.get_recent_commits(5)?;
                 if commits.is_empty() {
                     return Err(TuicrError::NoChanges);
                 }
 
                 let session =
-                    ReviewSession::new(repo_info.root_path.clone(), repo_info.head_commit.clone());
+                    ReviewSession::new(vcs_info.root_path.clone(), vcs_info.head_commit.clone());
 
                 Ok(Self {
-                    repo_info,
+                    vcs,
+                    vcs_info,
                     session,
                     diff_files: Vec::new(),
                     diff_source: DiffSource::WorkingTree,
@@ -337,26 +339,23 @@ impl App {
         }
     }
 
-    fn load_or_create_session(repo_info: &RepoInfo) -> ReviewSession {
-        match find_session_for_repo(&repo_info.root_path) {
+    fn load_or_create_session(vcs_info: &VcsInfo) -> ReviewSession {
+        match find_session_for_repo(&vcs_info.root_path) {
             Ok(Some(path)) => match load_session(&path) {
                 Ok(s) => {
                     // Delete stale session file if base commit doesn't match
-                    if s.base_commit != repo_info.head_commit {
+                    if s.base_commit != vcs_info.head_commit {
                         let _ = std::fs::remove_file(&path);
-                        ReviewSession::new(
-                            repo_info.root_path.clone(),
-                            repo_info.head_commit.clone(),
-                        )
+                        ReviewSession::new(vcs_info.root_path.clone(), vcs_info.head_commit.clone())
                     } else {
                         s
                     }
                 }
                 Err(_) => {
-                    ReviewSession::new(repo_info.root_path.clone(), repo_info.head_commit.clone())
+                    ReviewSession::new(vcs_info.root_path.clone(), vcs_info.head_commit.clone())
                 }
             },
-            _ => ReviewSession::new(repo_info.root_path.clone(), repo_info.head_commit.clone()),
+            _ => ReviewSession::new(vcs_info.root_path.clone(), vcs_info.head_commit.clone()),
         }
     }
 
@@ -375,7 +374,7 @@ impl App {
             prev_cursor_line.saturating_sub(start)
         };
 
-        let diff_files = get_working_tree_diff(&self.repo_info.repo)?;
+        let diff_files = self.vcs.get_working_tree_diff()?;
 
         for file in &diff_files {
             let path = file.display_path().clone();
@@ -1483,7 +1482,7 @@ impl App {
         }
 
         // Get the diff for the selected commits
-        let diff_files = get_commit_range_diff(&self.repo_info.repo, &selected_ids)?;
+        let diff_files = self.vcs.get_commit_range_diff(&selected_ids)?;
 
         if diff_files.is_empty() {
             self.set_message("No changes in selected commits");
@@ -1492,7 +1491,7 @@ impl App {
 
         // Update session with the newest commit as base
         let newest_commit_id = selected_ids.last().unwrap().clone();
-        self.session = ReviewSession::new(self.repo_info.root_path.clone(), newest_commit_id);
+        self.session = ReviewSession::new(self.vcs_info.root_path.clone(), newest_commit_id);
 
         // Add files to session
         for file in &diff_files {
@@ -1635,13 +1634,9 @@ impl App {
         let file_status = file.status;
 
         // Fetch the context lines
-        let lines = fetch_context_lines(
-            &self.repo_info.repo,
-            &file_path,
-            file_status,
-            start_line,
-            end_line,
-        )?;
+        let lines = self
+            .vcs
+            .fetch_context_lines(&file_path, file_status, start_line, end_line)?;
 
         self.expanded_content.insert(gap_id.clone(), lines);
         self.expanded_gaps.insert(gap_id);

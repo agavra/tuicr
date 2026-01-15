@@ -1,6 +1,5 @@
 mod app;
 mod error;
-mod git;
 mod handler;
 mod input;
 mod model;
@@ -8,6 +7,7 @@ mod output;
 mod persistence;
 mod syntax;
 mod ui;
+mod vcs;
 
 use std::io;
 use std::time::Duration;
