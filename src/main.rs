@@ -54,11 +54,19 @@ fn main() -> anyhow::Result<()> {
         }
         Err(e) => {
             eprintln!("Error: {}", e);
-            #[cfg(feature = "hg")]
+            #[cfg(all(feature = "hg", feature = "jj"))]
+            eprintln!(
+                "\nMake sure you're in a git, jujutsu, or mercurial repository with uncommitted changes."
+            );
+            #[cfg(all(feature = "hg", not(feature = "jj")))]
             eprintln!(
                 "\nMake sure you're in a git or mercurial repository with uncommitted changes."
             );
-            #[cfg(not(feature = "hg"))]
+            #[cfg(all(feature = "jj", not(feature = "hg")))]
+            eprintln!(
+                "\nMake sure you're in a git or jujutsu repository with uncommitted changes."
+            );
+            #[cfg(not(any(feature = "hg", feature = "jj")))]
             eprintln!("\nMake sure you're in a git repository with uncommitted changes.");
             std::process::exit(1);
         }

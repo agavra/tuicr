@@ -3,31 +3,44 @@
 //! Currently supports:
 //! - Git (always enabled)
 //! - Mercurial (optional, via `hg` feature flag)
+//! - Jujutsu (optional, via `jj` feature flag)
 //!
 //! ## Detection Order
 //!
-//! When auto-detecting the VCS type, Git is tried first since it's the most
-//! common. This means that in a directory that is both a Git and Mercurial
-//! repository, Git will be used. If Git detection fails and the `hg` feature
-//! is enabled, Mercurial is tried next.
+//! When auto-detecting the VCS type, Jujutsu is tried first (if enabled)
+//! because jj repos are Git-backed and contain a `.git` directory. If jj
+//! detection fails, Git is tried next, then Mercurial (if enabled).
 
+#[cfg(any(feature = "hg", feature = "jj"))]
+mod diff_parser;
 pub mod git;
 #[cfg(feature = "hg")]
 mod hg;
+#[cfg(feature = "jj")]
+mod jj;
 mod traits;
 
 pub use git::GitBackend;
 #[cfg(feature = "hg")]
 pub use hg::HgBackend;
+#[cfg(feature = "jj")]
+pub use jj::JjBackend;
 pub use traits::{CommitInfo, VcsBackend, VcsInfo};
 
 use crate::error::{Result, TuicrError};
 
 /// Detect the VCS type and return the appropriate backend.
 ///
-/// Tries Git first (most common), then Mercurial if the `hg` feature is enabled.
+/// Detection order: Jujutsu (if enabled) → Git → Mercurial (if enabled).
+/// Jujutsu is tried first because jj repos are Git-backed.
 pub fn detect_vcs() -> Result<Box<dyn VcsBackend>> {
-    // Try git first
+    // Try jj first since jj repos are Git-backed
+    #[cfg(feature = "jj")]
+    if let Ok(backend) = JjBackend::discover() {
+        return Ok(Box::new(backend));
+    }
+
+    // Try git
     if let Ok(backend) = GitBackend::discover() {
         return Ok(Box::new(backend));
     }

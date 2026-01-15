@@ -10,6 +10,8 @@ pub enum VcsType {
     Git,
     #[cfg(feature = "hg")]
     Mercurial,
+    #[cfg(feature = "jj")]
+    Jujutsu,
 }
 
 impl std::fmt::Display for VcsType {
@@ -18,6 +20,8 @@ impl std::fmt::Display for VcsType {
             VcsType::Git => write!(f, "git"),
             #[cfg(feature = "hg")]
             VcsType::Mercurial => write!(f, "hg"),
+            #[cfg(feature = "jj")]
+            VcsType::Jujutsu => write!(f, "jj"),
         }
     }
 }
@@ -91,6 +95,12 @@ mod tests {
         assert_eq!(format!("{}", VcsType::Mercurial), "hg");
     }
 
+    #[cfg(feature = "jj")]
+    #[test]
+    fn vcs_type_display_jujutsu() {
+        assert_eq!(format!("{}", VcsType::Jujutsu), "jj");
+    }
+
     #[test]
     fn vcs_type_equality() {
         assert_eq!(VcsType::Git, VcsType::Git);
@@ -98,6 +108,11 @@ mod tests {
         {
             assert_eq!(VcsType::Mercurial, VcsType::Mercurial);
             assert_ne!(VcsType::Git, VcsType::Mercurial);
+        }
+        #[cfg(feature = "jj")]
+        {
+            assert_eq!(VcsType::Jujutsu, VcsType::Jujutsu);
+            assert_ne!(VcsType::Git, VcsType::Jujutsu);
         }
     }
 

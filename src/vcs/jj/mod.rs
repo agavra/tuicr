@@ -1,3 +1,5 @@
+//! Jujutsu (jj) backend implementation using CLI commands.
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -6,20 +8,20 @@ use crate::model::{DiffFile, DiffLine, FileStatus, LineOrigin};
 use crate::vcs::diff_parser::{self, DiffFormat};
 use crate::vcs::traits::{VcsBackend, VcsInfo, VcsType};
 
-/// Mercurial backend implementation using hg CLI commands
-pub struct HgBackend {
+/// Jujutsu backend implementation using jj CLI commands
+pub struct JjBackend {
     info: VcsInfo,
 }
 
-impl HgBackend {
-    /// Discover a Mercurial repository from the current directory
+impl JjBackend {
+    /// Discover a Jujutsu repository from the current directory
     pub fn discover() -> Result<Self> {
-        // Use `hg root` to find the repository root
+        // Use `jj root` to find the repository root
         // This handles being called from subdirectories
-        let root_output = Command::new("hg")
+        let root_output = Command::new("jj")
             .args(["root"])
             .output()
-            .map_err(|e| TuicrError::VcsCommand(format!("Failed to run hg: {}", e)))?;
+            .map_err(|e| TuicrError::VcsCommand(format!("Failed to run jj: {}", e)))?;
 
         if !root_output.status.success() {
             return Err(TuicrError::NotARepository);
@@ -32,40 +34,48 @@ impl HgBackend {
 
     /// Create backend from a known path (used by discover and tests)
     fn from_path(root_path: PathBuf) -> Result<Self> {
-        // Get current revision info
-        let head_commit = run_hg_command(&root_path, &["id", "-i"])
-            .map(|s| s.trim().trim_end_matches('+').to_string())
-            .unwrap_or_else(|_| "unknown".to_string());
+        // Get current change id (jj uses change IDs rather than commit hashes)
+        let head_commit = run_jj_command(
+            &root_path,
+            &["log", "-r", "@", "--no-graph", "-T", "change_id.short()"],
+        )
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|_| "unknown".to_string());
 
-        let branch_name = run_hg_command(&root_path, &["branch"])
-            .ok()
-            .map(|s| s.trim().to_string());
+        // jj doesn't have branches in the traditional sense, but we can show the bookmark if set
+        let branch_name = run_jj_command(
+            &root_path,
+            &["log", "-r", "@", "--no-graph", "-T", "bookmarks"],
+        )
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
 
         let info = VcsInfo {
             root_path,
             head_commit,
             branch_name,
-            vcs_type: VcsType::Mercurial,
+            vcs_type: VcsType::Jujutsu,
         };
 
         Ok(Self { info })
     }
 }
 
-impl VcsBackend for HgBackend {
+impl VcsBackend for JjBackend {
     fn info(&self) -> &VcsInfo {
         &self.info
     }
 
     fn get_working_tree_diff(&self) -> Result<Vec<DiffFile>> {
-        // Get unified diff output from hg
-        let diff_output = run_hg_command(&self.info.root_path, &["diff"])?;
+        // Get unified diff output from jj using --git format
+        let diff_output = run_jj_command(&self.info.root_path, &["diff", "--git"])?;
 
         if diff_output.trim().is_empty() {
             return Err(TuicrError::NoChanges);
         }
 
-        diff_parser::parse_unified_diff(&diff_output, DiffFormat::Hg)
+        diff_parser::parse_unified_diff(&diff_output, DiffFormat::GitStyle)
     }
 
     fn fetch_context_lines(
@@ -81,10 +91,10 @@ impl VcsBackend for HgBackend {
 
         let content = match file_status {
             FileStatus::Deleted => {
-                // Read from hg cat (last committed version)
-                run_hg_command(
+                // Read from jj show (parent revision)
+                run_jj_command(
                     &self.info.root_path,
-                    &["cat", "-r", ".", &file_path.to_string_lossy()],
+                    &["file", "show", "-r", "@-", &file_path.to_string_lossy()],
                 )?
             }
             _ => {
@@ -115,21 +125,21 @@ impl VcsBackend for HgBackend {
 
     // Note: get_recent_commits and get_commit_range_diff use default
     // implementations that return empty/error, since we only support
-    // working tree diff for hg initially
+    // working tree diff for jj initially
 }
 
-/// Run an hg command and return its stdout
-fn run_hg_command(root: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new("hg")
+/// Run a jj command and return its stdout
+fn run_jj_command(root: &Path, args: &[&str]) -> Result<String> {
+    let output = Command::new("jj")
         .current_dir(root)
         .args(args)
         .output()
-        .map_err(|e| TuicrError::VcsCommand(format!("Failed to run hg: {}", e)))?;
+        .map_err(|e| TuicrError::VcsCommand(format!("Failed to run jj: {}", e)))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(TuicrError::VcsCommand(format!(
-            "hg {} failed: {}",
+            "jj {} failed: {}",
             args.join(" "),
             stderr
         )));
@@ -143,22 +153,22 @@ mod tests {
     use super::*;
     use std::fs;
 
-    /// Check if hg command is available
-    fn hg_available() -> bool {
-        Command::new("hg")
+    /// Check if jj command is available
+    fn jj_available() -> bool {
+        Command::new("jj")
             .arg("--version")
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false)
     }
 
-    /// Discover a Mercurial repository from a specific directory
-    fn discover_in(path: &Path) -> Result<HgBackend> {
-        let root_output = Command::new("hg")
+    /// Discover a Jujutsu repository from a specific directory
+    fn discover_in(path: &Path) -> Result<JjBackend> {
+        let root_output = Command::new("jj")
             .args(["root"])
             .current_dir(path)
             .output()
-            .map_err(|e| TuicrError::VcsCommand(format!("Failed to run hg: {}", e)))?;
+            .map_err(|e| TuicrError::VcsCommand(format!("Failed to run jj: {}", e)))?;
 
         if !root_output.status.success() {
             return Err(TuicrError::NotARepository);
@@ -166,37 +176,39 @@ mod tests {
 
         let root_path = PathBuf::from(String::from_utf8_lossy(&root_output.stdout).trim());
 
-        HgBackend::from_path(root_path)
+        JjBackend::from_path(root_path)
     }
 
-    /// Create a temporary hg repo for testing.
-    /// Returns None if hg is not available.
+    /// Create a temporary jj repo for testing.
+    /// Returns None if jj is not available.
     fn setup_test_repo() -> Option<tempfile::TempDir> {
-        if !hg_available() {
+        if !jj_available() {
             return None;
         }
 
         let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
         let root = temp_dir.path();
 
-        // Initialize hg repo
-        Command::new("hg")
-            .args(["init"])
+        // Initialize jj repo (jj init creates a git-backed repo by default)
+        let output = Command::new("jj")
+            .args(["git", "init"])
             .current_dir(root)
             .output()
-            .expect("Failed to init hg repo");
+            .expect("Failed to init jj repo");
+
+        if !output.status.success() {
+            eprintln!(
+                "jj git init failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return None;
+        }
 
         // Create initial file
         fs::write(root.join("hello.txt"), "hello world\n").expect("Failed to write file");
 
-        // Add and commit
-        Command::new("hg")
-            .args(["add", "hello.txt"])
-            .current_dir(root)
-            .output()
-            .expect("Failed to add file");
-
-        Command::new("hg")
+        // Snapshot the changes (jj auto-tracks files)
+        Command::new("jj")
             .args(["commit", "-m", "Initial commit"])
             .current_dir(root)
             .output()
@@ -210,34 +222,34 @@ mod tests {
     }
 
     #[test]
-    fn test_hg_discover() {
+    fn test_jj_discover() {
         let Some(temp) = setup_test_repo() else {
-            eprintln!("Skipping test: hg command not available");
+            eprintln!("Skipping test: jj command not available");
             return;
         };
 
         // Use discover_in to avoid set_current_dir race conditions
-        let backend = discover_in(temp.path()).expect("Failed to discover hg repo");
+        let backend = discover_in(temp.path()).expect("Failed to discover jj repo");
         let info = backend.info();
 
         assert_eq!(info.root_path, temp.path());
-        assert_eq!(info.vcs_type, VcsType::Mercurial);
+        assert_eq!(info.vcs_type, VcsType::Jujutsu);
         assert!(!info.head_commit.is_empty());
     }
 
     #[test]
-    fn test_hg_working_tree_diff() {
+    fn test_jj_working_tree_diff() {
         let Some(temp) = setup_test_repo() else {
-            eprintln!("Skipping test: hg command not available");
+            eprintln!("Skipping test: jj command not available");
             return;
         };
 
         // Use from_path directly to avoid set_current_dir race conditions
         let backend =
-            HgBackend::from_path(temp.path().to_path_buf()).expect("Failed to create hg backend");
+            JjBackend::from_path(temp.path().to_path_buf()).expect("Failed to create jj backend");
 
         assert_eq!(backend.info().root_path, temp.path());
-        assert_eq!(backend.info().vcs_type, VcsType::Mercurial);
+        assert_eq!(backend.info().vcs_type, VcsType::Jujutsu);
 
         let files = backend.get_working_tree_diff().expect("Failed to get diff");
 
@@ -250,15 +262,15 @@ mod tests {
     }
 
     #[test]
-    fn test_hg_fetch_context_lines() {
+    fn test_jj_fetch_context_lines() {
         let Some(temp) = setup_test_repo() else {
-            eprintln!("Skipping test: hg command not available");
+            eprintln!("Skipping test: jj command not available");
             return;
         };
 
         // Use from_path directly to avoid set_current_dir race conditions
         let backend =
-            HgBackend::from_path(temp.path().to_path_buf()).expect("Failed to create hg backend");
+            JjBackend::from_path(temp.path().to_path_buf()).expect("Failed to create jj backend");
 
         assert_eq!(backend.info().root_path, temp.path());
 
