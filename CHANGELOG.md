@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.0] - 2026-01-15
+
+### Bug Fixes
+
+- Enforce scroll bounds to prevent scrolling past content (#75)
+- `r` when focused on file viewer should mark file reviewed (#85)
+- Lines at the bottom of diff were clipped (#89)
+
+### Features
+
+- Use `/` to enter search mode (#79)
+- Support command `:clear` to clear comments (#80)
+- Improve commenting experience navigation (#83)
+- Improve color theme contrast (#84)
+- Support cmd+delete to delete last word in comment (#87)
+- Add line wrapping for unified view (#88)
 ## [0.2.0] - 2026-01-13
 
 ### Bug Fixes
