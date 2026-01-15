@@ -902,12 +902,22 @@ impl App {
             return 1;
         }
 
-        let header_lines = 2; // File header + spacing after
+        let header_lines = 1; // File header
+        let spacing_lines = 1; // Blank line between files
         let mut content_lines = 0;
+        let mut comment_lines = 0;
+
+        if let Some(review) = self.session.files.get(path) {
+            for comment in &review.file_comments {
+                comment_lines += Self::comment_display_lines(comment);
+            }
+        }
 
         if file.is_binary || file.hunks.is_empty() {
             content_lines = 1;
         } else {
+            let line_comments = self.session.files.get(path).map(|r| &r.line_comments);
+
             for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
                 // Calculate gap before this hunk
                 let prev_hunk = if hunk_idx > 0 {
@@ -935,11 +945,37 @@ impl App {
                 }
 
                 // Hunk header + diff lines
-                content_lines += 1 + hunk.lines.len();
+                content_lines += 1; // Hunk header
+
+                for diff_line in &hunk.lines {
+                    content_lines += 1;
+
+                    if let Some(line_comments) = line_comments {
+                        if let Some(old_ln) = diff_line.old_lineno
+                            && let Some(comments) = line_comments.get(&old_ln)
+                        {
+                            for comment in comments {
+                                if comment.side == Some(LineSide::Old) {
+                                    comment_lines += Self::comment_display_lines(comment);
+                                }
+                            }
+                        }
+
+                        if let Some(new_ln) = diff_line.new_lineno
+                            && let Some(comments) = line_comments.get(&new_ln)
+                        {
+                            for comment in comments {
+                                if comment.side != Some(LineSide::Old) {
+                                    comment_lines += Self::comment_display_lines(comment);
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 
-        header_lines + content_lines.max(1) - 1 // -1 because spacing is counted separately
+        header_lines + comment_lines + content_lines + spacing_lines
     }
 
     fn update_current_file_from_cursor(&mut self) {
