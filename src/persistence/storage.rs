@@ -88,37 +88,43 @@ pub fn find_session_for_commit(
         .and_then(|n| n.to_str())
         .unwrap_or("unknown");
 
-    // Find all session files for this repo
-    let mut matching_sessions: Vec<PathBuf> = fs::read_dir(&reviews_dir)?
+    let short_commit = if base_commit.len() >= 7 {
+        &base_commit[..7]
+    } else {
+        base_commit
+    };
+
+    // Collect matching files sorted by modification time (most recent first)
+    let mut matching_files: Vec<_> = fs::read_dir(&reviews_dir)?
         .filter_map(|entry| entry.ok())
         .filter(|entry| {
-            entry
-                .file_name()
-                .to_str()
-                .is_some_and(|name| name.starts_with(repo_name) && name.ends_with(".json"))
+            // Filter by filename pattern first (faster than loading files)
+            entry.file_name().to_str().is_some_and(|name| {
+                name.starts_with(repo_name)
+                    && name.contains(short_commit)
+                    && name.ends_with(".json")
+            })
         })
         .filter_map(|entry| {
             let path = entry.path();
-            // Load and check if this session matches our criteria
-            if let Ok(session) = load_session(&path) {
-                if session.base_commit == base_commit && session.diff_source == diff_source {
-                    return Some(path);
-                }
-            }
-            None
+            let modified = fs::metadata(&path).ok()?.modified().ok()?;
+            Some((path, modified))
         })
         .collect();
 
     // Sort by modification time, most recent first
-    matching_sessions.sort_by_key(|path| {
-        std::cmp::Reverse(
-            fs::metadata(path)
-                .ok()
-                .and_then(|m| m.modified().ok())
-        )
-    });
+    matching_files.sort_by_key(|(_, modified)| std::cmp::Reverse(*modified));
 
-    Ok(matching_sessions.first().cloned())
+    // Load sessions in order and return first match
+    for (path, _) in matching_files {
+        if let Ok(session) = load_session(&path) {
+            if session.base_commit == base_commit && session.diff_source == diff_source {
+                return Ok(Some(path));
+            }
+        }
+    }
+
+    Ok(None)
 }
 
 #[cfg(test)]
