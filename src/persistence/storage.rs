@@ -214,7 +214,9 @@ pub fn load_latest_session_for_context(
             .and_then(|m| m.modified().ok())
             .unwrap_or(SystemTime::UNIX_EPOCH);
 
-        b_modified.cmp(&a_modified).then_with(|| a.file_name().cmp(&b.file_name()))
+        b_modified
+            .cmp(&a_modified)
+            .then_with(|| a.file_name().cmp(&b.file_name()))
     });
 
     let mut legacy_candidate = None;
@@ -275,7 +277,7 @@ mod tests {
             Some("main".to_string()),
             SessionDiffSource::WorkingTree,
         );
-        session.add_file(PathBuf::from("src/main.rs"), FileStatus::Modified);   
+        session.add_file(PathBuf::from("src/main.rs"), FileStatus::Modified);
         session
     }
 
@@ -297,7 +299,8 @@ mod tests {
 
     fn with_test_reviews_dir() -> TestReviewsDirGuard<'static> {
         let lock = TEST_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
-        let path = std::env::temp_dir().join(format!("tuicr-reviews-test-{}", uuid::Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("tuicr-reviews-test-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&path).unwrap();
         unsafe {
             std::env::set_var("TUICR_REVIEWS_DIR", path.as_os_str());
@@ -327,7 +330,10 @@ mod tests {
         let obj = value.as_object_mut().unwrap();
         obj.remove("branch_name");
         obj.remove("diff_source");
-        obj.insert("version".to_string(), serde_json::Value::String("1.0".to_string()));
+        obj.insert(
+            "version".to_string(),
+            serde_json::Value::String("1.0".to_string()),
+        );
 
         let id_fragment = session.id.split('-').next().unwrap_or(&session.id);
         let path = reviews_dir.join(format!("legacy_{id_fragment}.json"));
@@ -705,6 +711,9 @@ mod tests {
 
         // then
         assert_eq!(selected.base_commit, "head-a");
-        assert_eq!(normalize_repo_path(&selected.repo_path), normalize_repo_path(&repo_a));
+        assert_eq!(
+            normalize_repo_path(&selected.repo_path),
+            normalize_repo_path(&repo_a)
+        );
     }
 }

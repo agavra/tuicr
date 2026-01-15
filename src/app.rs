@@ -2,7 +2,10 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use crate::error::{Result, TuicrError};
-use crate::model::{Comment, CommentType, DiffFile, DiffLine, LineRange, LineSide, ReviewSession, SessionDiffSource};
+use crate::model::{
+    Comment, CommentType, DiffFile, DiffLine, LineRange, LineSide, ReviewSession,
+    SessionDiffSource,
+};
 use crate::persistence::load_latest_session_for_context;
 use crate::theme::Theme;
 use crate::vcs::git::calculate_gap;
@@ -325,19 +328,12 @@ impl App {
                     return Err(TuicrError::NoChanges);
                 }
 
-                let session =
-<<<<<<< HEAD
-                    ReviewSession::new(vcs_info.root_path.clone(), vcs_info.head_commit.clone());
-||||||| parent of acd5ca5 (feat: add multi-session and multi-repo support with performance optimizations)
-                    ReviewSession::new(repo_info.root_path.clone(), repo_info.head_commit.clone());
-=======
-                    ReviewSession::new(
-                        repo_info.root_path.clone(),
-                        repo_info.head_commit.clone(),
-                        repo_info.branch_name.clone(),
-                        SessionDiffSource::WorkingTree,
-                    );
->>>>>>> acd5ca5 (feat: add multi-session and multi-repo support with performance optimizations)
+                let session = ReviewSession::new(
+                    vcs_info.root_path.clone(),
+                    vcs_info.head_commit.clone(),
+                    vcs_info.branch_name.clone(),
+                    SessionDiffSource::WorkingTree,
+                );
 
                 Ok(Self {
                     theme,
