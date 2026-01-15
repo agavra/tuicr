@@ -18,7 +18,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo check
-      - run: cargo check --features hg
+      - run: cargo check --features hg,jj
 
   fmt:
     name: Format
@@ -41,7 +41,7 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy -- -D warnings
-      - run: cargo clippy --features hg -- -D warnings
+      - run: cargo clippy --features hg,jj -- -D warnings
 
   test:
     name: Test
@@ -54,4 +54,6 @@ jobs:
       - run: cargo test
       - name: Install Mercurial (if missing)
         run: command -v hg || (sudo apt-get update && sudo apt-get install -y mercurial)
-      - run: cargo test --features hg
+      - name: Install Jujutsu (if missing)
+        run: command -v jj || cargo install jj-cli --locked
+      - run: cargo test --features hg,jj

@@ -1,3 +1,8 @@
+//! Unified diff parser for text-based VCS backends (hg, jj).
+//!
+//! Parses unified diff format output from CLI tools into DiffFile structures.
+//! Git uses the native git2 library instead and has its own parser.
+
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
@@ -7,18 +12,31 @@ use crate::syntax::SyntaxHighlighter;
 
 static HIGHLIGHTER: LazyLock<SyntaxHighlighter> = LazyLock::new(SyntaxHighlighter::new);
 
-/// Parse unified diff output from `hg diff` into DiffFile structures
-pub fn parse_unified_diff(diff_text: &str) -> Result<Vec<DiffFile>> {
+/// Diff format variants for different VCS tools.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffFormat {
+    /// Mercurial format: "diff -r" headers, paths may have timestamps
+    Hg,
+    /// Git-style format: "diff --git" headers (used by jj, git patches)
+    GitStyle,
+}
+
+/// Parse unified diff output into DiffFile structures.
+pub fn parse_unified_diff(diff_text: &str, format: DiffFormat) -> Result<Vec<DiffFile>> {
     let mut files: Vec<DiffFile> = Vec::new();
     let mut lines = diff_text.lines().peekable();
 
-    while let Some(line) = lines.next() {
-        // Look for "diff -r" or "diff --git" style headers
-        if line.starts_with("diff ") {
-            let (old_path, new_path, status) = parse_file_header(&mut lines);
+    let header_prefix = match format {
+        DiffFormat::Hg => "diff ",
+        DiffFormat::GitStyle => "diff --git ",
+    };
 
-            // Check if binary
-            if lines.peek().is_some_and(|l| l.contains("Binary file")) {
+    while let Some(line) = lines.next() {
+        if line.starts_with(header_prefix) {
+            let (old_path, new_path, status) = parse_file_header(&mut lines, format);
+
+            // Check if binary - hg uses "Binary file", jj/git use just "Binary"
+            if lines.peek().is_some_and(|l| l.contains("Binary")) {
                 lines.next(); // consume binary message
                 files.push(DiffFile {
                     old_path,
@@ -67,6 +85,7 @@ pub fn parse_unified_diff(diff_text: &str) -> Result<Vec<DiffFile>> {
 
 fn parse_file_header<'a, I>(
     lines: &mut std::iter::Peekable<I>,
+    format: DiffFormat,
 ) -> (Option<PathBuf>, Option<PathBuf>, FileStatus)
 where
     I: Iterator<Item = &'a str>,
@@ -80,15 +99,23 @@ where
         if line.starts_with("---") {
             let path_str = line.trim_start_matches("--- ").trim_start_matches("a/");
             if path_str != "/dev/null" {
-                // Remove trailing timestamp if present (hg format: "path\ttimestamp")
-                let path = path_str.split('\t').next().unwrap_or(path_str);
+                // Hg format may include timestamps after tab
+                let path = if format == DiffFormat::Hg {
+                    path_str.split('\t').next().unwrap_or(path_str)
+                } else {
+                    path_str
+                };
                 old_path = Some(PathBuf::from(path));
             }
             lines.next();
         } else if line.starts_with("+++") {
             let path_str = line.trim_start_matches("+++ ").trim_start_matches("b/");
             if path_str != "/dev/null" {
-                let path = path_str.split('\t').next().unwrap_or(path_str);
+                let path = if format == DiffFormat::Hg {
+                    path_str.split('\t').next().unwrap_or(path_str)
+                } else {
+                    path_str
+                };
                 new_path = Some(PathBuf::from(path));
             }
             lines.next();
@@ -108,7 +135,7 @@ where
         } else if line.starts_with("@@") || line.starts_with("diff ") || line.contains("Binary") {
             break;
         } else {
-            lines.next(); // Skip other metadata lines (rename to, copy to, etc.)
+            lines.next(); // Skip other metadata lines (rename to, copy to, index, etc.)
         }
     }
 
@@ -262,240 +289,37 @@ fn parse_range(s: &str) -> (u32, u32) {
 mod tests {
     use super::*;
 
-    #[test]
-    fn should_parse_simple_diff() {
-        let diff = r#"diff -r abc123 test.rs
---- a/test.rs	Thu Jan 01 00:00:00 1970 +0000
-+++ b/test.rs	Thu Jan 01 00:00:00 1970 +0000
-@@ -1,3 +1,4 @@
- fn main() {
-+    println!("hello");
-     println!("world");
- }
-"#;
-
-        let result = parse_unified_diff(diff).unwrap();
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].status, FileStatus::Modified);
-        assert_eq!(result[0].hunks.len(), 1);
-        assert_eq!(result[0].hunks[0].lines.len(), 4);
-    }
-
-    #[test]
-    fn should_parse_new_file() {
-        let diff = r#"diff -r 000000000000 new_file.rs
---- /dev/null
-+++ b/new_file.rs
-@@ -0,0 +1,2 @@
-+fn new() {
-+}
-"#;
-
-        let result = parse_unified_diff(diff).unwrap();
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].status, FileStatus::Added);
-        assert!(result[0].old_path.is_none());
-        assert_eq!(
-            result[0].new_path.as_ref().unwrap().to_str().unwrap(),
-            "new_file.rs"
-        );
-    }
-
-    #[test]
-    fn should_parse_deleted_file() {
-        let diff = r#"diff -r abc123 old_file.rs
---- a/old_file.rs
-+++ /dev/null
-@@ -1,2 +0,0 @@
--fn old() {
--}
-"#;
-
-        let result = parse_unified_diff(diff).unwrap();
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].status, FileStatus::Deleted);
-        assert_eq!(
-            result[0].old_path.as_ref().unwrap().to_str().unwrap(),
-            "old_file.rs"
-        );
-        assert!(result[0].new_path.is_none());
-    }
+    // ============ Common tests ============
 
     #[test]
     fn should_return_no_changes_for_empty_diff() {
-        let diff = "";
-        let result = parse_unified_diff(diff);
-        assert!(matches!(result, Err(TuicrError::NoChanges)));
+        assert!(matches!(
+            parse_unified_diff("", DiffFormat::Hg),
+            Err(TuicrError::NoChanges)
+        ));
+        assert!(matches!(
+            parse_unified_diff("", DiffFormat::GitStyle),
+            Err(TuicrError::NoChanges)
+        ));
     }
 
     #[test]
-    fn should_parse_multiple_files() {
-        let diff = r#"diff -r abc123 file1.rs
---- a/file1.rs
-+++ b/file1.rs
-@@ -1,1 +1,2 @@
- line1
-+line2
-diff -r abc123 file2.rs
---- a/file2.rs
-+++ b/file2.rs
-@@ -1,2 +1,1 @@
- keep
--remove
-"#;
+    fn should_parse_hunk_header() {
+        let result = parse_hunk_header("@@ -1,3 +1,4 @@");
+        assert_eq!(result, Some((1, 3, 1, 4)));
 
-        let result = parse_unified_diff(diff).unwrap();
-        assert_eq!(result.len(), 2);
-        assert_eq!(
-            result[0].new_path.as_ref().unwrap().to_str().unwrap(),
-            "file1.rs"
-        );
-        assert_eq!(
-            result[1].new_path.as_ref().unwrap().to_str().unwrap(),
-            "file2.rs"
-        );
-    }
-
-    #[test]
-    fn should_parse_multiple_hunks() {
-        let diff = r#"diff -r abc123 multi.rs
---- a/multi.rs
-+++ b/multi.rs
-@@ -1,3 +1,4 @@
- fn first() {
-+    // added
- }
-
-@@ -10,3 +11,4 @@
- fn second() {
-+    // also added
- }
-"#;
-
-        let result = parse_unified_diff(diff).unwrap();
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].hunks.len(), 2);
-        assert_eq!(result[0].hunks[0].old_start, 1);
-        assert_eq!(result[0].hunks[1].old_start, 10);
-    }
-
-    #[test]
-    fn should_parse_renamed_file() {
-        let diff = r#"diff -r abc123 new_name.rs
-rename from old_name.rs
-rename to new_name.rs
---- a/old_name.rs
-+++ b/new_name.rs
-@@ -1,1 +1,1 @@
--old content
-+new content
-"#;
-
-        let result = parse_unified_diff(diff).unwrap();
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].status, FileStatus::Renamed);
-        assert_eq!(
-            result[0].old_path.as_ref().unwrap().to_str().unwrap(),
-            "old_name.rs"
-        );
-        assert_eq!(
-            result[0].new_path.as_ref().unwrap().to_str().unwrap(),
-            "new_name.rs"
-        );
-    }
-
-    #[test]
-    fn should_parse_binary_file() {
-        let diff = r#"diff -r abc123 image.png
-Binary file image.png has changed
-"#;
-
-        let result = parse_unified_diff(diff).unwrap();
-        assert_eq!(result.len(), 1);
-        assert!(result[0].is_binary);
-        assert!(result[0].hunks.is_empty());
-    }
-
-    #[test]
-    fn should_handle_no_newline_marker() {
-        let diff = r#"diff -r abc123 no_newline.rs
---- a/no_newline.rs
-+++ b/no_newline.rs
-@@ -1,1 +1,1 @@
--old
-\ No newline at end of file
-+new
-\ No newline at end of file
-"#;
-
-        let result = parse_unified_diff(diff).unwrap();
-        assert_eq!(result.len(), 1);
-        // The "\ No newline" markers should be skipped
-        assert_eq!(result[0].hunks[0].lines.len(), 2);
-    }
-
-    #[test]
-    fn should_parse_line_numbers_correctly() {
-        let diff = r#"diff -r abc123 nums.rs
---- a/nums.rs
-+++ b/nums.rs
-@@ -5,4 +5,5 @@
- context at 5
--deleted at 6
-+added at 6
-+added at 7
- context at 7->8
-"#;
-
-        let result = parse_unified_diff(diff).unwrap();
-        let lines = &result[0].hunks[0].lines;
-
-        // Context line at old:5, new:5
-        assert_eq!(lines[0].origin, LineOrigin::Context);
-        assert_eq!(lines[0].old_lineno, Some(5));
-        assert_eq!(lines[0].new_lineno, Some(5));
-
-        // Deletion at old:6
-        assert_eq!(lines[1].origin, LineOrigin::Deletion);
-        assert_eq!(lines[1].old_lineno, Some(6));
-        assert_eq!(lines[1].new_lineno, None);
-
-        // Addition at new:6
-        assert_eq!(lines[2].origin, LineOrigin::Addition);
-        assert_eq!(lines[2].old_lineno, None);
-        assert_eq!(lines[2].new_lineno, Some(6));
-
-        // Addition at new:7
-        assert_eq!(lines[3].origin, LineOrigin::Addition);
-        assert_eq!(lines[3].old_lineno, None);
-        assert_eq!(lines[3].new_lineno, Some(7));
-
-        // Context at old:7, new:8
-        assert_eq!(lines[4].origin, LineOrigin::Context);
-        assert_eq!(lines[4].old_lineno, Some(7));
-        assert_eq!(lines[4].new_lineno, Some(8));
+        let result = parse_hunk_header("@@ -10,5 +20,8 @@ context");
+        assert_eq!(result, Some((10, 5, 20, 8)));
     }
 
     #[test]
     fn should_parse_hunk_header_without_count() {
-        // When count is omitted, it defaults to 1
         let (old_start, old_count, new_start, new_count) =
             parse_hunk_header("@@ -5 +10 @@").unwrap();
         assert_eq!(old_start, 5);
         assert_eq!(old_count, 1);
         assert_eq!(new_start, 10);
         assert_eq!(new_count, 1);
-    }
-
-    #[test]
-    fn should_parse_hunk_header_with_context() {
-        // Hunk headers can have optional context after the second @@
-        let (old_start, old_count, new_start, new_count) =
-            parse_hunk_header("@@ -1,5 +1,6 @@ fn main() {").unwrap();
-        assert_eq!(old_start, 1);
-        assert_eq!(old_count, 5);
-        assert_eq!(new_start, 1);
-        assert_eq!(new_count, 6);
     }
 
     #[test]
@@ -518,8 +342,324 @@ Binary file image.png has changed
 
     #[test]
     fn should_handle_invalid_range() {
-        // Invalid numbers default to 1
         assert_eq!(parse_range("abc"), (1, 1));
         assert_eq!(parse_range("abc,def"), (1, 1));
+    }
+
+    // ============ Hg format tests ============
+
+    #[test]
+    fn hg_should_parse_simple_diff() {
+        let diff = r#"diff -r abc123 test.rs
+--- a/test.rs	Thu Jan 01 00:00:00 1970 +0000
++++ b/test.rs	Thu Jan 01 00:00:00 1970 +0000
+@@ -1,3 +1,4 @@
+ fn main() {
++    println!("hello");
+     println!("world");
+ }
+"#;
+
+        let result = parse_unified_diff(diff, DiffFormat::Hg).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].status, FileStatus::Modified);
+        assert_eq!(result[0].hunks.len(), 1);
+        assert_eq!(result[0].hunks[0].lines.len(), 4);
+    }
+
+    #[test]
+    fn hg_should_parse_new_file() {
+        let diff = r#"diff -r 000000000000 new_file.rs
+--- /dev/null
++++ b/new_file.rs
+@@ -0,0 +1,2 @@
++fn new() {
++}
+"#;
+
+        let result = parse_unified_diff(diff, DiffFormat::Hg).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].status, FileStatus::Added);
+        assert!(result[0].old_path.is_none());
+        assert_eq!(
+            result[0].new_path.as_ref().unwrap().to_str().unwrap(),
+            "new_file.rs"
+        );
+    }
+
+    #[test]
+    fn hg_should_parse_deleted_file() {
+        let diff = r#"diff -r abc123 old_file.rs
+--- a/old_file.rs
++++ /dev/null
+@@ -1,2 +0,0 @@
+-fn old() {
+-}
+"#;
+
+        let result = parse_unified_diff(diff, DiffFormat::Hg).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].status, FileStatus::Deleted);
+        assert_eq!(
+            result[0].old_path.as_ref().unwrap().to_str().unwrap(),
+            "old_file.rs"
+        );
+        assert!(result[0].new_path.is_none());
+    }
+
+    #[test]
+    fn hg_should_parse_multiple_files() {
+        let diff = r#"diff -r abc123 file1.rs
+--- a/file1.rs
++++ b/file1.rs
+@@ -1,1 +1,2 @@
+ line1
++line2
+diff -r abc123 file2.rs
+--- a/file2.rs
++++ b/file2.rs
+@@ -1,2 +1,1 @@
+ keep
+-remove
+"#;
+
+        let result = parse_unified_diff(diff, DiffFormat::Hg).unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(
+            result[0].new_path.as_ref().unwrap().to_str().unwrap(),
+            "file1.rs"
+        );
+        assert_eq!(
+            result[1].new_path.as_ref().unwrap().to_str().unwrap(),
+            "file2.rs"
+        );
+    }
+
+    #[test]
+    fn hg_should_parse_multiple_hunks() {
+        let diff = r#"diff -r abc123 multi.rs
+--- a/multi.rs
++++ b/multi.rs
+@@ -1,3 +1,4 @@
+ fn first() {
++    // added
+ }
+
+@@ -10,3 +11,4 @@
+ fn second() {
++    // also added
+ }
+"#;
+
+        let result = parse_unified_diff(diff, DiffFormat::Hg).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].hunks.len(), 2);
+        assert_eq!(result[0].hunks[0].old_start, 1);
+        assert_eq!(result[0].hunks[1].old_start, 10);
+    }
+
+    #[test]
+    fn hg_should_parse_renamed_file() {
+        let diff = r#"diff -r abc123 new_name.rs
+rename from old_name.rs
+rename to new_name.rs
+--- a/old_name.rs
++++ b/new_name.rs
+@@ -1,1 +1,1 @@
+-old content
++new content
+"#;
+
+        let result = parse_unified_diff(diff, DiffFormat::Hg).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].status, FileStatus::Renamed);
+        assert_eq!(
+            result[0].old_path.as_ref().unwrap().to_str().unwrap(),
+            "old_name.rs"
+        );
+        assert_eq!(
+            result[0].new_path.as_ref().unwrap().to_str().unwrap(),
+            "new_name.rs"
+        );
+    }
+
+    #[test]
+    fn hg_should_parse_binary_file() {
+        let diff = r#"diff -r abc123 image.png
+Binary file image.png has changed
+"#;
+
+        let result = parse_unified_diff(diff, DiffFormat::Hg).unwrap();
+        assert_eq!(result.len(), 1);
+        assert!(result[0].is_binary);
+        assert!(result[0].hunks.is_empty());
+    }
+
+    #[test]
+    fn hg_should_handle_no_newline_marker() {
+        let diff = r#"diff -r abc123 no_newline.rs
+--- a/no_newline.rs
++++ b/no_newline.rs
+@@ -1,1 +1,1 @@
+-old
+\ No newline at end of file
++new
+\ No newline at end of file
+"#;
+
+        let result = parse_unified_diff(diff, DiffFormat::Hg).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].hunks[0].lines.len(), 2);
+    }
+
+    #[test]
+    fn hg_should_parse_line_numbers_correctly() {
+        let diff = r#"diff -r abc123 nums.rs
+--- a/nums.rs
++++ b/nums.rs
+@@ -5,4 +5,5 @@
+ context at 5
+-deleted at 6
++added at 6
++added at 7
+ context at 7->8
+"#;
+
+        let result = parse_unified_diff(diff, DiffFormat::Hg).unwrap();
+        let lines = &result[0].hunks[0].lines;
+
+        assert_eq!(lines[0].origin, LineOrigin::Context);
+        assert_eq!(lines[0].old_lineno, Some(5));
+        assert_eq!(lines[0].new_lineno, Some(5));
+
+        assert_eq!(lines[1].origin, LineOrigin::Deletion);
+        assert_eq!(lines[1].old_lineno, Some(6));
+        assert_eq!(lines[1].new_lineno, None);
+
+        assert_eq!(lines[2].origin, LineOrigin::Addition);
+        assert_eq!(lines[2].old_lineno, None);
+        assert_eq!(lines[2].new_lineno, Some(6));
+
+        assert_eq!(lines[3].origin, LineOrigin::Addition);
+        assert_eq!(lines[3].old_lineno, None);
+        assert_eq!(lines[3].new_lineno, Some(7));
+
+        assert_eq!(lines[4].origin, LineOrigin::Context);
+        assert_eq!(lines[4].old_lineno, Some(7));
+        assert_eq!(lines[4].new_lineno, Some(8));
+    }
+
+    // ============ Git-style (jj) format tests ============
+
+    #[test]
+    fn git_should_parse_simple_diff() {
+        let diff = r#"diff --git a/file.txt b/file.txt
+--- a/file.txt
++++ b/file.txt
+@@ -1,3 +1,4 @@
+ line1
++added
+ line2
+ line3
+"#;
+        let files = parse_unified_diff(diff, DiffFormat::GitStyle).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].new_path, Some(PathBuf::from("file.txt")));
+        assert_eq!(files[0].status, FileStatus::Modified);
+        assert_eq!(files[0].hunks.len(), 1);
+        assert_eq!(files[0].hunks[0].lines.len(), 4);
+    }
+
+    #[test]
+    fn git_should_parse_new_file() {
+        let diff = r#"diff --git a/new.txt b/new.txt
+new file mode 100644
+--- /dev/null
++++ b/new.txt
+@@ -0,0 +1,2 @@
++line1
++line2
+"#;
+        let files = parse_unified_diff(diff, DiffFormat::GitStyle).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].status, FileStatus::Added);
+    }
+
+    #[test]
+    fn git_should_parse_deleted_file() {
+        let diff = r#"diff --git a/old.txt b/old.txt
+deleted file mode 100644
+--- a/old.txt
++++ /dev/null
+@@ -1,2 +0,0 @@
+-line1
+-line2
+"#;
+        let files = parse_unified_diff(diff, DiffFormat::GitStyle).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].status, FileStatus::Deleted);
+    }
+
+    #[test]
+    fn git_should_parse_renamed_file() {
+        let diff = r#"diff --git a/old.txt b/new.txt
+rename from old.txt
+rename to new.txt
+"#;
+        let files = parse_unified_diff(diff, DiffFormat::GitStyle).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].status, FileStatus::Renamed);
+    }
+
+    #[test]
+    fn git_should_parse_multiple_files() {
+        let diff = r#"diff --git a/a.txt b/a.txt
+--- a/a.txt
++++ b/a.txt
+@@ -1 +1 @@
+-old
++new
+diff --git a/b.txt b/b.txt
+--- a/b.txt
++++ b/b.txt
+@@ -1 +1 @@
+-foo
++bar
+"#;
+        let files = parse_unified_diff(diff, DiffFormat::GitStyle).unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].new_path, Some(PathBuf::from("a.txt")));
+        assert_eq!(files[1].new_path, Some(PathBuf::from("b.txt")));
+    }
+
+    #[test]
+    fn git_should_calculate_line_numbers() {
+        let diff = r#"diff --git a/file.txt b/file.txt
+--- a/file.txt
++++ b/file.txt
+@@ -5,4 +5,5 @@
+ context
+-deleted
++added1
++added2
+ more
+"#;
+        let files = parse_unified_diff(diff, DiffFormat::GitStyle).unwrap();
+        let hunk = &files[0].hunks[0];
+
+        assert_eq!(hunk.lines[0].old_lineno, Some(5));
+        assert_eq!(hunk.lines[0].new_lineno, Some(5));
+
+        assert_eq!(hunk.lines[1].old_lineno, Some(6));
+        assert_eq!(hunk.lines[1].new_lineno, None);
+
+        assert_eq!(hunk.lines[2].old_lineno, None);
+        assert_eq!(hunk.lines[2].new_lineno, Some(6));
+
+        assert_eq!(hunk.lines[3].old_lineno, None);
+        assert_eq!(hunk.lines[3].new_lineno, Some(7));
+
+        assert_eq!(hunk.lines[4].old_lineno, Some(7));
+        assert_eq!(hunk.lines[4].new_lineno, Some(8));
     }
 }

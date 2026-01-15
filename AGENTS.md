@@ -17,16 +17,19 @@ src/
 ├── error.rs             # Error types (TuicrError enum)
 │
 ├── vcs/                 # VCS abstraction layer
-│   ├── mod.rs           # detect_vcs(): auto-detect VCS (git first, then hg)
+│   ├── mod.rs           # detect_vcs(): auto-detect VCS (jj first, then git, then hg)
 │   ├── traits.rs        # VcsBackend trait, VcsInfo, VcsType, CommitInfo
-│   ├── git/             # Git backend
+│   ├── diff_parser.rs   # Unified diff text parser (shared by hg/jj)
+│   │                    # DiffFormat enum: Hg (with timestamps), GitStyle (jj/git patches)
+│   ├── git/             # Git backend (uses native git2 library, not diff_parser)
 │   │   ├── mod.rs       # GitBackend: wraps git2 library
 │   │   ├── repository.rs # CommitInfo, get_recent_commits()
 │   │   ├── diff.rs      # get_working_tree_diff(), get_commit_range_diff()
 │   │   └── context.rs   # fetch_context_lines() for gap expansion
-│   └── hg/              # Mercurial backend (optional, --features hg)
-│       ├── mod.rs       # HgBackend: uses hg CLI commands
-│       └── diff_parser.rs # Parse unified diff from `hg diff`
+│   ├── hg/              # Mercurial backend (optional, --features hg)
+│   │   └── mod.rs       # HgBackend: uses hg CLI, parses with diff_parser::Hg
+│   └── jj/              # Jujutsu backend (optional, --features jj)
+│       └── mod.rs       # JjBackend: uses jj CLI, parses with diff_parser::GitStyle
 │
 ├── model/
 │   ├── mod.rs
@@ -66,7 +69,7 @@ src/
 **VcsBackend** (`src/vcs/traits.rs`):
 - Trait abstracting VCS operations
 - Methods: `info()`, `get_working_tree_diff()`, `fetch_context_lines()`, `get_recent_commits()`, `get_commit_range_diff()`
-- Implementations: `GitBackend` (always available), `HgBackend` (--features hg)
+- Implementations: `GitBackend` (always available), `HgBackend` (--features hg), `JjBackend` (--features jj)
 
 **InputMode** (`src/app.rs`):
 - `Normal` - default navigation mode
@@ -85,7 +88,7 @@ src/
 
 ### Data Flow
 
-1. **Startup**: `App::new()` calls `detect_vcs()` which tries Git first, then Mercurial (if `--features hg`). Parses diff and loads existing session if any
+1. **Startup**: `App::new()` calls `detect_vcs()` which tries Jujutsu first (if `--features jj`), then Git, then Mercurial (if `--features hg`). Parses diff and loads existing session if any
 2. **Render**: `ui::render()` draws the TUI based on `App` state
 3. **Input**: `crossterm` events → `map_key_to_action` → match on Action in main loop
 4. **Persistence**: `:w` calls `save_session()`, writes JSON to `~/.local/share/tuicr/reviews/`
