@@ -3,10 +3,12 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use chrono::{DateTime, Utc};
+
 use crate::error::{Result, TuicrError};
 use crate::model::{DiffFile, DiffLine, FileStatus, LineOrigin};
 use crate::vcs::diff_parser::{self, DiffFormat};
-use crate::vcs::traits::{VcsBackend, VcsInfo, VcsType};
+use crate::vcs::traits::{CommitInfo, VcsBackend, VcsInfo, VcsType};
 
 /// Jujutsu backend implementation using jj CLI commands
 pub struct JjBackend {
@@ -123,9 +125,88 @@ impl VcsBackend for JjBackend {
         Ok(result)
     }
 
-    // Note: get_recent_commits and get_commit_range_diff use default
-    // implementations that return empty/error, since we only support
-    // working tree diff for jj initially
+    fn get_recent_commits(&self, count: usize) -> Result<Vec<CommitInfo>> {
+        // Use jj log with a template to get structured output
+        // Template fields separated by \x00, records separated by \x01
+        // Note: jj uses change_id for identifying changes, commit_id for the underlying git commit
+        let template = r#"commit_id ++ "\x00" ++ commit_id.short() ++ "\x00" ++ description.first_line() ++ "\x00" ++ author.email() ++ "\x00" ++ committer.timestamp() ++ "\x01""#;
+        let output = run_jj_command(
+            &self.info.root_path,
+            &[
+                "log",
+                "-r",
+                "::@",
+                "--limit",
+                &count.to_string(),
+                "--no-graph",
+                "-T",
+                template,
+            ],
+        )?;
+
+        let mut commits = Vec::new();
+        for record in output.split('\x01') {
+            let record = record.trim();
+            if record.is_empty() {
+                continue;
+            }
+
+            let parts: Vec<&str> = record.split('\x00').collect();
+            if parts.len() < 5 {
+                continue;
+            }
+
+            let id = parts[0].to_string();
+            let short_id = parts[1].to_string();
+            let summary = parts[2].to_string();
+            let author = parts[3].to_string();
+
+            // jj timestamp format is ISO 8601: "2024-01-15T10:30:00.000-05:00"
+            let time = DateTime::parse_from_rfc3339(parts[4])
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
+
+            commits.push(CommitInfo {
+                id,
+                short_id,
+                summary,
+                author,
+                time,
+            });
+        }
+
+        Ok(commits)
+    }
+
+    fn get_commit_range_diff(&self, commit_ids: &[String]) -> Result<Vec<DiffFile>> {
+        if commit_ids.is_empty() {
+            return Err(TuicrError::NoChanges);
+        }
+
+        // commit_ids are ordered from oldest to newest
+        let oldest = &commit_ids[0];
+        let newest = commit_ids.last().unwrap();
+
+        // Get the parent of the oldest commit to include its changes
+        // In jj, we use {commit}- to get the parent(s)
+        let diff_output = run_jj_command(
+            &self.info.root_path,
+            &[
+                "diff",
+                "--from",
+                &format!("{}-", oldest),
+                "--to",
+                newest,
+                "--git",
+            ],
+        )?;
+
+        if diff_output.trim().is_empty() {
+            return Err(TuicrError::NoChanges);
+        }
+
+        diff_parser::parse_unified_diff(&diff_output, DiffFormat::GitStyle)
+    }
 }
 
 /// Run a jj command and return its stdout
@@ -282,5 +363,139 @@ mod tests {
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[0].content, "hello world");
         assert_eq!(lines[1].content, "modified line");
+    }
+
+    /// Create a test repo with multiple commits (no pending changes).
+    /// Returns None if jj is not available.
+    fn setup_test_repo_with_commits() -> Option<tempfile::TempDir> {
+        if !jj_available() {
+            return None;
+        }
+
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let root = temp_dir.path();
+
+        // Initialize jj repo
+        let output = Command::new("jj")
+            .args(["git", "init"])
+            .current_dir(root)
+            .output()
+            .expect("Failed to init jj repo");
+
+        if !output.status.success() {
+            eprintln!(
+                "jj git init failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return None;
+        }
+
+        // First commit
+        fs::write(root.join("file1.txt"), "first file\n").expect("Failed to write file");
+        Command::new("jj")
+            .args(["commit", "-m", "First commit"])
+            .current_dir(root)
+            .output()
+            .expect("Failed to commit");
+
+        // Second commit
+        fs::write(root.join("file2.txt"), "second file\n").expect("Failed to write file");
+        Command::new("jj")
+            .args(["commit", "-m", "Second commit"])
+            .current_dir(root)
+            .output()
+            .expect("Failed to commit");
+
+        // Third commit - modify first file
+        fs::write(root.join("file1.txt"), "first file\nmodified\n").expect("Failed to write file");
+        Command::new("jj")
+            .args(["commit", "-m", "Third commit"])
+            .current_dir(root)
+            .output()
+            .expect("Failed to commit");
+
+        Some(temp_dir)
+    }
+
+    #[test]
+    fn test_jj_get_recent_commits() {
+        let Some(temp) = setup_test_repo_with_commits() else {
+            eprintln!("Skipping test: jj command not available");
+            return;
+        };
+
+        let backend =
+            JjBackend::from_path(temp.path().to_path_buf()).expect("Failed to create jj backend");
+
+        let commits = backend
+            .get_recent_commits(5)
+            .expect("Failed to get commits");
+
+        // jj creates a working copy commit on top, so we may have 4 commits
+        assert!(commits.len() >= 3, "Expected at least 3 commits");
+
+        // All commits should have valid ids
+        for commit in &commits {
+            assert!(!commit.id.is_empty());
+            assert!(!commit.short_id.is_empty());
+        }
+
+        // Check that our commit messages are present (may not be in exact order due to working copy)
+        let summaries: Vec<_> = commits.iter().map(|c| c.summary.as_str()).collect();
+        assert!(
+            summaries.iter().any(|s| s.contains("First commit")),
+            "Expected 'First commit' in {:?}",
+            summaries
+        );
+        assert!(
+            summaries.iter().any(|s| s.contains("Second commit")),
+            "Expected 'Second commit' in {:?}",
+            summaries
+        );
+        assert!(
+            summaries.iter().any(|s| s.contains("Third commit")),
+            "Expected 'Third commit' in {:?}",
+            summaries
+        );
+    }
+
+    #[test]
+    fn test_jj_get_commit_range_diff() {
+        let Some(temp) = setup_test_repo_with_commits() else {
+            eprintln!("Skipping test: jj command not available");
+            return;
+        };
+
+        let backend =
+            JjBackend::from_path(temp.path().to_path_buf()).expect("Failed to create jj backend");
+
+        let commits = backend
+            .get_recent_commits(10)
+            .expect("Failed to get commits");
+        assert!(commits.len() >= 3, "Expected at least 3 commits");
+
+        // Find the commits with our messages (skip empty working copy commit)
+        let named_commits: Vec<_> = commits
+            .iter()
+            .filter(|c| {
+                c.summary.contains("First commit")
+                    || c.summary.contains("Second commit")
+                    || c.summary.contains("Third commit")
+            })
+            .collect();
+
+        if named_commits.len() >= 2 {
+            // Get diff for two commits
+            let oldest = &named_commits[named_commits.len() - 1]; // First commit
+            let newest = &named_commits[0]; // Third commit
+
+            let commit_ids = vec![oldest.id.clone(), newest.id.clone()];
+            let diff = backend
+                .get_commit_range_diff(&commit_ids)
+                .expect("Failed to get commit range diff");
+
+            // Should have changes
+            assert!(!diff.is_empty(), "Expected non-empty diff");
+        }
     }
 }

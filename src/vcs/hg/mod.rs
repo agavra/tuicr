@@ -1,10 +1,12 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use chrono::{TimeZone, Utc};
+
 use crate::error::{Result, TuicrError};
 use crate::model::{DiffFile, DiffLine, FileStatus, LineOrigin};
 use crate::vcs::diff_parser::{self, DiffFormat};
-use crate::vcs::traits::{VcsBackend, VcsInfo, VcsType};
+use crate::vcs::traits::{CommitInfo, VcsBackend, VcsInfo, VcsType};
 
 /// Mercurial backend implementation using hg CLI commands
 pub struct HgBackend {
@@ -113,9 +115,108 @@ impl VcsBackend for HgBackend {
         Ok(result)
     }
 
-    // Note: get_recent_commits and get_commit_range_diff use default
-    // implementations that return empty/error, since we only support
-    // working tree diff for hg initially
+    fn get_recent_commits(&self, count: usize) -> Result<Vec<CommitInfo>> {
+        // Use hg log with a template to get structured output
+        // Template fields separated by \x00, records separated by \x01
+        let template =
+            "{node}\\x00{node|short}\\x00{desc|firstline}\\x00{author|user}\\x00{date|hgdate}\\x01";
+        let output = run_hg_command(
+            &self.info.root_path,
+            &["log", "-l", &count.to_string(), "--template", template],
+        )?;
+
+        let mut commits = Vec::new();
+        for record in output.split('\x01') {
+            let record = record.trim();
+            if record.is_empty() {
+                continue;
+            }
+
+            let parts: Vec<&str> = record.split('\x00').collect();
+            if parts.len() < 5 {
+                continue;
+            }
+
+            let id = parts[0].to_string();
+            let short_id = parts[1].to_string();
+            let summary = parts[2].to_string();
+            let author = parts[3].to_string();
+
+            // hgdate format is "unix_timestamp timezone_offset"
+            let time = parts[4]
+                .split_whitespace()
+                .next()
+                .and_then(|s| s.parse::<i64>().ok())
+                .and_then(|ts| Utc.timestamp_opt(ts, 0).single())
+                .unwrap_or_else(Utc::now);
+
+            commits.push(CommitInfo {
+                id,
+                short_id,
+                summary,
+                author,
+                time,
+            });
+        }
+
+        Ok(commits)
+    }
+
+    fn get_commit_range_diff(&self, commit_ids: &[String]) -> Result<Vec<DiffFile>> {
+        if commit_ids.is_empty() {
+            return Err(TuicrError::NoChanges);
+        }
+
+        // commit_ids are ordered from oldest to newest
+        //
+        // Note on Sapling/Mercurial compatibility:
+        // - Sapling (Meta's hg fork) has issues with full 40-char hashes in certain operations
+        // - We use 12-char short hashes which work with both standard Mercurial and Sapling
+        // - The parents() revset is used to find the parent commit for diffing
+        let oldest = &commit_ids[0];
+        let oldest_short = if oldest.len() > 12 {
+            &oldest[..12]
+        } else {
+            oldest.as_str()
+        };
+
+        let newest = commit_ids.last().unwrap();
+        let newest_short = if newest.len() > 12 {
+            &newest[..12]
+        } else {
+            newest.as_str()
+        };
+
+        // First, get the parent commit of the oldest
+        // We use "log -r 'parents({oldest})'" to get the parent hash
+        let parent_output = run_hg_command(
+            &self.info.root_path,
+            &[
+                "log",
+                "-r",
+                &format!("parents({})", oldest_short),
+                "--template",
+                "{node|short}",
+            ],
+        );
+
+        // If there's no parent (first commit), diff from null
+        let from_rev = match parent_output {
+            Ok(parent) if !parent.trim().is_empty() => parent.trim().to_string(),
+            _ => "null".to_string(),
+        };
+
+        let diff_output = run_hg_command(
+            &self.info.root_path,
+            &["diff", "-r", &from_rev, "-r", newest_short],
+        )?;
+
+        if diff_output.trim().is_empty() {
+            return Err(TuicrError::NoChanges);
+        }
+
+        diff_parser::parse_unified_diff(&diff_output, DiffFormat::Hg)
+    }
 }
 
 /// Run an hg command and return its stdout
@@ -270,5 +371,139 @@ mod tests {
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[0].content, "hello world");
         assert_eq!(lines[1].content, "modified line");
+    }
+
+    /// Create a test repo with multiple commits (no pending changes).
+    /// Returns None if hg is not available.
+    fn setup_test_repo_with_commits() -> Option<tempfile::TempDir> {
+        if !hg_available() {
+            return None;
+        }
+
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let root = temp_dir.path();
+
+        // Initialize hg repo
+        Command::new("hg")
+            .args(["init"])
+            .current_dir(root)
+            .output()
+            .expect("Failed to init hg repo");
+
+        // First commit
+        fs::write(root.join("file1.txt"), "first file\n").expect("Failed to write file");
+        Command::new("hg")
+            .args(["add", "file1.txt"])
+            .current_dir(root)
+            .output()
+            .expect("Failed to add file");
+        Command::new("hg")
+            .args(["commit", "-m", "First commit"])
+            .current_dir(root)
+            .output()
+            .expect("Failed to commit");
+
+        // Second commit
+        fs::write(root.join("file2.txt"), "second file\n").expect("Failed to write file");
+        Command::new("hg")
+            .args(["add", "file2.txt"])
+            .current_dir(root)
+            .output()
+            .expect("Failed to add file");
+        Command::new("hg")
+            .args(["commit", "-m", "Second commit"])
+            .current_dir(root)
+            .output()
+            .expect("Failed to commit");
+
+        // Third commit - modify first file
+        fs::write(root.join("file1.txt"), "first file\nmodified\n").expect("Failed to write file");
+        Command::new("hg")
+            .args(["commit", "-m", "Third commit"])
+            .current_dir(root)
+            .output()
+            .expect("Failed to commit");
+
+        Some(temp_dir)
+    }
+
+    #[test]
+    fn test_hg_get_recent_commits() {
+        let Some(temp) = setup_test_repo_with_commits() else {
+            eprintln!("Skipping test: hg command not available");
+            return;
+        };
+
+        let backend =
+            HgBackend::from_path(temp.path().to_path_buf()).expect("Failed to create hg backend");
+
+        let commits = backend
+            .get_recent_commits(5)
+            .expect("Failed to get commits");
+
+        assert_eq!(commits.len(), 3);
+        // Most recent commit should be first
+        assert_eq!(commits[0].summary, "Third commit");
+        assert_eq!(commits[1].summary, "Second commit");
+        assert_eq!(commits[2].summary, "First commit");
+
+        // All commits should have valid ids
+        for commit in &commits {
+            assert!(!commit.id.is_empty());
+            assert!(!commit.short_id.is_empty());
+            assert!(commit.short_id.len() <= commit.id.len());
+        }
+    }
+
+    #[test]
+    fn test_hg_get_commit_range_diff() {
+        let Some(temp) = setup_test_repo_with_commits() else {
+            eprintln!("Skipping test: hg command not available");
+            return;
+        };
+
+        let backend =
+            HgBackend::from_path(temp.path().to_path_buf()).expect("Failed to create hg backend");
+
+        let commits = backend
+            .get_recent_commits(5)
+            .expect("Failed to get commits");
+        assert_eq!(commits.len(), 3);
+
+        // Get diff for the last two commits (Second and Third)
+        let commit_ids = vec![commits[1].id.clone(), commits[0].id.clone()];
+        let diff_result = backend.get_commit_range_diff(&commit_ids);
+
+        // Note: Sapling (Meta's hg fork) may fail with "id_dag_snapshot()" error
+        // in certain temporary directory configurations. Skip the test in that case.
+        let diff = match diff_result {
+            Ok(d) => d,
+            Err(TuicrError::VcsCommand(msg)) if msg.contains("id_dag_snapshot") => {
+                eprintln!("Skipping test: Sapling-specific issue with tempdir repos");
+                return;
+            }
+            Err(e) => panic!("Failed to get commit range diff: {:?}", e),
+        };
+
+        // Should have changes from both commits
+        // Second commit added file2.txt, Third modified file1.txt
+        assert!(!diff.is_empty());
+
+        let file_paths: Vec<_> = diff
+            .iter()
+            .filter_map(|f| f.new_path.as_ref().map(|p| p.to_string_lossy().to_string()))
+            .collect();
+
+        // Both files should be in the diff
+        assert!(
+            file_paths.contains(&"file2.txt".to_string()),
+            "Expected file2.txt in diff, got {:?}",
+            file_paths
+        );
+        assert!(
+            file_paths.contains(&"file1.txt".to_string()),
+            "Expected file1.txt in diff, got {:?}",
+            file_paths
+        );
     }
 }
