@@ -176,11 +176,46 @@ pub fn resolve_theme(arg: ThemeArg) -> Theme {
     }
 }
 
+/// Print help message and exit
+fn print_help() -> ! {
+    let name = std::env::args()
+        .next()
+        .and_then(|p| {
+            std::path::Path::new(&p)
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+        })
+        .unwrap_or_else(|| "tuicr".to_string());
+    println!(
+        "tuicr - Review AI-generated diffs like a GitHub pull request
+
+Usage: {} [OPTIONS]
+
+Options:
+  --theme <THEME>  Color theme to use [default: dark]
+                   Valid values: dark, light
+  -h, --help       Print this help message
+
+Press ? in the application for keybinding help.",
+        name
+    );
+    std::process::exit(0);
+}
+
 /// Parse --theme argument from command line
+///
+/// We use a handrolled argument parser instead of clap to keep binary size
+/// small and build times fast. If we end up needing more complex argument
+/// handling, we can revisit this decision.
 pub fn parse_theme_arg() -> ThemeArg {
     let args: Vec<String> = std::env::args().collect();
 
     for i in 0..args.len() {
+        // Handle --help / -h
+        if args[i] == "--help" || args[i] == "-h" {
+            print_help();
+        }
+
         // Handle --theme value
         if args[i] == "--theme" {
             if let Some(value) = args.get(i + 1) {
