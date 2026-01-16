@@ -9,22 +9,43 @@ use crate::model::diff_types::LineOrigin;
 pub struct SyntaxHighlighter {
     pub syntax_set: SyntaxSet,
     pub theme: syntect::highlighting::Theme,
+    /// Background color for added lines
+    pub add_bg: Color,
+    /// Background color for deleted lines
+    pub del_bg: Color,
+}
+
+impl Default for SyntaxHighlighter {
+    fn default() -> Self {
+        Self::new(
+            "base16-eighties.dark",
+            Color::Rgb(0, 35, 12),
+            Color::Rgb(45, 0, 0),
+        )
+    }
 }
 
 impl SyntaxHighlighter {
-    pub fn new() -> Self {
+    /// Create a new syntax highlighter with the given theme and diff background colors
+    pub fn new(syntect_theme: &str, add_bg: Color, del_bg: Color) -> Self {
         let syntax_set = SyntaxSet::load_defaults_newlines();
         let theme_set = ThemeSet::load_defaults();
 
-        // Prefer a higher-contrast built-in theme, fall back to the previous default.
+        // Try the requested theme, fall back to defaults
         let theme = theme_set
             .themes
-            .get("base16-eighties.dark")
+            .get(syntect_theme)
+            .or_else(|| theme_set.themes.get("base16-eighties.dark"))
             .or_else(|| theme_set.themes.get("base16-ocean.dark"))
             .cloned()
             .unwrap_or_default();
 
-        Self { syntax_set, theme }
+        Self {
+            syntax_set,
+            theme,
+            add_bg,
+            del_bg,
+        }
     }
 
     /// Highlight all lines in a file's content
@@ -108,12 +129,13 @@ impl SyntaxHighlighter {
 
     /// Apply diff background colors to highlighted spans based on line origin
     pub fn apply_diff_background(
+        &self,
         spans: Vec<(Style, String)>,
         origin: LineOrigin,
     ) -> Vec<(Style, String)> {
         let bg_color = match origin {
-            LineOrigin::Addition => Color::Rgb(0, 35, 12),
-            LineOrigin::Deletion => Color::Rgb(45, 0, 0),
+            LineOrigin::Addition => self.add_bg,
+            LineOrigin::Deletion => self.del_bg,
             LineOrigin::Context => return spans, // No background for context
         };
 
@@ -121,11 +143,5 @@ impl SyntaxHighlighter {
             .into_iter()
             .map(|(style, text)| (style.bg(bg_color), text))
             .collect()
-    }
-}
-
-impl Default for SyntaxHighlighter {
-    fn default() -> Self {
-        Self::new()
     }
 }

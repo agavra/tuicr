@@ -236,9 +236,10 @@ impl App {
     pub fn new(theme: Theme) -> Result<Self> {
         let vcs = detect_vcs()?;
         let vcs_info = vcs.info().clone();
+        let highlighter = theme.syntax_highlighter();
 
         // Try to get working tree diff first
-        let diff_result = vcs.get_working_tree_diff();
+        let diff_result = vcs.get_working_tree_diff(highlighter);
 
         match diff_result {
             Ok(diff_files) => {
@@ -378,7 +379,8 @@ impl App {
             prev_cursor_line.saturating_sub(start)
         };
 
-        let diff_files = self.vcs.get_working_tree_diff()?;
+        let highlighter = self.theme.syntax_highlighter();
+        let diff_files = self.vcs.get_working_tree_diff(highlighter)?;
 
         for file in &diff_files {
             let path = file.display_path().clone();
@@ -1486,7 +1488,8 @@ impl App {
         }
 
         // Get the diff for the selected commits
-        let diff_files = self.vcs.get_commit_range_diff(&selected_ids)?;
+        let highlighter = self.theme.syntax_highlighter();
+        let diff_files = self.vcs.get_commit_range_diff(&selected_ids, highlighter)?;
 
         if diff_files.is_empty() {
             self.set_message("No changes in selected commits");

@@ -2,11 +2,17 @@
 //!
 //! Provides dark and light themes with automatic terminal background detection.
 
+use std::sync::OnceLock;
+
 use ratatui::style::Color;
 
+use crate::syntax::SyntaxHighlighter;
+
 /// Complete color theme for the application
-#[derive(Debug, Clone)]
 pub struct Theme {
+    /// Cached syntax highlighter (lazily initialized)
+    highlighter: OnceLock<SyntaxHighlighter>,
+
     // Base colors
     pub bg_highlight: Color,
     pub fg_primary: Color,
@@ -21,6 +27,13 @@ pub struct Theme {
     pub diff_context: Color,
     pub diff_hunk_header: Color,
     pub expanded_context_fg: Color,
+
+    // Syntax highlighting diff backgrounds (for syntax-highlighted code)
+    pub syntax_add_bg: Color,
+    pub syntax_del_bg: Color,
+
+    // Syntect theme name for syntax highlighting
+    pub syntect_theme: &'static str,
 
     // File status colors
     pub file_added: Color,
@@ -59,6 +72,8 @@ impl Theme {
     /// Create the dark theme (current default colors)
     pub fn dark() -> Self {
         Self {
+            highlighter: OnceLock::new(),
+
             // Base colors
             bg_highlight: Color::Rgb(70, 70, 70),
             fg_primary: Color::White,
@@ -73,6 +88,13 @@ impl Theme {
             diff_context: Color::Rgb(200, 200, 200),
             diff_hunk_header: Color::Rgb(90, 200, 255),
             expanded_context_fg: Color::Rgb(140, 140, 140),
+
+            // Syntax highlighting diff backgrounds
+            syntax_add_bg: Color::Rgb(0, 35, 12),
+            syntax_del_bg: Color::Rgb(45, 0, 0),
+
+            // Syntect theme for syntax highlighting
+            syntect_theme: "base16-eighties.dark",
 
             // File status colors
             file_added: Color::Rgb(80, 220, 120),
@@ -105,6 +127,8 @@ impl Theme {
     /// Create the light theme (optimized for light terminal backgrounds)
     pub fn light() -> Self {
         Self {
+            highlighter: OnceLock::new(),
+
             // Base colors - dark text on light background
             bg_highlight: Color::Rgb(200, 200, 220),
             fg_primary: Color::Rgb(0, 0, 0),
@@ -120,6 +144,13 @@ impl Theme {
             diff_context: Color::Rgb(0, 0, 0),      // Black for max readability
             diff_hunk_header: Color::Rgb(0, 60, 140),
             expanded_context_fg: Color::Rgb(60, 60, 60),
+
+            // Syntax highlighting diff backgrounds (lighter for light theme)
+            syntax_add_bg: Color::Rgb(220, 255, 220), // Very light green
+            syntax_del_bg: Color::Rgb(255, 230, 230), // Very light pink
+
+            // Syntect theme for syntax highlighting (light variant)
+            syntect_theme: "base16-ocean.light",
 
             // File status colors
             file_added: Color::Rgb(0, 100, 0),
@@ -173,6 +204,15 @@ pub fn resolve_theme(arg: ThemeArg) -> Theme {
     match arg {
         ThemeArg::Dark => Theme::dark(),
         ThemeArg::Light => Theme::light(),
+    }
+}
+
+impl Theme {
+    /// Get the syntax highlighter for this theme (lazily initialized, cached)
+    pub fn syntax_highlighter(&self) -> &SyntaxHighlighter {
+        self.highlighter.get_or_init(|| {
+            SyntaxHighlighter::new(self.syntect_theme, self.syntax_add_bg, self.syntax_del_bg)
+        })
     }
 }
 

@@ -1,14 +1,14 @@
 use git2::{Delta, Diff, DiffOptions, Repository};
 use std::path::PathBuf;
-use std::sync::LazyLock;
 
 use crate::error::{Result, TuicrError};
 use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin};
 use crate::syntax::SyntaxHighlighter;
 
-static HIGHLIGHTER: LazyLock<SyntaxHighlighter> = LazyLock::new(SyntaxHighlighter::new);
-
-pub fn get_working_tree_diff(repo: &Repository) -> Result<Vec<DiffFile>> {
+pub fn get_working_tree_diff(
+    repo: &Repository,
+    highlighter: &SyntaxHighlighter,
+) -> Result<Vec<DiffFile>> {
     let head = repo.head()?.peel_to_tree()?;
 
     let mut opts = DiffOptions::new();
@@ -18,13 +18,17 @@ pub fn get_working_tree_diff(repo: &Repository) -> Result<Vec<DiffFile>> {
 
     let diff = repo.diff_tree_to_workdir_with_index(Some(&head), Some(&mut opts))?;
 
-    parse_diff(&diff)
+    parse_diff(&diff, highlighter)
 }
 
 /// Get the diff for a range of commits.
 /// `commit_ids` should be ordered from oldest to newest.
 /// The diff compares the oldest commit's parent to the newest commit.
-pub fn get_commit_range_diff(repo: &Repository, commit_ids: &[String]) -> Result<Vec<DiffFile>> {
+pub fn get_commit_range_diff(
+    repo: &Repository,
+    commit_ids: &[String],
+    highlighter: &SyntaxHighlighter,
+) -> Result<Vec<DiffFile>> {
     if commit_ids.is_empty() {
         return Err(TuicrError::NoChanges);
     }
@@ -48,10 +52,10 @@ pub fn get_commit_range_diff(repo: &Repository, commit_ids: &[String]) -> Result
 
     let diff = repo.diff_tree_to_tree(old_tree.as_ref(), Some(&new_tree), None)?;
 
-    parse_diff(&diff)
+    parse_diff(&diff, highlighter)
 }
 
-fn parse_diff(diff: &Diff) -> Result<Vec<DiffFile>> {
+fn parse_diff(diff: &Diff, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
     let mut files: Vec<DiffFile> = Vec::new();
 
     for (delta_idx, delta) in diff.deltas().enumerate() {
@@ -74,7 +78,7 @@ fn parse_diff(diff: &Diff) -> Result<Vec<DiffFile>> {
         let hunks = if is_binary {
             Vec::new()
         } else {
-            parse_hunks(diff, delta_idx, file_path, &HIGHLIGHTER)?
+            parse_hunks(diff, delta_idx, file_path, highlighter)?
         };
 
         files.push(DiffFile {
@@ -155,9 +159,9 @@ fn parse_hunks(
 
                 // Get highlighted spans and apply diff background
                 let highlighted_spans = if let Some(ref all_highlighted) = highlighted_lines {
-                    all_highlighted.get(line_idx).map(|spans| {
-                        SyntaxHighlighter::apply_diff_background(spans.clone(), origin)
-                    })
+                    all_highlighted
+                        .get(line_idx)
+                        .map(|spans| highlighter.apply_diff_background(spans.clone(), origin))
                 } else {
                     None
                 };
@@ -197,9 +201,10 @@ mod tests {
         let diff = repo
             .diff_tree_to_tree(Some(&head), Some(&head), None)
             .unwrap();
+        let highlighter = SyntaxHighlighter::default();
 
         // when
-        let result = parse_diff(&diff);
+        let result = parse_diff(&diff, &highlighter);
 
         // then
         assert!(matches!(result, Err(TuicrError::NoChanges)));

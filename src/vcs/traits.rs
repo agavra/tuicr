@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::Result;
 use crate::model::{DiffFile, DiffLine, FileStatus};
+use crate::syntax::SyntaxHighlighter;
 
 /// Information about the VCS type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,7 +53,7 @@ pub trait VcsBackend: Send {
     fn info(&self) -> &VcsInfo;
 
     /// Get the working tree diff (uncommitted changes)
-    fn get_working_tree_diff(&self) -> Result<Vec<DiffFile>>;
+    fn get_working_tree_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>>;
 
     /// Fetch context lines for gap expansion.
     /// For deleted files, reads from VCS; otherwise from working tree.
@@ -72,7 +73,11 @@ pub trait VcsBackend: Send {
 
     /// Get diff for a commit range.
     /// Returns error if not supported (default).
-    fn get_commit_range_diff(&self, _commit_ids: &[String]) -> Result<Vec<DiffFile>> {
+    fn get_commit_range_diff(
+        &self,
+        _commit_ids: &[String],
+        _highlighter: &SyntaxHighlighter,
+    ) -> Result<Vec<DiffFile>> {
         Err(crate::error::TuicrError::UnsupportedOperation(
             "Commit range diff not supported for this VCS".into(),
         ))

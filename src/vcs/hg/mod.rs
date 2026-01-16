@@ -5,6 +5,7 @@ use chrono::{TimeZone, Utc};
 
 use crate::error::{Result, TuicrError};
 use crate::model::{DiffFile, DiffLine, FileStatus, LineOrigin};
+use crate::syntax::SyntaxHighlighter;
 use crate::vcs::diff_parser::{self, DiffFormat};
 use crate::vcs::traits::{CommitInfo, VcsBackend, VcsInfo, VcsType};
 
@@ -59,7 +60,7 @@ impl VcsBackend for HgBackend {
         &self.info
     }
 
-    fn get_working_tree_diff(&self) -> Result<Vec<DiffFile>> {
+    fn get_working_tree_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
         // Get unified diff output from hg
         let diff_output = run_hg_command(&self.info.root_path, &["diff"])?;
 
@@ -67,7 +68,7 @@ impl VcsBackend for HgBackend {
             return Err(TuicrError::NoChanges);
         }
 
-        diff_parser::parse_unified_diff(&diff_output, DiffFormat::Hg)
+        diff_parser::parse_unified_diff(&diff_output, DiffFormat::Hg, highlighter)
     }
 
     fn fetch_context_lines(
@@ -162,7 +163,11 @@ impl VcsBackend for HgBackend {
         Ok(commits)
     }
 
-    fn get_commit_range_diff(&self, commit_ids: &[String]) -> Result<Vec<DiffFile>> {
+    fn get_commit_range_diff(
+        &self,
+        commit_ids: &[String],
+        highlighter: &SyntaxHighlighter,
+    ) -> Result<Vec<DiffFile>> {
         if commit_ids.is_empty() {
             return Err(TuicrError::NoChanges);
         }
@@ -215,7 +220,7 @@ impl VcsBackend for HgBackend {
             return Err(TuicrError::NoChanges);
         }
 
-        diff_parser::parse_unified_diff(&diff_output, DiffFormat::Hg)
+        diff_parser::parse_unified_diff(&diff_output, DiffFormat::Hg, highlighter)
     }
 }
 
@@ -340,7 +345,9 @@ mod tests {
         assert_eq!(backend.info().root_path, temp.path());
         assert_eq!(backend.info().vcs_type, VcsType::Mercurial);
 
-        let files = backend.get_working_tree_diff().expect("Failed to get diff");
+        let files = backend
+            .get_working_tree_diff(&SyntaxHighlighter::default())
+            .expect("Failed to get diff");
 
         assert_eq!(files.len(), 1);
         assert_eq!(
@@ -472,7 +479,7 @@ mod tests {
 
         // Get diff for the last two commits (Second and Third)
         let commit_ids = vec![commits[1].id.clone(), commits[0].id.clone()];
-        let diff_result = backend.get_commit_range_diff(&commit_ids);
+        let diff_result = backend.get_commit_range_diff(&commit_ids, &SyntaxHighlighter::default());
 
         // Note: Sapling (Meta's hg fork) may fail with "id_dag_snapshot()" error
         // in certain temporary directory configurations. Skip the test in that case.

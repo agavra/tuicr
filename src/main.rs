@@ -51,7 +51,8 @@ fn main() -> anyhow::Result<()> {
     // Check keyboard enhancement support before enabling raw mode
     let keyboard_enhancement_supported = matches!(supports_keyboard_enhancement(), Ok(true));
 
-    // Parse theme argument and resolve theme (auto-detection happens here, before raw mode)
+    // Parse theme argument and resolve theme
+    // This also configures syntax highlighting colors before diff parsing
     let theme_arg = parse_theme_arg();
     let theme = resolve_theme(theme_arg);
 

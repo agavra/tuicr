@@ -4,13 +4,10 @@
 //! Git uses the native git2 library instead and has its own parser.
 
 use std::path::PathBuf;
-use std::sync::LazyLock;
 
 use crate::error::{Result, TuicrError};
 use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin};
 use crate::syntax::SyntaxHighlighter;
-
-static HIGHLIGHTER: LazyLock<SyntaxHighlighter> = LazyLock::new(SyntaxHighlighter::new);
 
 /// Diff format variants for different VCS tools.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,7 +19,11 @@ pub enum DiffFormat {
 }
 
 /// Parse unified diff output into DiffFile structures.
-pub fn parse_unified_diff(diff_text: &str, format: DiffFormat) -> Result<Vec<DiffFile>> {
+pub fn parse_unified_diff(
+    diff_text: &str,
+    format: DiffFormat,
+    highlighter: &SyntaxHighlighter,
+) -> Result<Vec<DiffFile>> {
     let mut files: Vec<DiffFile> = Vec::new();
     let mut lines = diff_text.lines().peekable();
 
@@ -57,7 +58,7 @@ pub fn parse_unified_diff(diff_text: &str, format: DiffFormat) -> Result<Vec<Dif
                     if peek_line.starts_with("diff ") {
                         break;
                     } else if peek_line.starts_with("@@") {
-                        if let Some(hunk) = parse_hunk(&mut lines, file_path) {
+                        if let Some(hunk) = parse_hunk(&mut lines, file_path, highlighter) {
                             hunks.push(hunk);
                         }
                     } else {
@@ -154,6 +155,7 @@ where
 fn parse_hunk<'a, I>(
     lines: &mut std::iter::Peekable<I>,
     file_path: Option<&PathBuf>,
+    highlighter: &SyntaxHighlighter,
 ) -> Option<DiffHunk>
 where
     I: Iterator<Item = &'a str>,
@@ -224,30 +226,27 @@ where
 
     // Apply syntax highlighting if we have a file path
     let highlighted_lines =
-        file_path.and_then(|path| HIGHLIGHTER.highlight_file_lines(path, &line_contents));
+        file_path.and_then(|path| highlighter.highlight_file_lines(path, &line_contents));
 
     // Build DiffLines
-    let diff_lines: Vec<DiffLine> = line_contents
-        .into_iter()
-        .enumerate()
-        .map(|(idx, content)| {
-            let origin = line_origins[idx];
-            let (old_lineno, new_lineno) = line_numbers[idx];
+    let mut diff_lines: Vec<DiffLine> = Vec::with_capacity(line_contents.len());
+    for (idx, content) in line_contents.into_iter().enumerate() {
+        let origin = line_origins[idx];
+        let (old_lineno, new_lineno) = line_numbers[idx];
 
-            let highlighted_spans = highlighted_lines.as_ref().and_then(|all| {
-                all.get(idx)
-                    .map(|spans| SyntaxHighlighter::apply_diff_background(spans.clone(), origin))
-            });
+        let highlighted_spans = highlighted_lines.as_ref().and_then(|all| {
+            all.get(idx)
+                .map(|spans| highlighter.apply_diff_background(spans.clone(), origin))
+        });
 
-            DiffLine {
-                origin,
-                content,
-                old_lineno,
-                new_lineno,
-                highlighted_spans,
-            }
-        })
-        .collect();
+        diff_lines.push(DiffLine {
+            origin,
+            content,
+            old_lineno,
+            new_lineno,
+            highlighted_spans,
+        });
+    }
 
     Some(DiffHunk {
         header: header_line.to_string(),
@@ -294,11 +293,11 @@ mod tests {
     #[test]
     fn should_return_no_changes_for_empty_diff() {
         assert!(matches!(
-            parse_unified_diff("", DiffFormat::Hg),
+            parse_unified_diff("", DiffFormat::Hg, &SyntaxHighlighter::default()),
             Err(TuicrError::NoChanges)
         ));
         assert!(matches!(
-            parse_unified_diff("", DiffFormat::GitStyle),
+            parse_unified_diff("", DiffFormat::GitStyle, &SyntaxHighlighter::default()),
             Err(TuicrError::NoChanges)
         ));
     }
@@ -360,7 +359,8 @@ mod tests {
  }
 "#;
 
-        let result = parse_unified_diff(diff, DiffFormat::Hg).unwrap();
+        let result =
+            parse_unified_diff(diff, DiffFormat::Hg, &SyntaxHighlighter::default()).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].status, FileStatus::Modified);
         assert_eq!(result[0].hunks.len(), 1);
@@ -377,7 +377,8 @@ mod tests {
 +}
 "#;
 
-        let result = parse_unified_diff(diff, DiffFormat::Hg).unwrap();
+        let result =
+            parse_unified_diff(diff, DiffFormat::Hg, &SyntaxHighlighter::default()).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].status, FileStatus::Added);
         assert!(result[0].old_path.is_none());
@@ -397,7 +398,8 @@ mod tests {
 -}
 "#;
 
-        let result = parse_unified_diff(diff, DiffFormat::Hg).unwrap();
+        let result =
+            parse_unified_diff(diff, DiffFormat::Hg, &SyntaxHighlighter::default()).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].status, FileStatus::Deleted);
         assert_eq!(
@@ -423,7 +425,8 @@ diff -r abc123 file2.rs
 -remove
 "#;
 
-        let result = parse_unified_diff(diff, DiffFormat::Hg).unwrap();
+        let result =
+            parse_unified_diff(diff, DiffFormat::Hg, &SyntaxHighlighter::default()).unwrap();
         assert_eq!(result.len(), 2);
         assert_eq!(
             result[0].new_path.as_ref().unwrap().to_str().unwrap(),
@@ -451,7 +454,8 @@ diff -r abc123 file2.rs
  }
 "#;
 
-        let result = parse_unified_diff(diff, DiffFormat::Hg).unwrap();
+        let result =
+            parse_unified_diff(diff, DiffFormat::Hg, &SyntaxHighlighter::default()).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].hunks.len(), 2);
         assert_eq!(result[0].hunks[0].old_start, 1);
@@ -470,7 +474,8 @@ rename to new_name.rs
 +new content
 "#;
 
-        let result = parse_unified_diff(diff, DiffFormat::Hg).unwrap();
+        let result =
+            parse_unified_diff(diff, DiffFormat::Hg, &SyntaxHighlighter::default()).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].status, FileStatus::Renamed);
         assert_eq!(
@@ -489,7 +494,8 @@ rename to new_name.rs
 Binary file image.png has changed
 "#;
 
-        let result = parse_unified_diff(diff, DiffFormat::Hg).unwrap();
+        let result =
+            parse_unified_diff(diff, DiffFormat::Hg, &SyntaxHighlighter::default()).unwrap();
         assert_eq!(result.len(), 1);
         assert!(result[0].is_binary);
         assert!(result[0].hunks.is_empty());
@@ -507,7 +513,8 @@ Binary file image.png has changed
 \ No newline at end of file
 "#;
 
-        let result = parse_unified_diff(diff, DiffFormat::Hg).unwrap();
+        let result =
+            parse_unified_diff(diff, DiffFormat::Hg, &SyntaxHighlighter::default()).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].hunks[0].lines.len(), 2);
     }
@@ -525,7 +532,8 @@ Binary file image.png has changed
  context at 7->8
 "#;
 
-        let result = parse_unified_diff(diff, DiffFormat::Hg).unwrap();
+        let result =
+            parse_unified_diff(diff, DiffFormat::Hg, &SyntaxHighlighter::default()).unwrap();
         let lines = &result[0].hunks[0].lines;
 
         assert_eq!(lines[0].origin, LineOrigin::Context);
@@ -562,7 +570,8 @@ Binary file image.png has changed
  line2
  line3
 "#;
-        let files = parse_unified_diff(diff, DiffFormat::GitStyle).unwrap();
+        let files =
+            parse_unified_diff(diff, DiffFormat::GitStyle, &SyntaxHighlighter::default()).unwrap();
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].new_path, Some(PathBuf::from("file.txt")));
         assert_eq!(files[0].status, FileStatus::Modified);
@@ -580,7 +589,8 @@ new file mode 100644
 +line1
 +line2
 "#;
-        let files = parse_unified_diff(diff, DiffFormat::GitStyle).unwrap();
+        let files =
+            parse_unified_diff(diff, DiffFormat::GitStyle, &SyntaxHighlighter::default()).unwrap();
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].status, FileStatus::Added);
     }
@@ -595,7 +605,8 @@ deleted file mode 100644
 -line1
 -line2
 "#;
-        let files = parse_unified_diff(diff, DiffFormat::GitStyle).unwrap();
+        let files =
+            parse_unified_diff(diff, DiffFormat::GitStyle, &SyntaxHighlighter::default()).unwrap();
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].status, FileStatus::Deleted);
     }
@@ -606,7 +617,8 @@ deleted file mode 100644
 rename from old.txt
 rename to new.txt
 "#;
-        let files = parse_unified_diff(diff, DiffFormat::GitStyle).unwrap();
+        let files =
+            parse_unified_diff(diff, DiffFormat::GitStyle, &SyntaxHighlighter::default()).unwrap();
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].status, FileStatus::Renamed);
     }
@@ -626,7 +638,8 @@ diff --git a/b.txt b/b.txt
 -foo
 +bar
 "#;
-        let files = parse_unified_diff(diff, DiffFormat::GitStyle).unwrap();
+        let files =
+            parse_unified_diff(diff, DiffFormat::GitStyle, &SyntaxHighlighter::default()).unwrap();
         assert_eq!(files.len(), 2);
         assert_eq!(files[0].new_path, Some(PathBuf::from("a.txt")));
         assert_eq!(files[1].new_path, Some(PathBuf::from("b.txt")));
@@ -644,7 +657,8 @@ diff --git a/b.txt b/b.txt
 +added2
  more
 "#;
-        let files = parse_unified_diff(diff, DiffFormat::GitStyle).unwrap();
+        let files =
+            parse_unified_diff(diff, DiffFormat::GitStyle, &SyntaxHighlighter::default()).unwrap();
         let hunk = &files[0].hunks[0];
 
         assert_eq!(hunk.lines[0].old_lineno, Some(5));

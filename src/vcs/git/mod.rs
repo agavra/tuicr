@@ -7,6 +7,7 @@ use std::path::Path;
 
 use crate::error::{Result, TuicrError};
 use crate::model::{DiffFile, DiffLine, FileStatus};
+use crate::syntax::SyntaxHighlighter;
 
 use super::traits::{CommitInfo, VcsBackend, VcsInfo, VcsType};
 
@@ -61,8 +62,8 @@ impl VcsBackend for GitBackend {
         &self.info
     }
 
-    fn get_working_tree_diff(&self) -> Result<Vec<DiffFile>> {
-        get_working_tree_diff(&self.repo)
+    fn get_working_tree_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+        get_working_tree_diff(&self.repo, highlighter)
     }
 
     fn fetch_context_lines(
@@ -89,7 +90,11 @@ impl VcsBackend for GitBackend {
             .collect())
     }
 
-    fn get_commit_range_diff(&self, commit_ids: &[String]) -> Result<Vec<DiffFile>> {
-        get_commit_range_diff(&self.repo, commit_ids)
+    fn get_commit_range_diff(
+        &self,
+        commit_ids: &[String],
+        highlighter: &SyntaxHighlighter,
+    ) -> Result<Vec<DiffFile>> {
+        get_commit_range_diff(&self.repo, commit_ids, highlighter)
     }
 }

@@ -7,6 +7,7 @@ use chrono::{DateTime, Utc};
 
 use crate::error::{Result, TuicrError};
 use crate::model::{DiffFile, DiffLine, FileStatus, LineOrigin};
+use crate::syntax::SyntaxHighlighter;
 use crate::vcs::diff_parser::{self, DiffFormat};
 use crate::vcs::traits::{CommitInfo, VcsBackend, VcsInfo, VcsType};
 
@@ -69,7 +70,7 @@ impl VcsBackend for JjBackend {
         &self.info
     }
 
-    fn get_working_tree_diff(&self) -> Result<Vec<DiffFile>> {
+    fn get_working_tree_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
         // Get unified diff output from jj using --git format
         let diff_output = run_jj_command(&self.info.root_path, &["diff", "--git"])?;
 
@@ -77,7 +78,7 @@ impl VcsBackend for JjBackend {
             return Err(TuicrError::NoChanges);
         }
 
-        diff_parser::parse_unified_diff(&diff_output, DiffFormat::GitStyle)
+        diff_parser::parse_unified_diff(&diff_output, DiffFormat::GitStyle, highlighter)
     }
 
     fn fetch_context_lines(
@@ -178,7 +179,11 @@ impl VcsBackend for JjBackend {
         Ok(commits)
     }
 
-    fn get_commit_range_diff(&self, commit_ids: &[String]) -> Result<Vec<DiffFile>> {
+    fn get_commit_range_diff(
+        &self,
+        commit_ids: &[String],
+        highlighter: &SyntaxHighlighter,
+    ) -> Result<Vec<DiffFile>> {
         if commit_ids.is_empty() {
             return Err(TuicrError::NoChanges);
         }
@@ -205,7 +210,7 @@ impl VcsBackend for JjBackend {
             return Err(TuicrError::NoChanges);
         }
 
-        diff_parser::parse_unified_diff(&diff_output, DiffFormat::GitStyle)
+        diff_parser::parse_unified_diff(&diff_output, DiffFormat::GitStyle, highlighter)
     }
 }
 
@@ -332,7 +337,9 @@ mod tests {
         assert_eq!(backend.info().root_path, temp.path());
         assert_eq!(backend.info().vcs_type, VcsType::Jujutsu);
 
-        let files = backend.get_working_tree_diff().expect("Failed to get diff");
+        let files = backend
+            .get_working_tree_diff(&SyntaxHighlighter::default())
+            .expect("Failed to get diff");
 
         assert_eq!(files.len(), 1);
         assert_eq!(
@@ -491,7 +498,7 @@ mod tests {
 
             let commit_ids = vec![oldest.id.clone(), newest.id.clone()];
             let diff = backend
-                .get_commit_range_diff(&commit_ids)
+                .get_commit_range_diff(&commit_ids, &SyntaxHighlighter::default())
                 .expect("Failed to get commit range diff");
 
             // Should have changes
