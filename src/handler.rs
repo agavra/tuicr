@@ -141,10 +141,13 @@ pub fn handle_command_action(app: &mut App, action: Action) {
                     Ok(count) => app.set_message(format!("Reloaded {} files", count)),
                     Err(e) => app.set_error(format!("Reload failed: {}", e)),
                 },
-                "clip" | "export" => match export_to_clipboard(&app.session, &app.diff_source) {
-                    Ok(msg) => app.set_message(msg),
-                    Err(e) => app.set_warning(format!("{}", e)),
-                },
+                "clip" | "export" => {
+                    match export_to_clipboard(&app.session, &app.diff_source, app.vcs_info.vcs_type)
+                    {
+                        Ok(msg) => app.set_message(msg),
+                        Err(e) => app.set_warning(format!("{}", e)),
+                    }
+                }
                 "clear" => app.clear_all_comments(),
                 "version" => {
                     app.set_message(format!("tuicr v{}", env!("CARGO_PKG_VERSION")));
@@ -281,7 +284,7 @@ pub fn handle_confirm_action(app: &mut App, action: Action) {
     match action {
         Action::ConfirmYes => {
             if let Some(app::ConfirmAction::CopyAndQuit) = app.pending_confirm {
-                match export_to_clipboard(&app.session, &app.diff_source) {
+                match export_to_clipboard(&app.session, &app.diff_source, app.vcs_info.vcs_type) {
                     Ok(msg) => app.set_message(msg),
                     Err(e) => app.set_warning(format!("{}", e)),
                 }
@@ -415,10 +418,12 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
                 app.set_message("No comment at cursor");
             }
         }
-        Action::ExportToClipboard => match export_to_clipboard(&app.session, &app.diff_source) {
-            Ok(msg) => app.set_message(msg),
-            Err(e) => app.set_warning(format!("{}", e)),
-        },
+        Action::ExportToClipboard => {
+            match export_to_clipboard(&app.session, &app.diff_source, app.vcs_info.vcs_type) {
+                Ok(msg) => app.set_message(msg),
+                Err(e) => app.set_warning(format!("{}", e)),
+            }
+        }
         Action::SearchNext => {
             app.search_next_in_diff();
         }

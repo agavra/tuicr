@@ -7,17 +7,22 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use crate::app::DiffSource;
 use crate::error::{Result, TuicrError};
 use crate::model::{LineSide, ReviewSession};
+use crate::vcs::VcsType;
 
 /// (file_path, line_number, side, comment_type, content)
 type CommentEntry<'a> = (String, Option<u32>, Option<LineSide>, &'a str, &'a str);
 
-pub fn export_to_clipboard(session: &ReviewSession, diff_source: &DiffSource) -> Result<String> {
+pub fn export_to_clipboard(
+    session: &ReviewSession,
+    diff_source: &DiffSource,
+    vcs_type: VcsType,
+) -> Result<String> {
     // Check if there are any comments to export
     if !session.has_comments() {
         return Err(TuicrError::NoComments);
     }
 
-    let content = generate_markdown(session, diff_source);
+    let content = generate_markdown(session, diff_source, vcs_type);
 
     // Try arboard (system clipboard) first, fall back to OSC 52 for SSH/remote sessions
     match Clipboard::new().and_then(|mut cb| cb.set_text(&content)) {
@@ -49,7 +54,11 @@ fn write_osc52<W: IoWrite>(writer: &mut W, text: &str) -> Result<()> {
     Ok(())
 }
 
-fn generate_markdown(session: &ReviewSession, diff_source: &DiffSource) -> String {
+fn generate_markdown(
+    session: &ReviewSession,
+    diff_source: &DiffSource,
+    vcs_type: VcsType,
+) -> String {
     let mut md = String::new();
 
     // Intro for agents
@@ -57,6 +66,17 @@ fn generate_markdown(session: &ReviewSession, diff_source: &DiffSource) -> Strin
         md,
         "I reviewed your code and have the following comments. Please address them."
     );
+    let _ = writeln!(md);
+
+    // VCS type info for agents
+    let vcs_note = match vcs_type {
+        VcsType::Git => "This is a Git repository.",
+        #[cfg(feature = "hg")]
+        VcsType::Mercurial => "This is a Mercurial repository. Use `hg` commands instead of `git`.",
+        #[cfg(feature = "jj")]
+        VcsType::Jujutsu => "This is a Jujutsu repository. Use `jj` commands instead of `git`.",
+    };
+    let _ = writeln!(md, "{}", vcs_note);
     let _ = writeln!(md);
 
     // Include commit range info if reviewing commits
@@ -189,10 +209,11 @@ mod tests {
         let diff_source = DiffSource::WorkingTree;
 
         // when
-        let markdown = generate_markdown(&session, &diff_source);
+        let markdown = generate_markdown(&session, &diff_source, VcsType::Git);
 
         // then
         assert!(markdown.contains("I reviewed your code and have the following comments"));
+        assert!(markdown.contains("This is a Git repository."));
         assert!(markdown.contains("Comment types:"));
         assert!(markdown.contains("[SUGGESTION]"));
         assert!(markdown.contains("`src/main.rs`"));
@@ -209,7 +230,7 @@ mod tests {
         let diff_source = DiffSource::WorkingTree;
 
         // when
-        let markdown = generate_markdown(&session, &diff_source);
+        let markdown = generate_markdown(&session, &diff_source, VcsType::Git);
 
         // then
         // Should have 2 numbered comments
@@ -224,7 +245,7 @@ mod tests {
         let diff_source = DiffSource::WorkingTree;
 
         // when
-        let result = export_to_clipboard(&session, &diff_source);
+        let result = export_to_clipboard(&session, &diff_source, VcsType::Git);
 
         // then
         assert!(result.is_err());
@@ -241,7 +262,7 @@ mod tests {
         ]);
 
         // when
-        let markdown = generate_markdown(&session, &diff_source);
+        let markdown = generate_markdown(&session, &diff_source, VcsType::Git);
 
         // then
         assert!(markdown.contains("Reviewing commits: abc1234, def4567"));
@@ -254,10 +275,40 @@ mod tests {
         let diff_source = DiffSource::CommitRange(vec!["abc1234567890".to_string()]);
 
         // when
-        let markdown = generate_markdown(&session, &diff_source);
+        let markdown = generate_markdown(&session, &diff_source, VcsType::Git);
 
         // then
         assert!(markdown.contains("Reviewing commit: abc1234"));
+    }
+
+    #[test]
+    #[cfg(feature = "jj")]
+    fn should_include_jujutsu_vcs_info() {
+        // given
+        let session = create_test_session();
+        let diff_source = DiffSource::WorkingTree;
+
+        // when
+        let markdown = generate_markdown(&session, &diff_source, VcsType::Jujutsu);
+
+        // then
+        assert!(markdown.contains("This is a Jujutsu repository."));
+        assert!(markdown.contains("Use `jj` commands instead of `git`."));
+    }
+
+    #[test]
+    #[cfg(feature = "hg")]
+    fn should_include_mercurial_vcs_info() {
+        // given
+        let session = create_test_session();
+        let diff_source = DiffSource::WorkingTree;
+
+        // when
+        let markdown = generate_markdown(&session, &diff_source, VcsType::Mercurial);
+
+        // then
+        assert!(markdown.contains("This is a Mercurial repository."));
+        assert!(markdown.contains("Use `hg` commands instead of `git`."));
     }
 
     #[test]
@@ -315,7 +366,7 @@ mod tests {
         // given - simulate what would be copied during export
         let session = create_test_session();
         let diff_source = DiffSource::WorkingTree;
-        let markdown = generate_markdown(&session, &diff_source);
+        let markdown = generate_markdown(&session, &diff_source, VcsType::Git);
         let mut buffer: Vec<u8> = Vec::new();
 
         // when

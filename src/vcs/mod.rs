@@ -25,7 +25,7 @@ pub use git::GitBackend;
 pub use hg::HgBackend;
 #[cfg(feature = "jj")]
 pub use jj::JjBackend;
-pub use traits::{CommitInfo, VcsBackend, VcsInfo};
+pub use traits::{CommitInfo, VcsBackend, VcsInfo, VcsType};
 
 use crate::error::{Result, TuicrError};
 
