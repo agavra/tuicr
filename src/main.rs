@@ -10,7 +10,7 @@ mod ui;
 mod vcs;
 
 use std::io;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossterm::{
     event::{
@@ -32,6 +32,9 @@ use handler::{
     handle_search_action,
 };
 use input::{Action, map_key_to_action};
+
+/// Timeout for the "press Ctrl+C again to exit" feature
+const CTRL_C_EXIT_TIMEOUT: Duration = Duration::from_secs(2);
 
 fn main() -> anyhow::Result<()> {
     // Setup panic hook to restore terminal on panic
@@ -94,6 +97,8 @@ fn main() -> anyhow::Result<()> {
     let mut pending_d = false;
     // Track pending ; command for ;e toggle file list
     let mut pending_semicolon = false;
+    // Track pending Ctrl+C for "press twice to exit" (with timestamp for 2s timeout)
+    let mut pending_ctrl_c: Option<Instant> = None;
 
     // Main loop
     loop {
@@ -102,11 +107,50 @@ fn main() -> anyhow::Result<()> {
             ui::render(frame, &mut app);
         })?;
 
+        // Auto-clear expired pending Ctrl+C state and message
+        if let Some(first_press) = pending_ctrl_c
+            && first_press.elapsed() >= CTRL_C_EXIT_TIMEOUT
+        {
+            pending_ctrl_c = None;
+            app.message = None;
+        }
+
         // Handle events
         if event::poll(Duration::from_millis(100))?
             && let Event::Key(key) = event::read()?
             && key.kind == KeyEventKind::Press
         {
+            // Handle Ctrl+C twice to exit (works across all input modes)
+            // In Comment mode, first Ctrl+C also cancels the comment
+            if key.code == crossterm::event::KeyCode::Char('c')
+                && key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL)
+            {
+                // If in comment mode, cancel the comment first
+                if app.input_mode == InputMode::Comment {
+                    app.exit_comment_mode();
+                }
+
+                if let Some(first_press) = pending_ctrl_c
+                    && first_press.elapsed() < CTRL_C_EXIT_TIMEOUT
+                {
+                    // Second Ctrl+C within timeout - exit immediately
+                    app.should_quit = true;
+                    continue;
+                }
+                // First Ctrl+C (or timeout expired) - show warning and start timer
+                pending_ctrl_c = Some(Instant::now());
+                app.set_message("Press Ctrl+C again to exit");
+                continue;
+            }
+
+            // Any other key clears the pending Ctrl+C state and message
+            if pending_ctrl_c.is_some() {
+                pending_ctrl_c = None;
+                app.message = None;
+            }
+
             // Handle pending z command for zz centering
             if pending_z {
                 pending_z = false;
