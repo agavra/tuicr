@@ -8,9 +8,11 @@ use ratatui::{
 
 use crate::app::App;
 use crate::model::CommentType;
+use crate::theme::Theme;
 use crate::ui::styles;
 
 pub fn render_comment_input(frame: &mut Frame, app: &App) {
+    let theme = &app.theme;
     let area = centered_rect(60, 40, frame.area());
 
     frame.render_widget(Clear, area);
@@ -44,49 +46,36 @@ pub fn render_comment_input(frame: &mut Frame, app: &App) {
             newline_hint
         ))
         .borders(Borders::ALL)
-        .border_style(styles::border_style(true));
+        .border_style(styles::border_style(theme, true));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
     // Build content with type selector hint and input area
-    let type_style = match app.comment_type {
-        CommentType::Note => Style::default()
-            .fg(styles::COMMENT_NOTE)
-            .add_modifier(Modifier::BOLD),
-        CommentType::Suggestion => Style::default()
-            .fg(styles::COMMENT_SUGGESTION)
-            .add_modifier(Modifier::BOLD),
-        CommentType::Issue => Style::default()
-            .fg(styles::COMMENT_ISSUE)
-            .add_modifier(Modifier::BOLD),
-        CommentType::Praise => Style::default()
-            .fg(styles::COMMENT_PRAISE)
-            .add_modifier(Modifier::BOLD),
-    };
+    let type_style = styles::comment_type_style(theme, app.comment_type);
     let type_hint = Line::from(vec![
-        Span::styled("Type: ", styles::dim_style()),
+        Span::styled("Type: ", styles::dim_style(theme)),
         Span::styled(app.comment_type.as_str(), type_style),
-        Span::styled(" (Tab to cycle)", styles::dim_style()),
+        Span::styled(" (Tab to cycle)", styles::dim_style(theme)),
     ]);
 
     let separator = Line::from(Span::styled(
         "─".repeat(inner.width as usize),
-        styles::dim_style(),
+        styles::dim_style(theme),
     ));
 
     // Build content lines with cursor
     let mut lines = vec![type_hint, separator, Line::from("")];
 
     let cursor_style = Style::default()
-        .fg(styles::CURSOR_COLOR)
+        .fg(theme.cursor_color)
         .add_modifier(Modifier::UNDERLINED);
 
     if app.comment_buffer.is_empty() {
         // Show placeholder with cursor at start
         lines.push(Line::from(vec![
             Span::styled(" ", cursor_style),
-            Span::styled("Type your comment...", styles::dim_style()),
+            Span::styled("Type your comment...", styles::dim_style(theme)),
         ]));
     } else {
         // Split buffer into lines and render with cursor
@@ -136,43 +125,15 @@ pub fn render_comment_input(frame: &mut Frame, app: &App) {
     frame.render_widget(paragraph, inner);
 }
 
-/// Returns the style for a comment type
-fn comment_type_style(comment_type: CommentType) -> Style {
-    match comment_type {
-        CommentType::Note => Style::default()
-            .fg(styles::COMMENT_NOTE)
-            .add_modifier(Modifier::BOLD),
-        CommentType::Suggestion => Style::default()
-            .fg(styles::COMMENT_SUGGESTION)
-            .add_modifier(Modifier::BOLD),
-        CommentType::Issue => Style::default()
-            .fg(styles::COMMENT_ISSUE)
-            .add_modifier(Modifier::BOLD),
-        CommentType::Praise => Style::default()
-            .fg(styles::COMMENT_PRAISE)
-            .add_modifier(Modifier::BOLD),
-    }
-}
-
-/// Returns the border color for a comment type
-fn comment_border_color(comment_type: CommentType) -> Style {
-    match comment_type {
-        CommentType::Note => Style::default().fg(styles::COMMENT_NOTE),
-        CommentType::Suggestion => Style::default().fg(styles::COMMENT_SUGGESTION),
-        CommentType::Issue => Style::default().fg(styles::COMMENT_ISSUE),
-        CommentType::Praise => Style::default().fg(styles::COMMENT_PRAISE),
-    }
-}
-
-/// Format a comment as multiple lines with a box border
-/// Returns Vec<Line> for multiline support
+/// Format a comment as multiple lines with a box border (themed version)
 pub fn format_comment_lines(
+    theme: &Theme,
     comment_type: CommentType,
     content: &str,
     line_num: Option<u32>,
 ) -> Vec<Line<'static>> {
-    let type_style = comment_type_style(comment_type);
-    let border_style = comment_border_color(comment_type);
+    let type_style = styles::comment_type_style(theme, comment_type);
+    let border_style = styles::comment_border_style(theme, comment_type);
 
     let line_info = line_num.map(|n| format!("L{} ", n)).unwrap_or_default();
     let content_lines: Vec<&str> = content.split('\n').collect();
@@ -183,7 +144,7 @@ pub fn format_comment_lines(
     result.push(Line::from(vec![
         Span::styled("     ╭─ ", border_style),
         Span::styled(format!("[{}] ", comment_type.as_str()), type_style),
-        Span::styled(line_info, styles::dim_style()),
+        Span::styled(line_info, styles::dim_style(theme)),
         Span::styled("─".repeat(30), border_style),
     ]));
 
@@ -204,7 +165,8 @@ pub fn format_comment_lines(
     result
 }
 
-pub fn render_confirm_dialog(frame: &mut Frame, message: &str) {
+pub fn render_confirm_dialog(frame: &mut Frame, app: &App, message: &str) {
+    let theme = &app.theme;
     let area = centered_rect(50, 20, frame.area());
 
     frame.render_widget(Clear, area);
@@ -212,7 +174,7 @@ pub fn render_confirm_dialog(frame: &mut Frame, message: &str) {
     let block = Block::default()
         .title(" Confirm ")
         .borders(Borders::ALL)
-        .border_style(styles::border_style(true));
+        .border_style(styles::border_style(theme, true));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);

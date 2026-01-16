@@ -98,6 +98,13 @@ tuicr
 Detection order: Jujutsu (if enabled) → Git → Mercurial (if enabled).
 Jujutsu is tried first because jj repos are Git-backed.
 
+### Options
+
+| Flag | Description |
+|------|-------------|
+| `--theme dark` | Use dark color theme (default) |
+| `--theme light` | Use light color theme for light terminal backgrounds |
+
 ### Keybindings
 
 #### Navigation

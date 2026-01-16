@@ -6,6 +6,7 @@ mod model;
 mod output;
 mod persistence;
 mod syntax;
+mod theme;
 mod ui;
 mod vcs;
 
@@ -32,6 +33,7 @@ use handler::{
     handle_search_action,
 };
 use input::{Action, map_key_to_action};
+use theme::{parse_theme_arg, resolve_theme};
 
 /// Timeout for the "press Ctrl+C again to exit" feature
 const CTRL_C_EXIT_TIMEOUT: Duration = Duration::from_secs(2);
@@ -49,8 +51,12 @@ fn main() -> anyhow::Result<()> {
     // Check keyboard enhancement support before enabling raw mode
     let keyboard_enhancement_supported = matches!(supports_keyboard_enhancement(), Ok(true));
 
+    // Parse theme argument and resolve theme (auto-detection happens here, before raw mode)
+    let theme_arg = parse_theme_arg();
+    let theme = resolve_theme(theme_arg);
+
     // Initialize app
-    let mut app = match App::new() {
+    let mut app = match App::new(theme) {
         Ok(mut app) => {
             app.supports_keyboard_enhancement = keyboard_enhancement_supported;
             app

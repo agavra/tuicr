@@ -9,6 +9,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, DiffViewMode, FileTreeItem, FocusedPanel, GapId, InputMode};
 use crate::model::{LineOrigin, LineSide};
+use crate::theme::Theme;
 use crate::ui::{comment_panel, help_popup, status_bar, styles};
 use crate::vcs::git::calculate_gap;
 
@@ -44,7 +45,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     // Render confirm dialog if in confirm mode
     if app.input_mode == InputMode::Confirm {
-        comment_panel::render_confirm_dialog(frame, "Copy review to clipboard?");
+        comment_panel::render_confirm_dialog(frame, app, "Copy review to clipboard?");
     }
 }
 
@@ -62,7 +63,7 @@ fn render_commit_select(frame: &mut Frame, app: &App) {
 
     // Header
     let header = Paragraph::new(" Select commits to review ")
-        .style(styles::header_style())
+        .style(styles::header_style(&app.theme))
         .block(Block::default());
     frame.render_widget(header, chunks[0]);
 
@@ -70,7 +71,7 @@ fn render_commit_select(frame: &mut Frame, app: &App) {
     let block = Block::default()
         .title(" Recent Commits ")
         .borders(Borders::ALL)
-        .border_style(styles::border_style(true));
+        .border_style(styles::border_style(&app.theme, true));
 
     let inner = block.inner(chunks[1]);
     frame.render_widget(block, chunks[1]);
@@ -99,23 +100,23 @@ fn render_commit_select(frame: &mut Frame, app: &App) {
             let pointer = if is_cursor { ">" } else { " " };
 
             let style = if is_cursor {
-                styles::selected_style()
+                styles::selected_style(&app.theme)
             } else if is_selected {
-                Style::default().fg(styles::FG_SECONDARY)
+                Style::default().fg(app.theme.fg_secondary)
             } else {
                 Style::default()
             };
 
             let checkbox_style = if is_selected {
-                styles::reviewed_style()
+                styles::reviewed_style(&app.theme)
             } else {
-                styles::pending_style()
+                styles::pending_style(&app.theme)
             };
 
             let range_style = if is_selected {
-                styles::reviewed_style()
+                styles::reviewed_style(&app.theme)
             } else {
-                Style::default().fg(styles::FG_SECONDARY)
+                Style::default().fg(app.theme.fg_secondary)
             };
 
             // Format: > ┌ [x] abc1234  Commit message (author, date)
@@ -124,11 +125,14 @@ fn render_commit_select(frame: &mut Frame, app: &App) {
                 Span::styled(format!("{} ", pointer), style),
                 Span::styled(format!("{} ", range_marker), range_style),
                 Span::styled(format!("{} ", checkbox), checkbox_style),
-                Span::styled(format!("{} ", commit.short_id), styles::hash_style()),
+                Span::styled(
+                    format!("{} ", commit.short_id),
+                    styles::hash_style(&app.theme),
+                ),
                 Span::styled(truncate_str(&commit.summary, 50), style),
                 Span::styled(
                     format!(" ({}, {})", commit.author, time_str),
-                    Style::default().fg(styles::FG_SECONDARY),
+                    Style::default().fg(app.theme.fg_secondary),
                 ),
             ])
         })
@@ -152,7 +156,7 @@ fn render_commit_select(frame: &mut Frame, app: &App) {
         selection_info
     );
     let footer = Paragraph::new(hints)
-        .style(styles::status_bar_style())
+        .style(styles::status_bar_style(&app.theme))
         .block(Block::default());
     frame.render_widget(footer, chunks[2]);
 }
@@ -191,7 +195,7 @@ fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
     let block = Block::default()
         .title(" Files ")
         .borders(Borders::ALL)
-        .border_style(styles::border_style(focused));
+        .border_style(styles::border_style(&app.theme, focused));
 
     let inner = block.inner(area);
     let visible_items = app.build_visible_items();
@@ -264,14 +268,14 @@ fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
                         .unwrap_or(path);
 
                     let style = if is_selected {
-                        styles::selected_style().add_modifier(Modifier::UNDERLINED)
+                        styles::selected_style(&app.theme).add_modifier(Modifier::UNDERLINED)
                     } else {
                         Style::default()
                     };
 
                     let line = Line::from(vec![
                         Span::styled(indent, Style::default()),
-                        Span::styled(format!("{} ", icon), styles::dir_icon_style()),
+                        Span::styled(format!("{} ", icon), styles::dir_icon_style(&app.theme)),
                         Span::styled(format!("{}/", dir_name), style),
                     ]);
 
@@ -288,7 +292,7 @@ fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
                     let indent = "  ".repeat(*depth);
 
                     let style = if is_selected {
-                        styles::selected_style().add_modifier(Modifier::UNDERLINED)
+                        styles::selected_style(&app.theme).add_modifier(Modifier::UNDERLINED)
                     } else {
                         Style::default()
                     };
@@ -298,12 +302,15 @@ fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
                         Span::styled(
                             format!("[{}]", review_mark),
                             if is_reviewed {
-                                styles::reviewed_style()
+                                styles::reviewed_style(&app.theme)
                             } else {
-                                styles::pending_style()
+                                styles::pending_style(&app.theme)
                             },
                         ),
-                        Span::styled(format!(" {} ", status), styles::file_status_style(status)),
+                        Span::styled(
+                            format!(" {} ", status),
+                            styles::file_status_style(&app.theme, status),
+                        ),
                         Span::styled(filename.to_string(), style),
                     ]);
 
@@ -331,7 +338,7 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
     let block = Block::default()
         .title(" Diff (Unified) ")
         .borders(Borders::ALL)
-        .border_style(styles::border_style(focused));
+        .border_style(styles::border_style(&app.theme, focused));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -357,12 +364,12 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
         let review_mark = if is_reviewed { "✓ " } else { "" };
 
         lines.push(Line::from(vec![
-            Span::styled(indicator, styles::current_line_indicator_style()),
+            Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
             Span::styled(
                 format!("═══ {}{} [{}] ", review_mark, path.display(), status),
-                styles::file_header_style(),
+                styles::file_header_style(&app.theme),
             ),
-            Span::styled("═".repeat(40), styles::file_header_style()),
+            Span::styled("═".repeat(40), styles::file_header_style(&app.theme)),
         ]));
         line_idx += 1;
 
@@ -375,6 +382,7 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
         if let Some(review) = app.session.files.get(path) {
             for comment in &review.file_comments {
                 let comment_lines = comment_panel::format_comment_lines(
+                    &app.theme,
                     comment.comment_type,
                     &comment.content,
                     None,
@@ -383,7 +391,7 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
                     let indicator = cursor_indicator(line_idx, current_line_idx);
                     comment_line.spans.insert(
                         0,
-                        Span::styled(indicator, styles::current_line_indicator_style()),
+                        Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
                     );
                     lines.push(comment_line);
                     line_idx += 1;
@@ -394,15 +402,15 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
         if file.is_binary {
             let indicator = cursor_indicator_spaced(line_idx, current_line_idx);
             lines.push(Line::from(vec![
-                Span::styled(indicator, styles::current_line_indicator_style()),
-                Span::styled("(binary file)", styles::dim_style()),
+                Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
+                Span::styled("(binary file)", styles::dim_style(&app.theme)),
             ]));
             line_idx += 1;
         } else if file.hunks.is_empty() {
             let indicator = cursor_indicator_spaced(line_idx, current_line_idx);
             lines.push(Line::from(vec![
-                Span::styled(indicator, styles::current_line_indicator_style()),
-                Span::styled("(no changes)", styles::dim_style()),
+                Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
+                Span::styled("(no changes)", styles::dim_style(&app.theme)),
             ]));
             line_idx += 1;
         } else {
@@ -441,12 +449,18 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
                                     .unwrap_or_else(|| "     ".to_string());
 
                                 let line_spans = vec![
-                                    Span::styled(indicator, styles::current_line_indicator_style()),
-                                    Span::styled(line_num, styles::expanded_context_style()),
-                                    Span::styled("  ", styles::expanded_context_style()),
+                                    Span::styled(
+                                        indicator,
+                                        styles::current_line_indicator_style(&app.theme),
+                                    ),
+                                    Span::styled(
+                                        line_num,
+                                        styles::expanded_context_style(&app.theme),
+                                    ),
+                                    Span::styled("  ", styles::expanded_context_style(&app.theme)),
                                     Span::styled(
                                         expanded_line.content.clone(),
-                                        styles::expanded_context_style(),
+                                        styles::expanded_context_style(&app.theme),
                                     ),
                                 ];
                                 lines.push(Line::from(line_spans));
@@ -457,10 +471,13 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
                         // Render expander line
                         let indicator = cursor_indicator_spaced(line_idx, current_line_idx);
                         lines.push(Line::from(vec![
-                            Span::styled(indicator, styles::current_line_indicator_style()),
+                            Span::styled(
+                                indicator,
+                                styles::current_line_indicator_style(&app.theme),
+                            ),
                             Span::styled(
                                 format!("       ... expand ({} lines) ...", gap),
-                                styles::dim_style(),
+                                styles::dim_style(&app.theme),
                             ),
                         ]));
                         line_idx += 1;
@@ -470,17 +487,20 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
                 // Hunk header
                 let indicator = cursor_indicator_spaced(line_idx, current_line_idx);
                 lines.push(Line::from(vec![
-                    Span::styled(indicator, styles::current_line_indicator_style()),
-                    Span::styled(hunk.header.to_string(), styles::diff_hunk_header_style()),
+                    Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
+                    Span::styled(
+                        hunk.header.to_string(),
+                        styles::diff_hunk_header_style(&app.theme),
+                    ),
                 ]));
                 line_idx += 1;
 
                 // Diff lines
                 for diff_line in &hunk.lines {
                     let (prefix, style) = match diff_line.origin {
-                        LineOrigin::Addition => ("+", styles::diff_add_style()),
-                        LineOrigin::Deletion => ("-", styles::diff_del_style()),
-                        LineOrigin::Context => (" ", styles::diff_context_style()),
+                        LineOrigin::Addition => ("+", styles::diff_add_style(&app.theme)),
+                        LineOrigin::Deletion => ("-", styles::diff_del_style(&app.theme)),
+                        LineOrigin::Context => (" ", styles::diff_context_style(&app.theme)),
                     };
 
                     let line_num = match diff_line.origin {
@@ -503,8 +523,8 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
 
                     // Build line spans - use syntax highlighting if available
                     let mut line_spans = vec![
-                        Span::styled(indicator, styles::current_line_indicator_style()),
-                        Span::styled(line_num, styles::dim_style()),
+                        Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
+                        Span::styled(line_num, styles::dim_style(&app.theme)),
                         Span::styled(format!("{} ", prefix), style),
                     ];
 
@@ -530,6 +550,7 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
                         for comment in comments {
                             if comment.side == Some(LineSide::Old) {
                                 let comment_lines = comment_panel::format_comment_lines(
+                                    &app.theme,
                                     comment.comment_type,
                                     &comment.content,
                                     Some(old_ln),
@@ -541,7 +562,7 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
                                         0,
                                         Span::styled(
                                             indicator,
-                                            styles::current_line_indicator_style(),
+                                            styles::current_line_indicator_style(&app.theme),
                                         ),
                                     );
                                     lines.push(comment_line);
@@ -557,6 +578,7 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
                         for comment in comments {
                             if comment.side != Some(LineSide::Old) {
                                 let comment_lines = comment_panel::format_comment_lines(
+                                    &app.theme,
                                     comment.comment_type,
                                     &comment.content,
                                     Some(new_ln),
@@ -567,7 +589,7 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
                                         0,
                                         Span::styled(
                                             indicator,
-                                            styles::current_line_indicator_style(),
+                                            styles::current_line_indicator_style(&app.theme),
                                         ),
                                     );
                                     lines.push(comment_line);
@@ -584,7 +606,7 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
         let indicator = cursor_indicator(line_idx, current_line_idx);
         lines.push(Line::from(Span::styled(
             indicator,
-            styles::current_line_indicator_style(),
+            styles::current_line_indicator_style(&app.theme),
         )));
         line_idx += 1;
     }
@@ -635,7 +657,8 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 /// Context for rendering side-by-side diff lines
-struct SideBySideContext {
+struct SideBySideContext<'a> {
+    theme: &'a Theme,
     content_width: usize,
     current_line_idx: usize,
 }
@@ -664,7 +687,7 @@ fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
     let block = Block::default()
         .title(" Diff (Side-by-Side) ")
         .borders(Borders::ALL)
-        .border_style(styles::border_style(focused));
+        .border_style(styles::border_style(&app.theme, focused));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -679,6 +702,7 @@ fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
     let content_width = available_width / 2;
 
     let ctx = SideBySideContext {
+        theme: &app.theme,
         content_width,
         current_line_idx: app.diff_state.cursor_line,
     };
@@ -698,12 +722,12 @@ fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
         let review_mark = if is_reviewed { "✓ " } else { "" };
 
         lines.push(Line::from(vec![
-            Span::styled(indicator, styles::current_line_indicator_style()),
+            Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
             Span::styled(
                 format!("═══ {}{} [{}] ", review_mark, path.display(), status),
-                styles::file_header_style(),
+                styles::file_header_style(&app.theme),
             ),
-            Span::styled("═".repeat(40), styles::file_header_style()),
+            Span::styled("═".repeat(40), styles::file_header_style(&app.theme)),
         ]));
         line_idx += 1;
 
@@ -716,6 +740,7 @@ fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
         if let Some(review) = app.session.files.get(path) {
             for comment in &review.file_comments {
                 let comment_lines = comment_panel::format_comment_lines(
+                    &app.theme,
                     comment.comment_type,
                     &comment.content,
                     None,
@@ -724,7 +749,7 @@ fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
                     let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
                     comment_line.spans.insert(
                         0,
-                        Span::styled(indicator, styles::current_line_indicator_style()),
+                        Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
                     );
                     lines.push(comment_line);
                     line_idx += 1;
@@ -735,15 +760,15 @@ fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
         if file.is_binary {
             let indicator = cursor_indicator_spaced(line_idx, ctx.current_line_idx);
             lines.push(Line::from(vec![
-                Span::styled(indicator, styles::current_line_indicator_style()),
-                Span::styled("(binary file)", styles::dim_style()),
+                Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
+                Span::styled("(binary file)", styles::dim_style(&app.theme)),
             ]));
             line_idx += 1;
         } else if file.hunks.is_empty() {
             let indicator = cursor_indicator_spaced(line_idx, ctx.current_line_idx);
             lines.push(Line::from(vec![
-                Span::styled(indicator, styles::current_line_indicator_style()),
-                Span::styled("(no changes)", styles::dim_style()),
+                Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
+                Span::styled("(no changes)", styles::dim_style(&app.theme)),
             ]));
             line_idx += 1;
         } else {
@@ -782,22 +807,28 @@ fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
 
                                 // In side-by-side, show context on both sides
                                 let line_spans = vec![
-                                    Span::styled(indicator, styles::current_line_indicator_style()),
+                                    Span::styled(
+                                        indicator,
+                                        styles::current_line_indicator_style(&app.theme),
+                                    ),
                                     Span::styled(
                                         line_num.clone(),
-                                        styles::expanded_context_style(),
+                                        styles::expanded_context_style(&app.theme),
                                     ),
-                                    Span::styled("  ", styles::expanded_context_style()),
+                                    Span::styled("  ", styles::expanded_context_style(&app.theme)),
                                     Span::styled(
                                         truncate_or_pad(&expanded_line.content, ctx.content_width),
-                                        styles::expanded_context_style(),
+                                        styles::expanded_context_style(&app.theme),
                                     ),
-                                    Span::styled(" │ ", styles::dim_style()),
-                                    Span::styled(line_num, styles::expanded_context_style()),
-                                    Span::styled("  ", styles::expanded_context_style()),
+                                    Span::styled(" │ ", styles::dim_style(&app.theme)),
+                                    Span::styled(
+                                        line_num,
+                                        styles::expanded_context_style(&app.theme),
+                                    ),
+                                    Span::styled("  ", styles::expanded_context_style(&app.theme)),
                                     Span::styled(
                                         truncate_or_pad(&expanded_line.content, ctx.content_width),
-                                        styles::expanded_context_style(),
+                                        styles::expanded_context_style(&app.theme),
                                     ),
                                 ];
                                 lines.push(Line::from(line_spans));
@@ -808,10 +839,13 @@ fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
                         // Render expander line
                         let indicator = cursor_indicator_spaced(line_idx, ctx.current_line_idx);
                         lines.push(Line::from(vec![
-                            Span::styled(indicator, styles::current_line_indicator_style()),
+                            Span::styled(
+                                indicator,
+                                styles::current_line_indicator_style(&app.theme),
+                            ),
                             Span::styled(
                                 format!("       ... expand ({} lines) ...", gap),
-                                styles::dim_style(),
+                                styles::dim_style(&app.theme),
                             ),
                         ]));
                         line_idx += 1;
@@ -821,8 +855,11 @@ fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
                 // Hunk header
                 let indicator = cursor_indicator_spaced(line_idx, ctx.current_line_idx);
                 lines.push(Line::from(vec![
-                    Span::styled(indicator, styles::current_line_indicator_style()),
-                    Span::styled(hunk.header.to_string(), styles::diff_hunk_header_style()),
+                    Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
+                    Span::styled(
+                        hunk.header.to_string(),
+                        styles::diff_hunk_header_style(&app.theme),
+                    ),
                 ]));
                 line_idx += 1;
 
@@ -841,7 +878,7 @@ fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
         let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
         lines.push(Line::from(Span::styled(
             indicator,
-            styles::current_line_indicator_style(),
+            styles::current_line_indicator_style(&app.theme),
         )));
         line_idx += 1;
     }
@@ -958,34 +995,46 @@ fn render_context_line_side_by_side(
     let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
 
     let mut spans = vec![
-        Span::styled(indicator, styles::current_line_indicator_style()),
-        Span::styled(format!("{} ", line_num), styles::dim_style()),
-        Span::styled(" ".to_string(), styles::diff_context_style()),
+        Span::styled(indicator, styles::current_line_indicator_style(ctx.theme)),
+        Span::styled(format!("{} ", line_num), styles::dim_style(ctx.theme)),
+        Span::styled(" ".to_string(), styles::diff_context_style(ctx.theme)),
     ];
 
     // Left side content - use syntax highlighting if available
     if let Some(ref highlighted) = diff_line.highlighted_spans {
-        let content_spans =
-            truncate_or_pad_spans(highlighted, ctx.content_width, styles::diff_context_style());
+        let content_spans = truncate_or_pad_spans(
+            highlighted,
+            ctx.content_width,
+            styles::diff_context_style(ctx.theme),
+        );
         spans.extend(content_spans);
     } else {
         let content = truncate_or_pad(&diff_line.content, ctx.content_width);
-        spans.push(Span::styled(content, styles::diff_context_style()));
+        spans.push(Span::styled(content, styles::diff_context_style(ctx.theme)));
     }
 
     // Separator
-    spans.push(Span::styled(" │ ", styles::dim_style()));
-    spans.push(Span::styled(format!("{} ", line_num), styles::dim_style()));
-    spans.push(Span::styled(" ".to_string(), styles::diff_context_style()));
+    spans.push(Span::styled(" │ ", styles::dim_style(ctx.theme)));
+    spans.push(Span::styled(
+        format!("{} ", line_num),
+        styles::dim_style(ctx.theme),
+    ));
+    spans.push(Span::styled(
+        " ".to_string(),
+        styles::diff_context_style(ctx.theme),
+    ));
 
     // Right side content - use same highlighting
     if let Some(ref highlighted) = diff_line.highlighted_spans {
-        let content_spans =
-            truncate_or_pad_spans(highlighted, ctx.content_width, styles::diff_context_style());
+        let content_spans = truncate_or_pad_spans(
+            highlighted,
+            ctx.content_width,
+            styles::diff_context_style(ctx.theme),
+        );
         spans.extend(content_spans);
     } else {
         let content = truncate_or_pad(&diff_line.content, ctx.content_width);
-        spans.push(Span::styled(content, styles::diff_context_style()));
+        spans.push(Span::styled(content, styles::diff_context_style(ctx.theme)));
     }
 
     lines.push(Line::from(spans));
@@ -1031,23 +1080,23 @@ fn render_deletion_addition_pair_side_by_side(
 
         let mut spans = vec![Span::styled(
             indicator,
-            styles::current_line_indicator_style(),
+            styles::current_line_indicator_style(ctx.theme),
         )];
 
         // Left side (deletion)
         if offset < del_count {
             let del_line = &hunk_lines[start_idx + offset];
-            add_deletion_spans(&mut spans, del_line, ctx.content_width);
+            add_deletion_spans(ctx.theme, &mut spans, del_line, ctx.content_width);
         } else {
             add_empty_column_spans(&mut spans, ctx.content_width);
         }
 
-        spans.push(Span::styled(" │ ", styles::dim_style()));
+        spans.push(Span::styled(" │ ", styles::dim_style(ctx.theme)));
 
         // Right side (addition)
         if offset < add_count {
             let add_line = &hunk_lines[add_start + offset];
-            add_addition_spans(&mut spans, add_line, ctx.content_width);
+            add_addition_spans(ctx.theme, &mut spans, add_line, ctx.content_width);
         } else {
             add_empty_column_spans(&mut spans, ctx.content_width);
         }
@@ -1101,11 +1150,11 @@ fn render_standalone_addition_side_by_side(
 
     let mut spans = vec![Span::styled(
         indicator,
-        styles::current_line_indicator_style(),
+        styles::current_line_indicator_style(ctx.theme),
     )];
     add_empty_column_spans(&mut spans, ctx.content_width);
-    spans.push(Span::styled(" │ ", styles::dim_style()));
-    add_addition_spans(&mut spans, diff_line, ctx.content_width);
+    spans.push(Span::styled(" │ ", styles::dim_style(ctx.theme)));
+    add_addition_spans(ctx.theme, &mut spans, diff_line, ctx.content_width);
 
     lines.push(Line::from(spans));
     line_idx += 1;
@@ -1120,6 +1169,7 @@ fn render_standalone_addition_side_by_side(
 
 /// Add deletion line spans to the spans vector
 fn add_deletion_spans(
+    theme: &Theme,
     spans: &mut Vec<Span>,
     diff_line: &crate::model::DiffLine,
     content_width: usize,
@@ -1129,23 +1179,27 @@ fn add_deletion_spans(
         .map(|n| format!("{:>4}", n))
         .unwrap_or_else(|| "    ".to_string());
 
-    spans.push(Span::styled(format!("{} ", line_num), styles::dim_style()));
-    spans.push(Span::styled("-".to_string(), styles::diff_del_style()));
+    spans.push(Span::styled(
+        format!("{} ", line_num),
+        styles::dim_style(theme),
+    ));
+    spans.push(Span::styled("-".to_string(), styles::diff_del_style(theme)));
 
     // Use syntax highlighting if available
     if let Some(ref highlighted) = diff_line.highlighted_spans {
         let content_spans =
-            truncate_or_pad_spans(highlighted, content_width, styles::diff_del_style());
+            truncate_or_pad_spans(highlighted, content_width, styles::diff_del_style(theme));
         spans.extend(content_spans);
     } else {
         // Fall back to plain text
         let content = truncate_or_pad(&diff_line.content, content_width);
-        spans.push(Span::styled(content, styles::diff_del_style()));
+        spans.push(Span::styled(content, styles::diff_del_style(theme)));
     }
 }
 
 /// Add addition line spans to the spans vector
 fn add_addition_spans(
+    theme: &Theme,
     spans: &mut Vec<Span>,
     diff_line: &crate::model::DiffLine,
     content_width: usize,
@@ -1155,18 +1209,21 @@ fn add_addition_spans(
         .map(|n| format!("{:>4}", n))
         .unwrap_or_else(|| "    ".to_string());
 
-    spans.push(Span::styled(format!("{} ", line_num), styles::dim_style()));
-    spans.push(Span::styled("+".to_string(), styles::diff_add_style()));
+    spans.push(Span::styled(
+        format!("{} ", line_num),
+        styles::dim_style(theme),
+    ));
+    spans.push(Span::styled("+".to_string(), styles::diff_add_style(theme)));
 
     // Use syntax highlighting if available
     if let Some(ref highlighted) = diff_line.highlighted_spans {
         let content_spans =
-            truncate_or_pad_spans(highlighted, content_width, styles::diff_add_style());
+            truncate_or_pad_spans(highlighted, content_width, styles::diff_add_style(theme));
         spans.extend(content_spans);
     } else {
         // Fall back to plain text
         let content = truncate_or_pad(&diff_line.content, content_width);
-        spans.push(Span::styled(content, styles::diff_add_style()));
+        spans.push(Span::styled(content, styles::diff_add_style(theme)));
     }
 }
 
@@ -1195,6 +1252,7 @@ fn add_comments_to_line(
                 || (side == LineSide::New && comment_side != LineSide::Old)
             {
                 let comment_lines = comment_panel::format_comment_lines(
+                    ctx.theme,
                     comment.comment_type,
                     &comment.content,
                     Some(line_num),
@@ -1203,7 +1261,7 @@ fn add_comments_to_line(
                     let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
                     comment_line.spans.insert(
                         0,
-                        Span::styled(indicator, styles::current_line_indicator_style()),
+                        Span::styled(indicator, styles::current_line_indicator_style(ctx.theme)),
                     );
                     lines.push(comment_line);
                     line_idx += 1;

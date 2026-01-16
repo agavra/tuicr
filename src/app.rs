@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use crate::error::{Result, TuicrError};
 use crate::model::{Comment, CommentType, DiffFile, DiffLine, LineSide, ReviewSession};
 use crate::persistence::{find_session_for_repo, load_session};
+use crate::theme::Theme;
 use crate::vcs::git::calculate_gap;
 use crate::vcs::{CommitInfo, VcsBackend, VcsInfo, detect_vcs};
 
@@ -110,6 +111,7 @@ pub struct Message {
 }
 
 pub struct App {
+    pub theme: Theme,
     pub vcs: Box<dyn VcsBackend>,
     pub vcs_info: VcsInfo,
     pub session: ReviewSession,
@@ -231,7 +233,7 @@ enum CommentLocation {
 }
 
 impl App {
-    pub fn new() -> Result<Self> {
+    pub fn new(theme: Theme) -> Result<Self> {
         let vcs = detect_vcs()?;
         let vcs_info = vcs.info().clone();
 
@@ -250,6 +252,7 @@ impl App {
                 }
 
                 let mut app = Self {
+                    theme,
                     vcs,
                     vcs_info,
                     session,
@@ -300,6 +303,7 @@ impl App {
                     ReviewSession::new(vcs_info.root_path.clone(), vcs_info.head_commit.clone());
 
                 Ok(Self {
+                    theme,
                     vcs,
                     vcs_info,
                     session,

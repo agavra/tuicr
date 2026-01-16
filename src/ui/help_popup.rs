@@ -10,6 +10,7 @@ use crate::app::App;
 use crate::ui::styles;
 
 pub fn render_help(frame: &mut Frame, app: &mut App) {
+    let theme = &app.theme;
     let area = centered_rect(60, 70, frame.area());
 
     // Clear the area behind the popup
@@ -18,7 +19,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
     let block = Block::default()
         .title(" Help (j/k to scroll) - Press ? or Esc to close ")
         .borders(Borders::ALL)
-        .border_style(styles::border_style(true));
+        .border_style(styles::border_style(theme, true));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
