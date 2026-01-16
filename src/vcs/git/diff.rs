@@ -136,6 +136,7 @@ fn parse_hunks(
                 let content = String::from_utf8_lossy(line.content())
                     .trim_end_matches('\n')
                     .trim_end_matches('\r')
+                    .replace('\t', "    ")
                     .to_string();
 
                 line_contents.push(content);
