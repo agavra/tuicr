@@ -26,8 +26,6 @@ pub enum TuicrError {
     #[error("Clipboard error: {0}")]
     Clipboard(String),
 
-    /// Used by CLI-based VCS backends (hg, jj features)
-    #[cfg_attr(not(any(feature = "hg", feature = "jj")), allow(dead_code))]
     #[error("VCS command failed: {0}")]
     VcsCommand(String),
 

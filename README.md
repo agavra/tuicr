@@ -40,8 +40,8 @@ to clipboard in a format ready to paste back to the agent.
 - **Review tracking** - Mark files as reviewed, persist progress to disk
 - **Clipboard export** - Copy structured Markdown optimized for LLM consumption
 - **Session persistence** - Reviews auto-save and reload on restart
-- **Jujutsu support** - Optional jj support via `--features jj` (tried first since jj repos are Git-backed)
-- **Mercurial support** - Optional hg support via `--features hg`
+- **Jujutsu support** - Built-in jj support (tried first since jj repos are Git-backed)
+- **Mercurial support** - Built-in hg support
 
 ## Installation
 
@@ -69,35 +69,16 @@ cd tuicr
 cargo install --path .
 ```
 
-To enable Jujutsu (jj) support:
-
-```bash
-cargo install --path . --features jj
-```
-
-To enable Mercurial (hg) support:
-
-```bash
-cargo install --path . --features hg
-```
-
-To enable both:
-
-```bash
-cargo install --path . --features jj,hg
-```
-
 ## Usage
 
-Run `tuicr` in any git repository (or jj/hg repository if built with those features):
+Run `tuicr` in any git, jujutsu, or mercurial repository:
 
 ```bash
 cd /path/to/your/repo
 tuicr
 ```
 
-Detection order: Jujutsu (if enabled) → Git → Mercurial (if enabled).
-Jujutsu is tried first because jj repos are Git-backed.
+Detection order: Jujutsu → Git → Mercurial. Jujutsu is tried first because jj repos are Git-backed.
 
 ### Options
 

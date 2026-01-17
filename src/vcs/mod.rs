@@ -1,29 +1,24 @@
 //! VCS abstraction layer for supporting multiple version control systems.
 //!
 //! Currently supports:
-//! - Git (always enabled)
-//! - Mercurial (optional, via `hg` feature flag)
-//! - Jujutsu (optional, via `jj` feature flag)
+//! - Git
+//! - Mercurial
+//! - Jujutsu
 //!
 //! ## Detection Order
 //!
-//! When auto-detecting the VCS type, Jujutsu is tried first (if enabled)
-//! because jj repos are Git-backed and contain a `.git` directory. If jj
-//! detection fails, Git is tried next, then Mercurial (if enabled).
+//! When auto-detecting the VCS type, Jujutsu is tried first because jj repos
+//! are Git-backed and contain a `.git` directory. If jj detection fails, Git
+//! is tried next, then Mercurial.
 
-#[cfg(any(feature = "hg", feature = "jj"))]
 mod diff_parser;
 pub mod git;
-#[cfg(feature = "hg")]
 mod hg;
-#[cfg(feature = "jj")]
 mod jj;
 mod traits;
 
 pub use git::GitBackend;
-#[cfg(feature = "hg")]
 pub use hg::HgBackend;
-#[cfg(feature = "jj")]
 pub use jj::JjBackend;
 pub use traits::{CommitInfo, VcsBackend, VcsInfo};
 
@@ -31,11 +26,10 @@ use crate::error::{Result, TuicrError};
 
 /// Detect the VCS type and return the appropriate backend.
 ///
-/// Detection order: Jujutsu (if enabled) → Git → Mercurial (if enabled).
+/// Detection order: Jujutsu → Git → Mercurial.
 /// Jujutsu is tried first because jj repos are Git-backed.
 pub fn detect_vcs() -> Result<Box<dyn VcsBackend>> {
     // Try jj first since jj repos are Git-backed
-    #[cfg(feature = "jj")]
     if let Ok(backend) = JjBackend::discover() {
         return Ok(Box::new(backend));
     }
@@ -45,8 +39,7 @@ pub fn detect_vcs() -> Result<Box<dyn VcsBackend>> {
         return Ok(Box::new(backend));
     }
 
-    // Try hg if feature is enabled
-    #[cfg(feature = "hg")]
+    // Try hg
     if let Ok(backend) = HgBackend::discover() {
         return Ok(Box::new(backend));
     }

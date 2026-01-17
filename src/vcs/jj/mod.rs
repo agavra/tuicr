@@ -37,6 +37,9 @@ impl JjBackend {
 
     /// Create backend from a known path (used by discover and tests)
     fn from_path(root_path: PathBuf) -> Result<Self> {
+        // Canonicalize to resolve symlinks (e.g., /var -> /private/var on macOS)
+        let root_path = root_path.canonicalize().unwrap_or(root_path);
+
         // Get current change id (jj uses change IDs rather than commit hashes)
         let head_commit = run_jj_command(
             &root_path,
@@ -318,7 +321,9 @@ mod tests {
         let backend = discover_in(temp.path()).expect("Failed to discover jj repo");
         let info = backend.info();
 
-        assert_eq!(info.root_path, temp.path());
+        // Canonicalize temp path to handle macOS /var -> /private/var symlink
+        let expected_path = temp.path().canonicalize().unwrap();
+        assert_eq!(info.root_path, expected_path);
         assert_eq!(info.vcs_type, VcsType::Jujutsu);
         assert!(!info.head_commit.is_empty());
     }
@@ -334,7 +339,9 @@ mod tests {
         let backend =
             JjBackend::from_path(temp.path().to_path_buf()).expect("Failed to create jj backend");
 
-        assert_eq!(backend.info().root_path, temp.path());
+        // Canonicalize temp path to handle macOS /var -> /private/var symlink
+        let expected_path = temp.path().canonicalize().unwrap();
+        assert_eq!(backend.info().root_path, expected_path);
         assert_eq!(backend.info().vcs_type, VcsType::Jujutsu);
 
         let files = backend
@@ -360,7 +367,9 @@ mod tests {
         let backend =
             JjBackend::from_path(temp.path().to_path_buf()).expect("Failed to create jj backend");
 
-        assert_eq!(backend.info().root_path, temp.path());
+        // Canonicalize temp path to handle macOS /var -> /private/var symlink
+        let expected_path = temp.path().canonicalize().unwrap();
+        assert_eq!(backend.info().root_path, expected_path);
 
         // Fetch context lines from working tree (modified file)
         let lines = backend

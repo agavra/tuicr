@@ -10,11 +10,6 @@ readme = "README.md"
 keywords = ["tui", "git", "code-review", "diff", "cli"]
 categories = ["command-line-utilities", "development-tools"]
 
-[features]
-default = []
-hg = []  # Enable Mercurial (hg) support
-jj = []  # Enable Jujutsu (jj) support
-
 [dependencies]
 # TUI framework
 ratatui = "0.30"
