@@ -369,10 +369,10 @@ pub fn handle_diff_action(app: &mut App, action: Action) {
 fn handle_shared_normal_action(app: &mut App, action: Action) {
     match action {
         Action::Quit => app.should_quit = true,
-        Action::HalfPageDown => app.scroll_down(15),
-        Action::HalfPageUp => app.scroll_up(15),
-        Action::PageDown => app.scroll_down(30),
-        Action::PageUp => app.scroll_up(30),
+        Action::HalfPageDown => app.scroll_down(app.diff_state.viewport_height / 2),
+        Action::HalfPageUp => app.scroll_up(app.diff_state.viewport_height / 2),
+        Action::PageDown => app.scroll_down(app.diff_state.viewport_height),
+        Action::PageUp => app.scroll_up(app.diff_state.viewport_height),
         Action::GoToTop => app.jump_to_file(0),
         Action::GoToBottom => {
             let last = app.file_count().saturating_sub(1);
