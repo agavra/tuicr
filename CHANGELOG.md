@@ -2,6 +2,33 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.0] - 2026-01-17
+
+### Bug Fixes
+
+- Replace tabs with space (#106)
+
+### Documentation
+
+- Update demo for v0.3.0 (#99)
+
+### Features
+
+- Add optional Mercurial (hg) support (#93)
+- Add OSC 52 clipboard fallback for remote sessions (#94)
+- Add optional Jujutsu (jj) support (#96)
+- Add Ctrl+C twice to exit (#100)
+- Add commit selection support for hg and jj backends (#103)
+- Display VCS type in status bar header (#102)
+- Add PageUp/PageDown key support for scrolling (#112)
+
+### Refactor
+
+- Introduce VCS abstraction layer (#92)
+
+### Ui
+
+- Add theme support with dark and light modes (#105)
 ## [0.3.0] - 2026-01-15
 
 ### Bug Fixes
