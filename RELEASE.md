@@ -63,8 +63,8 @@ curl -sL "https://github.com/agavra/tuicr/releases/download/v${VERSION}/tuicr-${
 curl -sL "https://github.com/agavra/tuicr/releases/download/v${VERSION}/tuicr-${VERSION}-x86_64-unknown-linux-gnu.tar.gz" | shasum -a 256
 curl -sL "https://github.com/agavra/tuicr/releases/download/v${VERSION}/tuicr-${VERSION}-aarch64-unknown-linux-gnu.tar.gz" | shasum -a 256
 
-# Update homebrew-tuicr/Formula/tuicr.rb with new version and checksums
-# Then commit and push to homebrew-tuicr repo
+# Update homebrew-tap/Formula/tuicr.rb with new version and checksums
+# Then commit and push to homebrew-tap repo
 ```
 
 ## Required Secrets
