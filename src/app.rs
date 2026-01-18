@@ -548,6 +548,35 @@ impl App {
         self.update_current_file_from_cursor();
     }
 
+    pub fn viewport_scroll_down(&mut self, lines: usize) {
+        let total = self.total_lines();
+        let viewport = self.diff_state.viewport_height.max(1);
+        let max_scroll = total.saturating_sub(viewport);
+
+        // Move viewport down
+        self.diff_state.scroll_offset = (self.diff_state.scroll_offset + lines).min(max_scroll);
+
+        // Clamp cursor to stay within viewport bounds
+        // If cursor is now above the visible area, move it to the top visible line
+        if self.diff_state.cursor_line < self.diff_state.scroll_offset {
+            self.diff_state.cursor_line = self.diff_state.scroll_offset;
+        }
+    }
+
+    pub fn viewport_scroll_up(&mut self, lines: usize) {
+        let viewport = self.diff_state.viewport_height.max(1);
+
+        // Move viewport up
+        self.diff_state.scroll_offset = self.diff_state.scroll_offset.saturating_sub(lines);
+
+        // Clamp cursor to stay within viewport bounds
+        // If cursor is now below the visible area, move it to the bottom visible line
+        let max_visible_line = self.diff_state.scroll_offset + viewport - 1;
+        if self.diff_state.cursor_line > max_visible_line {
+            self.diff_state.cursor_line = max_visible_line;
+        }
+    }
+
     pub fn scroll_left(&mut self, cols: usize) {
         if self.diff_state.wrap_lines {
             return;

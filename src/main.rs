@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use crossterm::{
     event::{
         self, Event, KeyEventKind, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
-        PushKeyboardEnhancementFlags,
+        PushKeyboardEnhancementFlags, EnableMouseCapture, DisableMouseCapture,
     },
     execute,
     terminal::{
@@ -43,6 +43,7 @@ fn main() -> anyhow::Result<()> {
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
         let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
+        let _ = execute!(io::stdout(), DisableMouseCapture);
         let _ = disable_raw_mode();
         let _ = execute!(io::stdout(), LeaveAlternateScreen);
         original_hook(panic_info);
@@ -85,7 +86,7 @@ fn main() -> anyhow::Result<()> {
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
 
     // Enable keyboard enhancement for better modifier key detection (e.g., Alt+Enter)
     // This is supported by modern terminals like Kitty, iTerm2, WezTerm, etc.
@@ -123,10 +124,10 @@ fn main() -> anyhow::Result<()> {
         }
 
         // Handle events
-        if event::poll(Duration::from_millis(100))?
-            && let Event::Key(key) = event::read()?
-            && key.kind == KeyEventKind::Press
-        {
+        if event::poll(Duration::from_millis(100))? {
+            let event = event::read()?;
+            match event {
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
             // Handle Ctrl+C twice to exit (works across all input modes)
             // In Comment mode, first Ctrl+C also cancels the comment
             if key.code == crossterm::event::KeyCode::Char('c')
@@ -234,6 +235,28 @@ fn main() -> anyhow::Result<()> {
                     FocusedPanel::Diff => handle_diff_action(&mut app, action),
                 },
             }
+                }
+                Event::Mouse(mouse_event) => {
+                    use crossterm::event::MouseEventKind;
+                    let action = match mouse_event.kind {
+                        MouseEventKind::ScrollUp => Some(Action::MouseScrollUp(3)),
+                        MouseEventKind::ScrollDown => Some(Action::MouseScrollDown(3)),
+                        _ => None,
+                    };
+                    if let Some(action) = action {
+                        // Dispatch action through handler based on mode and panel
+                        match app.input_mode {
+                            InputMode::Help => handle_help_action(&mut app, action),
+                            InputMode::Normal => match app.focused_panel {
+                                FocusedPanel::FileList => handle_file_list_action(&mut app, action),
+                                FocusedPanel::Diff => handle_diff_action(&mut app, action),
+                            },
+                            _ => {}
+                        }
+                    }
+                }
+                _ => {}
+            }
         }
 
         if app.should_quit {
@@ -243,6 +266,7 @@ fn main() -> anyhow::Result<()> {
 
     // Restore terminal
     let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
+    execute!(terminal.backend_mut(), DisableMouseCapture)?;
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
 

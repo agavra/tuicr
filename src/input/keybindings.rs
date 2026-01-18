@@ -21,6 +21,8 @@ pub enum Action {
     PendingSemicolonCommand,
     ScrollLeft(usize),
     ScrollRight(usize),
+    MouseScrollUp(usize),
+    MouseScrollDown(usize),
 
     // Panel focus
     ToggleFocus,
