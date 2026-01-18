@@ -238,46 +238,61 @@ fn main() -> anyhow::Result<()> {
                 }
                 Event::Mouse(mouse_event) => {
                     use crossterm::event::MouseEventKind;
-                    let action = match mouse_event.kind {
-                        MouseEventKind::ScrollUp => Some(Action::MouseScrollUp(3)),
-                        MouseEventKind::ScrollDown => Some(Action::MouseScrollDown(3)),
-                        _ => None,
-                    };
-                    if let Some(action) = action {
-                        // Dispatch action based on which panel the mouse is over
-                        match app.input_mode {
-                            InputMode::Help => handle_help_action(&mut app, action),
-                            InputMode::Normal => {
-                                // Determine which panel the mouse is over
-                                let mouse_col = mouse_event.column;
-                                let mouse_row = mouse_event.row;
 
-                                let over_file_list = app.file_list_area
-                                    .map(|area| {
-                                        mouse_col >= area.x
-                                            && mouse_col < area.x + area.width
-                                            && mouse_row >= area.y
-                                            && mouse_row < area.y + area.height
-                                    })
-                                    .unwrap_or(false);
+                    // Helper to determine which panel the mouse is over
+                    let mouse_col = mouse_event.column;
+                    let mouse_row = mouse_event.row;
 
-                                let over_diff = app.diff_area
-                                    .map(|area| {
-                                        mouse_col >= area.x
-                                            && mouse_col < area.x + area.width
-                                            && mouse_row >= area.y
-                                            && mouse_row < area.y + area.height
-                                    })
-                                    .unwrap_or(false);
+                    let over_file_list = app.file_list_area
+                        .map(|area| {
+                            mouse_col >= area.x
+                                && mouse_col < area.x + area.width
+                                && mouse_row >= area.y
+                                && mouse_row < area.y + area.height
+                        })
+                        .unwrap_or(false);
 
+                    let over_diff = app.diff_area
+                        .map(|area| {
+                            mouse_col >= area.x
+                                && mouse_col < area.x + area.width
+                                && mouse_row >= area.y
+                                && mouse_row < area.y + area.height
+                        })
+                        .unwrap_or(false);
+
+                    match mouse_event.kind {
+                        MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+                            // Click to focus panel
+                            if app.input_mode == InputMode::Normal {
                                 if over_file_list {
-                                    handle_file_list_action(&mut app, action);
+                                    app.focused_panel = FocusedPanel::FileList;
                                 } else if over_diff {
-                                    handle_diff_action(&mut app, action);
+                                    app.focused_panel = FocusedPanel::Diff;
                                 }
-                            },
-                            _ => {}
+                            }
                         }
+                        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                            let action = match mouse_event.kind {
+                                MouseEventKind::ScrollUp => Action::MouseScrollUp(3),
+                                MouseEventKind::ScrollDown => Action::MouseScrollDown(3),
+                                _ => unreachable!(),
+                            };
+
+                            // Dispatch action based on which panel the mouse is over
+                            match app.input_mode {
+                                InputMode::Help => handle_help_action(&mut app, action),
+                                InputMode::Normal => {
+                                    if over_file_list {
+                                        handle_file_list_action(&mut app, action);
+                                    } else if over_diff {
+                                        handle_diff_action(&mut app, action);
+                                    }
+                                },
+                                _ => {}
+                            }
+                        }
+                        _ => {}
                     }
                 }
                 _ => {}
