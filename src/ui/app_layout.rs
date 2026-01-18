@@ -176,9 +176,15 @@ fn render_main_content(frame: &mut Frame, app: &mut App, area: Rect) {
             ])
             .split(area);
 
+        app.file_list_area = Some(chunks[0]);
+        app.diff_area = Some(chunks[1]);
+
         render_file_list(frame, app, chunks[0]);
         render_diff_view(frame, app, chunks[1]);
     } else {
+        app.file_list_area = None;
+        app.diff_area = Some(area);
+
         render_diff_view(frame, app, area);
     }
 }
