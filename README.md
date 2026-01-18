@@ -36,6 +36,7 @@ to clipboard in a format ready to paste back to the agent.
 - **Vim keybindings** - Navigate with `j/k`, `Ctrl-d/u`, `g/G`, `{/}`, `[/]`
 - **Expandable context** - Press Enter on "... expand (N lines) ..." to reveal hidden context between hunks
 - **Comments** - Add file-level or line-level comments with types
+- **Visual mode** - Select line ranges with `V` and comment on multiple lines at once
 - **Review tracking** - Mark files as reviewed, persist progress to disk
 - **Clipboard export** - Copy structured Markdown optimized for LLM consumption
 - **Session persistence** - Reviews auto-save and reload on restart
@@ -140,10 +141,19 @@ Jujutsu is tried first because jj repos are Git-backed.
 | `r` | Toggle file reviewed |
 | `c` | Add line comment (or file comment if not on a diff line) |
 | `C` | Add file comment |
+| `V` | Enter visual mode for range comments |
 | `dd` | Delete comment at cursor |
 | `i` | Edit comment at cursor |
 | `v` | Toggle diff view (unified / side-by-side) |
 | `y` | Copy review to clipboard |
+
+#### Visual Mode
+
+| Key | Action |
+|-----|--------|
+| `j` / `k` | Extend selection down/up |
+| `c` / `Enter` | Create comment for selected range |
+| `Esc` / `V` | Cancel selection |
 
 #### Comment Mode
 
@@ -196,9 +206,10 @@ Comment types: ISSUE (problems to fix), SUGGESTION (improvements), NOTE (observa
 
 1. **[SUGGESTION]** `src/auth.rs` - Consider adding unit tests
 2. **[ISSUE]** `src/auth.rs:42` - Magic number should be a named constant
+3. **[NOTE]** `src/auth.rs:50-55` - This block could be refactored
 ```
 
-Each comment is numbered and self-contained with its file path and line number (if applicable).
+Each comment is numbered and self-contained with its file path and line number or range (if applicable).
 
 ## Session Persistence
 
