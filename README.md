@@ -36,7 +36,7 @@ to clipboard in a format ready to paste back to the agent.
 - **Vim keybindings** - Navigate with `j/k`, `Ctrl-d/u`, `g/G`, `{/}`, `[/]`
 - **Expandable context** - Press Enter on "... expand (N lines) ..." to reveal hidden context between hunks
 - **Comments** - Add file-level or line-level comments with types
-- **Visual mode** - Select line ranges with `V` and comment on multiple lines at once
+- **Visual mode** - Select line ranges with `v` / `V` and comment on multiple lines at once
 - **Review tracking** - Mark files as reviewed, persist progress to disk
 - **Clipboard export** - Copy structured Markdown optimized for LLM consumption
 - **Session persistence** - Reviews auto-save and reload on restart
@@ -141,10 +141,9 @@ Jujutsu is tried first because jj repos are Git-backed.
 | `r` | Toggle file reviewed |
 | `c` | Add line comment (or file comment if not on a diff line) |
 | `C` | Add file comment |
-| `V` | Enter visual mode for range comments |
+| `v` / `V` | Enter visual mode for range comments |
 | `dd` | Delete comment at cursor |
 | `i` | Edit comment at cursor |
-| `v` | Toggle diff view (unified / side-by-side) |
 | `y` | Copy review to clipboard |
 
 #### Visual Mode
@@ -153,7 +152,7 @@ Jujutsu is tried first because jj repos are Git-backed.
 |-----|--------|
 | `j` / `k` | Extend selection down/up |
 | `c` / `Enter` | Create comment for selected range |
-| `Esc` / `V` | Cancel selection |
+| `Esc` / `v` / `V` | Cancel selection |
 
 #### Comment Mode
 
@@ -174,6 +173,7 @@ Jujutsu is tried first because jj repos are Git-backed.
 | `:w` | Save session |
 | `:e` (`:reload`) | Reload diff files |
 | `:clip` (`:export`) | Copy review to clipboard |
+| `:diff` | Toggle diff view (unified / side-by-side) |
 | `:q` | Quit |
 | `:x` / `:wq` | Save and quit (prompts to copy if comments exist) |
 | `?` | Toggle help |

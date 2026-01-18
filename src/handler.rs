@@ -151,6 +151,7 @@ pub fn handle_command_action(app: &mut App, action: Action) {
                 }
                 "set wrap" => app.set_diff_wrap(true),
                 "set wrap!" => app.toggle_diff_wrap(),
+                "diff" => app.toggle_diff_view_mode(),
                 _ => app.set_message(format!("Unknown command: {cmd}")),
             }
             app.exit_command_mode();
@@ -420,7 +421,6 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
         Action::NextHunk => app.next_hunk(),
         Action::PrevHunk => app.prev_hunk(),
         Action::ToggleReviewed => app.toggle_reviewed(),
-        Action::ToggleDiffView => app.toggle_diff_view_mode(),
         Action::ToggleFocus => {
             app.focused_panel = match app.focused_panel {
                 FocusedPanel::FileList => FocusedPanel::Diff,

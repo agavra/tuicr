@@ -32,7 +32,6 @@ pub enum Action {
     AddFileComment,
     EditComment,
     PendingDCommand,
-    ToggleDiffView,
     SearchNext,
     SearchPrev,
 
@@ -133,8 +132,7 @@ fn map_normal_mode(key: KeyEvent) -> Action {
         (KeyCode::Char('C'), _) => Action::AddFileComment,
         (KeyCode::Char('i'), KeyModifiers::NONE) => Action::EditComment,
         (KeyCode::Char('d'), KeyModifiers::NONE) => Action::PendingDCommand,
-        (KeyCode::Char('v'), KeyModifiers::NONE) => Action::ToggleDiffView,
-        (KeyCode::Char('V'), _) => Action::EnterVisualMode,
+        (KeyCode::Char('v') | KeyCode::Char('V'), _) => Action::EnterVisualMode,
         (KeyCode::Char('y'), KeyModifiers::NONE) => Action::ExportToClipboard,
         (KeyCode::Char('n'), KeyModifiers::NONE) => Action::SearchNext,
         (KeyCode::Char('N'), _) => Action::SearchPrev,
@@ -285,7 +283,7 @@ fn map_visual_mode(key: KeyEvent) -> Action {
         (KeyCode::Enter, KeyModifiers::NONE) => Action::AddRangeComment,
         // Cancel selection
         (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
-        (KeyCode::Char('V'), _) => Action::ExitMode,
+        (KeyCode::Char('v') | KeyCode::Char('V'), _) => Action::ExitMode,
         // Quick quit
         (KeyCode::Char('q'), KeyModifiers::NONE) => Action::Quit,
         _ => Action::None,
