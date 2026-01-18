@@ -105,7 +105,7 @@ mod tests {
                 // Expected when outside a repo
             }
             Err(e) => {
-                panic!("Unexpected error: {:?}", e);
+                panic!("Unexpected error: {e:?}");
             }
         }
     }

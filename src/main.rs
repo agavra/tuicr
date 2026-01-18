@@ -30,7 +30,7 @@ use app::{App, FocusedPanel, InputMode};
 use handler::{
     handle_command_action, handle_comment_action, handle_commit_select_action,
     handle_confirm_action, handle_diff_action, handle_file_list_action, handle_help_action,
-    handle_search_action,
+    handle_search_action, handle_visual_action,
 };
 use input::{Action, map_key_to_action};
 use theme::{parse_theme_arg, resolve_theme};
@@ -63,7 +63,7 @@ fn main() -> anyhow::Result<()> {
             app
         }
         Err(e) => {
-            eprintln!("Error: {}", e);
+            eprintln!("Error: {e}");
             #[cfg(all(feature = "hg", feature = "jj"))]
             eprintln!(
                 "\nMake sure you're in a git, jujutsu, or mercurial repository with uncommitted changes."
@@ -228,6 +228,7 @@ fn main() -> anyhow::Result<()> {
                 InputMode::Comment => handle_comment_action(&mut app, action),
                 InputMode::Confirm => handle_confirm_action(&mut app, action),
                 InputMode::CommitSelect => handle_commit_select_action(&mut app, action),
+                InputMode::VisualSelect => handle_visual_action(&mut app, action),
                 InputMode::Normal => match app.focused_panel {
                     FocusedPanel::FileList => handle_file_list_action(&mut app, action),
                     FocusedPanel::Diff => handle_diff_action(&mut app, action),

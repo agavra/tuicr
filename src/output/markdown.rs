@@ -6,10 +6,16 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 
 use crate::app::DiffSource;
 use crate::error::{Result, TuicrError};
-use crate::model::{LineSide, ReviewSession};
+use crate::model::{LineRange, LineSide, ReviewSession};
 
-/// (file_path, line_number, side, comment_type, content)
-type CommentEntry<'a> = (String, Option<u32>, Option<LineSide>, &'a str, &'a str);
+/// (file_path, line_range, side, comment_type, content)
+type CommentEntry<'a> = (
+    String,
+    Option<LineRange>,
+    Option<LineSide>,
+    &'a str,
+    &'a str,
+);
 
 pub fn export_to_clipboard(session: &ReviewSession, diff_source: &DiffSource) -> Result<String> {
     // Check if there are any comments to export
@@ -41,11 +47,11 @@ fn copy_osc52(text: &str) -> Result<()> {
 /// Separated for testability.
 fn write_osc52<W: IoWrite>(writer: &mut W, text: &str) -> Result<()> {
     let encoded = BASE64.encode(text);
-    write!(writer, "\x1b]52;c;{}\x07", encoded)
-        .map_err(|e| TuicrError::Clipboard(format!("Failed to write OSC 52: {}", e)))?;
+    write!(writer, "\x1b]52;c;{encoded}\x07")
+        .map_err(|e| TuicrError::Clipboard(format!("Failed to write OSC 52: {e}")))?;
     writer
         .flush()
-        .map_err(|e| TuicrError::Clipboard(format!("Failed to flush: {}", e)))?;
+        .map_err(|e| TuicrError::Clipboard(format!("Failed to flush: {e}")))?;
     Ok(())
 }
 
@@ -85,7 +91,7 @@ fn generate_markdown(session: &ReviewSession, diff_source: &DiffSource) -> Strin
 
     // Session notes/summary
     if let Some(notes) = &session.session_notes {
-        let _ = writeln!(md, "Summary: {}", notes);
+        let _ = writeln!(md, "Summary: {notes}");
         let _ = writeln!(md);
     }
 
@@ -116,9 +122,13 @@ fn generate_markdown(session: &ReviewSession, diff_source: &DiffSource) -> Strin
 
         for (line, comments) in line_comments {
             for comment in comments {
+                // Use comment's line_range if available, otherwise use the key line
+                let line_range = comment
+                    .line_range
+                    .or_else(|| Some(LineRange::single(*line)));
                 all_comments.push((
                     path_str.clone(),
-                    Some(*line),
+                    line_range,
                     comment.side,
                     comment.comment_type.as_str(),
                     &comment.content,
@@ -128,14 +138,24 @@ fn generate_markdown(session: &ReviewSession, diff_source: &DiffSource) -> Strin
     }
 
     // Output numbered list
-    for (i, (file, line, side, comment_type, content)) in all_comments.iter().enumerate() {
-        let location = match (line, side) {
-            // Deleted line: use ~N to indicate old line
-            (Some(l), Some(LineSide::Old)) => format!("`{}:~{}`", file, l),
-            // New/context line: use normal format
-            (Some(l), _) => format!("`{}:{}`", file, l),
+    for (i, (file, line_range, side, comment_type, content)) in all_comments.iter().enumerate() {
+        let location = match (line_range, side) {
+            // Range on deleted side (old lines)
+            (Some(range), Some(LineSide::Old)) if range.is_single() => {
+                format!("`{}:~{}`", file, range.start)
+            }
+            (Some(range), Some(LineSide::Old)) => {
+                format!("`{}:~{}-~{}`", file, range.start, range.end)
+            }
+            // Range on new/context side
+            (Some(range), _) if range.is_single() => {
+                format!("`{}:{}`", file, range.start)
+            }
+            (Some(range), _) => {
+                format!("`{}:{}-{}`", file, range.start, range.end)
+            }
             // File comment
-            (None, _) => format!("`{}`", file),
+            (None, _) => format!("`{file}`"),
         };
         let _ = writeln!(
             md,
@@ -153,7 +173,7 @@ fn generate_markdown(session: &ReviewSession, diff_source: &DiffSource) -> Strin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Comment, CommentType, FileStatus, LineSide};
+    use crate::model::{Comment, CommentType, FileStatus, LineRange, LineSide};
     use std::path::PathBuf;
 
     fn create_test_session() -> ReviewSession {
@@ -329,5 +349,147 @@ mod tests {
         let base64_content = &output[7..output.len() - 1];
         let decoded = String::from_utf8(BASE64.decode(base64_content).unwrap()).unwrap();
         assert_eq!(decoded, markdown);
+    }
+
+    #[test]
+    fn should_export_single_line_range_as_single_line() {
+        // given - a comment with a single-line range should display as L42, not L42-L42
+        let mut session =
+            ReviewSession::new(PathBuf::from("/tmp/test-repo"), "abc1234def".to_string());
+        session.add_file(PathBuf::from("src/main.rs"), FileStatus::Modified);
+
+        if let Some(review) = session.get_file_mut(&PathBuf::from("src/main.rs")) {
+            let range = LineRange::single(42);
+            review.add_line_comment(
+                42,
+                Comment::new_with_range(
+                    "Single line comment".to_string(),
+                    CommentType::Note,
+                    Some(LineSide::New),
+                    range,
+                ),
+            );
+        }
+        let diff_source = DiffSource::WorkingTree;
+
+        // when
+        let markdown = generate_markdown(&session, &diff_source);
+
+        // then
+        assert!(markdown.contains("`src/main.rs:42`"));
+        assert!(!markdown.contains("`src/main.rs:42-42`"));
+    }
+
+    #[test]
+    fn should_export_line_range_with_start_and_end() {
+        // given - a comment spanning multiple lines
+        let mut session =
+            ReviewSession::new(PathBuf::from("/tmp/test-repo"), "abc1234def".to_string());
+        session.add_file(PathBuf::from("src/main.rs"), FileStatus::Modified);
+
+        if let Some(review) = session.get_file_mut(&PathBuf::from("src/main.rs")) {
+            let range = LineRange::new(10, 15);
+            review.add_line_comment(
+                15, // keyed by end line
+                Comment::new_with_range(
+                    "Multi-line comment".to_string(),
+                    CommentType::Issue,
+                    Some(LineSide::New),
+                    range,
+                ),
+            );
+        }
+        let diff_source = DiffSource::WorkingTree;
+
+        // when
+        let markdown = generate_markdown(&session, &diff_source);
+
+        // then
+        assert!(markdown.contains("`src/main.rs:10-15`"));
+        assert!(markdown.contains("Multi-line comment"));
+    }
+
+    #[test]
+    fn should_export_old_side_line_range_with_tilde() {
+        // given - a range comment on deleted lines (old side)
+        let mut session =
+            ReviewSession::new(PathBuf::from("/tmp/test-repo"), "abc1234def".to_string());
+        session.add_file(PathBuf::from("src/main.rs"), FileStatus::Modified);
+
+        if let Some(review) = session.get_file_mut(&PathBuf::from("src/main.rs")) {
+            let range = LineRange::new(20, 25);
+            review.add_line_comment(
+                25, // keyed by end line
+                Comment::new_with_range(
+                    "Deleted lines comment".to_string(),
+                    CommentType::Suggestion,
+                    Some(LineSide::Old),
+                    range,
+                ),
+            );
+        }
+        let diff_source = DiffSource::WorkingTree;
+
+        // when
+        let markdown = generate_markdown(&session, &diff_source);
+
+        // then
+        assert!(markdown.contains("`src/main.rs:~20-~25`"));
+    }
+
+    #[test]
+    fn should_export_single_old_side_line_with_tilde() {
+        // given - a single line comment on a deleted line
+        let mut session =
+            ReviewSession::new(PathBuf::from("/tmp/test-repo"), "abc1234def".to_string());
+        session.add_file(PathBuf::from("src/main.rs"), FileStatus::Modified);
+
+        if let Some(review) = session.get_file_mut(&PathBuf::from("src/main.rs")) {
+            let range = LineRange::single(30);
+            review.add_line_comment(
+                30,
+                Comment::new_with_range(
+                    "Single deleted line".to_string(),
+                    CommentType::Note,
+                    Some(LineSide::Old),
+                    range,
+                ),
+            );
+        }
+        let diff_source = DiffSource::WorkingTree;
+
+        // when
+        let markdown = generate_markdown(&session, &diff_source);
+
+        // then
+        assert!(markdown.contains("`src/main.rs:~30`"));
+        assert!(!markdown.contains("`src/main.rs:~30-~30`"));
+    }
+
+    #[test]
+    fn should_handle_comment_without_line_range_field() {
+        // given - backward compatibility: comment without line_range uses line number
+        let mut session =
+            ReviewSession::new(PathBuf::from("/tmp/test-repo"), "abc1234def".to_string());
+        session.add_file(PathBuf::from("src/main.rs"), FileStatus::Modified);
+
+        if let Some(review) = session.get_file_mut(&PathBuf::from("src/main.rs")) {
+            // Use Comment::new which sets line_range to None
+            review.add_line_comment(
+                50,
+                Comment::new(
+                    "Old style comment".to_string(),
+                    CommentType::Note,
+                    Some(LineSide::New),
+                ),
+            );
+        }
+        let diff_source = DiffSource::WorkingTree;
+
+        // when
+        let markdown = generate_markdown(&session, &diff_source);
+
+        // then
+        assert!(markdown.contains("`src/main.rs:50`"));
     }
 }

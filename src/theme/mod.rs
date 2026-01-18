@@ -229,15 +229,14 @@ fn print_help() -> ! {
     println!(
         "tuicr - Review AI-generated diffs like a GitHub pull request
 
-Usage: {} [OPTIONS]
+Usage: {name} [OPTIONS]
 
 Options:
   --theme <THEME>  Color theme to use [default: dark]
                    Valid values: dark, light
   -h, --help       Print this help message
 
-Press ? in the application for keybinding help.",
-        name
+Press ? in the application for keybinding help."
     );
     std::process::exit(0);
 }
@@ -261,8 +260,7 @@ pub fn parse_theme_arg() -> ThemeArg {
             if let Some(value) = args.get(i + 1) {
                 return ThemeArg::from_str(value).unwrap_or_else(|| {
                     eprintln!(
-                        "Warning: Unknown theme '{}', using dark. Valid options: dark, light",
-                        value
+                        "Warning: Unknown theme '{value}', using dark. Valid options: dark, light"
                     );
                     ThemeArg::Dark
                 });
@@ -275,8 +273,7 @@ pub fn parse_theme_arg() -> ThemeArg {
         if let Some(value) = args[i].strip_prefix("--theme=") {
             return ThemeArg::from_str(value).unwrap_or_else(|| {
                 eprintln!(
-                    "Warning: Unknown theme '{}', using dark. Valid options: dark, light",
-                    value
+                    "Warning: Unknown theme '{value}', using dark. Valid options: dark, light"
                 );
                 ThemeArg::Dark
             });

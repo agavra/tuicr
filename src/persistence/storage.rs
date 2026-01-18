@@ -30,7 +30,7 @@ fn session_filename(session: &ReviewSession) -> String {
 
     let timestamp = session.created_at.format("%Y%m%d_%H%M%S");
 
-    format!("{}_{}_{}.json", repo_name, short_commit, timestamp)
+    format!("{repo_name}_{short_commit}_{timestamp}.json")
 }
 
 pub fn save_session(session: &ReviewSession) -> Result<PathBuf> {

@@ -15,7 +15,7 @@ pub fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     let branch = app.vcs_info.branch_name.as_deref().unwrap_or("detached");
 
     let title = " tuicr - Code Review ".to_string();
-    let vcs_info = format!("[{}:{}] ", vcs_type, branch);
+    let vcs_info = format!("[{vcs_type}:{branch}] ");
 
     // Show diff source info
     let source_info = match &app.diff_source {
@@ -67,27 +67,38 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         } else {
             &app.search_buffer
         };
-        let command_text = format!("{}{}", prefix, buffer);
+        let command_text = format!("{prefix}{buffer}");
         vec![Span::styled(
             command_text,
             Style::default().fg(theme.fg_primary),
         )]
     } else {
         let mode_str = match app.input_mode {
-            InputMode::Normal => " NORMAL ",
-            InputMode::Command => " COMMAND ",
-            InputMode::Search => " SEARCH ",
-            InputMode::Comment => " COMMENT ",
-            InputMode::Help => " HELP ",
-            InputMode::Confirm => " CONFIRM ",
-            InputMode::CommitSelect => " SELECT ",
+            InputMode::Normal => " NORMAL ".to_string(),
+            InputMode::Command => " COMMAND ".to_string(),
+            InputMode::Search => " SEARCH ".to_string(),
+            InputMode::Comment => " COMMENT ".to_string(),
+            InputMode::Help => " HELP ".to_string(),
+            InputMode::Confirm => " CONFIRM ".to_string(),
+            InputMode::CommitSelect => " SELECT ".to_string(),
+            InputMode::VisualSelect => {
+                if let Some((range, _)) = app.get_visual_selection() {
+                    if range.is_single() {
+                        format!(" VISUAL L{} ", range.start)
+                    } else {
+                        format!(" VISUAL L{}-L{} ", range.start, range.end)
+                    }
+                } else {
+                    " VISUAL ".to_string()
+                }
+            }
         };
 
         let mode_span = Span::styled(mode_str, styles::mode_style(theme));
 
         let hints = match app.input_mode {
             InputMode::Normal => {
-                " j/k:scroll  {/}:file  r:reviewed  c:comment  /:search  ?:help  :q:quit "
+                " j/k:scroll  {/}:file  r:reviewed  c:comment  V:visual  /:search  ?:help  :q:quit "
             }
             InputMode::Command => " Enter:execute  Esc:cancel ",
             InputMode::Search => " Enter:search  Esc:cancel ",
@@ -95,6 +106,7 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             InputMode::Help => " q/?/Esc:close ",
             InputMode::Confirm => " y:yes  n:no ",
             InputMode::CommitSelect => " j/k:navigate  Space:select  Enter:confirm  q:quit ",
+            InputMode::VisualSelect => " j/k:extend  c/Enter:comment  Esc/V:cancel ",
         };
         let hints_span = Span::styled(hints, Style::default().fg(theme.fg_secondary));
 

@@ -57,7 +57,7 @@ fn fetch_blob_content(repo: &Repository, file_path: &Path) -> Result<String> {
     let entry = head.get_path(file_path)?;
     let blob = repo.find_blob(entry.id())?;
     let content = std::str::from_utf8(blob.content())
-        .map_err(|e| TuicrError::CorruptedSession(format!("Invalid UTF-8 in file: {}", e)))?;
+        .map_err(|e| TuicrError::CorruptedSession(format!("Invalid UTF-8 in file: {e}")))?;
     Ok(content.to_string())
 }
 

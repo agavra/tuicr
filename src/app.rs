@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use crate::error::{Result, TuicrError};
-use crate::model::{Comment, CommentType, DiffFile, DiffLine, LineSide, ReviewSession};
+use crate::model::{Comment, CommentType, DiffFile, DiffLine, LineRange, LineSide, ReviewSession};
 use crate::persistence::{find_session_for_repo, load_session};
 use crate::theme::Theme;
 use crate::vcs::git::calculate_gap;
@@ -72,6 +72,7 @@ pub enum InputMode {
     Help,
     Confirm,
     CommitSelect,
+    VisualSelect,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,6 +135,11 @@ pub struct App {
     pub comment_is_file_level: bool,
     pub comment_line: Option<(u32, LineSide)>,
     pub editing_comment_id: Option<String>,
+
+    /// Visual selection anchor point (starting line, side)
+    pub visual_anchor: Option<(u32, LineSide)>,
+    /// Line range for range comments (used when creating comments from visual selection)
+    pub comment_line_range: Option<(LineRange, LineSide)>,
 
     // Commit selection state
     pub commit_list: Vec<CommitInfo>,
@@ -274,6 +280,8 @@ impl App {
                     comment_is_file_level: true,
                     comment_line: None,
                     editing_comment_id: None,
+                    visual_anchor: None,
+                    comment_line_range: None,
                     commit_list: Vec::new(),
                     commit_list_cursor: 0,
                     commit_selection_range: None,
@@ -325,6 +333,8 @@ impl App {
                     comment_is_file_level: true,
                     comment_line: None,
                     editing_comment_id: None,
+                    visual_anchor: None,
+                    comment_line_range: None,
                     commit_list: commits,
                     commit_list_cursor: 0,
                     commit_selection_range: None,
@@ -572,7 +582,7 @@ impl App {
         } else {
             "off"
         };
-        self.set_message(format!("Diff wrapping: {}", status));
+        self.set_message(format!("Diff wrapping: {status}"));
     }
 
     fn ensure_cursor_visible(&mut self) {
@@ -666,7 +676,7 @@ impl App {
             }
         }
 
-        self.set_message(format!("No matches for \"{}\"", pattern));
+        self.set_message(format!("No matches for \"{pattern}\""));
         false
     }
 
@@ -703,7 +713,7 @@ impl App {
             }
             AnnotatedLine::Expander { gap_id } => {
                 let gap = self.gap_size(gap_id)?;
-                Some(format!("... expand ({} lines) ...", gap))
+                Some(format!("... expand ({gap} lines) ..."))
             }
             AnnotatedLine::ExpandedContext {
                 gap_id,
@@ -1147,7 +1157,7 @@ impl App {
                             review.line_comments.remove(&line);
                         }
                         self.dirty = true;
-                        self.set_message(format!("Comment on line {} deleted", line));
+                        self.set_message(format!("Comment on line {line} deleted"));
                         self.rebuild_annotations();
                         return true;
                     }
@@ -1168,7 +1178,7 @@ impl App {
 
         self.dirty = true;
         self.rebuild_annotations();
-        self.set_message(format!("Cleared {} comments", cleared));
+        self.set_message(format!("Cleared {cleared} comments"));
     }
 
     /// Enter edit mode for the comment at the current cursor position
@@ -1260,6 +1270,64 @@ impl App {
         self.comment_buffer.clear();
         self.comment_cursor = 0;
         self.editing_comment_id = None;
+        self.comment_line_range = None;
+    }
+
+    /// Enter visual selection mode, anchoring at the current cursor position
+    pub fn enter_visual_mode(&mut self, line: u32, side: LineSide) {
+        self.input_mode = InputMode::VisualSelect;
+        self.visual_anchor = Some((line, side));
+    }
+
+    /// Exit visual selection mode and return to normal mode
+    pub fn exit_visual_mode(&mut self) {
+        self.input_mode = InputMode::Normal;
+        self.visual_anchor = None;
+    }
+
+    /// Get the current visual selection range (if in visual mode)
+    /// Returns None if not in visual mode or if there's no valid selection
+    pub fn get_visual_selection(&self) -> Option<(LineRange, LineSide)> {
+        if self.input_mode != InputMode::VisualSelect {
+            return None;
+        }
+
+        let (anchor_line, anchor_side) = self.visual_anchor?;
+        let (current_line, current_side) = self.get_line_at_cursor()?;
+
+        // Don't allow selection across sides (old vs new)
+        if anchor_side != current_side {
+            return None;
+        }
+
+        let range = LineRange::new(anchor_line, current_line);
+        Some((range, anchor_side))
+    }
+
+    /// Check if a given line is within the current visual selection
+    pub fn is_line_in_visual_selection(&self, line: u32, side: LineSide) -> bool {
+        if let Some((range, sel_side)) = self.get_visual_selection() {
+            sel_side == side && range.contains(line)
+        } else {
+            false
+        }
+    }
+
+    /// Enter comment mode from visual selection
+    pub fn enter_comment_from_visual(&mut self) {
+        if let Some((range, side)) = self.get_visual_selection() {
+            self.comment_line_range = Some((range, side));
+            self.comment_line = Some((range.end, side)); // Key by end line
+            self.input_mode = InputMode::Comment;
+            self.comment_buffer.clear();
+            self.comment_cursor = 0;
+            self.comment_type = CommentType::Note;
+            self.comment_is_file_level = false;
+            self.visual_anchor = None;
+        } else {
+            self.set_warning("Invalid visual selection");
+            self.exit_visual_mode();
+        }
     }
 
     pub fn save_comment(&mut self) {
@@ -1301,7 +1369,7 @@ impl App {
                         comment.content = content.clone();
                         comment.comment_type = self.comment_type;
                         message = if let Some((line, _)) = self.comment_line {
-                            format!("Comment on line {} updated", line)
+                            format!("Comment on line {line} updated")
                         } else {
                             "Comment updated".to_string()
                         };
@@ -1315,10 +1383,21 @@ impl App {
                     let comment = Comment::new(content, self.comment_type, None);
                     review.add_file_comment(comment);
                     message = "File comment added".to_string();
+                } else if let Some((range, side)) = self.comment_line_range {
+                    // Range comment from visual selection
+                    let comment =
+                        Comment::new_with_range(content, self.comment_type, Some(side), range);
+                    // Store by end line of the range
+                    review.add_line_comment(range.end, comment);
+                    if range.is_single() {
+                        message = format!("Comment added to line {}", range.end);
+                    } else {
+                        message = format!("Comment added to lines {}-{}", range.start, range.end);
+                    }
                 } else if let Some((line, side)) = self.comment_line {
                     let comment = Comment::new(content, self.comment_type, Some(side));
                     review.add_line_comment(line, comment);
-                    message = format!("Comment added to line {}", line);
+                    message = format!("Comment added to line {line}");
                 } else {
                     // Fallback to file comment if no line specified
                     let comment = Comment::new(content, self.comment_type, None);
@@ -1396,7 +1475,7 @@ impl App {
             DiffViewMode::Unified => "unified",
             DiffViewMode::SideBySide => "side-by-side",
         };
-        self.set_message(format!("Diff view mode: {}", mode_name));
+        self.set_message(format!("Diff view mode: {mode_name}"));
     }
 
     pub fn toggle_file_list(&mut self) {
@@ -1406,7 +1485,7 @@ impl App {
         } else {
             "hidden"
         };
-        self.set_message(format!("File list: {}", status));
+        self.set_message(format!("File list: {status}"));
     }
 
     // Commit selection methods

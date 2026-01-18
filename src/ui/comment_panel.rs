@@ -7,7 +7,7 @@ use ratatui::{
 };
 
 use crate::app::App;
-use crate::model::CommentType;
+use crate::model::{CommentType, LineRange};
 use crate::theme::Theme;
 use crate::ui::styles;
 
@@ -25,9 +25,15 @@ pub fn render_comment_input(frame: &mut Frame, app: &App) {
 
     let comment_kind = if app.comment_is_file_level {
         "File Comment".to_string()
+    } else if let Some((range, _)) = app.comment_line_range {
+        if range.is_single() {
+            format!("Line {} Comment", range.start)
+        } else {
+            format!("Lines {}-{} Comment", range.start, range.end)
+        }
     } else {
         match app.comment_line {
-            Some((line, _)) => format!("Line {} Comment", line),
+            Some((line, _)) => format!("Line {line} Comment"),
             None => "Line Comment".to_string(),
         }
     };
@@ -130,12 +136,16 @@ pub fn format_comment_lines(
     theme: &Theme,
     comment_type: CommentType,
     content: &str,
-    line_num: Option<u32>,
+    line_range: Option<LineRange>,
 ) -> Vec<Line<'static>> {
     let type_style = styles::comment_type_style(theme, comment_type);
     let border_style = styles::comment_border_style(theme, comment_type);
 
-    let line_info = line_num.map(|n| format!("L{} ", n)).unwrap_or_default();
+    let line_info = match line_range {
+        Some(range) if range.is_single() => format!("L{} ", range.start),
+        Some(range) => format!("L{}-L{} ", range.start, range.end),
+        None => String::new(),
+    };
     let content_lines: Vec<&str> = content.split('\n').collect();
 
     let mut result = Vec::new();

@@ -36,6 +36,10 @@ pub enum Action {
     SearchNext,
     SearchPrev,
 
+    // Visual selection mode
+    EnterVisualMode,
+    AddRangeComment,
+
     // Session
     Quit,
     ExportToClipboard,
@@ -89,6 +93,7 @@ pub fn map_key_to_action(key: KeyEvent, mode: InputMode) -> Action {
         InputMode::Help => map_help_mode(key),
         InputMode::Confirm => map_confirm_mode(key),
         InputMode::CommitSelect => map_commit_select_mode(key),
+        InputMode::VisualSelect => map_visual_mode(key),
     }
 }
 
@@ -129,6 +134,7 @@ fn map_normal_mode(key: KeyEvent) -> Action {
         (KeyCode::Char('i'), KeyModifiers::NONE) => Action::EditComment,
         (KeyCode::Char('d'), KeyModifiers::NONE) => Action::PendingDCommand,
         (KeyCode::Char('v'), KeyModifiers::NONE) => Action::ToggleDiffView,
+        (KeyCode::Char('V'), _) => Action::EnterVisualMode,
         (KeyCode::Char('y'), KeyModifiers::NONE) => Action::ExportToClipboard,
         (KeyCode::Char('n'), KeyModifiers::NONE) => Action::SearchNext,
         (KeyCode::Char('N'), _) => Action::SearchPrev,
@@ -265,6 +271,23 @@ fn map_commit_select_mode(key: KeyEvent) -> Action {
         KeyCode::Char(' ') => Action::ToggleCommitSelect,
         KeyCode::Enter => Action::ConfirmCommitSelect,
         KeyCode::Char('q') | KeyCode::Esc => Action::Quit,
+        _ => Action::None,
+    }
+}
+
+fn map_visual_mode(key: KeyEvent) -> Action {
+    match (key.code, key.modifiers) {
+        // Extend selection
+        (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => Action::CursorDown(1),
+        (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => Action::CursorUp(1),
+        // Create range comment
+        (KeyCode::Char('c'), KeyModifiers::NONE) => Action::AddRangeComment,
+        (KeyCode::Enter, KeyModifiers::NONE) => Action::AddRangeComment,
+        // Cancel selection
+        (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
+        (KeyCode::Char('V'), _) => Action::ExitMode,
+        // Quick quit
+        (KeyCode::Char('q'), KeyModifiers::NONE) => Action::Quit,
         _ => Action::None,
     }
 }

@@ -203,6 +203,40 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
             ),
             Span::raw("Toggle unified/side-by-side diff view"),
         ]),
+        Line::from(vec![
+            Span::styled(
+                "  V         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Enter visual mode for range comments"),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Visual Mode",
+            Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                "  j/k       ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Extend selection up/down"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  c/Enter   ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Create comment for selected range"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  Esc/V     ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Cancel visual selection"),
+        ]),
         Line::from(""),
         Line::from(Span::styled(
             "Comment Mode",

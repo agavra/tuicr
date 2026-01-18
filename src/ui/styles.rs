@@ -117,3 +117,7 @@ pub fn comment_border_style(theme: &Theme, comment_type: crate::model::CommentTy
     };
     Style::default().fg(color)
 }
+
+pub fn visual_selection_style(theme: &Theme) -> Style {
+    Style::default().bg(theme.bg_highlight)
+}

@@ -122,7 +122,7 @@ pub fn handle_command_action(app: &mut App, action: Action) {
                         app.dirty = false;
                         app.set_message(format!("Saved to {}", path.display()));
                     }
-                    Err(e) => app.set_error(format!("Save failed: {}", e)),
+                    Err(e) => app.set_error(format!("Save failed: {e}")),
                 },
                 "x" | "wq" => match save_session(&app.session) {
                     Ok(_) => {
@@ -135,15 +135,15 @@ pub fn handle_command_action(app: &mut App, action: Action) {
                             app.should_quit = true;
                         }
                     }
-                    Err(e) => app.set_error(format!("Save failed: {}", e)),
+                    Err(e) => app.set_error(format!("Save failed: {e}")),
                 },
                 "e" | "reload" => match app.reload_diff_files() {
-                    Ok(count) => app.set_message(format!("Reloaded {} files", count)),
-                    Err(e) => app.set_error(format!("Reload failed: {}", e)),
+                    Ok(count) => app.set_message(format!("Reloaded {count} files")),
+                    Err(e) => app.set_error(format!("Reload failed: {e}")),
                 },
                 "clip" | "export" => match export_to_clipboard(&app.session, &app.diff_source) {
                     Ok(msg) => app.set_message(msg),
-                    Err(e) => app.set_warning(format!("{}", e)),
+                    Err(e) => app.set_warning(format!("{e}")),
                 },
                 "clear" => app.clear_all_comments(),
                 "version" => {
@@ -151,7 +151,7 @@ pub fn handle_command_action(app: &mut App, action: Action) {
                 }
                 "set wrap" => app.set_diff_wrap(true),
                 "set wrap!" => app.toggle_diff_wrap(),
-                _ => app.set_message(format!("Unknown command: {}", cmd)),
+                _ => app.set_message(format!("Unknown command: {cmd}")),
             }
             app.exit_command_mode();
         }
@@ -283,7 +283,7 @@ pub fn handle_confirm_action(app: &mut App, action: Action) {
             if let Some(app::ConfirmAction::CopyAndQuit) = app.pending_confirm {
                 match export_to_clipboard(&app.session, &app.diff_source) {
                     Ok(msg) => app.set_message(msg),
-                    Err(e) => app.set_warning(format!("{}", e)),
+                    Err(e) => app.set_warning(format!("{e}")),
                 }
             }
             app.exit_confirm_mode();
@@ -306,9 +306,46 @@ pub fn handle_commit_select_action(app: &mut App, action: Action) {
         Action::ToggleCommitSelect => app.toggle_commit_selection(),
         Action::ConfirmCommitSelect => {
             if let Err(e) = app.confirm_commit_selection() {
-                app.set_error(format!("Failed to load commits: {}", e));
+                app.set_error(format!("Failed to load commits: {e}"));
             }
         }
+        Action::Quit => app.should_quit = true,
+        _ => {}
+    }
+}
+
+/// Handle actions in VisualSelect mode
+pub fn handle_visual_action(app: &mut App, action: Action) {
+    match action {
+        Action::CursorDown(n) => {
+            app.cursor_down(n);
+            // Check if selection crosses sides
+            if let Some((_, anchor_side)) = app.visual_anchor
+                && let Some((_, current_side)) = app.get_line_at_cursor()
+                && anchor_side != current_side
+            {
+                app.set_warning("Cannot select across old/new sides");
+            }
+        }
+        Action::CursorUp(n) => {
+            app.cursor_up(n);
+            // Check if selection crosses sides
+            if let Some((_, anchor_side)) = app.visual_anchor
+                && let Some((_, current_side)) = app.get_line_at_cursor()
+                && anchor_side != current_side
+            {
+                app.set_warning("Cannot select across old/new sides");
+            }
+        }
+        Action::AddRangeComment => {
+            if app.get_visual_selection().is_some() {
+                app.enter_comment_from_visual();
+            } else {
+                app.set_warning("Invalid selection - cannot span old and new lines");
+                app.exit_visual_mode();
+            }
+        }
+        Action::ExitMode => app.exit_visual_mode(),
         Action::Quit => app.should_quit = true,
         _ => {}
     }
@@ -356,7 +393,7 @@ pub fn handle_diff_action(app: &mut App, action: Action) {
                 } else {
                     // Expand the gap
                     if let Err(e) = app.expand_gap(gap_id) {
-                        app.set_error(format!("Failed to expand: {}", e));
+                        app.set_error(format!("Failed to expand: {e}"));
                     }
                 }
             }
@@ -417,13 +454,20 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
         }
         Action::ExportToClipboard => match export_to_clipboard(&app.session, &app.diff_source) {
             Ok(msg) => app.set_message(msg),
-            Err(e) => app.set_warning(format!("{}", e)),
+            Err(e) => app.set_warning(format!("{e}")),
         },
         Action::SearchNext => {
             app.search_next_in_diff();
         }
         Action::SearchPrev => {
             app.search_prev_in_diff();
+        }
+        Action::EnterVisualMode => {
+            if let Some((line, side)) = app.get_line_at_cursor() {
+                app.enter_visual_mode(line, side);
+            } else {
+                app.set_message("Move cursor to a diff line to start visual selection");
+            }
         }
         _ => {}
     }
