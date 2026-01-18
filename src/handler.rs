@@ -361,8 +361,8 @@ pub fn handle_file_list_action(app: &mut App, action: Action) {
         Action::CursorUp(n) => app.file_list_up(n),
         Action::ScrollLeft(n) => app.file_list_state.scroll_left(n),
         Action::ScrollRight(n) => app.file_list_state.scroll_right(n),
-        Action::MouseScrollDown(n) => app.file_list_down(n),
-        Action::MouseScrollUp(n) => app.file_list_up(n),
+        Action::MouseScrollDown(n) => app.file_list_viewport_scroll_down(n),
+        Action::MouseScrollUp(n) => app.file_list_viewport_scroll_up(n),
         Action::SelectFile | Action::ToggleExpand => {
             if let Some(item) = app.get_selected_tree_item() {
                 match item {

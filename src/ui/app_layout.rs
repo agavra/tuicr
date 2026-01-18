@@ -221,6 +221,7 @@ fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
         .unwrap_or(0);
 
     app.file_list_state.viewport_width = inner.width as usize;
+    app.file_list_state.viewport_height = inner.height as usize;
     app.file_list_state.max_content_width = max_content_width;
 
     let max_scroll_x = max_content_width.saturating_sub(inner.width as usize);
