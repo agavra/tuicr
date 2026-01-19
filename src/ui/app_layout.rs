@@ -141,21 +141,8 @@ fn render_commit_select(frame: &mut Frame, app: &App) {
     let list = Paragraph::new(items);
     frame.render_widget(list, inner);
 
-    // Footer hints with selection count
-    let selected_count = match range {
-        Some((start, end)) => end - start + 1,
-        None => 0,
-    };
-    let selection_info = if selected_count > 0 {
-        format!(" ({selected_count} selected)")
-    } else {
-        String::new()
-    };
-    let hints = format!(" j/k:navigate  Space:select range  Enter:confirm  q:quit{selection_info}");
-    let footer = Paragraph::new(hints)
-        .style(styles::status_bar_style(&app.theme))
-        .block(Block::default());
-    frame.render_widget(footer, chunks[2]);
+    // Footer hints with status bar and selection count
+    status_bar::render_status_bar(frame, app, chunks[2]);
 }
 
 fn truncate_str(s: &str, max_len: usize) -> String {
