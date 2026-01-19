@@ -157,6 +157,8 @@ pub fn handle_command_action(app: &mut App, action: Action) {
                 "commits" => {
                     if let Err(e) = app.enter_commit_select_mode() {
                         app.set_error(format!("Failed to load commits: {e}"));
+                    } else {
+                        return;
                     }
                 }
                 _ => app.set_message(format!("Unknown command: {cmd}")),
