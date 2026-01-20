@@ -505,4 +505,148 @@ mod tests {
             assert!(!diff.is_empty(), "Expected non-empty diff");
         }
     }
+
+    /// Create a test repo with a renamed file (no content changes).
+    fn setup_test_repo_with_rename() -> Option<tempfile::TempDir> {
+        if !jj_available() {
+            return None;
+        }
+
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let root = temp_dir.path();
+
+        // Initialize jj repo
+        let output = Command::new("jj")
+            .args(["git", "init"])
+            .current_dir(root)
+            .output()
+            .expect("Failed to init jj repo");
+
+        if !output.status.success() {
+            return None;
+        }
+
+        // Create and commit a file
+        fs::write(root.join("original.txt"), "file content\n").expect("Failed to write file");
+        Command::new("jj")
+            .args(["commit", "-m", "Add original file"])
+            .current_dir(root)
+            .output()
+            .expect("Failed to commit");
+
+        // Rename the file using jj file track after manual rename
+        fs::rename(root.join("original.txt"), root.join("renamed.txt"))
+            .expect("Failed to rename file");
+
+        Some(temp_dir)
+    }
+
+    #[test]
+    fn test_jj_renamed_file_without_content_changes() {
+        let Some(temp) = setup_test_repo_with_rename() else {
+            eprintln!("Skipping test: jj command not available");
+            return;
+        };
+
+        let backend =
+            JjBackend::from_path(temp.path().to_path_buf()).expect("Failed to create jj backend");
+
+        let files = backend
+            .get_working_tree_diff(&SyntaxHighlighter::default())
+            .expect("Failed to get diff");
+
+        // jj should detect the rename
+        // Note: jj may show this as delete + add if it doesn't detect the rename
+        assert!(!files.is_empty(), "Expected at least one file change");
+
+        // Verify we can get display_path without panic (the bug we fixed)
+        for file in &files {
+            let _path = file.display_path();
+        }
+    }
+
+    /// Create a test repo with a binary file.
+    fn setup_test_repo_with_binary() -> Option<tempfile::TempDir> {
+        if !jj_available() {
+            return None;
+        }
+
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let root = temp_dir.path();
+
+        // Initialize jj repo
+        let output = Command::new("jj")
+            .args(["git", "init"])
+            .current_dir(root)
+            .output()
+            .expect("Failed to init jj repo");
+
+        if !output.status.success() {
+            return None;
+        }
+
+        // Create a binary file (PNG header bytes)
+        let png_header: [u8; 8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+        fs::write(root.join("image.png"), png_header).expect("Failed to write binary file");
+
+        Some(temp_dir)
+    }
+
+    #[test]
+    fn test_jj_binary_file_added() {
+        let Some(temp) = setup_test_repo_with_binary() else {
+            eprintln!("Skipping test: jj command not available");
+            return;
+        };
+
+        let backend =
+            JjBackend::from_path(temp.path().to_path_buf()).expect("Failed to create jj backend");
+
+        let files = backend
+            .get_working_tree_diff(&SyntaxHighlighter::default())
+            .expect("Failed to get diff");
+
+        assert_eq!(files.len(), 1, "Expected one file");
+
+        let file = &files[0];
+        // Verify we can get display_path without panic (the bug we fixed)
+        let path = file.display_path();
+        assert_eq!(path.to_str().unwrap(), "image.png");
+        assert_eq!(file.status, FileStatus::Added);
+    }
+
+    #[test]
+    fn test_jj_binary_file_deleted() {
+        let Some(temp) = setup_test_repo_with_binary() else {
+            eprintln!("Skipping test: jj command not available");
+            return;
+        };
+
+        let root = temp.path();
+
+        // Commit the binary file first
+        Command::new("jj")
+            .args(["commit", "-m", "Add binary file"])
+            .current_dir(root)
+            .output()
+            .expect("Failed to commit");
+
+        // Delete the binary file
+        fs::remove_file(root.join("image.png")).expect("Failed to delete file");
+
+        let backend =
+            JjBackend::from_path(temp.path().to_path_buf()).expect("Failed to create jj backend");
+
+        let files = backend
+            .get_working_tree_diff(&SyntaxHighlighter::default())
+            .expect("Failed to get diff");
+
+        assert_eq!(files.len(), 1, "Expected one file");
+
+        let file = &files[0];
+        // Verify we can get display_path without panic (the bug we fixed)
+        let path = file.display_path();
+        assert_eq!(path.to_str().unwrap(), "image.png");
+        assert_eq!(file.status, FileStatus::Deleted);
+    }
 }

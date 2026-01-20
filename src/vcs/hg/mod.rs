@@ -513,4 +513,236 @@ mod tests {
             file_paths
         );
     }
+
+    /// Create a test repo with a renamed file (no content changes).
+    fn setup_test_repo_with_rename() -> Option<tempfile::TempDir> {
+        if !hg_available() {
+            return None;
+        }
+
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let root = temp_dir.path();
+
+        // Initialize hg repo
+        Command::new("hg")
+            .args(["init"])
+            .current_dir(root)
+            .output()
+            .expect("Failed to init hg repo");
+
+        // Create and commit a file
+        fs::write(root.join("original.txt"), "file content\n").expect("Failed to write file");
+        Command::new("hg")
+            .args(["add", "original.txt"])
+            .current_dir(root)
+            .output()
+            .expect("Failed to add file");
+        Command::new("hg")
+            .args(["commit", "-m", "Add original file"])
+            .current_dir(root)
+            .output()
+            .expect("Failed to commit");
+
+        // Rename the file using hg rename
+        Command::new("hg")
+            .args(["rename", "original.txt", "renamed.txt"])
+            .current_dir(root)
+            .output()
+            .expect("Failed to rename file");
+
+        Some(temp_dir)
+    }
+
+    #[test]
+    fn test_hg_renamed_file_without_content_changes() {
+        let Some(temp) = setup_test_repo_with_rename() else {
+            eprintln!("Skipping test: hg command not available");
+            return;
+        };
+
+        let backend =
+            HgBackend::from_path(temp.path().to_path_buf()).expect("Failed to create hg backend");
+
+        let files = backend
+            .get_working_tree_diff(&SyntaxHighlighter::default())
+            .expect("Failed to get diff");
+
+        // hg should show the rename
+        assert!(!files.is_empty(), "Expected at least one file change");
+
+        // Verify we can get display_path without panic (the bug we fixed)
+        for file in &files {
+            let _path = file.display_path();
+        }
+
+        // Look for the renamed file
+        let renamed_file = files.iter().find(|f| {
+            f.new_path
+                .as_ref()
+                .is_some_and(|p| p.to_str() == Some("renamed.txt"))
+        });
+        assert!(
+            renamed_file.is_some(),
+            "Expected to find renamed.txt in diff"
+        );
+    }
+
+    /// Create a test repo with a copied file.
+    fn setup_test_repo_with_copy() -> Option<tempfile::TempDir> {
+        if !hg_available() {
+            return None;
+        }
+
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let root = temp_dir.path();
+
+        // Initialize hg repo
+        Command::new("hg")
+            .args(["init"])
+            .current_dir(root)
+            .output()
+            .expect("Failed to init hg repo");
+
+        // Create and commit a file
+        fs::write(root.join("source.txt"), "source content\n").expect("Failed to write file");
+        Command::new("hg")
+            .args(["add", "source.txt"])
+            .current_dir(root)
+            .output()
+            .expect("Failed to add file");
+        Command::new("hg")
+            .args(["commit", "-m", "Add source file"])
+            .current_dir(root)
+            .output()
+            .expect("Failed to commit");
+
+        // Copy the file using hg copy
+        Command::new("hg")
+            .args(["copy", "source.txt", "dest.txt"])
+            .current_dir(root)
+            .output()
+            .expect("Failed to copy file");
+
+        Some(temp_dir)
+    }
+
+    #[test]
+    fn test_hg_copied_file() {
+        let Some(temp) = setup_test_repo_with_copy() else {
+            eprintln!("Skipping test: hg command not available");
+            return;
+        };
+
+        let backend =
+            HgBackend::from_path(temp.path().to_path_buf()).expect("Failed to create hg backend");
+
+        let files = backend
+            .get_working_tree_diff(&SyntaxHighlighter::default())
+            .expect("Failed to get diff");
+
+        assert!(!files.is_empty(), "Expected at least one file change");
+
+        // Verify we can get display_path without panic (the bug we fixed)
+        for file in &files {
+            let _path = file.display_path();
+        }
+
+        // Look for the copied file
+        let copied_file = files.iter().find(|f| {
+            f.new_path
+                .as_ref()
+                .is_some_and(|p| p.to_str() == Some("dest.txt"))
+        });
+        assert!(copied_file.is_some(), "Expected to find dest.txt in diff");
+    }
+
+    /// Create a test repo with a binary file.
+    fn setup_test_repo_with_binary() -> Option<tempfile::TempDir> {
+        if !hg_available() {
+            return None;
+        }
+
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let root = temp_dir.path();
+
+        // Initialize hg repo
+        Command::new("hg")
+            .args(["init"])
+            .current_dir(root)
+            .output()
+            .expect("Failed to init hg repo");
+
+        // Create a binary file (PNG header bytes)
+        let png_header: [u8; 8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+        fs::write(root.join("image.png"), png_header).expect("Failed to write binary file");
+
+        // Add the file
+        Command::new("hg")
+            .args(["add", "image.png"])
+            .current_dir(root)
+            .output()
+            .expect("Failed to add file");
+
+        Some(temp_dir)
+    }
+
+    #[test]
+    fn test_hg_binary_file_added() {
+        let Some(temp) = setup_test_repo_with_binary() else {
+            eprintln!("Skipping test: hg command not available");
+            return;
+        };
+
+        let backend =
+            HgBackend::from_path(temp.path().to_path_buf()).expect("Failed to create hg backend");
+
+        let files = backend
+            .get_working_tree_diff(&SyntaxHighlighter::default())
+            .expect("Failed to get diff");
+
+        assert_eq!(files.len(), 1, "Expected one file");
+
+        let file = &files[0];
+        // Verify we can get display_path without panic (the bug we fixed)
+        // Don't assert exact path/status as hg implementations differ (Sapling vs standard hg)
+        let _path = file.display_path();
+    }
+
+    #[test]
+    fn test_hg_binary_file_deleted() {
+        let Some(temp) = setup_test_repo_with_binary() else {
+            eprintln!("Skipping test: hg command not available");
+            return;
+        };
+
+        let root = temp.path();
+
+        // Commit the binary file first
+        Command::new("hg")
+            .args(["commit", "-m", "Add binary file"])
+            .current_dir(root)
+            .output()
+            .expect("Failed to commit");
+
+        // Delete the binary file using hg remove
+        Command::new("hg")
+            .args(["remove", "image.png"])
+            .current_dir(root)
+            .output()
+            .expect("Failed to remove file");
+
+        let backend =
+            HgBackend::from_path(temp.path().to_path_buf()).expect("Failed to create hg backend");
+
+        let files = backend
+            .get_working_tree_diff(&SyntaxHighlighter::default())
+            .expect("Failed to get diff");
+
+        assert_eq!(files.len(), 1, "Expected one file");
+
+        let file = &files[0];
+        // Verify we can get display_path without panic (the bug we fixed)
+        // Don't assert exact path/status as hg implementations differ (Sapling vs standard hg)
+        let _path = file.display_path();
+    }
 }

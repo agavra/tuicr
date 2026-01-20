@@ -127,13 +127,33 @@ where
         } else if line.starts_with("deleted file") {
             status = FileStatus::Deleted;
             lines.next();
-        } else if line.starts_with("rename from") {
+        } else if let Some(path) = line.strip_prefix("rename from ") {
             status = FileStatus::Renamed;
+            old_path = Some(PathBuf::from(path));
             lines.next();
-        } else if line.starts_with("copy from") {
+        } else if let Some(path) = line.strip_prefix("rename to ") {
+            new_path = Some(PathBuf::from(path));
+            lines.next();
+        } else if let Some(path) = line.strip_prefix("copy from ") {
             status = FileStatus::Copied;
+            old_path = Some(PathBuf::from(path));
             lines.next();
-        } else if line.starts_with("@@") || line.starts_with("diff ") || line.contains("Binary") {
+        } else if let Some(path) = line.strip_prefix("copy to ") {
+            new_path = Some(PathBuf::from(path));
+            lines.next();
+        } else if line.starts_with("@@") || line.starts_with("diff ") {
+            break;
+        } else if line.starts_with("Binary file") {
+            // Hg format: "Binary file <path> has changed"
+            // Git format: "Binary files a/<old> and b/<new> differ"
+            if let Some((old, new)) = parse_binary_file_line(line) {
+                if old_path.is_none() {
+                    old_path = old;
+                }
+                if new_path.is_none() {
+                    new_path = new;
+                }
+            }
             break;
         } else {
             lines.next(); // Skip other metadata lines (rename to, copy to, index, etc.)
@@ -282,6 +302,46 @@ fn parse_range(s: &str) -> (u32, u32) {
     } else {
         (s.parse().unwrap_or(1), 1)
     }
+}
+
+/// Parse paths from a binary file line.
+/// Git format: "Binary files a/<old> and b/<new> differ"
+/// Hg format: "Binary file <path> has changed"
+/// Returns (old_path, new_path) where either can be None for /dev/null
+fn parse_binary_file_line(line: &str) -> Option<(Option<PathBuf>, Option<PathBuf>)> {
+    // Git format: "Binary files a/path/to/file and b/path/to/file differ"
+    if let Some(content) = line.strip_prefix("Binary files ") {
+        let content = content.strip_suffix(" differ")?;
+        let (old_part, new_part) = content.split_once(" and ")?;
+
+        let old_path = if old_part == "/dev/null" {
+            None
+        } else {
+            Some(PathBuf::from(
+                old_part.strip_prefix("a/").unwrap_or(old_part),
+            ))
+        };
+
+        let new_path = if new_part == "/dev/null" {
+            None
+        } else {
+            Some(PathBuf::from(
+                new_part.strip_prefix("b/").unwrap_or(new_part),
+            ))
+        };
+
+        return Some((old_path, new_path));
+    }
+
+    // Hg format: "Binary file image.png has changed"
+    if let Some(content) = line.strip_prefix("Binary file ") {
+        let path = content.strip_suffix(" has changed")?;
+        // For hg, the same path is used for both old and new
+        let path = PathBuf::from(path);
+        return Some((Some(path.clone()), Some(path)));
+    }
+
+    None
 }
 
 #[cfg(test)]
@@ -502,6 +562,62 @@ Binary file image.png has changed
     }
 
     #[test]
+    fn hg_should_parse_renamed_file_without_content_changes() {
+        // Pure rename with no content changes - no ---/+++ lines
+        let diff = r#"diff -r abc123 new_name.rs
+rename from old_name.rs
+rename to new_name.rs
+"#;
+
+        let result =
+            parse_unified_diff(diff, DiffFormat::Hg, &SyntaxHighlighter::default()).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].status, FileStatus::Renamed);
+        assert_eq!(result[0].old_path, Some(PathBuf::from("old_name.rs")));
+        assert_eq!(result[0].new_path, Some(PathBuf::from("new_name.rs")));
+        assert!(result[0].hunks.is_empty());
+    }
+
+    #[test]
+    fn hg_should_parse_copied_file_without_content_changes() {
+        // Pure copy with no content changes
+        let diff = r#"diff -r abc123 dest.rs
+copy from source.rs
+copy to dest.rs
+"#;
+
+        let result =
+            parse_unified_diff(diff, DiffFormat::Hg, &SyntaxHighlighter::default()).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].status, FileStatus::Copied);
+        assert_eq!(result[0].old_path, Some(PathBuf::from("source.rs")));
+        assert_eq!(result[0].new_path, Some(PathBuf::from("dest.rs")));
+        assert!(result[0].hunks.is_empty());
+    }
+
+    #[test]
+    fn hg_should_parse_copied_file_with_content_changes() {
+        // Copy with content changes
+        let diff = r#"diff -r abc123 dest.rs
+copy from source.rs
+copy to dest.rs
+--- a/source.rs	Thu Jan 01 00:00:00 1970 +0000
++++ b/dest.rs	Thu Jan 01 00:00:00 1970 +0000
+@@ -1 +1,2 @@
+ original
++added line
+"#;
+
+        let result =
+            parse_unified_diff(diff, DiffFormat::Hg, &SyntaxHighlighter::default()).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].status, FileStatus::Copied);
+        assert_eq!(result[0].old_path, Some(PathBuf::from("source.rs")));
+        assert_eq!(result[0].new_path, Some(PathBuf::from("dest.rs")));
+        assert_eq!(result[0].hunks.len(), 1);
+    }
+
+    #[test]
     fn hg_should_handle_no_newline_marker() {
         let diff = r#"diff -r abc123 no_newline.rs
 --- a/no_newline.rs
@@ -557,10 +673,10 @@ Binary file image.png has changed
         assert_eq!(lines[4].new_lineno, Some(8));
     }
 
-    // ============ Git-style (jj) format tests ============
+    // ============ Jujutsu (jj) format tests - uses DiffFormat::GitStyle ============
 
     #[test]
-    fn git_should_parse_simple_diff() {
+    fn jj_should_parse_simple_diff() {
         let diff = r#"diff --git a/file.txt b/file.txt
 --- a/file.txt
 +++ b/file.txt
@@ -580,7 +696,7 @@ Binary file image.png has changed
     }
 
     #[test]
-    fn git_should_parse_new_file() {
+    fn jj_should_parse_new_file() {
         let diff = r#"diff --git a/new.txt b/new.txt
 new file mode 100644
 --- /dev/null
@@ -596,7 +712,7 @@ new file mode 100644
     }
 
     #[test]
-    fn git_should_parse_deleted_file() {
+    fn jj_should_parse_deleted_file() {
         let diff = r#"diff --git a/old.txt b/old.txt
 deleted file mode 100644
 --- a/old.txt
@@ -612,7 +728,8 @@ deleted file mode 100644
     }
 
     #[test]
-    fn git_should_parse_renamed_file() {
+    fn jj_should_parse_renamed_file_without_content_changes() {
+        // Pure rename with no content changes - no ---/+++ lines
         let diff = r#"diff --git a/old.txt b/new.txt
 rename from old.txt
 rename to new.txt
@@ -621,10 +738,118 @@ rename to new.txt
             parse_unified_diff(diff, DiffFormat::GitStyle, &SyntaxHighlighter::default()).unwrap();
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].status, FileStatus::Renamed);
+        assert_eq!(files[0].old_path, Some(PathBuf::from("old.txt")));
+        assert_eq!(files[0].new_path, Some(PathBuf::from("new.txt")));
+        assert!(files[0].hunks.is_empty());
     }
 
     #[test]
-    fn git_should_parse_multiple_files() {
+    fn jj_should_parse_renamed_file_with_content_changes() {
+        // Rename with content changes - has ---/+++ lines
+        let diff = r#"diff --git a/old.txt b/new.txt
+rename from old.txt
+rename to new.txt
+--- a/old.txt
++++ b/new.txt
+@@ -1 +1 @@
+-old content
++new content
+"#;
+        let files =
+            parse_unified_diff(diff, DiffFormat::GitStyle, &SyntaxHighlighter::default()).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].status, FileStatus::Renamed);
+        assert_eq!(files[0].old_path, Some(PathBuf::from("old.txt")));
+        assert_eq!(files[0].new_path, Some(PathBuf::from("new.txt")));
+        assert_eq!(files[0].hunks.len(), 1);
+    }
+
+    #[test]
+    fn jj_should_parse_copied_file_without_content_changes() {
+        // Pure copy with no content changes
+        let diff = r#"diff --git a/source.txt b/dest.txt
+copy from source.txt
+copy to dest.txt
+"#;
+        let files =
+            parse_unified_diff(diff, DiffFormat::GitStyle, &SyntaxHighlighter::default()).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].status, FileStatus::Copied);
+        assert_eq!(files[0].old_path, Some(PathBuf::from("source.txt")));
+        assert_eq!(files[0].new_path, Some(PathBuf::from("dest.txt")));
+        assert!(files[0].hunks.is_empty());
+    }
+
+    #[test]
+    fn jj_should_parse_copied_file_with_content_changes() {
+        // Copy with content changes
+        let diff = r#"diff --git a/source.txt b/dest.txt
+copy from source.txt
+copy to dest.txt
+--- a/source.txt
++++ b/dest.txt
+@@ -1 +1,2 @@
+ original
++added line
+"#;
+        let files =
+            parse_unified_diff(diff, DiffFormat::GitStyle, &SyntaxHighlighter::default()).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].status, FileStatus::Copied);
+        assert_eq!(files[0].old_path, Some(PathBuf::from("source.txt")));
+        assert_eq!(files[0].new_path, Some(PathBuf::from("dest.txt")));
+        assert_eq!(files[0].hunks.len(), 1);
+    }
+
+    #[test]
+    fn jj_should_parse_binary_file_added() {
+        let diff = r#"diff --git a/image.png b/image.png
+new file mode 100644
+index 0000000000..abc1234567
+Binary files /dev/null and b/image.png differ
+"#;
+        let files =
+            parse_unified_diff(diff, DiffFormat::GitStyle, &SyntaxHighlighter::default()).unwrap();
+        assert_eq!(files.len(), 1);
+        assert!(files[0].is_binary);
+        assert_eq!(files[0].status, FileStatus::Added);
+        assert!(files[0].old_path.is_none());
+        assert_eq!(files[0].new_path, Some(PathBuf::from("image.png")));
+    }
+
+    #[test]
+    fn jj_should_parse_binary_file_deleted() {
+        let diff = r#"diff --git a/image.png b/image.png
+deleted file mode 100644
+index abc1234567..0000000000
+Binary files a/image.png and /dev/null differ
+"#;
+        let files =
+            parse_unified_diff(diff, DiffFormat::GitStyle, &SyntaxHighlighter::default()).unwrap();
+        assert_eq!(files.len(), 1);
+        assert!(files[0].is_binary);
+        assert_eq!(files[0].status, FileStatus::Deleted);
+        assert_eq!(files[0].old_path, Some(PathBuf::from("image.png")));
+        assert!(files[0].new_path.is_none());
+    }
+
+    #[test]
+    fn jj_should_parse_binary_file_modified() {
+        let diff = r#"diff --git a/image.png b/image.png
+index abc1234567..def7890123 100644
+Binary files a/image.png and b/image.png differ
+"#;
+        let files =
+            parse_unified_diff(diff, DiffFormat::GitStyle, &SyntaxHighlighter::default()).unwrap();
+        assert_eq!(files.len(), 1);
+        assert!(files[0].is_binary);
+        assert_eq!(files[0].status, FileStatus::Modified);
+        assert_eq!(files[0].old_path, Some(PathBuf::from("image.png")));
+        assert_eq!(files[0].new_path, Some(PathBuf::from("image.png")));
+    }
+
+    #[test]
+    fn jj_should_parse_multiple_files() {
         let diff = r#"diff --git a/a.txt b/a.txt
 --- a/a.txt
 +++ b/a.txt
@@ -646,7 +871,7 @@ diff --git a/b.txt b/b.txt
     }
 
     #[test]
-    fn git_should_calculate_line_numbers() {
+    fn jj_should_calculate_line_numbers() {
         let diff = r#"diff --git a/file.txt b/file.txt
 --- a/file.txt
 +++ b/file.txt
