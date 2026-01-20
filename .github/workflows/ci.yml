@@ -54,6 +54,8 @@ jobs:
       - run: cargo test
       - name: Install Mercurial (if missing)
         run: command -v hg || (sudo apt-get update && sudo apt-get install -y mercurial)
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
       - name: Install Jujutsu (if missing)
-        run: command -v jj || cargo install jj-cli --locked
+        run: command -v jj || cargo binstall --strategies crate-meta-data jj-cli --no-confirm
       - run: cargo test --features hg,jj
