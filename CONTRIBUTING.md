@@ -23,3 +23,14 @@ cargo fmt
 - Keep it simple—this is a focused tool, not a platform
 - If you add a feature, use it yourself first
 - Bug reports and feature requests welcome via issues
+
+## Committers
+
+The following individuals have write access to `tuicr`:
+
+- [@agavra](https://github.com/agavra) (chair)
+- [@YPares](https://github.com/YPares)
+
+The chair has final decision-making authority on project direction. Consistent,
+quality contributions (issues, pull request reviews and code submissions) are
+the path to committership, keep contributing and you may receive an invite!
