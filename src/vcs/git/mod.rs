@@ -24,7 +24,8 @@ pub struct GitBackend {
 impl GitBackend {
     /// Discover a git repository from the current directory
     pub fn discover() -> Result<Self> {
-        let repo = Repository::discover(".").map_err(|_| TuicrError::NotARepository)?;
+        let cwd = std::env::current_dir().map_err(|_| TuicrError::NotARepository)?;
+        let repo = Repository::discover(&cwd).map_err(|_| TuicrError::NotARepository)?;
 
         let root_path = repo
             .workdir()
