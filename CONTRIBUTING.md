@@ -30,6 +30,7 @@ The following individuals have write access to `tuicr`:
 
 - [@agavra](https://github.com/agavra) (chair)
 - [@YPares](https://github.com/YPares)
+- [@martintrojer](https://github.com/martintrojer)
 
 The chair has final decision-making authority on project direction. Consistent,
 quality contributions (issues, pull request reviews and code submissions) are
