@@ -6,8 +6,47 @@ use ratatui::{
     widgets::{Block, Paragraph},
 };
 
-use crate::app::{App, DiffSource, InputMode, MessageType};
+use crate::app::{App, DiffSource, InputMode, Message, MessageType};
+use crate::theme::Theme;
 use crate::ui::styles;
+
+pub fn build_message_span(message: Option<&Message>, theme: &Theme) -> (Span<'static>, usize) {
+    if let Some(msg) = message {
+        let (fg, bg) = match msg.message_type {
+            MessageType::Info => (Color::Black, Color::Cyan),
+            MessageType::Warning => (Color::Black, theme.pending),
+            MessageType::Error => (Color::White, theme.comment_issue),
+        };
+        let content = format!(" {} ", msg.content);
+        let width = content.len();
+        (
+            Span::styled(
+                content,
+                Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD),
+            ),
+            width,
+        )
+    } else {
+        (Span::raw(""), 0)
+    }
+}
+
+pub fn build_right_aligned_spans<'a>(
+    mut left_spans: Vec<Span<'a>>,
+    message_span: Span<'a>,
+    message_width: usize,
+    total_width: usize,
+) -> Vec<Span<'a>> {
+    let left_width: usize = left_spans.iter().map(|s| s.content.len()).sum();
+    let padding_width = total_width.saturating_sub(left_width + message_width);
+    let padding = Span::raw(" ".repeat(padding_width));
+
+    left_spans.push(padding);
+    if message_width > 0 {
+        left_spans.push(message_span);
+    }
+    left_spans
+}
 
 pub fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
@@ -121,38 +160,10 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         vec![mode_span, hints_span, dirty_indicator]
     };
 
-    let left_width: usize = left_spans.iter().map(|s| s.content.len()).sum();
-
-    // Build message span for right side with highlighted background
-    let (message_span, message_width) = if let Some(msg) = &app.message {
-        let (fg, bg) = match msg.message_type {
-            MessageType::Info => (Color::Black, Color::Cyan),
-            MessageType::Warning => (Color::Black, theme.pending),
-            MessageType::Error => (Color::White, theme.comment_issue),
-        };
-        let content = format!(" {} ", msg.content);
-        let width = content.len();
-        (
-            Span::styled(
-                content,
-                Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD),
-            ),
-            width,
-        )
-    } else {
-        (Span::raw(""), 0)
-    };
-
-    // Calculate padding to push message to the right
+    // Build message span and create right-aligned layout
+    let (message_span, message_width) = build_message_span(app.message.as_ref(), theme);
     let total_width = area.width as usize;
-    let padding_width = total_width.saturating_sub(left_width + message_width);
-    let padding = Span::raw(" ".repeat(padding_width));
-
-    let mut spans = left_spans;
-    spans.push(padding);
-    if message_width > 0 {
-        spans.push(message_span);
-    }
+    let spans = build_right_aligned_spans(left_spans, message_span, message_width, total_width);
 
     let line = Line::from(spans);
 

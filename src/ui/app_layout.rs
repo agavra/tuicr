@@ -141,8 +141,11 @@ fn render_commit_select(frame: &mut Frame, app: &App) {
     let list = Paragraph::new(items);
     frame.render_widget(list, inner);
 
-    // Footer hints with selection count
-    let selected_count = match range {
+    // Footer with mode, hints, and right-aligned message
+    let theme = &app.theme;
+    let mode_span = Span::styled(" SELECT ", styles::mode_style(theme));
+
+    let selected_count = match app.commit_selection_range {
         Some((start, end)) => end - start + 1,
         None => 0,
     };
@@ -152,8 +155,20 @@ fn render_commit_select(frame: &mut Frame, app: &App) {
         String::new()
     };
     let hints = format!(" j/k:navigate  Space:select range  Enter:confirm  q:quit{selection_info}");
-    let footer = Paragraph::new(hints)
-        .style(styles::status_bar_style(&app.theme))
+    let hints_span = Span::styled(hints, Style::default().fg(theme.fg_secondary));
+
+    let left_spans = vec![mode_span, hints_span];
+
+    let (message_span, message_width) = status_bar::build_message_span(app.message.as_ref(), theme);
+    let spans = status_bar::build_right_aligned_spans(
+        left_spans,
+        message_span,
+        message_width,
+        chunks[2].width as usize,
+    );
+
+    let footer = Paragraph::new(Line::from(spans))
+        .style(styles::status_bar_style(theme))
         .block(Block::default());
     frame.render_widget(footer, chunks[2]);
 }
