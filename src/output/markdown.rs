@@ -25,6 +25,12 @@ pub fn export_to_clipboard(session: &ReviewSession, diff_source: &DiffSource) ->
 
     let content = generate_markdown(session, diff_source);
 
+    // Prefer OSC 52 in tmux/SSH where arboard may silently fail
+    if should_prefer_osc52() {
+        copy_osc52(&content)?;
+        return Ok("Review copied to clipboard (via terminal)".to_string());
+    }
+
     // Try arboard (system clipboard) first, fall back to OSC 52 for SSH/remote sessions
     match Clipboard::new().and_then(|mut cb| cb.set_text(&content)) {
         Ok(_) => Ok("Review copied to clipboard".to_string()),
@@ -34,6 +40,14 @@ pub fn export_to_clipboard(session: &ReviewSession, diff_source: &DiffSource) ->
             Ok("Review copied to clipboard (via terminal)".to_string())
         }
     }
+}
+
+/// Returns true if we should prefer OSC 52 over the system clipboard.
+///
+/// In tmux or SSH sessions, arboard may "succeed" but copy to an inaccessible
+/// X11 clipboard, so we use OSC 52 which works reliably in these environments.
+fn should_prefer_osc52() -> bool {
+    std::env::var("TMUX").is_ok() || std::env::var("SSH_TTY").is_ok()
 }
 
 /// Copy text to clipboard using OSC 52 escape sequence.
