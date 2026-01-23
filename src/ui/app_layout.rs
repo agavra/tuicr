@@ -38,10 +38,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         help_popup::render_help(frame, app);
     }
 
-    // Render comment input popup if in comment mode
-    if app.input_mode == InputMode::Comment {
-        comment_panel::render_comment_input(frame, app);
-    }
+    // Comment input is now rendered inline in the diff view
 
     // Render confirm dialog if in confirm mode
     if app.input_mode == InputMode::Confirm {
@@ -403,24 +400,83 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
             continue;
         }
 
+        // Check if we're editing/adding a file-level comment for this file
+        let is_file_comment_mode = app.input_mode == InputMode::Comment
+            && app.comment_is_file_level
+            && file_idx == app.diff_state.current_file_idx;
+
         // Show file-level comments right after the header
         if let Some(review) = app.session.files.get(path) {
             for comment in &review.file_comments {
-                let comment_lines = comment_panel::format_comment_lines(
-                    &app.theme,
-                    comment.comment_type,
-                    &comment.content,
-                    None,
-                );
-                for mut comment_line in comment_lines {
-                    let indicator = cursor_indicator(line_idx, current_line_idx);
-                    comment_line.spans.insert(
-                        0,
-                        Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
+                // Skip rendering this comment if it's being edited
+                let is_being_edited =
+                    app.editing_comment_id.as_ref() == Some(&comment.id) && is_file_comment_mode;
+
+                if is_being_edited {
+                    // Render the inline input instead
+                    let input_lines = comment_panel::format_comment_input_lines(
+                        &app.theme,
+                        app.comment_type,
+                        &app.comment_buffer,
+                        app.comment_cursor,
+                        None,
+                        true,
+                        app.supports_keyboard_enhancement,
                     );
-                    lines.push(comment_line);
-                    line_idx += 1;
+                    for mut input_line in input_lines {
+                        let indicator = cursor_indicator(line_idx, current_line_idx);
+                        input_line.spans.insert(
+                            0,
+                            Span::styled(
+                                indicator,
+                                styles::current_line_indicator_style(&app.theme),
+                            ),
+                        );
+                        lines.push(input_line);
+                        line_idx += 1;
+                    }
+                } else {
+                    let comment_lines = comment_panel::format_comment_lines(
+                        &app.theme,
+                        comment.comment_type,
+                        &comment.content,
+                        None,
+                    );
+                    for mut comment_line in comment_lines {
+                        let indicator = cursor_indicator(line_idx, current_line_idx);
+                        comment_line.spans.insert(
+                            0,
+                            Span::styled(
+                                indicator,
+                                styles::current_line_indicator_style(&app.theme),
+                            ),
+                        );
+                        lines.push(comment_line);
+                        line_idx += 1;
+                    }
                 }
+            }
+        }
+
+        // Render inline input for new file-level comment
+        if is_file_comment_mode && app.editing_comment_id.is_none() {
+            let input_lines = comment_panel::format_comment_input_lines(
+                &app.theme,
+                app.comment_type,
+                &app.comment_buffer,
+                app.comment_cursor,
+                None,
+                false,
+                app.supports_keyboard_enhancement,
+            );
+            for mut input_line in input_lines {
+                let indicator = cursor_indicator(line_idx, current_line_idx);
+                input_line.spans.insert(
+                    0,
+                    Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
+                );
+                lines.push(input_line);
+                line_idx += 1;
             }
         }
 
@@ -603,63 +659,209 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
 
                     // Show line comments for both old side (deleted lines) and new side (added/context)
                     // Old side comments (for deleted lines)
-                    if let Some(old_ln) = diff_line.old_lineno
-                        && let Some(comments) = line_comments.get(&old_ln)
-                    {
-                        for comment in comments {
-                            if comment.side == Some(LineSide::Old) {
-                                let line_range = comment
-                                    .line_range
-                                    .or_else(|| Some(LineRange::single(old_ln)));
-                                let comment_lines = comment_panel::format_comment_lines(
-                                    &app.theme,
-                                    comment.comment_type,
-                                    &comment.content,
-                                    line_range,
-                                );
-                                for mut comment_line in comment_lines {
-                                    let is_current = line_idx == current_line_idx;
-                                    let indicator = if is_current { "▶" } else { " " };
-                                    comment_line.spans.insert(
-                                        0,
-                                        Span::styled(
-                                            indicator,
-                                            styles::current_line_indicator_style(&app.theme),
-                                        ),
-                                    );
-                                    lines.push(comment_line);
-                                    line_idx += 1;
+                    if let Some(old_ln) = diff_line.old_lineno {
+                        // Check if we're adding/editing a comment on this line (old side)
+                        let is_line_comment_mode = app.input_mode == InputMode::Comment
+                            && !app.comment_is_file_level
+                            && file_idx == app.diff_state.current_file_idx
+                            && app.comment_line == Some((old_ln, LineSide::Old));
+
+                        if let Some(comments) = line_comments.get(&old_ln) {
+                            for comment in comments {
+                                if comment.side == Some(LineSide::Old) {
+                                    // Skip if this comment is being edited
+                                    let is_being_edited = is_line_comment_mode
+                                        && app.editing_comment_id.as_ref() == Some(&comment.id);
+
+                                    if is_being_edited {
+                                        let line_range = app
+                                            .comment_line_range
+                                            .map(|(r, _)| r)
+                                            .or_else(|| Some(LineRange::single(old_ln)));
+                                        let input_lines = comment_panel::format_comment_input_lines(
+                                            &app.theme,
+                                            app.comment_type,
+                                            &app.comment_buffer,
+                                            app.comment_cursor,
+                                            line_range,
+                                            true,
+                                            app.supports_keyboard_enhancement,
+                                        );
+                                        for mut input_line in input_lines {
+                                            let indicator =
+                                                cursor_indicator(line_idx, current_line_idx);
+                                            input_line.spans.insert(
+                                                0,
+                                                Span::styled(
+                                                    indicator,
+                                                    styles::current_line_indicator_style(
+                                                        &app.theme,
+                                                    ),
+                                                ),
+                                            );
+                                            lines.push(input_line);
+                                            line_idx += 1;
+                                        }
+                                    } else {
+                                        let line_range = comment
+                                            .line_range
+                                            .or_else(|| Some(LineRange::single(old_ln)));
+                                        let comment_lines = comment_panel::format_comment_lines(
+                                            &app.theme,
+                                            comment.comment_type,
+                                            &comment.content,
+                                            line_range,
+                                        );
+                                        for mut comment_line in comment_lines {
+                                            let is_current = line_idx == current_line_idx;
+                                            let indicator = if is_current { "▶" } else { " " };
+                                            comment_line.spans.insert(
+                                                0,
+                                                Span::styled(
+                                                    indicator,
+                                                    styles::current_line_indicator_style(
+                                                        &app.theme,
+                                                    ),
+                                                ),
+                                            );
+                                            lines.push(comment_line);
+                                            line_idx += 1;
+                                        }
+                                    }
                                 }
                             }
                         }
-                    }
-                    // New side comments (for added/context lines)
-                    if let Some(new_ln) = diff_line.new_lineno
-                        && let Some(comments) = line_comments.get(&new_ln)
-                    {
-                        for comment in comments {
-                            if comment.side != Some(LineSide::Old) {
-                                let line_range = comment
-                                    .line_range
-                                    .or_else(|| Some(LineRange::single(new_ln)));
-                                let comment_lines = comment_panel::format_comment_lines(
-                                    &app.theme,
-                                    comment.comment_type,
-                                    &comment.content,
-                                    line_range,
+
+                        // Render inline input for new line comment (old side)
+                        if is_line_comment_mode && app.editing_comment_id.is_none() {
+                            let line_range = app
+                                .comment_line_range
+                                .map(|(r, _)| r)
+                                .or_else(|| Some(LineRange::single(old_ln)));
+                            let input_lines = comment_panel::format_comment_input_lines(
+                                &app.theme,
+                                app.comment_type,
+                                &app.comment_buffer,
+                                app.comment_cursor,
+                                line_range,
+                                false,
+                                app.supports_keyboard_enhancement,
+                            );
+                            for mut input_line in input_lines {
+                                let indicator = cursor_indicator(line_idx, current_line_idx);
+                                input_line.spans.insert(
+                                    0,
+                                    Span::styled(
+                                        indicator,
+                                        styles::current_line_indicator_style(&app.theme),
+                                    ),
                                 );
-                                for mut comment_line in comment_lines {
-                                    let indicator = cursor_indicator(line_idx, current_line_idx);
-                                    comment_line.spans.insert(
-                                        0,
-                                        Span::styled(
-                                            indicator,
-                                            styles::current_line_indicator_style(&app.theme),
-                                        ),
-                                    );
-                                    lines.push(comment_line);
-                                    line_idx += 1;
+                                lines.push(input_line);
+                                line_idx += 1;
+                            }
+                        }
+                    }
+
+                    // New side comments (for added/context lines)
+                    if let Some(new_ln) = diff_line.new_lineno {
+                        // Check if we're adding/editing a comment on this line (new side)
+                        let is_line_comment_mode = app.input_mode == InputMode::Comment
+                            && !app.comment_is_file_level
+                            && file_idx == app.diff_state.current_file_idx
+                            && app.comment_line == Some((new_ln, LineSide::New));
+
+                        if let Some(comments) = line_comments.get(&new_ln) {
+                            for comment in comments {
+                                if comment.side != Some(LineSide::Old) {
+                                    // Skip if this comment is being edited
+                                    let is_being_edited = is_line_comment_mode
+                                        && app.editing_comment_id.as_ref() == Some(&comment.id);
+
+                                    if is_being_edited {
+                                        let line_range = app
+                                            .comment_line_range
+                                            .map(|(r, _)| r)
+                                            .or_else(|| Some(LineRange::single(new_ln)));
+                                        let input_lines = comment_panel::format_comment_input_lines(
+                                            &app.theme,
+                                            app.comment_type,
+                                            &app.comment_buffer,
+                                            app.comment_cursor,
+                                            line_range,
+                                            true,
+                                            app.supports_keyboard_enhancement,
+                                        );
+                                        for mut input_line in input_lines {
+                                            let indicator =
+                                                cursor_indicator(line_idx, current_line_idx);
+                                            input_line.spans.insert(
+                                                0,
+                                                Span::styled(
+                                                    indicator,
+                                                    styles::current_line_indicator_style(
+                                                        &app.theme,
+                                                    ),
+                                                ),
+                                            );
+                                            lines.push(input_line);
+                                            line_idx += 1;
+                                        }
+                                    } else {
+                                        let line_range = comment
+                                            .line_range
+                                            .or_else(|| Some(LineRange::single(new_ln)));
+                                        let comment_lines = comment_panel::format_comment_lines(
+                                            &app.theme,
+                                            comment.comment_type,
+                                            &comment.content,
+                                            line_range,
+                                        );
+                                        for mut comment_line in comment_lines {
+                                            let indicator =
+                                                cursor_indicator(line_idx, current_line_idx);
+                                            comment_line.spans.insert(
+                                                0,
+                                                Span::styled(
+                                                    indicator,
+                                                    styles::current_line_indicator_style(
+                                                        &app.theme,
+                                                    ),
+                                                ),
+                                            );
+                                            lines.push(comment_line);
+                                            line_idx += 1;
+                                        }
+                                    }
                                 }
+                            }
+                        }
+
+                        // Render inline input for new line comment (new side)
+                        if is_line_comment_mode && app.editing_comment_id.is_none() {
+                            let line_range = app
+                                .comment_line_range
+                                .map(|(r, _)| r)
+                                .or_else(|| Some(LineRange::single(new_ln)));
+                            let input_lines = comment_panel::format_comment_input_lines(
+                                &app.theme,
+                                app.comment_type,
+                                &app.comment_buffer,
+                                app.comment_cursor,
+                                line_range,
+                                false,
+                                app.supports_keyboard_enhancement,
+                            );
+                            for mut input_line in input_lines {
+                                let indicator = cursor_indicator(line_idx, current_line_idx);
+                                input_line.spans.insert(
+                                    0,
+                                    Span::styled(
+                                        indicator,
+                                        styles::current_line_indicator_style(&app.theme),
+                                    ),
+                                );
+                                lines.push(input_line);
+                                line_idx += 1;
                             }
                         }
                     }
@@ -752,6 +954,15 @@ struct SideBySideContext<'a> {
     theme: &'a Theme,
     content_width: usize,
     current_line_idx: usize,
+    // Comment input state for inline editing
+    comment_input_mode: bool,
+    comment_line: Option<(u32, LineSide)>,
+    comment_type: crate::model::CommentType,
+    comment_buffer: &'a str,
+    comment_cursor: usize,
+    comment_line_range: Option<LineRange>,
+    editing_comment_id: Option<&'a str>,
+    supports_keyboard_enhancement: bool,
 }
 
 /// Get cursor indicator (single character for inline content)
@@ -792,10 +1003,21 @@ fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
     let available_width = inner.width.saturating_sub(16) as usize;
     let content_width = available_width / 2;
 
+    // Determine if we're in line comment mode (not file-level)
+    let comment_input_mode = app.input_mode == InputMode::Comment && !app.comment_is_file_level;
+
     let ctx = SideBySideContext {
         theme: &app.theme,
         content_width,
         current_line_idx: app.diff_state.cursor_line,
+        comment_input_mode,
+        comment_line: app.comment_line,
+        comment_type: app.comment_type,
+        comment_buffer: &app.comment_buffer,
+        comment_cursor: app.comment_cursor,
+        comment_line_range: app.comment_line_range.map(|(r, _)| r),
+        editing_comment_id: app.editing_comment_id.as_deref(),
+        supports_keyboard_enhancement: app.supports_keyboard_enhancement,
     };
 
     // Build all diff lines for side-by-side view
@@ -827,24 +1049,83 @@ fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
             continue;
         }
 
+        // Check if we're editing/adding a file-level comment for this file
+        let is_file_comment_mode = app.input_mode == InputMode::Comment
+            && app.comment_is_file_level
+            && file_idx == app.diff_state.current_file_idx;
+
         // Show file-level comments
         if let Some(review) = app.session.files.get(path) {
             for comment in &review.file_comments {
-                let comment_lines = comment_panel::format_comment_lines(
-                    &app.theme,
-                    comment.comment_type,
-                    &comment.content,
-                    None,
-                );
-                for mut comment_line in comment_lines {
-                    let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
-                    comment_line.spans.insert(
-                        0,
-                        Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
+                // Skip rendering this comment if it's being edited
+                let is_being_edited =
+                    app.editing_comment_id.as_ref() == Some(&comment.id) && is_file_comment_mode;
+
+                if is_being_edited {
+                    // Render the inline input instead
+                    let input_lines = comment_panel::format_comment_input_lines(
+                        &app.theme,
+                        app.comment_type,
+                        &app.comment_buffer,
+                        app.comment_cursor,
+                        None,
+                        true,
+                        app.supports_keyboard_enhancement,
                     );
-                    lines.push(comment_line);
-                    line_idx += 1;
+                    for mut input_line in input_lines {
+                        let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
+                        input_line.spans.insert(
+                            0,
+                            Span::styled(
+                                indicator,
+                                styles::current_line_indicator_style(&app.theme),
+                            ),
+                        );
+                        lines.push(input_line);
+                        line_idx += 1;
+                    }
+                } else {
+                    let comment_lines = comment_panel::format_comment_lines(
+                        &app.theme,
+                        comment.comment_type,
+                        &comment.content,
+                        None,
+                    );
+                    for mut comment_line in comment_lines {
+                        let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
+                        comment_line.spans.insert(
+                            0,
+                            Span::styled(
+                                indicator,
+                                styles::current_line_indicator_style(&app.theme),
+                            ),
+                        );
+                        lines.push(comment_line);
+                        line_idx += 1;
+                    }
                 }
+            }
+        }
+
+        // Render inline input for new file-level comment
+        if is_file_comment_mode && app.editing_comment_id.is_none() {
+            let input_lines = comment_panel::format_comment_input_lines(
+                &app.theme,
+                app.comment_type,
+                &app.comment_buffer,
+                app.comment_cursor,
+                None,
+                false,
+                app.supports_keyboard_enhancement,
+            );
+            for mut input_line in input_lines {
+                let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
+                input_line.spans.insert(
+                    0,
+                    Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
+                );
+                lines.push(input_line);
+                line_idx += 1;
             }
         }
 
@@ -1362,33 +1643,97 @@ fn add_comments_to_line(
     mut line_idx: usize,
     lines: &mut Vec<Line>,
 ) -> usize {
+    // Check if we're adding/editing a comment on this line and side
+    let is_line_comment_mode = ctx.comment_input_mode && ctx.comment_line == Some((line_num, side));
+
     if let Some(comments) = line_comments.get(&line_num) {
         for comment in comments {
             let comment_side = comment.side.unwrap_or(LineSide::New);
             if (side == LineSide::Old && comment_side == LineSide::Old)
                 || (side == LineSide::New && comment_side != LineSide::Old)
             {
-                let line_range = comment
-                    .line_range
-                    .or_else(|| Some(LineRange::single(line_num)));
-                let comment_lines = comment_panel::format_comment_lines(
-                    ctx.theme,
-                    comment.comment_type,
-                    &comment.content,
-                    line_range,
-                );
-                for mut comment_line in comment_lines {
-                    let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
-                    comment_line.spans.insert(
-                        0,
-                        Span::styled(indicator, styles::current_line_indicator_style(ctx.theme)),
+                // Check if this comment is being edited
+                let is_being_edited =
+                    is_line_comment_mode && ctx.editing_comment_id == Some(comment.id.as_str());
+
+                if is_being_edited {
+                    // Render inline input instead
+                    let line_range = ctx
+                        .comment_line_range
+                        .or_else(|| Some(LineRange::single(line_num)));
+                    let input_lines = comment_panel::format_comment_input_lines(
+                        ctx.theme,
+                        ctx.comment_type,
+                        ctx.comment_buffer,
+                        ctx.comment_cursor,
+                        line_range,
+                        true,
+                        ctx.supports_keyboard_enhancement,
                     );
-                    lines.push(comment_line);
-                    line_idx += 1;
+                    for mut input_line in input_lines {
+                        let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
+                        input_line.spans.insert(
+                            0,
+                            Span::styled(
+                                indicator,
+                                styles::current_line_indicator_style(ctx.theme),
+                            ),
+                        );
+                        lines.push(input_line);
+                        line_idx += 1;
+                    }
+                } else {
+                    let line_range = comment
+                        .line_range
+                        .or_else(|| Some(LineRange::single(line_num)));
+                    let comment_lines = comment_panel::format_comment_lines(
+                        ctx.theme,
+                        comment.comment_type,
+                        &comment.content,
+                        line_range,
+                    );
+                    for mut comment_line in comment_lines {
+                        let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
+                        comment_line.spans.insert(
+                            0,
+                            Span::styled(
+                                indicator,
+                                styles::current_line_indicator_style(ctx.theme),
+                            ),
+                        );
+                        lines.push(comment_line);
+                        line_idx += 1;
+                    }
                 }
             }
         }
     }
+
+    // Render inline input for new line comment
+    if is_line_comment_mode && ctx.editing_comment_id.is_none() {
+        let line_range = ctx
+            .comment_line_range
+            .or_else(|| Some(LineRange::single(line_num)));
+        let input_lines = comment_panel::format_comment_input_lines(
+            ctx.theme,
+            ctx.comment_type,
+            ctx.comment_buffer,
+            ctx.comment_cursor,
+            line_range,
+            false,
+            ctx.supports_keyboard_enhancement,
+        );
+        for mut input_line in input_lines {
+            let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
+            input_line.spans.insert(
+                0,
+                Span::styled(indicator, styles::current_line_indicator_style(ctx.theme)),
+            );
+            lines.push(input_line);
+            line_idx += 1;
+        }
+    }
+
     line_idx
 }
 

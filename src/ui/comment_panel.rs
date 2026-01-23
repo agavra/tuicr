@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Constraint, Flex, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, Paragraph},
 };
 
 use crate::app::App;
@@ -11,81 +11,61 @@ use crate::model::{CommentType, LineRange};
 use crate::theme::Theme;
 use crate::ui::styles;
 
-pub fn render_comment_input(frame: &mut Frame, app: &App) {
-    let theme = &app.theme;
-    let area = centered_rect(60, 40, frame.area());
-
-    frame.render_widget(Clear, area);
-
-    let action = if app.editing_comment_id.is_some() {
-        "Edit"
-    } else {
-        "Add"
-    };
-
-    let comment_kind = if app.comment_is_file_level {
-        "File Comment".to_string()
-    } else if let Some((range, _)) = app.comment_line_range {
-        if range.is_single() {
-            format!("Line {} Comment", range.start)
-        } else {
-            format!("Lines {}-{} Comment", range.start, range.end)
-        }
-    } else {
-        match app.comment_line {
-            Some((line, _)) => format!("Line {line} Comment"),
-            None => "Line Comment".to_string(),
-        }
-    };
-
-    let newline_hint = if app.supports_keyboard_enhancement {
-        "Shift-Enter"
-    } else {
-        "Ctrl-J"
-    };
-    let block = Block::default()
-        .title(format!(
-            " {} {} [{}] (Enter to save, {} for newline) ",
-            action,
-            comment_kind,
-            app.comment_type.as_str(),
-            newline_hint
-        ))
-        .borders(Borders::ALL)
-        .border_style(styles::border_style(theme, true));
-
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    // Build content with type selector hint and input area
-    let type_style = styles::comment_type_style(theme, app.comment_type);
-    let type_hint = Line::from(vec![
-        Span::styled("Type: ", styles::dim_style(theme)),
-        Span::styled(app.comment_type.as_str(), type_style),
-        Span::styled(" (Tab to cycle)", styles::dim_style(theme)),
-    ]);
-
-    let separator = Line::from(Span::styled(
-        "─".repeat(inner.width as usize),
-        styles::dim_style(theme),
-    ));
-
-    // Build content lines with cursor
-    let mut lines = vec![type_hint, separator, Line::from("")];
-
+/// Format a comment input as multiple lines with a box border for inline editing
+/// This mimics the normal comment display but shows it's being edited
+pub fn format_comment_input_lines(
+    theme: &Theme,
+    comment_type: CommentType,
+    buffer: &str,
+    cursor_pos: usize,
+    line_range: Option<LineRange>,
+    is_editing: bool,
+    supports_keyboard_enhancement: bool,
+) -> Vec<Line<'static>> {
+    let type_style = styles::comment_type_style(theme, comment_type);
+    let border_style = styles::comment_border_style(theme, comment_type);
     let cursor_style = Style::default()
         .fg(theme.cursor_color)
         .add_modifier(Modifier::UNDERLINED);
 
-    if app.comment_buffer.is_empty() {
+    let action = if is_editing { "Edit" } else { "Add" };
+    let line_info = match line_range {
+        Some(range) if range.is_single() => format!("L{} ", range.start),
+        Some(range) => format!("L{}-L{} ", range.start, range.end),
+        None => String::new(),
+    };
+
+    let newline_hint = if supports_keyboard_enhancement {
+        "Shift-Enter"
+    } else {
+        "Ctrl-J"
+    };
+
+    let mut result = Vec::new();
+
+    // Top border with type label and hints
+    result.push(Line::from(vec![
+        Span::styled("     ╭─ ", border_style),
+        Span::styled(format!("{} ", action), styles::dim_style(theme)),
+        Span::styled(format!("[{}] ", comment_type.as_str()), type_style),
+        Span::styled(line_info, styles::dim_style(theme)),
+        Span::styled(
+            format!("(Tab:type Enter:save {}:newline Esc:cancel)", newline_hint),
+            styles::dim_style(theme),
+        ),
+    ]));
+
+    // Content lines with cursor
+    if buffer.is_empty() {
         // Show placeholder with cursor at start
-        lines.push(Line::from(vec![
+        result.push(Line::from(vec![
+            Span::styled("     │ ", border_style),
             Span::styled(" ", cursor_style),
             Span::styled("Type your comment...", styles::dim_style(theme)),
         ]));
     } else {
         // Split buffer into lines and render with cursor
-        let buffer_lines: Vec<&str> = app.comment_buffer.split('\n').collect();
+        let buffer_lines: Vec<&str> = buffer.split('\n').collect();
         let mut char_offset = 0;
 
         for (line_idx, text) in buffer_lines.iter().enumerate() {
@@ -93,42 +73,45 @@ pub fn render_comment_input(frame: &mut Frame, app: &App) {
             let line_end = char_offset + text.len();
 
             // Check if cursor is on this line
-            let cursor_on_this_line = app.comment_cursor >= line_start
-                && (app.comment_cursor <= line_end
-                    || (line_idx == buffer_lines.len() - 1
-                        && app.comment_cursor == app.comment_buffer.len()));
+            let cursor_on_this_line = cursor_pos >= line_start
+                && (cursor_pos <= line_end
+                    || (line_idx == buffer_lines.len() - 1 && cursor_pos == buffer.len()));
+
+            let mut line_spans = vec![Span::styled("     │ ", border_style)];
 
             if cursor_on_this_line {
-                let cursor_pos_in_line = app.comment_cursor - line_start;
+                let cursor_pos_in_line = cursor_pos - line_start;
                 let cursor_pos_in_line = cursor_pos_in_line.min(text.len());
                 let (before_cursor, after_cursor) = text.split_at(cursor_pos_in_line);
                 if after_cursor.is_empty() {
-                    lines.push(Line::from(vec![
-                        Span::raw(before_cursor.to_string()),
-                        Span::styled(" ", cursor_style),
-                    ]));
+                    line_spans.push(Span::raw(before_cursor.to_string()));
+                    line_spans.push(Span::styled(" ", cursor_style));
                 } else {
                     let mut chars = after_cursor.chars();
                     let cursor_char = chars.next().unwrap();
                     let remaining = chars.as_str();
-                    lines.push(Line::from(vec![
-                        Span::raw(before_cursor.to_string()),
-                        Span::styled(cursor_char.to_string(), cursor_style),
-                        Span::raw(remaining.to_string()),
-                    ]));
+                    line_spans.push(Span::raw(before_cursor.to_string()));
+                    line_spans.push(Span::styled(cursor_char.to_string(), cursor_style));
+                    line_spans.push(Span::raw(remaining.to_string()));
                 }
             } else {
-                lines.push(Line::from(Span::raw(text.to_string())));
+                line_spans.push(Span::raw(text.to_string()));
             }
+
+            result.push(Line::from(line_spans));
 
             // Account for newline character (except for last line)
             char_offset = line_end + 1;
         }
     }
 
-    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+    // Bottom border
+    result.push(Line::from(vec![Span::styled(
+        "     ╰".to_string() + &"─".repeat(38),
+        border_style,
+    )]));
 
-    frame.render_widget(paragraph, inner);
+    result
 }
 
 /// Format a comment as multiple lines with a box border (themed version)
