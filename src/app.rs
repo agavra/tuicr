@@ -149,6 +149,8 @@ pub struct App {
     /// Selected commit range as (start_idx, end_idx) inclusive, where start <= end.
     /// Indices refer to positions in commit_list (0 = newest/HEAD, higher = older).
     pub commit_selection_range: Option<(usize, usize)>,
+    /// Whether the commit list has been expanded to show all commits
+    pub commit_expanded: bool,
 
     pub should_quit: bool,
     pub dirty: bool,
@@ -299,6 +301,7 @@ impl App {
                     commit_list: Vec::new(),
                     commit_list_cursor: 0,
                     commit_selection_range: None,
+                    commit_expanded: false,
                     should_quit: false,
                     dirty: false,
                     quit_warned: false,
@@ -322,7 +325,7 @@ impl App {
             }
             Err(TuicrError::NoChanges) => {
                 // No unstaged changes - try to get recent commits
-                let commits = vcs.get_recent_commits(5)?;
+                let commits = vcs.get_recent_commits(20)?;
                 if commits.is_empty() {
                     return Err(TuicrError::NoChanges);
                 }
@@ -361,6 +364,7 @@ impl App {
                     commit_list: commits,
                     commit_list_cursor: 0,
                     commit_selection_range: None,
+                    commit_expanded: false,
                     should_quit: false,
                     dirty: false,
                     quit_warned: false,
@@ -1619,6 +1623,7 @@ impl App {
         self.commit_list = commits;
         self.commit_list_cursor = 0;
         self.commit_selection_range = None;
+        self.commit_expanded = true;
         self.input_mode = InputMode::CommitSelect;
         Ok(())
     }
@@ -1683,9 +1688,37 @@ impl App {
     }
 
     pub fn commit_select_down(&mut self) {
-        if self.commit_list_cursor < self.commit_list.len().saturating_sub(1) {
-            self.commit_list_cursor += 1;
+        let max_cursor = if !self.commit_expanded && self.commit_list.len() > 5 {
+            5
+        } else {
+            self.commit_list.len().saturating_sub(1)
+        };
+
+        if self.commit_list_cursor < max_cursor {
+            self.commit_list_cursor += 1
         }
+    }
+
+    // Check if cursor in on the commit expand row
+    pub fn is_on_expand_row(&self) -> bool {
+        !self.commit_expanded && self.commit_list.len() > 5 && self.commit_list_cursor == 5
+    }
+
+    // Expand the commit list to show all loaded commits
+    pub fn expand_commit(&mut self) -> Result<()> {
+        let commits = self.vcs.get_recent_commits(20)?;
+        if commits.is_empty() {
+            self.set_message("No commits found");
+            return Ok(());
+        }
+
+        self.commit_list = commits;
+        self.commit_expanded = true;
+
+        if self.commit_list_cursor >= self.commit_list.len() {
+            self.commit_list_cursor = self.commit_list.len().saturating_sub(1);
+        }
+        Ok(())
     }
 
     pub fn toggle_commit_selection(&mut self) {
