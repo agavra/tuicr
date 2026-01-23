@@ -76,9 +76,20 @@ fn render_commit_select(frame: &mut Frame, app: &App) {
     // Get range info for visual indicators
     let range = app.commit_selection_range;
 
-    let items: Vec<Line> = app
+    // Determine whether to show all commit or not
+    let is_expanded = app.commit_expanded;
+    let total_commits = app.commit_list.len();
+
+    let preview_len = if !is_expanded && total_commits >= 5 {
+        5
+    } else {
+        total_commits
+    };
+
+    let mut items: Vec<Line> = app
         .commit_list
         .iter()
+        .take(preview_len)
         .enumerate()
         .map(|(i, commit)| {
             let is_selected = app.is_commit_selected(i);
@@ -134,6 +145,23 @@ fn render_commit_select(frame: &mut Frame, app: &App) {
             ])
         })
         .collect();
+
+    // Show expand row when commit are collapsed and there are more than 5 commits available
+    if !is_expanded && total_commits > 5 {
+        let expand_idx = preview_len;
+        let is_cursor = app.commit_list_cursor == expand_idx;
+
+        let style = if is_cursor {
+            styles::selected_style(&app.theme)
+        } else {
+            Style::default().fg(app.theme.fg_secondary)
+        };
+
+        items.push(Line::from(vec![
+            Span::styled(if is_cursor { "> " } else { " " }, style),
+            Span::styled(format!("        ... show more ..."), style),
+        ]));
+    }
 
     let list = Paragraph::new(items);
     frame.render_widget(list, inner);
