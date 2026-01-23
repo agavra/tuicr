@@ -159,7 +159,7 @@ fn render_commit_select(frame: &mut Frame, app: &App) {
 
         items.push(Line::from(vec![
             Span::styled(if is_cursor { "> " } else { " " }, style),
-            Span::styled(format!("        ... show more ..."), style),
+            Span::styled("        ... show more ...", style),
         ]));
     }
 
