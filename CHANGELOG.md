@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.0] - 2026-01-23
+
+### Bug Fixes
+
+- Use absolute path for git repository discovery in worktrees (#123)
+- Parse paths from rename/copy metadata and binary file lines (#124)
+- Correct scroll behavior when line wrapping is enabled (#130)
+- **ui:** Status bar not appearing on commit panel (#121)
+- **clipboard:** Prefer OSC 52 in tmux/SSH sessions (#135)
+
+### Features
+
+- Add line range comment support with visual selection mode (#115)
+- Add manual commit selection mode (#91)
+- Add vim-style warning on exit with unsaved changes (#122)
+
+### Ci
+
+- Use cargo-binstall for faster jj installation (#126)
 ## [0.4.0] - 2026-01-17
 
 ### Bug Fixes
