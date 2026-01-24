@@ -55,6 +55,12 @@ brew install agavra/tap/tuicr
 
 Download the latest release for your platform from [GitHub Releases](https://github.com/agavra/tuicr/releases).
 
+### Mise (macOS/Linux/Windows)
+
+```
+mise use github:agavra/tuicr
+```
+
 ### From crates.io
 
 ```bash
