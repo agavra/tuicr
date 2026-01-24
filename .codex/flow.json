@@ -1,0 +1,23 @@
+{
+  "task": {
+    "id": "manual",
+    "title": "Manual task",
+    "source": "manual",
+    "url": null
+  },
+  "policy": {
+    "stoppingPoint": "pr-created"
+  },
+  "phase": "policy-selection",
+  "status": "in_progress",
+  "lastUpdate": "2026-01-19T14:56:03.923Z",
+  "userNotes": "",
+  "git": {
+    "branch": null,
+    "baseBranch": "main"
+  },
+  "pr": null,
+  "exploration": null,
+  "plan": null,
+  "projectPath": null
+}

@@ -137,7 +137,7 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
 
         let hints = match app.input_mode {
             InputMode::Normal => {
-                " j/k:scroll  {/}:file  r:reviewed  c:comment  m:commits  V:visual  /:search  ?:help  :q:quit "
+                " j/k:scroll  {/}:file  r:reviewed  c:comment  V:visual  /:search  ?:help  :q:quit "
             }
             InputMode::Command => " Enter:execute  Esc:cancel ",
             InputMode::Search => " Enter:search  Esc:cancel ",

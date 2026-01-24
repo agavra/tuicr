@@ -3,8 +3,7 @@ use std::path::PathBuf;
 
 use crate::error::{Result, TuicrError};
 use crate::model::{
-    Comment, CommentType, DiffFile, DiffLine, LineRange, LineSide, ReviewSession,
-    SessionDiffSource,
+    Comment, CommentType, DiffFile, DiffLine, LineRange, LineSide, ReviewSession, SessionDiffSource,
 };
 use crate::persistence::load_latest_session_for_context;
 use crate::theme::Theme;
