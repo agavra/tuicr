@@ -58,6 +58,8 @@ pub struct ReviewSession {
     pub base_commit: String,
     #[serde(default)]
     pub diff_source: SessionDiffSource,
+    #[serde(default)]
+    pub commit_range: Option<Vec<String>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub files: HashMap<PathBuf, FileReview>,
@@ -74,11 +76,12 @@ impl ReviewSession {
         let now = Utc::now();
         Self {
             id: uuid::Uuid::new_v4().to_string(),
-            version: "1.1".to_string(),
+            version: "1.2".to_string(),
             repo_path,
             branch_name,
             base_commit,
             diff_source,
+            commit_range: None,
             created_at: now,
             updated_at: now,
             files: HashMap::new(),

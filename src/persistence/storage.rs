@@ -8,9 +8,14 @@ use crate::model::ReviewSession;
 use crate::model::review::SessionDiffSource;
 
 const SESSION_MAX_AGE_DAYS: u64 = 7;
+const SESSION_FILENAME_MIN_PARTS: usize = 6;
+const SESSION_FILENAME_SUFFIX_PARTS: usize = 4;
+const SESSION_FILENAME_DATE_LEN: usize = 8;
+const SESSION_FILENAME_TIME_LEN: usize = 6;
+const FINGERPRINT_HEX_LEN: usize = 8;
 
 struct SessionFilenameParts {
-    repo_fingerprint: String,
+    repo_fingerprints: Vec<String>,
     diff_source: String,
 }
 
@@ -18,14 +23,52 @@ fn parse_session_filename(filename: &str) -> Option<SessionFilenameParts> {
     let stem = filename.strip_suffix(".json")?;
     let parts: Vec<&str> = stem.split('_').collect();
 
-    if parts.len() < 6 {
+    if parts.len() < SESSION_FILENAME_MIN_PARTS {
+        return None;
+    }
+
+    let diff_source_idx = parts.len().checked_sub(SESSION_FILENAME_SUFFIX_PARTS)?;
+    let date_idx = parts.len().checked_sub(SESSION_FILENAME_SUFFIX_PARTS - 1)?;
+    let time_idx = parts.len().checked_sub(SESSION_FILENAME_SUFFIX_PARTS - 2)?;
+    let diff_source = parts.get(diff_source_idx)?;
+    let date_part = parts.get(date_idx)?;
+    let time_part = parts.get(time_idx)?;
+
+    if !matches!(*diff_source, "worktree" | "commits") {
+        return None;
+    }
+
+    if !is_timestamp_part(date_part, SESSION_FILENAME_DATE_LEN)
+        || !is_timestamp_part(time_part, SESSION_FILENAME_TIME_LEN)
+    {
+        return None;
+    }
+
+    let mut fingerprints = Vec::new();
+    for part in &parts[..diff_source_idx] {
+        if is_hex_fingerprint(part) {
+            if !fingerprints.iter().any(|candidate| candidate == part) {
+                fingerprints.push((*part).to_string());
+            }
+        }
+    }
+
+    if fingerprints.is_empty() {
         return None;
     }
 
     Some(SessionFilenameParts {
-        repo_fingerprint: parts[1].to_string(),
-        diff_source: parts[3].to_string(),
+        repo_fingerprints: fingerprints,
+        diff_source: diff_source.to_string(),
     })
+}
+
+fn is_timestamp_part(part: &str, len: usize) -> bool {
+    part.len() == len && part.chars().all(|ch| ch.is_ascii_digit())
+}
+
+fn is_hex_fingerprint(part: &str) -> bool {
+    part.len() == FINGERPRINT_HEX_LEN && part.chars().all(|ch| ch.is_ascii_hexdigit())
 }
 
 fn get_reviews_dir() -> Result<PathBuf> {
@@ -81,7 +124,7 @@ fn repo_path_fingerprint(repo_path: &Path) -> String {
     let normalized = normalize_repo_path(repo_path);
     let hash = fnv1a_64(normalized.as_bytes());
     let hex = format!("{hash:016x}");
-    hex[..8].to_string()
+    hex[..FINGERPRINT_HEX_LEN].to_string()
 }
 
 fn normalize_repo_path(repo_path: &Path) -> String {
@@ -145,6 +188,7 @@ pub fn load_latest_session_for_context(
     branch_name: Option<&str>,
     head_commit: &str,
     diff_source: SessionDiffSource,
+    commit_range: Option<&[String]>,
 ) -> Result<Option<(PathBuf, ReviewSession)>> {
     let current_repo_path = normalize_repo_path(repo_path);
     let current_fingerprint = repo_path_fingerprint(repo_path);
@@ -188,7 +232,11 @@ pub fn load_latest_session_for_context(
                 return true;
             };
 
-            if parts.repo_fingerprint != current_fingerprint {
+            if !parts
+                .repo_fingerprints
+                .iter()
+                .any(|fingerprint| fingerprint == &current_fingerprint)
+            {
                 return false;
             }
 
@@ -233,6 +281,13 @@ pub fn load_latest_session_for_context(
             continue;
         }
 
+        if diff_source == SessionDiffSource::CommitRange
+            && let Some(expected_range) = commit_range
+            && session.commit_range.as_deref() != Some(expected_range)
+        {
+            continue;
+        }
+
         let session_branch = session.branch_name.as_deref();
         if session_branch == branch_name {
             if branch_name.is_none() && session.base_commit != head_commit {
@@ -244,6 +299,7 @@ pub fn load_latest_session_for_context(
 
         let eligible_legacy = branch_name.is_some()
             && legacy_candidate.is_none()
+            && commit_range.is_none()
             && session_branch.is_none()
             && session.base_commit == head_commit;
         if eligible_legacy {
@@ -267,6 +323,9 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::{Mutex, OnceLock};
     use std::time::Duration;
+
+    const TEST_MTIME_RETRIES: usize = 40;
+    const TEST_MTIME_SLEEP_MS: u64 = 100;
 
     fn create_test_session() -> ReviewSession {
         let mut session = ReviewSession::new(
@@ -312,6 +371,7 @@ mod tests {
         base_commit: &str,
         branch_name: Option<&str>,
         diff_source: SessionDiffSource,
+        commit_range: Option<Vec<String>>,
     ) -> ReviewSession {
         let mut session = ReviewSession::new(
             repo_path,
@@ -319,6 +379,7 @@ mod tests {
             branch_name.map(|s| s.to_string()),
             diff_source,
         );
+        session.commit_range = commit_range;
         session.add_file(PathBuf::from("src/main.rs"), FileStatus::Modified);
         session
     }
@@ -328,6 +389,7 @@ mod tests {
         let obj = value.as_object_mut().unwrap();
         obj.remove("branch_name");
         obj.remove("diff_source");
+        obj.remove("commit_range");
         obj.insert(
             "version".to_string(),
             serde_json::Value::String("1.0".to_string()),
@@ -345,7 +407,7 @@ mod tests {
             .and_then(|m| m.modified().ok())
             .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
 
-        for _ in 0..40 {
+        for _ in 0..TEST_MTIME_RETRIES {
             let newer_time = fs::metadata(newer)
                 .ok()
                 .and_then(|m| m.modified().ok())
@@ -355,7 +417,7 @@ mod tests {
                 return;
             }
 
-            std::thread::sleep(Duration::from_millis(100));
+            std::thread::sleep(Duration::from_millis(TEST_MTIME_SLEEP_MS));
             let contents = fs::read_to_string(newer).unwrap();
             fs::write(newer, contents).unwrap();
         }
@@ -374,13 +436,8 @@ mod tests {
 
     #[test]
     fn should_generate_correct_filename() {
-        // given
         let session = create_test_session();
-
-        // when
         let filename = session_filename(&session);
-
-        // then
         assert!(filename.starts_with("test-repo_"));
         assert!(filename.contains("_main_worktree_"));
         assert!(filename.ends_with(".json"));
@@ -389,39 +446,27 @@ mod tests {
     #[test]
     fn should_roundtrip_session() {
         let _guard = with_test_reviews_dir();
-
-        // given
         let session = create_test_session();
-
-        // when
         let path = save_session(&session).unwrap();
         let loaded = load_session(&path).unwrap();
-
-        // then
         assert_eq!(session.id, loaded.id);
         assert_eq!(session.base_commit, loaded.base_commit);
         assert_eq!(session.branch_name, loaded.branch_name);
         assert_eq!(session.diff_source, loaded.diff_source);
         assert_eq!(session.files.len(), loaded.files.len());
-
-        // cleanup
         let _ = delete_session(&path);
     }
 
     #[test]
     fn should_sanitize_branch_name_in_filename() {
-        // given
         let session = create_session(
             PathBuf::from("/tmp/test-repo"),
             "abc1234def",
             Some("feature/login"),
             SessionDiffSource::WorkingTree,
+            None,
         );
-
-        // when
         let filename = session_filename(&session);
-
-        // then
         assert!(!filename.contains('/'));
         assert!(filename.contains("feature-login"));
     }
@@ -429,8 +474,6 @@ mod tests {
     #[test]
     fn should_select_latest_session_for_branch() {
         let _guard = with_test_reviews_dir();
-
-        // given
         let repo_path = std::env::temp_dir().join(format!("tuicr-repo-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&repo_path).unwrap();
 
@@ -439,6 +482,7 @@ mod tests {
             "commit-1",
             Some("main"),
             SessionDiffSource::WorkingTree,
+            None,
         );
         let path1 = save_session(&session1).unwrap();
 
@@ -447,21 +491,19 @@ mod tests {
             "commit-2",
             Some("main"),
             SessionDiffSource::WorkingTree,
+            None,
         );
         let path2 = save_session(&session2).unwrap();
         ensure_newer_mtime(&path2, &path1);
-
-        // when
         let (selected_path, selected) = load_latest_session_for_context(
             &repo_path,
             Some("main"),
             "head-does-not-matter-for-branch",
             SessionDiffSource::WorkingTree,
+            None,
         )
         .unwrap()
         .unwrap();
-
-        // then
         assert_eq!(selected_path, path2);
         assert_ne!(selected_path, path1);
         assert_eq!(selected.base_commit, "commit-2");
@@ -470,8 +512,6 @@ mod tests {
     #[test]
     fn should_match_branch_even_when_head_commit_differs() {
         let _guard = with_test_reviews_dir();
-
-        // given
         let repo_path = std::env::temp_dir().join(format!("tuicr-repo-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&repo_path).unwrap();
 
@@ -480,27 +520,73 @@ mod tests {
             "old-head",
             Some("main"),
             SessionDiffSource::WorkingTree,
+            None,
         );
         let _ = save_session(&session).unwrap();
-
-        // when
         let loaded = load_latest_session_for_context(
             &repo_path,
             Some("main"),
             "new-head",
             SessionDiffSource::WorkingTree,
+            None,
         )
         .unwrap();
+        assert!(loaded.is_some());
+    }
 
-        // then
+    #[test]
+    fn should_load_session_with_underscore_branch_name() {
+        let _guard = with_test_reviews_dir();
+        let repo_path = std::env::temp_dir().join(format!("tuicr-repo-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&repo_path).unwrap();
+
+        let session = create_session(
+            repo_path.clone(),
+            "head-commit",
+            Some("feature/with_underscores"),
+            SessionDiffSource::WorkingTree,
+            None,
+        );
+        let _ = save_session(&session).unwrap();
+        let loaded = load_latest_session_for_context(
+            &repo_path,
+            Some("feature/with_underscores"),
+            "new-head",
+            SessionDiffSource::WorkingTree,
+            None,
+        )
+        .unwrap();
+        assert!(loaded.is_some());
+    }
+
+    #[test]
+    fn should_load_session_with_hex_like_branch_segment() {
+        let _guard = with_test_reviews_dir();
+        let repo_path = std::env::temp_dir().join(format!("tuicr-repo-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&repo_path).unwrap();
+
+        let session = create_session(
+            repo_path.clone(),
+            "head-commit",
+            Some("feature/deadbeef_fix"),
+            SessionDiffSource::WorkingTree,
+            None,
+        );
+        let _ = save_session(&session).unwrap();
+        let loaded = load_latest_session_for_context(
+            &repo_path,
+            Some("feature/deadbeef_fix"),
+            "new-head",
+            SessionDiffSource::WorkingTree,
+            None,
+        )
+        .unwrap();
         assert!(loaded.is_some());
     }
 
     #[test]
     fn should_prefer_branch_match_over_legacy_candidate() {
         let guard = with_test_reviews_dir();
-
-        // given
         let repo_path = std::env::temp_dir().join(format!("tuicr-repo-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&repo_path).unwrap();
 
@@ -509,6 +595,7 @@ mod tests {
             "branch-base",
             Some("main"),
             SessionDiffSource::WorkingTree,
+            None,
         );
         let branch_path = save_session(&branch_session).unwrap();
 
@@ -517,20 +604,18 @@ mod tests {
             "head-commit",
             None,
             SessionDiffSource::WorkingTree,
+            None,
         );
         let legacy_path = save_legacy_session(&guard.path, &legacy_source);
-
-        // when
         let (selected_path, _selected) = load_latest_session_for_context(
             &repo_path,
             Some("main"),
             "head-commit",
             SessionDiffSource::WorkingTree,
+            None,
         )
         .unwrap()
         .unwrap();
-
-        // then
         assert_eq!(selected_path, branch_path);
         assert_ne!(selected_path, legacy_path);
     }
@@ -538,8 +623,6 @@ mod tests {
     #[test]
     fn should_fallback_to_legacy_session_when_no_branch_session_exists() {
         let guard = with_test_reviews_dir();
-
-        // given
         let repo_path = std::env::temp_dir().join(format!("tuicr-repo-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&repo_path).unwrap();
 
@@ -548,20 +631,18 @@ mod tests {
             "head-commit",
             None,
             SessionDiffSource::WorkingTree,
+            None,
         );
         let legacy_path = save_legacy_session(&guard.path, &legacy_source);
-
-        // when
         let (selected_path, selected) = load_latest_session_for_context(
             &repo_path,
             Some("main"),
             "head-commit",
             SessionDiffSource::WorkingTree,
+            None,
         )
         .unwrap()
         .unwrap();
-
-        // then
         assert_eq!(selected_path, legacy_path);
         assert_eq!(selected.branch_name, None);
         assert_eq!(selected.diff_source, SessionDiffSource::WorkingTree);
@@ -570,8 +651,6 @@ mod tests {
     #[test]
     fn should_not_select_legacy_session_when_head_commit_differs() {
         let guard = with_test_reviews_dir();
-
-        // given
         let repo_path = std::env::temp_dir().join(format!("tuicr-repo-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&repo_path).unwrap();
 
@@ -580,27 +659,23 @@ mod tests {
             "old-head",
             None,
             SessionDiffSource::WorkingTree,
+            None,
         );
         let _legacy_path = save_legacy_session(&guard.path, &legacy_source);
-
-        // when
         let loaded = load_latest_session_for_context(
             &repo_path,
             Some("main"),
             "new-head",
             SessionDiffSource::WorkingTree,
+            None,
         )
         .unwrap();
-
-        // then
         assert!(loaded.is_none());
     }
 
     #[test]
     fn should_require_commit_match_in_detached_head() {
         let _guard = with_test_reviews_dir();
-
-        // given
         let repo_path = std::env::temp_dir().join(format!("tuicr-repo-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&repo_path).unwrap();
 
@@ -609,15 +684,15 @@ mod tests {
             "detached-head",
             None,
             SessionDiffSource::WorkingTree,
+            None,
         );
         let _ = save_session(&session).unwrap();
-
-        // when
         let mismatch = load_latest_session_for_context(
             &repo_path,
             None,
             "different-head",
             SessionDiffSource::WorkingTree,
+            None,
         )
         .unwrap();
         let match_ = load_latest_session_for_context(
@@ -625,10 +700,9 @@ mod tests {
             None,
             "detached-head",
             SessionDiffSource::WorkingTree,
+            None,
         )
         .unwrap();
-
-        // then
         assert!(mismatch.is_none());
         assert!(match_.is_some());
     }
@@ -636,25 +710,24 @@ mod tests {
     #[test]
     fn should_ignore_sessions_with_different_diff_source() {
         let _guard = with_test_reviews_dir();
-
-        // given
         let repo_path = std::env::temp_dir().join(format!("tuicr-repo-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&repo_path).unwrap();
 
+        let commit_range = vec!["commit-2".to_string(), "commit-1".to_string()];
         let commits_session = create_session(
             repo_path.clone(),
             "commit-2",
             Some("main"),
             SessionDiffSource::CommitRange,
+            Some(commit_range.clone()),
         );
         let _ = save_session(&commits_session).unwrap();
-
-        // when
         let worktree = load_latest_session_for_context(
             &repo_path,
             Some("main"),
             "head",
             SessionDiffSource::WorkingTree,
+            None,
         )
         .unwrap();
         let commits = load_latest_session_for_context(
@@ -662,19 +735,135 @@ mod tests {
             Some("main"),
             "head",
             SessionDiffSource::CommitRange,
+            Some(commit_range.as_slice()),
         )
         .unwrap();
-
-        // then
         assert!(worktree.is_none());
         assert!(commits.is_some());
     }
 
     #[test]
+    fn should_match_commit_range_session() {
+        let _guard = with_test_reviews_dir();
+        let repo_path = std::env::temp_dir().join(format!("tuicr-repo-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&repo_path).unwrap();
+
+        let commit_range_a = vec!["commit-a2".to_string(), "commit-a1".to_string()];
+        let commit_range_b = vec!["commit-b2".to_string(), "commit-b1".to_string()];
+
+        let session_a = create_session(
+            repo_path.clone(),
+            "commit-a2",
+            Some("main"),
+            SessionDiffSource::CommitRange,
+            Some(commit_range_a.clone()),
+        );
+        let path_a = save_session(&session_a).unwrap();
+
+        let session_b = create_session(
+            repo_path.clone(),
+            "commit-b2",
+            Some("main"),
+            SessionDiffSource::CommitRange,
+            Some(commit_range_b.clone()),
+        );
+        let path_b = save_session(&session_b).unwrap();
+        let (selected_path, selected) = load_latest_session_for_context(
+            &repo_path,
+            Some("main"),
+            "commit-b2",
+            SessionDiffSource::CommitRange,
+            Some(commit_range_b.as_slice()),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(selected_path, path_b);
+        assert_ne!(selected_path, path_a);
+        assert_eq!(
+            selected.commit_range.as_deref(),
+            Some(commit_range_b.as_slice())
+        );
+    }
+
+    #[test]
+    fn should_roundtrip_commit_range_session() {
+        let _guard = with_test_reviews_dir();
+        let repo_path = std::env::temp_dir().join(format!("tuicr-repo-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&repo_path).unwrap();
+
+        let commit_range = vec!["commit-2".to_string(), "commit-1".to_string()];
+        let session = create_session(
+            repo_path,
+            "commit-2",
+            Some("main"),
+            SessionDiffSource::CommitRange,
+            Some(commit_range.clone()),
+        );
+        let path = save_session(&session).unwrap();
+        let loaded = load_session(&path).unwrap();
+        assert_eq!(loaded.commit_range, Some(commit_range));
+        assert_eq!(loaded.diff_source, SessionDiffSource::CommitRange);
+        let _ = delete_session(&path);
+    }
+
+    #[test]
+    fn should_require_commit_range_order_match() {
+        let _guard = with_test_reviews_dir();
+        let repo_path = std::env::temp_dir().join(format!("tuicr-repo-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&repo_path).unwrap();
+
+        let commit_range = vec!["commit-2".to_string(), "commit-1".to_string()];
+        let reversed_range = vec!["commit-1".to_string(), "commit-2".to_string()];
+
+        let session = create_session(
+            repo_path.clone(),
+            "commit-2",
+            Some("main"),
+            SessionDiffSource::CommitRange,
+            Some(commit_range),
+        );
+        let _ = save_session(&session).unwrap();
+        let loaded = load_latest_session_for_context(
+            &repo_path,
+            Some("main"),
+            "commit-2",
+            SessionDiffSource::CommitRange,
+            Some(reversed_range.as_slice()),
+        )
+        .unwrap();
+        assert!(loaded.is_none());
+    }
+
+    #[test]
+    fn should_skip_commit_sessions_without_range_match() {
+        let _guard = with_test_reviews_dir();
+        let repo_path = std::env::temp_dir().join(format!("tuicr-repo-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&repo_path).unwrap();
+
+        let commit_range = vec!["commit-2".to_string(), "commit-1".to_string()];
+
+        let session = create_session(
+            repo_path.clone(),
+            "commit-2",
+            Some("main"),
+            SessionDiffSource::CommitRange,
+            None,
+        );
+        let _ = save_session(&session).unwrap();
+        let loaded = load_latest_session_for_context(
+            &repo_path,
+            Some("main"),
+            "commit-2",
+            SessionDiffSource::CommitRange,
+            Some(commit_range.as_slice()),
+        )
+        .unwrap();
+        assert!(loaded.is_none());
+    }
+
+    #[test]
     fn should_disambiguate_repos_with_same_folder_name() {
         let _guard = with_test_reviews_dir();
-
-        // given
         let base = std::env::temp_dir().join(format!("tuicr-repos-{}", uuid::Uuid::new_v4()));
         let repo_a = base.join("a").join("same-repo");
         let repo_b = base.join("b").join("same-repo");
@@ -686,6 +875,7 @@ mod tests {
             "head-a",
             Some("main"),
             SessionDiffSource::WorkingTree,
+            None,
         );
         let _ = save_session(&session_a).unwrap();
 
@@ -694,20 +884,18 @@ mod tests {
             "head-b",
             Some("main"),
             SessionDiffSource::WorkingTree,
+            None,
         );
         let _ = save_session(&session_b).unwrap();
-
-        // when
         let (_path, selected) = load_latest_session_for_context(
             &repo_a,
             Some("main"),
             "head",
             SessionDiffSource::WorkingTree,
+            None,
         )
         .unwrap()
         .unwrap();
-
-        // then
         assert_eq!(selected.base_commit, "head-a");
         assert_eq!(
             normalize_repo_path(&selected.repo_path),

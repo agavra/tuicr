@@ -397,6 +397,7 @@ impl App {
             vcs_info.branch_name.as_deref(),
             &vcs_info.head_commit,
             SessionDiffSource::WorkingTree,
+            None,
         ) else {
             return new_session();
         };
@@ -1762,12 +1763,33 @@ impl App {
 
         // Update session with the newest commit as base
         let newest_commit_id = selected_ids.last().unwrap().clone();
-        self.session = ReviewSession::new(
-            self.vcs_info.root_path.clone(),
-            newest_commit_id,
-            self.vcs_info.branch_name.clone(),
+        let loaded_session = load_latest_session_for_context(
+            &self.vcs_info.root_path,
+            self.vcs_info.branch_name.as_deref(),
+            &newest_commit_id,
             SessionDiffSource::CommitRange,
-        );
+            Some(selected_ids.as_slice()),
+        )
+        .ok()
+        .and_then(|found| found.map(|(_path, session)| session));
+
+        let mut session = loaded_session.unwrap_or_else(|| {
+            let mut session = ReviewSession::new(
+                self.vcs_info.root_path.clone(),
+                newest_commit_id,
+                self.vcs_info.branch_name.clone(),
+                SessionDiffSource::CommitRange,
+            );
+            session.commit_range = Some(selected_ids.clone());
+            session
+        });
+
+        if session.commit_range.is_none() {
+            session.commit_range = Some(selected_ids.clone());
+            session.updated_at = chrono::Utc::now();
+        }
+
+        self.session = session;
 
         // Add files to session
         for file in &diff_files {
