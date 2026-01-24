@@ -49,13 +49,40 @@ impl JjBackend {
         .unwrap_or_else(|_| "unknown".to_string());
 
         // jj doesn't have branches in the traditional sense, but we can show the bookmark if set
+        // First check if @ has a bookmark directly, otherwise find the closest ancestor bookmark
         let branch_name = run_jj_command(
             &root_path,
             &["log", "-r", "@", "--no-graph", "-T", "bookmarks"],
         )
         .ok()
         .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            // Find the closest bookmark in ancestors using heads(::@ & bookmarks())
+            run_jj_command(
+                &root_path,
+                &[
+                    "log",
+                    "-r",
+                    "heads(::@ & bookmarks())",
+                    "--no-graph",
+                    "-T",
+                    "bookmarks",
+                    "--limit",
+                    "1",
+                ],
+            )
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+        })
+        // Extract first local bookmark (filter out remote tracking like "name@upstream")
+        .map(|s| {
+            s.split_whitespace()
+                .find(|b| !b.contains('@'))
+                .unwrap_or_else(|| s.split_whitespace().next().unwrap_or(&s))
+                .to_string()
+        });
 
         let info = VcsInfo {
             root_path,
@@ -657,5 +684,174 @@ mod tests {
         let path = file.display_path();
         assert_eq!(path.to_str().unwrap(), "image.png");
         assert_eq!(file.status, FileStatus::Deleted);
+    }
+
+    /// Create a test repo with a bookmark on the current revision.
+    fn setup_test_repo_with_bookmark_on_current() -> Option<tempfile::TempDir> {
+        if !jj_available() {
+            return None;
+        }
+
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let root = temp_dir.path();
+
+        // Initialize jj repo
+        let output = Command::new("jj")
+            .args(["git", "init"])
+            .current_dir(root)
+            .output()
+            .expect("Failed to init jj repo");
+
+        if !output.status.success() {
+            return None;
+        }
+
+        // Create initial file and commit
+        fs::write(root.join("file.txt"), "content\n").expect("Failed to write file");
+        Command::new("jj")
+            .args(["commit", "-m", "Initial commit"])
+            .current_dir(root)
+            .output()
+            .expect("Failed to commit");
+
+        // Create a bookmark on @
+        Command::new("jj")
+            .args(["bookmark", "create", "my-feature", "-r", "@"])
+            .current_dir(root)
+            .output()
+            .expect("Failed to create bookmark");
+
+        Some(temp_dir)
+    }
+
+    #[test]
+    fn test_jj_bookmark_on_current_revision() {
+        let Some(temp) = setup_test_repo_with_bookmark_on_current() else {
+            eprintln!("Skipping test: jj command not available");
+            return;
+        };
+
+        let backend =
+            JjBackend::from_path(temp.path().to_path_buf()).expect("Failed to create jj backend");
+        let info = backend.info();
+
+        assert_eq!(
+            info.branch_name.as_deref(),
+            Some("my-feature"),
+            "Expected bookmark 'my-feature' to be detected"
+        );
+    }
+
+    /// Create a test repo with a bookmark on an ancestor revision.
+    fn setup_test_repo_with_bookmark_on_ancestor() -> Option<tempfile::TempDir> {
+        if !jj_available() {
+            return None;
+        }
+
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let root = temp_dir.path();
+
+        // Initialize jj repo
+        let output = Command::new("jj")
+            .args(["git", "init"])
+            .current_dir(root)
+            .output()
+            .expect("Failed to init jj repo");
+
+        if !output.status.success() {
+            return None;
+        }
+
+        // Create initial file and commit
+        fs::write(root.join("file.txt"), "content\n").expect("Failed to write file");
+        Command::new("jj")
+            .args(["commit", "-m", "Initial commit"])
+            .current_dir(root)
+            .output()
+            .expect("Failed to commit");
+
+        // Create a bookmark on the commit we just made (now @-)
+        Command::new("jj")
+            .args(["bookmark", "create", "main", "-r", "@-"])
+            .current_dir(root)
+            .output()
+            .expect("Failed to create bookmark");
+
+        // Make another commit so @ is ahead of the bookmark
+        fs::write(root.join("file2.txt"), "more content\n").expect("Failed to write file");
+        Command::new("jj")
+            .args(["commit", "-m", "Second commit"])
+            .current_dir(root)
+            .output()
+            .expect("Failed to commit");
+
+        Some(temp_dir)
+    }
+
+    #[test]
+    fn test_jj_bookmark_on_ancestor_revision() {
+        let Some(temp) = setup_test_repo_with_bookmark_on_ancestor() else {
+            eprintln!("Skipping test: jj command not available");
+            return;
+        };
+
+        let backend =
+            JjBackend::from_path(temp.path().to_path_buf()).expect("Failed to create jj backend");
+        let info = backend.info();
+
+        assert_eq!(
+            info.branch_name.as_deref(),
+            Some("main"),
+            "Expected ancestor bookmark 'main' to be detected"
+        );
+    }
+
+    /// Create a test repo with no bookmarks.
+    fn setup_test_repo_without_bookmarks() -> Option<tempfile::TempDir> {
+        if !jj_available() {
+            return None;
+        }
+
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let root = temp_dir.path();
+
+        // Initialize jj repo
+        let output = Command::new("jj")
+            .args(["git", "init"])
+            .current_dir(root)
+            .output()
+            .expect("Failed to init jj repo");
+
+        if !output.status.success() {
+            return None;
+        }
+
+        // Create initial file and commit (no bookmarks)
+        fs::write(root.join("file.txt"), "content\n").expect("Failed to write file");
+        Command::new("jj")
+            .args(["commit", "-m", "Initial commit"])
+            .current_dir(root)
+            .output()
+            .expect("Failed to commit");
+
+        Some(temp_dir)
+    }
+
+    #[test]
+    fn test_jj_no_bookmarks() {
+        let Some(temp) = setup_test_repo_without_bookmarks() else {
+            eprintln!("Skipping test: jj command not available");
+            return;
+        };
+
+        let backend =
+            JjBackend::from_path(temp.path().to_path_buf()).expect("Failed to create jj backend");
+        let info = backend.info();
+
+        assert!(
+            info.branch_name.is_none(),
+            "Expected no bookmark when none exist, got {:?}",
+            info.branch_name
+        );
     }
 }
