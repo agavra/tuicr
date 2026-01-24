@@ -164,6 +164,10 @@ pub struct App {
     pub expanded_content: HashMap<GapId, Vec<DiffLine>>,
     /// Cached annotations describing what each rendered line represents
     pub line_annotations: Vec<AnnotatedLine>,
+    /// Output to stdout instead of clipboard when exporting
+    pub output_to_stdout: bool,
+    /// Pending output to print to stdout after TUI exits
+    pub pending_stdout_output: Option<String>,
 }
 
 #[derive(Default)]
@@ -247,7 +251,7 @@ enum CommentLocation {
 }
 
 impl App {
-    pub fn new(theme: Theme) -> Result<Self> {
+    pub fn new(theme: Theme, output_to_stdout: bool) -> Result<Self> {
         let vcs = detect_vcs()?;
         let vcs_info = vcs.info().clone();
         let highlighter = theme.syntax_highlighter();
@@ -306,6 +310,8 @@ impl App {
                     expanded_gaps: HashSet::new(),
                     expanded_content: HashMap::new(),
                     line_annotations: Vec::new(),
+                    output_to_stdout,
+                    pending_stdout_output: None,
                 };
                 app.sort_files_by_directory(true);
                 app.expand_all_dirs();
@@ -362,6 +368,8 @@ impl App {
                     expanded_gaps: HashSet::new(),
                     expanded_content: HashMap::new(),
                     line_annotations: Vec::new(),
+                    output_to_stdout,
+                    pending_stdout_output: None,
                 })
             }
             Err(e) => Err(e),

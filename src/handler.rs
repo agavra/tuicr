@@ -1,7 +1,26 @@
 use crate::app::{self, App, FileTreeItem, FocusedPanel};
 use crate::input::Action;
-use crate::output::export_to_clipboard;
+use crate::output::{export_to_clipboard, generate_export_content};
 use crate::persistence::save_session;
+
+/// Export review: either to clipboard or set pending stdout output based on app.output_to_stdout.
+/// When output_to_stdout is true, stores the content and sets should_quit.
+fn handle_export(app: &mut App) {
+    if app.output_to_stdout {
+        match generate_export_content(&app.session, &app.diff_source) {
+            Ok(content) => {
+                app.pending_stdout_output = Some(content);
+                app.should_quit = true;
+            }
+            Err(e) => app.set_warning(format!("{e}")),
+        }
+    } else {
+        match export_to_clipboard(&app.session, &app.diff_source) {
+            Ok(msg) => app.set_message(msg),
+            Err(e) => app.set_warning(format!("{e}")),
+        }
+    }
+}
 
 fn comment_line_start(buffer: &str, cursor: usize) -> usize {
     let cursor = cursor.min(buffer.len());
@@ -137,6 +156,11 @@ pub fn handle_command_action(app: &mut App, action: Action) {
                     Ok(_) => {
                         app.dirty = false;
                         if app.session.has_comments() {
+                            if app.output_to_stdout {
+                                // Skip confirmation dialog, export directly
+                                handle_export(app);
+                                return;
+                            }
                             app.exit_command_mode();
                             app.enter_confirm_mode(app::ConfirmAction::CopyAndQuit);
                             return;
@@ -150,10 +174,7 @@ pub fn handle_command_action(app: &mut App, action: Action) {
                     Ok(count) => app.set_message(format!("Reloaded {count} files")),
                     Err(e) => app.set_error(format!("Reload failed: {e}")),
                 },
-                "clip" | "export" => match export_to_clipboard(&app.session, &app.diff_source) {
-                    Ok(msg) => app.set_message(msg),
-                    Err(e) => app.set_warning(format!("{e}")),
-                },
+                "clip" | "export" => handle_export(app),
                 "clear" => app.clear_all_comments(),
                 "version" => {
                     app.set_message(format!("tuicr v{}", env!("CARGO_PKG_VERSION")));
@@ -298,9 +319,16 @@ pub fn handle_confirm_action(app: &mut App, action: Action) {
     match action {
         Action::ConfirmYes => {
             if let Some(app::ConfirmAction::CopyAndQuit) = app.pending_confirm {
-                match export_to_clipboard(&app.session, &app.diff_source) {
-                    Ok(msg) => app.set_message(msg),
-                    Err(e) => app.set_warning(format!("{e}")),
+                if app.output_to_stdout {
+                    match generate_export_content(&app.session, &app.diff_source) {
+                        Ok(content) => app.pending_stdout_output = Some(content),
+                        Err(e) => app.set_warning(format!("{e}")),
+                    }
+                } else {
+                    match export_to_clipboard(&app.session, &app.diff_source) {
+                        Ok(msg) => app.set_message(msg),
+                        Err(e) => app.set_warning(format!("{e}")),
+                    }
                 }
             }
             app.exit_confirm_mode();
@@ -489,10 +517,7 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
                 app.set_message("No comment at cursor");
             }
         }
-        Action::ExportToClipboard => match export_to_clipboard(&app.session, &app.diff_source) {
-            Ok(msg) => app.set_message(msg),
-            Err(e) => app.set_warning(format!("{e}")),
-        },
+        Action::ExportToClipboard => handle_export(app),
         Action::SearchNext => {
             app.search_next_in_diff();
         }

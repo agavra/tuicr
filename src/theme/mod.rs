@@ -189,6 +189,14 @@ pub enum ThemeArg {
     Light,
 }
 
+/// CLI arguments parsed from command line
+#[derive(Debug, Clone, Default)]
+pub struct CliArgs {
+    pub theme: ThemeArg,
+    /// Output to stdout instead of clipboard when exporting
+    pub output_to_stdout: bool,
+}
+
 impl ThemeArg {
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
@@ -234,6 +242,7 @@ Usage: {name} [OPTIONS]
 Options:
   --theme <THEME>  Color theme to use [default: dark]
                    Valid values: dark, light
+  --stdout         Output to stdout instead of clipboard when exporting
   -h, --help       Print this help message
 
 Press ? in the application for keybinding help."
@@ -241,13 +250,14 @@ Press ? in the application for keybinding help."
     std::process::exit(0);
 }
 
-/// Parse --theme argument from command line
+/// Parse CLI arguments from command line
 ///
 /// We use a handrolled argument parser instead of clap to keep binary size
 /// small and build times fast. If we end up needing more complex argument
 /// handling, we can revisit this decision.
-pub fn parse_theme_arg() -> ThemeArg {
+pub fn parse_cli_args() -> CliArgs {
     let args: Vec<String> = std::env::args().collect();
+    let mut cli_args = CliArgs::default();
 
     for i in 0..args.len() {
         // Handle --help / -h
@@ -255,10 +265,15 @@ pub fn parse_theme_arg() -> ThemeArg {
             print_help();
         }
 
+        // Handle --stdout
+        if args[i] == "--stdout" {
+            cli_args.output_to_stdout = true;
+        }
+
         // Handle --theme value
         if args[i] == "--theme" {
             if let Some(value) = args.get(i + 1) {
-                return ThemeArg::from_str(value).unwrap_or_else(|| {
+                cli_args.theme = ThemeArg::from_str(value).unwrap_or_else(|| {
                     eprintln!(
                         "Warning: Unknown theme '{value}', using dark. Valid options: dark, light"
                     );
@@ -266,12 +281,11 @@ pub fn parse_theme_arg() -> ThemeArg {
                 });
             } else {
                 eprintln!("Warning: --theme requires a value (dark, light)");
-                return ThemeArg::Dark;
             }
         }
         // Handle --theme=value
         if let Some(value) = args[i].strip_prefix("--theme=") {
-            return ThemeArg::from_str(value).unwrap_or_else(|| {
+            cli_args.theme = ThemeArg::from_str(value).unwrap_or_else(|| {
                 eprintln!(
                     "Warning: Unknown theme '{value}', using dark. Valid options: dark, light"
                 );
@@ -280,5 +294,5 @@ pub fn parse_theme_arg() -> ThemeArg {
         }
     }
 
-    ThemeArg::Dark
+    cli_args
 }

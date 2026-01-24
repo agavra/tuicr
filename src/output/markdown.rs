@@ -17,13 +17,20 @@ type CommentEntry<'a> = (
     &'a str,
 );
 
-pub fn export_to_clipboard(session: &ReviewSession, diff_source: &DiffSource) -> Result<String> {
-    // Check if there are any comments to export
+/// Generate markdown content from the review session.
+/// Returns the markdown string or an error if there are no comments.
+pub fn generate_export_content(
+    session: &ReviewSession,
+    diff_source: &DiffSource,
+) -> Result<String> {
     if !session.has_comments() {
         return Err(TuicrError::NoComments);
     }
+    Ok(generate_markdown(session, diff_source))
+}
 
-    let content = generate_markdown(session, diff_source);
+pub fn export_to_clipboard(session: &ReviewSession, diff_source: &DiffSource) -> Result<String> {
+    let content = generate_export_content(session, diff_source)?;
 
     // Prefer OSC 52 in tmux/SSH where arboard may silently fail
     if should_prefer_osc52() {
@@ -259,6 +266,37 @@ mod tests {
 
         // when
         let result = export_to_clipboard(&session, &diff_source);
+
+        // then
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), TuicrError::NoComments));
+    }
+
+    #[test]
+    fn should_generate_export_content_with_comments() {
+        // given
+        let session = create_test_session();
+        let diff_source = DiffSource::WorkingTree;
+
+        // when
+        let result = generate_export_content(&session, &diff_source);
+
+        // then
+        assert!(result.is_ok());
+        let content = result.unwrap();
+        assert!(content.contains("I reviewed your code"));
+        assert!(content.contains("[SUGGESTION]"));
+        assert!(content.contains("[ISSUE]"));
+    }
+
+    #[test]
+    fn should_fail_generate_export_content_when_no_comments() {
+        // given
+        let session = ReviewSession::new(PathBuf::from("/tmp/test-repo"), "abc1234def".to_string());
+        let diff_source = DiffSource::WorkingTree;
+
+        // when
+        let result = generate_export_content(&session, &diff_source);
 
         // then
         assert!(result.is_err());

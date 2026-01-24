@@ -10,7 +10,8 @@ mod theme;
 mod ui;
 mod vcs;
 
-use std::io;
+use std::fs::File;
+use std::io::{self, Write};
 use std::time::{Duration, Instant};
 
 use crossterm::{
@@ -33,7 +34,7 @@ use handler::{
     handle_search_action, handle_visual_action,
 };
 use input::{Action, map_key_to_action};
-use theme::{parse_theme_arg, resolve_theme};
+use theme::{parse_cli_args, resolve_theme};
 
 /// Timeout for the "press Ctrl+C again to exit" feature
 const CTRL_C_EXIT_TIMEOUT: Duration = Duration::from_secs(2);
@@ -52,13 +53,13 @@ fn main() -> anyhow::Result<()> {
     // Check keyboard enhancement support before enabling raw mode
     let keyboard_enhancement_supported = matches!(supports_keyboard_enhancement(), Ok(true));
 
-    // Parse theme argument and resolve theme
+    // Parse CLI arguments and resolve theme
     // This also configures syntax highlighting colors before diff parsing
-    let theme_arg = parse_theme_arg();
-    let theme = resolve_theme(theme_arg);
+    let cli_args = parse_cli_args();
+    let theme = resolve_theme(cli_args.theme);
 
     // Initialize app
-    let mut app = match App::new(theme) {
+    let mut app = match App::new(theme, cli_args.output_to_stdout) {
         Ok(mut app) => {
             app.supports_keyboard_enhancement = keyboard_enhancement_supported;
             app
@@ -73,19 +74,24 @@ fn main() -> anyhow::Result<()> {
     };
 
     // Setup terminal
+    // When --stdout is used, render TUI to /dev/tty so stdout is free for export output
     enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    let mut tty_output: Box<dyn Write> = if cli_args.output_to_stdout {
+        Box::new(File::options().write(true).open("/dev/tty")?)
+    } else {
+        Box::new(io::stdout())
+    };
+    execute!(tty_output, EnterAlternateScreen, EnableMouseCapture)?;
 
     // Enable keyboard enhancement for better modifier key detection (e.g., Alt+Enter)
     // This is supported by modern terminals like Kitty, iTerm2, WezTerm, etc.
     if keyboard_enhancement_supported {
         let _ = execute!(
-            stdout,
+            tty_output,
             PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
         );
     }
-    let backend = CrosstermBackend::new(stdout);
+    let backend = CrosstermBackend::new(tty_output);
     let mut terminal = Terminal::new(backend)?;
 
     // Track pending z command for zz centering
@@ -300,6 +306,11 @@ fn main() -> anyhow::Result<()> {
     execute!(terminal.backend_mut(), DisableMouseCapture)?;
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+
+    // Print pending stdout output if --stdout was used
+    if let Some(output) = app.pending_stdout_output {
+        print!("{output}");
+    }
 
     Ok(())
 }
