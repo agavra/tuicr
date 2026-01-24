@@ -195,3 +195,21 @@ Each comment is numbered and self-contained with its file path and line number o
 ## Session Persistence
 
 Sessions are automatically saved to `~/.local/share/tuicr/reviews/` (XDG compliant). When you reopen `tuicr` in the same repository, your previous review progress (comments, reviewed status) is restored.
+
+## Claude Code Integration
+
+tuicr includes a skill for [Claude Code](https://claude.ai/claude-code) that opens tuicr in a tmux split pane, letting you review changes interactively and feed comments back to Claude.
+
+**Prerequisites:** Claude Code running inside tmux, tuicr installed.
+
+**Installation** (choose one):
+
+```bash
+# Option 1: Copy to local skills
+cp -r /path/to/tuicr/.claude/skill ~/.claude/skills/tuicr
+
+# Option 2: Point Claude to this repo
+claude skill add /path/to/tuicr/.claude/skill
+```
+
+**Usage:** `/tuicr` or ask Claude to "review my changes with tuicr".

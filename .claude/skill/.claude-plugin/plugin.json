@@ -1,0 +1,8 @@
+{
+  "name": "tuicr",
+  "version": "1.0.0",
+  "description": "Review local git changes with tuicr TUI via tmux split pane",
+  "author": "tuicr contributors",
+  "type": "skill",
+  "entrypoint": "SKILL.md"
+}
