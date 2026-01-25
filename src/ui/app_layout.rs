@@ -46,7 +46,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
 }
 
-fn render_commit_select(frame: &mut Frame, app: &App) {
+fn render_commit_select(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
 
     let chunks = Layout::default()
@@ -73,23 +73,20 @@ fn render_commit_select(frame: &mut Frame, app: &App) {
     let inner = block.inner(chunks[1]);
     frame.render_widget(block, chunks[1]);
 
+    // Update viewport height for scroll calculations
+    app.commit_list_viewport_height = inner.height as usize;
+
     // Get range info for visual indicators
     let range = app.commit_selection_range;
 
-    // Determine whether to show all commit or not
-    let is_expanded = app.commit_expanded;
+    // Determine commits to show
     let total_commits = app.commit_list.len();
-
-    let preview_len = if !is_expanded && total_commits >= 5 {
-        5
-    } else {
-        total_commits
-    };
+    let visible_count = app.visible_commit_count.min(total_commits);
 
     let mut items: Vec<Line> = app
         .commit_list
         .iter()
-        .take(preview_len)
+        .take(visible_count)
         .enumerate()
         .map(|(i, commit)| {
             let is_selected = app.is_commit_selected(i);
@@ -146,10 +143,9 @@ fn render_commit_select(frame: &mut Frame, app: &App) {
         })
         .collect();
 
-    // Show expand row when commit are collapsed and there are more than 5 commits available
-    if !is_expanded && total_commits > 5 {
-        let expand_idx = preview_len;
-        let is_cursor = app.commit_list_cursor == expand_idx;
+    // Show an expand row when commits are collapsed
+    if app.can_show_more_commits() {
+        let is_cursor = app.commit_list_cursor == visible_count;
 
         let style = if is_cursor {
             styles::selected_style(&app.theme)
@@ -158,12 +154,19 @@ fn render_commit_select(frame: &mut Frame, app: &App) {
         };
 
         items.push(Line::from(vec![
-            Span::styled(if is_cursor { "> " } else { " " }, style),
-            Span::styled("        ... show more ...", style),
+            Span::styled(if is_cursor { "> " } else { "  " }, style),
+            Span::styled("       ... show more commits ...", style),
         ]));
     }
 
-    let list = Paragraph::new(items);
+    // Apply scroll offset and take only visible items
+    let visible_items: Vec<Line> = items
+        .into_iter()
+        .skip(app.commit_list_scroll_offset)
+        .take(inner.height as usize)
+        .collect();
+
+    let list = Paragraph::new(visible_items);
     frame.render_widget(list, inner);
 
     // Footer with mode, hints, and right-aligned message
