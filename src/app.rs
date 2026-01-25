@@ -2,8 +2,10 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use crate::error::{Result, TuicrError};
-use crate::model::{Comment, CommentType, DiffFile, DiffLine, LineRange, LineSide, ReviewSession};
-use crate::persistence::{find_session_for_repo, load_session};
+use crate::model::{
+    Comment, CommentType, DiffFile, DiffLine, LineRange, LineSide, ReviewSession, SessionDiffSource,
+};
+use crate::persistence::load_latest_session_for_context;
 use crate::theme::Theme;
 use crate::vcs::git::calculate_gap;
 use crate::vcs::{CommitInfo, VcsBackend, VcsInfo, detect_vcs};
@@ -325,8 +327,12 @@ impl App {
                     return Err(TuicrError::NoChanges);
                 }
 
-                let session =
-                    ReviewSession::new(vcs_info.root_path.clone(), vcs_info.head_commit.clone());
+                let session = ReviewSession::new(
+                    vcs_info.root_path.clone(),
+                    vcs_info.head_commit.clone(),
+                    vcs_info.branch_name.clone(),
+                    SessionDiffSource::WorkingTree,
+                );
 
                 Ok(Self {
                     theme,
@@ -377,23 +383,45 @@ impl App {
     }
 
     fn load_or_create_session(vcs_info: &VcsInfo) -> ReviewSession {
-        match find_session_for_repo(&vcs_info.root_path) {
-            Ok(Some(path)) => match load_session(&path) {
-                Ok(s) => {
-                    // Delete stale session file if base commit doesn't match
-                    if s.base_commit != vcs_info.head_commit {
-                        let _ = std::fs::remove_file(&path);
-                        ReviewSession::new(vcs_info.root_path.clone(), vcs_info.head_commit.clone())
-                    } else {
-                        s
-                    }
-                }
-                Err(_) => {
-                    ReviewSession::new(vcs_info.root_path.clone(), vcs_info.head_commit.clone())
-                }
-            },
-            _ => ReviewSession::new(vcs_info.root_path.clone(), vcs_info.head_commit.clone()),
+        let new_session = || {
+            ReviewSession::new(
+                vcs_info.root_path.clone(),
+                vcs_info.head_commit.clone(),
+                vcs_info.branch_name.clone(),
+                SessionDiffSource::WorkingTree,
+            )
+        };
+
+        let Ok(found) = load_latest_session_for_context(
+            &vcs_info.root_path,
+            vcs_info.branch_name.as_deref(),
+            &vcs_info.head_commit,
+            SessionDiffSource::WorkingTree,
+            None,
+        ) else {
+            return new_session();
+        };
+
+        let Some((_path, mut session)) = found else {
+            return new_session();
+        };
+
+        let mut updated = false;
+        if session.branch_name.is_none() && vcs_info.branch_name.is_some() {
+            session.branch_name = vcs_info.branch_name.clone();
+            updated = true;
         }
+
+        if vcs_info.branch_name.is_some() && session.base_commit != vcs_info.head_commit {
+            session.base_commit = vcs_info.head_commit.clone();
+            updated = true;
+        }
+
+        if updated {
+            session.updated_at = chrono::Utc::now();
+        }
+
+        session
     }
 
     pub fn reload_diff_files(&mut self) -> Result<usize> {
@@ -1735,8 +1763,33 @@ impl App {
 
         // Update session with the newest commit as base
         let newest_commit_id = selected_ids.last().unwrap().clone();
-        self.session =
-            ReviewSession::new(self.vcs_info.root_path.clone(), newest_commit_id.clone());
+        let loaded_session = load_latest_session_for_context(
+            &self.vcs_info.root_path,
+            self.vcs_info.branch_name.as_deref(),
+            &newest_commit_id,
+            SessionDiffSource::CommitRange,
+            Some(selected_ids.as_slice()),
+        )
+        .ok()
+        .and_then(|found| found.map(|(_path, session)| session));
+
+        let mut session = loaded_session.unwrap_or_else(|| {
+            let mut session = ReviewSession::new(
+                self.vcs_info.root_path.clone(),
+                newest_commit_id,
+                self.vcs_info.branch_name.clone(),
+                SessionDiffSource::CommitRange,
+            );
+            session.commit_range = Some(selected_ids.clone());
+            session
+        });
+
+        if session.commit_range.is_none() {
+            session.commit_range = Some(selected_ids.clone());
+            session.updated_at = chrono::Utc::now();
+        }
+
+        self.session = session;
 
         // Add files to session
         for file in &diff_files {
