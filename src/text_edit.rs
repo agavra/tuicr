@@ -55,10 +55,10 @@ pub fn delete_word_before(buffer: &mut String, cursor: usize) -> usize {
     // Skip whitespace backwards
     while pos > 0 {
         let prev = prev_char_boundary(buffer, pos);
-        if let Some(ch) = buffer[prev..pos].chars().next() {
-            if !ch.is_whitespace() {
-                break;
-            }
+        if let Some(ch) = buffer[prev..pos].chars().next()
+            && !ch.is_whitespace()
+        {
+            break;
         }
         pos = prev;
     }
@@ -66,10 +66,10 @@ pub fn delete_word_before(buffer: &mut String, cursor: usize) -> usize {
     // Skip non-whitespace backwards (the word itself)
     while pos > 0 {
         let prev = prev_char_boundary(buffer, pos);
-        if let Some(ch) = buffer[prev..pos].chars().next() {
-            if ch.is_whitespace() {
-                break;
-            }
+        if let Some(ch) = buffer[prev..pos].chars().next()
+            && ch.is_whitespace()
+        {
+            break;
         }
         pos = prev;
     }
