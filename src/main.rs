@@ -6,6 +6,7 @@ mod model;
 mod output;
 mod persistence;
 mod syntax;
+mod text_edit;
 mod theme;
 mod ui;
 mod vcs;

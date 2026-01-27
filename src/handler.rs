@@ -2,6 +2,9 @@ use crate::app::{self, App, FileTreeItem, FocusedPanel};
 use crate::input::Action;
 use crate::output::{export_to_clipboard, generate_export_content};
 use crate::persistence::save_session;
+use crate::text_edit::{
+    delete_char_before, delete_word_before, next_char_boundary, prev_char_boundary,
+};
 
 /// Export review: either to clipboard or set pending stdout output based on app.output_to_stdout.
 /// When output_to_stdout is true, stores the content and sets should_quit.
@@ -245,26 +248,19 @@ pub fn handle_comment_action(app: &mut App, action: Action) {
     match action {
         Action::InsertChar(c) => {
             app.comment_buffer.insert(app.comment_cursor, c);
-            app.comment_cursor += 1;
+            app.comment_cursor += c.len_utf8();
         }
         Action::DeleteChar => {
-            if app.comment_cursor > 0 {
-                app.comment_cursor -= 1;
-                app.comment_buffer.remove(app.comment_cursor);
-            }
+            app.comment_cursor = delete_char_before(&mut app.comment_buffer, app.comment_cursor);
         }
         Action::ExitMode => app.exit_comment_mode(),
         Action::SubmitInput => app.save_comment(),
         Action::CycleCommentType => app.cycle_comment_type(),
         Action::TextCursorLeft => {
-            if app.comment_cursor > 0 {
-                app.comment_cursor -= 1;
-            }
+            app.comment_cursor = prev_char_boundary(&app.comment_buffer, app.comment_cursor);
         }
         Action::TextCursorRight => {
-            if app.comment_cursor < app.comment_buffer.len() {
-                app.comment_cursor += 1;
-            }
+            app.comment_cursor = next_char_boundary(&app.comment_buffer, app.comment_cursor);
         }
         Action::TextCursorLineStart => {
             app.comment_cursor = comment_line_start(&app.comment_buffer, app.comment_cursor);
@@ -279,31 +275,7 @@ pub fn handle_comment_action(app: &mut App, action: Action) {
             app.comment_cursor = comment_word_right(&app.comment_buffer, app.comment_cursor);
         }
         Action::DeleteWord => {
-            if app.comment_cursor > 0 {
-                // Delete backwards to start of word or start of buffer
-                while app.comment_cursor > 0
-                    && app
-                        .comment_buffer
-                        .chars()
-                        .nth(app.comment_cursor - 1)
-                        .map(|c| c.is_whitespace())
-                        .unwrap_or(false)
-                {
-                    app.comment_cursor -= 1;
-                    app.comment_buffer.remove(app.comment_cursor);
-                }
-                while app.comment_cursor > 0
-                    && app
-                        .comment_buffer
-                        .chars()
-                        .nth(app.comment_cursor - 1)
-                        .map(|c| !c.is_whitespace())
-                        .unwrap_or(false)
-                {
-                    app.comment_cursor -= 1;
-                    app.comment_buffer.remove(app.comment_cursor);
-                }
-            }
+            app.comment_cursor = delete_word_before(&mut app.comment_buffer, app.comment_cursor);
         }
         Action::ClearLine => {
             app.comment_buffer.clear();
