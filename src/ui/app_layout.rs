@@ -20,6 +20,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         return;
     }
 
+    // Clear cursor position before rendering (will be set if in Comment mode)
+    app.comment_cursor_screen_pos = None;
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(vec![
@@ -43,6 +46,23 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // Render confirm dialog if in confirm mode
     if app.input_mode == InputMode::Confirm {
         comment_panel::render_confirm_dialog(frame, app, "Copy review to clipboard?");
+    }
+
+    // Position terminal cursor for IME when in Comment mode
+    // Always set a cursor position to prevent IME from showing at (0,0)
+    if app.input_mode == InputMode::Comment {
+        let (col, row) = app.comment_cursor_screen_pos.unwrap_or_else(|| {
+            // Fallback: position cursor in the diff area or at a reasonable default
+            // Use the diff area if available, otherwise use the main content area
+            if let Some(diff_area) = app.diff_area {
+                // Position at the start of the diff inner area (after border)
+                (diff_area.x + 1, diff_area.y + 1)
+            } else {
+                // Last resort: position at the main content area
+                (chunks[1].x + 1, chunks[1].y + 1)
+            }
+        });
+        frame.set_cursor_position(ratatui::layout::Position { x: col, y: row });
     }
 }
 
@@ -374,6 +394,11 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
     let mut line_idx: usize = 0;
     let current_line_idx = app.diff_state.cursor_line;
 
+    // Track cursor position for IME when in Comment mode
+    // Store the logical line index and column where the cursor should be
+    let mut comment_cursor_logical_line: Option<usize> = None;
+    let mut comment_cursor_column: u16 = 0;
+
     for (file_idx, file) in app.diff_files.iter().enumerate() {
         let path = file.display_path();
         let status = file.status.as_char();
@@ -414,7 +439,7 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
 
                 if is_being_edited {
                     // Render the inline input instead
-                    let input_lines = comment_panel::format_comment_input_lines(
+                    let (input_lines, cursor_info) = comment_panel::format_comment_input_lines(
                         &app.theme,
                         app.comment_type,
                         &app.comment_buffer,
@@ -423,6 +448,11 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
                         true,
                         app.supports_keyboard_enhancement,
                     );
+                    // Track cursor position: logical line = current line_idx + cursor offset within input
+                    comment_cursor_logical_line = Some(line_idx + cursor_info.line_offset);
+                    // Column = indicator (1) + cursor_info.column
+                    comment_cursor_column = 1 + cursor_info.column;
+
                     for mut input_line in input_lines {
                         let indicator = cursor_indicator(line_idx, current_line_idx);
                         input_line.spans.insert(
@@ -460,7 +490,7 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
 
         // Render inline input for new file-level comment
         if is_file_comment_mode && app.editing_comment_id.is_none() {
-            let input_lines = comment_panel::format_comment_input_lines(
+            let (input_lines, cursor_info) = comment_panel::format_comment_input_lines(
                 &app.theme,
                 app.comment_type,
                 &app.comment_buffer,
@@ -469,6 +499,10 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
                 false,
                 app.supports_keyboard_enhancement,
             );
+            // Track cursor position
+            comment_cursor_logical_line = Some(line_idx + cursor_info.line_offset);
+            comment_cursor_column = 1 + cursor_info.column;
+
             for mut input_line in input_lines {
                 let indicator = cursor_indicator(line_idx, current_line_idx);
                 input_line.spans.insert(
@@ -678,15 +712,20 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
                                             .comment_line_range
                                             .map(|(r, _)| r)
                                             .or_else(|| Some(LineRange::single(old_ln)));
-                                        let input_lines = comment_panel::format_comment_input_lines(
-                                            &app.theme,
-                                            app.comment_type,
-                                            &app.comment_buffer,
-                                            app.comment_cursor,
-                                            line_range,
-                                            true,
-                                            app.supports_keyboard_enhancement,
-                                        );
+                                        let (input_lines, cursor_info) =
+                                            comment_panel::format_comment_input_lines(
+                                                &app.theme,
+                                                app.comment_type,
+                                                &app.comment_buffer,
+                                                app.comment_cursor,
+                                                line_range,
+                                                true,
+                                                app.supports_keyboard_enhancement,
+                                            );
+                                        comment_cursor_logical_line =
+                                            Some(line_idx + cursor_info.line_offset);
+                                        comment_cursor_column = 1 + cursor_info.column;
+
                                         for mut input_line in input_lines {
                                             let indicator =
                                                 cursor_indicator(line_idx, current_line_idx);
@@ -738,15 +777,19 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
                                 .comment_line_range
                                 .map(|(r, _)| r)
                                 .or_else(|| Some(LineRange::single(old_ln)));
-                            let input_lines = comment_panel::format_comment_input_lines(
-                                &app.theme,
-                                app.comment_type,
-                                &app.comment_buffer,
-                                app.comment_cursor,
-                                line_range,
-                                false,
-                                app.supports_keyboard_enhancement,
-                            );
+                            let (input_lines, cursor_info) =
+                                comment_panel::format_comment_input_lines(
+                                    &app.theme,
+                                    app.comment_type,
+                                    &app.comment_buffer,
+                                    app.comment_cursor,
+                                    line_range,
+                                    false,
+                                    app.supports_keyboard_enhancement,
+                                );
+                            comment_cursor_logical_line = Some(line_idx + cursor_info.line_offset);
+                            comment_cursor_column = 1 + cursor_info.column;
+
                             for mut input_line in input_lines {
                                 let indicator = cursor_indicator(line_idx, current_line_idx);
                                 input_line.spans.insert(
@@ -782,15 +825,20 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
                                             .comment_line_range
                                             .map(|(r, _)| r)
                                             .or_else(|| Some(LineRange::single(new_ln)));
-                                        let input_lines = comment_panel::format_comment_input_lines(
-                                            &app.theme,
-                                            app.comment_type,
-                                            &app.comment_buffer,
-                                            app.comment_cursor,
-                                            line_range,
-                                            true,
-                                            app.supports_keyboard_enhancement,
-                                        );
+                                        let (input_lines, cursor_info) =
+                                            comment_panel::format_comment_input_lines(
+                                                &app.theme,
+                                                app.comment_type,
+                                                &app.comment_buffer,
+                                                app.comment_cursor,
+                                                line_range,
+                                                true,
+                                                app.supports_keyboard_enhancement,
+                                            );
+                                        comment_cursor_logical_line =
+                                            Some(line_idx + cursor_info.line_offset);
+                                        comment_cursor_column = 1 + cursor_info.column;
+
                                         for mut input_line in input_lines {
                                             let indicator =
                                                 cursor_indicator(line_idx, current_line_idx);
@@ -842,15 +890,19 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
                                 .comment_line_range
                                 .map(|(r, _)| r)
                                 .or_else(|| Some(LineRange::single(new_ln)));
-                            let input_lines = comment_panel::format_comment_input_lines(
-                                &app.theme,
-                                app.comment_type,
-                                &app.comment_buffer,
-                                app.comment_cursor,
-                                line_range,
-                                false,
-                                app.supports_keyboard_enhancement,
-                            );
+                            let (input_lines, cursor_info) =
+                                comment_panel::format_comment_input_lines(
+                                    &app.theme,
+                                    app.comment_type,
+                                    &app.comment_buffer,
+                                    app.comment_cursor,
+                                    line_range,
+                                    false,
+                                    app.supports_keyboard_enhancement,
+                                );
+                            comment_cursor_logical_line = Some(line_idx + cursor_info.line_offset);
+                            comment_cursor_column = 1 + cursor_info.column;
+
                             for mut input_line in input_lines {
                                 let indicator = cursor_indicator(line_idx, current_line_idx);
                                 input_line.spans.insert(
@@ -947,6 +999,52 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
         diff = diff.wrap(Wrap { trim: false });
     }
     frame.render_widget(diff, inner);
+
+    // Calculate screen position for comment cursor if in Comment mode
+    if let Some(cursor_logical_line) = comment_cursor_logical_line {
+        let scroll_offset = app.diff_state.scroll_offset;
+        // Use visible_line_count which accounts for line wrapping
+        let visible_lines_count = app.diff_state.visible_line_count.max(1);
+
+        // Check if the cursor line is visible (after scrolling)
+        if cursor_logical_line >= scroll_offset
+            && cursor_logical_line < scroll_offset + visible_lines_count
+        {
+            // Calculate screen row - need to account for wrapping
+            let logical_offset = cursor_logical_line - scroll_offset;
+
+            // Calculate visual row by summing wrapped line heights
+            let mut visual_row: u16 = 0;
+            let viewport_width = inner.width as usize;
+
+            if app.diff_state.wrap_lines && viewport_width > 0 {
+                // Calculate how many visual rows the lines before cursor take
+                // Note: line_widths is indexed from 0 and corresponds to visible lines
+                // (i.e., line_widths[0] is the first visible line after scroll)
+                for i in 0..logical_offset {
+                    if i < line_widths.len() {
+                        let width = line_widths[i];
+                        let rows = if width == 0 {
+                            1
+                        } else {
+                            width.div_ceil(viewport_width)
+                        };
+                        visual_row += rows as u16;
+                    } else {
+                        visual_row += 1;
+                    }
+                }
+            } else {
+                visual_row = logical_offset as u16;
+            }
+
+            // Account for diff area position (inner starts at diff block's inner area)
+            let screen_col = inner.x + comment_cursor_column;
+            let screen_row_abs = inner.y + visual_row;
+
+            app.comment_cursor_screen_pos = Some((screen_col, screen_row_abs));
+        }
+    }
 }
 
 /// Context for rendering side-by-side diff lines
@@ -1024,6 +1122,10 @@ fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
     let mut lines: Vec<Line> = Vec::new();
     let mut line_idx: usize = 0;
 
+    // Track cursor position for IME when in Comment mode
+    let mut comment_cursor_logical_line: Option<usize> = None;
+    let mut comment_cursor_column: u16 = 0;
+
     for (file_idx, file) in app.diff_files.iter().enumerate() {
         let path = file.display_path();
         let status = file.status.as_char();
@@ -1063,7 +1165,7 @@ fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
 
                 if is_being_edited {
                     // Render the inline input instead
-                    let input_lines = comment_panel::format_comment_input_lines(
+                    let (input_lines, cursor_info) = comment_panel::format_comment_input_lines(
                         &app.theme,
                         app.comment_type,
                         &app.comment_buffer,
@@ -1072,6 +1174,9 @@ fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
                         true,
                         app.supports_keyboard_enhancement,
                     );
+                    comment_cursor_logical_line = Some(line_idx + cursor_info.line_offset);
+                    comment_cursor_column = 1 + cursor_info.column;
+
                     for mut input_line in input_lines {
                         let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
                         input_line.spans.insert(
@@ -1109,7 +1214,7 @@ fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
 
         // Render inline input for new file-level comment
         if is_file_comment_mode && app.editing_comment_id.is_none() {
-            let input_lines = comment_panel::format_comment_input_lines(
+            let (input_lines, cursor_info) = comment_panel::format_comment_input_lines(
                 &app.theme,
                 app.comment_type,
                 &app.comment_buffer,
@@ -1118,6 +1223,9 @@ fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
                 false,
                 app.supports_keyboard_enhancement,
             );
+            comment_cursor_logical_line = Some(line_idx + cursor_info.line_offset);
+            comment_cursor_column = 1 + cursor_info.column;
+
             for mut input_line in input_lines {
                 let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
                 input_line.spans.insert(
@@ -1236,13 +1344,18 @@ fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
                 line_idx += 1;
 
                 // Process diff lines in side-by-side format
-                line_idx = render_hunk_lines_side_by_side(
+                let (new_line_idx, cursor_info) = render_hunk_lines_side_by_side(
                     &hunk.lines,
                     &line_comments,
                     &ctx,
                     line_idx,
                     &mut lines,
                 );
+                line_idx = new_line_idx;
+                if cursor_info.is_some() {
+                    comment_cursor_logical_line = cursor_info.map(|(line, _)| line);
+                    comment_cursor_column = cursor_info.map(|(_, col)| col).unwrap_or(0);
+                }
             }
         }
 
@@ -1324,66 +1437,122 @@ fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
         diff = diff.wrap(Wrap { trim: false });
     }
     frame.render_widget(diff, inner);
+
+    // Calculate screen position for comment cursor if in Comment mode
+    if let Some(cursor_logical_line) = comment_cursor_logical_line {
+        let scroll_offset = app.diff_state.scroll_offset;
+        let visible_lines_count = app.diff_state.visible_line_count.max(1);
+
+        // Check if the cursor line is visible (after scrolling)
+        if cursor_logical_line >= scroll_offset
+            && cursor_logical_line < scroll_offset + visible_lines_count
+        {
+            // Calculate screen row - need to account for wrapping
+            let logical_offset = cursor_logical_line - scroll_offset;
+
+            let mut visual_row: u16 = 0;
+            let viewport_width = inner.width as usize;
+
+            if app.diff_state.wrap_lines && viewport_width > 0 {
+                for i in 0..logical_offset {
+                    if i < line_widths.len() {
+                        let width = line_widths[i];
+                        let rows = if width == 0 {
+                            1
+                        } else {
+                            width.div_ceil(viewport_width)
+                        };
+                        visual_row += rows as u16;
+                    } else {
+                        visual_row += 1;
+                    }
+                }
+            } else {
+                visual_row = logical_offset as u16;
+            }
+
+            let screen_col = inner.x + comment_cursor_column;
+            let screen_row_abs = inner.y + visual_row;
+
+            app.comment_cursor_screen_pos = Some((screen_col, screen_row_abs));
+        }
+    }
 }
 
 /// Process and render all diff lines in a hunk for side-by-side view
+/// Returns (new_line_idx, Option<(cursor_logical_line, cursor_column)>)
 fn render_hunk_lines_side_by_side(
     hunk_lines: &[crate::model::DiffLine],
     line_comments: &std::collections::HashMap<u32, Vec<crate::model::Comment>>,
     ctx: &SideBySideContext,
     mut line_idx: usize,
     lines: &mut Vec<Line>,
-) -> usize {
+) -> (usize, Option<(usize, u16)>) {
     let mut i = 0;
+    let mut cursor_info_out: Option<(usize, u16)> = None;
+
     while i < hunk_lines.len() {
         let diff_line = &hunk_lines[i];
 
         match diff_line.origin {
             LineOrigin::Context => {
-                line_idx = render_context_line_side_by_side(
+                let (new_line_idx, cursor_info) = render_context_line_side_by_side(
                     diff_line,
-                    line_comments,
-                    ctx,
-                    line_idx,
-                    lines,
-                );
-                i += 1;
-            }
-            LineOrigin::Deletion => {
-                let (new_line_idx, lines_processed) = render_deletion_addition_pair_side_by_side(
-                    hunk_lines,
-                    i,
                     line_comments,
                     ctx,
                     line_idx,
                     lines,
                 );
                 line_idx = new_line_idx;
+                if cursor_info.is_some() {
+                    cursor_info_out = cursor_info;
+                }
+                i += 1;
+            }
+            LineOrigin::Deletion => {
+                let (new_line_idx, lines_processed, cursor_info) =
+                    render_deletion_addition_pair_side_by_side(
+                        hunk_lines,
+                        i,
+                        line_comments,
+                        ctx,
+                        line_idx,
+                        lines,
+                    );
+                line_idx = new_line_idx;
+                if cursor_info.is_some() {
+                    cursor_info_out = cursor_info;
+                }
                 i = lines_processed;
             }
             LineOrigin::Addition => {
-                line_idx = render_standalone_addition_side_by_side(
+                let (new_line_idx, cursor_info) = render_standalone_addition_side_by_side(
                     diff_line,
                     line_comments,
                     ctx,
                     line_idx,
                     lines,
                 );
+                line_idx = new_line_idx;
+                if cursor_info.is_some() {
+                    cursor_info_out = cursor_info;
+                }
                 i += 1;
             }
         }
     }
-    line_idx
+    (line_idx, cursor_info_out)
 }
 
 /// Render a context line (appears on both sides)
+/// Returns (new_line_idx, Option<(cursor_logical_line, cursor_column)>)
 fn render_context_line_side_by_side(
     diff_line: &crate::model::DiffLine,
     line_comments: &std::collections::HashMap<u32, Vec<crate::model::Comment>>,
     ctx: &SideBySideContext,
     mut line_idx: usize,
     lines: &mut Vec<Line>,
-) -> usize {
+) -> (usize, Option<(usize, u16)>) {
     let line_num = diff_line
         .old_lineno
         .or(diff_line.new_lineno)
@@ -1439,14 +1608,19 @@ fn render_context_line_side_by_side(
     line_idx += 1;
 
     // Add comments if any
+    let mut cursor_info_out: Option<(usize, u16)> = None;
     if let Some(new_ln) = diff_line.new_lineno {
-        line_idx = add_comments_to_line(new_ln, line_comments, LineSide::New, ctx, line_idx, lines);
+        let (new_line_idx, cursor_info) =
+            add_comments_to_line(new_ln, line_comments, LineSide::New, ctx, line_idx, lines);
+        line_idx = new_line_idx;
+        cursor_info_out = cursor_info;
     }
 
-    line_idx
+    (line_idx, cursor_info_out)
 }
 
 /// Render paired deletions and additions side-by-side
+/// Returns (line_idx, skip_count, Option<(cursor_logical_line, cursor_column)>)
 fn render_deletion_addition_pair_side_by_side(
     hunk_lines: &[crate::model::DiffLine],
     start_idx: usize,
@@ -1454,7 +1628,7 @@ fn render_deletion_addition_pair_side_by_side(
     ctx: &SideBySideContext,
     mut line_idx: usize,
     lines: &mut Vec<Line>,
-) -> (usize, usize) {
+) -> (usize, usize, Option<(usize, u16)>) {
     // Find the range of consecutive deletions
     let mut del_end = start_idx + 1;
     while del_end < hunk_lines.len() && hunk_lines[del_end].origin == LineOrigin::Deletion {
@@ -1471,6 +1645,7 @@ fn render_deletion_addition_pair_side_by_side(
     let del_count = del_end - start_idx;
     let add_count = add_end - add_start;
     let max_lines = del_count.max(add_count);
+    let mut cursor_info_out: Option<(usize, u16)> = None;
 
     // Render each pair of deletion/addition
     for offset in 0..max_lines {
@@ -1506,7 +1681,7 @@ fn render_deletion_addition_pair_side_by_side(
         if offset < del_count {
             let del_line = &hunk_lines[start_idx + offset];
             if let Some(old_ln) = del_line.old_lineno {
-                line_idx = add_comments_to_line(
+                let (new_line_idx, cursor_info) = add_comments_to_line(
                     old_ln,
                     line_comments,
                     LineSide::Old,
@@ -1514,6 +1689,10 @@ fn render_deletion_addition_pair_side_by_side(
                     line_idx,
                     lines,
                 );
+                line_idx = new_line_idx;
+                if cursor_info.is_some() {
+                    cursor_info_out = cursor_info;
+                }
             }
         }
 
@@ -1521,7 +1700,7 @@ fn render_deletion_addition_pair_side_by_side(
         if offset < add_count {
             let add_line = &hunk_lines[add_start + offset];
             if let Some(new_ln) = add_line.new_lineno {
-                line_idx = add_comments_to_line(
+                let (new_line_idx, cursor_info) = add_comments_to_line(
                     new_ln,
                     line_comments,
                     LineSide::New,
@@ -1529,21 +1708,26 @@ fn render_deletion_addition_pair_side_by_side(
                     line_idx,
                     lines,
                 );
+                line_idx = new_line_idx;
+                if cursor_info.is_some() {
+                    cursor_info_out = cursor_info;
+                }
             }
         }
     }
 
-    (line_idx, add_end)
+    (line_idx, add_end, cursor_info_out)
 }
 
 /// Render a standalone addition (no matching deletion)
+/// Returns (new_line_idx, Option<(cursor_logical_line, cursor_column)>)
 fn render_standalone_addition_side_by_side(
     diff_line: &crate::model::DiffLine,
     line_comments: &std::collections::HashMap<u32, Vec<crate::model::Comment>>,
     ctx: &SideBySideContext,
     mut line_idx: usize,
     lines: &mut Vec<Line>,
-) -> usize {
+) -> (usize, Option<(usize, u16)>) {
     let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
 
     let mut spans = vec![Span::styled(
@@ -1558,11 +1742,15 @@ fn render_standalone_addition_side_by_side(
     line_idx += 1;
 
     // Add comments if any
+    let mut cursor_info_out: Option<(usize, u16)> = None;
     if let Some(new_ln) = diff_line.new_lineno {
-        line_idx = add_comments_to_line(new_ln, line_comments, LineSide::New, ctx, line_idx, lines);
+        let (new_line_idx, cursor_info) =
+            add_comments_to_line(new_ln, line_comments, LineSide::New, ctx, line_idx, lines);
+        line_idx = new_line_idx;
+        cursor_info_out = cursor_info;
     }
 
-    line_idx
+    (line_idx, cursor_info_out)
 }
 
 /// Add deletion line spans to the spans vector
@@ -1634,7 +1822,8 @@ fn add_empty_column_spans(spans: &mut Vec<Span>, content_width: usize) {
     ));
 }
 
-/// Add comments for a specific line
+/// Add comments for a specific line.
+/// Returns (new_line_idx, Option<(cursor_logical_line, cursor_column)>)
 fn add_comments_to_line(
     line_num: u32,
     line_comments: &std::collections::HashMap<u32, Vec<crate::model::Comment>>,
@@ -1642,9 +1831,10 @@ fn add_comments_to_line(
     ctx: &SideBySideContext,
     mut line_idx: usize,
     lines: &mut Vec<Line>,
-) -> usize {
+) -> (usize, Option<(usize, u16)>) {
     // Check if we're adding/editing a comment on this line and side
     let is_line_comment_mode = ctx.comment_input_mode && ctx.comment_line == Some((line_num, side));
+    let mut cursor_info_out: Option<(usize, u16)> = None;
 
     if let Some(comments) = line_comments.get(&line_num) {
         for comment in comments {
@@ -1661,7 +1851,7 @@ fn add_comments_to_line(
                     let line_range = ctx
                         .comment_line_range
                         .or_else(|| Some(LineRange::single(line_num)));
-                    let input_lines = comment_panel::format_comment_input_lines(
+                    let (input_lines, cursor_info) = comment_panel::format_comment_input_lines(
                         ctx.theme,
                         ctx.comment_type,
                         ctx.comment_buffer,
@@ -1670,6 +1860,9 @@ fn add_comments_to_line(
                         true,
                         ctx.supports_keyboard_enhancement,
                     );
+                    cursor_info_out =
+                        Some((line_idx + cursor_info.line_offset, 1 + cursor_info.column));
+
                     for mut input_line in input_lines {
                         let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
                         input_line.spans.insert(
@@ -1714,7 +1907,7 @@ fn add_comments_to_line(
         let line_range = ctx
             .comment_line_range
             .or_else(|| Some(LineRange::single(line_num)));
-        let input_lines = comment_panel::format_comment_input_lines(
+        let (input_lines, cursor_info) = comment_panel::format_comment_input_lines(
             ctx.theme,
             ctx.comment_type,
             ctx.comment_buffer,
@@ -1723,6 +1916,8 @@ fn add_comments_to_line(
             false,
             ctx.supports_keyboard_enhancement,
         );
+        cursor_info_out = Some((line_idx + cursor_info.line_offset, 1 + cursor_info.column));
+
         for mut input_line in input_lines {
             let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
             input_line.spans.insert(
@@ -1734,7 +1929,7 @@ fn add_comments_to_line(
         }
     }
 
-    line_idx
+    (line_idx, cursor_info_out)
 }
 
 /// Truncate or pad a string to a specific width

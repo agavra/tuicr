@@ -170,6 +170,9 @@ pub struct App {
     pub output_to_stdout: bool,
     /// Pending output to print to stdout after TUI exits
     pub pending_stdout_output: Option<String>,
+    /// Calculated screen position for comment input cursor (col, row) for IME positioning.
+    /// Set during render when in Comment mode, None otherwise.
+    pub comment_cursor_screen_pos: Option<(u16, u16)>,
 }
 
 #[derive(Default)]
@@ -314,6 +317,7 @@ impl App {
                     line_annotations: Vec::new(),
                     output_to_stdout,
                     pending_stdout_output: None,
+                    comment_cursor_screen_pos: None,
                 };
                 app.sort_files_by_directory(true);
                 app.expand_all_dirs();
@@ -376,6 +380,7 @@ impl App {
                     line_annotations: Vec::new(),
                     output_to_stdout,
                     pending_stdout_output: None,
+                    comment_cursor_screen_pos: None,
                 })
             }
             Err(e) => Err(e),
