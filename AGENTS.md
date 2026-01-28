@@ -115,6 +115,16 @@ src/
 - `chrono`: Timestamps
 - `thiserror` + `anyhow`: Error handling
 
+### Keeping Docs Updated
+
+When adding user-facing features, update the relevant documentation:
+
+| Document | Update when adding/changing... |
+|----------|-------------------------------|
+| `README.md` | Keybindings, commands (`:*`), CLI flags, features list, installation methods |
+| `src/ui/help_popup.rs` | Keybindings or commands (update the `help_text` vector) |
+| `AGENTS.md` | Module structure, key types, data flow, dependencies |
+
 ---
 
 ## Review Format (for coding agents receiving tuicr output)
