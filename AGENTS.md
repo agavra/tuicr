@@ -26,9 +26,9 @@ src/
 │   │   ├── repository.rs # CommitInfo, get_recent_commits()
 │   │   ├── diff.rs      # get_working_tree_diff(), get_commit_range_diff()
 │   │   └── context.rs   # fetch_context_lines() for gap expansion
-│   ├── hg/              # Mercurial backend (optional, --features hg)
+│   ├── hg/              # Mercurial backend (always compiled)
 │   │   └── mod.rs       # HgBackend: uses hg CLI, parses with diff_parser::Hg
-│   └── jj/              # Jujutsu backend (optional, --features jj)
+│   └── jj/              # Jujutsu backend (always compiled)
 │       └── mod.rs       # JjBackend: uses jj CLI, parses with diff_parser::GitStyle
 │
 ├── model/
@@ -69,14 +69,17 @@ src/
 **VcsBackend** (`src/vcs/traits.rs`):
 - Trait abstracting VCS operations
 - Methods: `info()`, `get_working_tree_diff()`, `fetch_context_lines()`, `get_recent_commits()`, `get_commit_range_diff()`
-- Implementations: `GitBackend` (always available), `HgBackend` (--features hg), `JjBackend` (--features jj)
+- Implementations: `GitBackend`, `HgBackend`, `JjBackend` (all always compiled)
 
 **InputMode** (`src/app.rs`):
 - `Normal` - default navigation mode
 - `Command` - after pressing `:`, vim-style commands
 - `Comment` - typing a comment (Ctrl-S saves, Ctrl-C cancels)
+- `Search` - after pressing `/`, search pattern entry
 - `Help` - showing help popup
 - `Confirm` - Y/N confirmation dialog
+- `CommitSelect` - selecting commits to review
+- `VisualSelect` - visual mode for range comments
 
 **ReviewSession** (`src/model/review.rs`):
 - Persisted review state with `files: HashMap<PathBuf, FileReview>`
@@ -88,12 +91,12 @@ src/
 
 ### Data Flow
 
-1. **Startup**: `App::new()` calls `detect_vcs()` which tries Jujutsu first (if `--features jj`), then Git, then Mercurial (if `--features hg`). Parses diff and loads existing session if any
+1. **Startup**: `App::new()` calls `detect_vcs()` which tries Jujutsu first, then Git, then Mercurial. Parses diff and loads existing session if any
 2. **Render**: `ui::render()` draws the TUI based on `App` state
 3. **Input**: `crossterm` events → `map_key_to_action` → match on Action in main loop
 4. **Persistence**: `:w` calls `save_session()`, writes JSON to `~/.local/share/tuicr/reviews/`
 5. **Reload diff**: `:e` re-runs `vcs.get_working_tree_diff()` to refresh the displayed files
-6. **Export**: `:clip` (alias `:export`) calls `export_to_clipboard()`, generating markdown and copying it to the clipboard
+6. **Export**: `:clip` (alias `:export`) calls `export_to_clipboard()`, generating markdown and copying it to the clipboard (or stdout with `--stdout` flag)
 
 ### Important Implementation Details
 

@@ -92,6 +92,7 @@ Detection order: Jujutsu → Git → Mercurial. Jujutsu is tried first because j
 |------|-------------|
 | `--theme dark` | Use dark color theme (default) |
 | `--theme light` | Use light color theme for light terminal backgrounds |
+| `--stdout` | Output to stdout instead of clipboard when exporting |
 
 ### Keybindings
 
@@ -108,8 +109,19 @@ Detection order: Jujutsu → Git → Mercurial. Jujutsu is tried first because j
 | `g` / `G` | Go to first/last file |
 | `{` / `}` | Jump to previous/next file |
 | `[` / `]` | Jump to previous/next hunk |
+| `/` | Search within diff |
+| `n` / `N` | Next/previous search match |
 | `Enter` | Expand/collapse hidden context between hunks |
 | `zz` | Center cursor on screen |
+
+#### File Tree
+
+| Key | Action |
+|-----|--------|
+| `Space` | Toggle expand directory |
+| `Enter` | Expand directory / Jump to file in diff |
+| `o` | Expand all directories |
+| `O` | Collapse all directories |
 
 #### Panel Focus
 
@@ -155,13 +167,18 @@ Detection order: Jujutsu → Git → Mercurial. Jujutsu is tried first because j
 
 #### Commands
 
-| Key | Action |
-|-----|--------|
+| Command | Action |
+|---------|--------|
 | `:w` | Save session |
 | `:e` (`:reload`) | Reload diff files |
 | `:clip` (`:export`) | Copy review to clipboard |
 | `:diff` | Toggle diff view (unified / side-by-side) |
-| `:q` | Quit |
+| `:commits` | Select commits to review |
+| `:set wrap` | Enable line wrap in diff view |
+| `:set wrap!` | Toggle line wrap in diff view |
+| `:clear` | Clear all comments |
+| `:q` | Quit (warns if unsaved) |
+| `:q!` | Force quit |
 | `:x` / `:wq` | Save and quit (prompts to copy if comments exist) |
 | `?` | Toggle help |
 | `q` | Quick quit |

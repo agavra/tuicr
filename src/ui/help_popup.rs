@@ -245,10 +245,24 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  Enter     ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Save comment"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  Ctrl-S    ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("Save comment"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  Shift-Enter/Ctrl-J",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Insert newline"),
         ]),
         Line::from(vec![
             Span::styled(
@@ -353,6 +367,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("Save and quit"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :version  ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Show tuicr version"),
         ]),
         Line::from(""),
         Line::from(vec![
