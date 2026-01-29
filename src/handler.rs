@@ -182,6 +182,26 @@ pub fn handle_command_action(app: &mut App, action: Action) {
                 "version" => {
                     app.set_message(format!("tuicr v{}", env!("CARGO_PKG_VERSION")));
                 }
+                "update" => match crate::update::check_for_updates() {
+                    crate::update::UpdateCheckResult::UpdateAvailable(info) => {
+                        app.set_message(format!(
+                            "Update available: v{} -> v{}",
+                            info.current_version, info.latest_version
+                        ));
+                    }
+                    crate::update::UpdateCheckResult::UpToDate(info) => {
+                        app.set_message(format!("tuicr v{} is up to date", info.current_version));
+                    }
+                    crate::update::UpdateCheckResult::AheadOfRelease(info) => {
+                        app.set_message(format!(
+                            "You're from the future! v{} > v{}",
+                            info.current_version, info.latest_version
+                        ));
+                    }
+                    crate::update::UpdateCheckResult::Failed(err) => {
+                        app.set_warning(format!("Update check failed: {err}"));
+                    }
+                },
                 "set wrap" => app.set_diff_wrap(true),
                 "set wrap!" => app.toggle_diff_wrap(),
                 "diff" => app.toggle_diff_view_mode(),

@@ -31,6 +31,7 @@ anyhow = "1.0"
 
 # Utilities
 directories = "6.0"
+ureq = { version = "3", features = ["json"] }
 unicode-width = "0.2"
 uuid = { version = "1.0", features = ["v4"] }
 arboard = { version = "3.4", features = ["wayland-data-control"] }

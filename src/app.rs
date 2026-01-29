@@ -7,6 +7,7 @@ use crate::model::{
 };
 use crate::persistence::load_latest_session_for_context;
 use crate::theme::Theme;
+use crate::update::UpdateInfo;
 use crate::vcs::git::calculate_gap;
 use crate::vcs::{CommitInfo, VcsBackend, VcsInfo, detect_vcs};
 
@@ -182,6 +183,8 @@ pub struct App {
     /// Calculated screen position for comment input cursor (col, row) for IME positioning.
     /// Set during render when in Comment mode, None otherwise.
     pub comment_cursor_screen_pos: Option<(u16, u16)>,
+    /// Information about available updates (set by background check)
+    pub update_info: Option<UpdateInfo>,
 }
 
 #[derive(Default)]
@@ -332,6 +335,7 @@ impl App {
                     output_to_stdout,
                     pending_stdout_output: None,
                     comment_cursor_screen_pos: None,
+                    update_info: None,
                 };
                 app.sort_files_by_directory(true);
                 app.expand_all_dirs();
@@ -404,6 +408,7 @@ impl App {
                     output_to_stdout,
                     pending_stdout_output: None,
                     comment_cursor_screen_pos: None,
+                    update_info: None,
                 })
             }
             Err(e) => Err(e),

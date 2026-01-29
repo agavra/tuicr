@@ -195,6 +195,8 @@ pub struct CliArgs {
     pub theme: ThemeArg,
     /// Output to stdout instead of clipboard when exporting
     pub output_to_stdout: bool,
+    /// Skip checking for updates on startup
+    pub no_update_check: bool,
 }
 
 impl ThemeArg {
@@ -240,10 +242,11 @@ fn print_help() -> ! {
 Usage: {name} [OPTIONS]
 
 Options:
-  --theme <THEME>  Color theme to use [default: dark]
-                   Valid values: dark, light
-  --stdout         Output to stdout instead of clipboard when exporting
-  -h, --help       Print this help message
+  --theme <THEME>    Color theme to use [default: dark]
+                     Valid values: dark, light
+  --stdout           Output to stdout instead of clipboard when exporting
+  --no-update-check  Skip checking for updates on startup
+  -h, --help         Print this help message
 
 Press ? in the application for keybinding help."
     );
@@ -268,6 +271,11 @@ pub fn parse_cli_args() -> CliArgs {
         // Handle --stdout
         if args[i] == "--stdout" {
             cli_args.output_to_stdout = true;
+        }
+
+        // Handle --no-update-check
+        if args[i] == "--no-update-check" {
+            cli_args.no_update_check = true;
         }
 
         // Handle --theme value

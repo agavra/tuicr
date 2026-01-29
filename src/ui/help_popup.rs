@@ -375,6 +375,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
             ),
             Span::raw("Show tuicr version"),
         ]),
+        Line::from(vec![
+            Span::styled(
+                "  :update   ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Check for updates"),
+        ]),
         Line::from(""),
         Line::from(vec![
             Span::styled(

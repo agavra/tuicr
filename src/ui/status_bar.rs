@@ -82,7 +82,37 @@ pub fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         },
     );
 
-    let line = Line::from(vec![title_span, vcs_span, source_span, progress_span]);
+    let update_span = if let Some(ref info) = app.update_info {
+        if info.update_available {
+            Span::styled(
+                format!("[v{} available] ", info.latest_version),
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(theme.comment_suggestion)
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else if info.is_ahead {
+            Span::styled(
+                format!("[unreleased v{}] ", info.current_version),
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(theme.comment_suggestion)
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Span::raw("")
+        }
+    } else {
+        Span::raw("")
+    };
+
+    let line = Line::from(vec![
+        title_span,
+        vcs_span,
+        source_span,
+        progress_span,
+        update_span,
+    ]);
 
     let header = Paragraph::new(line)
         .style(styles::status_bar_style(theme))
