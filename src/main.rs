@@ -9,10 +9,12 @@ mod syntax;
 mod text_edit;
 mod theme;
 mod ui;
+mod update;
 mod vcs;
 
 use std::fs::File;
 use std::io::{self, Write};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use crossterm::{
@@ -58,6 +60,18 @@ fn main() -> anyhow::Result<()> {
     // This also configures syntax highlighting colors before diff parsing
     let cli_args = parse_cli_args();
     let theme = resolve_theme(cli_args.theme);
+
+    // Start update check in background (non-blocking)
+    let update_rx = if !cli_args.no_update_check {
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let result = update::check_for_updates();
+            let _ = tx.send(result); // Ignore send error if receiver dropped
+        });
+        Some(rx)
+    } else {
+        None
+    };
 
     // Initialize app
     let mut app = match App::new(theme, cli_args.output_to_stdout) {
@@ -110,6 +124,16 @@ fn main() -> anyhow::Result<()> {
         terminal.draw(|frame| {
             ui::render(frame, &mut app);
         })?;
+
+        // Check for update result (non-blocking)
+        if let Some(ref rx) = update_rx
+            && let Ok(
+                update::UpdateCheckResult::UpdateAvailable(info)
+                | update::UpdateCheckResult::AheadOfRelease(info),
+            ) = rx.try_recv()
+        {
+            app.update_info = Some(info);
+        }
 
         // Auto-clear expired pending Ctrl+C state and message
         if let Some(first_press) = pending_ctrl_c

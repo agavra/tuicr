@@ -93,6 +93,7 @@ Detection order: Jujutsu → Git → Mercurial. Jujutsu is tried first because j
 | `--theme dark` | Use dark color theme (default) |
 | `--theme light` | Use light color theme for light terminal backgrounds |
 | `--stdout` | Output to stdout instead of clipboard when exporting |
+| `--no-update-check` | Skip checking for updates on startup |
 
 ### Keybindings
 
@@ -177,6 +178,8 @@ Detection order: Jujutsu → Git → Mercurial. Jujutsu is tried first because j
 | `:set wrap` | Enable line wrap in diff view |
 | `:set wrap!` | Toggle line wrap in diff view |
 | `:clear` | Clear all comments |
+| `:version` | Show tuicr version |
+| `:update` | Check for updates |
 | `:q` | Quit (warns if unsaved) |
 | `:q!` | Force quit |
 | `:x` / `:wq` | Save and quit (prompts to copy if comments exist) |
