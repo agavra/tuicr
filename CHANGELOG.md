@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.0] - 2026-01-30
+
+### Bug Fixes
+
+- **ui:** Render comment input inline instead of as overlay (#137)
+- **jj:** Show closest bookmark instead of 'detached' in UI (#144)
+- **input:** Handle multi-byte UTF-8 characters in comment input (#132) (#147)
+
+### Documentation
+
+- **ui:** Update help and docs for search, commands, and stdout export (#148)
+
+### Features
+
+- **cli:** Add --stdout flag to output export to stdout (#142)
+- **skill:** Add Claude Code skill for interactive review (#143)
+- **app:** Support expandable commit list and adjust default commit loading (#138)
+- **update:** Check crates.io for new releases and surface update status in UI (#150)
 ## [0.5.0] - 2026-01-23
 
 ### Bug Fixes
