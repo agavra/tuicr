@@ -121,8 +121,6 @@ pub fn handle_help_action(app: &mut App, action: Action) {
         Action::PageUp => app.help_scroll_up(app.help_state.viewport_height),
         Action::GoToTop => app.help_scroll_to_top(),
         Action::GoToBottom => app.help_scroll_to_bottom(),
-        Action::MouseScrollDown(n) => app.help_scroll_down(n),
-        Action::MouseScrollUp(n) => app.help_scroll_up(n),
         Action::ToggleHelp => app.toggle_help(),
         Action::Quit => app.should_quit = true,
         _ => {}
@@ -414,13 +412,14 @@ pub fn handle_file_list_action(app: &mut App, action: Action) {
         Action::CursorUp(n) => app.file_list_up(n),
         Action::ScrollLeft(n) => app.file_list_state.scroll_left(n),
         Action::ScrollRight(n) => app.file_list_state.scroll_right(n),
-        Action::MouseScrollDown(n) => app.file_list_viewport_scroll_down(n),
-        Action::MouseScrollUp(n) => app.file_list_viewport_scroll_up(n),
         Action::SelectFile | Action::ToggleExpand => {
             if let Some(item) = app.get_selected_tree_item() {
                 match item {
                     FileTreeItem::Directory { path, .. } => app.toggle_directory(&path),
-                    FileTreeItem::File { file_idx, .. } => app.jump_to_file(file_idx),
+                    FileTreeItem::File { file_idx, .. } => {
+                        app.jump_to_file(file_idx);
+                        app.focused_panel = FocusedPanel::Diff;
+                    }
                 }
             }
         }
@@ -442,8 +441,6 @@ pub fn handle_diff_action(app: &mut App, action: Action) {
         Action::CursorUp(n) => app.cursor_up(n),
         Action::ScrollLeft(n) => app.scroll_left(n),
         Action::ScrollRight(n) => app.scroll_right(n),
-        Action::MouseScrollDown(n) => app.viewport_scroll_down(n),
-        Action::MouseScrollUp(n) => app.viewport_scroll_up(n),
         Action::SelectFile => {
             // Check if cursor is on an expander line or expanded content
             if let Some((gap_id, is_expanded)) = app.get_gap_at_cursor() {

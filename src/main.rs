@@ -19,8 +19,8 @@ use std::time::{Duration, Instant};
 
 use crossterm::{
     event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind,
-        KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+        self, Event, KeyEventKind, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+        PushKeyboardEnhancementFlags,
     },
     execute,
     terminal::{
@@ -47,7 +47,6 @@ fn main() -> anyhow::Result<()> {
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
         let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
-        let _ = execute!(io::stdout(), DisableMouseCapture);
         let _ = disable_raw_mode();
         let _ = execute!(io::stdout(), LeaveAlternateScreen);
         original_hook(panic_info);
@@ -96,7 +95,7 @@ fn main() -> anyhow::Result<()> {
     } else {
         Box::new(io::stdout())
     };
-    execute!(tty_output, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(tty_output, EnterAlternateScreen)?;
 
     // Enable keyboard enhancement for better modifier key detection (e.g., Alt+Enter)
     // This is supported by modern terminals like Kitty, iTerm2, WezTerm, etc.
@@ -256,67 +255,6 @@ fn main() -> anyhow::Result<()> {
                         },
                     }
                 }
-                Event::Mouse(mouse_event) => {
-                    use crossterm::event::MouseEventKind;
-
-                    // Helper to determine which panel the mouse is over
-                    let mouse_col = mouse_event.column;
-                    let mouse_row = mouse_event.row;
-
-                    let over_file_list = app
-                        .file_list_area
-                        .map(|area| {
-                            mouse_col >= area.x
-                                && mouse_col < area.x + area.width
-                                && mouse_row >= area.y
-                                && mouse_row < area.y + area.height
-                        })
-                        .unwrap_or(false);
-
-                    let over_diff = app
-                        .diff_area
-                        .map(|area| {
-                            mouse_col >= area.x
-                                && mouse_col < area.x + area.width
-                                && mouse_row >= area.y
-                                && mouse_row < area.y + area.height
-                        })
-                        .unwrap_or(false);
-
-                    match mouse_event.kind {
-                        MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
-                            // Click to focus panel
-                            if app.input_mode == InputMode::Normal {
-                                if over_file_list {
-                                    app.focused_panel = FocusedPanel::FileList;
-                                } else if over_diff {
-                                    app.focused_panel = FocusedPanel::Diff;
-                                }
-                            }
-                        }
-                        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
-                            let action = match mouse_event.kind {
-                                MouseEventKind::ScrollUp => Action::MouseScrollUp(3),
-                                MouseEventKind::ScrollDown => Action::MouseScrollDown(3),
-                                _ => unreachable!(),
-                            };
-
-                            // Dispatch action based on which panel the mouse is over
-                            match app.input_mode {
-                                InputMode::Help => handle_help_action(&mut app, action),
-                                InputMode::Normal => {
-                                    if over_file_list {
-                                        handle_file_list_action(&mut app, action);
-                                    } else if over_diff {
-                                        handle_diff_action(&mut app, action);
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
-                        _ => {}
-                    }
-                }
                 _ => {}
             }
         }
@@ -328,7 +266,6 @@ fn main() -> anyhow::Result<()> {
 
     // Restore terminal
     let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
-    execute!(terminal.backend_mut(), DisableMouseCapture)?;
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
 
