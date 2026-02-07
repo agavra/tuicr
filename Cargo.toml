@@ -39,7 +39,7 @@ base64 = "0.22"
 
 # Syntax highlighting
 syntect = "5.2"
-syntect-tui = "3.0"
+two-face = { version = "0.5", default-features = false, features = ["syntect-default-fancy"] }
 
 [dev-dependencies]
 tempfile = "3.24.0"

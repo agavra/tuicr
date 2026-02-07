@@ -5,6 +5,7 @@
 use std::sync::OnceLock;
 
 use ratatui::style::Color;
+use two_face::theme::EmbeddedThemeName;
 
 use crate::syntax::SyntaxHighlighter;
 
@@ -33,7 +34,7 @@ pub struct Theme {
     pub syntax_del_bg: Color,
 
     // Syntect theme name for syntax highlighting
-    pub syntect_theme: &'static str,
+    pub syntect_theme: EmbeddedThemeName,
 
     // File status colors
     pub file_added: Color,
@@ -94,7 +95,7 @@ impl Theme {
             syntax_del_bg: Color::Rgb(45, 0, 0),
 
             // Syntect theme for syntax highlighting
-            syntect_theme: "base16-eighties.dark",
+            syntect_theme: EmbeddedThemeName::Base16EightiesDark,
 
             // File status colors
             file_added: Color::Rgb(80, 220, 120),
@@ -150,7 +151,7 @@ impl Theme {
             syntax_del_bg: Color::Rgb(255, 230, 230), // Very light pink
 
             // Syntect theme for syntax highlighting (light variant)
-            syntect_theme: "base16-ocean.light",
+            syntect_theme: EmbeddedThemeName::Base16OceanLight,
 
             // File status colors
             file_added: Color::Rgb(0, 100, 0),

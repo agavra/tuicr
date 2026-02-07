@@ -1,7 +1,6 @@
 use ratatui::style::{Color, Modifier, Style};
 use std::path::Path;
-use syntect::highlighting::ThemeSet;
-use syntect::parsing::SyntaxSet;
+use two_face::theme::EmbeddedThemeName;
 
 use crate::model::diff_types::LineOrigin;
 
@@ -13,7 +12,7 @@ type HighlightedLines = Vec<Option<HighlightedSpans>>;
 
 /// Helper to highlight lines of code from a diff
 pub struct SyntaxHighlighter {
-    pub syntax_set: SyntaxSet,
+    pub syntax_set: syntect::parsing::SyntaxSet,
     pub theme: syntect::highlighting::Theme,
     /// Background color for added lines
     pub add_bg: Color,
@@ -31,7 +30,7 @@ pub(crate) struct DiffHighlightSequences {
 impl Default for SyntaxHighlighter {
     fn default() -> Self {
         Self::new(
-            "base16-eighties.dark",
+            EmbeddedThemeName::Base16EightiesDark,
             Color::Rgb(0, 35, 12),
             Color::Rgb(45, 0, 0),
         )
@@ -40,18 +39,10 @@ impl Default for SyntaxHighlighter {
 
 impl SyntaxHighlighter {
     /// Create a new syntax highlighter with the given theme and diff background colors
-    pub fn new(syntect_theme: &str, add_bg: Color, del_bg: Color) -> Self {
-        let syntax_set = SyntaxSet::load_defaults_newlines();
-        let theme_set = ThemeSet::load_defaults();
-
-        // Try the requested theme, fall back to defaults
-        let theme = theme_set
-            .themes
-            .get(syntect_theme)
-            .or_else(|| theme_set.themes.get("base16-eighties.dark"))
-            .or_else(|| theme_set.themes.get("base16-ocean.dark"))
-            .cloned()
-            .unwrap_or_default();
+    pub fn new(theme_name: EmbeddedThemeName, add_bg: Color, del_bg: Color) -> Self {
+        let syntax_set = two_face::syntax::extra_newlines();
+        let theme_set = two_face::theme::extra();
+        let theme = theme_set[theme_name].clone();
 
         Self {
             syntax_set,
@@ -208,30 +199,14 @@ impl SyntaxHighlighter {
         ratatui_style
     }
 
-    /// Map extensions not in syntect's defaults to a known equivalent.
+    /// Map extensions not in two-face's syntax set to a known equivalent.
     fn fallback_extension(ext: &str) -> Option<&'static str> {
         match ext {
-            // JavaScript/TypeScript family
-            "ts" | "mts" | "cts" | "tsx" | "jsx" | "mjs" | "cjs" | "coffee" => Some("js"),
-            // CSS preprocessors
-            "scss" | "less" | "styl" => Some("css"),
-            // Template/markup languages
-            "vue" | "svelte" | "hbs" | "handlebars" | "mustache" | "ejs" | "pug" | "jade"
-            | "j2" | "jinja" | "jinja2" | "twig" | "njk" => Some("html"),
+            "jsx" | "mjs" | "cjs" => Some("js"),
+            "hbs" | "handlebars" | "mustache" | "ejs" | "pug" | "jade" | "njk" => Some("html"),
             "mdx" => Some("md"),
-            // Data/config formats
-            "jsonc" | "json5" | "graphql" | "gql" | "prisma" => Some("json"),
-            // Systems languages
-            "v" | "odin" | "proto" => Some("c"),
-            "dart" => Some("js"),
-            // Functional/scripted languages
-            "ex" | "exs" | "heex" => Some("rb"),
-            "cr" => Some("rb"),
-            "nim" | "nims" => Some("py"),
-            // JVM languages
-            "kt" | "kts" => Some("java"),
-            // Shell variants
-            "dockerfile" => Some("sh"),
+            "jsonc" | "json5" | "prisma" => Some("json"),
+            "heex" => Some("rb"),
             _ => None,
         }
     }
@@ -239,10 +214,8 @@ impl SyntaxHighlighter {
     /// Map extension-less filenames to a known syntax extension.
     fn fallback_filename(name: &str) -> Option<&'static str> {
         match name {
-            "Dockerfile" | "Containerfile" => Some("sh"),
-            "Vagrantfile" | "Podfile" => Some("rb"),
+            "Containerfile" => Some("sh"),
             "Justfile" | "justfile" => Some("sh"),
-            ".env" | ".envrc" => Some("sh"),
             _ => None,
         }
     }
@@ -378,39 +351,8 @@ mod tests {
     fn should_find_syntax_for_fallback_extensions() {
         let highlighter = SyntaxHighlighter::default();
         let extensions = [
-            // CSS preprocessors
-            "scss",
-            "less",
-            "styl",
-            // Template/markup
-            "vue",
-            "svelte",
-            "hbs",
-            "mustache",
-            "ejs",
-            "pug",
-            "njk",
-            "mdx",
-            // Data/config
-            "jsonc",
-            "json5",
-            "graphql",
-            "gql",
-            // Systems
-            "dart",
-            "proto",
-            // Functional/scripted
-            "ex",
-            "exs",
-            "cr",
-            "nim",
-            // JVM
-            "kt",
-            "kts",
-            // Shell
-            "dockerfile",
-            // CoffeeScript
-            "coffee",
+            "jsx", "mjs", "cjs", "hbs", "mustache", "ejs", "pug", "njk", "mdx", "jsonc", "json5",
+            "prisma", "heex",
         ];
         for ext in &extensions {
             let path = format!("file.{ext}");
@@ -424,13 +366,7 @@ mod tests {
     #[test]
     fn should_find_syntax_for_fallback_filenames() {
         let highlighter = SyntaxHighlighter::default();
-        for name in &[
-            "Dockerfile",
-            "Containerfile",
-            "Vagrantfile",
-            "Justfile",
-            ".env",
-        ] {
+        for name in &["Containerfile", "Justfile", "justfile"] {
             assert!(
                 highlighter.get_syntax(Path::new(name)).is_some(),
                 "should find syntax for {name}"
@@ -489,7 +425,7 @@ mod tests {
 
     #[test]
     fn should_not_use_weak_fallback_mappings() {
-        for ext in &["toml", "hcl", "tf", "tfvars", "nix", "swift", "zig"] {
+        for ext in &["toml", "hcl", "tf", "tfvars", "nix", "swift", "zig", "v"] {
             assert_eq!(SyntaxHighlighter::fallback_extension(ext), None);
         }
     }
