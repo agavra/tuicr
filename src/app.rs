@@ -3,7 +3,8 @@ use std::path::PathBuf;
 
 use crate::error::{Result, TuicrError};
 use crate::model::{
-    Comment, CommentType, DiffFile, DiffLine, LineRange, LineSide, ReviewSession, SessionDiffSource,
+    Comment, CommentType, DiffFile, DiffLine, LineOrigin, LineRange, LineSide, ReviewSession,
+    SessionDiffSource,
 };
 use crate::persistence::load_latest_session_for_context;
 use crate::theme::Theme;
@@ -53,6 +54,15 @@ pub enum AnnotatedLine {
         file_idx: usize,
         hunk_idx: usize,
         line_idx: usize,
+        old_lineno: Option<u32>,
+        new_lineno: Option<u32>,
+    },
+    /// Side-by-side paired diff line
+    SideBySideLine {
+        file_idx: usize,
+        hunk_idx: usize,
+        del_line_idx: Option<usize>,
+        add_line_idx: Option<usize>,
         old_lineno: Option<u32>,
         new_lineno: Option<u32>,
     },
@@ -833,6 +843,26 @@ impl App {
                     Some("(no changes)".to_string())
                 }
             }
+            AnnotatedLine::SideBySideLine {
+                file_idx,
+                hunk_idx,
+                del_line_idx,
+                add_line_idx,
+                ..
+            } => {
+                let file = self.diff_files.get(*file_idx)?;
+                let hunk = file.hunks.get(*hunk_idx)?;
+
+                let del_content = del_line_idx
+                    .and_then(|idx| hunk.lines.get(idx))
+                    .map(|l| l.content.as_str())
+                    .unwrap_or("");
+                let add_content = add_line_idx
+                    .and_then(|idx| hunk.lines.get(idx))
+                    .map(|l| l.content.as_str())
+                    .unwrap_or("");
+                Some(format!("{} {}", del_content, add_content))
+            }
             AnnotatedLine::Spacing => None,
         }
     }
@@ -1088,26 +1118,133 @@ impl App {
                 // Hunk header + diff lines
                 content_lines += 1; // Hunk header
 
-                for diff_line in &hunk.lines {
-                    content_lines += 1;
+                // Count diff lines based on view mode
+                match self.diff_view_mode {
+                    DiffViewMode::Unified => {
+                        for diff_line in &hunk.lines {
+                            content_lines += 1;
 
-                    if let Some(line_comments) = line_comments {
-                        if let Some(old_ln) = diff_line.old_lineno
-                            && let Some(comments) = line_comments.get(&old_ln)
-                        {
-                            for comment in comments {
-                                if comment.side == Some(LineSide::Old) {
-                                    comment_lines += Self::comment_display_lines(comment);
+                            if let Some(line_comments) = line_comments {
+                                if let Some(old_ln) = diff_line.old_lineno
+                                    && let Some(comments) = line_comments.get(&old_ln)
+                                {
+                                    for comment in comments {
+                                        if comment.side == Some(LineSide::Old) {
+                                            comment_lines += Self::comment_display_lines(comment);
+                                        }
+                                    }
+                                }
+
+                                if let Some(new_ln) = diff_line.new_lineno
+                                    && let Some(comments) = line_comments.get(&new_ln)
+                                {
+                                    for comment in comments {
+                                        if comment.side != Some(LineSide::Old) {
+                                            comment_lines += Self::comment_display_lines(comment);
+                                        }
+                                    }
                                 }
                             }
                         }
+                    }
+                    DiffViewMode::SideBySide => {
+                        use crate::model::LineOrigin;
+                        // Side-by-side mode: pair deletions with following additions
+                        let lines = &hunk.lines;
+                        let mut i = 0;
+                        while i < lines.len() {
+                            let diff_line = &lines[i];
 
-                        if let Some(new_ln) = diff_line.new_lineno
-                            && let Some(comments) = line_comments.get(&new_ln)
-                        {
-                            for comment in comments {
-                                if comment.side != Some(LineSide::Old) {
-                                    comment_lines += Self::comment_display_lines(comment);
+                            match diff_line.origin {
+                                LineOrigin::Context => {
+                                    content_lines += 1;
+
+                                    // Comments for context line
+                                    if let Some(line_comments) = line_comments
+                                        && let Some(new_ln) = diff_line.new_lineno
+                                        && let Some(comments) = line_comments.get(&new_ln)
+                                    {
+                                        for comment in comments {
+                                            if comment.side != Some(LineSide::Old) {
+                                                comment_lines +=
+                                                    Self::comment_display_lines(comment);
+                                            }
+                                        }
+                                    }
+                                    i += 1;
+                                }
+                                LineOrigin::Deletion => {
+                                    // Find consecutive deletions
+                                    let del_start = i;
+                                    let mut del_end = i + 1;
+                                    while del_end < lines.len()
+                                        && lines[del_end].origin == LineOrigin::Deletion
+                                    {
+                                        del_end += 1;
+                                    }
+
+                                    // Find consecutive additions following deletions
+                                    let add_start = del_end;
+                                    let mut add_end = add_start;
+                                    while add_end < lines.len()
+                                        && lines[add_end].origin == LineOrigin::Addition
+                                    {
+                                        add_end += 1;
+                                    }
+
+                                    let del_count = del_end - del_start;
+                                    let add_count = add_end - add_start;
+                                    // Paired lines use max of the two counts
+                                    content_lines += del_count.max(add_count);
+
+                                    // Count comments for all deletions and additions in this pair
+                                    if let Some(line_comments) = line_comments {
+                                        for line in &lines[del_start..del_end] {
+                                            if let Some(old_ln) = line.old_lineno
+                                                && let Some(comments) = line_comments.get(&old_ln)
+                                            {
+                                                for comment in comments {
+                                                    if comment.side == Some(LineSide::Old) {
+                                                        comment_lines +=
+                                                            Self::comment_display_lines(comment);
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        for line in &lines[add_start..add_end] {
+                                            if let Some(new_ln) = line.new_lineno
+                                                && let Some(comments) = line_comments.get(&new_ln)
+                                            {
+                                                for comment in comments {
+                                                    if comment.side != Some(LineSide::Old) {
+                                                        comment_lines +=
+                                                            Self::comment_display_lines(comment);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    i = add_end;
+                                }
+                                LineOrigin::Addition => {
+                                    // Standalone addition (not following deletions)
+                                    content_lines += 1;
+
+                                    if let Some(line_comments) = line_comments
+                                        && let Some(new_ln) = diff_line.new_lineno
+                                        && let Some(comments) = line_comments.get(&new_ln)
+                                    {
+                                        for comment in comments {
+                                            if comment.side != Some(LineSide::Old) {
+                                                comment_lines +=
+                                                    Self::comment_display_lines(comment);
+                                            }
+                                        }
+                                    }
+
+                                    i += 1;
                                 }
                             }
                         }
@@ -1175,6 +1312,11 @@ impl App {
         let target = self.diff_state.cursor_line;
         match self.line_annotations.get(target) {
             Some(AnnotatedLine::DiffLine {
+                old_lineno,
+                new_lineno,
+                ..
+            })
+            | Some(AnnotatedLine::SideBySideLine {
                 old_lineno,
                 new_lineno,
                 ..
@@ -1629,6 +1771,7 @@ impl App {
             DiffViewMode::SideBySide => "side-by-side",
         };
         self.set_message(format!("Diff view mode: {mode_name}"));
+        self.rebuild_annotations();
     }
 
     pub fn toggle_file_list(&mut self) {
@@ -1989,6 +2132,7 @@ impl App {
     /// - Diff files change (load/reload)
     /// - Expansion state changes (expand/collapse gap)
     /// - Comments are added/removed
+    /// - Diff view mode changes
     pub fn rebuild_annotations(&mut self) {
         self.line_annotations.clear();
 
@@ -2067,52 +2211,25 @@ impl App {
                     self.line_annotations
                         .push(AnnotatedLine::HunkHeader { file_idx, hunk_idx });
 
-                    // Diff lines
-                    for (line_idx, diff_line) in hunk.lines.iter().enumerate() {
-                        self.line_annotations.push(AnnotatedLine::DiffLine {
-                            file_idx,
-                            hunk_idx,
-                            line_idx,
-                            old_lineno: diff_line.old_lineno,
-                            new_lineno: diff_line.new_lineno,
-                        });
-
-                        // Line comments on old side (deleted lines)
-                        if let Some(old_ln) = diff_line.old_lineno
-                            && let Some(comments) = line_comments.get(&old_ln)
-                        {
-                            for (idx, comment) in comments.iter().enumerate() {
-                                if comment.side == Some(LineSide::Old) {
-                                    let comment_lines = Self::comment_display_lines(comment);
-                                    for _ in 0..comment_lines {
-                                        self.line_annotations.push(AnnotatedLine::LineComment {
-                                            file_idx,
-                                            line: old_ln,
-                                            side: LineSide::Old,
-                                            comment_idx: idx,
-                                        });
-                                    }
-                                }
-                            }
+                    // Diff lines - handle differently based on view mode
+                    match self.diff_view_mode {
+                        DiffViewMode::Unified => {
+                            Self::build_unified_diff_annotations(
+                                &mut self.line_annotations,
+                                file_idx,
+                                hunk_idx,
+                                &hunk.lines,
+                                &line_comments,
+                            );
                         }
-
-                        // Line comments on new side (added/context lines)
-                        if let Some(new_ln) = diff_line.new_lineno
-                            && let Some(comments) = line_comments.get(&new_ln)
-                        {
-                            for (idx, comment) in comments.iter().enumerate() {
-                                if comment.side != Some(LineSide::Old) {
-                                    let comment_lines = Self::comment_display_lines(comment);
-                                    for _ in 0..comment_lines {
-                                        self.line_annotations.push(AnnotatedLine::LineComment {
-                                            file_idx,
-                                            line: new_ln,
-                                            side: LineSide::New,
-                                            comment_idx: idx,
-                                        });
-                                    }
-                                }
-                            }
+                        DiffViewMode::SideBySide => {
+                            Self::build_side_by_side_annotations(
+                                &mut self.line_annotations,
+                                file_idx,
+                                hunk_idx,
+                                &hunk.lines,
+                                &line_comments,
+                            );
                         }
                     }
                 }
@@ -2120,6 +2237,190 @@ impl App {
 
             // Spacing line
             self.line_annotations.push(AnnotatedLine::Spacing);
+        }
+    }
+
+    fn push_comments(
+        annotations: &mut Vec<AnnotatedLine>,
+        file_idx: usize,
+        line_no: Option<u32>,
+        line_comments: &std::collections::HashMap<u32, Vec<crate::model::Comment>>,
+        side: LineSide,
+    ) {
+        let Some(ln) = line_no else {
+            return;
+        };
+
+        let Some(comments) = line_comments.get(&ln) else {
+            return;
+        };
+
+        for (idx, comment) in comments.iter().enumerate() {
+            let matches_side =
+                comment.side == Some(side) || (side == LineSide::New && comment.side.is_none());
+
+            if !matches_side {
+                continue;
+            }
+
+            let comment_lines = Self::comment_display_lines(comment);
+            for _ in 0..comment_lines {
+                annotations.push(AnnotatedLine::LineComment {
+                    file_idx,
+                    line: ln,
+                    comment_idx: idx,
+                    side,
+                });
+            }
+        }
+    }
+
+    /// Build annotations for unified diff mode (one annotation per diff line)
+    fn build_unified_diff_annotations(
+        annotations: &mut Vec<AnnotatedLine>,
+        file_idx: usize,
+        hunk_idx: usize,
+        lines: &[crate::model::DiffLine],
+        line_comments: &std::collections::HashMap<u32, Vec<crate::model::Comment>>,
+    ) {
+        for (line_idx, diff_line) in lines.iter().enumerate() {
+            annotations.push(AnnotatedLine::DiffLine {
+                file_idx,
+                hunk_idx,
+                line_idx,
+                old_lineno: diff_line.old_lineno,
+                new_lineno: diff_line.new_lineno,
+            });
+
+            // Line comments on old side (delete lines)
+            if let Some(old_ln) = diff_line.old_lineno {
+                Self::push_comments(
+                    annotations,
+                    file_idx,
+                    Some(old_ln),
+                    line_comments,
+                    LineSide::Old,
+                );
+            }
+        }
+    }
+
+    /// Build annotations for side-by-side diff mode, pairing deletions and additions into aligned rows.
+    fn build_side_by_side_annotations(
+        annotations: &mut Vec<AnnotatedLine>,
+        file_idx: usize,
+        hunk_idx: usize,
+        lines: &[crate::model::DiffLine],
+        line_comments: &std::collections::HashMap<u32, Vec<crate::model::Comment>>,
+    ) {
+        let mut i = 0;
+        while i < lines.len() {
+            let diff_line = &lines[i];
+
+            match diff_line.origin {
+                LineOrigin::Context => {
+                    annotations.push(AnnotatedLine::SideBySideLine {
+                        file_idx,
+                        hunk_idx,
+                        del_line_idx: Some(i),
+                        add_line_idx: Some(i),
+                        old_lineno: diff_line.old_lineno,
+                        new_lineno: diff_line.new_lineno,
+                    });
+
+                    Self::push_comments(
+                        annotations,
+                        file_idx,
+                        diff_line.new_lineno,
+                        line_comments,
+                        LineSide::New,
+                    );
+
+                    i += 1
+                }
+
+                LineOrigin::Deletion => {
+                    // Find consecutive deletions
+                    let del_start = i;
+                    let mut del_end = i + 1;
+                    while del_end < lines.len() && lines[del_end].origin == LineOrigin::Deletion {
+                        del_end += 1;
+                    }
+
+                    // Find consecutive additions following deletions
+                    let add_start = del_end;
+                    let mut add_end = add_start;
+                    while add_end < lines.len() && lines[add_end].origin == LineOrigin::Addition {
+                        add_end += 1;
+                    }
+
+                    let del_count = del_end - del_start;
+                    let add_count = add_end - add_start;
+                    let max_lines = del_count.max(add_count);
+
+                    for offset in 0..max_lines {
+                        let del_idx = if offset < del_count {
+                            Some(del_start + offset)
+                        } else {
+                            None
+                        };
+                        let add_idx = if offset < add_count {
+                            Some(add_start + offset)
+                        } else {
+                            None
+                        };
+
+                        let old_lineno = del_idx.and_then(|idx| lines[idx].old_lineno);
+                        let new_lineno = add_idx.and_then(|idx| lines[idx].new_lineno);
+
+                        annotations.push(AnnotatedLine::SideBySideLine {
+                            file_idx,
+                            hunk_idx,
+                            del_line_idx: del_idx,
+                            add_line_idx: add_idx,
+                            old_lineno,
+                            new_lineno,
+                        });
+
+                        Self::push_comments(
+                            annotations,
+                            file_idx,
+                            old_lineno,
+                            line_comments,
+                            LineSide::Old,
+                        );
+                        Self::push_comments(
+                            annotations,
+                            file_idx,
+                            new_lineno,
+                            line_comments,
+                            LineSide::New,
+                        );
+                    }
+
+                    i = add_end;
+                }
+                LineOrigin::Addition => {
+                    annotations.push(AnnotatedLine::SideBySideLine {
+                        file_idx,
+                        hunk_idx,
+                        del_line_idx: None,
+                        add_line_idx: Some(i),
+                        old_lineno: None,
+                        new_lineno: diff_line.new_lineno,
+                    });
+
+                    Self::push_comments(
+                        annotations,
+                        file_idx,
+                        diff_line.new_lineno,
+                        line_comments,
+                        LineSide::New,
+                    );
+
+                    i += 1;
+                }
+            }
         }
     }
 
