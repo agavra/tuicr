@@ -2302,6 +2302,17 @@ impl App {
                     LineSide::Old,
                 );
             }
+
+            // Line comments on new side (added/context lines)
+            if let Some(new_ln) = diff_line.new_lineno {
+                Self::push_comments(
+                    annotations,
+                    file_idx,
+                    Some(new_ln),
+                    line_comments,
+                    LineSide::New,
+                );
+            }
         }
     }
 
