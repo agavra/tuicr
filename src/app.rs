@@ -1,6 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
+use chrono::Utc;
+
 use crate::error::{Result, TuicrError};
 use crate::model::{
     Comment, CommentType, DiffFile, DiffLine, LineOrigin, LineRange, LineSide, ReviewSession,
@@ -14,6 +16,7 @@ use crate::vcs::{CommitInfo, VcsBackend, VcsInfo, detect_vcs};
 
 const VISIBLE_COMMIT_COUNT: usize = 10;
 const COMMIT_PAGE_SIZE: usize = 10;
+pub const WORKING_TREE_SELECTION_ID: &str = "__tuicr_working_tree__";
 
 #[derive(Debug, Clone)]
 pub enum FileTreeItem {
@@ -163,7 +166,8 @@ pub struct App {
     pub commit_list_scroll_offset: usize,
     pub commit_list_viewport_height: usize,
     /// Selected commit range as (start_idx, end_idx) inclusive, where start <= end.
-    /// Indices refer to positions in commit_list (0 = newest/HEAD, higher = older).
+    /// Indices refer to positions in commit_list.
+    /// If uncommitted changes exist, index 0 is the working tree option.
     pub commit_selection_range: Option<(usize, usize)>,
     /// State describing how many commits are currently shown and how pagination behaves.
     pub visible_commit_count: usize,
@@ -305,46 +309,38 @@ impl App {
                 Vec::new(),
             )
         } else {
-            match vcs.get_working_tree_diff(highlighter) {
-                Ok(diff_files) => {
-                    let session = Self::load_or_create_session(&vcs_info);
-                    Self::build(
-                        vcs,
-                        vcs_info,
-                        theme,
-                        output_to_stdout,
-                        diff_files,
-                        session,
-                        DiffSource::WorkingTree,
-                        InputMode::Normal,
-                        Vec::new(),
-                    )
-                }
-                Err(TuicrError::NoChanges) => {
-                    let commits = vcs.get_recent_commits(0, VISIBLE_COMMIT_COUNT)?;
-                    if commits.is_empty() {
-                        return Err(TuicrError::NoChanges);
-                    }
-                    let session = ReviewSession::new(
-                        vcs_info.root_path.clone(),
-                        vcs_info.head_commit.clone(),
-                        vcs_info.branch_name.clone(),
-                        SessionDiffSource::WorkingTree,
-                    );
-                    Self::build(
-                        vcs,
-                        vcs_info,
-                        theme,
-                        output_to_stdout,
-                        Vec::new(),
-                        session,
-                        DiffSource::WorkingTree,
-                        InputMode::CommitSelect,
-                        commits,
-                    )
-                }
-                Err(e) => Err(e),
+            let working_tree_diff = match vcs.get_working_tree_diff(highlighter) {
+                Ok(diff_files) => Some(diff_files),
+                Err(TuicrError::NoChanges) => None,
+                Err(e) => return Err(e),
+            };
+
+            let commits = vcs.get_recent_commits(0, VISIBLE_COMMIT_COUNT)?;
+            if working_tree_diff.is_none() && commits.is_empty() {
+                return Err(TuicrError::NoChanges);
             }
+
+            let mut commit_list = commits.clone();
+            if working_tree_diff.is_some() {
+                commit_list.insert(0, Self::working_tree_commit_entry());
+            }
+
+            let session = Self::load_or_create_session(&vcs_info);
+            let mut app = Self::build(
+                vcs,
+                vcs_info,
+                theme,
+                output_to_stdout,
+                working_tree_diff.unwrap_or_default(),
+                session,
+                DiffSource::WorkingTree,
+                InputMode::CommitSelect,
+                commit_list,
+            )?;
+
+            app.has_more_commit = commits.len() >= VISIBLE_COMMIT_COUNT;
+            app.visible_commit_count = app.commit_list.len();
+            Ok(app)
         }
     }
 
@@ -503,6 +499,64 @@ impl App {
         }
 
         session
+    }
+
+    fn working_tree_commit_entry() -> CommitInfo {
+        CommitInfo {
+            id: WORKING_TREE_SELECTION_ID.to_string(),
+            short_id: "WORKTREE".to_string(),
+            branch_name: None,
+            summary: "Uncommitted changes".to_string(),
+            author: String::new(),
+            time: Utc::now(),
+        }
+    }
+
+    fn is_working_tree_commit(commit: &CommitInfo) -> bool {
+        commit.id == WORKING_TREE_SELECTION_ID
+    }
+
+    fn has_working_tree_option(&self) -> bool {
+        self.commit_list
+            .first()
+            .map(Self::is_working_tree_commit)
+            .unwrap_or(false)
+    }
+
+    fn loaded_history_commit_count(&self) -> usize {
+        self.commit_list
+            .len()
+            .saturating_sub(usize::from(self.has_working_tree_option()))
+    }
+
+    fn load_working_tree_selection(&mut self) -> Result<()> {
+        let highlighter = self.theme.syntax_highlighter();
+        let diff_files = match self.vcs.get_working_tree_diff(highlighter) {
+            Ok(diff_files) => diff_files,
+            Err(TuicrError::NoChanges) => {
+                self.set_message("No uncommitted changes");
+                return Ok(());
+            }
+            Err(e) => return Err(e),
+        };
+
+        self.session = Self::load_or_create_session(&self.vcs_info);
+        for file in &diff_files {
+            let path = file.display_path().clone();
+            self.session.add_file(path, file.status);
+        }
+
+        self.diff_files = diff_files;
+        self.diff_source = DiffSource::WorkingTree;
+        self.input_mode = InputMode::Normal;
+        self.diff_state = DiffState::default();
+        self.file_list_state = FileListState::default();
+        self.clear_expanded_gaps();
+        self.sort_files_by_directory(true);
+        self.expand_all_dirs();
+        self.rebuild_annotations();
+
+        Ok(())
     }
 
     pub fn reload_diff_files(&mut self) -> Result<usize> {
@@ -1753,15 +1807,26 @@ impl App {
     }
 
     pub fn enter_commit_select_mode(&mut self) -> Result<()> {
+        let highlighter = self.theme.syntax_highlighter();
+        let has_uncommitted_changes = match self.vcs.get_working_tree_diff(highlighter) {
+            Ok(_) => true,
+            Err(TuicrError::NoChanges) => false,
+            Err(e) => return Err(e),
+        };
+
         let commits = self.vcs.get_recent_commits(0, VISIBLE_COMMIT_COUNT)?;
-        if commits.is_empty() {
-            self.set_message("No commits found");
+        if commits.is_empty() && !has_uncommitted_changes {
+            self.set_message("No commits or uncommitted changes found");
             return Ok(());
         }
 
         // Check if there might be more commits
         self.has_more_commit = commits.len() >= VISIBLE_COMMIT_COUNT;
         self.commit_list = commits;
+        if has_uncommitted_changes {
+            self.commit_list
+                .insert(0, Self::working_tree_commit_entry());
+        }
         self.commit_list_cursor = 0;
         self.commit_list_scroll_offset = 0;
         self.commit_selection_range = None;
@@ -1876,7 +1941,7 @@ impl App {
             return Ok(());
         }
 
-        let offset = self.commit_list.len();
+        let offset = self.loaded_history_commit_count();
         let limit = self.commit_page_size;
 
         let new_commits = self.vcs.get_recent_commits(offset, limit)?;
@@ -1950,16 +2015,33 @@ impl App {
             return Ok(());
         };
 
-        // Collect selected commit IDs (in order from oldest to newest, i.e., end to start)
-        // commit_list[0] is newest (HEAD), commit_list[end] is oldest selected
-        let selected_ids: Vec<String> = (start..=end)
+        // Collect selected entries in order from oldest to newest (end..start).
+        let selected_commits: Vec<&CommitInfo> = (start..=end)
             .rev()
-            .filter_map(|i| self.commit_list.get(i).map(|c| c.id.clone()))
+            .filter_map(|i| self.commit_list.get(i))
             .collect();
 
-        if selected_ids.is_empty() {
+        if selected_commits.is_empty() {
             self.set_message("Select at least one commit");
             return Ok(());
+        }
+
+        let selected_working_tree = selected_commits
+            .iter()
+            .any(|c| Self::is_working_tree_commit(c));
+        let selected_ids: Vec<String> = selected_commits
+            .iter()
+            .filter(|c| !Self::is_working_tree_commit(c))
+            .map(|c| c.id.clone())
+            .collect();
+
+        if selected_working_tree && !selected_ids.is_empty() {
+            self.set_message("Select either uncommitted changes or commits, not both");
+            return Ok(());
+        }
+
+        if selected_working_tree {
+            return self.load_working_tree_selection();
         }
 
         // Get the diff for the selected commits

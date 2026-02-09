@@ -146,7 +146,7 @@ fn render_commit_select(frame: &mut Frame, app: &mut App) {
 
             // Format: > ┌ [x] abc1234  Commit message (author, date)
             let time_str = commit.time.format("%Y-%m-%d").to_string();
-            Line::from(vec![
+            let mut spans = vec![
                 Span::styled(format!("{pointer} "), style),
                 Span::styled(format!("{range_marker} "), range_style),
                 Span::styled(format!("{checkbox} "), checkbox_style),
@@ -154,12 +154,27 @@ fn render_commit_select(frame: &mut Frame, app: &mut App) {
                     format!("{} ", commit.short_id),
                     styles::hash_style(&app.theme),
                 ),
-                Span::styled(truncate_str(&commit.summary, 50), style),
-                Span::styled(
-                    format!(" ({}, {})", commit.author, time_str),
+            ];
+
+            if commit.id == crate::app::WORKING_TREE_SELECTION_ID {
+                spans.push(Span::styled(&commit.summary, style));
+                return Line::from(spans);
+            }
+
+            if let Some(branch_name) = &commit.branch_name {
+                spans.push(Span::styled(
+                    format!("[{}] ", truncate_str(branch_name, 20)),
                     Style::default().fg(app.theme.fg_secondary),
-                ),
-            ])
+                ));
+            }
+
+            spans.push(Span::styled(truncate_str(&commit.summary, 50), style));
+            spans.push(Span::styled(
+                format!(" ({}, {})", commit.author, time_str),
+                Style::default().fg(app.theme.fg_secondary),
+            ));
+
+            Line::from(spans)
         })
         .collect();
 

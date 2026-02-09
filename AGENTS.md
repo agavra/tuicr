@@ -91,7 +91,7 @@ src/
 
 ### Data Flow
 
-1. **Startup**: `App::new()` calls `detect_vcs()` which tries Jujutsu first, then Git, then Mercurial. Parses diff and loads existing session if any
+1. **Startup**: `App::new()` calls `detect_vcs()` (Jujutsu first, then Git, then Mercurial), then enters commit selection mode by default. If uncommitted changes exist, the first selection row is "Uncommitted changes". With `-r/--revisions`, it opens the requested commit range directly.
 2. **Render**: `ui::render()` draws the TUI based on `App` state
 3. **Input**: `crossterm` events → `map_key_to_action` → match on Action in main loop
 4. **Persistence**: `:w` calls `save_session()`, writes JSON to `~/.local/share/tuicr/reviews/`

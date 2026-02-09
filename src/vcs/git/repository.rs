@@ -1,5 +1,6 @@
 use chrono::{DateTime, TimeZone, Utc};
-use git2::Repository;
+use git2::{BranchType, Oid, Repository};
+use std::collections::HashMap;
 
 use crate::error::{Result, TuicrError};
 
@@ -7,9 +8,37 @@ use crate::error::{Result, TuicrError};
 pub struct CommitInfo {
     pub id: String,
     pub short_id: String,
+    pub branch_name: Option<String>,
     pub summary: String,
     pub author: String,
     pub time: DateTime<Utc>,
+}
+
+fn get_branch_tip_names(repo: &Repository) -> HashMap<Oid, Vec<String>> {
+    let mut names_by_tip: HashMap<Oid, Vec<String>> = HashMap::new();
+
+    if let Ok(branches) = repo.branches(Some(BranchType::Local)) {
+        for (branch, _) in branches.flatten() {
+            let Some(target) = branch.get().target() else {
+                continue;
+            };
+
+            let Ok(Some(name)) = branch.name() else {
+                continue;
+            };
+
+            names_by_tip
+                .entry(target)
+                .or_default()
+                .push(name.to_string());
+        }
+    }
+
+    for names in names_by_tip.values_mut() {
+        names.sort_unstable();
+    }
+
+    names_by_tip
 }
 
 pub fn get_recent_commits(
@@ -19,6 +48,7 @@ pub fn get_recent_commits(
 ) -> Result<Vec<CommitInfo>> {
     let mut revwalk = repo.revwalk()?;
     revwalk.push_head()?;
+    let branch_tip_names = get_branch_tip_names(repo);
 
     let mut commits = Vec::new();
     for oid in revwalk.skip(offset).take(limit) {
@@ -29,6 +59,9 @@ pub fn get_recent_commits(
         let short_id = id[..7.min(id.len())].to_string();
         let summary = commit.summary().unwrap_or("(no message)").to_string();
         let author = commit.author().name().unwrap_or("Unknown").to_string();
+        let branch_name = branch_tip_names
+            .get(&oid)
+            .and_then(|names| names.first().cloned());
         let time = Utc
             .timestamp_opt(commit.time().seconds(), 0)
             .single()
@@ -37,6 +70,7 @@ pub fn get_recent_commits(
         commits.push(CommitInfo {
             id,
             short_id,
+            branch_name,
             summary,
             author,
             time,

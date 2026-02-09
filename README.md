@@ -96,6 +96,10 @@ Detection order: Jujutsu → Git → Mercurial. Jujutsu is tried first because j
 | `--stdout` | Output to stdout instead of clipboard when exporting |
 | `--no-update-check` | Skip checking for updates on startup |
 
+By default, `tuicr` starts in commit selection mode.  
+If uncommitted changes exist, the first selectable entry is `Uncommitted changes`.  
+When `-r` / `--revisions` is provided, `tuicr` opens that revision range directly.
+
 ### Keybindings
 
 #### Navigation
@@ -187,7 +191,7 @@ Detection order: Jujutsu → Git → Mercurial. Jujutsu is tried first because j
 | `?` | Toggle help |
 | `q` | Quick quit |
 
-#### Commit Selection (when no unstaged changes)
+#### Commit Selection
 
 | Key | Action |
 |-----|--------|

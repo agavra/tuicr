@@ -191,6 +191,7 @@ impl VcsBackend for HgBackend {
             commits.push(CommitInfo {
                 id,
                 short_id,
+                branch_name: None,
                 summary,
                 author,
                 time,

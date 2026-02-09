@@ -38,6 +38,9 @@ pub struct VcsInfo {
 pub struct CommitInfo {
     pub id: String,
     pub short_id: String,
+    /// Optional branch label for this commit in commit selection UI.
+    /// For Git this is populated for commits that are branch tips.
+    pub branch_name: Option<String>,
     pub summary: String,
     pub author: String,
     pub time: DateTime<Utc>,
@@ -149,6 +152,7 @@ mod tests {
         let commit = CommitInfo {
             id: "abc123def456".to_string(),
             short_id: "abc123d".to_string(),
+            branch_name: Some("main".to_string()),
             summary: "Fix bug".to_string(),
             author: "Test User".to_string(),
             time: Utc::now(),
@@ -157,6 +161,7 @@ mod tests {
         let cloned = commit.clone();
         assert_eq!(cloned.id, "abc123def456");
         assert_eq!(cloned.short_id, "abc123d");
+        assert_eq!(cloned.branch_name, Some("main".to_string()));
         assert_eq!(cloned.summary, "Fix bug");
         assert_eq!(cloned.author, "Test User");
     }

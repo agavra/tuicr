@@ -84,6 +84,7 @@ impl VcsBackend for GitBackend {
             .map(|c| CommitInfo {
                 id: c.id,
                 short_id: c.short_id,
+                branch_name: c.branch_name,
                 summary: c.summary,
                 author: c.author,
                 time: c.time,
