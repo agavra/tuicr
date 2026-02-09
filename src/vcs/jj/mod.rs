@@ -156,6 +156,37 @@ impl VcsBackend for JjBackend {
         Ok(result)
     }
 
+    fn resolve_revisions(&self, revisions: &str) -> Result<Vec<String>> {
+        // Use jj log to resolve the revisions to commit IDs, reverse-chronological by default.
+        // We reverse the result so the oldest commit is first (matching get_commit_range_diff expectations).
+        let output = run_jj_command(
+            &self.info.root_path,
+            &[
+                "log",
+                "-r",
+                revisions,
+                "--no-graph",
+                "-T",
+                r#"commit_id ++ "\n""#,
+            ],
+        )?;
+
+        let mut commit_ids: Vec<String> = output
+            .lines()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty())
+            .map(|l| l.to_string())
+            .collect();
+
+        if commit_ids.is_empty() {
+            return Err(TuicrError::NoChanges);
+        }
+
+        // jj log outputs newest first; reverse so oldest is first
+        commit_ids.reverse();
+        Ok(commit_ids)
+    }
+
     fn get_recent_commits(&self, offset: usize, limit: usize) -> Result<Vec<CommitInfo>> {
         // Use jj log with a template to get structured output
         // Template fields separated by \x00, records separated by \x01

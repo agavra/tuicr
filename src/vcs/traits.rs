@@ -67,6 +67,14 @@ pub trait VcsBackend: Send {
         Ok(Vec::new())
     }
 
+    /// Resolve a revisions expression to a list of commit IDs (oldest first).
+    /// Returns error if not supported (default).
+    fn resolve_revisions(&self, _revisions: &str) -> Result<Vec<String>> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Revset resolution not supported for this VCS".into(),
+        ))
+    }
+
     /// Get diff for a commit range.
     /// Returns error if not supported (default).
     fn get_commit_range_diff(

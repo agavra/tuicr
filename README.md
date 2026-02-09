@@ -90,6 +90,7 @@ Detection order: Jujutsu → Git → Mercurial. Jujutsu is tried first because j
 
 | Flag | Description |
 |------|-------------|
+| `-r` / `--revisions <REVSET>` | Commit range/Revision set to review. Exact syntax depends on VCS backend (Git, JJ, Hg) |
 | `--theme dark` | Use dark color theme (default) |
 | `--theme light` | Use light color theme for light terminal backgrounds |
 | `--stdout` | Output to stdout instead of clipboard when exporting |

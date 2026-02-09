@@ -73,7 +73,11 @@ fn main() -> anyhow::Result<()> {
     };
 
     // Initialize app
-    let mut app = match App::new(theme, cli_args.output_to_stdout) {
+    let mut app = match App::new(
+        theme,
+        cli_args.output_to_stdout,
+        cli_args.revisions.as_deref(),
+    ) {
         Ok(mut app) => {
             app.supports_keyboard_enhancement = keyboard_enhancement_supported;
             app

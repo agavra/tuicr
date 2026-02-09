@@ -119,6 +119,30 @@ impl VcsBackend for HgBackend {
         Ok(result)
     }
 
+    fn resolve_revisions(&self, revisions: &str) -> Result<Vec<String>> {
+        // Use hg log to resolve the revset to commit hashes.
+        // hg log outputs newest first; we reverse so oldest is first.
+        let output = run_hg_command(
+            &self.info.root_path,
+            &["log", "-r", revisions, "--template", "{node}\\n"],
+        )?;
+
+        let mut commit_ids: Vec<String> = output
+            .lines()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty())
+            .map(|l| l.to_string())
+            .collect();
+
+        if commit_ids.is_empty() {
+            return Err(TuicrError::NoChanges);
+        }
+
+        // hg log outputs newest first; reverse so oldest is first
+        commit_ids.reverse();
+        Ok(commit_ids)
+    }
+
     fn get_recent_commits(&self, offset: usize, limit: usize) -> Result<Vec<CommitInfo>> {
         // Use hg log with a template to get structured output
         // Template fields separated by \x00, records separated by \x01

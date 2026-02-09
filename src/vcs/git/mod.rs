@@ -91,6 +91,10 @@ impl VcsBackend for GitBackend {
             .collect())
     }
 
+    fn resolve_revisions(&self, revisions: &str) -> Result<Vec<String>> {
+        repository::resolve_revisions(&self.repo, revisions)
+    }
+
     fn get_commit_range_diff(
         &self,
         commit_ids: &[String],

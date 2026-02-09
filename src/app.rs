@@ -278,151 +278,189 @@ enum CommentLocation {
 }
 
 impl App {
-    pub fn new(theme: Theme, output_to_stdout: bool) -> Result<Self> {
+    pub fn new(theme: Theme, output_to_stdout: bool, revisions: Option<&str>) -> Result<Self> {
         let vcs = detect_vcs()?;
         let vcs_info = vcs.info().clone();
         let highlighter = theme.syntax_highlighter();
 
-        // Try to get working tree diff first
-        let diff_result = vcs.get_working_tree_diff(highlighter);
-
-        match diff_result {
-            Ok(diff_files) => {
-                // We have unstaged changes - normal flow
-                let mut session = Self::load_or_create_session(&vcs_info);
-
-                // Ensure all current diff files are in the session
-                for file in &diff_files {
-                    let path = file.display_path().clone();
-                    session.add_file(path, file.status);
-                }
-
-                let mut app = Self {
-                    theme,
-                    vcs,
-                    vcs_info,
-                    session,
-                    diff_files,
-                    diff_source: DiffSource::WorkingTree,
-                    input_mode: InputMode::Normal,
-                    focused_panel: FocusedPanel::Diff,
-                    diff_view_mode: DiffViewMode::Unified,
-                    file_list_state: FileListState::default(),
-                    diff_state: DiffState::default(),
-                    help_state: HelpState::default(),
-                    command_buffer: String::new(),
-                    search_buffer: String::new(),
-                    last_search_pattern: None,
-                    comment_buffer: String::new(),
-                    comment_cursor: 0,
-                    comment_type: CommentType::Note,
-                    comment_is_file_level: true,
-                    comment_line: None,
-                    editing_comment_id: None,
-                    visual_anchor: None,
-                    comment_line_range: None,
-                    commit_list: Vec::new(),
-                    commit_list_cursor: 0,
-                    commit_list_scroll_offset: 0,
-                    commit_list_viewport_height: 0,
-                    commit_selection_range: None,
-                    visible_commit_count: VISIBLE_COMMIT_COUNT,
-                    commit_page_size: COMMIT_PAGE_SIZE,
-                    has_more_commit: true,
-                    should_quit: false,
-                    dirty: false,
-                    quit_warned: false,
-                    message: None,
-                    pending_confirm: None,
-                    supports_keyboard_enhancement: false,
-                    show_file_list: true,
-                    file_list_area: None,
-                    diff_area: None,
-                    expanded_dirs: HashSet::new(),
-                    expanded_gaps: HashSet::new(),
-                    expanded_content: HashMap::new(),
-                    line_annotations: Vec::new(),
-                    output_to_stdout,
-                    pending_stdout_output: None,
-                    comment_cursor_screen_pos: None,
-                    update_info: None,
-                };
-                app.sort_files_by_directory(true);
-                app.expand_all_dirs();
-                app.rebuild_annotations();
-                Ok(app)
+        // Determine the diff source, files, and session based on input.
+        // Three paths: CLI revisions, working tree changes, or commit selection fallback.
+        if let Some(revisions) = revisions {
+            // Resolve the revisions to commits and diff as a commit range
+            let commit_ids = vcs.resolve_revisions(revisions)?;
+            let diff_files = vcs.get_commit_range_diff(&commit_ids, highlighter)?;
+            if diff_files.is_empty() {
+                return Err(TuicrError::NoChanges);
             }
-            Err(TuicrError::NoChanges) => {
-                // No unstaged changes - try to get recent commits
-                let commits = vcs.get_recent_commits(0, VISIBLE_COMMIT_COUNT)?;
-                if commits.is_empty() {
-                    return Err(TuicrError::NoChanges);
+            let session = Self::load_or_create_commit_range_session(&vcs_info, &commit_ids);
+            Self::build(
+                vcs,
+                vcs_info,
+                theme,
+                output_to_stdout,
+                diff_files,
+                session,
+                DiffSource::CommitRange(commit_ids),
+                InputMode::Normal,
+                Vec::new(),
+            )
+        } else {
+            match vcs.get_working_tree_diff(highlighter) {
+                Ok(diff_files) => {
+                    let session = Self::load_or_create_session(&vcs_info);
+                    Self::build(
+                        vcs,
+                        vcs_info,
+                        theme,
+                        output_to_stdout,
+                        diff_files,
+                        session,
+                        DiffSource::WorkingTree,
+                        InputMode::Normal,
+                        Vec::new(),
+                    )
                 }
-
-                // Check if there might be more commits (if we got exactly the page size)
-                let has_more_commit = commits.len() >= VISIBLE_COMMIT_COUNT;
-                let commit_count = commits.len();
-
-                let session = ReviewSession::new(
-                    vcs_info.root_path.clone(),
-                    vcs_info.head_commit.clone(),
-                    vcs_info.branch_name.clone(),
-                    SessionDiffSource::WorkingTree,
-                );
-
-                Ok(Self {
-                    theme,
-                    vcs,
-                    vcs_info,
-                    session,
-                    diff_files: Vec::new(),
-                    diff_source: DiffSource::WorkingTree,
-                    input_mode: InputMode::CommitSelect,
-                    focused_panel: FocusedPanel::Diff,
-                    diff_view_mode: DiffViewMode::Unified,
-                    file_list_state: FileListState::default(),
-                    diff_state: DiffState::default(),
-                    help_state: HelpState::default(),
-                    command_buffer: String::new(),
-                    search_buffer: String::new(),
-                    last_search_pattern: None,
-                    comment_buffer: String::new(),
-                    comment_cursor: 0,
-                    comment_type: CommentType::Note,
-                    comment_is_file_level: true,
-                    comment_line: None,
-                    editing_comment_id: None,
-                    visual_anchor: None,
-                    comment_line_range: None,
-                    commit_list: commits,
-                    commit_list_cursor: 0,
-                    commit_list_scroll_offset: 0,
-                    commit_list_viewport_height: 0,
-                    commit_selection_range: None,
-                    visible_commit_count: commit_count,
-                    commit_page_size: COMMIT_PAGE_SIZE,
-                    has_more_commit,
-                    should_quit: false,
-                    dirty: false,
-                    quit_warned: false,
-                    message: None,
-                    pending_confirm: None,
-                    supports_keyboard_enhancement: false,
-                    show_file_list: true,
-                    file_list_area: None,
-                    diff_area: None,
-                    expanded_dirs: HashSet::new(),
-                    expanded_gaps: HashSet::new(),
-                    expanded_content: HashMap::new(),
-                    line_annotations: Vec::new(),
-                    output_to_stdout,
-                    pending_stdout_output: None,
-                    comment_cursor_screen_pos: None,
-                    update_info: None,
-                })
+                Err(TuicrError::NoChanges) => {
+                    let commits = vcs.get_recent_commits(0, VISIBLE_COMMIT_COUNT)?;
+                    if commits.is_empty() {
+                        return Err(TuicrError::NoChanges);
+                    }
+                    let session = ReviewSession::new(
+                        vcs_info.root_path.clone(),
+                        vcs_info.head_commit.clone(),
+                        vcs_info.branch_name.clone(),
+                        SessionDiffSource::WorkingTree,
+                    );
+                    Self::build(
+                        vcs,
+                        vcs_info,
+                        theme,
+                        output_to_stdout,
+                        Vec::new(),
+                        session,
+                        DiffSource::WorkingTree,
+                        InputMode::CommitSelect,
+                        commits,
+                    )
+                }
+                Err(e) => Err(e),
             }
-            Err(e) => Err(e),
         }
+    }
+
+    /// Shared constructor: all `App::new` paths converge here.
+    #[allow(clippy::too_many_arguments)]
+    fn build(
+        vcs: Box<dyn VcsBackend>,
+        vcs_info: VcsInfo,
+        theme: Theme,
+        output_to_stdout: bool,
+        diff_files: Vec<DiffFile>,
+        mut session: ReviewSession,
+        diff_source: DiffSource,
+        input_mode: InputMode,
+        commit_list: Vec<CommitInfo>,
+    ) -> Result<Self> {
+        // Ensure all diff files are registered in the session
+        for file in &diff_files {
+            session.add_file(file.display_path().clone(), file.status);
+        }
+
+        let has_more_commit = commit_list.len() >= VISIBLE_COMMIT_COUNT;
+        let visible_commit_count = if commit_list.is_empty() {
+            VISIBLE_COMMIT_COUNT
+        } else {
+            commit_list.len()
+        };
+
+        let mut app = Self {
+            theme,
+            vcs,
+            vcs_info,
+            session,
+            diff_files,
+            diff_source,
+            input_mode,
+            focused_panel: FocusedPanel::Diff,
+            diff_view_mode: DiffViewMode::Unified,
+            file_list_state: FileListState::default(),
+            diff_state: DiffState::default(),
+            help_state: HelpState::default(),
+            command_buffer: String::new(),
+            search_buffer: String::new(),
+            last_search_pattern: None,
+            comment_buffer: String::new(),
+            comment_cursor: 0,
+            comment_type: CommentType::Note,
+            comment_is_file_level: true,
+            comment_line: None,
+            editing_comment_id: None,
+            visual_anchor: None,
+            comment_line_range: None,
+            commit_list,
+            commit_list_cursor: 0,
+            commit_list_scroll_offset: 0,
+            commit_list_viewport_height: 0,
+            commit_selection_range: None,
+            visible_commit_count,
+            commit_page_size: COMMIT_PAGE_SIZE,
+            has_more_commit,
+            should_quit: false,
+            dirty: false,
+            quit_warned: false,
+            message: None,
+            pending_confirm: None,
+            supports_keyboard_enhancement: false,
+            show_file_list: true,
+            file_list_area: None,
+            diff_area: None,
+            expanded_dirs: HashSet::new(),
+            expanded_gaps: HashSet::new(),
+            expanded_content: HashMap::new(),
+            line_annotations: Vec::new(),
+            output_to_stdout,
+            pending_stdout_output: None,
+            comment_cursor_screen_pos: None,
+            update_info: None,
+        };
+        app.sort_files_by_directory(true);
+        app.expand_all_dirs();
+        app.rebuild_annotations();
+        Ok(app)
+    }
+
+    /// Load or create a session for a commit range (used by revisions and commit selection).
+    fn load_or_create_commit_range_session(
+        vcs_info: &VcsInfo,
+        commit_ids: &[String],
+    ) -> ReviewSession {
+        let newest_commit_id = commit_ids.last().unwrap().clone();
+        let loaded = load_latest_session_for_context(
+            &vcs_info.root_path,
+            vcs_info.branch_name.as_deref(),
+            &newest_commit_id,
+            SessionDiffSource::CommitRange,
+            Some(commit_ids),
+        )
+        .ok()
+        .and_then(|found| found.map(|(_path, session)| session));
+
+        let mut session = loaded.unwrap_or_else(|| {
+            let mut s = ReviewSession::new(
+                vcs_info.root_path.clone(),
+                newest_commit_id,
+                vcs_info.branch_name.clone(),
+                SessionDiffSource::CommitRange,
+            );
+            s.commit_range = Some(commit_ids.to_vec());
+            s
+        });
+
+        if session.commit_range.is_none() {
+            session.commit_range = Some(commit_ids.to_vec());
+            session.updated_at = chrono::Utc::now();
+        }
+        session
     }
 
     fn load_or_create_session(vcs_info: &VcsInfo) -> ReviewSession {

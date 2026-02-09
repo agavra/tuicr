@@ -198,6 +198,8 @@ pub struct CliArgs {
     pub output_to_stdout: bool,
     /// Skip checking for updates on startup
     pub no_update_check: bool,
+    /// Commit/revision range to review
+    pub revisions: Option<String>,
 }
 
 impl ThemeArg {
@@ -243,11 +245,12 @@ fn print_help() -> ! {
 Usage: {name} [OPTIONS]
 
 Options:
-  --theme <THEME>    Color theme to use [default: dark]
-                     Valid values: dark, light
-  --stdout           Output to stdout instead of clipboard when exporting
-  --no-update-check  Skip checking for updates on startup
-  -h, --help         Print this help message
+  -r, --revisions <REVSET>  Commit range/Revset to review (syntax depends on VCS backend)
+  --theme <THEME>        Color theme to use [default: dark]
+                         Valid values: dark, light
+  --stdout               Output to stdout instead of clipboard when exporting
+  --no-update-check      Skip checking for updates on startup
+  -h, --help             Print this help message
 
 Press ? in the application for keybinding help."
     );
@@ -300,6 +303,19 @@ pub fn parse_cli_args() -> CliArgs {
                 );
                 ThemeArg::Dark
             });
+        }
+
+        // Handle -r / --revisions value
+        if args[i] == "-r" || args[i] == "--revisions" {
+            if let Some(value) = args.get(i + 1) {
+                cli_args.revisions = Some(value.clone());
+            } else {
+                eprintln!("Warning: {0} requires a value", args[i]);
+            }
+        }
+        // Handle --revisions=value
+        if let Some(value) = args[i].strip_prefix("--revisions=") {
+            cli_args.revisions = Some(value.to_string());
         }
     }
 
