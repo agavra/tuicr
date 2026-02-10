@@ -170,7 +170,7 @@ fn render_commit_select(frame: &mut Frame, app: &mut App) {
             if let Some(branch_name) = &commit.branch_name {
                 spans.push(Span::styled(
                     format!("[{}] ", truncate_str(branch_name, 20)),
-                    Style::default().fg(app.theme.fg_secondary),
+                    styles::branch_style(&app.theme),
                 ));
             }
 
@@ -358,7 +358,7 @@ fn render_inline_commit_selector(frame: &mut Frame, app: &mut App, area: Rect) {
                 if let Some(branch_name) = &commit.branch_name {
                     spans.push(Span::styled(
                         format!("[{}] ", truncate_str(branch_name, 20)),
-                        Style::default().fg(app.theme.fg_secondary),
+                        styles::branch_style(&app.theme),
                     ));
                 }
 

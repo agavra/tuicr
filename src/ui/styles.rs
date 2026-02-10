@@ -101,6 +101,10 @@ pub fn hash_style(theme: &Theme) -> Style {
     Style::default().fg(theme.cursor_color)
 }
 
+pub fn branch_style(theme: &Theme) -> Style {
+    Style::default().fg(theme.branch_name)
+}
+
 pub fn dir_icon_style(theme: &Theme) -> Style {
     Style::default().fg(theme.diff_hunk_header)
 }

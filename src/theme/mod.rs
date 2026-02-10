@@ -59,6 +59,7 @@ pub struct Theme {
     pub border_unfocused: Color,
     pub status_bar_bg: Color,
     pub cursor_color: Color,
+    pub branch_name: Color,
     pub help_indicator: Color,
 
     // Message/update badge colors
@@ -132,6 +133,7 @@ impl Theme {
             border_unfocused: Color::Rgb(110, 110, 110),
             status_bar_bg: Color::Rgb(30, 30, 30),
             cursor_color: Color::Rgb(255, 210, 90),
+            branch_name: Color::Rgb(90, 220, 240),
             help_indicator: Color::Rgb(110, 110, 110),
 
             // Message/update badge colors
@@ -200,6 +202,7 @@ impl Theme {
             border_unfocused: Color::Rgb(100, 100, 100),
             status_bar_bg: Color::Rgb(210, 210, 220),
             cursor_color: Color::Rgb(140, 80, 0),
+            branch_name: Color::Rgb(0, 100, 120),
             help_indicator: Color::Rgb(90, 90, 90),
 
             // Message/update badge colors
@@ -413,6 +416,7 @@ fn catppuccin_theme(flavor: CatppuccinFlavor, syntect_theme: EmbeddedThemeName) 
         border_unfocused: flavor.surface2,
         status_bar_bg: flavor.mantle,
         cursor_color: flavor.peach,
+        branch_name: flavor.teal,
         help_indicator: flavor.overlay0,
 
         // Message/update badge colors
