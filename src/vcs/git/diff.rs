@@ -55,6 +55,38 @@ pub fn get_commit_range_diff(
     parse_diff(&diff, highlighter)
 }
 
+/// Get a combined diff from the parent of the oldest commit through to the working tree.
+/// This shows both committed and uncommitted changes in a single diff.
+pub fn get_working_tree_with_commits_diff(
+    repo: &Repository,
+    commit_ids: &[String],
+    highlighter: &SyntaxHighlighter,
+) -> Result<Vec<DiffFile>> {
+    if commit_ids.is_empty() {
+        return Err(TuicrError::NoChanges);
+    }
+
+    // Find the oldest commit (first in our list since commits are oldest to newest)
+    let oldest_id = git2::Oid::from_str(&commit_ids[0])?;
+    let oldest_commit = repo.find_commit(oldest_id)?;
+
+    // Get the parent of the oldest commit, or use an empty tree if it's the initial commit
+    let old_tree = if oldest_commit.parent_count() > 0 {
+        Some(oldest_commit.parent(0)?.tree()?)
+    } else {
+        None
+    };
+
+    let mut opts = DiffOptions::new();
+    opts.include_untracked(true);
+    opts.show_untracked_content(true);
+    opts.recurse_untracked_dirs(true);
+
+    let diff = repo.diff_tree_to_workdir_with_index(old_tree.as_ref(), Some(&mut opts))?;
+
+    parse_diff(&diff, highlighter)
+}
+
 fn parse_diff(diff: &Diff, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
     let mut files: Vec<DiffFile> = Vec::new();
 

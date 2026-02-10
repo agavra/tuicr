@@ -34,7 +34,10 @@ fn parse_session_filename(filename: &str) -> Option<SessionFilenameParts> {
     let date_part = parts.get(date_idx)?;
     let time_part = parts.get(time_idx)?;
 
-    if !matches!(*diff_source, "worktree" | "commits") {
+    if !matches!(
+        *diff_source,
+        "worktree" | "commits" | "worktree_and_commits"
+    ) {
         return None;
     }
 
@@ -152,6 +155,7 @@ fn session_filename(session: &ReviewSession) -> String {
     let diff_source = match session.diff_source {
         SessionDiffSource::WorkingTree => "worktree",
         SessionDiffSource::CommitRange => "commits",
+        SessionDiffSource::WorkingTreeAndCommits => "worktree_and_commits",
     };
 
     let timestamp = session.created_at.format("%Y%m%d_%H%M%S");
@@ -193,6 +197,7 @@ pub fn load_latest_session_for_context(
     let current_diff_source = match diff_source {
         SessionDiffSource::WorkingTree => "worktree",
         SessionDiffSource::CommitRange => "commits",
+        SessionDiffSource::WorkingTreeAndCommits => "worktree_and_commits",
     };
 
     let reviews_dir = get_reviews_dir()?;
@@ -279,8 +284,10 @@ pub fn load_latest_session_for_context(
             continue;
         }
 
-        if diff_source == SessionDiffSource::CommitRange
-            && let Some(expected_range) = commit_range
+        if matches!(
+            diff_source,
+            SessionDiffSource::CommitRange | SessionDiffSource::WorkingTreeAndCommits
+        ) && let Some(expected_range) = commit_range
             && session.commit_range.as_deref() != Some(expected_range)
         {
             continue;

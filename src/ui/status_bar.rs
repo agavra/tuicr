@@ -75,6 +75,9 @@ pub fn render_header(frame: &mut Frame, app: &App, area: Rect) {
                 }
             }
         }
+        DiffSource::WorkingTreeAndCommits(commits) => {
+            format!("[worktree + {} commits] ", commits.len())
+        }
     };
 
     let progress = format!("{}/{} reviewed ", app.reviewed_count(), app.file_count());

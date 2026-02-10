@@ -321,6 +321,50 @@ impl VcsBackend for HgBackend {
         // Return in input order
         Ok(ids.iter().filter_map(|id| by_id.remove(id)).collect())
     }
+
+    fn get_working_tree_with_commits_diff(
+        &self,
+        commit_ids: &[String],
+        highlighter: &SyntaxHighlighter,
+    ) -> Result<Vec<DiffFile>> {
+        if commit_ids.is_empty() {
+            return Err(TuicrError::NoChanges);
+        }
+
+        // commit_ids are ordered from oldest to newest
+        let oldest = &commit_ids[0];
+        let oldest_short = if oldest.len() > 12 {
+            &oldest[..12]
+        } else {
+            oldest.as_str()
+        };
+
+        // Get the parent of the oldest commit
+        let parent_output = run_hg_command(
+            &self.info.root_path,
+            &[
+                "log",
+                "-r",
+                &format!("parents({})", oldest_short),
+                "--template",
+                "{node|short}",
+            ],
+        );
+
+        let from_rev = match parent_output {
+            Ok(parent) if !parent.trim().is_empty() => parent.trim().to_string(),
+            _ => "null".to_string(),
+        };
+
+        // Diff from parent of oldest to working directory (omit --to)
+        let diff_output = run_hg_command(&self.info.root_path, &["diff", "-r", &from_rev])?;
+
+        if diff_output.trim().is_empty() {
+            return Err(TuicrError::NoChanges);
+        }
+
+        diff_parser::parse_unified_diff(&diff_output, DiffFormat::Hg, highlighter)
+    }
 }
 
 /// Run an hg command and return its stdout

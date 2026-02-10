@@ -46,6 +46,7 @@ pub enum SessionDiffSource {
     #[default]
     WorkingTree,
     CommitRange,
+    WorkingTreeAndCommits,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

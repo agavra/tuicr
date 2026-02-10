@@ -95,6 +95,19 @@ pub trait VcsBackend: Send {
     fn get_commits_info(&self, _ids: &[String]) -> Result<Vec<CommitInfo>> {
         Ok(Vec::new())
     }
+
+    /// Get a combined diff from the parent of the oldest commit through to the working tree.
+    /// This shows both committed and uncommitted changes in a single diff.
+    /// Returns error if not supported (default).
+    fn get_working_tree_with_commits_diff(
+        &self,
+        _commit_ids: &[String],
+        _highlighter: &SyntaxHighlighter,
+    ) -> Result<Vec<DiffFile>> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Working tree + commits diff not supported for this VCS".into(),
+        ))
+    }
 }
 
 #[cfg(test)]

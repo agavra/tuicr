@@ -98,6 +98,7 @@ pub enum InputMode {
 pub enum DiffSource {
     WorkingTree,
     CommitRange(Vec<String>),
+    WorkingTreeAndCommits(Vec<String>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -614,7 +615,14 @@ impl App {
         };
 
         let highlighter = self.theme.syntax_highlighter();
-        let diff_files = self.vcs.get_working_tree_diff(highlighter)?;
+        let diff_files = match &self.diff_source {
+            DiffSource::WorkingTreeAndCommits(commit_ids) => {
+                let ids = commit_ids.clone();
+                self.vcs
+                    .get_working_tree_with_commits_diff(&ids, highlighter)?
+            }
+            _ => self.vcs.get_working_tree_diff(highlighter)?,
+        };
 
         for file in &diff_files {
             let path = file.display_path().clone();
@@ -1900,7 +1908,10 @@ impl App {
         }
 
         // If we were viewing commits, try to go back to working tree
-        if matches!(self.diff_source, DiffSource::CommitRange(_)) {
+        if matches!(
+            self.diff_source,
+            DiffSource::CommitRange(_) | DiffSource::WorkingTreeAndCommits(_)
+        ) {
             let highlighter = self.theme.syntax_highlighter();
             match self.vcs.get_working_tree_diff(highlighter) {
                 Ok(diff_files) => {
@@ -2174,8 +2185,7 @@ impl App {
             .collect();
 
         if selected_working_tree && !selected_ids.is_empty() {
-            self.set_message("Select either uncommitted changes or commits, not both");
-            return Ok(());
+            return self.load_working_tree_and_commits_selection(selected_ids);
         }
 
         if selected_working_tree {
@@ -2328,6 +2338,67 @@ impl App {
         self.file_list_state = FileListState::default();
         self.expanded_gaps.clear();
         self.expanded_content.clear();
+        self.sort_files_by_directory(true);
+        self.expand_all_dirs();
+        self.rebuild_annotations();
+
+        Ok(())
+    }
+
+    fn load_working_tree_and_commits_selection(&mut self, selected_ids: Vec<String>) -> Result<()> {
+        let highlighter = self.theme.syntax_highlighter();
+        let diff_files = match self
+            .vcs
+            .get_working_tree_with_commits_diff(&selected_ids, highlighter)
+        {
+            Ok(diff_files) => diff_files,
+            Err(TuicrError::NoChanges) => {
+                self.set_message("No changes in selected commits + working tree");
+                return Ok(());
+            }
+            Err(e) => return Err(e),
+        };
+
+        let newest_commit_id = selected_ids.last().unwrap().clone();
+        let loaded_session = load_latest_session_for_context(
+            &self.vcs_info.root_path,
+            self.vcs_info.branch_name.as_deref(),
+            &newest_commit_id,
+            SessionDiffSource::WorkingTreeAndCommits,
+            Some(selected_ids.as_slice()),
+        )
+        .ok()
+        .and_then(|found| found.map(|(_path, session)| session));
+
+        let mut session = loaded_session.unwrap_or_else(|| {
+            let mut session = ReviewSession::new(
+                self.vcs_info.root_path.clone(),
+                newest_commit_id,
+                self.vcs_info.branch_name.clone(),
+                SessionDiffSource::WorkingTreeAndCommits,
+            );
+            session.commit_range = Some(selected_ids.clone());
+            session
+        });
+
+        if session.commit_range.is_none() {
+            session.commit_range = Some(selected_ids.clone());
+            session.updated_at = chrono::Utc::now();
+        }
+
+        self.session = session;
+
+        for file in &diff_files {
+            let path = file.display_path().clone();
+            self.session.add_file(path, file.status);
+        }
+
+        self.diff_files = diff_files;
+        self.diff_source = DiffSource::WorkingTreeAndCommits(selected_ids);
+        self.input_mode = InputMode::Normal;
+        self.diff_state = DiffState::default();
+        self.file_list_state = FileListState::default();
+
         self.sort_files_by_directory(true);
         self.expand_all_dirs();
         self.rebuild_annotations();

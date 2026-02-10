@@ -329,6 +329,38 @@ impl VcsBackend for JjBackend {
         // Return in input order
         Ok(ids.iter().filter_map(|id| by_id.remove(id)).collect())
     }
+
+    fn get_working_tree_with_commits_diff(
+        &self,
+        commit_ids: &[String],
+        highlighter: &SyntaxHighlighter,
+    ) -> Result<Vec<DiffFile>> {
+        if commit_ids.is_empty() {
+            return Err(TuicrError::NoChanges);
+        }
+
+        // commit_ids are ordered from oldest to newest
+        let oldest = &commit_ids[0];
+
+        // Diff from the parent of the oldest commit to the working copy (@)
+        let diff_output = run_jj_command(
+            &self.info.root_path,
+            &[
+                "diff",
+                "--from",
+                &format!("{}-", oldest),
+                "--to",
+                "@",
+                "--git",
+            ],
+        )?;
+
+        if diff_output.trim().is_empty() {
+            return Err(TuicrError::NoChanges);
+        }
+
+        diff_parser::parse_unified_diff(&diff_output, DiffFormat::GitStyle, highlighter)
+    }
 }
 
 /// Run a jj command and return its stdout

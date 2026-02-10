@@ -102,6 +102,15 @@ fn generate_markdown(session: &ReviewSession, diff_source: &DiffSource) -> Strin
             }
             let _ = writeln!(md);
         }
+        DiffSource::WorkingTreeAndCommits(commits) => {
+            let short_ids: Vec<&str> = commits.iter().map(|c| &c[..7.min(c.len())]).collect();
+            let _ = writeln!(
+                md,
+                "Reviewing working tree + commits: {}",
+                short_ids.join(", ")
+            );
+            let _ = writeln!(md);
+        }
     }
 
     let _ = writeln!(
