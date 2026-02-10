@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.7.0] - 2026-02-10
+
+### Bug Fixes
+
+- **diff:** Expand collapsed lines in side-by-side mode (#156)
+- **config:** Ignore unknown keys while preserving known settings (#166)
+
+### Features
+
+- **syntax:** Add syntax highlighting for diffs (#154)
+- **syntax:** Replace syntect defaults with two-face for expanded syntax highlighting (#155)
+- Add inline commit selector for multi-commit reviews (#160)
+- Allow selecting both worktree and commits in the selector (#161)
+- Add configuration file support and catppuccin themes (#162)
 ## [0.6.0] - 2026-01-30
 
 ### Bug Fixes
