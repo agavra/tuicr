@@ -2319,7 +2319,7 @@ impl App {
         let has_worktree = (start..=end).any(|i| {
             self.review_commits
                 .get(i)
-                .is_some_and(|c| Self::is_working_tree_commit(c))
+                .is_some_and(Self::is_working_tree_commit)
         });
         let selected_ids: Vec<String> = (start..=end)
             .rev() // oldest to newest
