@@ -58,10 +58,47 @@ fn should_prefer_osc52() -> bool {
 }
 
 /// Copy text to clipboard using OSC 52 escape sequence.
-/// This works over SSH as the escape sequence is interpreted by the local terminal.
+/// In tmux, raw OSC 52 is intercepted and may not reach the outer terminal.
+/// We use `tmux load-buffer -w` which tells tmux to handle the clipboard copy itself.
 fn copy_osc52(text: &str) -> Result<()> {
-    let mut stdout = std::io::stdout().lock();
-    write_osc52(&mut stdout, text)
+    if std::env::var("TMUX").is_ok() {
+        copy_via_tmux(text)
+    } else {
+        let mut stdout = std::io::stdout().lock();
+        write_osc52(&mut stdout, text)
+    }
+}
+
+/// Copy text to the system clipboard via `tmux load-buffer -w -`.
+/// The `-w` flag tells tmux to also forward to the outer terminal's clipboard via OSC 52.
+fn copy_via_tmux(text: &str) -> Result<()> {
+    use std::process::{Command, Stdio};
+
+    let mut child = Command::new("tmux")
+        .args(["load-buffer", "-w", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| TuicrError::Clipboard(format!("Failed to run tmux: {e}")))?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(text.as_bytes())
+            .map_err(|e| TuicrError::Clipboard(format!("Failed to write to tmux: {e}")))?;
+    }
+
+    let status = child
+        .wait()
+        .map_err(|e| TuicrError::Clipboard(format!("tmux load-buffer failed: {e}")))?;
+
+    if !status.success() {
+        return Err(TuicrError::Clipboard(
+            "tmux load-buffer exited with error".to_string(),
+        ));
+    }
+
+    Ok(())
 }
 
 /// Write OSC 52 escape sequence to the given writer.
