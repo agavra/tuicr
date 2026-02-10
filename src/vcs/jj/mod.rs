@@ -1,5 +1,6 @@
 //! Jujutsu (jj) backend implementation using CLI commands.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -277,6 +278,56 @@ impl VcsBackend for JjBackend {
         }
 
         diff_parser::parse_unified_diff(&diff_output, DiffFormat::GitStyle, highlighter)
+    }
+
+    fn get_commits_info(&self, ids: &[String]) -> Result<Vec<CommitInfo>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Use jj log with a revset matching the given IDs
+        let revset = ids
+            .iter()
+            .map(|id| id.as_str())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        let template = r#"commit_id ++ "\x00" ++ commit_id.short() ++ "\x00" ++ description.first_line() ++ "\x00" ++ author.email() ++ "\x00" ++ committer.timestamp() ++ "\x01""#;
+        let output = run_jj_command(
+            &self.info.root_path,
+            &["log", "-r", &revset, "--no-graph", "-T", template],
+        )?;
+
+        let mut by_id: HashMap<String, CommitInfo> = HashMap::new();
+        for record in output.split('\x01') {
+            let record = record.trim();
+            if record.is_empty() {
+                continue;
+            }
+            let parts: Vec<&str> = record.split('\x00').collect();
+            if parts.len() < 5 {
+                continue;
+            }
+            let id = parts[0].to_string();
+            let short_id = parts[1].to_string();
+            let summary = parts[2].to_string();
+            let author = parts[3].to_string();
+            let time = DateTime::parse_from_rfc3339(parts[4])
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
+            by_id.insert(
+                id.clone(),
+                CommitInfo {
+                    id,
+                    short_id,
+                    branch_name: None,
+                    summary,
+                    author,
+                    time,
+                },
+            );
+        }
+
+        // Return in input order
+        Ok(ids.iter().filter_map(|id| by_id.remove(id)).collect())
     }
 }
 

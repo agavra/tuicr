@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -259,6 +260,66 @@ impl VcsBackend for HgBackend {
         }
 
         diff_parser::parse_unified_diff(&diff_output, DiffFormat::Hg, highlighter)
+    }
+
+    fn get_commits_info(&self, ids: &[String]) -> Result<Vec<CommitInfo>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Use hg log with a revset matching the given IDs
+        let revset = ids
+            .iter()
+            .map(|id| {
+                if id.len() > 12 {
+                    &id[..12]
+                } else {
+                    id.as_str()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" | ");
+        let template =
+            "{node}\\x00{node|short}\\x00{desc|firstline}\\x00{author|user}\\x00{date|hgdate}\\x01";
+        let output = run_hg_command(
+            &self.info.root_path,
+            &["log", "-r", &revset, "--template", template],
+        )?;
+
+        let mut by_id: HashMap<String, CommitInfo> = HashMap::new();
+        for record in output.split('\x01') {
+            let record = record.trim();
+            if record.is_empty() {
+                continue;
+            }
+            let parts: Vec<&str> = record.split('\x00').collect();
+            if parts.len() < 5 {
+                continue;
+            }
+            let id = parts[0].to_string();
+            let short_id = parts[1].to_string();
+            let summary = parts[2].to_string();
+            let author = parts[3].to_string();
+            let time = parts[4]
+                .split_whitespace()
+                .next()
+                .and_then(|s| s.parse::<i64>().ok())
+                .and_then(|ts| Utc.timestamp_opt(ts, 0).single())
+                .unwrap_or_else(Utc::now);
+            by_id.insert(
+                id.clone(),
+                CommitInfo {
+                    id,
+                    short_id,
+                    branch_name: None,
+                    summary,
+                    author,
+                    time,
+                },
+            );
+        }
+
+        // Return in input order
+        Ok(ids.iter().filter_map(|id| by_id.remove(id)).collect())
     }
 }
 

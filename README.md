@@ -133,9 +133,11 @@ When `-r` / `--revisions` is provided, `tuicr` opens that revision range directl
 
 | Key | Action |
 |-----|--------|
-| `Tab` | Toggle focus between file list and diff |
+| `Tab` | Toggle focus between file list, diff, and commit selector |
 | `;h` | Focus file list (left panel) |
 | `;l` | Focus diff view (right panel) |
+| `;k` | Focus commit selector (top panel) |
+| `;j` | Focus diff view |
 | `;e` | Toggle file list visibility |
 | `Enter` | Select file (when file list is focused) |
 
@@ -182,6 +184,9 @@ When `-r` / `--revisions` is provided, `tuicr` opens that revision range directl
 | `:commits` | Select commits to review |
 | `:set wrap` | Enable line wrap in diff view |
 | `:set wrap!` | Toggle line wrap in diff view |
+| `:set commits` | Show inline commit selector |
+| `:set nocommits` | Hide inline commit selector |
+| `:set commits!` | Toggle inline commit selector |
 | `:clear` | Clear all comments |
 | `:version` | Show tuicr version |
 | `:update` | Check for updates |
@@ -191,7 +196,7 @@ When `-r` / `--revisions` is provided, `tuicr` opens that revision range directl
 | `?` | Toggle help |
 | `q` | Quick quit |
 
-#### Commit Selection
+#### Commit Selection (startup)
 
 | Key | Action |
 |-----|--------|
@@ -199,6 +204,17 @@ When `-r` / `--revisions` is provided, `tuicr` opens that revision range directl
 | `Space` | Toggle commit selection |
 | `Enter` | Confirm and load diff |
 | `q` / `Esc` | Quit |
+
+#### Inline Commit Selector (multi-commit reviews)
+
+When reviewing multiple commits, an inline commit selector panel appears at the top of the diff view. Focus it with `;k` or `Tab`.
+
+| Key | Action |
+|-----|--------|
+| `j` / `k` | Navigate commits |
+| `Space` / `Enter` | Toggle commit selection (updates diff) |
+| `(` / `)` | Cycle through individual commits |
+| `Esc` | Return focus to diff |
 
 #### Confirm Dialogs
 

@@ -103,4 +103,19 @@ impl VcsBackend for GitBackend {
     ) -> Result<Vec<DiffFile>> {
         get_commit_range_diff(&self.repo, commit_ids, highlighter)
     }
+
+    fn get_commits_info(&self, ids: &[String]) -> Result<Vec<CommitInfo>> {
+        let git_commits = repository::get_commits_info(&self.repo, ids)?;
+        Ok(git_commits
+            .into_iter()
+            .map(|c| CommitInfo {
+                id: c.id,
+                short_id: c.short_id,
+                branch_name: c.branch_name,
+                summary: c.summary,
+                author: c.author,
+                time: c.time,
+            })
+            .collect())
+    }
 }

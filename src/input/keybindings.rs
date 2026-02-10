@@ -74,6 +74,10 @@ pub enum Action {
     CommitSelectDown,
     ToggleCommitSelect,
     ConfirmCommitSelect,
+    /// Cycle inline commit selector to next individual commit (`)`)
+    CycleCommitNext,
+    /// Cycle inline commit selector to previous individual commit (`(`)
+    CycleCommitPrev,
 
     ToggleExpand,
     ExpandAll,
@@ -117,6 +121,8 @@ fn map_normal_mode(key: KeyEvent) -> Action {
         (KeyCode::Char('{'), _) => Action::PrevFile,
         (KeyCode::Char(']'), _) => Action::NextHunk,
         (KeyCode::Char('['), _) => Action::PrevHunk,
+        (KeyCode::Char(')'), _) => Action::CycleCommitNext,
+        (KeyCode::Char('('), _) => Action::CycleCommitPrev,
 
         // Panel focus
         (KeyCode::Tab, KeyModifiers::NONE) => Action::ToggleFocus,

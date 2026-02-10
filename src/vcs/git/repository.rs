@@ -80,6 +80,44 @@ pub fn get_recent_commits(
     Ok(commits)
 }
 
+/// Get commit info for specific commit IDs.
+/// Returns CommitInfo in the same order as the input IDs.
+pub fn get_commits_info(repo: &Repository, ids: &[String]) -> Result<Vec<CommitInfo>> {
+    let branch_tip_names = get_branch_tip_names(repo);
+    let mut commits = Vec::new();
+
+    for id_str in ids {
+        let oid = Oid::from_str(id_str)
+            .map_err(|e| TuicrError::VcsCommand(format!("Invalid commit ID {}: {}", id_str, e)))?;
+        let commit = repo
+            .find_commit(oid)
+            .map_err(|e| TuicrError::VcsCommand(format!("Commit not found {}: {}", id_str, e)))?;
+
+        let id = oid.to_string();
+        let short_id = id[..7.min(id.len())].to_string();
+        let summary = commit.summary().unwrap_or("(no message)").to_string();
+        let author = commit.author().name().unwrap_or("Unknown").to_string();
+        let branch_name = branch_tip_names
+            .get(&oid)
+            .and_then(|names| names.first().cloned());
+        let time = Utc
+            .timestamp_opt(commit.time().seconds(), 0)
+            .single()
+            .unwrap_or_else(Utc::now);
+
+        commits.push(CommitInfo {
+            id,
+            short_id,
+            branch_name,
+            summary,
+            author,
+            time,
+        });
+    }
+
+    Ok(commits)
+}
+
 /// Resolve a git revision range expression to a list of commit IDs (oldest first).
 ///
 /// Supports both single revisions ("HEAD~3") and ranges ("main..feature").

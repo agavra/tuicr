@@ -63,7 +63,16 @@ pub fn render_header(frame: &mut Frame, app: &App, area: Rect) {
             if commits.len() == 1 {
                 format!("[commit {}] ", &commits[0][..7.min(commits[0].len())])
             } else {
-                format!("[{} commits] ", commits.len())
+                match app.commit_selection_range {
+                    Some((start, end)) if end - start + 1 < app.review_commits.len() => {
+                        format!(
+                            "[{}/{} commits] ",
+                            end - start + 1,
+                            app.review_commits.len()
+                        )
+                    }
+                    _ => format!("[{} commits] ", commits.len()),
+                }
             }
         }
     };

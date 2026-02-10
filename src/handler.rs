@@ -202,6 +202,31 @@ pub fn handle_command_action(app: &mut App, action: Action) {
                 },
                 "set wrap" => app.set_diff_wrap(true),
                 "set wrap!" => app.toggle_diff_wrap(),
+                "set commits" => {
+                    app.show_commit_selector = true;
+                    app.set_message("Commit selector: visible");
+                }
+                "set nocommits" => {
+                    app.show_commit_selector = false;
+                    if app.focused_panel == FocusedPanel::CommitSelector {
+                        app.focused_panel = FocusedPanel::Diff;
+                    }
+                    app.set_message("Commit selector: hidden");
+                }
+                "set commits!" => {
+                    app.show_commit_selector = !app.show_commit_selector;
+                    if !app.show_commit_selector
+                        && app.focused_panel == FocusedPanel::CommitSelector
+                    {
+                        app.focused_panel = FocusedPanel::Diff;
+                    }
+                    let status = if app.show_commit_selector {
+                        "visible"
+                    } else {
+                        "hidden"
+                    };
+                    app.set_message(format!("Commit selector: {status}"));
+                }
                 "diff" => app.toggle_diff_view_mode(),
                 "commits" => {
                     if let Err(e) = app.enter_commit_select_mode() {
@@ -368,6 +393,25 @@ pub fn handle_commit_select_action(app: &mut App, action: Action) {
     }
 }
 
+/// Handle actions when inline commit selector panel is focused
+pub fn handle_commit_selector_action(app: &mut App, action: Action) {
+    match action {
+        Action::CursorDown(_) => app.commit_select_down(),
+        Action::CursorUp(_) => app.commit_select_up(),
+        // Space/Enter toggle selection
+        Action::ToggleExpand | Action::ToggleCommitSelect | Action::SelectFile => {
+            app.toggle_commit_selection();
+            if let Err(e) = app.reload_inline_selection() {
+                app.set_error(format!("Failed to load diff: {e}"));
+            }
+        }
+        Action::ExitMode => {
+            app.focused_panel = FocusedPanel::Diff;
+        }
+        _ => handle_shared_normal_action(app, action),
+    }
+}
+
 /// Handle actions in VisualSelect mode
 pub fn handle_visual_action(app: &mut App, action: Action) {
     match action {
@@ -490,9 +534,12 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
         Action::PrevHunk => app.prev_hunk(),
         Action::ToggleReviewed => app.toggle_reviewed(),
         Action::ToggleFocus => {
-            app.focused_panel = match app.focused_panel {
-                FocusedPanel::FileList => FocusedPanel::Diff,
-                FocusedPanel::Diff => FocusedPanel::FileList,
+            let has_selector = app.has_inline_commit_selector();
+            app.focused_panel = match (app.focused_panel, has_selector) {
+                (FocusedPanel::FileList, _) => FocusedPanel::Diff,
+                (FocusedPanel::Diff, true) => FocusedPanel::CommitSelector,
+                (FocusedPanel::Diff, false) => FocusedPanel::FileList,
+                (FocusedPanel::CommitSelector, _) => FocusedPanel::FileList,
             };
         }
         Action::ExpandAll => {
@@ -532,6 +579,22 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
                 app.enter_visual_mode(line, side);
             } else {
                 app.set_message("Move cursor to a diff line to start visual selection");
+            }
+        }
+        Action::CycleCommitNext => {
+            if app.has_inline_commit_selector() {
+                app.cycle_commit_next();
+                if let Err(e) = app.reload_inline_selection() {
+                    app.set_error(format!("Failed to load diff: {e}"));
+                }
+            }
+        }
+        Action::CycleCommitPrev => {
+            if app.has_inline_commit_selector() {
+                app.cycle_commit_prev();
+                if let Err(e) = app.reload_inline_selection() {
+                    app.set_error(format!("Failed to load diff: {e}"));
+                }
             }
         }
         _ => {}

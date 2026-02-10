@@ -33,8 +33,8 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 use app::{App, FocusedPanel, InputMode};
 use handler::{
     handle_command_action, handle_comment_action, handle_commit_select_action,
-    handle_confirm_action, handle_diff_action, handle_file_list_action, handle_help_action,
-    handle_search_action, handle_visual_action,
+    handle_commit_selector_action, handle_confirm_action, handle_diff_action,
+    handle_file_list_action, handle_help_action, handle_search_action, handle_visual_action,
 };
 use input::{Action, map_key_to_action};
 use theme::{parse_cli_args, resolve_theme};
@@ -204,7 +204,7 @@ fn main() -> anyhow::Result<()> {
                         // Otherwise fall through to normal handling
                     }
 
-                    // Handle pending ; command for ;e toggle file list, ;h/;l panel focus
+                    // Handle pending ; command for ;e toggle file list, ;h/;l/;k/;j panel focus
                     if pending_semicolon {
                         pending_semicolon = false;
                         match key.code {
@@ -217,6 +217,16 @@ fn main() -> anyhow::Result<()> {
                                 continue;
                             }
                             crossterm::event::KeyCode::Char('l') => {
+                                app.focused_panel = app::FocusedPanel::Diff;
+                                continue;
+                            }
+                            crossterm::event::KeyCode::Char('k') => {
+                                if app.has_inline_commit_selector() {
+                                    app.focused_panel = app::FocusedPanel::CommitSelector;
+                                }
+                                continue;
+                            }
+                            crossterm::event::KeyCode::Char('j') => {
                                 app.focused_panel = app::FocusedPanel::Diff;
                                 continue;
                             }
@@ -256,6 +266,9 @@ fn main() -> anyhow::Result<()> {
                         InputMode::Normal => match app.focused_panel {
                             FocusedPanel::FileList => handle_file_list_action(&mut app, action),
                             FocusedPanel::Diff => handle_diff_action(&mut app, action),
+                            FocusedPanel::CommitSelector => {
+                                handle_commit_selector_action(&mut app, action)
+                            }
                         },
                     }
                 }

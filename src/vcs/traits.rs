@@ -89,6 +89,12 @@ pub trait VcsBackend: Send {
             "Commit range diff not supported for this VCS".into(),
         ))
     }
+
+    /// Get commit info for specific commit IDs (for inline commit selector).
+    /// Returns CommitInfo for each ID, in the same order as the input.
+    fn get_commits_info(&self, _ids: &[String]) -> Result<Vec<CommitInfo>> {
+        Ok(Vec::new())
+    }
 }
 
 #[cfg(test)]
