@@ -109,10 +109,51 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  ;k/;j     ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Focus commit selector/diff"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  ;e        ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("Toggle file list visibility"),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Commit Selector (multi-commit reviews)",
+            Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                "  j/k       ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Navigate commits"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  Space/Enter",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  Toggle commit selection (updates diff)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  (/)       ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Cycle through individual commits"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  Esc       ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Return focus to diff"),
         ]),
         Line::from(""),
         Line::from(Span::styled(
@@ -346,6 +387,27 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("Select commits or uncommitted changes"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :set commits",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  Show inline commit selector"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :set nocommits",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  Hide inline commit selector"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :set commits!",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  Toggle inline commit selector"),
         ]),
         Line::from(vec![
             Span::styled(

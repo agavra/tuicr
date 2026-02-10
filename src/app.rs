@@ -109,6 +109,7 @@ pub enum ConfirmAction {
 pub enum FocusedPanel {
     FileList,
     Diff,
+    CommitSelector,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -199,6 +200,18 @@ pub struct App {
     pub comment_cursor_screen_pos: Option<(u16, u16)>,
     /// Information about available updates (set by background check)
     pub update_info: Option<UpdateInfo>,
+
+    // Inline commit selector state (shown at top of diff view for multi-commit reviews)
+    /// CommitInfo for commits in the current review (display order: newest first)
+    pub review_commits: Vec<CommitInfo>,
+    /// Whether the inline commit selector panel is visible
+    pub show_commit_selector: bool,
+    /// Cached individual/subrange diffs keyed by (start_idx, end_idx) into review_commits
+    pub commit_diff_cache: HashMap<(usize, usize), Vec<DiffFile>>,
+    /// The combined "all selected" diff, cached for quick restoration
+    pub range_diff_files: Option<Vec<DiffFile>>,
+    /// Saved inline selection range when entering full commit select mode via :commits
+    pub saved_inline_selection: Option<(usize, usize)>,
 }
 
 #[derive(Default)]
@@ -297,7 +310,12 @@ impl App {
                 return Err(TuicrError::NoChanges);
             }
             let session = Self::load_or_create_commit_range_session(&vcs_info, &commit_ids);
-            Self::build(
+            // Get commit info for the inline commit selector
+            let review_commits = vcs.get_commits_info(&commit_ids)?;
+            // Reverse to newest-first display order
+            let review_commits: Vec<CommitInfo> = review_commits.into_iter().rev().collect();
+
+            let mut app = Self::build(
                 vcs,
                 vcs_info,
                 theme,
@@ -307,7 +325,23 @@ impl App {
                 DiffSource::CommitRange(commit_ids),
                 InputMode::Normal,
                 Vec::new(),
-            )
+            )?;
+
+            // Set up inline commit selector for multi-commit reviews
+            if review_commits.len() > 1 {
+                app.range_diff_files = Some(app.diff_files.clone());
+                app.commit_list = review_commits.clone();
+                app.commit_list_cursor = 0;
+                app.commit_selection_range = Some((0, review_commits.len() - 1));
+                app.commit_list_scroll_offset = 0;
+                app.visible_commit_count = review_commits.len();
+                app.has_more_commit = false;
+                app.show_commit_selector = true;
+                app.commit_diff_cache.clear();
+            }
+            app.review_commits = review_commits;
+
+            Ok(app)
         } else {
             let working_tree_diff = match vcs.get_working_tree_diff(highlighter) {
                 Ok(diff_files) => Some(diff_files),
@@ -418,6 +452,11 @@ impl App {
             pending_stdout_output: None,
             comment_cursor_screen_pos: None,
             update_info: None,
+            review_commits: Vec::new(),
+            show_commit_selector: false,
+            commit_diff_cache: HashMap::new(),
+            range_diff_files: None,
+            saved_inline_selection: None,
         };
         app.sort_files_by_directory(true);
         app.expand_all_dirs();
@@ -1807,6 +1846,11 @@ impl App {
     }
 
     pub fn enter_commit_select_mode(&mut self) -> Result<()> {
+        // Save inline selection state if we have review commits
+        if !self.review_commits.is_empty() {
+            self.saved_inline_selection = self.commit_selection_range;
+        }
+
         let highlighter = self.theme.syntax_highlighter();
         let has_uncommitted_changes = match self.vcs.get_working_tree_diff(highlighter) {
             Ok(_) => true,
@@ -1837,6 +1881,23 @@ impl App {
 
     pub fn exit_commit_select_mode(&mut self) -> Result<()> {
         self.input_mode = InputMode::Normal;
+
+        // If we have review commits, restore the inline selector state
+        if !self.review_commits.is_empty() {
+            self.commit_list = self.review_commits.clone();
+            self.commit_selection_range = self.saved_inline_selection;
+            self.commit_list_cursor = 0;
+            self.commit_list_scroll_offset = 0;
+            self.visible_commit_count = self.review_commits.len();
+            self.has_more_commit = false;
+            self.saved_inline_selection = None;
+
+            // Reload diff for the restored selection
+            if self.commit_selection_range.is_some() {
+                self.reload_inline_selection()?;
+            }
+            return Ok(());
+        }
 
         // If we were viewing commits, try to go back to working tree
         if matches!(self.diff_source, DiffSource::CommitRange(_)) {
@@ -1885,6 +1946,13 @@ impl App {
             "hidden"
         };
         self.set_message(format!("File list: {status}"));
+    }
+
+    /// Whether the inline commit selector panel should be displayed.
+    pub fn has_inline_commit_selector(&self) -> bool {
+        self.show_commit_selector
+            && self.review_commits.len() > 1
+            && matches!(&self.diff_source, DiffSource::CommitRange(ids) if !ids.is_empty())
     }
 
     // Commit selection methods
@@ -2009,6 +2077,76 @@ impl App {
         }
     }
 
+    /// Cycle inline commit selector to the next individual commit (`)` key).
+    /// all → last, i → i+1, last → all
+    pub fn cycle_commit_next(&mut self) {
+        if self.review_commits.is_empty() {
+            return;
+        }
+        let n = self.review_commits.len();
+        let all_selected = Some((0, n - 1));
+
+        if self.commit_selection_range == all_selected {
+            // all → last
+            self.commit_selection_range = Some((n - 1, n - 1));
+            self.commit_list_cursor = n - 1;
+        } else if let Some((i, j)) = self.commit_selection_range {
+            if i == j {
+                // Single commit selected
+                if i == n - 1 {
+                    // last → all
+                    self.commit_selection_range = all_selected;
+                } else {
+                    // i → i+1
+                    self.commit_selection_range = Some((i + 1, i + 1));
+                    self.commit_list_cursor = i + 1;
+                }
+            } else {
+                // Multi-commit subrange → select last of that range
+                self.commit_selection_range = Some((j, j));
+                self.commit_list_cursor = j;
+            }
+        } else {
+            // None selected → select all
+            self.commit_selection_range = all_selected;
+        }
+    }
+
+    /// Cycle inline commit selector to the previous individual commit (`(` key).
+    /// all → first, i → i-1, first → all
+    pub fn cycle_commit_prev(&mut self) {
+        if self.review_commits.is_empty() {
+            return;
+        }
+        let n = self.review_commits.len();
+        let all_selected = Some((0, n - 1));
+
+        if self.commit_selection_range == all_selected {
+            // all → first
+            self.commit_selection_range = Some((0, 0));
+            self.commit_list_cursor = 0;
+        } else if let Some((i, j)) = self.commit_selection_range {
+            if i == j {
+                // Single commit selected
+                if i == 0 {
+                    // first → all
+                    self.commit_selection_range = all_selected;
+                } else {
+                    // i → i-1
+                    self.commit_selection_range = Some((i - 1, i - 1));
+                    self.commit_list_cursor = i - 1;
+                }
+            } else {
+                // Multi-commit subrange → select first of that range
+                self.commit_selection_range = Some((i, i));
+                self.commit_list_cursor = i;
+            }
+        } else {
+            // None selected → select all
+            self.commit_selection_range = all_selected;
+        }
+    }
+
     pub fn confirm_commit_selection(&mut self) -> Result<()> {
         let Some((start, end)) = self.commit_selection_range else {
             self.set_message("Select at least one commit");
@@ -2098,10 +2236,101 @@ impl App {
         self.diff_state = DiffState::default();
         self.file_list_state = FileListState::default();
 
+        // Set up inline commit selector for multi-commit reviews (newest-first display order)
+        self.review_commits = selected_commits
+            .iter()
+            .rev()
+            .map(|c| (*c).clone())
+            .collect();
+        self.range_diff_files = Some(self.diff_files.clone());
+        self.commit_list = self.review_commits.clone();
+        self.commit_list_cursor = 0;
+        self.commit_selection_range = if self.review_commits.is_empty() {
+            None
+        } else {
+            Some((0, self.review_commits.len() - 1))
+        };
+        self.commit_list_scroll_offset = 0;
+        self.visible_commit_count = self.review_commits.len();
+        self.has_more_commit = false;
+        self.show_commit_selector = self.review_commits.len() > 1;
+        self.commit_diff_cache.clear();
+        self.saved_inline_selection = None;
+
         self.sort_files_by_directory(true);
         self.expand_all_dirs();
         self.rebuild_annotations();
 
+        Ok(())
+    }
+
+    /// Reload the diff for the currently selected inline commit subrange.
+    pub fn reload_inline_selection(&mut self) -> Result<()> {
+        let Some((start, end)) = self.commit_selection_range else {
+            self.set_message("Select at least one commit");
+            return Ok(());
+        };
+
+        // Check if all commits selected -> use cached range_diff_files
+        if start == 0
+            && end == self.review_commits.len() - 1
+            && let Some(ref files) = self.range_diff_files
+        {
+            self.diff_files = files.clone();
+            let wrap = self.diff_state.wrap_lines;
+            self.diff_state = DiffState::default();
+            self.diff_state.wrap_lines = wrap;
+            self.file_list_state = FileListState::default();
+            self.expanded_gaps.clear();
+            self.expanded_content.clear();
+            self.sort_files_by_directory(true);
+            self.expand_all_dirs();
+            self.rebuild_annotations();
+            return Ok(());
+        }
+
+        // Check cache for this subrange
+        if let Some(files) = self.commit_diff_cache.get(&(start, end)) {
+            self.diff_files = files.clone();
+            let wrap = self.diff_state.wrap_lines;
+            self.diff_state = DiffState::default();
+            self.diff_state.wrap_lines = wrap;
+            self.file_list_state = FileListState::default();
+            self.expanded_gaps.clear();
+            self.expanded_content.clear();
+            self.sort_files_by_directory(true);
+            self.expand_all_dirs();
+            self.rebuild_annotations();
+            return Ok(());
+        }
+
+        // Load diff for selected subrange
+        let selected_ids: Vec<String> = (start..=end)
+            .rev() // oldest to newest
+            .filter_map(|i| self.review_commits.get(i))
+            .map(|c| c.id.clone())
+            .collect();
+
+        let highlighter = self.theme.syntax_highlighter();
+        let diff_files = match self.vcs.get_commit_range_diff(&selected_ids, highlighter) {
+            Ok(files) => files,
+            Err(TuicrError::NoChanges) => Vec::new(),
+            Err(e) => return Err(e),
+        };
+        self.commit_diff_cache
+            .insert((start, end), diff_files.clone());
+        self.diff_files = diff_files;
+
+        // Reset navigation, rebuild file tree + annotations
+        let wrap = self.diff_state.wrap_lines;
+        self.diff_state = DiffState::default();
+        self.diff_state.wrap_lines = wrap;
+        self.file_list_state = FileListState::default();
+        self.expanded_gaps.clear();
+        self.expanded_content.clear();
+        self.sort_files_by_directory(true);
+        self.expand_all_dirs();
+        self.rebuild_annotations();
         Ok(())
     }
 
