@@ -1963,7 +1963,7 @@ impl App {
     pub fn has_inline_commit_selector(&self) -> bool {
         self.show_commit_selector
             && self.review_commits.len() > 1
-            && matches!(&self.diff_source, DiffSource::CommitRange(ids) if !ids.is_empty())
+            && !matches!(&self.diff_source, DiffSource::WorkingTree)
     }
 
     // Commit selection methods
@@ -2185,7 +2185,8 @@ impl App {
             .collect();
 
         if selected_working_tree && !selected_ids.is_empty() {
-            return self.load_working_tree_and_commits_selection(selected_ids);
+            let all_selected: Vec<CommitInfo> = selected_commits.into_iter().cloned().collect();
+            return self.load_working_tree_and_commits_selection(selected_ids, all_selected);
         }
 
         if selected_working_tree {
@@ -2315,17 +2316,40 @@ impl App {
         }
 
         // Load diff for selected subrange
+        let has_worktree = (start..=end).any(|i| {
+            self.review_commits
+                .get(i)
+                .is_some_and(|c| Self::is_working_tree_commit(c))
+        });
         let selected_ids: Vec<String> = (start..=end)
             .rev() // oldest to newest
             .filter_map(|i| self.review_commits.get(i))
+            .filter(|c| !Self::is_working_tree_commit(c))
             .map(|c| c.id.clone())
             .collect();
 
         let highlighter = self.theme.syntax_highlighter();
-        let diff_files = match self.vcs.get_commit_range_diff(&selected_ids, highlighter) {
-            Ok(files) => files,
-            Err(TuicrError::NoChanges) => Vec::new(),
-            Err(e) => return Err(e),
+        let diff_files = if has_worktree && !selected_ids.is_empty() {
+            match self
+                .vcs
+                .get_working_tree_with_commits_diff(&selected_ids, highlighter)
+            {
+                Ok(files) => files,
+                Err(TuicrError::NoChanges) => Vec::new(),
+                Err(e) => return Err(e),
+            }
+        } else if has_worktree {
+            match self.vcs.get_working_tree_diff(highlighter) {
+                Ok(files) => files,
+                Err(TuicrError::NoChanges) => Vec::new(),
+                Err(e) => return Err(e),
+            }
+        } else {
+            match self.vcs.get_commit_range_diff(&selected_ids, highlighter) {
+                Ok(files) => files,
+                Err(TuicrError::NoChanges) => Vec::new(),
+                Err(e) => return Err(e),
+            }
         };
         self.commit_diff_cache
             .insert((start, end), diff_files.clone());
@@ -2345,7 +2369,11 @@ impl App {
         Ok(())
     }
 
-    fn load_working_tree_and_commits_selection(&mut self, selected_ids: Vec<String>) -> Result<()> {
+    fn load_working_tree_and_commits_selection(
+        &mut self,
+        selected_ids: Vec<String>,
+        selected_commits: Vec<CommitInfo>,
+    ) -> Result<()> {
         let highlighter = self.theme.syntax_highlighter();
         let diff_files = match self
             .vcs
@@ -2398,6 +2426,23 @@ impl App {
         self.input_mode = InputMode::Normal;
         self.diff_state = DiffState::default();
         self.file_list_state = FileListState::default();
+
+        // Set up inline commit selector (newest-first display order)
+        self.review_commits = selected_commits.into_iter().rev().collect();
+        self.range_diff_files = Some(self.diff_files.clone());
+        self.commit_list = self.review_commits.clone();
+        self.commit_list_cursor = 0;
+        self.commit_selection_range = if self.review_commits.is_empty() {
+            None
+        } else {
+            Some((0, self.review_commits.len() - 1))
+        };
+        self.commit_list_scroll_offset = 0;
+        self.visible_commit_count = self.review_commits.len();
+        self.has_more_commit = false;
+        self.show_commit_selector = self.review_commits.len() > 1;
+        self.commit_diff_cache.clear();
+        self.saved_inline_selection = None;
 
         self.sort_files_by_directory(true);
         self.expand_all_dirs();
