@@ -666,7 +666,8 @@ impl App {
             }
             DiffSource::WorkingTreeAndCommits(commit_ids) => {
                 let ids = commit_ids.clone();
-                self.vcs.get_working_tree_with_commits_diff(&ids, highlighter)?
+                self.vcs
+                    .get_working_tree_with_commits_diff(&ids, highlighter)?
             }
             DiffSource::PullRequest { base_ref, .. } => {
                 let pr_diff = self

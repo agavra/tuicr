@@ -2,7 +2,7 @@ use std::fmt::Write;
 use std::io::Write as IoWrite;
 
 use arboard::Clipboard;
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 
 use crate::app::DiffSource;
 use crate::error::{Result, TuicrError};
