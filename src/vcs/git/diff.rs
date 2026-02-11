@@ -160,7 +160,10 @@ fn resolve_base_reference(repo: &Repository, explicit_base: Option<&str>) -> Res
         // Skip if the upstream is just the remote copy of the current branch
         // (e.g. origin/feat-x for branch feat-x), since it's not a useful PR base.
         let upstream_short = upstream.get().shorthand().unwrap_or(upstream_ref_name);
-        let is_same_branch = upstream_short.ends_with(branch_name);
+        let is_same_branch = upstream_short
+            .split_once('/')
+            .map(|(_, upstream_branch_name)| upstream_branch_name == branch_name)
+            .unwrap_or(false);
         if !is_same_branch {
             return Ok((upstream_ref_name.to_string(), oid));
         }
