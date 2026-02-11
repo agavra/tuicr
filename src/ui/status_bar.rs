@@ -1,9 +1,9 @@
 use ratatui::{
-    Frame,
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Paragraph},
+    Frame,
 };
 
 use crate::app::{App, DiffSource, InputMode, Message, MessageType};
@@ -80,12 +80,12 @@ pub fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         }
         DiffSource::PullRequest {
             base_ref,
-            merge_base_commit,
+            head_commit,
             commit_count,
             ..
         } => {
-            let short_merge_base = &merge_base_commit[..7.min(merge_base_commit.len())];
-            format!("[pr {base_ref}..{short_merge_base} ({commit_count} commits)] ")
+            let short_head = &head_commit[..7.min(head_commit.len())];
+            format!("[pr {base_ref}..{short_head} ({commit_count} commits)] ")
         }
     };
 

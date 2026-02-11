@@ -1,9 +1,9 @@
 use ratatui::{
-    Frame,
     layout::{Constraint, Flex, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
+    Frame,
 };
 
 use crate::app::App;
@@ -412,10 +412,10 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
-                "  :pr [base]",
+                "  :pr [base]   ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Load PR diff from merge-base to HEAD"),
+            Span::raw("  Load PR diff from merge-base to HEAD"),
         ]),
         Line::from(vec![
             Span::styled(
