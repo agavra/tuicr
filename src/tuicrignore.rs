@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use ignore::gitignore::GitignoreBuilder;
 
@@ -35,6 +35,7 @@ fn load_matcher(repo_root: &Path) -> Option<ignore::gitignore::Gitignore> {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::path::PathBuf;
 
     use tempfile::tempdir;
 
