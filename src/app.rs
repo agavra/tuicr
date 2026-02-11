@@ -297,73 +297,14 @@ enum CommentLocation {
 }
 
 impl App {
-    pub fn new(
-        theme: Theme,
-        output_to_stdout: bool,
-        revisions: Option<&str>,
-        base: Option<&str>,
-    ) -> Result<Self> {
-        if revisions.is_some() && base.is_some() {
-            return Err(TuicrError::UnsupportedOperation(
-                "--revisions and --base cannot be used together".to_string(),
-            ));
-        }
-
+    pub fn new(theme: Theme, output_to_stdout: bool, revisions: Option<&str>) -> Result<Self> {
         let vcs = detect_vcs()?;
         let vcs_info = vcs.info().clone();
         let highlighter = theme.syntax_highlighter();
 
         // Determine the diff source, files, and session based on input.
-        // Four paths: base diff, CLI revisions, working tree changes, or commit selection fallback.
-        if let Some(base) = base {
-            let commit_ids = vcs.resolve_base_with_head_commits(base)?;
-            let diff_files = if commit_ids.is_empty() {
-                Self::get_working_tree_diff_with_ignore(
-                    vcs.as_ref(),
-                    &vcs_info.root_path,
-                    highlighter,
-                )?
-            } else {
-                Self::get_working_tree_with_commits_diff_with_ignore(
-                    vcs.as_ref(),
-                    &vcs_info.root_path,
-                    &commit_ids,
-                    highlighter,
-                )?
-            };
-
-            let (session, diff_source) = if commit_ids.is_empty() {
-                (
-                    Self::load_or_create_session(&vcs_info),
-                    DiffSource::WorkingTree,
-                )
-            } else {
-                (
-                    Self::load_or_create_working_tree_and_commits_session(&vcs_info, &commit_ids),
-                    DiffSource::WorkingTreeAndCommits(commit_ids.clone()),
-                )
-            };
-
-            let mut app = Self::build(
-                vcs,
-                vcs_info,
-                theme,
-                output_to_stdout,
-                diff_files,
-                session,
-                diff_source,
-                InputMode::Normal,
-                Vec::new(),
-            )?;
-
-            if !commit_ids.is_empty() {
-                let review_commits = app.vcs.get_commits_info(&commit_ids)?;
-                app.review_commits = review_commits.into_iter().rev().collect();
-                app.range_diff_files = Some(app.diff_files.clone());
-            }
-
-            Ok(app)
-        } else if let Some(revisions) = revisions {
+        // Three paths: CLI revisions, working tree changes, or commit selection fallback.
+        if let Some(revisions) = revisions {
             // Resolve the revisions to commits and diff as a commit range
             let commit_ids = vcs.resolve_revisions(revisions)?;
             let diff_files = Self::get_commit_range_diff_with_ignore(

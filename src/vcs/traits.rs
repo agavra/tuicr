@@ -78,15 +78,6 @@ pub trait VcsBackend: Send {
         ))
     }
 
-    /// Resolve commits from the merge-base of `base` and HEAD through HEAD (oldest first).
-    /// Returns empty vec when HEAD is already at merge-base with `base`.
-    /// Returns error if not supported (default).
-    fn resolve_base_with_head_commits(&self, _base: &str) -> Result<Vec<String>> {
-        Err(crate::error::TuicrError::UnsupportedOperation(
-            "Base branch diff not supported for this VCS".into(),
-        ))
-    }
-
     /// Get diff for a commit range.
     /// Returns error if not supported (default).
     fn get_commit_range_diff(

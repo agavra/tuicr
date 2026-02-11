@@ -92,8 +92,6 @@ Detection order: Jujutsu → Git → Mercurial. Jujutsu is tried first because j
 | Flag | Description |
 |------|-------------|
 | `-r` / `--revisions <REVSET>` | Commit range/Revision set to review. Exact syntax depends on VCS backend (Git, JJ, Hg) |
-| `--base <REV>` | Git only: diff from `merge-base(REV, HEAD)` to working tree (includes committed + staged + unstaged changes) |
-| `--diff-only` | Start with file tree hidden (diff panel only) |
 | `--theme <THEME>` | Color theme override (`dark`, `light`, `catppuccin-latte`, `catppuccin-frappe`, `catppuccin-macchiato`, `catppuccin-mocha`) |
 | `--stdout` | Output to stdout instead of clipboard when exporting |
 | `--no-update-check` | Skip checking for updates on startup |
@@ -101,14 +99,7 @@ Detection order: Jujutsu → Git → Mercurial. Jujutsu is tried first because j
 By default, `tuicr` starts in commit selection mode.  
 If uncommitted changes exist, the first selectable entry is `Uncommitted changes`.  
 When `-r` / `--revisions` is provided, `tuicr` opens that revision range directly.
-When `--base` is provided, `tuicr` opens the combined branch+working-tree diff directly.
-
-Examples:
-
-```bash
-# Branch diff + staged/unstaged changes vs main, with diff-only view for small screens
-tuicr --base origin/main --diff-only
-```
+On narrow terminals (less than 100 columns), `tuicr` starts with the file list hidden; toggle it with `;e`.
 
 ### Configuration
 

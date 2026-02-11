@@ -96,10 +96,6 @@ impl VcsBackend for GitBackend {
         repository::resolve_revisions(&self.repo, revisions)
     }
 
-    fn resolve_base_with_head_commits(&self, base: &str) -> Result<Vec<String>> {
-        repository::resolve_base_with_head_commits(&self.repo, base)
-    }
-
     fn get_commit_range_diff(
         &self,
         commit_ids: &[String],

@@ -43,6 +43,8 @@ use theme::{parse_cli_args, resolve_theme_with_config};
 
 /// Timeout for the "press Ctrl+C again to exit" feature
 const CTRL_C_EXIT_TIMEOUT: Duration = Duration::from_secs(2);
+/// Hide the file list by default on narrow terminals.
+const MIN_WIDTH_FOR_FILE_LIST: u16 = 100;
 
 fn main() -> anyhow::Result<()> {
     // Setup panic hook to restore terminal on panic
@@ -95,16 +97,11 @@ fn main() -> anyhow::Result<()> {
         theme,
         cli_args.output_to_stdout,
         cli_args.revisions.as_deref(),
-        cli_args.base.as_deref(),
     ) {
         Ok(mut app) => {
             app.supports_keyboard_enhancement = keyboard_enhancement_supported;
             if let Some(message) = startup_warnings.first() {
                 app.set_warning(message.clone());
-            }
-            if cli_args.diff_only {
-                app.show_file_list = false;
-                app.focused_panel = FocusedPanel::Diff;
             }
             app
         }
@@ -137,6 +134,14 @@ fn main() -> anyhow::Result<()> {
     }
     let backend = CrosstermBackend::new(tty_output);
     let mut terminal = Terminal::new(backend)?;
+
+    // On narrow terminals, start with only the diff panel visible.
+    if let Ok((width, _)) = crossterm::terminal::size()
+        && width < MIN_WIDTH_FOR_FILE_LIST
+    {
+        app.show_file_list = false;
+        app.focused_panel = FocusedPanel::Diff;
+    }
 
     // Track pending z command for zz centering
     let mut pending_z = false;
