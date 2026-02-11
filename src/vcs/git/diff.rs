@@ -157,7 +157,13 @@ fn resolve_base_reference(repo: &Repository, explicit_base: Option<&str>) -> Res
         && let Some(upstream_ref_name) = upstream.get().name()
         && let Ok(oid) = resolve_ref_to_oid(repo, upstream_ref_name)
     {
-        return Ok((upstream_ref_name.to_string(), oid));
+        // Skip if the upstream is just the remote copy of the current branch
+        // (e.g. origin/feat-x for branch feat-x), since it's not a useful PR base.
+        let upstream_short = upstream.get().shorthand().unwrap_or(upstream_ref_name);
+        let is_same_branch = upstream_short.ends_with(branch_name);
+        if !is_same_branch {
+            return Ok((upstream_ref_name.to_string(), oid));
+        }
     }
 
     if let Ok(origin_head) = repo.find_reference("refs/remotes/origin/HEAD")

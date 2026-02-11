@@ -670,9 +670,10 @@ impl App {
                     .get_working_tree_with_commits_diff(&ids, highlighter)?
             }
             DiffSource::PullRequest { base_ref, .. } => {
+                let base = base_ref.clone();
                 let pr_diff = self
                     .vcs
-                    .get_pull_request_diff(Some(base_ref.as_str()), highlighter)?;
+                    .get_pull_request_diff(Some(base.as_str()), highlighter)?;
                 self.diff_source = DiffSource::PullRequest {
                     base_ref: pr_diff.info.base_ref,
                     merge_base_commit: pr_diff.info.merge_base_commit,
