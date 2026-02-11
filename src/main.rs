@@ -9,6 +9,7 @@ mod persistence;
 mod syntax;
 mod text_edit;
 mod theme;
+mod tuicrignore;
 mod ui;
 mod update;
 mod vcs;
@@ -94,11 +95,16 @@ fn main() -> anyhow::Result<()> {
         theme,
         cli_args.output_to_stdout,
         cli_args.revisions.as_deref(),
+        cli_args.base.as_deref(),
     ) {
         Ok(mut app) => {
             app.supports_keyboard_enhancement = keyboard_enhancement_supported;
             if let Some(message) = startup_warnings.first() {
                 app.set_warning(message.clone());
+            }
+            if cli_args.diff_only {
+                app.show_file_list = false;
+                app.focused_panel = FocusedPanel::Diff;
             }
             app
         }

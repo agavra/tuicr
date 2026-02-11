@@ -17,6 +17,7 @@ src/
 │   └── mod.rs           # User config loading (XDG on Unix, %APPDATA% on Windows)
 ├── app.rs               # Application state (App struct, InputMode, etc.)
 ├── error.rs             # Error types (TuicrError enum)
+├── tuicrignore.rs       # .tuicrignore loader + diff file filtering (gitignore-style patterns)
 ├── theme/
 │   └── mod.rs           # Theme palette definitions + CLI theme parsing/resolution
 │
@@ -95,11 +96,11 @@ src/
 
 ### Data Flow
 
-1. **Startup**: Parse CLI args (invalid `--theme` exits non-zero), load config from `$XDG_CONFIG_HOME/tuicr/config.toml` (default `~/.config/tuicr/config.toml`, or `%APPDATA%\tuicr\config.toml` on Windows), ignore unknown config keys with startup warnings, resolve theme precedence (`--theme` > config > dark), then call `App::new()`. `App::new()` calls `detect_vcs()` (Jujutsu first, then Git, then Mercurial), then enters commit selection mode by default. If uncommitted changes exist, the first selection row is "Uncommitted changes". With `-r/--revisions`, it opens the requested commit range directly.
+1. **Startup**: Parse CLI args (invalid `--theme` exits non-zero), load config from `$XDG_CONFIG_HOME/tuicr/config.toml` (default `~/.config/tuicr/config.toml`, or `%APPDATA%\tuicr\config.toml` on Windows), ignore unknown config keys with startup warnings, resolve theme precedence (`--theme` > config > dark), then call `App::new()`. `App::new()` calls `detect_vcs()` (Jujutsu first, then Git, then Mercurial), filters diff files via repo-root `.tuicrignore`, and picks startup mode: `--base <REV>` opens merge-base-to-working-tree diff (Git only), `-r/--revisions` opens commit range, otherwise commit selection mode. If uncommitted changes exist, the first selection row is "Uncommitted changes". `--diff-only` starts with the file list hidden.
 2. **Render**: `ui::render()` draws the TUI based on `App` state
 3. **Input**: `crossterm` events → `map_key_to_action` → match on Action in main loop
 4. **Persistence**: `:w` calls `save_session()`, writes JSON to `~/.local/share/tuicr/reviews/`
-5. **Reload diff**: `:e` re-runs `vcs.get_working_tree_diff()` to refresh the displayed files
+5. **Reload diff**: `:e` re-runs VCS diff loading and reapplies `.tuicrignore` filtering to refresh displayed files
 6. **Export**: `:clip` (alias `:export`) calls `export_to_clipboard()`, generating markdown and copying it to the clipboard (or stdout with `--stdout` flag)
 
 ### Important Implementation Details
@@ -109,6 +110,7 @@ src/
 - **Session loading**: `App::new()` calls `find_session_for_repo()` to restore previous review
 - **Clipboard**: Uses `arboard` crate for cross-platform clipboard support
 - **Hunk navigation**: `next_hunk()`/`prev_hunk()` calculate positions by iterating through files
+- **Ignore filtering**: `.tuicrignore` is applied whenever diffs are loaded/reloaded
 
 ### Dependencies
 
@@ -117,6 +119,7 @@ src/
 - `serde` + `serde_json`: Session serialization
 - `toml`: User config parsing
 - `arboard`: Clipboard access
+- `ignore`: Gitignore-style matcher for `.tuicrignore`
 - `chrono`: Timestamps
 - `thiserror` + `anyhow`: Error handling
 

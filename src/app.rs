@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use chrono::Utc;
 
@@ -9,6 +9,7 @@ use crate::model::{
     SessionDiffSource,
 };
 use crate::persistence::load_latest_session_for_context;
+use crate::syntax::SyntaxHighlighter;
 use crate::theme::Theme;
 use crate::update::UpdateInfo;
 use crate::vcs::git::calculate_gap;
@@ -296,20 +297,81 @@ enum CommentLocation {
 }
 
 impl App {
-    pub fn new(theme: Theme, output_to_stdout: bool, revisions: Option<&str>) -> Result<Self> {
+    pub fn new(
+        theme: Theme,
+        output_to_stdout: bool,
+        revisions: Option<&str>,
+        base: Option<&str>,
+    ) -> Result<Self> {
+        if revisions.is_some() && base.is_some() {
+            return Err(TuicrError::UnsupportedOperation(
+                "--revisions and --base cannot be used together".to_string(),
+            ));
+        }
+
         let vcs = detect_vcs()?;
         let vcs_info = vcs.info().clone();
         let highlighter = theme.syntax_highlighter();
 
         // Determine the diff source, files, and session based on input.
-        // Three paths: CLI revisions, working tree changes, or commit selection fallback.
-        if let Some(revisions) = revisions {
+        // Four paths: base diff, CLI revisions, working tree changes, or commit selection fallback.
+        if let Some(base) = base {
+            let commit_ids = vcs.resolve_base_with_head_commits(base)?;
+            let diff_files = if commit_ids.is_empty() {
+                Self::get_working_tree_diff_with_ignore(
+                    vcs.as_ref(),
+                    &vcs_info.root_path,
+                    highlighter,
+                )?
+            } else {
+                Self::get_working_tree_with_commits_diff_with_ignore(
+                    vcs.as_ref(),
+                    &vcs_info.root_path,
+                    &commit_ids,
+                    highlighter,
+                )?
+            };
+
+            let (session, diff_source) = if commit_ids.is_empty() {
+                (
+                    Self::load_or_create_session(&vcs_info),
+                    DiffSource::WorkingTree,
+                )
+            } else {
+                (
+                    Self::load_or_create_working_tree_and_commits_session(&vcs_info, &commit_ids),
+                    DiffSource::WorkingTreeAndCommits(commit_ids.clone()),
+                )
+            };
+
+            let mut app = Self::build(
+                vcs,
+                vcs_info,
+                theme,
+                output_to_stdout,
+                diff_files,
+                session,
+                diff_source,
+                InputMode::Normal,
+                Vec::new(),
+            )?;
+
+            if !commit_ids.is_empty() {
+                let review_commits = app.vcs.get_commits_info(&commit_ids)?;
+                app.review_commits = review_commits.into_iter().rev().collect();
+                app.range_diff_files = Some(app.diff_files.clone());
+            }
+
+            Ok(app)
+        } else if let Some(revisions) = revisions {
             // Resolve the revisions to commits and diff as a commit range
             let commit_ids = vcs.resolve_revisions(revisions)?;
-            let diff_files = vcs.get_commit_range_diff(&commit_ids, highlighter)?;
-            if diff_files.is_empty() {
-                return Err(TuicrError::NoChanges);
-            }
+            let diff_files = Self::get_commit_range_diff_with_ignore(
+                vcs.as_ref(),
+                &vcs_info.root_path,
+                &commit_ids,
+                highlighter,
+            )?;
             let session = Self::load_or_create_commit_range_session(&vcs_info, &commit_ids);
             // Get commit info for the inline commit selector
             let review_commits = vcs.get_commits_info(&commit_ids)?;
@@ -344,7 +406,11 @@ impl App {
 
             Ok(app)
         } else {
-            let working_tree_diff = match vcs.get_working_tree_diff(highlighter) {
+            let working_tree_diff = match Self::get_working_tree_diff_with_ignore(
+                vcs.as_ref(),
+                &vcs_info.root_path,
+                highlighter,
+            ) {
                 Ok(diff_files) => Some(diff_files),
                 Err(TuicrError::NoChanges) => None,
                 Err(e) => return Err(e),
@@ -499,6 +565,39 @@ impl App {
         session
     }
 
+    fn load_or_create_working_tree_and_commits_session(
+        vcs_info: &VcsInfo,
+        commit_ids: &[String],
+    ) -> ReviewSession {
+        let newest_commit_id = commit_ids.last().unwrap().clone();
+        let loaded = load_latest_session_for_context(
+            &vcs_info.root_path,
+            vcs_info.branch_name.as_deref(),
+            &newest_commit_id,
+            SessionDiffSource::WorkingTreeAndCommits,
+            Some(commit_ids),
+        )
+        .ok()
+        .and_then(|found| found.map(|(_path, session)| session));
+
+        let mut session = loaded.unwrap_or_else(|| {
+            let mut s = ReviewSession::new(
+                vcs_info.root_path.clone(),
+                newest_commit_id,
+                vcs_info.branch_name.clone(),
+                SessionDiffSource::WorkingTreeAndCommits,
+            );
+            s.commit_range = Some(commit_ids.to_vec());
+            s
+        });
+
+        if session.commit_range.is_none() {
+            session.commit_range = Some(commit_ids.to_vec());
+            session.updated_at = chrono::Utc::now();
+        }
+        session
+    }
+
     fn load_or_create_session(vcs_info: &VcsInfo) -> ReviewSession {
         let new_session = || {
             ReviewSession::new(
@@ -569,9 +668,56 @@ impl App {
             .saturating_sub(usize::from(self.has_working_tree_option()))
     }
 
+    fn filter_ignored_diff_files(repo_root: &Path, diff_files: Vec<DiffFile>) -> Vec<DiffFile> {
+        crate::tuicrignore::filter_diff_files(repo_root, diff_files)
+    }
+
+    fn require_non_empty_diff_files(diff_files: Vec<DiffFile>) -> Result<Vec<DiffFile>> {
+        if diff_files.is_empty() {
+            return Err(TuicrError::NoChanges);
+        }
+        Ok(diff_files)
+    }
+
+    fn get_working_tree_diff_with_ignore(
+        vcs: &dyn VcsBackend,
+        repo_root: &Path,
+        highlighter: &SyntaxHighlighter,
+    ) -> Result<Vec<DiffFile>> {
+        let diff_files = vcs.get_working_tree_diff(highlighter)?;
+        let diff_files = Self::filter_ignored_diff_files(repo_root, diff_files);
+        Self::require_non_empty_diff_files(diff_files)
+    }
+
+    fn get_commit_range_diff_with_ignore(
+        vcs: &dyn VcsBackend,
+        repo_root: &Path,
+        commit_ids: &[String],
+        highlighter: &SyntaxHighlighter,
+    ) -> Result<Vec<DiffFile>> {
+        let diff_files = vcs.get_commit_range_diff(commit_ids, highlighter)?;
+        let diff_files = Self::filter_ignored_diff_files(repo_root, diff_files);
+        Self::require_non_empty_diff_files(diff_files)
+    }
+
+    fn get_working_tree_with_commits_diff_with_ignore(
+        vcs: &dyn VcsBackend,
+        repo_root: &Path,
+        commit_ids: &[String],
+        highlighter: &SyntaxHighlighter,
+    ) -> Result<Vec<DiffFile>> {
+        let diff_files = vcs.get_working_tree_with_commits_diff(commit_ids, highlighter)?;
+        let diff_files = Self::filter_ignored_diff_files(repo_root, diff_files);
+        Self::require_non_empty_diff_files(diff_files)
+    }
+
     fn load_working_tree_selection(&mut self) -> Result<()> {
         let highlighter = self.theme.syntax_highlighter();
-        let diff_files = match self.vcs.get_working_tree_diff(highlighter) {
+        let diff_files = match Self::get_working_tree_diff_with_ignore(
+            self.vcs.as_ref(),
+            &self.vcs_info.root_path,
+            highlighter,
+        ) {
             Ok(diff_files) => diff_files,
             Err(TuicrError::NoChanges) => {
                 self.set_message("No uncommitted changes");
@@ -618,10 +764,18 @@ impl App {
         let diff_files = match &self.diff_source {
             DiffSource::WorkingTreeAndCommits(commit_ids) => {
                 let ids = commit_ids.clone();
-                self.vcs
-                    .get_working_tree_with_commits_diff(&ids, highlighter)?
+                Self::get_working_tree_with_commits_diff_with_ignore(
+                    self.vcs.as_ref(),
+                    &self.vcs_info.root_path,
+                    &ids,
+                    highlighter,
+                )?
             }
-            _ => self.vcs.get_working_tree_diff(highlighter)?,
+            _ => Self::get_working_tree_diff_with_ignore(
+                self.vcs.as_ref(),
+                &self.vcs_info.root_path,
+                highlighter,
+            )?,
         };
 
         for file in &diff_files {
@@ -1860,7 +2014,11 @@ impl App {
         }
 
         let highlighter = self.theme.syntax_highlighter();
-        let has_uncommitted_changes = match self.vcs.get_working_tree_diff(highlighter) {
+        let has_uncommitted_changes = match Self::get_working_tree_diff_with_ignore(
+            self.vcs.as_ref(),
+            &self.vcs_info.root_path,
+            highlighter,
+        ) {
             Ok(_) => true,
             Err(TuicrError::NoChanges) => false,
             Err(e) => return Err(e),
@@ -1913,7 +2071,11 @@ impl App {
             DiffSource::CommitRange(_) | DiffSource::WorkingTreeAndCommits(_)
         ) {
             let highlighter = self.theme.syntax_highlighter();
-            match self.vcs.get_working_tree_diff(highlighter) {
+            match Self::get_working_tree_diff_with_ignore(
+                self.vcs.as_ref(),
+                &self.vcs_info.root_path,
+                highlighter,
+            ) {
                 Ok(diff_files) => {
                     self.diff_files = diff_files;
                     self.diff_source = DiffSource::WorkingTree;
@@ -2195,7 +2357,12 @@ impl App {
 
         // Get the diff for the selected commits
         let highlighter = self.theme.syntax_highlighter();
-        let diff_files = self.vcs.get_commit_range_diff(&selected_ids, highlighter)?;
+        let diff_files = Self::get_commit_range_diff_with_ignore(
+            self.vcs.as_ref(),
+            &self.vcs_info.root_path,
+            &selected_ids,
+            highlighter,
+        )?;
 
         if diff_files.is_empty() {
             self.set_message("No changes in selected commits");
@@ -2330,22 +2497,33 @@ impl App {
 
         let highlighter = self.theme.syntax_highlighter();
         let diff_files = if has_worktree && !selected_ids.is_empty() {
-            match self
-                .vcs
-                .get_working_tree_with_commits_diff(&selected_ids, highlighter)
-            {
+            match Self::get_working_tree_with_commits_diff_with_ignore(
+                self.vcs.as_ref(),
+                &self.vcs_info.root_path,
+                &selected_ids,
+                highlighter,
+            ) {
                 Ok(files) => files,
                 Err(TuicrError::NoChanges) => Vec::new(),
                 Err(e) => return Err(e),
             }
         } else if has_worktree {
-            match self.vcs.get_working_tree_diff(highlighter) {
+            match Self::get_working_tree_diff_with_ignore(
+                self.vcs.as_ref(),
+                &self.vcs_info.root_path,
+                highlighter,
+            ) {
                 Ok(files) => files,
                 Err(TuicrError::NoChanges) => Vec::new(),
                 Err(e) => return Err(e),
             }
         } else {
-            match self.vcs.get_commit_range_diff(&selected_ids, highlighter) {
+            match Self::get_commit_range_diff_with_ignore(
+                self.vcs.as_ref(),
+                &self.vcs_info.root_path,
+                &selected_ids,
+                highlighter,
+            ) {
                 Ok(files) => files,
                 Err(TuicrError::NoChanges) => Vec::new(),
                 Err(e) => return Err(e),
@@ -2375,10 +2553,12 @@ impl App {
         selected_commits: Vec<CommitInfo>,
     ) -> Result<()> {
         let highlighter = self.theme.syntax_highlighter();
-        let diff_files = match self
-            .vcs
-            .get_working_tree_with_commits_diff(&selected_ids, highlighter)
-        {
+        let diff_files = match Self::get_working_tree_with_commits_diff_with_ignore(
+            self.vcs.as_ref(),
+            &self.vcs_info.root_path,
+            &selected_ids,
+            highlighter,
+        ) {
             Ok(diff_files) => diff_files,
             Err(TuicrError::NoChanges) => {
                 self.set_message("No changes in selected commits + working tree");
@@ -2387,34 +2567,8 @@ impl App {
             Err(e) => return Err(e),
         };
 
-        let newest_commit_id = selected_ids.last().unwrap().clone();
-        let loaded_session = load_latest_session_for_context(
-            &self.vcs_info.root_path,
-            self.vcs_info.branch_name.as_deref(),
-            &newest_commit_id,
-            SessionDiffSource::WorkingTreeAndCommits,
-            Some(selected_ids.as_slice()),
-        )
-        .ok()
-        .and_then(|found| found.map(|(_path, session)| session));
-
-        let mut session = loaded_session.unwrap_or_else(|| {
-            let mut session = ReviewSession::new(
-                self.vcs_info.root_path.clone(),
-                newest_commit_id,
-                self.vcs_info.branch_name.clone(),
-                SessionDiffSource::WorkingTreeAndCommits,
-            );
-            session.commit_range = Some(selected_ids.clone());
-            session
-        });
-
-        if session.commit_range.is_none() {
-            session.commit_range = Some(selected_ids.clone());
-            session.updated_at = chrono::Utc::now();
-        }
-
-        self.session = session;
+        self.session =
+            Self::load_or_create_working_tree_and_commits_session(&self.vcs_info, &selected_ids);
 
         for file in &diff_files {
             let path = file.display_path().clone();

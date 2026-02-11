@@ -466,6 +466,10 @@ pub struct CliArgs {
     pub no_update_check: bool,
     /// Commit/revision range to review
     pub revisions: Option<String>,
+    /// Base branch/revision to diff against HEAD + working tree (Git only)
+    pub base: Option<String>,
+    /// Start with only the diff panel visible
+    pub diff_only: bool,
 }
 
 impl ThemeArg {
@@ -565,6 +569,8 @@ Usage: {name} [OPTIONS]
 
 Options:
   -r, --revisions <REVSET>  Commit range/Revset to review (syntax depends on VCS backend)
+  --base <REV>           Diff from merge-base(REV, HEAD) to working tree (Git only)
+  --diff-only            Start with file list hidden (diff panel only)
   --theme <THEME>        Color theme to use [default: dark]
                          Valid values: {valid_values}
                          Precedence: --theme > {config_path} > dark
@@ -609,6 +615,11 @@ fn parse_cli_args_from(args: &[String]) -> Result<CliArgs, String> {
             cli_args.no_update_check = true;
         }
 
+        // Handle --diff-only
+        if args[i] == "--diff-only" {
+            cli_args.diff_only = true;
+        }
+
         // Handle --theme value
         if args[i] == "--theme" {
             let valid_values = ThemeArg::valid_values_display();
@@ -648,6 +659,30 @@ fn parse_cli_args_from(args: &[String]) -> Result<CliArgs, String> {
         if let Some(value) = args[i].strip_prefix("--revisions=") {
             cli_args.revisions = Some(value.to_string());
         }
+
+        // Handle --base value
+        if args[i] == "--base" {
+            let value = args
+                .get(i + 1)
+                .ok_or_else(|| "--base requires a value".to_string())?;
+
+            if value.starts_with('-') {
+                return Err("--base requires a value".to_string());
+            }
+
+            cli_args.base = Some(value.clone());
+        }
+        // Handle --base=value
+        if let Some(value) = args[i].strip_prefix("--base=") {
+            if value.is_empty() {
+                return Err("--base requires a value".to_string());
+            }
+            cli_args.base = Some(value.to_string());
+        }
+    }
+
+    if cli_args.revisions.is_some() && cli_args.base.is_some() {
+        return Err("--revisions and --base cannot be used together".to_string());
     }
 
     Ok(cli_args)
@@ -684,6 +719,39 @@ mod tests {
     fn should_leave_theme_none_when_not_provided() {
         let parsed = parse_for_test(&["tuicr"]).expect("parse should succeed");
         assert_eq!(parsed.theme, None);
+    }
+
+    #[test]
+    fn should_parse_base_separate_arg() {
+        let parsed =
+            parse_for_test(&["tuicr", "--base", "origin/main"]).expect("parse should succeed");
+        assert_eq!(parsed.base, Some("origin/main".to_string()));
+    }
+
+    #[test]
+    fn should_parse_base_equals_arg() {
+        let parsed =
+            parse_for_test(&["tuicr", "--base=origin/main"]).expect("parse should succeed");
+        assert_eq!(parsed.base, Some("origin/main".to_string()));
+    }
+
+    #[test]
+    fn should_error_when_base_value_missing() {
+        let err = parse_for_test(&["tuicr", "--base"]).expect_err("parse should fail");
+        assert!(err.contains("--base requires a value"));
+    }
+
+    #[test]
+    fn should_parse_diff_only_flag() {
+        let parsed = parse_for_test(&["tuicr", "--diff-only"]).expect("parse should succeed");
+        assert!(parsed.diff_only);
+    }
+
+    #[test]
+    fn should_error_when_base_and_revisions_are_both_set() {
+        let err = parse_for_test(&["tuicr", "--base", "origin/main", "-r", "HEAD~2..HEAD"])
+            .expect_err("parse should fail");
+        assert!(err.contains("--revisions and --base cannot be used together"));
     }
 
     #[test]

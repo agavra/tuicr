@@ -38,6 +38,7 @@ to clipboard in a format ready to paste back to the agent.
 - **Comments** - Add file-level or line-level comments with types
 - **Visual mode** - Select line ranges with `v` / `V` and comment on multiple lines at once
 - **Review tracking** - Mark files as reviewed, persist progress to disk
+- **`.tuicrignore` support** - Exclude matching files from review diffs
 - **Clipboard export** - Copy structured Markdown optimized for LLM consumption
 - **Session persistence** - Reviews auto-save and reload on restart
 - **Jujutsu support** - Built-in jj support (tried first since jj repos are Git-backed)
@@ -91,6 +92,8 @@ Detection order: Jujutsu → Git → Mercurial. Jujutsu is tried first because j
 | Flag | Description |
 |------|-------------|
 | `-r` / `--revisions <REVSET>` | Commit range/Revision set to review. Exact syntax depends on VCS backend (Git, JJ, Hg) |
+| `--base <REV>` | Git only: diff from `merge-base(REV, HEAD)` to working tree (includes committed + staged + unstaged changes) |
+| `--diff-only` | Start with file tree hidden (diff panel only) |
 | `--theme <THEME>` | Color theme override (`dark`, `light`, `catppuccin-latte`, `catppuccin-frappe`, `catppuccin-macchiato`, `catppuccin-mocha`) |
 | `--stdout` | Output to stdout instead of clipboard when exporting |
 | `--no-update-check` | Skip checking for updates on startup |
@@ -98,6 +101,14 @@ Detection order: Jujutsu → Git → Mercurial. Jujutsu is tried first because j
 By default, `tuicr` starts in commit selection mode.  
 If uncommitted changes exist, the first selectable entry is `Uncommitted changes`.  
 When `-r` / `--revisions` is provided, `tuicr` opens that revision range directly.
+When `--base` is provided, `tuicr` opens the combined branch+working-tree diff directly.
+
+Examples:
+
+```bash
+# Branch diff + staged/unstaged changes vs main, with diff-only view for small screens
+tuicr --base origin/main --diff-only
+```
 
 ### Configuration
 
@@ -119,6 +130,21 @@ Theme resolution precedence:
 Notes:
 - Invalid `--theme` values cause an immediate non-zero exit.
 - Unknown keys in `config.toml` are ignored with a startup warning.
+
+### Ignoring Files With `.tuicrignore`
+
+`tuicr` reads `.tuicrignore` from the repository root and excludes matching files from all review diffs.
+
+Rules follow gitignore-style pattern matching, including `!` negation.
+
+Example:
+
+```gitignore
+target/
+dist/
+*.lock
+!Cargo.lock
+```
 
 ### Keybindings
 
