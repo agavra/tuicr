@@ -466,6 +466,10 @@ pub struct CliArgs {
     pub no_update_check: bool,
     /// Commit/revision range to review
     pub revisions: Option<String>,
+    /// Start in PR mode (merge-base to HEAD)
+    pub pr_mode: bool,
+    /// Base ref for PR mode, for example `origin/main`
+    pub pr_base_ref: Option<String>,
 }
 
 impl ThemeArg {
@@ -565,6 +569,8 @@ Usage: {name} [OPTIONS]
 
 Options:
   -r, --revisions <REVSET>  Commit range/Revset to review (syntax depends on VCS backend)
+  --pr                      Start in PR mode (merge-base -> HEAD diff)
+  --base <REF>              Base ref for PR mode (implies --pr), e.g. origin/main
   --theme <THEME>        Color theme to use [default: dark]
                          Valid values: {valid_values}
                          Precedence: --theme > {config_path} > dark
@@ -609,6 +615,29 @@ fn parse_cli_args_from(args: &[String]) -> Result<CliArgs, String> {
             cli_args.no_update_check = true;
         }
 
+        if args[i] == "--pr" {
+            cli_args.pr_mode = true;
+        }
+
+        if args[i] == "--base" {
+            let value = args
+                .get(i + 1)
+                .ok_or_else(|| "--base requires a value".to_string())?;
+            if value.starts_with('-') {
+                return Err("--base requires a value".to_string());
+            }
+            cli_args.pr_mode = true;
+            cli_args.pr_base_ref = Some(value.clone());
+        }
+
+        if let Some(value) = args[i].strip_prefix("--base=") {
+            if value.is_empty() {
+                return Err("--base requires a value".to_string());
+            }
+            cli_args.pr_mode = true;
+            cli_args.pr_base_ref = Some(value.to_string());
+        }
+
         // Handle --theme value
         if args[i] == "--theme" {
             let valid_values = ThemeArg::valid_values_display();
@@ -648,6 +677,10 @@ fn parse_cli_args_from(args: &[String]) -> Result<CliArgs, String> {
         if let Some(value) = args[i].strip_prefix("--revisions=") {
             cli_args.revisions = Some(value.to_string());
         }
+    }
+
+    if cli_args.pr_mode && cli_args.revisions.is_some() {
+        return Err("--pr/--base cannot be combined with --revisions".to_string());
     }
 
     Ok(cli_args)

@@ -9,11 +9,14 @@ use crate::error::{Result, TuicrError};
 use crate::model::{DiffFile, DiffLine, FileStatus};
 use crate::syntax::SyntaxHighlighter;
 
-use super::traits::{CommitInfo, VcsBackend, VcsInfo, VcsType};
+use super::traits::{CommitInfo, PullRequestDiff, VcsBackend, VcsInfo, VcsType};
 
 // Re-export commonly used functions
 pub use context::{calculate_gap, fetch_context_lines};
-pub use diff::{get_commit_range_diff, get_working_tree_diff, get_working_tree_with_commits_diff};
+pub use diff::{
+    get_commit_range_diff, get_pull_request_diff, get_working_tree_diff,
+    get_working_tree_with_commits_diff,
+};
 
 /// Git backend implementation using git2 library
 pub struct GitBackend {
@@ -125,5 +128,13 @@ impl VcsBackend for GitBackend {
         highlighter: &SyntaxHighlighter,
     ) -> Result<Vec<DiffFile>> {
         get_working_tree_with_commits_diff(&self.repo, commit_ids, highlighter)
+    }
+
+    fn get_pull_request_diff(
+        &self,
+        base_ref: Option<&str>,
+        highlighter: &SyntaxHighlighter,
+    ) -> Result<PullRequestDiff> {
+        get_pull_request_diff(&self.repo, base_ref, highlighter)
     }
 }

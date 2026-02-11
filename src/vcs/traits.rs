@@ -46,6 +46,26 @@ pub struct CommitInfo {
     pub time: DateTime<Utc>,
 }
 
+/// Metadata about a pull-request style diff.
+#[derive(Debug, Clone)]
+pub struct PullRequestInfo {
+    /// Base reference used for the PR comparison, for example `origin/main`.
+    pub base_ref: String,
+    /// Merge-base commit between base_ref and HEAD.
+    pub merge_base_commit: String,
+    /// Current HEAD commit.
+    pub head_commit: String,
+    /// Number of commits between merge-base and HEAD.
+    pub commit_count: usize,
+}
+
+/// Pull-request diff result including files and metadata.
+#[derive(Debug, Clone)]
+pub struct PullRequestDiff {
+    pub files: Vec<DiffFile>,
+    pub info: PullRequestInfo,
+}
+
 /// Trait for VCS backend implementations
 pub trait VcsBackend: Send {
     /// Get repository information
@@ -106,6 +126,17 @@ pub trait VcsBackend: Send {
     ) -> Result<Vec<DiffFile>> {
         Err(crate::error::TuicrError::UnsupportedOperation(
             "Working tree + commits diff not supported for this VCS".into(),
+        ))
+    }
+
+    /// Get a PR-style diff from merge-base(base_ref, HEAD) to HEAD.
+    fn get_pull_request_diff(
+        &self,
+        _base_ref: Option<&str>,
+        _highlighter: &SyntaxHighlighter,
+    ) -> Result<PullRequestDiff> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "PR diff not supported for this VCS".into(),
         ))
     }
 }

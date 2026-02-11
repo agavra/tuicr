@@ -1,9 +1,10 @@
-use git2::{Delta, Diff, DiffOptions, Repository};
+use git2::{BranchType, Delta, Diff, DiffOptions, Oid, Repository};
 use std::path::PathBuf;
 
 use crate::error::{Result, TuicrError};
 use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin};
 use crate::syntax::SyntaxHighlighter;
+use crate::vcs::{PullRequestDiff, PullRequestInfo};
 
 pub fn get_working_tree_diff(
     repo: &Repository,
@@ -85,6 +86,103 @@ pub fn get_working_tree_with_commits_diff(
     let diff = repo.diff_tree_to_workdir_with_index(old_tree.as_ref(), Some(&mut opts))?;
 
     parse_diff(&diff, highlighter)
+}
+
+/// Get a PR-style diff from merge-base(base_ref, HEAD) to HEAD.
+pub fn get_pull_request_diff(
+    repo: &Repository,
+    base_ref: Option<&str>,
+    highlighter: &SyntaxHighlighter,
+) -> Result<PullRequestDiff> {
+    let head_commit = repo.head()?.peel_to_commit()?;
+    let head_oid = head_commit.id();
+    let head_tree = head_commit.tree()?;
+
+    let (resolved_base_ref, base_oid) = resolve_base_reference(repo, base_ref)?;
+    let merge_base_oid = repo.merge_base(base_oid, head_oid).map_err(|_| {
+        TuicrError::VcsCommand(format!(
+            "Failed to find merge-base between {resolved_base_ref} and HEAD"
+        ))
+    })?;
+
+    if merge_base_oid == head_oid {
+        return Err(TuicrError::NoChanges);
+    }
+
+    let merge_base_commit = repo.find_commit(merge_base_oid)?;
+    let merge_base_tree = merge_base_commit.tree()?;
+    let diff = repo.diff_tree_to_tree(Some(&merge_base_tree), Some(&head_tree), None)?;
+    let files = parse_diff(&diff, highlighter)?;
+
+    let commit_count = count_commits_between(repo, merge_base_oid, head_oid)?;
+
+    Ok(PullRequestDiff {
+        files,
+        info: PullRequestInfo {
+            base_ref: resolved_base_ref,
+            merge_base_commit: merge_base_oid.to_string(),
+            head_commit: head_oid.to_string(),
+            commit_count,
+        },
+    })
+}
+
+fn count_commits_between(repo: &Repository, merge_base_oid: Oid, head_oid: Oid) -> Result<usize> {
+    let mut revwalk = repo.revwalk()?;
+    revwalk.push(head_oid)?;
+    revwalk.hide(merge_base_oid)?;
+
+    let mut count = 0;
+    for oid_result in revwalk {
+        oid_result?;
+        count += 1;
+    }
+
+    Ok(count)
+}
+
+fn resolve_base_reference(repo: &Repository, explicit_base: Option<&str>) -> Result<(String, Oid)> {
+    if let Some(base_ref) = explicit_base {
+        let oid = resolve_ref_to_oid(repo, base_ref).map_err(|_| {
+            TuicrError::VcsCommand(format!("Could not resolve base reference '{base_ref}'"))
+        })?;
+        return Ok((base_ref.to_string(), oid));
+    }
+
+    if let Ok(head) = repo.head()
+        && head.is_branch()
+        && let Some(branch_name) = head.shorthand()
+        && let Ok(branch) = repo.find_branch(branch_name, BranchType::Local)
+        && let Ok(upstream) = branch.upstream()
+        && let Some(upstream_ref_name) = upstream.get().name()
+        && let Ok(oid) = resolve_ref_to_oid(repo, upstream_ref_name)
+    {
+        return Ok((upstream_ref_name.to_string(), oid));
+    }
+
+    if let Ok(origin_head) = repo.find_reference("refs/remotes/origin/HEAD")
+        && let Some(target) = origin_head.symbolic_target()
+        && let Ok(oid) = resolve_ref_to_oid(repo, target)
+    {
+        return Ok((target.to_string(), oid));
+    }
+
+    for candidate in ["origin/main", "origin/master", "main", "master"] {
+        if let Ok(oid) = resolve_ref_to_oid(repo, candidate) {
+            return Ok((candidate.to_string(), oid));
+        }
+    }
+
+    Err(TuicrError::VcsCommand(
+        "Could not determine PR base reference. Set an upstream branch or pass --base <ref>."
+            .to_string(),
+    ))
+}
+
+fn resolve_ref_to_oid(repo: &Repository, reference: &str) -> Result<Oid> {
+    let object = repo.revparse_single(reference)?;
+    let commit = object.peel_to_commit()?;
+    Ok(commit.id())
 }
 
 fn parse_diff(diff: &Diff, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
