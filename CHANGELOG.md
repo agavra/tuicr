@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.7.2] - 2026-02-12
+
+### Bug Fixes
+
+- Skip large untracked files to prevent startup hang (#177)
+- Prefer OSC 52 clipboard in Zellij sessions (#176)
 ## [0.7.0] - 2026-02-10
 
 ### Bug Fixes
