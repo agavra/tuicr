@@ -680,7 +680,14 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
             }
         }
 
-        if file.is_binary {
+        if file.is_too_large {
+            let indicator = cursor_indicator_spaced(line_idx, current_line_idx);
+            lines.push(Line::from(vec![
+                Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
+                Span::styled("(file too large to display)", styles::dim_style(&app.theme)),
+            ]));
+            line_idx += 1;
+        } else if file.is_binary {
             let indicator = cursor_indicator_spaced(line_idx, current_line_idx);
             lines.push(Line::from(vec![
                 Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
@@ -1404,7 +1411,14 @@ fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
             }
         }
 
-        if file.is_binary {
+        if file.is_too_large {
+            let indicator = cursor_indicator_spaced(line_idx, ctx.current_line_idx);
+            lines.push(Line::from(vec![
+                Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
+                Span::styled("(file too large to display)", styles::dim_style(&app.theme)),
+            ]));
+            line_idx += 1;
+        } else if file.is_binary {
             let indicator = cursor_indicator_spaced(line_idx, ctx.current_line_idx);
             lines.push(Line::from(vec![
                 Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),

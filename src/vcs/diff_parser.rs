@@ -45,6 +45,7 @@ pub fn parse_unified_diff(
                     status,
                     hunks: Vec::new(),
                     is_binary: true,
+                    is_too_large: false,
                 });
                 continue;
             }
@@ -73,6 +74,7 @@ pub fn parse_unified_diff(
                 status,
                 hunks,
                 is_binary: false,
+                is_too_large: false,
             });
         }
     }

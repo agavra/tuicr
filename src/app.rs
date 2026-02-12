@@ -1071,7 +1071,9 @@ impl App {
             }
             AnnotatedLine::BinaryOrEmpty { file_idx } => {
                 let file = self.diff_files.get(*file_idx)?;
-                if file.is_binary {
+                if file.is_too_large {
+                    Some("(file too large to display)".to_string())
+                } else if file.is_binary {
                     Some("(binary file)".to_string())
                 } else {
                     Some("(no changes)".to_string())
@@ -3113,6 +3115,7 @@ mod tree_tests {
             status: FileStatus::Modified,
             hunks: vec![],
             is_binary: false,
+            is_too_large: false,
         }
     }
 

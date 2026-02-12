@@ -49,6 +49,7 @@ mod tests {
             status: FileStatus::Modified,
             hunks: Vec::new(),
             is_binary: false,
+            is_too_large: false,
         }
     }
 
@@ -120,6 +121,7 @@ mod tests {
             status: FileStatus::Deleted,
             hunks: Vec::new(),
             is_binary: false,
+            is_too_large: false,
         };
         let kept = make_diff_file("src/lib.rs");
 

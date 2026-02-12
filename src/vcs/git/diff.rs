@@ -90,6 +90,10 @@ pub fn get_working_tree_with_commits_diff(
 fn parse_diff(diff: &Diff, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
     let mut files: Vec<DiffFile> = Vec::new();
 
+    // Untracked files larger than this are shown in the file list but their
+    // content is not parsed — they are likely logs, dumps, or build artefacts.
+    const MAX_UNTRACKED_FILE_SIZE: u64 = 10 * 1_024 * 1_024;
+
     for (delta_idx, delta) in diff.deltas().enumerate() {
         let status = match delta.status() {
             Delta::Added | Delta::Untracked => FileStatus::Added,
@@ -103,11 +107,13 @@ fn parse_diff(diff: &Diff, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFi
         let old_path = delta.old_file().path().map(PathBuf::from);
         let new_path = delta.new_file().path().map(PathBuf::from);
         let is_binary = delta.old_file().is_binary() || delta.new_file().is_binary();
+        let is_too_large =
+            delta.status() == Delta::Untracked && delta.new_file().size() > MAX_UNTRACKED_FILE_SIZE;
 
         // Use new_path for highlighting (the current version of the file)
         let file_path = new_path.as_ref().or(old_path.as_ref());
 
-        let hunks = if is_binary {
+        let hunks = if is_binary || is_too_large {
             Vec::new()
         } else {
             parse_hunks(diff, delta_idx, file_path, highlighter)?
@@ -119,6 +125,7 @@ fn parse_diff(diff: &Diff, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFi
             status,
             hunks,
             is_binary,
+            is_too_large,
         });
     }
 
