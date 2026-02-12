@@ -38,6 +38,7 @@ to clipboard in a format ready to paste back to the agent.
 - **Comments** - Add file-level or line-level comments with types
 - **Visual mode** - Select line ranges with `v` / `V` and comment on multiple lines at once
 - **Review tracking** - Mark files as reviewed, persist progress to disk
+- **`.tuicrignore` support** - Exclude matching files from review diffs
 - **Clipboard export** - Copy structured Markdown optimized for LLM consumption
 - **Session persistence** - Reviews auto-save and reload on restart
 - **Jujutsu support** - Built-in jj support (tried first since jj repos are Git-backed)
@@ -100,6 +101,7 @@ Detection order: Jujutsu → Git → Mercurial. Jujutsu is tried first because j
 By default, `tuicr` starts in commit selection mode.  
 If uncommitted changes exist, the first selectable entry is `Uncommitted changes`.  
 When `-r` / `--revisions` is provided, `tuicr` opens that revision range directly.
+On narrow terminals (less than 100 columns), `tuicr` starts with the file list hidden; toggle it with `;e`.
 
 In PR mode, `tuicr` opens a single combined diff from merge-base to `HEAD`, so merge commits are not shown as standalone review units.
 
@@ -123,6 +125,21 @@ Theme resolution precedence:
 Notes:
 - Invalid `--theme` values cause an immediate non-zero exit.
 - Unknown keys in `config.toml` are ignored with a startup warning.
+
+### Ignoring Files With `.tuicrignore`
+
+`tuicr` reads `.tuicrignore` from the repository root and excludes matching files from all review diffs.
+
+Rules follow gitignore-style pattern matching, including `!` negation.
+
+Example:
+
+```gitignore
+target/
+dist/
+*.lock
+!Cargo.lock
+```
 
 ### Keybindings
 
