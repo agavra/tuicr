@@ -1,4 +1,4 @@
-use crate::app::{self, App, FileTreeItem, FocusedPanel};
+use crate::app::{self, App, DiffSource, FileTreeItem, FocusedPanel};
 use crate::input::Action;
 use crate::output::{export_to_clipboard, generate_export_content};
 use crate::persistence::save_session;
@@ -137,6 +137,36 @@ pub fn handle_command_action(app: &mut App, action: Action) {
         Action::ExitMode => app.exit_command_mode(),
         Action::SubmitInput => {
             let cmd = app.command_buffer.trim().to_string();
+
+            if cmd == "pr" || cmd.starts_with("pr ") {
+                let base_ref = cmd
+                    .split_once(' ')
+                    .map(|(_, rest)| rest.trim())
+                    .filter(|value| !value.is_empty());
+
+                match app.enter_pr_mode(base_ref) {
+                    Ok(()) => {
+                        if let DiffSource::PullRequest {
+                            base_ref,
+                            commit_count,
+                            ..
+                        } = &app.diff_source
+                        {
+                            app.set_message(format!(
+                                "Loaded PR diff against {base_ref} ({commit_count} commits)"
+                            ));
+                        } else {
+                            app.set_message("Loaded PR diff");
+                        }
+                    }
+                    Err(e) => {
+                        app.set_error(format!("Failed to load PR diff: {e}"));
+                    }
+                }
+                app.exit_command_mode();
+                return;
+            }
+
             match cmd.as_str() {
                 "q" | "quit" => {
                     if app.dirty {

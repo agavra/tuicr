@@ -150,6 +150,26 @@ fn generate_markdown(session: &ReviewSession, diff_source: &DiffSource) -> Strin
             );
             let _ = writeln!(md);
         }
+        DiffSource::PullRequest {
+            base_ref,
+            merge_base_commit,
+            head_commit,
+            commit_count,
+        } => {
+            let _ = writeln!(
+                md,
+                "Reviewing PR diff: {}...{} ({} commits)",
+                base_ref,
+                &head_commit[..7.min(head_commit.len())],
+                commit_count
+            );
+            let _ = writeln!(
+                md,
+                "Merge base: {}",
+                &merge_base_commit[..7.min(merge_base_commit.len())]
+            );
+            let _ = writeln!(md);
+        }
     }
 
     let _ = writeln!(
