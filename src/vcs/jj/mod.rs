@@ -12,6 +12,22 @@ use crate::syntax::SyntaxHighlighter;
 use crate::vcs::diff_parser::{self, DiffFormat};
 use crate::vcs::traits::{CommitInfo, VcsBackend, VcsInfo, VcsType};
 
+/// Parse a jj description into (summary, optional body).
+fn parse_description(desc: &str) -> (String, Option<String>) {
+    let mut lines = desc.lines();
+    let summary = lines.next().unwrap_or("(no message)").to_string();
+    let body_text: String = lines
+        .skip_while(|l| l.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let body = if body_text.trim().is_empty() {
+        None
+    } else {
+        Some(body_text)
+    };
+    (summary, body)
+}
+
 /// Jujutsu backend implementation using jj CLI commands
 pub struct JjBackend {
     info: VcsInfo,
@@ -196,7 +212,7 @@ impl VcsBackend for JjBackend {
         // jj log doesn't have a --skip option, so we fetch offset+limit commits
         // and skip the first `offset` in Rust code
         let fetch_count = offset + limit;
-        let template = r#"commit_id ++ "\x00" ++ commit_id.short() ++ "\x00" ++ description.first_line() ++ "\x00" ++ author.email() ++ "\x00" ++ committer.timestamp() ++ "\x01""#;
+        let template = r#"commit_id ++ "\x00" ++ commit_id.short() ++ "\x00" ++ description ++ "\x00" ++ author.email() ++ "\x00" ++ committer.timestamp() ++ "\x01""#;
         let output = run_jj_command(
             &self.info.root_path,
             &[
@@ -225,7 +241,7 @@ impl VcsBackend for JjBackend {
 
             let id = parts[0].to_string();
             let short_id = parts[1].to_string();
-            let summary = parts[2].to_string();
+            let (summary, body) = parse_description(parts[2]);
             let author = parts[3].to_string();
 
             // jj timestamp format is ISO 8601: "2024-01-15T10:30:00.000-05:00"
@@ -238,6 +254,7 @@ impl VcsBackend for JjBackend {
                 short_id,
                 branch_name: None,
                 summary,
+                body,
                 author,
                 time,
             });
@@ -290,7 +307,7 @@ impl VcsBackend for JjBackend {
             .map(|id| id.as_str())
             .collect::<Vec<_>>()
             .join(" | ");
-        let template = r#"commit_id ++ "\x00" ++ commit_id.short() ++ "\x00" ++ description.first_line() ++ "\x00" ++ author.email() ++ "\x00" ++ committer.timestamp() ++ "\x01""#;
+        let template = r#"commit_id ++ "\x00" ++ commit_id.short() ++ "\x00" ++ description ++ "\x00" ++ author.email() ++ "\x00" ++ committer.timestamp() ++ "\x01""#;
         let output = run_jj_command(
             &self.info.root_path,
             &["log", "-r", &revset, "--no-graph", "-T", template],
@@ -308,7 +325,7 @@ impl VcsBackend for JjBackend {
             }
             let id = parts[0].to_string();
             let short_id = parts[1].to_string();
-            let summary = parts[2].to_string();
+            let (summary, body) = parse_description(parts[2]);
             let author = parts[3].to_string();
             let time = DateTime::parse_from_rfc3339(parts[4])
                 .map(|dt| dt.with_timezone(&Utc))
@@ -320,6 +337,7 @@ impl VcsBackend for JjBackend {
                     short_id,
                     branch_name: None,
                     summary,
+                    body,
                     author,
                     time,
                 },

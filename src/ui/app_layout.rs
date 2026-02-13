@@ -489,12 +489,8 @@ fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
                 FileTreeItem::File { file_idx, depth } => {
                     let file = &app.diff_files[*file_idx];
                     let path = file.display_path();
-                    let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
-                    let status = file.status.as_char();
                     let is_reviewed = app.session.is_file_reviewed(path);
                     let review_mark = if is_reviewed { "✓" } else { " " };
-
-                    let indent = "  ".repeat(*depth);
 
                     let style = if is_selected {
                         styles::selected_style(&app.theme).add_modifier(Modifier::UNDERLINED)
@@ -502,22 +498,39 @@ fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
                         Style::default()
                     };
 
-                    let line = Line::from(vec![
-                        Span::styled(indent, Style::default()),
-                        Span::styled(
-                            format!("[{review_mark}]"),
-                            if is_reviewed {
-                                styles::reviewed_style(&app.theme)
-                            } else {
-                                styles::pending_style(&app.theme)
-                            },
-                        ),
-                        Span::styled(
-                            format!(" {status} "),
-                            styles::file_status_style(&app.theme, status),
-                        ),
-                        Span::styled(filename.to_string(), style),
-                    ]);
+                    let line = if file.is_commit_message {
+                        Line::from(vec![
+                            Span::styled(
+                                format!("[{review_mark}]"),
+                                if is_reviewed {
+                                    styles::reviewed_style(&app.theme)
+                                } else {
+                                    styles::pending_style(&app.theme)
+                                },
+                            ),
+                            Span::styled("   Commit Message".to_string(), style),
+                        ])
+                    } else {
+                        let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+                        let status = file.status.as_char();
+                        let indent = "  ".repeat(*depth);
+                        Line::from(vec![
+                            Span::styled(indent, Style::default()),
+                            Span::styled(
+                                format!("[{review_mark}]"),
+                                if is_reviewed {
+                                    styles::reviewed_style(&app.theme)
+                                } else {
+                                    styles::pending_style(&app.theme)
+                                },
+                            ),
+                            Span::styled(
+                                format!(" {status} "),
+                                styles::file_status_style(&app.theme, status),
+                            ),
+                            Span::styled(filename.to_string(), style),
+                        ])
+                    };
 
                     ListItem::new(apply_horizontal_scroll(line, scroll_x))
                 }
@@ -576,12 +589,14 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
         // Add checkmark if reviewed (using same character as file list)
         let review_mark = if is_reviewed { "✓ " } else { "" };
 
+        let header_text = if file.is_commit_message {
+            format!("═══ {}Commit Message ", review_mark)
+        } else {
+            format!("═══ {}{} [{}] ", review_mark, path.display(), status)
+        };
         lines.push(Line::from(vec![
             Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
-            Span::styled(
-                format!("═══ {}{} [{}] ", review_mark, path.display(), status),
-                styles::file_header_style(&app.theme),
-            ),
+            Span::styled(header_text, styles::file_header_style(&app.theme)),
             Span::styled("═".repeat(40), styles::file_header_style(&app.theme)),
         ]));
         line_idx += 1;
@@ -1310,12 +1325,14 @@ fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
 
         let review_mark = if is_reviewed { "✓ " } else { "" };
 
+        let header_text = if file.is_commit_message {
+            format!("═══ {}Commit Message ", review_mark)
+        } else {
+            format!("═══ {}{} [{}] ", review_mark, path.display(), status)
+        };
         lines.push(Line::from(vec![
             Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
-            Span::styled(
-                format!("═══ {}{} [{}] ", review_mark, path.display(), status),
-                styles::file_header_style(&app.theme),
-            ),
+            Span::styled(header_text, styles::file_header_style(&app.theme)),
             Span::styled("═".repeat(40), styles::file_header_style(&app.theme)),
         ]));
         line_idx += 1;

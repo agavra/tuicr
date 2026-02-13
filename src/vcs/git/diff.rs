@@ -126,6 +126,7 @@ fn parse_diff(diff: &Diff, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFi
             hunks,
             is_binary,
             is_too_large,
+            is_commit_message: false,
         });
     }
 

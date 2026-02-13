@@ -10,8 +10,27 @@ pub struct CommitInfo {
     pub short_id: String,
     pub branch_name: Option<String>,
     pub summary: String,
+    pub body: Option<String>,
     pub author: String,
     pub time: DateTime<Utc>,
+}
+
+/// Parse a full commit message into (summary, optional body).
+/// The summary is the first line; the body is everything after the first blank line, trimmed.
+fn parse_commit_message(message: &str) -> (String, Option<String>) {
+    let mut lines = message.lines();
+    let summary = lines.next().unwrap_or("(no message)").to_string();
+    // Skip blank separator line(s) between summary and body
+    let body_text: String = lines
+        .skip_while(|l| l.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let body = if body_text.trim().is_empty() {
+        None
+    } else {
+        Some(body_text)
+    };
+    (summary, body)
 }
 
 fn get_branch_tip_names(repo: &Repository) -> HashMap<Oid, Vec<String>> {
@@ -57,7 +76,8 @@ pub fn get_recent_commits(
 
         let id = oid.to_string();
         let short_id = id[..7.min(id.len())].to_string();
-        let summary = commit.summary().unwrap_or("(no message)").to_string();
+        let full_message = commit.message().unwrap_or("(no message)");
+        let (summary, body) = parse_commit_message(full_message);
         let author = commit.author().name().unwrap_or("Unknown").to_string();
         let branch_name = branch_tip_names
             .get(&oid)
@@ -72,6 +92,7 @@ pub fn get_recent_commits(
             short_id,
             branch_name,
             summary,
+            body,
             author,
             time,
         });
@@ -95,7 +116,8 @@ pub fn get_commits_info(repo: &Repository, ids: &[String]) -> Result<Vec<CommitI
 
         let id = oid.to_string();
         let short_id = id[..7.min(id.len())].to_string();
-        let summary = commit.summary().unwrap_or("(no message)").to_string();
+        let full_message = commit.message().unwrap_or("(no message)");
+        let (summary, body) = parse_commit_message(full_message);
         let author = commit.author().name().unwrap_or("Unknown").to_string();
         let branch_name = branch_tip_names
             .get(&oid)
@@ -110,6 +132,7 @@ pub fn get_commits_info(repo: &Repository, ids: &[String]) -> Result<Vec<CommitI
             short_id,
             branch_name,
             summary,
+            body,
             author,
             time,
         });

@@ -5,8 +5,8 @@ use chrono::Utc;
 
 use crate::error::{Result, TuicrError};
 use crate::model::{
-    Comment, CommentType, DiffFile, DiffLine, LineOrigin, LineRange, LineSide, ReviewSession,
-    SessionDiffSource,
+    Comment, CommentType, DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin, LineRange,
+    LineSide, ReviewSession, SessionDiffSource,
 };
 use crate::persistence::load_latest_session_for_context;
 use crate::syntax::SyntaxHighlighter;
@@ -344,6 +344,10 @@ impl App {
                 app.commit_diff_cache.clear();
             }
             app.review_commits = review_commits;
+            app.insert_commit_message_if_single();
+            app.sort_files_by_directory(true);
+            app.expand_all_dirs();
+            app.rebuild_annotations();
 
             Ok(app)
         } else {
@@ -587,9 +591,71 @@ impl App {
             short_id: "WORKTREE".to_string(),
             branch_name: None,
             summary: "Uncommitted changes".to_string(),
+            body: None,
             author: String::new(),
             time: Utc::now(),
         }
+    }
+
+    /// If we are viewing a single commit, insert a "Commit Message" DiffFile at index 0.
+    fn insert_commit_message_if_single(&mut self) {
+        self.diff_files.retain(|f| !f.is_commit_message);
+
+        let commit = if let Some((start, end)) = self.commit_selection_range {
+            if start == end {
+                self.review_commits.get(start)
+            } else {
+                None
+            }
+        } else if self.review_commits.len() == 1 {
+            self.review_commits.first()
+        } else {
+            None
+        };
+
+        let Some(commit) = commit else { return };
+        if Self::is_working_tree_commit(commit) {
+            return;
+        }
+
+        let mut full_message = commit.summary.clone();
+        if let Some(ref body) = commit.body {
+            full_message.push('\n');
+            full_message.push('\n');
+            full_message.push_str(body);
+        }
+
+        let diff_lines: Vec<DiffLine> = full_message
+            .lines()
+            .enumerate()
+            .map(|(i, line)| DiffLine {
+                origin: LineOrigin::Context,
+                content: line.to_string(),
+                old_lineno: None,
+                new_lineno: Some(i as u32 + 1),
+                highlighted_spans: None,
+            })
+            .collect();
+        let line_count = diff_lines.len() as u32;
+        let commit_msg_file = DiffFile {
+            old_path: None,
+            new_path: Some(PathBuf::from("Commit Message")),
+            status: FileStatus::Added,
+            hunks: vec![DiffHunk {
+                header: String::new(),
+                lines: diff_lines,
+                old_start: 0,
+                old_count: 0,
+                new_start: 1,
+                new_count: line_count,
+            }],
+            is_binary: false,
+            is_too_large: false,
+            is_commit_message: true,
+        };
+        self.diff_files.insert(0, commit_msg_file);
+        self.session
+            .add_file(PathBuf::from("Commit Message"), FileStatus::Added);
     }
 
     fn is_working_tree_commit(commit: &CommitInfo) -> bool {
@@ -2404,6 +2470,7 @@ impl App {
             self.file_list_state = FileListState::default();
             self.expanded_gaps.clear();
             self.expanded_content.clear();
+            self.insert_commit_message_if_single();
             self.sort_files_by_directory(true);
             self.expand_all_dirs();
             self.rebuild_annotations();
@@ -2419,6 +2486,7 @@ impl App {
             self.file_list_state = FileListState::default();
             self.expanded_gaps.clear();
             self.expanded_content.clear();
+            self.insert_commit_message_if_single();
             self.sort_files_by_directory(true);
             self.expand_all_dirs();
             self.rebuild_annotations();
@@ -2483,6 +2551,7 @@ impl App {
         self.file_list_state = FileListState::default();
         self.expanded_gaps.clear();
         self.expanded_content.clear();
+        self.insert_commit_message_if_single();
         self.sort_files_by_directory(true);
         self.expand_all_dirs();
         self.rebuild_annotations();
@@ -2541,6 +2610,7 @@ impl App {
         self.commit_diff_cache.clear();
         self.saved_inline_selection = None;
 
+        self.insert_commit_message_if_single();
         self.sort_files_by_directory(true);
         self.expand_all_dirs();
         self.rebuild_annotations();
@@ -2558,8 +2628,13 @@ impl App {
         };
 
         let mut dir_map: BTreeMap<String, Vec<DiffFile>> = BTreeMap::new();
+        let mut commit_msg_files: Vec<DiffFile> = Vec::new();
 
         for file in self.diff_files.drain(..) {
+            if file.is_commit_message {
+                commit_msg_files.push(file);
+                continue;
+            }
             let path = file.display_path();
             let dir = if let Some(parent) = path.parent() {
                 if parent == Path::new("") {
@@ -2574,6 +2649,7 @@ impl App {
             dir_map.entry(dir).or_default().push(file);
         }
 
+        self.diff_files.extend(commit_msg_files);
         for (_dir, files) in dir_map {
             self.diff_files.extend(files);
         }
@@ -3116,6 +3192,7 @@ mod tree_tests {
             hunks: vec![],
             is_binary: false,
             is_too_large: false,
+            is_commit_message: false,
         }
     }
 
