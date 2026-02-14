@@ -861,6 +861,31 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
                         line_spans.push(Span::styled(diff_line.content.clone(), style));
                     }
 
+                    // Mark add/del lines with their effective EOL style so we can paint full
+                    // row backgrounds later (including wrapped visual rows).
+                    if matches!(
+                        diff_line.origin,
+                        LineOrigin::Addition | LineOrigin::Deletion
+                    ) {
+                        let eol_style = match diff_line.highlighted_spans.as_ref() {
+                            // For syntax-highlighted lines (including empty highlighted lines),
+                            // use syntax diff background so row fill matches code spans.
+                            Some(_) => {
+                                let syntax_bg = match diff_line.origin {
+                                    LineOrigin::Addition => app.theme.syntax_add_bg,
+                                    LineOrigin::Deletion => app.theme.syntax_del_bg,
+                                    LineOrigin::Context => app.theme.panel_bg,
+                                };
+                                let base = line_spans.last().map(|s| s.style).unwrap_or(style);
+                                base.bg(syntax_bg)
+                            }
+                            // Non-highlighted lines keep classic diff background.
+                            None => line_spans.last().map(|s| s.style).unwrap_or(style),
+                        };
+                        // Zero-width marker span carrying the background style.
+                        line_spans.push(Span::styled(String::new(), eol_style));
+                    }
+
                     lines.push(Line::from(line_spans));
                     line_idx += 1;
 
@@ -1158,6 +1183,7 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 
     let scroll_x = app.diff_state.scroll_x;
+    let visible_lines_unscrolled_for_bg = visible_lines_unscrolled.clone();
     let visible_lines: Vec<Line> = if app.diff_state.wrap_lines {
         visible_lines_unscrolled
     } else {
@@ -1167,7 +1193,19 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
             .collect()
     };
 
-    let mut diff = Paragraph::new(visible_lines).style(styles::panel_style(&app.theme));
+    // Paint per-visual-row add/del backgrounds across full row width.
+    paint_unified_diff_row_backgrounds(
+        frame,
+        inner,
+        &visible_lines_unscrolled_for_bg,
+        &line_widths,
+        app.diff_state.wrap_lines,
+        inner.width as usize,
+        &app.theme,
+    );
+
+    // Keep paragraph bg unset so pre-painted per-row diff backgrounds remain visible.
+    let mut diff = Paragraph::new(visible_lines).style(Style::default().fg(app.theme.fg_primary));
     if app.diff_state.wrap_lines {
         diff = diff.wrap(Wrap { trim: false });
     }
@@ -1954,8 +1992,8 @@ fn add_deletion_spans(
 
     // Use syntax highlighting if available
     if let Some(ref highlighted) = diff_line.highlighted_spans {
-        let content_spans =
-            truncate_or_pad_spans(highlighted, content_width, styles::diff_del_style(theme));
+        let syntax_pad_style = Style::default().fg(theme.diff_del).bg(theme.syntax_del_bg);
+        let content_spans = truncate_or_pad_spans(highlighted, content_width, syntax_pad_style);
         spans.extend(content_spans);
     } else {
         // Fall back to plain text
@@ -1984,8 +2022,8 @@ fn add_addition_spans(
 
     // Use syntax highlighting if available
     if let Some(ref highlighted) = diff_line.highlighted_spans {
-        let content_spans =
-            truncate_or_pad_spans(highlighted, content_width, styles::diff_add_style(theme));
+        let syntax_pad_style = Style::default().fg(theme.diff_add).bg(theme.syntax_add_bg);
+        let content_spans = truncate_or_pad_spans(highlighted, content_width, syntax_pad_style);
         spans.extend(content_spans);
     } else {
         // Fall back to plain text
@@ -2187,6 +2225,71 @@ fn truncate_or_pad_spans(
             .iter()
             .map(|(style, text)| Span::styled(text.clone(), *style))
             .collect()
+    }
+}
+
+fn unified_line_bg_style(line: &Line, theme: &Theme) -> Option<Style> {
+    let prefix = line.spans.get(2)?.content.as_ref();
+    let default_bg = match prefix {
+        "+ " => theme.diff_add_bg,
+        "- " => theme.diff_del_bg,
+        _ => return None,
+    };
+
+    let bg = line
+        .spans
+        .last()
+        .and_then(|span| span.style.bg)
+        .unwrap_or(default_bg);
+
+    Some(Style::default().bg(bg))
+}
+
+fn paint_unified_diff_row_backgrounds(
+    frame: &mut Frame,
+    inner: Rect,
+    visible_lines_unscrolled: &[Line],
+    line_widths: &[usize],
+    wrap_lines: bool,
+    viewport_width: usize,
+    theme: &Theme,
+) {
+    let mut visual_row: usize = 0;
+
+    for (idx, line) in visible_lines_unscrolled.iter().enumerate() {
+        if visual_row >= inner.height as usize {
+            break;
+        }
+
+        let rows_for_line = if wrap_lines && viewport_width > 0 {
+            let width = line_widths.get(idx).copied().unwrap_or(0);
+            if width == 0 {
+                1
+            } else {
+                width.div_ceil(viewport_width)
+            }
+        } else {
+            1
+        };
+
+        if let Some(row_style) = unified_line_bg_style(line, theme) {
+            for _ in 0..rows_for_line {
+                if visual_row >= inner.height as usize {
+                    break;
+                }
+
+                let row_rect = Rect {
+                    x: inner.x,
+                    y: inner.y + visual_row as u16,
+                    width: inner.width,
+                    height: 1,
+                };
+                frame.buffer_mut().set_style(row_rect, row_style);
+                visual_row += 1;
+            }
+        } else {
+            visual_row += rows_for_line;
+        }
     }
 }
 
