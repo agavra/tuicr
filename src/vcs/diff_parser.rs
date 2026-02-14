@@ -241,7 +241,9 @@ where
             continue;
         };
 
-        line_contents.push(content.to_string());
+        // Match git backend behavior: normalize tabs to 4 spaces so rendering is consistent
+        // across all VCS backends.
+        line_contents.push(content.replace('\t', "    "));
         line_origins.push(origin);
         line_numbers.push((old_ln, new_ln));
     }
@@ -438,6 +440,25 @@ mod tests {
         assert_eq!(result[0].status, FileStatus::Modified);
         assert_eq!(result[0].hunks.len(), 1);
         assert_eq!(result[0].hunks[0].lines.len(), 4);
+    }
+
+    #[test]
+    fn hg_should_expand_tabs_to_spaces_in_hunk_lines() {
+        let diff = r#"diff -r abc123 test.rs
+--- a/test.rs	Thu Jan 01 00:00:00 1970 +0000
++++ b/test.rs	Thu Jan 01 00:00:00 1970 +0000
+@@ -1,2 +1,2 @@
+-	old
++	new
+"#;
+
+        let result =
+            parse_unified_diff(diff, DiffFormat::Hg, &SyntaxHighlighter::default()).unwrap();
+        let lines = &result[0].hunks[0].lines;
+
+        assert_eq!(lines[0].content, "    old");
+        assert_eq!(lines[1].content, "    new");
+        assert!(lines.iter().all(|l| !l.content.contains('\t')));
     }
 
     #[test]
@@ -706,6 +727,24 @@ copy to dest.rs
         assert_eq!(files[0].status, FileStatus::Modified);
         assert_eq!(files[0].hunks.len(), 1);
         assert_eq!(files[0].hunks[0].lines.len(), 4);
+    }
+
+    #[test]
+    fn jj_should_expand_tabs_to_spaces_in_hunk_lines() {
+        let diff = r#"diff --git a/file.txt b/file.txt
+--- a/file.txt
++++ b/file.txt
+@@ -1,2 +1,2 @@
+-	old
++	new
+"#;
+        let files =
+            parse_unified_diff(diff, DiffFormat::GitStyle, &SyntaxHighlighter::default()).unwrap();
+        let lines = &files[0].hunks[0].lines;
+
+        assert_eq!(lines[0].content, "    old");
+        assert_eq!(lines[1].content, "    new");
+        assert!(lines.iter().all(|l| !l.content.contains('\t')));
     }
 
     #[test]
