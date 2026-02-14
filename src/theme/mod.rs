@@ -316,6 +316,54 @@ impl Theme {
         };
         catppuccin_theme(flavor, EmbeddedThemeName::CatppuccinMocha)
     }
+
+    pub fn gruvbox_dark() -> Self {
+        let flavor = GruvboxFlavor {
+            dark: true,
+            bg0: rgb(29, 32, 33),
+            bg1: rgb(40, 40, 40),
+            bg4: rgb(80, 73, 69),
+            selected_bg: rgb(60, 56, 54),
+            fg0: rgb(212, 190, 152),
+            fg1: rgb(221, 199, 161),
+            grey0: rgb(124, 111, 100),
+            grey1: rgb(146, 131, 116),
+            red: rgb(251, 73, 52),
+            orange: rgb(254, 128, 25),
+            yellow: rgb(250, 189, 47),
+            green: rgb(184, 187, 38),
+            aqua: rgb(142, 192, 124),
+            blue: rgb(131, 165, 152),
+            purple: rgb(211, 134, 155),
+            bg_red: rgb(64, 33, 32),
+            bg_green: rgb(52, 56, 27),
+        };
+        gruvbox_theme(flavor)
+    }
+
+    pub fn gruvbox_light() -> Self {
+        let flavor = GruvboxFlavor {
+            dark: false,
+            bg0: rgb(249, 245, 215),
+            bg1: rgb(245, 237, 202),
+            bg4: rgb(221, 199, 161),
+            selected_bg: rgb(235, 219, 178),
+            fg0: rgb(101, 71, 53),
+            fg1: rgb(79, 56, 41),
+            grey0: rgb(168, 153, 132),
+            grey1: rgb(146, 131, 116),
+            red: rgb(157, 0, 6),
+            orange: rgb(175, 58, 3),
+            yellow: rgb(181, 118, 20),
+            green: rgb(121, 116, 14),
+            aqua: rgb(66, 123, 88),
+            blue: rgb(7, 102, 120),
+            purple: rgb(143, 63, 113),
+            bg_red: rgb(240, 222, 222),
+            bg_green: rgb(228, 236, 213),
+        };
+        gruvbox_theme(flavor)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -338,6 +386,28 @@ struct CatppuccinFlavor {
     lavender: Color,
     peach: Color,
     pink: Color,
+}
+
+#[derive(Clone, Copy)]
+struct GruvboxFlavor {
+    dark: bool,
+    bg0: Color,
+    bg1: Color,
+    bg4: Color,
+    selected_bg: Color,
+    fg0: Color,
+    fg1: Color,
+    grey0: Color,
+    grey1: Color,
+    red: Color,
+    orange: Color,
+    yellow: Color,
+    green: Color,
+    aqua: Color,
+    blue: Color,
+    purple: Color,
+    bg_red: Color,
+    bg_green: Color,
 }
 
 fn rgb(r: u8, g: u8, b: u8) -> Color {
@@ -435,6 +505,80 @@ fn catppuccin_theme(flavor: CatppuccinFlavor, syntect_theme: EmbeddedThemeName) 
     }
 }
 
+fn gruvbox_theme(flavor: GruvboxFlavor) -> Theme {
+    let syntect_theme = if flavor.dark {
+        EmbeddedThemeName::GruvboxDark
+    } else {
+        EmbeddedThemeName::GruvboxLight
+    };
+    let accent_fg = if flavor.dark { flavor.bg0 } else { flavor.fg1 };
+
+    Theme {
+        highlighter: OnceLock::new(),
+
+        // Base colors
+        panel_bg: flavor.bg0,
+        bg_highlight: flavor.selected_bg,
+        fg_primary: flavor.fg0,
+        fg_secondary: flavor.fg1,
+        fg_dim: flavor.grey0,
+
+        // Diff colors
+        diff_add: flavor.green,
+        diff_add_bg: flavor.bg_green,
+        diff_del: flavor.red,
+        diff_del_bg: flavor.bg_red,
+        diff_context: flavor.fg0,
+        diff_hunk_header: flavor.blue,
+        expanded_context_fg: flavor.grey1,
+
+        // Syntax highlighting diff backgrounds
+        syntax_add_bg: flavor.bg_green,
+        syntax_del_bg: flavor.bg_red,
+
+        // Syntect theme for syntax highlighting
+        syntect_theme,
+
+        // File status colors
+        file_added: flavor.green,
+        file_modified: flavor.yellow,
+        file_deleted: flavor.red,
+        file_renamed: flavor.purple,
+
+        // Review status colors
+        reviewed: flavor.green,
+        pending: flavor.yellow,
+
+        // Comment type colors
+        comment_note: flavor.blue,
+        comment_suggestion: flavor.aqua,
+        comment_issue: flavor.red,
+        comment_praise: flavor.green,
+
+        // UI element colors
+        border_focused: flavor.aqua,
+        border_unfocused: flavor.bg4,
+        status_bar_bg: flavor.bg1,
+        cursor_color: flavor.orange,
+        branch_name: flavor.aqua,
+        help_indicator: flavor.grey0,
+
+        // Message/update badge colors
+        message_info_fg: accent_fg,
+        message_info_bg: flavor.aqua,
+        message_warning_fg: accent_fg,
+        message_warning_bg: flavor.yellow,
+        message_error_fg: accent_fg,
+        message_error_bg: flavor.red,
+        update_badge_fg: accent_fg,
+        update_badge_bg: flavor.orange,
+
+        // Mode indicator colors
+        mode_fg: accent_fg,
+        mode_bg: flavor.green,
+    }
+}
+
 /// Theme selection from CLI argument
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum ThemeArg {
@@ -445,15 +589,19 @@ pub enum ThemeArg {
     CatppuccinFrappe,
     CatppuccinMacchiato,
     CatppuccinMocha,
+    GruvboxDark,
+    GruvboxLight,
 }
 
-const THEME_CHOICES: [(&str, ThemeArg); 6] = [
+const THEME_CHOICES: [(&str, ThemeArg); 8] = [
     ("dark", ThemeArg::Dark),
     ("light", ThemeArg::Light),
     ("catppuccin-latte", ThemeArg::CatppuccinLatte),
     ("catppuccin-frappe", ThemeArg::CatppuccinFrappe),
     ("catppuccin-macchiato", ThemeArg::CatppuccinMacchiato),
     ("catppuccin-mocha", ThemeArg::CatppuccinMocha),
+    ("gruvbox-dark", ThemeArg::GruvboxDark),
+    ("gruvbox-light", ThemeArg::GruvboxLight),
 ];
 
 /// CLI arguments parsed from command line
@@ -502,6 +650,8 @@ pub fn resolve_theme(arg: ThemeArg) -> Theme {
         ThemeArg::CatppuccinFrappe => Theme::catppuccin_frappe(),
         ThemeArg::CatppuccinMacchiato => Theme::catppuccin_macchiato(),
         ThemeArg::CatppuccinMocha => Theme::catppuccin_mocha(),
+        ThemeArg::GruvboxDark => Theme::gruvbox_dark(),
+        ThemeArg::GruvboxLight => Theme::gruvbox_light(),
     }
 }
 
@@ -681,6 +831,17 @@ mod tests {
     }
 
     #[test]
+    fn should_parse_gruvbox_themes() {
+        let parsed =
+            parse_for_test(&["tuicr", "--theme", "gruvbox-dark"]).expect("parse should succeed");
+        assert_eq!(parsed.theme, Some(ThemeArg::GruvboxDark));
+
+        let parsed =
+            parse_for_test(&["tuicr", "--theme=gruvbox-light"]).expect("parse should succeed");
+        assert_eq!(parsed.theme, Some(ThemeArg::GruvboxLight));
+    }
+
+    #[test]
     fn should_leave_theme_none_when_not_provided() {
         let parsed = parse_for_test(&["tuicr"]).expect("parse should succeed");
         assert_eq!(parsed.theme, None);
@@ -766,6 +927,18 @@ mod tests {
     fn should_resolve_catppuccin_latte_syntect_theme() {
         let theme = resolve_theme(ThemeArg::CatppuccinLatte);
         assert_eq!(theme.syntect_theme, EmbeddedThemeName::CatppuccinLatte);
+    }
+
+    #[test]
+    fn should_resolve_gruvbox_dark_to_dark_syntect_theme() {
+        let theme = resolve_theme(ThemeArg::GruvboxDark);
+        assert_eq!(theme.syntect_theme, EmbeddedThemeName::GruvboxDark);
+    }
+
+    #[test]
+    fn should_resolve_gruvbox_light_to_light_syntect_theme() {
+        let theme = resolve_theme(ThemeArg::GruvboxLight);
+        assert_eq!(theme.syntect_theme, EmbeddedThemeName::GruvboxLight);
     }
 
     #[test]
