@@ -42,6 +42,7 @@ pub struct CommitInfo {
     /// For Git this is populated for commits that are branch tips.
     pub branch_name: Option<String>,
     pub summary: String,
+    pub body: Option<String>,
     pub author: String,
     pub time: DateTime<Utc>,
 }
@@ -173,6 +174,7 @@ mod tests {
             short_id: "abc123d".to_string(),
             branch_name: Some("main".to_string()),
             summary: "Fix bug".to_string(),
+            body: None,
             author: "Test User".to_string(),
             time: Utc::now(),
         };

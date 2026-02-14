@@ -73,6 +73,7 @@ mod tests {
             short_id: "abc".to_string(),
             branch_name: Some("main".to_string()),
             summary: "test".to_string(),
+            body: None,
             author: "author".to_string(),
             time: chrono::Utc::now(),
         };

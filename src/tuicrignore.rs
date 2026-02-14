@@ -50,6 +50,7 @@ mod tests {
             hunks: Vec::new(),
             is_binary: false,
             is_too_large: false,
+            is_commit_message: false,
         }
     }
 
@@ -122,6 +123,7 @@ mod tests {
             hunks: Vec::new(),
             is_binary: false,
             is_too_large: false,
+            is_commit_message: false,
         };
         let kept = make_diff_file("src/lib.rs");
 

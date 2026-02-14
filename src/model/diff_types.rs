@@ -66,6 +66,7 @@ pub struct DiffFile {
     pub hunks: Vec<DiffHunk>,
     pub is_binary: bool,
     pub is_too_large: bool,
+    pub is_commit_message: bool,
 }
 
 impl DiffFile {

@@ -10,6 +10,22 @@ use crate::syntax::SyntaxHighlighter;
 use crate::vcs::diff_parser::{self, DiffFormat};
 use crate::vcs::traits::{CommitInfo, VcsBackend, VcsInfo, VcsType};
 
+/// Parse an hg description into (summary, optional body).
+fn parse_hg_description(desc: &str) -> (String, Option<String>) {
+    let mut lines = desc.lines();
+    let summary = lines.next().unwrap_or("(no message)").to_string();
+    let body_text: String = lines
+        .skip_while(|l| l.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let body = if body_text.trim().is_empty() {
+        None
+    } else {
+        Some(body_text)
+    };
+    (summary, body)
+}
+
 /// Mercurial backend implementation using hg CLI commands
 pub struct HgBackend {
     info: VcsInfo,
@@ -152,7 +168,7 @@ impl VcsBackend for HgBackend {
         // and skip the first `offset` in Rust code
         let fetch_count = offset + limit;
         let template =
-            "{node}\\x00{node|short}\\x00{desc|firstline}\\x00{author|user}\\x00{date|hgdate}\\x01";
+            "{node}\\x00{node|short}\\x00{desc}\\x00{author|user}\\x00{date|hgdate}\\x01";
         let output = run_hg_command(
             &self.info.root_path,
             &[
@@ -178,7 +194,7 @@ impl VcsBackend for HgBackend {
 
             let id = parts[0].to_string();
             let short_id = parts[1].to_string();
-            let summary = parts[2].to_string();
+            let (summary, body) = parse_hg_description(parts[2]);
             let author = parts[3].to_string();
 
             // hgdate format is "unix_timestamp timezone_offset"
@@ -194,6 +210,7 @@ impl VcsBackend for HgBackend {
                 short_id,
                 branch_name: None,
                 summary,
+                body,
                 author,
                 time,
             });
@@ -279,7 +296,7 @@ impl VcsBackend for HgBackend {
             .collect::<Vec<_>>()
             .join(" | ");
         let template =
-            "{node}\\x00{node|short}\\x00{desc|firstline}\\x00{author|user}\\x00{date|hgdate}\\x01";
+            "{node}\\x00{node|short}\\x00{desc}\\x00{author|user}\\x00{date|hgdate}\\x01";
         let output = run_hg_command(
             &self.info.root_path,
             &["log", "-r", &revset, "--template", template],
@@ -297,7 +314,7 @@ impl VcsBackend for HgBackend {
             }
             let id = parts[0].to_string();
             let short_id = parts[1].to_string();
-            let summary = parts[2].to_string();
+            let (summary, body) = parse_hg_description(parts[2]);
             let author = parts[3].to_string();
             let time = parts[4]
                 .split_whitespace()
@@ -312,6 +329,7 @@ impl VcsBackend for HgBackend {
                     short_id,
                     branch_name: None,
                     summary,
+                    body,
                     author,
                     time,
                 },
