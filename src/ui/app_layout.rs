@@ -162,7 +162,9 @@ fn render_commit_select(frame: &mut Frame, app: &mut App) {
                 ),
             ];
 
-            if commit.id == crate::app::WORKING_TREE_SELECTION_ID {
+            if commit.id == crate::app::STAGED_SELECTION_ID
+                || commit.id == crate::app::UNSTAGED_SELECTION_ID
+            {
                 spans.push(Span::styled(&commit.summary, style));
                 return Line::from(spans);
             }

@@ -1,9 +1,9 @@
 use ratatui::{
-    Frame,
     layout::{Constraint, Flex, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
+    Frame,
 };
 
 use crate::app::App;
@@ -387,7 +387,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  :commits  ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Select commits or uncommitted changes"),
+            Span::raw("Select commits or staged/unstaged changes"),
         ]),
         Line::from(vec![
             Span::styled(

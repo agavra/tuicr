@@ -2,7 +2,7 @@ use std::fmt::Write;
 use std::io::Write as IoWrite;
 
 use arboard::Clipboard;
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 
 use crate::app::DiffSource;
 use crate::error::{Result, TuicrError};
@@ -128,6 +128,18 @@ fn generate_markdown(session: &ReviewSession, diff_source: &DiffSource) -> Strin
     // Include commit range info if reviewing commits
     match diff_source {
         DiffSource::WorkingTree => {}
+        DiffSource::Staged => {
+            let _ = writeln!(md, "Reviewing staged changes");
+            let _ = writeln!(md);
+        }
+        DiffSource::Unstaged => {
+            let _ = writeln!(md, "Reviewing unstaged changes");
+            let _ = writeln!(md);
+        }
+        DiffSource::StagedAndUnstaged => {
+            let _ = writeln!(md, "Reviewing staged + unstaged changes");
+            let _ = writeln!(md);
+        }
         DiffSource::CommitRange(commits) => {
             if commits.len() == 1 {
                 let _ = writeln!(
@@ -146,6 +158,15 @@ fn generate_markdown(session: &ReviewSession, diff_source: &DiffSource) -> Strin
             let _ = writeln!(
                 md,
                 "Reviewing working tree + commits: {}",
+                short_ids.join(", ")
+            );
+            let _ = writeln!(md);
+        }
+        DiffSource::StagedUnstagedAndCommits(commits) => {
+            let short_ids: Vec<&str> = commits.iter().map(|c| &c[..7.min(c.len())]).collect();
+            let _ = writeln!(
+                md,
+                "Reviewing staged + unstaged + commits: {}",
                 short_ids.join(", ")
             );
             let _ = writeln!(md);

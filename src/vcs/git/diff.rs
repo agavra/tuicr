@@ -21,6 +21,32 @@ pub fn get_working_tree_diff(
     parse_diff(&diff, highlighter)
 }
 
+/// Get the staged diff (index vs HEAD)
+pub fn get_staged_diff(
+    repo: &Repository,
+    highlighter: &SyntaxHighlighter,
+) -> Result<Vec<DiffFile>> {
+    let head = repo.head()?.peel_to_tree()?;
+    let index = repo.index()?;
+    let diff = repo.diff_tree_to_index(Some(&head), Some(&index), None)?;
+    parse_diff(&diff, highlighter)
+}
+
+/// Get the unstaged diff (working tree vs index)
+pub fn get_unstaged_diff(
+    repo: &Repository,
+    highlighter: &SyntaxHighlighter,
+) -> Result<Vec<DiffFile>> {
+    let index = repo.index()?;
+    let mut opts = DiffOptions::new();
+    opts.include_untracked(true);
+    opts.show_untracked_content(true);
+    opts.recurse_untracked_dirs(true);
+
+    let diff = repo.diff_index_to_workdir(Some(&index), Some(&mut opts))?;
+    parse_diff(&diff, highlighter)
+}
+
 /// Get the diff for a range of commits.
 /// `commit_ids` should be ordered from oldest to newest.
 /// The diff compares the oldest commit's parent to the newest commit.
@@ -56,7 +82,7 @@ pub fn get_commit_range_diff(
 }
 
 /// Get a combined diff from the parent of the oldest commit through to the working tree.
-/// This shows both committed and uncommitted changes in a single diff.
+/// This shows both committed and working tree changes in a single diff.
 pub fn get_working_tree_with_commits_diff(
     repo: &Repository,
     commit_ids: &[String],
@@ -304,5 +330,37 @@ mod tests {
             "expected tab-expanded content in git diff lines"
         );
         assert!(lines.iter().all(|l| !l.content.contains('\t')));
+    }
+
+    #[test]
+    fn should_separate_staged_and_unstaged_diffs() {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let repo = Repository::init(temp_dir.path()).expect("failed to init repo");
+
+        create_initial_commit(&repo, "file.txt", "base\n");
+
+        fs::write(temp_dir.path().join("file.txt"), "unstaged\n").expect("failed to update file");
+
+        let highlighter = SyntaxHighlighter::default();
+
+        let unstaged = get_unstaged_diff(&repo, &highlighter).expect("unstaged diff failed");
+        assert_eq!(unstaged.len(), 1);
+        assert!(matches!(
+            get_staged_diff(&repo, &highlighter),
+            Err(TuicrError::NoChanges)
+        ));
+
+        let mut index = repo.index().expect("failed to open index");
+        index
+            .add_path(Path::new("file.txt"))
+            .expect("failed to add file to index");
+        index.write().expect("failed to write index");
+
+        let staged = get_staged_diff(&repo, &highlighter).expect("staged diff failed");
+        assert_eq!(staged.len(), 1);
+        assert!(matches!(
+            get_unstaged_diff(&repo, &highlighter),
+            Err(TuicrError::NoChanges)
+        ));
     }
 }

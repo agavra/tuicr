@@ -51,8 +51,22 @@ pub trait VcsBackend: Send {
     /// Get repository information
     fn info(&self) -> &VcsInfo;
 
-    /// Get the working tree diff (uncommitted changes)
+    /// Get the working tree diff (staged + unstaged changes)
     fn get_working_tree_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>>;
+
+    /// Get the staged diff (index vs HEAD)
+    fn get_staged_diff(&self, _highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Staged diff not supported for this VCS".into(),
+        ))
+    }
+
+    /// Get the unstaged diff (working tree vs index)
+    fn get_unstaged_diff(&self, _highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Unstaged diff not supported for this VCS".into(),
+        ))
+    }
 
     /// Fetch context lines for gap expansion.
     /// For deleted files, reads from VCS; otherwise from working tree.
@@ -97,7 +111,7 @@ pub trait VcsBackend: Send {
     }
 
     /// Get a combined diff from the parent of the oldest commit through to the working tree.
-    /// This shows both committed and uncommitted changes in a single diff.
+    /// This shows both committed and working tree changes in a single diff.
     /// Returns error if not supported (default).
     fn get_working_tree_with_commits_diff(
         &self,
