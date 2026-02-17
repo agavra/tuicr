@@ -401,7 +401,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  :commits  ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Select commits or uncommitted changes"),
+            Span::raw("Select commits or staged/unstaged changes"),
         ]),
         Line::from(vec![
             Span::styled(

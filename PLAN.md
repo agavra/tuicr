@@ -300,7 +300,7 @@ Auto-saves every 60 seconds and on file navigation.
 1. **Build**: `cargo build` should compile without errors
 2. **Format**: `cargo fmt` after each file modification
 3. **Manual test flow**:
-   - Create a test git repo with multiple uncommitted changed files
+   - Create a test git repo with multiple staged/unstaged changed files
    - Run `tuicr` in that directory
    - Scroll through all diffs with `j/k` and `Ctrl-d/u`
    - Verify file list `▶` indicator updates as you scroll

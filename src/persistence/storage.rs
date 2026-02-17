@@ -154,8 +154,12 @@ fn session_filename(session: &ReviewSession) -> String {
 
     let diff_source = match session.diff_source {
         SessionDiffSource::WorkingTree => "worktree",
+        SessionDiffSource::Staged => "staged",
+        SessionDiffSource::Unstaged => "unstaged",
+        SessionDiffSource::StagedAndUnstaged => "staged_and_unstaged",
         SessionDiffSource::CommitRange => "commits",
         SessionDiffSource::WorkingTreeAndCommits => "worktree_and_commits",
+        SessionDiffSource::StagedUnstagedAndCommits => "staged_unstaged_and_commits",
     };
 
     let timestamp = session.created_at.format("%Y%m%d_%H%M%S");
@@ -196,8 +200,12 @@ pub fn load_latest_session_for_context(
     let current_fingerprint = repo_path_fingerprint(repo_path);
     let current_diff_source = match diff_source {
         SessionDiffSource::WorkingTree => "worktree",
+        SessionDiffSource::Staged => "staged",
+        SessionDiffSource::Unstaged => "unstaged",
+        SessionDiffSource::StagedAndUnstaged => "staged_and_unstaged",
         SessionDiffSource::CommitRange => "commits",
         SessionDiffSource::WorkingTreeAndCommits => "worktree_and_commits",
+        SessionDiffSource::StagedUnstagedAndCommits => "staged_unstaged_and_commits",
     };
 
     let reviews_dir = get_reviews_dir()?;
@@ -286,7 +294,9 @@ pub fn load_latest_session_for_context(
 
         if matches!(
             diff_source,
-            SessionDiffSource::CommitRange | SessionDiffSource::WorkingTreeAndCommits
+            SessionDiffSource::CommitRange
+                | SessionDiffSource::WorkingTreeAndCommits
+                | SessionDiffSource::StagedUnstagedAndCommits
         ) && let Some(expected_range) = commit_range
             && session.commit_range.as_deref() != Some(expected_range)
         {
@@ -446,6 +456,19 @@ mod tests {
         assert!(filename.starts_with("test-repo_"));
         assert!(filename.contains("_main_worktree_"));
         assert!(filename.ends_with(".json"));
+    }
+
+    #[test]
+    fn should_generate_filename_for_staged_unstaged() {
+        let session = create_session(
+            PathBuf::from("/tmp/test-repo"),
+            "abc1234def",
+            Some("main"),
+            SessionDiffSource::StagedAndUnstaged,
+            None,
+        );
+        let filename = session_filename(&session);
+        assert!(filename.contains("_staged_and_unstaged_"));
     }
 
     #[test]

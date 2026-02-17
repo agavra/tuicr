@@ -13,7 +13,10 @@ use super::traits::{CommitInfo, VcsBackend, VcsInfo, VcsType};
 
 // Re-export commonly used functions
 pub use context::{calculate_gap, fetch_context_lines};
-pub use diff::{get_commit_range_diff, get_working_tree_diff, get_working_tree_with_commits_diff};
+pub use diff::{
+    get_commit_range_diff, get_staged_diff, get_unstaged_diff, get_working_tree_diff,
+    get_working_tree_with_commits_diff,
+};
 
 /// Git backend implementation using git2 library
 pub struct GitBackend {
@@ -65,6 +68,14 @@ impl VcsBackend for GitBackend {
 
     fn get_working_tree_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
         get_working_tree_diff(&self.repo, highlighter)
+    }
+
+    fn get_staged_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+        get_staged_diff(&self.repo, highlighter)
+    }
+
+    fn get_unstaged_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+        get_unstaged_diff(&self.repo, highlighter)
     }
 
     fn fetch_context_lines(

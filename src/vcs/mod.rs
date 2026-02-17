@@ -15,7 +15,7 @@ mod diff_parser;
 pub mod git;
 mod hg;
 mod jj;
-mod traits;
+pub(crate) mod traits;
 
 pub use git::GitBackend;
 pub use hg::HgBackend;
