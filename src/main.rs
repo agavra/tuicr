@@ -108,7 +108,7 @@ fn main() -> anyhow::Result<()> {
         Err(e) => {
             eprintln!("Error: {e}");
             eprintln!(
-                "\nMake sure you're in a git, jujutsu, or mercurial repository with commits or uncommitted changes."
+                "\nMake sure you're in a git, jujutsu, or mercurial repository with commits or staged/unstaged changes."
             );
             std::process::exit(1);
         }

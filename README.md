@@ -97,7 +97,7 @@ Detection order: Jujutsu → Git → Mercurial. Jujutsu is tried first because j
 | `--no-update-check` | Skip checking for updates on startup |
 
 By default, `tuicr` starts in commit selection mode.  
-If uncommitted changes exist, the first selectable entry is `Uncommitted changes`.  
+If staged or unstaged changes exist, the first selectable entries are `Staged changes` and/or `Unstaged changes`.  
 When `-r` / `--revisions` is provided, `tuicr` opens that revision range directly.
 On narrow terminals (less than 100 columns), `tuicr` starts with the file list hidden; toggle it with `;e`.
 

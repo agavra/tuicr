@@ -1,9 +1,9 @@
 use ratatui::{
-    Frame,
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Paragraph},
+    Frame,
 };
 
 use crate::app::{App, DiffSource, InputMode, Message, MessageType};
@@ -58,7 +58,10 @@ pub fn render_header(frame: &mut Frame, app: &App, area: Rect) {
 
     // Show diff source info
     let source_info = match &app.diff_source {
-        DiffSource::WorkingTree => String::new(),
+        DiffSource::WorkingTree => "[staged + unstaged] ".to_string(),
+        DiffSource::Staged => "[staged] ".to_string(),
+        DiffSource::Unstaged => "[unstaged] ".to_string(),
+        DiffSource::StagedAndUnstaged => "[staged + unstaged] ".to_string(),
         DiffSource::CommitRange(commits) => {
             if commits.len() == 1 {
                 format!("[commit {}] ", &commits[0][..7.min(commits[0].len())])
@@ -77,6 +80,16 @@ pub fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         }
         DiffSource::WorkingTreeAndCommits(commits) => {
             format!("[worktree + {} commits] ", commits.len())
+        }
+        DiffSource::StagedUnstagedAndCommits(commits) => {
+            if commits.len() == 1 {
+                format!(
+                    "[staged + unstaged + commit {}] ",
+                    &commits[0][..7.min(commits[0].len())]
+                )
+            } else {
+                format!("[staged + unstaged + {} commits] ", commits.len())
+            }
         }
     };
 

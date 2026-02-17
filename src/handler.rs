@@ -385,7 +385,7 @@ pub fn handle_commit_select_action(app: &mut App, action: Action) {
         }
         Action::ExitMode => {
             if let Err(e) = app.exit_commit_select_mode() {
-                app.set_error(format!("Failed to reload working tree: {e}"));
+                app.set_error(format!("Failed to reload changes: {e}"));
             }
         }
         Action::Quit => app.should_quit = true,
