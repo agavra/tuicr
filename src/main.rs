@@ -228,11 +228,15 @@ fn main() -> anyhow::Result<()> {
             app.update_info = Some(info);
         }
 
-        // Handle IDE commands (non-blocking)
+        // Handle IDE commands (non-blocking, limited to avoid blocking the event loop)
         #[cfg(feature = "ide-integration")]
         if let Some(ref rx) = ide_command_rx {
-            while let Ok(cmd) = rx.try_recv() {
-                handle_ide_command(&mut app, cmd);
+            const MAX_IDE_COMMANDS_PER_FRAME: usize = 10;
+            for _ in 0..MAX_IDE_COMMANDS_PER_FRAME {
+                match rx.try_recv() {
+                    Ok(cmd) => handle_ide_command(&mut app, cmd),
+                    Err(_) => break,
+                }
             }
         }
 
@@ -393,12 +397,18 @@ fn main() -> anyhow::Result<()> {
 }
 
 /// Sync app state to IDE state for tool queries.
+///
+/// Uses `try_write()` to avoid blocking the main event loop. If the lock
+/// cannot be acquired (e.g., a tool query is in progress), sync is skipped
+/// for this call and will be retried on the next state change. This is
+/// acceptable because IDE tools query the state on-demand and brief staleness
+/// during active queries has no user-visible impact.
 #[cfg(feature = "ide-integration")]
 fn sync_app_to_ide_state(app: &App, ide_state: &ide::SharedIdeState) {
     use ide::{DiagnosticInfo, OpenFileInfo, Selection};
-    use model::CommentType;
 
-    // Use try_write to avoid blocking if the state is locked
+    // Use try_write to avoid blocking - if lock is held, skip this sync
+    // (state will be refreshed on next call)
     let Ok(mut state) = ide_state.try_write() else {
         return;
     };
