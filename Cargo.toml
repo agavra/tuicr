@@ -43,5 +43,16 @@ ignore = "0.4"
 syntect = "5.2"
 two-face = { version = "0.5", default-features = false, features = ["syntect-default-fancy"] }
 
+# IDE integration (Claude Code MCP protocol)
+tokio = { version = "1", features = ["full", "sync", "net", "time", "fs"], optional = true }
+tokio-tungstenite = { version = "0.24", optional = true }
+tungstenite = { version = "0.24", optional = true }
+futures-util = { version = "0.3", optional = true }
+dirs = { version = "5.0", optional = true }
+
+[features]
+default = []
+ide-integration = ["tokio", "tokio-tungstenite", "tungstenite", "futures-util", "dirs"]
+
 [dev-dependencies]
 tempfile = "3.24.0"
