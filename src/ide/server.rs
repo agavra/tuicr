@@ -8,14 +8,14 @@ use std::sync::Arc;
 
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc};
 use tokio_tungstenite::tungstenite::Message;
 
+use super::IdeCommand;
 use super::handlers;
 use super::lockfile::LockFile;
 use super::protocol::{JsonRpcError, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
 use super::state::SharedIdeState;
-use super::IdeCommand;
 
 /// Connected client information.
 struct Client {
@@ -201,9 +201,7 @@ async fn handle_connection(
     while let Some(result) = ws_receiver.next().await {
         match result {
             Ok(Message::Text(text)) => {
-                if let Some(response) =
-                    handle_message(&text, &ide_state, &command_tx).await
-                {
+                if let Some(response) = handle_message(&text, &ide_state, &command_tx).await {
                     // Get the client's sender
                     let state = server_state.read().await;
                     if let Some(client) = state.clients.iter().find(|c| c.id == client_id) {
@@ -261,9 +259,14 @@ async fn handle_message(
     }
 
     // Handle the method
-    let response =
-        handlers::handle_method(&request.method, request.params, request.id, ide_state, command_tx)
-            .await?;
+    let response = handlers::handle_method(
+        &request.method,
+        request.params,
+        request.id,
+        ide_state,
+        command_tx,
+    )
+    .await?;
 
     Some(serde_json::to_string(&response).unwrap())
 }

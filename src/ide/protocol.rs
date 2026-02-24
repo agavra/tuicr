@@ -422,7 +422,9 @@ mod tests {
         let result = InitializeResult {
             protocol_version: MCP_PROTOCOL_VERSION.to_string(),
             capabilities: ServerCapabilities {
-                tools: Some(ToolsCapability { list_changed: false }),
+                tools: Some(ToolsCapability {
+                    list_changed: false,
+                }),
                 resources: None,
                 prompts: None,
             },
@@ -489,8 +491,14 @@ mod tests {
             file_path: "/path/to/file.rs".to_string(),
             text: "selected text".to_string(),
             selection: SelectionRange {
-                start: Position { line: 10, character: 0 },
-                end: Position { line: 15, character: 0 },
+                start: Position {
+                    line: 10,
+                    character: 0,
+                },
+                end: Position {
+                    line: 15,
+                    character: 0,
+                },
             },
         };
         let json = serde_json::to_string(&result).unwrap();
@@ -503,8 +511,14 @@ mod tests {
         let diag = Diagnostic {
             file_path: "test.rs".to_string(),
             range: SelectionRange {
-                start: Position { line: 1, character: 0 },
-                end: Position { line: 1, character: 0 },
+                start: Position {
+                    line: 1,
+                    character: 0,
+                },
+                end: Position {
+                    line: 1,
+                    character: 0,
+                },
             },
             message: "test".to_string(),
             severity: DiagnosticSeverity::Error,

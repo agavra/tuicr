@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use tokio::sync::mpsc;
 
+use super::IdeCommand;
 use super::protocol::{
     InitializeParams, InitializeResult, JsonRpcError, JsonRpcId, JsonRpcResponse,
     MCP_PROTOCOL_VERSION, ServerCapabilities, ServerInfo, ToolsCallParams, ToolsCallResult,
@@ -11,7 +12,6 @@ use super::protocol::{
 };
 use super::state::SharedIdeState;
 use super::tools;
-use super::IdeCommand;
 
 /// Handle an MCP method call and return the response.
 pub async fn handle_method(
@@ -50,7 +50,9 @@ fn handle_initialize(params: Option<serde_json::Value>, id: Option<JsonRpcId>) -
             Err(e) => {
                 return JsonRpcResponse::error(
                     id,
-                    JsonRpcError::invalid_params(&format!("Failed to parse initialize params: {e}")),
+                    JsonRpcError::invalid_params(&format!(
+                        "Failed to parse initialize params: {e}"
+                    )),
                 );
             }
         },
@@ -65,7 +67,9 @@ fn handle_initialize(params: Option<serde_json::Value>, id: Option<JsonRpcId>) -
     let result = InitializeResult {
         protocol_version: MCP_PROTOCOL_VERSION.to_string(),
         capabilities: ServerCapabilities {
-            tools: Some(ToolsCapability { list_changed: false }),
+            tools: Some(ToolsCapability {
+                list_changed: false,
+            }),
             resources: None,
             prompts: None,
         },
@@ -110,7 +114,9 @@ async fn handle_tools_call(
             Err(e) => {
                 return JsonRpcResponse::error(
                     id,
-                    JsonRpcError::invalid_params(&format!("Failed to parse tools/call params: {e}")),
+                    JsonRpcError::invalid_params(&format!(
+                        "Failed to parse tools/call params: {e}"
+                    )),
                 );
             }
         },
@@ -159,7 +165,11 @@ mod tests {
     use super::*;
     use crate::ide::state::new_shared_state;
 
-    fn create_test_state() -> (SharedIdeState, mpsc::Sender<IdeCommand>, mpsc::Receiver<IdeCommand>) {
+    fn create_test_state() -> (
+        SharedIdeState,
+        mpsc::Sender<IdeCommand>,
+        mpsc::Receiver<IdeCommand>,
+    ) {
         let state = new_shared_state();
         let (tx, rx) = mpsc::channel(32);
         (state, tx, rx)
@@ -211,10 +221,7 @@ mod tests {
         assert_eq!(tools.len(), 5);
 
         // Check tool names exist
-        let tool_names: Vec<&str> = tools
-            .iter()
-            .map(|t| t["name"].as_str().unwrap())
-            .collect();
+        let tool_names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert!(tool_names.contains(&"getCurrentSelection"));
         assert!(tool_names.contains(&"getOpenEditors"));
         assert!(tool_names.contains(&"getWorkspaceFolders"));
@@ -258,14 +265,8 @@ mod tests {
     async fn handle_tools_call_with_missing_params_returns_error() {
         let (state, tx, _rx) = create_test_state();
 
-        let response = handle_method(
-            "tools/call",
-            None,
-            Some(JsonRpcId::Number(1)),
-            &state,
-            &tx,
-        )
-        .await;
+        let response =
+            handle_method("tools/call", None, Some(JsonRpcId::Number(1)), &state, &tx).await;
 
         assert!(response.is_some());
         let resp = response.unwrap();

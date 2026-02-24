@@ -23,9 +23,9 @@ impl LockFile {
         let lock_dir = Self::lock_dir().ok_or(LockFileError::NoHomeDir)?;
 
         // Create the directory if it doesn't exist
-        tokio::fs::create_dir_all(&lock_dir).await.map_err(|e| {
-            LockFileError::Io(format!("Failed to create lock directory: {e}"))
-        })?;
+        tokio::fs::create_dir_all(&lock_dir)
+            .await
+            .map_err(|e| LockFileError::Io(format!("Failed to create lock directory: {e}")))?;
 
         let lock_path = lock_dir.join(format!("{port}.lock"));
 
@@ -40,9 +40,9 @@ impl LockFile {
         let json = serde_json::to_string_pretty(&content)
             .map_err(|e| LockFileError::Serialize(e.to_string()))?;
 
-        tokio::fs::write(&lock_path, json).await.map_err(|e| {
-            LockFileError::Io(format!("Failed to write lock file: {e}"))
-        })?;
+        tokio::fs::write(&lock_path, json)
+            .await
+            .map_err(|e| LockFileError::Io(format!("Failed to write lock file: {e}")))?;
 
         Ok(Self { path: lock_path })
     }
@@ -57,9 +57,9 @@ impl LockFile {
     #[allow(dead_code)]
     pub async fn remove(&self) -> Result<(), LockFileError> {
         if self.path.exists() {
-            tokio::fs::remove_file(&self.path).await.map_err(|e| {
-                LockFileError::Io(format!("Failed to remove lock file: {e}"))
-            })?;
+            tokio::fs::remove_file(&self.path)
+                .await
+                .map_err(|e| LockFileError::Io(format!("Failed to remove lock file: {e}")))?;
         }
         Ok(())
     }

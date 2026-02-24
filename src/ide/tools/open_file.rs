@@ -2,8 +2,8 @@
 
 use std::collections::HashMap;
 
-use crate::ide::protocol::{OpenFileResult, ToolContent, ToolsCallResult};
 use crate::ide::IdeCommand;
+use crate::ide::protocol::{OpenFileResult, ToolContent, ToolsCallResult};
 use tokio::sync::mpsc;
 
 /// Navigate to a specific file in the diff viewer.

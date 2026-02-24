@@ -1,6 +1,8 @@
 //! getCurrentSelection tool implementation.
 
-use crate::ide::protocol::{Position, SelectionRange, SelectionResult, ToolContent, ToolsCallResult};
+use crate::ide::protocol::{
+    Position, SelectionRange, SelectionResult, ToolContent, ToolsCallResult,
+};
 use crate::ide::state::IdeState;
 
 /// Get the currently selected text in the diff viewer.
