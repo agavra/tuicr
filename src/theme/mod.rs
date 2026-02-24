@@ -614,6 +614,9 @@ pub struct CliArgs {
     pub no_update_check: bool,
     /// Commit/revision range to review
     pub revisions: Option<String>,
+    /// Enable Claude Code IDE integration (MCP server)
+    #[cfg(feature = "ide-integration")]
+    pub ide_integration: bool,
 }
 
 impl ThemeArg {
@@ -708,6 +711,12 @@ fn print_help() -> ! {
         .unwrap_or_else(|| "tuicr".to_string());
     let valid_values = ThemeArg::valid_values_display();
     let config_path = config_path_hint();
+
+    #[cfg(feature = "ide-integration")]
+    let ide_help = "  --ide-integration      Enable Claude Code IDE integration (MCP server)\n";
+    #[cfg(not(feature = "ide-integration"))]
+    let ide_help = "";
+
     println!(
         "tuicr - Review AI-generated diffs like a GitHub pull request
 
@@ -720,7 +729,7 @@ Options:
                          Precedence: --theme > {config_path} > dark
   --stdout               Output to stdout instead of clipboard when exporting
   --no-update-check      Skip checking for updates on startup
-  -h, --help             Print this help message
+{ide_help}  -h, --help             Print this help message
 
 Press ? in the application for keybinding help."
     );
@@ -757,6 +766,12 @@ fn parse_cli_args_from(args: &[String]) -> Result<CliArgs, String> {
         // Handle --no-update-check
         if args[i] == "--no-update-check" {
             cli_args.no_update_check = true;
+        }
+
+        // Handle --ide-integration (only when feature is enabled)
+        #[cfg(feature = "ide-integration")]
+        if args[i] == "--ide-integration" {
+            cli_args.ide_integration = true;
         }
 
         // Handle --theme value
