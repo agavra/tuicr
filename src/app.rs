@@ -100,6 +100,12 @@ pub enum DiffSource {
     WorkingTree,
     CommitRange(Vec<String>),
     WorkingTreeAndCommits(Vec<String>),
+    PullRequest {
+        base_ref: String,
+        merge_base_commit: String,
+        head_commit: String,
+        commit_count: usize,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -297,10 +303,47 @@ enum CommentLocation {
 }
 
 impl App {
-    pub fn new(theme: Theme, output_to_stdout: bool, revisions: Option<&str>) -> Result<Self> {
+    pub fn new(
+        theme: Theme,
+        output_to_stdout: bool,
+        revisions: Option<&str>,
+        pr_mode: bool,
+        pr_base_ref: Option<&str>,
+    ) -> Result<Self> {
         let vcs = detect_vcs()?;
         let vcs_info = vcs.info().clone();
         let highlighter = theme.syntax_highlighter();
+
+        if pr_mode {
+            let pr_diff = vcs.get_pull_request_diff(pr_base_ref, highlighter)?;
+            let mut session = ReviewSession::new(
+                vcs_info.root_path.clone(),
+                pr_diff.info.head_commit.clone(),
+                vcs_info.branch_name.clone(),
+                SessionDiffSource::CommitRange,
+            );
+
+            for file in &pr_diff.files {
+                session.add_file(file.display_path().clone(), file.status);
+            }
+
+            return Self::build(
+                vcs,
+                vcs_info,
+                theme,
+                output_to_stdout,
+                pr_diff.files,
+                session,
+                DiffSource::PullRequest {
+                    base_ref: pr_diff.info.base_ref,
+                    merge_base_commit: pr_diff.info.merge_base_commit,
+                    head_commit: pr_diff.info.head_commit,
+                    commit_count: pr_diff.info.commit_count,
+                },
+                InputMode::Normal,
+                Vec::new(),
+            );
+        }
 
         // Determine the diff source, files, and session based on input.
         // Three paths: CLI revisions, working tree changes, or commit selection fallback.
@@ -769,6 +812,11 @@ impl App {
 
         let highlighter = self.theme.syntax_highlighter();
         let diff_files = match &self.diff_source {
+            DiffSource::WorkingTree => self.vcs.get_working_tree_diff(highlighter)?,
+            DiffSource::CommitRange(commit_ids) => {
+                let ids = commit_ids.clone();
+                self.vcs.get_commit_range_diff(&ids, highlighter)?
+            }
             DiffSource::WorkingTreeAndCommits(commit_ids) => {
                 let ids = commit_ids.clone();
                 Self::get_working_tree_with_commits_diff_with_ignore(
@@ -778,11 +826,20 @@ impl App {
                     highlighter,
                 )?
             }
-            _ => Self::get_working_tree_diff_with_ignore(
-                self.vcs.as_ref(),
-                &self.vcs_info.root_path,
-                highlighter,
-            )?,
+            DiffSource::PullRequest { base_ref, .. } => {
+                let base = base_ref.clone();
+                let pr_diff = self
+                    .vcs
+                    .get_pull_request_diff(Some(base.as_str()), highlighter)?;
+                self.diff_source = DiffSource::PullRequest {
+                    base_ref: pr_diff.info.base_ref,
+                    merge_base_commit: pr_diff.info.merge_base_commit,
+                    head_commit: pr_diff.info.head_commit.clone(),
+                    commit_count: pr_diff.info.commit_count,
+                };
+                self.session.base_commit = pr_diff.info.head_commit;
+                Self::filter_ignored_diff_files(&self.vcs_info.root_path, pr_diff.files)
+            }
         };
 
         for file in &diff_files {
@@ -2054,6 +2111,52 @@ impl App {
         Ok(())
     }
 
+    pub fn enter_pr_mode(&mut self, base_ref: Option<&str>) -> Result<()> {
+        let highlighter = self.theme.syntax_highlighter();
+        let pr_diff = self.vcs.get_pull_request_diff(base_ref, highlighter)?;
+
+        let mut session = ReviewSession::new(
+            self.vcs_info.root_path.clone(),
+            pr_diff.info.head_commit.clone(),
+            self.vcs_info.branch_name.clone(),
+            SessionDiffSource::CommitRange,
+        );
+
+        for file in &pr_diff.files {
+            session.add_file(file.display_path().clone(), file.status);
+        }
+
+        self.session = session;
+        self.diff_files = pr_diff.files;
+        self.diff_source = DiffSource::PullRequest {
+            base_ref: pr_diff.info.base_ref,
+            merge_base_commit: pr_diff.info.merge_base_commit,
+            head_commit: pr_diff.info.head_commit,
+            commit_count: pr_diff.info.commit_count,
+        };
+        self.input_mode = InputMode::Normal;
+
+        let wrap = self.diff_state.wrap_lines;
+        self.diff_state = DiffState::default();
+        self.diff_state.wrap_lines = wrap;
+        self.file_list_state = FileListState::default();
+        self.clear_expanded_gaps();
+
+        self.review_commits.clear();
+        self.commit_list.clear();
+        self.commit_selection_range = None;
+        self.show_commit_selector = false;
+        self.commit_diff_cache.clear();
+        self.range_diff_files = None;
+        self.saved_inline_selection = None;
+
+        self.sort_files_by_directory(true);
+        self.expand_all_dirs();
+        self.rebuild_annotations();
+
+        Ok(())
+    }
+
     pub fn exit_commit_select_mode(&mut self) -> Result<()> {
         self.input_mode = InputMode::Normal;
 
@@ -2077,7 +2180,9 @@ impl App {
         // If we were viewing commits, try to go back to working tree
         if matches!(
             self.diff_source,
-            DiffSource::CommitRange(_) | DiffSource::WorkingTreeAndCommits(_)
+            DiffSource::CommitRange(_)
+                | DiffSource::WorkingTreeAndCommits(_)
+                | DiffSource::PullRequest { .. }
         ) {
             let highlighter = self.theme.syntax_highlighter();
             match Self::get_working_tree_diff_with_ignore(

@@ -412,6 +412,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  :pr [base]   ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  Load PR diff from merge-base to HEAD"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  :clear    ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),

@@ -97,6 +97,8 @@ fn main() -> anyhow::Result<()> {
         theme,
         cli_args.output_to_stdout,
         cli_args.revisions.as_deref(),
+        cli_args.pr_mode,
+        cli_args.pr_base_ref.as_deref(),
     ) {
         Ok(mut app) => {
             app.supports_keyboard_enhancement = keyboard_enhancement_supported;
@@ -107,9 +109,16 @@ fn main() -> anyhow::Result<()> {
         }
         Err(e) => {
             eprintln!("Error: {e}");
-            eprintln!(
-                "\nMake sure you're in a git, jujutsu, or mercurial repository with commits or uncommitted changes."
-            );
+            if cli_args.pr_mode {
+                eprintln!(
+                    "\nPR mode requires a git repository with commits ahead of the selected base ref."
+                );
+                eprintln!("Try: tuicr --pr --base origin/main");
+            } else {
+                eprintln!(
+                    "\nMake sure you're in a git, jujutsu, or mercurial repository with commits or uncommitted changes."
+                );
+            }
             std::process::exit(1);
         }
     };

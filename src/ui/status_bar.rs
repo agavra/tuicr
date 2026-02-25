@@ -78,6 +78,15 @@ pub fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         DiffSource::WorkingTreeAndCommits(commits) => {
             format!("[worktree + {} commits] ", commits.len())
         }
+        DiffSource::PullRequest {
+            base_ref,
+            head_commit,
+            commit_count,
+            ..
+        } => {
+            let short_head = &head_commit[..7.min(head_commit.len())];
+            format!("[pr {base_ref}..{short_head} ({commit_count} commits)] ")
+        }
     };
 
     let progress = format!("{}/{} reviewed ", app.reviewed_count(), app.file_count());

@@ -614,6 +614,10 @@ pub struct CliArgs {
     pub no_update_check: bool,
     /// Commit/revision range to review
     pub revisions: Option<String>,
+    /// Start in PR mode (merge-base to HEAD)
+    pub pr_mode: bool,
+    /// Base ref for PR mode, for example `origin/main`
+    pub pr_base_ref: Option<String>,
 }
 
 impl ThemeArg {
@@ -715,6 +719,8 @@ Usage: {name} [OPTIONS]
 
 Options:
   -r, --revisions <REVSET>  Commit range/Revset to review (syntax depends on VCS backend)
+  --pr                      Start in PR mode (merge-base -> HEAD diff)
+  --base <REF>              Base ref for PR mode (implies --pr), e.g. origin/main
   --theme <THEME>        Color theme to use [default: dark]
                          Valid values: {valid_values}
                          Precedence: --theme > {config_path} > dark
@@ -743,39 +749,87 @@ pub fn parse_cli_args() -> CliArgs {
 fn parse_cli_args_from(args: &[String]) -> Result<CliArgs, String> {
     let mut cli_args = CliArgs::default();
 
-    for i in 0..args.len() {
-        // Handle --help / -h
-        if args[i] == "--help" || args[i] == "-h" {
-            print_help();
-        }
+    let mut i = if args.is_empty() { 0 } else { 1 };
+    while i < args.len() {
+        let arg = &args[i];
 
-        // Handle --stdout
-        if args[i] == "--stdout" {
-            cli_args.output_to_stdout = true;
-        }
-
-        // Handle --no-update-check
-        if args[i] == "--no-update-check" {
-            cli_args.no_update_check = true;
-        }
-
-        // Handle --theme value
-        if args[i] == "--theme" {
-            let valid_values = ThemeArg::valid_values_display();
-            let value = args
-                .get(i + 1)
-                .ok_or_else(|| format!("--theme requires a value ({valid_values})"))?;
-
-            if value.starts_with('-') {
-                return Err(format!("--theme requires a value ({valid_values})"));
+        match arg.as_str() {
+            "--help" | "-h" => print_help(),
+            "--stdout" => {
+                cli_args.output_to_stdout = true;
+                i += 1;
+                continue;
             }
+            "--no-update-check" => {
+                cli_args.no_update_check = true;
+                i += 1;
+                continue;
+            }
+            "--pr" => {
+                cli_args.pr_mode = true;
+                i += 1;
+                continue;
+            }
+            "--base" => {
+                let value = args
+                    .get(i + 1)
+                    .ok_or_else(|| "--base requires a value".to_string())?;
+                if value.starts_with('-') {
+                    return Err("--base requires a value".to_string());
+                }
+                cli_args.pr_mode = true;
+                cli_args.pr_base_ref = Some(value.clone());
+                i += 2;
+                continue;
+            }
+            "--theme" => {
+                let valid_values = ThemeArg::valid_values_display();
+                let value = args
+                    .get(i + 1)
+                    .ok_or_else(|| format!("--theme requires a value ({valid_values})"))?;
 
-            cli_args.theme = ThemeArg::from_str(value)
-                .ok_or_else(|| format!("Unknown theme '{value}'. Valid options: {valid_values}"))
-                .map(Some)?;
+                if value.starts_with('-') {
+                    return Err(format!("--theme requires a value ({valid_values})"));
+                }
+
+                cli_args.theme = ThemeArg::from_str(value)
+                    .ok_or_else(|| {
+                        format!("Unknown theme '{value}'. Valid options: {valid_values}")
+                    })
+                    .map(Some)?;
+                i += 2;
+                continue;
+            }
+            "-r" | "--revisions" => {
+                if let Some(value) = args.get(i + 1) {
+                    if value.starts_with('-') {
+                        eprintln!("Warning: {arg} requires a value");
+                        i += 1;
+                        continue;
+                    }
+                    cli_args.revisions = Some(value.clone());
+                    i += 2;
+                    continue;
+                }
+
+                eprintln!("Warning: {arg} requires a value");
+                i += 1;
+                continue;
+            }
+            _ => {}
         }
-        // Handle --theme=value
-        if let Some(value) = args[i].strip_prefix("--theme=") {
+
+        if let Some(value) = arg.strip_prefix("--base=") {
+            if value.is_empty() {
+                return Err("--base requires a value".to_string());
+            }
+            cli_args.pr_mode = true;
+            cli_args.pr_base_ref = Some(value.to_string());
+            i += 1;
+            continue;
+        }
+
+        if let Some(value) = arg.strip_prefix("--theme=") {
             let valid_values = ThemeArg::valid_values_display();
             if value.is_empty() {
                 return Err(format!("--theme requires a value ({valid_values})"));
@@ -784,20 +838,27 @@ fn parse_cli_args_from(args: &[String]) -> Result<CliArgs, String> {
             cli_args.theme = ThemeArg::from_str(value)
                 .ok_or_else(|| format!("Unknown theme '{value}'. Valid options: {valid_values}"))
                 .map(Some)?;
+            i += 1;
+            continue;
         }
 
-        // Handle -r / --revisions value
-        if args[i] == "-r" || args[i] == "--revisions" {
-            if let Some(value) = args.get(i + 1) {
-                cli_args.revisions = Some(value.clone());
-            } else {
-                eprintln!("Warning: {0} requires a value", args[i]);
-            }
-        }
-        // Handle --revisions=value
-        if let Some(value) = args[i].strip_prefix("--revisions=") {
+        if let Some(value) = arg.strip_prefix("--revisions=") {
             cli_args.revisions = Some(value.to_string());
+            i += 1;
+            continue;
         }
+
+        if arg.starts_with('-') {
+            return Err(format!("Unknown option '{arg}'. Use --help for usage."));
+        }
+
+        return Err(format!(
+            "Unexpected argument '{arg}'. Use --help for usage."
+        ));
+    }
+
+    if cli_args.pr_mode && cli_args.revisions.is_some() {
+        return Err("--pr/--base cannot be combined with --revisions".to_string());
     }
 
     Ok(cli_args)
@@ -863,6 +924,77 @@ mod tests {
     fn should_error_when_theme_value_missing() {
         let err = parse_for_test(&["tuicr", "--theme"]).expect_err("parse should fail");
         assert!(err.contains("--theme requires a value"));
+    }
+
+    #[test]
+    fn should_parse_pr_flag() {
+        let parsed = parse_for_test(&["tuicr", "--pr"]).expect("parse should succeed");
+        assert!(parsed.pr_mode);
+        assert!(parsed.pr_base_ref.is_none());
+    }
+
+    #[test]
+    fn should_parse_base_with_separate_value() {
+        let parsed =
+            parse_for_test(&["tuicr", "--base", "origin/main"]).expect("parse should succeed");
+        assert!(parsed.pr_mode);
+        assert_eq!(parsed.pr_base_ref.as_deref(), Some("origin/main"));
+    }
+
+    #[test]
+    fn should_parse_base_with_equals_value() {
+        let parsed =
+            parse_for_test(&["tuicr", "--base=origin/main"]).expect("parse should succeed");
+        assert!(parsed.pr_mode);
+        assert_eq!(parsed.pr_base_ref.as_deref(), Some("origin/main"));
+    }
+
+    #[test]
+    fn should_imply_pr_mode_when_base_is_provided() {
+        let parsed =
+            parse_for_test(&["tuicr", "--base", "origin/main"]).expect("parse should succeed");
+        assert!(parsed.pr_mode);
+    }
+
+    #[test]
+    fn should_error_when_base_value_missing() {
+        let err = parse_for_test(&["tuicr", "--base"]).expect_err("parse should fail");
+        assert!(err.contains("--base requires a value"));
+    }
+
+    #[test]
+    fn should_error_when_base_equals_value_empty() {
+        let err = parse_for_test(&["tuicr", "--base="]).expect_err("parse should fail");
+        assert!(err.contains("--base requires a value"));
+    }
+
+    #[test]
+    fn should_error_when_pr_combined_with_revisions() {
+        let err = parse_for_test(&["tuicr", "--pr", "-r", "HEAD~3..HEAD"])
+            .expect_err("parse should fail");
+        assert!(err.contains("--pr/--base cannot be combined with --revisions"));
+    }
+
+    #[test]
+    fn should_error_when_base_combined_with_revisions() {
+        let err = parse_for_test(&["tuicr", "--base", "origin/main", "-r", "HEAD~3..HEAD"])
+            .expect_err("parse should fail");
+        assert!(err.contains("--pr/--base cannot be combined with --revisions"));
+    }
+
+    #[test]
+    fn should_error_for_unknown_option() {
+        let err = parse_for_test(&["tuicr", "--fmt"]).expect_err("parse should fail");
+        assert!(err.contains("Unknown option '--fmt'"));
+    }
+
+    #[test]
+    fn should_not_treat_consumed_option_value_as_argument() {
+        let parsed = parse_for_test(&["tuicr", "--base", "origin/main", "--stdout"])
+            .expect("parse should succeed");
+        assert!(parsed.pr_mode);
+        assert_eq!(parsed.pr_base_ref.as_deref(), Some("origin/main"));
+        assert!(parsed.output_to_stdout);
     }
 
     #[test]

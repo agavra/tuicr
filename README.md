@@ -92,6 +92,8 @@ Detection order: Jujutsu → Git → Mercurial. Jujutsu is tried first because j
 | Flag | Description |
 |------|-------------|
 | `-r` / `--revisions <REVSET>` | Commit range/Revision set to review. Exact syntax depends on VCS backend (Git, JJ, Hg) |
+| `--pr` | Review branch changes as a PR diff (`merge-base(base, HEAD)..HEAD`) |
+| `--base <REF>` | Base ref for PR mode (implies `--pr`), for example `origin/main` |
 | `--theme <THEME>` | Color theme override (`dark`, `light`, `catppuccin-latte`, `catppuccin-frappe`, `catppuccin-macchiato`, `catppuccin-mocha`, `gruvbox-dark`, `gruvbox-light`) |
 | `--stdout` | Output to stdout instead of clipboard when exporting |
 | `--no-update-check` | Skip checking for updates on startup |
@@ -100,6 +102,8 @@ By default, `tuicr` starts in commit selection mode.
 If uncommitted changes exist, the first selectable entry is `Uncommitted changes`.  
 When `-r` / `--revisions` is provided, `tuicr` opens that revision range directly.
 On narrow terminals (less than 100 columns), `tuicr` starts with the file list hidden; toggle it with `;e`.
+
+In PR mode, `tuicr` opens a single combined diff from merge-base to `HEAD`, so merge commits are not shown as standalone review units.
 
 ### Configuration
 
@@ -219,6 +223,7 @@ dist/
 | `:clip` (`:export`) | Copy review to clipboard |
 | `:diff` | Toggle diff view (unified / side-by-side) |
 | `:commits` | Select commits to review |
+| `:pr [base-ref]` | Load PR diff mode (optional base ref override) |
 | `:set wrap` | Enable line wrap in diff view |
 | `:set wrap!` | Toggle line wrap in diff view |
 | `:set commits` | Show inline commit selector |
