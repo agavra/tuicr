@@ -89,6 +89,7 @@ impl VcsBackend for GitBackend {
                 short_id: c.short_id,
                 branch_name: c.branch_name,
                 summary: c.summary,
+                body: c.body,
                 author: c.author,
                 time: c.time,
             })
@@ -116,6 +117,7 @@ impl VcsBackend for GitBackend {
                 short_id: c.short_id,
                 branch_name: c.branch_name,
                 summary: c.summary,
+                body: c.body,
                 author: c.author,
                 time: c.time,
             })

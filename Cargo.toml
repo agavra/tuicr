@@ -1,6 +1,6 @@
 [package]
 name = "tuicr"
-version = "0.7.1"
+version = "0.7.2"
 edition = "2024"
 description = "Review AI-generated diffs like a GitHub pull request, right from your terminal."
 license = "MIT"

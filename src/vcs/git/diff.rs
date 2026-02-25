@@ -177,6 +177,10 @@ fn resolve_ref_to_oid(repo: &Repository, reference: &str) -> Result<Oid> {
 fn parse_diff(diff: &Diff, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
     let mut files: Vec<DiffFile> = Vec::new();
 
+    // Untracked files larger than this are shown in the file list but their
+    // content is not parsed — they are likely logs, dumps, or build artefacts.
+    const MAX_UNTRACKED_FILE_SIZE: u64 = 10 * 1_024 * 1_024;
+
     for (delta_idx, delta) in diff.deltas().enumerate() {
         let status = match delta.status() {
             Delta::Added | Delta::Untracked => FileStatus::Added,
@@ -190,11 +194,13 @@ fn parse_diff(diff: &Diff, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFi
         let old_path = delta.old_file().path().map(PathBuf::from);
         let new_path = delta.new_file().path().map(PathBuf::from);
         let is_binary = delta.old_file().is_binary() || delta.new_file().is_binary();
+        let is_too_large =
+            delta.status() == Delta::Untracked && delta.new_file().size() > MAX_UNTRACKED_FILE_SIZE;
 
         // Use new_path for highlighting (the current version of the file)
         let file_path = new_path.as_ref().or(old_path.as_ref());
 
-        let hunks = if is_binary {
+        let hunks = if is_binary || is_too_large {
             Vec::new()
         } else {
             parse_hunks(diff, delta_idx, file_path, highlighter)?
@@ -206,6 +212,8 @@ fn parse_diff(diff: &Diff, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFi
             status,
             hunks,
             is_binary,
+            is_too_large,
+            is_commit_message: false,
         });
     }
 
@@ -317,6 +325,27 @@ fn parse_hunks(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::path::Path;
+
+    fn create_initial_commit(repo: &Repository, file_name: &str, content: &str) {
+        fs::write(repo.workdir().unwrap().join(file_name), content)
+            .expect("failed to write initial file");
+
+        let mut index = repo.index().expect("failed to open index");
+        index
+            .add_path(Path::new(file_name))
+            .expect("failed to add file to index");
+        index.write().expect("failed to write index");
+
+        let tree_id = index.write_tree().expect("failed to write tree");
+        let tree = repo.find_tree(tree_id).expect("failed to find tree");
+        let sig = git2::Signature::now("Test User", "test@example.com")
+            .expect("failed to create signature");
+
+        repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .expect("failed to create commit");
+    }
 
     #[test]
     fn should_return_no_changes_for_clean_repo() {
@@ -333,5 +362,35 @@ mod tests {
 
         // then
         assert!(matches!(result, Err(TuicrError::NoChanges)));
+    }
+
+    #[test]
+    fn should_expand_tabs_to_spaces_in_git_hunks() {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let repo = Repository::init(temp_dir.path()).expect("failed to init repo");
+
+        create_initial_commit(
+            &repo, "file.txt", r#"old
+"#,
+        );
+
+        fs::write(
+            temp_dir.path().join("file.txt"),
+            r#"	new
+"#,
+        )
+        .expect("failed to update file");
+
+        let files = get_working_tree_diff(&repo, &SyntaxHighlighter::default())
+            .expect("failed to get diff");
+
+        assert_eq!(files.len(), 1);
+        let lines = &files[0].hunks[0].lines;
+
+        assert!(
+            lines.iter().any(|l| l.content == "    new"),
+            "expected tab-expanded content in git diff lines"
+        );
+        assert!(lines.iter().all(|l| !l.content.contains('\t')));
     }
 }
