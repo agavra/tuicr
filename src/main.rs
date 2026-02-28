@@ -2,6 +2,8 @@ mod app;
 mod config;
 mod error;
 mod handler;
+#[cfg(feature = "ide-integration")]
+mod ide;
 mod input;
 mod model;
 mod output;
@@ -18,6 +20,9 @@ use std::fs::File;
 use std::io::{self, Write};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
+
+#[cfg(feature = "ide-integration")]
+use std::sync::Arc;
 
 use crossterm::{
     event::{
@@ -114,6 +119,60 @@ fn main() -> anyhow::Result<()> {
         }
     };
 
+    // IDE integration setup
+    #[cfg(feature = "ide-integration")]
+    let ide_command_rx: Option<std::sync::mpsc::Receiver<ide::IdeCommand>> =
+        if cli_args.ide_integration {
+            let workspace_path = app.vcs_info.root_path.to_string_lossy().to_string();
+            let ide_state = ide::new_shared_state();
+            let ide_state_clone = ide_state.clone();
+
+            // Create a channel for IDE commands (sync receiver for main loop)
+            let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+
+            // Spawn tokio runtime in background thread
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+                rt.block_on(async move {
+                    // Create tokio channel for internal async communication
+                    let (async_cmd_tx, mut async_cmd_rx) = tokio::sync::mpsc::channel(32);
+
+                    // Start the IDE server
+                    let mut server = ide::IdeServer::new(ide_state_clone, async_cmd_tx);
+                    match server.start(&workspace_path).await {
+                        Ok(port) => {
+                            eprintln!("IDE integration server started on port {port}");
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to start IDE server: {e}");
+                            return;
+                        }
+                    }
+
+                    // Forward async commands to sync channel
+                    while let Some(cmd) = async_cmd_rx.recv().await {
+                        if cmd_tx.send(cmd).is_err() {
+                            // Main loop has exited
+                            break;
+                        }
+                    }
+                });
+            });
+
+            // Sync initial state to IDE
+            sync_app_to_ide_state(&app, &ide_state);
+
+            // Store the IDE state for later syncing
+            app.ide_state = Some(ide_state);
+
+            Some(cmd_rx)
+        } else {
+            None
+        };
+
+    #[cfg(not(feature = "ide-integration"))]
+    let _ide_command_rx: Option<std::sync::mpsc::Receiver<()>> = None;
+
     // Setup terminal
     // When --stdout is used, render TUI to /dev/tty so stdout is free for export output
     enable_raw_mode()?;
@@ -167,6 +226,18 @@ fn main() -> anyhow::Result<()> {
             ) = rx.try_recv()
         {
             app.update_info = Some(info);
+        }
+
+        // Handle IDE commands (non-blocking, limited to avoid blocking the event loop)
+        #[cfg(feature = "ide-integration")]
+        if let Some(ref rx) = ide_command_rx {
+            const MAX_IDE_COMMANDS_PER_FRAME: usize = 10;
+            for _ in 0..MAX_IDE_COMMANDS_PER_FRAME {
+                match rx.try_recv() {
+                    Ok(cmd) => handle_ide_command(&mut app, cmd),
+                    Err(_) => break,
+                }
+            }
         }
 
         // Auto-clear expired pending Ctrl+C state and message
@@ -323,4 +394,234 @@ fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// Sync app state to IDE state for tool queries.
+///
+/// Uses `try_write()` to avoid blocking the main event loop. If the lock
+/// cannot be acquired (e.g., a tool query is in progress), sync is skipped
+/// for this call and will be retried on the next state change. This is
+/// acceptable because IDE tools query the state on-demand and brief staleness
+/// during active queries has no user-visible impact.
+#[cfg(feature = "ide-integration")]
+fn sync_app_to_ide_state(app: &App, ide_state: &ide::SharedIdeState) {
+    use ide::{DiagnosticInfo, OpenFileInfo, Selection};
+
+    // Use try_write to avoid blocking - if lock is held, skip this sync
+    // (state will be refreshed on next call)
+    let Ok(mut state) = ide_state.try_write() else {
+        return;
+    };
+
+    // Set workspace info
+    state.set_workspace(
+        app.vcs_info.root_path.to_string_lossy().to_string(),
+        app.vcs_info
+            .root_path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string()),
+    );
+
+    // Set open files from diff_files
+    let open_files: Vec<OpenFileInfo> = app
+        .diff_files
+        .iter()
+        .enumerate()
+        .map(|(idx, file)| {
+            let path = file
+                .new_path
+                .as_ref()
+                .or(file.old_path.as_ref())
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default();
+
+            let extension = std::path::Path::new(&path)
+                .extension()
+                .map(|e| e.to_string_lossy().to_string())
+                .unwrap_or_default();
+
+            let language_id = match extension.as_str() {
+                "rs" => "rust",
+                "py" => "python",
+                "js" => "javascript",
+                "ts" => "typescript",
+                "tsx" => "typescriptreact",
+                "jsx" => "javascriptreact",
+                "go" => "go",
+                "java" => "java",
+                "c" | "h" => "c",
+                "cpp" | "hpp" | "cc" | "cxx" => "cpp",
+                "rb" => "ruby",
+                "php" => "php",
+                "swift" => "swift",
+                "kt" | "kts" => "kotlin",
+                "scala" => "scala",
+                "lua" => "lua",
+                "sh" | "bash" => "shellscript",
+                "json" => "json",
+                "yaml" | "yml" => "yaml",
+                "toml" => "toml",
+                "xml" => "xml",
+                "html" => "html",
+                "css" => "css",
+                "scss" => "scss",
+                "md" => "markdown",
+                _ => "plaintext",
+            }
+            .to_string();
+
+            let reviewed = app.session.is_file_reviewed(
+                &file
+                    .new_path
+                    .clone()
+                    .or_else(|| file.old_path.clone())
+                    .unwrap_or_default(),
+            );
+
+            OpenFileInfo {
+                file_path: path,
+                language_id,
+                is_dirty: !reviewed,
+                is_active: idx == app.diff_state.current_file_idx,
+                status: format!("{:?}", file.status),
+                reviewed,
+            }
+        })
+        .collect();
+    state.set_open_files(open_files);
+    state.set_active_file(app.diff_state.current_file_idx);
+
+    // Set diagnostics from comments
+    let mut diagnostics = Vec::new();
+    for (path, file_review) in &app.session.files {
+        let path_str = path.to_string_lossy().to_string();
+
+        // File-level comments
+        for comment in &file_review.file_comments {
+            diagnostics.push(DiagnosticInfo {
+                file_path: path_str.clone(),
+                start_line: 1,
+                end_line: 1,
+                message: comment.content.clone(),
+                severity: comment_type_to_severity(&comment.comment_type),
+                comment_type: format!("{:?}", comment.comment_type),
+            });
+        }
+
+        // Line comments
+        for (line, comments) in &file_review.line_comments {
+            for comment in comments {
+                let (start, end) = match &comment.line_range {
+                    Some(range) => (range.start, range.end),
+                    None => (*line, *line),
+                };
+                diagnostics.push(DiagnosticInfo {
+                    file_path: path_str.clone(),
+                    start_line: start,
+                    end_line: end,
+                    message: comment.content.clone(),
+                    severity: comment_type_to_severity(&comment.comment_type),
+                    comment_type: format!("{:?}", comment.comment_type),
+                });
+            }
+        }
+    }
+    state.set_diagnostics(diagnostics);
+
+    // Set selection if in visual mode
+    if app.input_mode == InputMode::VisualSelect {
+        if let Some((anchor_line, _anchor_side)) = app.visual_anchor {
+            // Get current cursor position
+            if let Some(current_file) = app.diff_files.get(app.diff_state.current_file_idx) {
+                let path = current_file
+                    .new_path
+                    .as_ref()
+                    .or(current_file.old_path.as_ref())
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default();
+
+                // For now, just use the anchor line as both start and end
+                // A more complete implementation would track the current cursor line
+                state.set_selection(Some(Selection {
+                    file_path: path,
+                    text: String::new(), // Would need to extract actual text
+                    start_line: anchor_line,
+                    end_line: anchor_line,
+                }));
+            }
+        }
+    } else {
+        state.set_selection(None);
+    }
+}
+
+#[cfg(feature = "ide-integration")]
+fn comment_type_to_severity(comment_type: &model::CommentType) -> String {
+    match comment_type {
+        model::CommentType::Issue => "error".to_string(),
+        model::CommentType::Suggestion => "warning".to_string(),
+        model::CommentType::Note => "information".to_string(),
+        model::CommentType::Praise => "hint".to_string(),
+    }
+}
+
+/// Handle an IDE command from the MCP server.
+#[cfg(feature = "ide-integration")]
+fn handle_ide_command(app: &mut App, cmd: ide::IdeCommand) {
+    match cmd {
+        ide::IdeCommand::OpenFile { path, line } => {
+            // Find the file index
+            let file_idx = app.diff_files.iter().position(|f| {
+                f.new_path
+                    .as_ref()
+                    .or(f.old_path.as_ref())
+                    .map(|p| p.to_string_lossy().contains(&path))
+                    .unwrap_or(false)
+            });
+
+            if let Some(idx) = file_idx {
+                // Select the file in the file list
+                app.file_list_state.select(idx);
+                app.diff_state.current_file_idx = idx;
+
+                // Jump to line if specified
+                if let Some(target_line) = line {
+                    // Find the annotation line that corresponds to this source line
+                    for (anno_idx, anno) in app.line_annotations.iter().enumerate() {
+                        match anno {
+                            app::AnnotatedLine::DiffLine {
+                                file_idx: f_idx,
+                                new_lineno,
+                                old_lineno,
+                                ..
+                            } if *f_idx == idx => {
+                                if new_lineno == &Some(target_line)
+                                    || old_lineno == &Some(target_line)
+                                {
+                                    app.diff_state.cursor_line = anno_idx;
+                                    // Adjust scroll to show cursor
+                                    if anno_idx < app.diff_state.scroll_offset {
+                                        app.diff_state.scroll_offset = anno_idx;
+                                    } else if anno_idx
+                                        >= app.diff_state.scroll_offset
+                                            + app.diff_state.viewport_height.saturating_sub(1)
+                                    {
+                                        app.diff_state.scroll_offset = anno_idx
+                                            .saturating_sub(app.diff_state.viewport_height / 2);
+                                    }
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
+                // Sync state back to IDE
+                if let Some(ref ide_state) = app.ide_state {
+                    sync_app_to_ide_state(app, ide_state);
+                }
+            }
+        }
+    }
 }
