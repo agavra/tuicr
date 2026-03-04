@@ -272,17 +272,44 @@ fn main() -> anyhow::Result<()> {
                     match action {
                         Action::PendingZCommand => {
                             pending_z = true;
+                            app.pending_count = None;
                             continue;
                         }
                         Action::PendingDCommand => {
                             pending_d = true;
+                            app.pending_count = None;
                             continue;
                         }
                         Action::PendingSemicolonCommand => {
                             pending_semicolon = true;
+                            app.pending_count = None;
                             continue;
                         }
                         _ => {}
+                    }
+
+                    // Handle digit accumulation for {N}G jump-to-line (Normal mode only)
+                    if app.input_mode == InputMode::Normal {
+                        match action {
+                            Action::Digit(d) => {
+                                let n = app.pending_count.unwrap_or(0);
+                                app.pending_count = Some(
+                                    (n.saturating_mul(10).saturating_add(d as usize)).min(999_999),
+                                );
+                                continue;
+                            }
+                            Action::GoToBottom if app.pending_count.is_some() => {
+                                // Clamp to 1 since source lines are 1-indexed; 0G behaves like 1G
+                                let count = app.pending_count.unwrap().max(1);
+                                app.pending_count = None;
+                                // Safe cast: count is clamped to 999_999 which fits in u32
+                                app.go_to_source_line(count as u32);
+                                continue;
+                            }
+                            _ => {
+                                app.pending_count = None;
+                            }
+                        }
                     }
 
                     // Dispatch by input mode

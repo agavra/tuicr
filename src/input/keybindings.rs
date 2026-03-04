@@ -13,6 +13,7 @@ pub enum Action {
     PageUp,
     GoToTop,
     GoToBottom,
+    Digit(u8),
     NextFile,
     PrevFile,
     NextHunk,
@@ -156,6 +157,8 @@ fn map_normal_mode(key: KeyEvent) -> Action {
         (KeyCode::Char('o'), KeyModifiers::NONE) => Action::ExpandAll,
         (KeyCode::Char('O'), _) => Action::CollapseAll,
 
+        (KeyCode::Char(c @ '0'..='9'), KeyModifiers::NONE) => Action::Digit(c as u8 - b'0'),
+
         _ => Action::None,
     }
 }
@@ -294,5 +297,86 @@ fn map_visual_mode(key: KeyEvent) -> Action {
         // Quick quit
         (KeyCode::Char('q'), KeyModifiers::NONE) => Action::Quit,
         _ => Action::None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn key_shift(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::SHIFT)
+    }
+
+    #[test]
+    fn should_map_digit_keys_to_digit_action_in_normal_mode() {
+        for d in 0..=9u8 {
+            let c = (b'0' + d) as char;
+            let action = map_normal_mode(key(KeyCode::Char(c)));
+            assert_eq!(
+                action,
+                Action::Digit(d),
+                "digit key '{c}' should map to Digit({d})"
+            );
+        }
+    }
+
+    #[test]
+    fn should_map_uppercase_g_to_go_to_bottom_in_normal_mode() {
+        let action = map_normal_mode(key_shift('G'));
+        assert_eq!(action, Action::GoToBottom);
+    }
+
+    #[test]
+    fn should_map_lowercase_g_to_go_to_top_in_normal_mode() {
+        let action = map_normal_mode(key(KeyCode::Char('g')));
+        assert_eq!(action, Action::GoToTop);
+    }
+
+    #[test]
+    fn should_not_map_digits_in_command_mode() {
+        for d in 0..=9u8 {
+            let c = (b'0' + d) as char;
+            let action = map_command_mode(key(KeyCode::Char(c)));
+            assert_eq!(
+                action,
+                Action::InsertChar(c),
+                "digit '{c}' in command mode should be InsertChar"
+            );
+        }
+    }
+
+    #[test]
+    fn should_not_map_digits_in_search_mode() {
+        for d in 0..=9u8 {
+            let c = (b'0' + d) as char;
+            let action = map_search_mode(key(KeyCode::Char(c)));
+            assert_eq!(
+                action,
+                Action::InsertChar(c),
+                "digit '{c}' in search mode should be InsertChar"
+            );
+        }
+    }
+
+    #[test]
+    fn should_not_map_shifted_digits_to_digit_action() {
+        // Shift+digit produces characters like !, @, #, etc. on most layouts,
+        // but if a terminal sends the raw digit with SHIFT modifier it must not
+        // be treated as Action::Digit.
+        for d in 0..=9u8 {
+            let c = (b'0' + d) as char;
+            let action = map_normal_mode(key_shift(c));
+            assert_ne!(
+                action,
+                Action::Digit(d),
+                "Shift+'{c}' in normal mode must not produce Digit({d})"
+            );
+        }
     }
 }

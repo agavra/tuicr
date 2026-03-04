@@ -170,7 +170,13 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         )]
     } else {
         let mode_str = match app.input_mode {
-            InputMode::Normal => " NORMAL ".to_string(),
+            InputMode::Normal => {
+                if let Some(count) = app.pending_count {
+                    format!(" NORMAL {count} ")
+                } else {
+                    " NORMAL ".to_string()
+                }
+            }
             InputMode::Command => " COMMAND ".to_string(),
             InputMode::Search => " SEARCH ".to_string(),
             InputMode::Comment => " COMMENT ".to_string(),
