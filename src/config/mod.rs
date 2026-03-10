@@ -10,6 +10,7 @@ use toml::Value;
 #[serde(default)]
 pub struct AppConfig {
     pub theme: Option<String>,
+    pub appearance: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -93,8 +94,18 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         }
     }
 
+    if let Some(appearance) = table.get("appearance") {
+        if let Some(appearance_str) = appearance.as_str() {
+            config.appearance = Some(appearance_str.to_string());
+        } else {
+            warnings.push(
+                "Warning: Config key 'appearance' must be a string; ignoring value".to_string(),
+            );
+        }
+    }
+
     for key in table.keys() {
-        if key != "theme" {
+        if key != "theme" && key != "appearance" {
             warnings.push(format!("Warning: Unknown config key '{key}', ignoring"));
         }
     }
@@ -129,6 +140,23 @@ mod tests {
         assert_eq!(
             outcome.config.as_ref().and_then(|cfg| cfg.theme.as_deref()),
             Some("light")
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_load_appearance_from_valid_toml() {
+        let dir = tempdir().expect("failed to create temp dir");
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "appearance = \"system\"\n").expect("failed to write config");
+
+        let outcome = load_config_from_path(&path).expect("valid config should parse");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.appearance.as_deref()),
+            Some("system")
         );
         assert!(outcome.warnings.is_empty());
     }
@@ -169,6 +197,21 @@ mod tests {
         assert_eq!(
             outcome.warnings[0],
             "Warning: Unknown config key 'themes', ignoring"
+        );
+    }
+
+    #[test]
+    fn should_warn_and_ignore_appearance_with_invalid_type() {
+        let dir = tempdir().expect("failed to create temp dir");
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "appearance = 123\n").expect("failed to write config");
+
+        let outcome = load_config_from_path(&path).expect("config should parse");
+        assert_eq!(outcome.config, Some(AppConfig::default()));
+        assert_eq!(outcome.warnings.len(), 1);
+        assert_eq!(
+            outcome.warnings[0],
+            "Warning: Config key 'appearance' must be a string; ignoring value"
         );
     }
 
