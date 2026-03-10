@@ -68,6 +68,16 @@ mise use github:agavra/tuicr
 cargo install tuicr
 ```
 
+### Using Nix
+
+```bash
+# build tuirc (links binary to ./result/bin/tuirc)
+nix build github:agavra/tuicr
+
+# or just run with
+nix run github:agavra/tuicr
+```
+
 ### From source
 
 ```bash

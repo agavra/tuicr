@@ -61,6 +61,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  {N}G      ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Go to source line N in current file"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  {/}       ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),

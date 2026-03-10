@@ -83,6 +83,60 @@ pub enum AnnotatedLine {
     Spacing,
 }
 
+/// Result of searching for a source line number in annotations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FindSourceLineResult {
+    /// Exact match found at the given annotation index.
+    Exact(usize),
+    /// No exact match; nearest line found at the given annotation index.
+    Nearest(usize),
+    /// No matching lines found in the current file at all.
+    NotFound,
+}
+
+/// Search `line_annotations` for the annotation whose `new_lineno` best matches
+/// `target_lineno` within the file identified by `current_file`.
+pub fn find_source_line(
+    annotations: &[AnnotatedLine],
+    current_file: usize,
+    target_lineno: u32,
+) -> FindSourceLineResult {
+    let mut best: Option<(usize, u32)> = None; // (index, distance)
+
+    for (idx, annotation) in annotations.iter().enumerate() {
+        let (file_idx, new_lineno) = match annotation {
+            AnnotatedLine::DiffLine {
+                file_idx,
+                new_lineno,
+                ..
+            } => (*file_idx, *new_lineno),
+            AnnotatedLine::SideBySideLine {
+                file_idx,
+                new_lineno,
+                ..
+            } => (*file_idx, *new_lineno),
+            _ => continue,
+        };
+        if file_idx != current_file {
+            continue;
+        }
+        if let Some(ln) = new_lineno {
+            let dist = ln.abs_diff(target_lineno);
+            if dist == 0 {
+                return FindSourceLineResult::Exact(idx);
+            }
+            if best.is_none() || dist < best.unwrap().1 {
+                best = Some((idx, dist));
+            }
+        }
+    }
+
+    match best {
+        Some((idx, _)) => FindSourceLineResult::Nearest(idx),
+        None => FindSourceLineResult::NotFound,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputMode {
     Normal,
@@ -208,6 +262,8 @@ pub struct App {
     pub comment_cursor_screen_pos: Option<(u16, u16)>,
     /// Information about available updates (set by background check)
     pub update_info: Option<UpdateInfo>,
+    /// Accumulated digit count for {N}G jump-to-line
+    pub pending_count: Option<usize>,
 
     // Inline commit selector state (shown at top of diff view for multi-commit reviews)
     /// CommitInfo for commits in the current review (display order: newest first)
@@ -507,6 +563,7 @@ impl App {
             pending_stdout_output: None,
             comment_cursor_screen_pos: None,
             update_info: None,
+            pending_count: None,
             review_commits: Vec::new(),
             show_commit_selector: false,
             commit_diff_cache: HashMap::new(),
@@ -1249,6 +1306,28 @@ impl App {
             .cursor_line
             .saturating_sub(half_viewport)
             .min(max_scroll);
+    }
+
+    pub fn go_to_source_line(&mut self, target_lineno: u32) {
+        let current_file = self.diff_state.current_file_idx;
+        let result = find_source_line(&self.line_annotations, current_file, target_lineno);
+
+        match result {
+            FindSourceLineResult::Exact(idx) | FindSourceLineResult::Nearest(idx) => {
+                self.diff_state.cursor_line = idx;
+                self.ensure_cursor_visible();
+                self.center_cursor();
+                self.update_current_file_from_cursor();
+                if matches!(result, FindSourceLineResult::Nearest(_)) {
+                    self.set_message(format!(
+                        "Line {target_lineno} not in diff, jumped to nearest"
+                    ));
+                }
+            }
+            FindSourceLineResult::NotFound => {
+                self.set_warning(format!("Line {target_lineno} not found in current file"));
+            }
+        }
     }
 
     pub fn file_list_down(&mut self, n: usize) {
@@ -3623,5 +3702,203 @@ mod scroll_tests {
         assert!(diff_state_wrap.wrap_lines);
         assert_eq!(diff_state_no_wrap.viewport_height, 20);
         assert_eq!(diff_state_wrap.viewport_height, 20);
+    }
+}
+
+#[cfg(test)]
+mod find_source_line_tests {
+    use super::*;
+
+    // hunk_idx and line_idx are set to 0 because find_source_line doesn't use them;
+    // only file_idx and new_lineno matter for the search.
+    fn make_diff_line(file_idx: usize, new_lineno: Option<u32>) -> AnnotatedLine {
+        AnnotatedLine::DiffLine {
+            file_idx,
+            hunk_idx: 0,
+            line_idx: 0,
+            old_lineno: None,
+            new_lineno,
+        }
+    }
+
+    fn make_sbs_line(file_idx: usize, new_lineno: Option<u32>) -> AnnotatedLine {
+        AnnotatedLine::SideBySideLine {
+            file_idx,
+            hunk_idx: 0,
+            del_line_idx: None,
+            add_line_idx: None,
+            old_lineno: None,
+            new_lineno,
+        }
+    }
+
+    #[test]
+    fn should_find_exact_match() {
+        let annotations = vec![
+            AnnotatedLine::FileHeader { file_idx: 0 },
+            make_diff_line(0, Some(10)),
+            make_diff_line(0, Some(11)),
+            make_diff_line(0, Some(12)),
+        ];
+
+        let result = find_source_line(&annotations, 0, 11);
+        assert_eq!(result, FindSourceLineResult::Exact(2));
+    }
+
+    #[test]
+    fn should_find_nearest_when_no_exact_match() {
+        let annotations = vec![
+            make_diff_line(0, Some(10)),
+            make_diff_line(0, Some(15)),
+            make_diff_line(0, Some(20)),
+        ];
+
+        // Target 12 is closest to line 10 (dist=2) vs 15 (dist=3) vs 20 (dist=8)
+        let result = find_source_line(&annotations, 0, 12);
+        assert_eq!(result, FindSourceLineResult::Nearest(0));
+    }
+
+    #[test]
+    fn should_find_nearest_above_target() {
+        let annotations = vec![
+            make_diff_line(0, Some(10)),
+            make_diff_line(0, Some(15)),
+            make_diff_line(0, Some(20)),
+        ];
+
+        // Target 18 is closest to line 20 (dist=2) vs 15 (dist=3) vs 10 (dist=8)
+        let result = find_source_line(&annotations, 0, 18);
+        assert_eq!(result, FindSourceLineResult::Nearest(2));
+    }
+
+    #[test]
+    fn should_return_not_found_for_empty_annotations() {
+        let annotations: Vec<AnnotatedLine> = vec![];
+        let result = find_source_line(&annotations, 0, 42);
+        assert_eq!(result, FindSourceLineResult::NotFound);
+    }
+
+    #[test]
+    fn should_return_not_found_when_no_lines_in_current_file() {
+        let annotations = vec![make_diff_line(1, Some(10)), make_diff_line(1, Some(20))];
+
+        // File 0 has no lines
+        let result = find_source_line(&annotations, 0, 10);
+        assert_eq!(result, FindSourceLineResult::NotFound);
+    }
+
+    #[test]
+    fn should_skip_lines_from_other_files() {
+        let annotations = vec![
+            make_diff_line(0, Some(100)), // file 0, line 100
+            make_diff_line(1, Some(42)),  // file 1, exact match but wrong file
+            make_diff_line(0, Some(50)),  // file 0, line 50
+        ];
+
+        // Searching file 0 for line 42 — should find nearest (50, dist=8) not file 1's exact match
+        let result = find_source_line(&annotations, 0, 42);
+        assert_eq!(result, FindSourceLineResult::Nearest(2));
+    }
+
+    #[test]
+    fn should_skip_non_diff_line_annotations() {
+        let annotations = vec![
+            AnnotatedLine::FileHeader { file_idx: 0 },
+            AnnotatedLine::HunkHeader {
+                file_idx: 0,
+                hunk_idx: 0,
+            },
+            AnnotatedLine::Spacing,
+            make_diff_line(0, Some(42)),
+        ];
+
+        let result = find_source_line(&annotations, 0, 42);
+        assert_eq!(result, FindSourceLineResult::Exact(3));
+    }
+
+    #[test]
+    fn should_skip_diff_lines_with_no_new_lineno() {
+        // Deletion-only lines have new_lineno = None
+        let annotations = vec![make_diff_line(0, None), make_diff_line(0, Some(20))];
+
+        let result = find_source_line(&annotations, 0, 5);
+        assert_eq!(result, FindSourceLineResult::Nearest(1));
+    }
+
+    #[test]
+    fn should_work_with_side_by_side_lines() {
+        let annotations = vec![
+            make_sbs_line(0, Some(10)),
+            make_sbs_line(0, Some(20)),
+            make_sbs_line(0, Some(30)),
+        ];
+
+        let result = find_source_line(&annotations, 0, 20);
+        assert_eq!(result, FindSourceLineResult::Exact(1));
+    }
+
+    #[test]
+    fn should_handle_mixed_diff_and_sbs_lines() {
+        let annotations = vec![
+            make_diff_line(0, Some(10)),
+            make_sbs_line(0, Some(20)),
+            make_diff_line(0, Some(30)),
+        ];
+
+        let result = find_source_line(&annotations, 0, 25);
+        // Nearest is line 20 (dist=5) or line 30 (dist=5), first match wins
+        assert_eq!(result, FindSourceLineResult::Nearest(1));
+    }
+
+    #[test]
+    fn should_return_not_found_when_only_non_line_annotations() {
+        let annotations = vec![
+            AnnotatedLine::FileHeader { file_idx: 0 },
+            AnnotatedLine::Spacing,
+            AnnotatedLine::HunkHeader {
+                file_idx: 0,
+                hunk_idx: 0,
+            },
+        ];
+
+        let result = find_source_line(&annotations, 0, 42);
+        assert_eq!(result, FindSourceLineResult::NotFound);
+    }
+
+    #[test]
+    fn should_prefer_exact_match_over_earlier_nearest() {
+        let annotations = vec![
+            make_diff_line(0, Some(41)), // dist=1 from target 42
+            make_diff_line(0, Some(42)), // exact match
+            make_diff_line(0, Some(43)), // dist=1 from target 42
+        ];
+
+        let result = find_source_line(&annotations, 0, 42);
+        assert_eq!(result, FindSourceLineResult::Exact(1));
+    }
+
+    #[test]
+    fn should_find_nearest_for_target_zero() {
+        // target_lineno = 0 is out-of-range (lines are 1-indexed) but should
+        // still return the nearest line rather than panicking.
+        let annotations = vec![make_diff_line(0, Some(1)), make_diff_line(0, Some(5))];
+
+        let result = find_source_line(&annotations, 0, 0);
+        assert_eq!(result, FindSourceLineResult::Nearest(0));
+    }
+
+    #[test]
+    fn should_tie_break_nearest_by_iteration_order() {
+        // When two lines are equidistant, the first one encountered wins.
+        // Here lines are in descending order; line 30 (idx 0) and line 10 (idx 2)
+        // are both dist=10 from target 20, so idx 0 should win.
+        let annotations = vec![
+            make_diff_line(0, Some(30)),
+            make_diff_line(0, Some(50)),
+            make_diff_line(0, Some(10)),
+        ];
+
+        let result = find_source_line(&annotations, 0, 20);
+        assert_eq!(result, FindSourceLineResult::Nearest(0));
     }
 }
