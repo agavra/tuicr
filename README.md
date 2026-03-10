@@ -104,7 +104,7 @@ Detection order: Jujutsu → Git → Mercurial. Jujutsu is tried first because j
 | `-r` / `--revisions <REVSET>` | Commit range/Revision set to review. Exact syntax depends on VCS backend (Git, JJ, Hg) |
 | `--pr` | Review branch changes as a PR diff (`merge-base(base, HEAD)..HEAD`) |
 | `--base <REF>` | Base ref for PR mode (implies `--pr`), for example `origin/main` |
-| `--theme <THEME>` | Color theme override (`dark`, `light`, `catppuccin-latte`, `catppuccin-frappe`, `catppuccin-macchiato`, `catppuccin-mocha`, `gruvbox-dark`, `gruvbox-light`) |
+| `--theme <THEME>` | Color theme override (`dark`, `light`, `ayu-light`, `onedark`, `system`, `catppuccin-latte`, `catppuccin-frappe`, `catppuccin-macchiato`, `catppuccin-mocha`, `gruvbox-dark`, `gruvbox-light`) |
 | `--stdout` | Output to stdout instead of clipboard when exporting |
 | `--no-update-check` | Skip checking for updates on startup |
 
@@ -131,6 +131,8 @@ Theme resolution precedence:
 1. `--theme <THEME>`
 2. Config file path above (OS-specific)
 3. built-in default (`dark`)
+
+`system` follows your OS appearance (light/dark) at startup.
 
 Notes:
 - Invalid `--theme` values cause an immediate non-zero exit.
