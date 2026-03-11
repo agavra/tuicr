@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.8.0] - 2026-03-11
+
+### Bug Fixes
+
+- **ui:** Make diff row backgrounds consistent to eol (#180)
+- **diff:** Normalize tabs across parsers and add coverage (#179)
+- **ui:** Shift focus to diff when file list is collapsed (#185)
+
+### Features
+
+- **theme:** Add gruvbox-dark, gruvbox-light themes (#181)
+- Show commit message as reviewable entry for single-commit reviews (#182)
+- Add {N}G shortcut to jump to source line in diff view (#193)
+- **theme:** Add ayu-light and onedark themes (#195)
+- **theme:** Add appearance mode and split dark/light config variants (#196)
+- **comments:** Add review-level comments across review scope (#197)
 ## [0.7.2] - 2026-02-12
 
 ### Bug Fixes
