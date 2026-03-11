@@ -578,6 +578,84 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
     let mut comment_cursor_logical_line: Option<usize> = None;
     let mut comment_cursor_column: u16 = 0;
 
+    let is_review_comment_mode = app.input_mode == InputMode::Comment && app.comment_is_review_level;
+
+    let general_indicator = cursor_indicator_spaced(line_idx, current_line_idx);
+    lines.push(Line::from(vec![
+        Span::styled(
+            general_indicator,
+            styles::current_line_indicator_style(&app.theme),
+        ),
+        Span::styled("═══ Review Comments ", styles::file_header_style(&app.theme)),
+        Span::styled("═".repeat(40), styles::file_header_style(&app.theme)),
+    ]));
+    line_idx += 1;
+
+    for comment in &app.session.review_comments {
+        let is_being_edited =
+            app.editing_comment_id.as_ref() == Some(&comment.id) && is_review_comment_mode;
+
+        if is_being_edited {
+            let (input_lines, cursor_info) = comment_panel::format_comment_input_lines(
+                &app.theme,
+                app.comment_type,
+                &app.comment_buffer,
+                app.comment_cursor,
+                None,
+                true,
+                app.supports_keyboard_enhancement,
+            );
+            comment_cursor_logical_line = Some(line_idx + cursor_info.line_offset);
+            comment_cursor_column = 1 + cursor_info.column;
+
+            for mut input_line in input_lines {
+                let indicator = cursor_indicator(line_idx, current_line_idx);
+                input_line.spans.insert(
+                    0,
+                    Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
+                );
+                lines.push(input_line);
+                line_idx += 1;
+            }
+        } else {
+            let comment_lines =
+                comment_panel::format_comment_lines(&app.theme, comment.comment_type, &comment.content, None);
+            for mut comment_line in comment_lines {
+                let indicator = cursor_indicator(line_idx, current_line_idx);
+                comment_line.spans.insert(
+                    0,
+                    Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
+                );
+                lines.push(comment_line);
+                line_idx += 1;
+            }
+        }
+    }
+
+    if is_review_comment_mode && app.editing_comment_id.is_none() {
+        let (input_lines, cursor_info) = comment_panel::format_comment_input_lines(
+            &app.theme,
+            app.comment_type,
+            &app.comment_buffer,
+            app.comment_cursor,
+            None,
+            false,
+            app.supports_keyboard_enhancement,
+        );
+        comment_cursor_logical_line = Some(line_idx + cursor_info.line_offset);
+        comment_cursor_column = 1 + cursor_info.column;
+
+        for mut input_line in input_lines {
+            let indicator = cursor_indicator(line_idx, current_line_idx);
+            input_line.spans.insert(
+                0,
+                Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
+            );
+            lines.push(input_line);
+            line_idx += 1;
+        }
+    }
+
     for (file_idx, file) in app.diff_files.iter().enumerate() {
         let path = file.display_path();
         let status = file.status.as_char();
@@ -1329,7 +1407,8 @@ fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
     let content_width = available_width / 2;
 
     // Determine if we're in line comment mode (not file-level)
-    let comment_input_mode = app.input_mode == InputMode::Comment && !app.comment_is_file_level;
+    let comment_input_mode =
+        app.input_mode == InputMode::Comment && !app.comment_is_file_level && !app.comment_is_review_level;
 
     let ctx = SideBySideContext {
         theme: &app.theme,
@@ -1352,6 +1431,84 @@ fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
     // Track cursor position for IME when in Comment mode
     let mut comment_cursor_logical_line: Option<usize> = None;
     let mut comment_cursor_column: u16 = 0;
+
+    let is_review_comment_mode = app.input_mode == InputMode::Comment && app.comment_is_review_level;
+
+    let general_indicator = cursor_indicator_spaced(line_idx, ctx.current_line_idx);
+    lines.push(Line::from(vec![
+        Span::styled(
+            general_indicator,
+            styles::current_line_indicator_style(&app.theme),
+        ),
+        Span::styled("═══ Review Comments ", styles::file_header_style(&app.theme)),
+        Span::styled("═".repeat(40), styles::file_header_style(&app.theme)),
+    ]));
+    line_idx += 1;
+
+    for comment in &app.session.review_comments {
+        let is_being_edited =
+            app.editing_comment_id.as_ref() == Some(&comment.id) && is_review_comment_mode;
+
+        if is_being_edited {
+            let (input_lines, cursor_info) = comment_panel::format_comment_input_lines(
+                &app.theme,
+                app.comment_type,
+                &app.comment_buffer,
+                app.comment_cursor,
+                None,
+                true,
+                app.supports_keyboard_enhancement,
+            );
+            comment_cursor_logical_line = Some(line_idx + cursor_info.line_offset);
+            comment_cursor_column = 1 + cursor_info.column;
+
+            for mut input_line in input_lines {
+                let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
+                input_line.spans.insert(
+                    0,
+                    Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
+                );
+                lines.push(input_line);
+                line_idx += 1;
+            }
+        } else {
+            let comment_lines =
+                comment_panel::format_comment_lines(&app.theme, comment.comment_type, &comment.content, None);
+            for mut comment_line in comment_lines {
+                let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
+                comment_line.spans.insert(
+                    0,
+                    Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
+                );
+                lines.push(comment_line);
+                line_idx += 1;
+            }
+        }
+    }
+
+    if is_review_comment_mode && app.editing_comment_id.is_none() {
+        let (input_lines, cursor_info) = comment_panel::format_comment_input_lines(
+            &app.theme,
+            app.comment_type,
+            &app.comment_buffer,
+            app.comment_cursor,
+            None,
+            false,
+            app.supports_keyboard_enhancement,
+        );
+        comment_cursor_logical_line = Some(line_idx + cursor_info.line_offset);
+        comment_cursor_column = 1 + cursor_info.column;
+
+        for mut input_line in input_lines {
+            let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
+            input_line.spans.insert(
+                0,
+                Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
+            );
+            lines.push(input_line);
+            line_idx += 1;
+        }
+    }
 
     for (file_idx, file) in app.diff_files.iter().enumerate() {
         let path = file.display_path();

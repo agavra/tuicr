@@ -63,6 +63,8 @@ pub struct ReviewSession {
     pub commit_range: Option<Vec<String>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    #[serde(default, alias = "general_comments")]
+    pub review_comments: Vec<Comment>,
     pub files: HashMap<PathBuf, FileReview>,
     pub session_notes: Option<String>,
 }
@@ -85,6 +87,7 @@ impl ReviewSession {
             commit_range: None,
             created_at: now,
             updated_at: now,
+            review_comments: Vec::new(),
             files: HashMap::new(),
             session_notes: None,
         }
@@ -105,11 +108,12 @@ impl ReviewSession {
     }
 
     pub fn has_comments(&self) -> bool {
-        self.files.values().any(|f| f.comment_count() > 0)
+        !self.review_comments.is_empty() || self.files.values().any(|f| f.comment_count() > 0)
     }
 
     pub fn clear_comments(&mut self) -> usize {
-        let mut cleared = 0;
+        let mut cleared = self.review_comments.len();
+        self.review_comments.clear();
         for file in self.files.values_mut() {
             cleared += file.comment_count();
             file.file_comments.clear();

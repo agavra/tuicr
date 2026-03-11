@@ -2,7 +2,7 @@ use std::fmt::Write;
 use std::io::Write as IoWrite;
 
 use arboard::Clipboard;
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 
 use crate::app::DiffSource;
 use crate::error::{Result, TuicrError};
@@ -167,6 +167,16 @@ fn generate_markdown(session: &ReviewSession, diff_source: &DiffSource) -> Strin
     // Collect all comments into a flat list
     let mut all_comments: Vec<CommentEntry> = Vec::new();
 
+    for comment in &session.review_comments {
+        all_comments.push((
+            "(review)".to_string(),
+            None,
+            None,
+            comment.comment_type.as_str(),
+            &comment.content,
+        ));
+    }
+
     // Sort files by path for consistent output
     let mut files: Vec<_> = session.files.iter().collect();
     files.sort_by_key(|(path, _)| path.to_string_lossy().to_string());
@@ -308,6 +318,20 @@ mod tests {
         // Should have 2 numbered comments
         assert!(markdown.contains("1. **[SUGGESTION]**"));
         assert!(markdown.contains("2. **[ISSUE]**"));
+    }
+
+    #[test]
+    fn should_include_review_comments_in_export() {
+        let mut session = create_test_session();
+        session.review_comments.push(Comment::new(
+            "Please split this into smaller commits".to_string(),
+            CommentType::Note,
+            None,
+        ));
+
+        let markdown = generate_markdown(&session, &DiffSource::WorkingTree);
+
+        assert!(markdown.contains("`(review)` - Please split this into smaller commits"));
     }
 
     #[test]

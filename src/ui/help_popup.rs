@@ -1,9 +1,9 @@
 use ratatui::{
-    Frame,
     layout::{Constraint, Flex, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
+    Frame,
 };
 
 use crate::app::App;
@@ -223,6 +223,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("Add file comment"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  ;c        ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Add review comment"),
         ]),
         Line::from(vec![
             Span::styled(

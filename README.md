@@ -35,7 +35,7 @@ to clipboard in a format ready to paste back to the agent.
 - **Infinite scroll diff view** - All changed files in one continuous scroll (GitHub-style)
 - **Vim keybindings** - Navigate with `j/k`, `Ctrl-d/u`, `g/G`, `{/}`, `[/]`
 - **Expandable context** - Press Enter on "... expand (N lines) ..." to reveal hidden context between hunks
-- **Comments** - Add file-level or line-level comments with types
+- **Comments** - Add review-level, file-level, or line-level comments with types
 - **Visual mode** - Select line ranges with `v` / `V` and comment on multiple lines at once
 - **Review tracking** - Mark files as reviewed, persist progress to disk
 - **`.tuicrignore` support** - Exclude matching files from review diffs
@@ -204,6 +204,7 @@ dist/
 | `r` | Toggle file reviewed |
 | `c` | Add line comment (or file comment if not on a diff line) |
 | `C` | Add file comment |
+| `;c` | Add review comment |
 | `v` / `V` | Enter visual mode for range comments |
 | `dd` | Delete comment at cursor |
 | `i` | Edit comment at cursor |
