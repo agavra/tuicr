@@ -17,7 +17,7 @@ comments one at a time and wait after each fix.
 
 `tuicr` is the middle ground. Let the agent loose, review the changes like a
 normal PR, drop comments where needed, and export everything as structured
-feedback Claude can act on in one pass.
+feedback the agent can act on in one pass.
 
 It makes my AI-assisted development go brrrrrr.
 
@@ -317,3 +317,23 @@ claude skill add /path/to/tuicr/.claude/skill
 ```
 
 **Usage:** `/tuicr` or ask Claude to "review my changes with tuicr".
+
+## Codex Integration
+
+tuicr also includes a skill for OpenAI Codex that opens tuicr in a tmux split pane, letting you review changes interactively and feed comments back to Codex.
+
+**Prerequisites:** Codex running inside tmux, tuicr installed.
+
+**Installation** (choose one):
+
+```bash
+# Option 1: Copy to local skills
+mkdir -p ~/.codex/skills
+cp -r /path/to/tuicr/.codex/skills/tuicr ~/.codex/skills/tuicr
+
+# Option 2: Symlink to this repo checkout
+mkdir -p ~/.codex/skills
+ln -s /path/to/tuicr/.codex/skills/tuicr ~/.codex/skills/tuicr
+```
+
+**Usage:** `/tuicr` or ask Codex to "review my changes with tuicr".

@@ -1,6 +1,11 @@
 /target
-result
-tmpclaude-*
-.claude/
-.codex/
-.opencode/
+/result
+/tmpclaude-*
+/.claude/*
+!/.claude/skill/
+!/.claude/skill/**
+/.codex/*
+!/.codex/skills/
+!/.codex/skills/tuicr/
+!/.codex/skills/tuicr/**
+/.opencode/
