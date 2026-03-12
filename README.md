@@ -329,11 +329,11 @@ tuicr also includes a skill for OpenAI Codex that opens tuicr in a tmux split pa
 ```bash
 # Option 1: Copy to local skills
 mkdir -p ~/.codex/skills
-cp -r /path/to/tuicr/.codex/skills/tuicr ~/.codex/skills/tuicr
+cp -r /path/to/tuicr/.agents/skills/tuicr ~/.codex/skills/tuicr
 
 # Option 2: Symlink to this repo checkout
 mkdir -p ~/.codex/skills
-ln -s /path/to/tuicr/.codex/skills/tuicr ~/.codex/skills/tuicr
+ln -s /path/to/tuicr/.agents/skills/tuicr ~/.codex/skills/tuicr
 ```
 
 **Usage:** `/tuicr` or ask Codex to "review my changes with tuicr".

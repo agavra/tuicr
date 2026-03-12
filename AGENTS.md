@@ -66,7 +66,7 @@ src/
 
 Repository-managed agent integrations:
 - `.claude/skill/` - Claude Code skill that launches tuicr in a tmux split pane
-- `.codex/skills/tuicr/` - Codex skill that launches tuicr with the same tmux review flow
+- `.agents/skills/tuicr/` - Codex skill that launches tuicr with the same tmux review flow
 
 ### Key Types
 

@@ -4,8 +4,9 @@
 /.claude/*
 !/.claude/skill/
 !/.claude/skill/**
-/.codex/*
-!/.codex/skills/
-!/.codex/skills/tuicr/
-!/.codex/skills/tuicr/**
+/.codex/
+/.agents/*
+!/.agents/skills/
+!/.agents/skills/tuicr/
+!/.agents/skills/tuicr/**
 /.opencode/
