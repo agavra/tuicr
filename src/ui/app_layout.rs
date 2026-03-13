@@ -246,7 +246,14 @@ fn truncate_str(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
         s.to_string()
     } else {
-        format!("{}...", &s[..max_len.saturating_sub(3)])
+        let truncate_at = max_len.saturating_sub(3);
+        let end = s
+            .char_indices()
+            .map(|(i, _)| i)
+            .take_while(|&i| i <= truncate_at)
+            .last()
+            .unwrap_or(0);
+        format!("{}...", &s[..end])
     }
 }
 
@@ -2517,4 +2524,51 @@ fn apply_horizontal_scroll(line: Line, scroll_x: usize) -> Line {
     }
 
     Line::from(new_spans)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn should_return_string_unchanged_when_within_max_len() {
+        // given
+        let s = "hello";
+        // when
+        let result = truncate_str(s, 10);
+        // then
+        assert_eq!(result, "hello");
+    }
+
+    #[test]
+    fn should_truncate_ascii_string_with_ellipsis() {
+        // given
+        let s = "hello world this is long";
+        // when
+        let result = truncate_str(s, 10);
+        // then
+        assert_eq!(result, "hello w...");
+    }
+
+    #[test]
+    fn should_truncate_without_panicking_on_multibyte_chars() {
+        // given - the exact string from the bug report
+        let s = "Resolve \"SD : Envoi en validation manuelle après 3 rejet de la fiche employé\"";
+        // when
+        let result = truncate_str(s, 47);
+        // then - should not panic and should end with "..."
+        assert!(result.ends_with("..."));
+        assert!(result.len() <= 47);
+    }
+
+    #[test]
+    fn should_handle_string_of_only_multibyte_chars() {
+        // given
+        let s = "ééééééééé";
+        // when
+        let result = truncate_str(s, 5);
+        // then
+        assert!(result.ends_with("..."));
+        assert!(result.is_char_boundary(result.len()));
+    }
 }
