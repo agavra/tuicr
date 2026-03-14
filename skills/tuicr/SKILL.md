@@ -17,11 +17,11 @@ Or simply mention wanting to review changes with tuicr.
 
 ## How It Works
 
-Since Codex cannot run interactive TUI applications directly, this skill uses a tmux workaround:
+Since coding agents cannot run interactive TUI applications directly, this skill uses a tmux workaround:
 
-1. Detects if Codex is running inside tmux
+1. Detects if the current agent session is running inside tmux
 2. If yes: Creates a split pane with tuicr running in it
-3. If no: Provides instructions to restart Codex inside tmux
+3. If no: Provides instructions to restart the agent inside tmux
 
 ## Determining the Directory
 
@@ -51,8 +51,8 @@ Common patterns:
    ```
 
    **IMPORTANT:** Always set `timeout: 600000` (10 minutes) on the Bash tool call.
-   The script waits for tuicr to exit, and without the extended timeout Codex will
-   background the command after 2 minutes.
+   The script waits for tuicr to exit, and without the extended timeout the agent
+   may background the command after 2 minutes.
 
 3. **Handle the result**:
    - If successful: tuicr opens in a split pane and blocks until user exits
@@ -113,7 +113,7 @@ User says: "/tuicr ~/projects/myapp"
 
 | Error | Action |
 |-------|--------|
-| Not in tmux | Show restart instructions with `codex` |
+| Not in tmux | Tell the user to restart the agent inside tmux |
 | Not a git repo | Ask user for correct directory |
 | tuicr not installed | Tell user to install tuicr |
 

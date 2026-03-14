@@ -300,40 +300,34 @@ Each comment is numbered and self-contained with its file path and line number o
 
 Sessions are automatically saved to `~/.local/share/tuicr/reviews/` (XDG compliant). When you reopen `tuicr` in the same repository, your previous review progress (comments, reviewed status) is restored.
 
-## Claude Code Integration
+## Agent Integrations
 
-tuicr includes a skill for [Claude Code](https://claude.ai/claude-code) that opens tuicr in a tmux split pane, letting you review changes interactively and feed comments back to Claude.
+tuicr ships a repo-managed skill bundle at `skills/tuicr/`.
+
+It opens tuicr in a tmux split pane so you can review changes interactively and feed comments back to your coding agent.
+
+**Usage:** `/tuicr` or ask your coding agent to "review my changes with tuicr".
+
+### Claude Code
 
 **Prerequisites:** Claude Code running inside tmux, tuicr installed.
 
 **Installation** (choose one):
 
 ```bash
-# Option 1: Copy to local skills
-cp -r /path/to/tuicr/.claude/skill ~/.claude/skills/tuicr
-
-# Option 2: Point Claude to this repo
-claude skill add /path/to/tuicr/.claude/skill
+# Copy the shared skill into Claude's local skills directory
+mkdir -p ~/.claude/skills
+cp -r /path/to/tuicr/skills/tuicr ~/.claude/skills/tuicr
 ```
 
-**Usage:** `/tuicr` or ask Claude to "review my changes with tuicr".
-
-## Codex Integration
-
-tuicr also includes a skill for OpenAI Codex that opens tuicr in a tmux split pane, letting you review changes interactively and feed comments back to Codex.
+### Codex
 
 **Prerequisites:** Codex running inside tmux, tuicr installed.
 
-**Installation** (choose one):
+**Installation**:
 
 ```bash
-# Option 1: Copy to local skills
-mkdir -p ~/.codex/skills
-cp -r /path/to/tuicr/.agents/skills/tuicr ~/.codex/skills/tuicr
-
-# Option 2: Symlink to this repo checkout
-mkdir -p ~/.codex/skills
-ln -s /path/to/tuicr/.agents/skills/tuicr ~/.codex/skills/tuicr
+# Copy the shared skill into the local agents skills directory
+mkdir -p ~/.agents/skills
+cp -r /path/to/tuicr/skills/tuicr ~/.agents/skills/tuicr
 ```
-
-**Usage:** `/tuicr` or ask Codex to "review my changes with tuicr".

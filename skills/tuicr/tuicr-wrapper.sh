@@ -182,15 +182,13 @@ main() {
   if ! check_tmux; then
     log_error "Not running inside tmux!"
     echo ""
-    echo "To use tuicr with Codex, you need to run Codex inside tmux."
+    echo "To use tuicr with your coding agent, run that agent inside tmux."
     echo ""
-    echo "1. Exit Codex now:"
-    echo "   Type /exit or press Ctrl+C twice"
+    echo "1. Exit the current agent session."
     echo ""
-    echo "2. Restart Codex inside tmux (will resume this session):"
-    echo "   tmux new-session 'codex'"
+    echo "2. Restart the agent inside tmux."
     echo ""
-    echo "3. Then run /tuicr again"
+    echo "3. Then run /tuicr again."
     exit 1
   fi
 

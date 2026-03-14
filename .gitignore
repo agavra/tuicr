@@ -1,12 +1,7 @@
 /target
 /result
 /tmpclaude-*
-/.claude/*
-!/.claude/skill/
-!/.claude/skill/**
+/.claude/
 /.codex/
-/.agents/*
-!/.agents/skills/
-!/.agents/skills/tuicr/
-!/.agents/skills/tuicr/**
+/.agents/
 /.opencode/
