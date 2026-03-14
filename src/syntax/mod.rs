@@ -78,7 +78,7 @@ impl SyntaxHighlighter {
         Some(Self::collect_line_highlights(lines, |line| {
             // Highlight failures are scoped to the single line; other lines still keep highlighting.
             highlighter
-                .highlight_line(line, &self.syntax_set)
+                .highlight_line(&format!("{}\n", line), &self.syntax_set)
                 .ok()
                 .map(|ranges| {
                     ranges
