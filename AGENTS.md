@@ -64,6 +64,9 @@ src/
     └── styles.rs        # Color constants and style helper functions
 ```
 
+Repository-managed agent integrations:
+- `skills/tuicr/` - Shared agent skill bundle for coding agents, for example Claude Code, Codex, and similar tools; launches tuicr in a tmux split pane
+
 ### Key Types
 
 **App** (`src/app.rs`):
@@ -129,9 +132,9 @@ When adding user-facing features, update the relevant documentation:
 
 | Document | Update when adding/changing... |
 |----------|-------------------------------|
-| `README.md` | Keybindings, commands (`:*`), CLI flags, features list, installation methods |
+| `README.md` | Keybindings, commands (`:*`), CLI flags, features list, installation methods, agent integration setup |
 | `src/ui/help_popup.rs` | Keybindings or commands (update the `help_text` vector) |
-| `AGENTS.md` | Module structure, key types, data flow, dependencies |
+| `AGENTS.md` | Module structure, repo-managed agent integrations, key types, data flow, dependencies |
 
 ---
 

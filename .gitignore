@@ -1,6 +1,7 @@
 /target
-result
-tmpclaude-*
-.claude/
-.codex/
-.opencode/
+/result
+/tmpclaude-*
+/.claude/
+/.codex/
+/.agents/
+/.opencode/

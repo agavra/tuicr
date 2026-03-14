@@ -17,11 +17,11 @@ Or simply mention wanting to review changes with tuicr.
 
 ## How It Works
 
-Since Claude Code cannot run interactive TUI applications directly, this skill uses a tmux workaround:
+Since coding agents cannot run interactive TUI applications directly, this skill uses a tmux workaround:
 
-1. Detects if Claude is running inside tmux
+1. Detects if the current agent session is running inside tmux
 2. If yes: Creates a split pane with tuicr running in it
-3. If no: Provides instructions to restart Claude inside tmux
+3. If no: Provides instructions to restart the agent inside tmux
 
 ## Determining the Directory
 
@@ -34,9 +34,9 @@ Consider:
 - The git status output if available
 
 Common patterns:
-- "review my changes" → use current working directory
-- "review changes in myproject" → find that repo path
-- After editing files → use the directory of those files
+- "review my changes" -> use current working directory
+- "review changes in myproject" -> find that repo path
+- After editing files -> use the directory of those files
 
 ## Workflow
 
@@ -51,8 +51,8 @@ Common patterns:
    ```
 
    **IMPORTANT:** Always set `timeout: 600000` (10 minutes) on the Bash tool call.
-   The script waits for tuicr to exit, and without the extended timeout Claude will
-   background the command after 2 minutes.
+   The script waits for tuicr to exit, and without the extended timeout the agent
+   may background the command after 2 minutes.
 
 3. **Handle the result**:
    - If successful: tuicr opens in a split pane and blocks until user exits
@@ -93,14 +93,14 @@ TUICR_PANE_SIZE=70 TUICR_PANE_POSITION=bottom <skill-directory>/tuicr-wrapper.sh
 ## Example Invocations
 
 User says: "review my changes"
-→ Run tuicr-wrapper.sh with current working directory
+-> Run tuicr-wrapper.sh with current working directory
 
 User says: "let me review the changes in myproject"
-→ Find myproject path based on context
-→ Run tuicr-wrapper.sh with that path
+-> Find myproject path based on context
+-> Run tuicr-wrapper.sh with that path
 
 User says: "/tuicr ~/projects/myapp"
-→ Run tuicr-wrapper.sh with `~/projects/myapp`
+-> Run tuicr-wrapper.sh with `~/projects/myapp`
 
 ## Tmux Tips (relay to user if needed)
 
@@ -113,7 +113,7 @@ User says: "/tuicr ~/projects/myapp"
 
 | Error | Action |
 |-------|--------|
-| Not in tmux | Show restart instructions with `claude -c` |
+| Not in tmux | Tell the user to restart the agent inside tmux |
 | Not a git repo | Ask user for correct directory |
 | tuicr not installed | Tell user to install tuicr |
 

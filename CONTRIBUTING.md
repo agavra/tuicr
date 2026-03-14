@@ -2,9 +2,9 @@
 
 ## The workflow
 
-1. Use Claude (or your favorite AI coding agent) to make changes
+1. Use Codex, Claude, or your favorite AI coding agent to make changes
 2. Run `cargo run` to review the diff with `tuicr` itself
-3. Export your comments and feed them back to Claude
+3. Export your comments and feed them back to the agent
 4. Repeat until you're happy
 5. Open a PR
 
