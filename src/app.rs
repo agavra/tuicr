@@ -275,6 +275,10 @@ pub struct App {
     pub range_diff_files: Option<Vec<DiffFile>>,
     /// Saved inline selection range when entering full commit select mode via :commits
     pub saved_inline_selection: Option<(usize, usize)>,
+
+    /// Shared IDE state for Claude Code integration (when feature enabled)
+    #[cfg(feature = "ide-integration")]
+    pub ide_state: Option<crate::ide::SharedIdeState>,
 }
 
 #[derive(Default)]
@@ -535,6 +539,8 @@ impl App {
             commit_diff_cache: HashMap::new(),
             range_diff_files: None,
             saved_inline_selection: None,
+            #[cfg(feature = "ide-integration")]
+            ide_state: None,
         };
         app.sort_files_by_directory(true);
         app.expand_all_dirs();
