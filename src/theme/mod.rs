@@ -753,6 +753,8 @@ pub struct CliArgs {
     pub no_update_check: bool,
     /// Commit/revision range to review
     pub revisions: Option<String>,
+    /// Skip commit selector and review uncommitted changes directly
+    pub working_tree: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1092,6 +1094,8 @@ Options:
                          Valid values: {appearance_values}
                          Used when no explicit theme is set
                          Precedence: --appearance > {config_path} > system
+  -w, --working-tree     Include uncommitted changes (skip commit selector when used alone,
+                         combine with commits when used with -r)
   --stdout               Output to stdout instead of clipboard when exporting
   --no-update-check      Skip checking for updates on startup
   -h, --help             Print this help message
@@ -1131,6 +1135,11 @@ fn parse_cli_args_from(args: &[String]) -> Result<CliArgs, String> {
         // Handle --no-update-check
         if args[i] == "--no-update-check" {
             cli_args.no_update_check = true;
+        }
+
+        // Handle -w / --working-tree
+        if args[i] == "-w" || args[i] == "--working-tree" {
+            cli_args.working_tree = true;
         }
 
         // Handle --theme value
@@ -1265,6 +1274,32 @@ mod tests {
     fn should_leave_theme_none_when_not_provided() {
         let parsed = parse_for_test(&["tuicr"]).expect("parse should succeed");
         assert_eq!(parsed.theme, None);
+    }
+
+    #[test]
+    fn should_parse_working_tree_short_flag() {
+        let parsed = parse_for_test(&["tuicr", "-w"]).expect("parse should succeed");
+        assert!(parsed.working_tree);
+    }
+
+    #[test]
+    fn should_parse_working_tree_long_flag() {
+        let parsed = parse_for_test(&["tuicr", "--working-tree"]).expect("parse should succeed");
+        assert!(parsed.working_tree);
+    }
+
+    #[test]
+    fn should_default_working_tree_to_false() {
+        let parsed = parse_for_test(&["tuicr"]).expect("parse should succeed");
+        assert!(!parsed.working_tree);
+    }
+
+    #[test]
+    fn should_parse_working_tree_with_revisions() {
+        let parsed =
+            parse_for_test(&["tuicr", "-w", "-r", "HEAD~3..HEAD"]).expect("parse should succeed");
+        assert!(parsed.working_tree);
+        assert_eq!(parsed.revisions, Some("HEAD~3..HEAD".to_string()));
     }
 
     #[test]

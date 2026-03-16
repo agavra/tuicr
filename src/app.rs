@@ -361,16 +361,79 @@ enum CommentLocation {
 }
 
 impl App {
-    pub fn new(theme: Theme, output_to_stdout: bool, revisions: Option<&str>) -> Result<Self> {
+    pub fn new(
+        theme: Theme,
+        output_to_stdout: bool,
+        revisions: Option<&str>,
+        working_tree: bool,
+    ) -> Result<Self> {
         let vcs = detect_vcs()?;
         let vcs_info = vcs.info().clone();
         let highlighter = theme.syntax_highlighter();
 
         // Determine the diff source, files, and session based on input.
-        // Three paths: CLI revisions, working tree changes, or commit selection fallback.
+        // Four paths:
+        //   1. -r + -w: combined commit range and uncommitted changes
+        //   2. -r only: commit range
+        //   3. -w only: working tree directly (skip commit selector)
+        //   4. neither: commit selection UI
         if let Some(revisions) = revisions {
-            // Resolve the revisions to commits and diff as a commit range
             let commit_ids = vcs.resolve_revisions(revisions)?;
+
+            if working_tree {
+                // Combined: commit range + uncommitted changes
+                let diff_files = Self::get_working_tree_with_commits_diff_with_ignore(
+                    vcs.as_ref(),
+                    &vcs_info.root_path,
+                    &commit_ids,
+                    highlighter,
+                )?;
+                let session =
+                    Self::load_or_create_working_tree_and_commits_session(&vcs_info, &commit_ids);
+                let review_commits: Vec<CommitInfo> = vcs
+                    .get_commits_info(&commit_ids)?
+                    .into_iter()
+                    .rev()
+                    .collect();
+                // Prepend working tree entry to the review commits list
+                let mut all_commits = vec![Self::working_tree_commit_entry()];
+                all_commits.extend(review_commits);
+
+                let mut app = Self::build(
+                    vcs,
+                    vcs_info,
+                    theme,
+                    output_to_stdout,
+                    diff_files,
+                    session,
+                    DiffSource::WorkingTreeAndCommits(commit_ids),
+                    InputMode::Normal,
+                    Vec::new(),
+                )?;
+
+                app.range_diff_files = Some(app.diff_files.clone());
+                app.commit_list = all_commits.clone();
+                app.commit_list_cursor = 0;
+                app.commit_selection_range = if all_commits.is_empty() {
+                    None
+                } else {
+                    Some((0, all_commits.len() - 1))
+                };
+                app.commit_list_scroll_offset = 0;
+                app.visible_commit_count = all_commits.len();
+                app.has_more_commit = false;
+                app.show_commit_selector = all_commits.len() > 1;
+                app.commit_diff_cache.clear();
+                app.review_commits = all_commits;
+                app.insert_commit_message_if_single();
+                app.sort_files_by_directory(true);
+                app.expand_all_dirs();
+                app.rebuild_annotations();
+
+                return Ok(app);
+            }
+
+            // Resolve the revisions to commits and diff as a commit range
             let diff_files = Self::get_commit_range_diff_with_ignore(
                 vcs.as_ref(),
                 &vcs_info.root_path,
@@ -409,6 +472,31 @@ impl App {
             }
             app.review_commits = review_commits;
             app.insert_commit_message_if_single();
+            app.sort_files_by_directory(true);
+            app.expand_all_dirs();
+            app.rebuild_annotations();
+
+            Ok(app)
+        } else if working_tree {
+            // Skip commit selector, go straight to working tree diff
+            let diff_files = Self::get_working_tree_diff_with_ignore(
+                vcs.as_ref(),
+                &vcs_info.root_path,
+                highlighter,
+            )?;
+            let session = Self::load_or_create_session(&vcs_info);
+
+            let mut app = Self::build(
+                vcs,
+                vcs_info,
+                theme,
+                output_to_stdout,
+                diff_files,
+                session,
+                DiffSource::WorkingTree,
+                InputMode::Normal,
+                Vec::new(),
+            )?;
             app.sort_files_by_directory(true);
             app.expand_all_dirs();
             app.rebuild_annotations();
