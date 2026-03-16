@@ -324,6 +324,11 @@ pub fn handle_comment_action(app: &mut App, action: Action) {
             app.comment_buffer.clear();
             app.comment_cursor = 0;
         }
+        Action::OpenExternalEditor => {
+            // Signal the main loop to suspend the TUI and launch the external editor.
+            // The main loop owns the terminal and handles the suspend/resume cycle.
+            app.pending_external_edit = true;
+        }
         Action::Quit => app.should_quit = true,
         _ => {}
     }

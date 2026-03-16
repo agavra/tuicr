@@ -1,6 +1,7 @@
 mod app;
 mod config;
 mod error;
+mod external_editor;
 mod handler;
 mod input;
 mod model;
@@ -348,6 +349,72 @@ fn main() -> anyhow::Result<()> {
                     }
                 }
                 _ => {}
+            }
+        }
+
+        // ==============================================================================
+        // External Editor
+        // ==============================================================================
+        //
+        // When the user presses Ctrl+G in comment mode, the handler sets the
+        // pending_external_edit flag. We handle it here because the terminal
+        // must be suspended (leave alternate screen, disable raw mode) before
+        // spawning the editor process, and only main.rs owns the terminal.
+
+        if app.pending_external_edit {
+            app.pending_external_edit = false;
+
+            match external_editor::resolve_editor_command() {
+                Ok(editor_cmd) => {
+                    let editor_name = external_editor::editor_display_name(&editor_cmd);
+
+                    // Suspend TUI: pop keyboard enhancements, leave alternate
+                    // screen, and disable raw mode so the editor gets a normal
+                    // terminal.
+                    if keyboard_enhancement_supported {
+                        let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
+                    }
+                    disable_raw_mode()?;
+                    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+
+                    let result = external_editor::run_editor(
+                        &app.comment_buffer,
+                        &editor_cmd,
+                        app.output_to_stdout,
+                    );
+
+                    // Resume TUI: re-enter alternate screen, re-enable raw
+                    // mode, and restore keyboard enhancements.
+                    enable_raw_mode()?;
+                    execute!(terminal.backend_mut(), EnterAlternateScreen)?;
+                    if keyboard_enhancement_supported {
+                        let _ = execute!(
+                            terminal.backend_mut(),
+                            PushKeyboardEnhancementFlags(
+                                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                            )
+                        );
+                    }
+
+                    // Force a full redraw so the TUI renders cleanly after
+                    // the editor process has written to the terminal.
+                    terminal.clear()?;
+
+                    match result {
+                        Ok(new_content) => {
+                            app.comment_buffer =
+                                external_editor::normalize_edited_content(&new_content);
+                            app.comment_cursor = app.comment_buffer.len();
+                            app.set_message(format!("Edited with {editor_name}"));
+                        }
+                        Err(e) => {
+                            app.set_error(format!("Editor failed: {e}"));
+                        }
+                    }
+                }
+                Err(e) => {
+                    app.set_error(format!("{e} — set $VISUAL or $EDITOR"));
+                }
             }
         }
 

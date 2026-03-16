@@ -66,6 +66,9 @@ pub enum Action {
     // Comment type
     CycleCommentType,
 
+    // External editor
+    OpenExternalEditor,
+
     // Confirm dialog
     ConfirmYes,
     ConfirmNo,
@@ -192,6 +195,8 @@ fn map_comment_mode(key: KeyEvent) -> Action {
         // Cancel: Esc, Ctrl+C
         (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
         (KeyCode::Char('c'), KeyModifiers::CONTROL) => Action::ExitMode,
+        // Open external editor: Ctrl+G
+        (KeyCode::Char('g'), KeyModifiers::CONTROL) => Action::OpenExternalEditor,
         // Submit: Enter without shift (Ctrl+Enter and Ctrl+S also work)
         (KeyCode::Enter, KeyModifiers::NONE) => Action::SubmitInput,
         (KeyCode::Enter, KeyModifiers::CONTROL) => Action::SubmitInput,

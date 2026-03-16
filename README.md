@@ -37,6 +37,7 @@ to clipboard in a format ready to paste back to the agent.
 - **Expandable context** - Press Enter on "... expand (N lines) ..." to reveal hidden context between hunks
 - **Comments** - Add review-level, file-level, or line-level comments with types
 - **Visual mode** - Select line ranges with `v` / `V` and comment on multiple lines at once
+- **External editor** - Press `Ctrl-g` in comment mode to edit with `$VISUAL` or `$EDITOR`
 - **Review tracking** - Mark files as reviewed, persist progress to disk
 - **`.tuicrignore` support** - Exclude matching files from review diffs
 - **Clipboard export** - Copy structured Markdown optimized for LLM consumption
@@ -225,6 +226,7 @@ dist/
 | `Tab` | Cycle comment type (Note → Suggestion → Issue → Praise) |
 | `Enter` / `Ctrl-Enter` / `Ctrl-s` | Save comment |
 | `Shift-Enter` / `Ctrl-j` | Insert newline |
+| `Ctrl-g` | Open the draft in `$VISUAL` or `$EDITOR` |
 | `←` / `→` | Move cursor |
 | `Ctrl-w` | Delete word |
 | `Ctrl-u` | Clear line |

@@ -264,6 +264,11 @@ pub struct App {
     /// Accumulated digit count for {N}G jump-to-line
     pub pending_count: Option<usize>,
 
+    /// Set to true when the user presses Ctrl+G in comment mode to open an
+    /// external editor. The main event loop checks this flag to suspend the
+    /// TUI, run the editor, and resume.
+    pub pending_external_edit: bool,
+
     // Inline commit selector state (shown at top of diff view for multi-commit reviews)
     /// CommitInfo for commits in the current review (display order: newest first)
     pub review_commits: Vec<CommitInfo>,
@@ -530,6 +535,7 @@ impl App {
             comment_cursor_screen_pos: None,
             update_info: None,
             pending_count: None,
+            pending_external_edit: false,
             review_commits: Vec::new(),
             show_commit_selector: false,
             commit_diff_cache: HashMap::new(),

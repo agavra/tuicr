@@ -72,7 +72,10 @@ pub fn format_comment_input_lines(
         Span::styled(format!("[{}] ", comment_type.as_str()), type_style),
         Span::styled(line_info, styles::dim_style(theme)),
         Span::styled(
-            format!("(Tab:type Enter:save {}:newline Esc:cancel)", newline_hint),
+            format!(
+                "(Tab:type Enter:save {}:newline Ctrl-G:editor Esc:cancel)",
+                newline_hint
+            ),
             styles::dim_style(theme),
         ),
     ]));

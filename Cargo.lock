@@ -2419,6 +2419,7 @@ dependencies = [
  "ratatui",
  "serde",
  "serde_json",
+ "shlex",
  "syntect",
  "tempfile",
  "thiserror 2.0.18",
