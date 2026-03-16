@@ -29,7 +29,7 @@ src/
 │   ├── git/             # Git backend (uses native git2 library, not diff_parser)
 │   │   ├── mod.rs       # GitBackend: wraps git2 library
 │   │   ├── repository.rs # CommitInfo, get_recent_commits()
-│   │   ├── diff.rs      # get_working_tree_diff(), get_commit_range_diff()
+│   │   ├── diff.rs      # get_working_tree_diff(), get_unstaged_diff(), get_commit_range_diff()
 │   │   └── context.rs   # fetch_context_lines() for gap expansion
 │   ├── hg/              # Mercurial backend (always compiled)
 │   │   └── mod.rs       # HgBackend: uses hg CLI, parses with diff_parser::Hg
@@ -73,7 +73,7 @@ src/
 
 **VcsBackend** (`src/vcs/traits.rs`):
 - Trait abstracting VCS operations
-- Methods: `info()`, `get_working_tree_diff()`, `fetch_context_lines()`, `get_recent_commits()`, `get_commit_range_diff()`
+- Methods: `info()`, `get_working_tree_diff()`, `get_unstaged_diff()`, `fetch_context_lines()`, `get_recent_commits()`, `get_commit_range_diff()`
 - Implementations: `GitBackend`, `HgBackend`, `JjBackend` (all always compiled)
 
 **InputMode** (`src/app.rs`):
@@ -96,7 +96,7 @@ src/
 
 ### Data Flow
 
-1. **Startup**: Parse CLI args (invalid `--theme` exits non-zero), load config from `$XDG_CONFIG_HOME/tuicr/config.toml` (default `~/.config/tuicr/config.toml`, or `%APPDATA%\tuicr\config.toml` on Windows), ignore unknown config keys with startup warnings, resolve theme precedence (`--theme` > config > dark), then call `App::new()`. `App::new()` calls `detect_vcs()` (Jujutsu first, then Git, then Mercurial), filters diff files via repo-root `.tuicrignore`, then enters commit selection mode by default. If uncommitted changes exist, the first selection row is "Uncommitted changes". With `-r/--revisions`, it opens the requested commit range directly.
+1. **Startup**: Parse CLI args (invalid `--theme` exits non-zero), load config from `$XDG_CONFIG_HOME/tuicr/config.toml` (default `~/.config/tuicr/config.toml`, or `%APPDATA%\tuicr\config.toml` on Windows), ignore unknown config keys with startup warnings, resolve theme precedence (`--theme` > config > dark), then call `App::new()`. `App::new()` calls `detect_vcs()` (Jujutsu first, then Git, then Mercurial), filters diff files via repo-root `.tuicrignore`, then enters commit selection mode by default. If uncommitted changes exist, the first selection row is "Uncommitted changes". If unstaged changes exist (Git only), the second row is "Unstaged changes". With `-r/--revisions`, it opens the requested commit range directly.
 2. **Render**: `ui::render()` draws the TUI based on `App` state
 3. **Input**: `crossterm` events → `map_key_to_action` → match on Action in main loop
 4. **Persistence**: `:w` calls `save_session()`, writes JSON to `~/.local/share/tuicr/reviews/`
