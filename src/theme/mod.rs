@@ -1068,6 +1068,12 @@ impl Theme {
     }
 }
 
+/// Print version and exit
+fn print_version() -> ! {
+    println!("tuicr {}", env!("CARGO_PKG_VERSION"));
+    std::process::exit(0);
+}
+
 /// Print help message and exit
 fn print_help() -> ! {
     let name = std::env::args()
@@ -1098,6 +1104,7 @@ Options:
                          combine with commits when used with -r)
   --stdout               Output to stdout instead of clipboard when exporting
   --no-update-check      Skip checking for updates on startup
+  -V, --version          Print version
   -h, --help             Print this help message
 
 Press ? in the application for keybinding help."
@@ -1122,6 +1129,11 @@ fn parse_cli_args_from(args: &[String]) -> Result<CliArgs, String> {
     let mut cli_args = CliArgs::default();
 
     for i in 0..args.len() {
+        // Handle --version / -V
+        if args[i] == "--version" || args[i] == "-V" {
+            print_version();
+        }
+
         // Handle --help / -h
         if args[i] == "--help" || args[i] == "-h" {
             print_help();
