@@ -1,9 +1,9 @@
 use ratatui::{
-    Frame,
     layout::{Constraint, Flex, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
+    Frame,
 };
 
 use crate::app::App;
@@ -103,10 +103,10 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
-                "  Tab       ",
+                "  Tab/S-Tab ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Toggle focus file list/diff"),
+            Span::raw("Toggle focus next/previous panel"),
         ]),
         Line::from(vec![
             Span::styled(
@@ -294,10 +294,10 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         Line::from(""),
         Line::from(vec![
             Span::styled(
-                "  Tab       ",
+                "  Tab/S-Tab ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Cycle comment type"),
+            Span::raw("Cycle comment type next/previous"),
         ]),
         Line::from(vec![
             Span::styled(

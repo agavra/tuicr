@@ -25,6 +25,7 @@ pub enum Action {
 
     // Panel focus
     ToggleFocus,
+    ToggleFocusReverse,
     SelectFile,
 
     // Review actions
@@ -65,6 +66,7 @@ pub enum Action {
 
     // Comment type
     CycleCommentType,
+    CycleCommentTypeReverse,
 
     // Confirm dialog
     ConfirmYes,
@@ -127,6 +129,7 @@ fn map_normal_mode(key: KeyEvent) -> Action {
 
         // Panel focus
         (KeyCode::Tab, KeyModifiers::NONE) => Action::ToggleFocus,
+        (KeyCode::BackTab, _) => Action::ToggleFocusReverse,
         (KeyCode::Enter, KeyModifiers::NONE) => Action::SelectFile,
 
         // Horizontal scrolling
@@ -201,6 +204,7 @@ fn map_comment_mode(key: KeyEvent) -> Action {
         (KeyCode::Char('j'), KeyModifiers::CONTROL) => Action::InsertChar('\n'),
         // Comment type: Tab to cycle
         (KeyCode::Tab, KeyModifiers::NONE) => Action::CycleCommentType,
+        (KeyCode::BackTab, _) => Action::CycleCommentTypeReverse,
         // Cursor movement
         (KeyCode::Char('a'), KeyModifiers::CONTROL) => Action::TextCursorLineStart,
         (KeyCode::Char('e'), KeyModifiers::CONTROL) => Action::TextCursorLineEnd,
@@ -378,5 +382,17 @@ mod tests {
                 "Shift+'{c}' in normal mode must not produce Digit({d})"
             );
         }
+    }
+
+    #[test]
+    fn should_map_backtab_to_reverse_focus_in_normal_mode() {
+        let action = map_normal_mode(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+        assert_eq!(action, Action::ToggleFocusReverse);
+    }
+
+    #[test]
+    fn should_map_backtab_to_reverse_comment_type_in_comment_mode() {
+        let action = map_comment_mode(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+        assert_eq!(action, Action::CycleCommentTypeReverse);
     }
 }

@@ -299,6 +299,7 @@ pub fn handle_comment_action(app: &mut App, action: Action) {
         Action::ExitMode => app.exit_comment_mode(),
         Action::SubmitInput => app.save_comment(),
         Action::CycleCommentType => app.cycle_comment_type(),
+        Action::CycleCommentTypeReverse => app.cycle_comment_type_reverse(),
         Action::TextCursorLeft => {
             app.comment_cursor = prev_char_boundary(&app.comment_buffer, app.comment_cursor);
         }
@@ -544,6 +545,15 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
                 (FocusedPanel::Diff, true) => FocusedPanel::CommitSelector,
                 (FocusedPanel::Diff, false) => FocusedPanel::FileList,
                 (FocusedPanel::CommitSelector, _) => FocusedPanel::FileList,
+            };
+        }
+        Action::ToggleFocusReverse => {
+            let has_selector = app.has_inline_commit_selector();
+            app.focused_panel = match (app.focused_panel, has_selector) {
+                (FocusedPanel::FileList, true) => FocusedPanel::CommitSelector,
+                (FocusedPanel::FileList, false) => FocusedPanel::Diff,
+                (FocusedPanel::Diff, _) => FocusedPanel::FileList,
+                (FocusedPanel::CommitSelector, _) => FocusedPanel::Diff,
             };
         }
         Action::ExpandAll => {

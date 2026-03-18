@@ -231,7 +231,7 @@ dist/
 
 | Key | Action |
 |-----|--------|
-| `Tab` | Toggle focus between file list, diff, and commit selector |
+| `Tab` / `Shift-Tab` | Toggle focus forward/backward between file list, diff, and commit selector |
 | `;h` | Focus file list (left panel) |
 | `;l` | Focus diff view (right panel) |
 | `;k` | Focus commit selector (top panel) |
@@ -264,7 +264,7 @@ dist/
 
 | Key | Action |
 |-----|--------|
-| `Tab` | Cycle comment type (from `comment_types` order) |
+| `Tab` / `Shift-Tab` | Cycle comment type forward/backward (from `comment_types` order) |
 | `Enter` / `Ctrl-Enter` / `Ctrl-s` | Save comment |
 | `Shift-Enter` / `Ctrl-j` | Insert newline |
 | `←` / `→` | Move cursor |

@@ -2396,6 +2396,25 @@ impl App {
         self.comment_type = CommentType::from_id(&self.comment_types[next_index].id);
     }
 
+    pub fn cycle_comment_type_reverse(&mut self) {
+        if self.comment_types.is_empty() {
+            return;
+        }
+
+        let current_id = self.comment_type.id();
+        let current_index = self
+            .comment_types
+            .iter()
+            .position(|comment_type| comment_type.id == current_id)
+            .unwrap_or(0);
+        let prev_index = if current_index == 0 {
+            self.comment_types.len() - 1
+        } else {
+            current_index - 1
+        };
+        self.comment_type = CommentType::from_id(&self.comment_types[prev_index].id);
+    }
+
     pub fn toggle_help(&mut self) {
         if self.input_mode == InputMode::Help {
             self.input_mode = InputMode::Normal;
