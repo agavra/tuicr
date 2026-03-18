@@ -21,6 +21,22 @@ pub fn get_working_tree_diff(
     parse_diff(&diff, highlighter)
 }
 
+pub fn get_unstaged_diff(
+    repo: &Repository,
+    highlighter: &SyntaxHighlighter,
+) -> Result<Vec<DiffFile>> {
+    let index = repo.index()?;
+
+    let mut opts = DiffOptions::new();
+    opts.include_untracked(true);
+    opts.show_untracked_content(true);
+    opts.recurse_untracked_dirs(true);
+
+    let diff = repo.diff_index_to_workdir(Some(&index), Some(&mut opts))?;
+
+    parse_diff(&diff, highlighter)
+}
+
 /// Get the diff for a range of commits.
 /// `commit_ids` should be ordered from oldest to newest.
 /// The diff compares the oldest commit's parent to the newest commit.
@@ -305,5 +321,59 @@ mod tests {
             "expected tab-expanded content in git diff lines"
         );
         assert!(lines.iter().all(|l| !l.content.contains('\t')));
+    }
+
+    #[test]
+    fn should_only_include_unstaged_changes() {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let repo = Repository::init(temp_dir.path()).expect("failed to init repo");
+
+        create_initial_commit(&repo, "file.txt", "line1\n");
+
+        // Stage one change
+        fs::write(temp_dir.path().join("file.txt"), "staged\n")
+            .expect("failed to write staged content");
+        let mut index = repo.index().expect("failed to open index");
+        index
+            .add_path(Path::new("file.txt"))
+            .expect("failed to add staged file");
+        index.write().expect("failed to write index");
+
+        // Then make an unstaged change
+        fs::write(temp_dir.path().join("file.txt"), "unstaged\n")
+            .expect("failed to write unstaged content");
+
+        let files = get_unstaged_diff(&repo, &SyntaxHighlighter::default())
+            .expect("failed to get unstaged diff");
+
+        assert_eq!(files.len(), 1);
+        let lines = &files[0].hunks[0].lines;
+        assert!(lines.iter().any(|l| l.content == "staged"));
+        assert!(lines.iter().any(|l| l.content == "unstaged"));
+        assert!(!lines.iter().any(|l| l.content == "line1"));
+    }
+
+    #[test]
+    fn should_exclude_staged_only_files_from_unstaged_diff() {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let repo = Repository::init(temp_dir.path()).expect("failed to init repo");
+
+        create_initial_commit(&repo, "file.txt", "original\n");
+
+        // Stage a change to file.txt but don't modify it further
+        fs::write(temp_dir.path().join("file.txt"), "staged only\n")
+            .expect("failed to write staged content");
+        let mut index = repo.index().expect("failed to open index");
+        index
+            .add_path(Path::new("file.txt"))
+            .expect("failed to add staged file");
+        index.write().expect("failed to write index");
+
+        let result = get_unstaged_diff(&repo, &SyntaxHighlighter::default());
+
+        assert!(
+            matches!(result, Err(TuicrError::NoChanges)),
+            "staged-only file should not appear in unstaged diff"
+        );
     }
 }

@@ -45,6 +45,7 @@ impl FileReview {
 pub enum SessionDiffSource {
     #[default]
     WorkingTree,
+    WorkingTreeUnstaged,
     CommitRange,
     WorkingTreeAndCommits,
 }

@@ -59,6 +59,7 @@ pub fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     // Show diff source info
     let source_info = match &app.diff_source {
         DiffSource::WorkingTree => String::new(),
+        DiffSource::WorkingTreeUnstaged => "[unstaged] ".to_string(),
         DiffSource::CommitRange(commits) => {
             if commits.len() == 1 {
                 format!("[commit {}] ", &commits[0][..7.min(commits[0].len())])

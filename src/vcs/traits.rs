@@ -55,6 +55,13 @@ pub trait VcsBackend: Send {
     /// Get the working tree diff (uncommitted changes)
     fn get_working_tree_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>>;
 
+    /// Get only unstaged working tree changes (Git-only).
+    fn get_unstaged_diff(&self, _highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Unstaged diff not supported for this VCS".into(),
+        ))
+    }
+
     /// Fetch context lines for gap expansion.
     /// For deleted files, reads from VCS; otherwise from working tree.
     fn fetch_context_lines(

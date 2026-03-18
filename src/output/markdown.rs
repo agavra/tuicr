@@ -118,6 +118,7 @@ fn write_osc52<W: IoWrite>(writer: &mut W, text: &str) -> Result<()> {
 fn review_scope_label(diff_source: &DiffSource) -> String {
     let scope = match diff_source {
         DiffSource::WorkingTree => "working tree changes".to_string(),
+        DiffSource::WorkingTreeUnstaged => "unstaged changes".to_string(),
         DiffSource::CommitRange(_) => "selected commit range".to_string(),
         DiffSource::WorkingTreeAndCommits(_) => {
             "selected commit range + working tree changes".to_string()
@@ -139,7 +140,7 @@ fn generate_markdown(session: &ReviewSession, diff_source: &DiffSource) -> Strin
 
     // Include commit range info if reviewing commits
     match diff_source {
-        DiffSource::WorkingTree => {}
+        DiffSource::WorkingTree | DiffSource::WorkingTreeUnstaged => {}
         DiffSource::CommitRange(commits) => {
             if commits.len() == 1 {
                 let _ = writeln!(
@@ -346,6 +347,21 @@ mod tests {
 
         assert!(markdown
             .contains("`Review Comment (scope: working tree changes)` - Please split this into smaller commits"));
+    }
+
+    #[test]
+    fn should_include_unstaged_scope_for_review_comments() {
+        let mut session = create_test_session();
+        session.review_comments.push(Comment::new(
+            "Please separate staged and unstaged feedback".to_string(),
+            CommentType::Note,
+            None,
+        ));
+
+        let markdown = generate_markdown(&session, &DiffSource::WorkingTreeUnstaged);
+
+        assert!(markdown
+            .contains("`Review Comment (scope: unstaged changes)` - Please separate staged and unstaged feedback"));
     }
 
     #[test]

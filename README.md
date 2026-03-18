@@ -42,6 +42,7 @@ to clipboard in a format ready to paste back to the agent.
 - **Clipboard export** - Copy structured Markdown optimized for LLM consumption
 - **Session persistence** - Reviews auto-save and reload on restart
 - **Jujutsu support** - Built-in jj support (tried first since jj repos are Git-backed)
+- **Unstaged diff review** - Review only unstaged changes separately from the full working tree (Git)
 - **Mercurial support** - Built-in hg support
 
 ## Installation
@@ -109,6 +110,7 @@ Detection order: Jujutsu → Git → Mercurial. Jujutsu is tried first because j
 
 By default, `tuicr` starts in commit selection mode.  
 If uncommitted changes exist, the first selectable entry is `Uncommitted changes`.  
+If unstaged changes exist (Git only), the second entry is `Unstaged changes`. This shows only index-to-workdir diffs, letting you review staged and unstaged work separately.
 When `-r` / `--revisions` is provided, `tuicr` opens that revision range directly.
 On narrow terminals (less than 100 columns), `tuicr` starts with the file list hidden; toggle it with `;e`.
 
