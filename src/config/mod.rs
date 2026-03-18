@@ -8,11 +8,21 @@ use toml::Value;
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default)]
+pub struct CommentTypeConfig {
+    pub id: String,
+    pub label: Option<String>,
+    pub definition: Option<String>,
+    pub color: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
 pub struct AppConfig {
     pub theme: Option<String>,
     pub theme_dark: Option<String>,
     pub theme_light: Option<String>,
     pub appearance: Option<String>,
+    pub comment_types: Option<Vec<CommentTypeConfig>>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -126,8 +136,17 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         }
     }
 
+    if let Some(comment_types) = table.get("comment_types") {
+        config.comment_types = parse_comment_types(comment_types, &mut warnings);
+    }
+
     for key in table.keys() {
-        if key != "theme" && key != "theme_dark" && key != "theme_light" && key != "appearance" {
+        if key != "theme"
+            && key != "theme_dark"
+            && key != "theme_light"
+            && key != "appearance"
+            && key != "comment_types"
+        {
             warnings.push(format!("Warning: Unknown config key '{key}', ignoring"));
         }
     }
@@ -136,6 +155,194 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         config: Some(config),
         warnings,
     })
+}
+
+fn parse_comment_types(
+    value: &Value,
+    warnings: &mut Vec<String>,
+) -> Option<Vec<CommentTypeConfig>> {
+    let Some(items) = value.as_array() else {
+        warnings.push(
+            "Warning: Config key 'comment_types' must be an array of objects; ignoring value"
+                .to_string(),
+        );
+        return None;
+    };
+
+    let mut parsed = Vec::new();
+    let mut seen_ids = std::collections::HashSet::new();
+
+    for (index, item) in items.iter().enumerate() {
+        let Some(entry) = item.as_table() else {
+            warnings.push(format!(
+                "Warning: Config key 'comment_types[{index}]' must be an object; ignoring entry"
+            ));
+            continue;
+        };
+
+        for key in entry.keys() {
+            if key != "id" && key != "label" && key != "definition" && key != "color" {
+                warnings.push(format!(
+                    "Warning: Unknown key 'comment_types[{index}].{key}', ignoring"
+                ));
+            }
+        }
+
+        let Some(id_raw) = entry.get("id").and_then(Value::as_str) else {
+            warnings.push(format!(
+                "Warning: Config key 'comment_types[{index}].id' must be a string; ignoring entry"
+            ));
+            continue;
+        };
+
+        let id = id_raw.trim().to_ascii_lowercase();
+        if id.is_empty() {
+            warnings.push(format!(
+                "Warning: Config key 'comment_types[{index}].id' cannot be empty; ignoring entry"
+            ));
+            continue;
+        }
+
+        if seen_ids.contains(&id) {
+            warnings.push(format!(
+                "Warning: Duplicate comment type id '{id}' in config; ignoring duplicate entry"
+            ));
+            continue;
+        }
+
+        let label = match entry.get("label") {
+            None => None,
+            Some(raw) => match raw.as_str() {
+                Some(text) => {
+                    let trimmed = text.trim();
+                    if trimmed.is_empty() {
+                        warnings.push(format!(
+                            "Warning: Config key 'comment_types[{index}].label' cannot be empty; ignoring value"
+                        ));
+                        None
+                    } else {
+                        Some(trimmed.to_string())
+                    }
+                }
+                None => {
+                    warnings.push(format!(
+                        "Warning: Config key 'comment_types[{index}].label' must be a string; ignoring value"
+                    ));
+                    None
+                }
+            },
+        };
+
+        let color = match entry.get("color") {
+            None => None,
+            Some(raw) => match raw.as_str() {
+                Some(text) => {
+                    let trimmed = text.trim();
+                    if trimmed.is_empty() {
+                        warnings.push(format!(
+                            "Warning: Config key 'comment_types[{index}].color' cannot be empty; ignoring value"
+                        ));
+                        None
+                    } else if !is_supported_color_value(trimmed) {
+                        warnings.push(format!(
+                            "Warning: Config key 'comment_types[{index}].color' must be a named color or #RRGGBB; ignoring value"
+                        ));
+                        None
+                    } else {
+                        Some(trimmed.to_string())
+                    }
+                }
+                None => {
+                    warnings.push(format!(
+                        "Warning: Config key 'comment_types[{index}].color' must be a string; ignoring value"
+                    ));
+                    None
+                }
+            },
+        };
+
+        let definition = match entry.get("definition") {
+            None => None,
+            Some(raw) => match raw.as_str() {
+                Some(text) => {
+                    let trimmed = text.trim();
+                    if trimmed.is_empty() {
+                        warnings.push(format!(
+                            "Warning: Config key 'comment_types[{index}].definition' cannot be empty; ignoring value"
+                        ));
+                        None
+                    } else {
+                        Some(trimmed.to_string())
+                    }
+                }
+                None => {
+                    warnings.push(format!(
+                        "Warning: Config key 'comment_types[{index}].definition' must be a string; ignoring value"
+                    ));
+                    None
+                }
+            },
+        };
+
+        seen_ids.insert(id.clone());
+        parsed.push(CommentTypeConfig {
+            id,
+            label,
+            definition,
+            color,
+        });
+    }
+
+    if parsed.is_empty() {
+        warnings.push(
+            "Warning: Config key 'comment_types' contains no valid entries; using defaults"
+                .to_string(),
+        );
+        None
+    } else {
+        Some(parsed)
+    }
+}
+
+fn is_supported_color_value(value: &str) -> bool {
+    let normalized = value.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return false;
+    }
+
+    if let Some(hex) = normalized.strip_prefix('#') {
+        return hex.len() == 6 && hex.chars().all(|ch| ch.is_ascii_hexdigit());
+    }
+
+    matches!(
+        normalized.as_str(),
+        "black"
+            | "red"
+            | "green"
+            | "yellow"
+            | "blue"
+            | "magenta"
+            | "cyan"
+            | "gray"
+            | "grey"
+            | "darkgray"
+            | "dark_gray"
+            | "darkgrey"
+            | "dark_grey"
+            | "lightred"
+            | "light_red"
+            | "lightgreen"
+            | "light_green"
+            | "lightyellow"
+            | "light_yellow"
+            | "lightblue"
+            | "light_blue"
+            | "lightmagenta"
+            | "light_magenta"
+            | "lightcyan"
+            | "light_cyan"
+            | "white"
+    )
 }
 
 #[cfg(test)]
@@ -283,6 +490,90 @@ mod tests {
             outcome.warnings[0],
             "Warning: Config key 'theme_dark' must be a string; ignoring value"
         );
+    }
+
+    #[test]
+    fn should_parse_comment_types_from_array_of_objects() {
+        let dir = tempdir().expect("failed to create temp dir");
+        let path = dir.path().join("config.toml");
+        fs::write(
+            &path,
+            r#"comment_types = [
+  { id = "note", label = "question", definition = "ask for clarification", color = "yellow" },
+  { id = "issue" }
+]"#,
+        )
+        .expect("failed to write config");
+
+        let outcome = load_config_from_path(&path).expect("config should parse");
+        let comment_types = outcome
+            .config
+            .as_ref()
+            .and_then(|cfg| cfg.comment_types.as_ref())
+            .expect("comment types should be set");
+
+        assert_eq!(comment_types.len(), 2);
+        assert_eq!(comment_types[0].id, "note");
+        assert_eq!(comment_types[0].label.as_deref(), Some("question"));
+        assert_eq!(
+            comment_types[0].definition.as_deref(),
+            Some("ask for clarification")
+        );
+        assert_eq!(comment_types[0].color.as_deref(), Some("yellow"));
+        assert_eq!(comment_types[1].id, "issue");
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_warn_and_ignore_invalid_comment_type_entries() {
+        let dir = tempdir().expect("failed to create temp dir");
+        let path = dir.path().join("config.toml");
+        fs::write(
+            &path,
+            r#"comment_types = [
+  { id = "" },
+  { id = "note" },
+  { id = "NOTE" },
+  42
+]"#,
+        )
+        .expect("failed to write config");
+
+        let outcome = load_config_from_path(&path).expect("config should parse");
+        let comment_types = outcome
+            .config
+            .as_ref()
+            .and_then(|cfg| cfg.comment_types.as_ref())
+            .expect("comment types should be set");
+
+        assert_eq!(comment_types.len(), 1);
+        assert_eq!(comment_types[0].id, "note");
+        assert_eq!(outcome.warnings.len(), 3);
+    }
+
+    #[test]
+    fn should_warn_and_ignore_invalid_comment_type_color() {
+        let dir = tempdir().expect("failed to create temp dir");
+        let path = dir.path().join("config.toml");
+        fs::write(
+            &path,
+            r#"comment_types = [
+  { id = "note", color = "not-a-color" }
+]"#,
+        )
+        .expect("failed to write config");
+
+        let outcome = load_config_from_path(&path).expect("config should parse");
+        let comment_types = outcome
+            .config
+            .as_ref()
+            .and_then(|cfg| cfg.comment_types.as_ref())
+            .expect("comment types should be set");
+
+        assert_eq!(comment_types.len(), 1);
+        assert_eq!(comment_types[0].id, "note");
+        assert_eq!(comment_types[0].color, None);
+        assert_eq!(outcome.warnings.len(), 1);
     }
 
     #[cfg(not(windows))]

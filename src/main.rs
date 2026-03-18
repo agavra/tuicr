@@ -108,6 +108,10 @@ fn main() -> anyhow::Result<()> {
     // Initialize app
     let mut app = match App::new(
         theme,
+        config_outcome
+            .config
+            .as_ref()
+            .and_then(|cfg| cfg.comment_types.clone()),
         cli_args.output_to_stdout,
         cli_args.revisions.as_deref(),
         cli_args.working_tree,

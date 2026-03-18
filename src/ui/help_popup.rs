@@ -297,7 +297,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  Tab       ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Toggle type: Note/Suggestion/Issue/Praise"),
+            Span::raw("Cycle comment type"),
         ]),
         Line::from(vec![
             Span::styled(

@@ -1,14 +1,14 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Flex, Layout, Rect},
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
 };
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::App;
-use crate::model::{CommentType, LineRange};
+use crate::model::LineRange;
 use crate::theme::Theme;
 use crate::ui::styles;
 
@@ -24,6 +24,12 @@ pub struct CommentCursorInfo {
     pub column: u16,
 }
 
+#[derive(Debug, Clone)]
+pub struct CommentTypePresentation {
+    pub label: String,
+    pub color: Color,
+}
+
 /// Format a comment input as multiple lines with a box border for inline editing.
 /// This mimics the normal comment display but shows it's being edited.
 ///
@@ -31,15 +37,15 @@ pub struct CommentCursorInfo {
 /// of the cursor within the formatted output for IME positioning.
 pub fn format_comment_input_lines(
     theme: &Theme,
-    comment_type: CommentType,
+    comment_type: CommentTypePresentation,
     buffer: &str,
     cursor_pos: usize,
     line_range: Option<LineRange>,
     is_editing: bool,
     supports_keyboard_enhancement: bool,
 ) -> (Vec<Line<'static>>, CommentCursorInfo) {
-    let type_style = styles::comment_type_style(theme, comment_type);
-    let border_style = styles::comment_border_style(theme, comment_type);
+    let type_style = styles::comment_type_style(theme, comment_type.color);
+    let border_style = styles::comment_border_style(theme, comment_type.color);
     let cursor_style = Style::default()
         .fg(theme.cursor_color)
         .add_modifier(Modifier::UNDERLINED);
@@ -69,7 +75,7 @@ pub fn format_comment_input_lines(
     result.push(Line::from(vec![
         Span::styled("     ╭─ ", border_style),
         Span::styled(format!("{} ", action), styles::dim_style(theme)),
-        Span::styled(format!("[{}] ", comment_type.as_str()), type_style),
+        Span::styled(format!("[{}] ", comment_type.label), type_style),
         Span::styled(line_info, styles::dim_style(theme)),
         Span::styled(
             format!("(Tab:type Enter:save {}:newline Esc:cancel)", newline_hint),
@@ -153,12 +159,12 @@ pub fn format_comment_input_lines(
 /// Format a comment as multiple lines with a box border (themed version)
 pub fn format_comment_lines(
     theme: &Theme,
-    comment_type: CommentType,
+    comment_type: CommentTypePresentation,
     content: &str,
     line_range: Option<LineRange>,
 ) -> Vec<Line<'static>> {
-    let type_style = styles::comment_type_style(theme, comment_type);
-    let border_style = styles::comment_border_style(theme, comment_type);
+    let type_style = styles::comment_type_style(theme, comment_type.color);
+    let border_style = styles::comment_border_style(theme, comment_type.color);
 
     let line_info = match line_range {
         Some(range) if range.is_single() => format!("L{} ", range.start),
@@ -172,7 +178,7 @@ pub fn format_comment_lines(
     // Top border with type label
     result.push(Line::from(vec![
         Span::styled("     ╭─ ", border_style),
-        Span::styled(format!("[{}] ", comment_type.as_str()), type_style),
+        Span::styled(format!("[{}] ", comment_type.label), type_style),
         Span::styled(line_info, styles::dim_style(theme)),
         Span::styled("─".repeat(30), border_style),
     ]));
@@ -239,6 +245,7 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 mod tests {
     use super::*;
     use crate::theme::Theme;
+    use ratatui::style::Color;
 
     fn test_theme() -> Theme {
         Theme::default()
@@ -250,8 +257,18 @@ mod tests {
         let theme = test_theme();
 
         // when
-        let (lines, cursor_info) =
-            format_comment_input_lines(&theme, CommentType::Note, "", 0, None, false, false);
+        let (lines, cursor_info) = format_comment_input_lines(
+            &theme,
+            CommentTypePresentation {
+                label: "NOTE".to_string(),
+                color: Color::Blue,
+            },
+            "",
+            0,
+            None,
+            false,
+            false,
+        );
 
         // then
         assert_eq!(lines.len(), 3); // header + content + footer
@@ -269,7 +286,10 @@ mod tests {
         // when
         let (_, cursor_info) = format_comment_input_lines(
             &theme,
-            CommentType::Note,
+            CommentTypePresentation {
+                label: "NOTE".to_string(),
+                color: Color::Blue,
+            },
             buffer,
             cursor_pos,
             None,
@@ -292,7 +312,10 @@ mod tests {
         // when
         let (_, cursor_info) = format_comment_input_lines(
             &theme,
-            CommentType::Note,
+            CommentTypePresentation {
+                label: "NOTE".to_string(),
+                color: Color::Blue,
+            },
             buffer,
             cursor_pos,
             None,
@@ -316,7 +339,10 @@ mod tests {
         // when
         let (_, cursor_info) = format_comment_input_lines(
             &theme,
-            CommentType::Note,
+            CommentTypePresentation {
+                label: "NOTE".to_string(),
+                color: Color::Blue,
+            },
             buffer,
             cursor_pos,
             None,
@@ -339,7 +365,10 @@ mod tests {
         // when
         let (lines, cursor_info) = format_comment_input_lines(
             &theme,
-            CommentType::Note,
+            CommentTypePresentation {
+                label: "NOTE".to_string(),
+                color: Color::Blue,
+            },
             buffer,
             cursor_pos,
             None,
@@ -363,7 +392,10 @@ mod tests {
         // when
         let (_, cursor_info) = format_comment_input_lines(
             &theme,
-            CommentType::Note,
+            CommentTypePresentation {
+                label: "NOTE".to_string(),
+                color: Color::Blue,
+            },
             buffer,
             cursor_pos,
             None,

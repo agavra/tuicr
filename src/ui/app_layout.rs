@@ -609,7 +609,7 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
         if is_being_edited {
             let (input_lines, cursor_info) = comment_panel::format_comment_input_lines(
                 &app.theme,
-                app.comment_type,
+                comment_type_presentation(app, &app.comment_type),
                 &app.comment_buffer,
                 app.comment_cursor,
                 None,
@@ -631,7 +631,7 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
         } else {
             let comment_lines = comment_panel::format_comment_lines(
                 &app.theme,
-                comment.comment_type,
+                comment_type_presentation(app, &comment.comment_type),
                 &comment.content,
                 None,
             );
@@ -650,7 +650,7 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
     if is_review_comment_mode && app.editing_comment_id.is_none() {
         let (input_lines, cursor_info) = comment_panel::format_comment_input_lines(
             &app.theme,
-            app.comment_type,
+            comment_type_presentation(app, &app.comment_type),
             &app.comment_buffer,
             app.comment_cursor,
             None,
@@ -715,7 +715,7 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
                     // Render the inline input instead
                     let (input_lines, cursor_info) = comment_panel::format_comment_input_lines(
                         &app.theme,
-                        app.comment_type,
+                        comment_type_presentation(app, &app.comment_type),
                         &app.comment_buffer,
                         app.comment_cursor,
                         None,
@@ -742,7 +742,7 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
                 } else {
                     let comment_lines = comment_panel::format_comment_lines(
                         &app.theme,
-                        comment.comment_type,
+                        comment_type_presentation(app, &comment.comment_type),
                         &comment.content,
                         None,
                     );
@@ -766,7 +766,7 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
         if is_file_comment_mode && app.editing_comment_id.is_none() {
             let (input_lines, cursor_info) = comment_panel::format_comment_input_lines(
                 &app.theme,
-                app.comment_type,
+                comment_type_presentation(app, &app.comment_type),
                 &app.comment_buffer,
                 app.comment_cursor,
                 None,
@@ -1021,7 +1021,7 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
                                         let (input_lines, cursor_info) =
                                             comment_panel::format_comment_input_lines(
                                                 &app.theme,
-                                                app.comment_type,
+                                                comment_type_presentation(app, &app.comment_type),
                                                 &app.comment_buffer,
                                                 app.comment_cursor,
                                                 line_range,
@@ -1053,7 +1053,7 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
                                             .or_else(|| Some(LineRange::single(old_ln)));
                                         let comment_lines = comment_panel::format_comment_lines(
                                             &app.theme,
-                                            comment.comment_type,
+                                            comment_type_presentation(app, &comment.comment_type),
                                             &comment.content,
                                             line_range,
                                         );
@@ -1086,7 +1086,7 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
                             let (input_lines, cursor_info) =
                                 comment_panel::format_comment_input_lines(
                                     &app.theme,
-                                    app.comment_type,
+                                    comment_type_presentation(app, &app.comment_type),
                                     &app.comment_buffer,
                                     app.comment_cursor,
                                     line_range,
@@ -1134,7 +1134,7 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
                                         let (input_lines, cursor_info) =
                                             comment_panel::format_comment_input_lines(
                                                 &app.theme,
-                                                app.comment_type,
+                                                comment_type_presentation(app, &app.comment_type),
                                                 &app.comment_buffer,
                                                 app.comment_cursor,
                                                 line_range,
@@ -1166,7 +1166,7 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
                                             .or_else(|| Some(LineRange::single(new_ln)));
                                         let comment_lines = comment_panel::format_comment_lines(
                                             &app.theme,
-                                            comment.comment_type,
+                                            comment_type_presentation(app, &comment.comment_type),
                                             &comment.content,
                                             line_range,
                                         );
@@ -1199,7 +1199,7 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
                             let (input_lines, cursor_info) =
                                 comment_panel::format_comment_input_lines(
                                     &app.theme,
-                                    app.comment_type,
+                                    comment_type_presentation(app, &app.comment_type),
                                     &app.comment_buffer,
                                     app.comment_cursor,
                                     line_range,
@@ -1368,6 +1368,7 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
 
 /// Context for rendering side-by-side diff lines
 struct SideBySideContext<'a> {
+    app: &'a App,
     theme: &'a Theme,
     content_width: usize,
     current_line_idx: usize,
@@ -1400,6 +1401,16 @@ fn cursor_indicator_spaced(line_idx: usize, current_line_idx: usize) -> &'static
     }
 }
 
+fn comment_type_presentation(
+    app: &App,
+    comment_type: &crate::model::CommentType,
+) -> comment_panel::CommentTypePresentation {
+    comment_panel::CommentTypePresentation {
+        label: app.comment_type_label(comment_type),
+        color: app.comment_type_color(comment_type),
+    }
+}
+
 fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focused_panel == FocusedPanel::Diff;
 
@@ -1427,12 +1438,13 @@ fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
         && !app.comment_is_review_level;
 
     let ctx = SideBySideContext {
+        app,
         theme: &app.theme,
         content_width,
         current_line_idx: app.diff_state.cursor_line,
         comment_input_mode,
         comment_line: app.comment_line,
-        comment_type: app.comment_type,
+        comment_type: app.comment_type.clone(),
         comment_buffer: &app.comment_buffer,
         comment_cursor: app.comment_cursor,
         comment_line_range: app.comment_line_range.map(|(r, _)| r),
@@ -1472,7 +1484,7 @@ fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
         if is_being_edited {
             let (input_lines, cursor_info) = comment_panel::format_comment_input_lines(
                 &app.theme,
-                app.comment_type,
+                comment_type_presentation(app, &app.comment_type),
                 &app.comment_buffer,
                 app.comment_cursor,
                 None,
@@ -1494,7 +1506,7 @@ fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
         } else {
             let comment_lines = comment_panel::format_comment_lines(
                 &app.theme,
-                comment.comment_type,
+                comment_type_presentation(app, &comment.comment_type),
                 &comment.content,
                 None,
             );
@@ -1513,7 +1525,7 @@ fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
     if is_review_comment_mode && app.editing_comment_id.is_none() {
         let (input_lines, cursor_info) = comment_panel::format_comment_input_lines(
             &app.theme,
-            app.comment_type,
+            comment_type_presentation(app, &app.comment_type),
             &app.comment_buffer,
             app.comment_cursor,
             None,
@@ -1577,7 +1589,7 @@ fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
                     // Render the inline input instead
                     let (input_lines, cursor_info) = comment_panel::format_comment_input_lines(
                         &app.theme,
-                        app.comment_type,
+                        comment_type_presentation(app, &app.comment_type),
                         &app.comment_buffer,
                         app.comment_cursor,
                         None,
@@ -1602,7 +1614,7 @@ fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
                 } else {
                     let comment_lines = comment_panel::format_comment_lines(
                         &app.theme,
-                        comment.comment_type,
+                        comment_type_presentation(app, &comment.comment_type),
                         &comment.content,
                         None,
                     );
@@ -1626,7 +1638,7 @@ fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
         if is_file_comment_mode && app.editing_comment_id.is_none() {
             let (input_lines, cursor_info) = comment_panel::format_comment_input_lines(
                 &app.theme,
-                app.comment_type,
+                comment_type_presentation(app, &app.comment_type),
                 &app.comment_buffer,
                 app.comment_cursor,
                 None,
@@ -2270,7 +2282,7 @@ fn add_comments_to_line(
                         .or_else(|| Some(LineRange::single(line_num)));
                     let (input_lines, cursor_info) = comment_panel::format_comment_input_lines(
                         ctx.theme,
-                        ctx.comment_type,
+                        comment_type_presentation(ctx.app, &ctx.comment_type),
                         ctx.comment_buffer,
                         ctx.comment_cursor,
                         line_range,
@@ -2298,7 +2310,7 @@ fn add_comments_to_line(
                         .or_else(|| Some(LineRange::single(line_num)));
                     let comment_lines = comment_panel::format_comment_lines(
                         ctx.theme,
-                        comment.comment_type,
+                        comment_type_presentation(ctx.app, &comment.comment_type),
                         &comment.content,
                         line_range,
                     );
@@ -2326,7 +2338,7 @@ fn add_comments_to_line(
             .or_else(|| Some(LineRange::single(line_num)));
         let (input_lines, cursor_info) = comment_panel::format_comment_input_lines(
             ctx.theme,
-            ctx.comment_type,
+            comment_type_presentation(ctx.app, &ctx.comment_type),
             ctx.comment_buffer,
             ctx.comment_cursor,
             line_range,

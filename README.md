@@ -126,6 +126,37 @@ theme = "catppuccin-mocha"
 appearance = "system"
 theme_dark = "gruvbox-dark"
 theme_light = "gruvbox-light"
+
+comment_types = [
+  { id = "note", label = "question", definition = "ask for clarification", color = "yellow" },
+  { id = "suggestion", definition = "possible improvements" },
+  { id = "issue", definition = "problems to fix" },
+  { id = "praise", definition = "positive feedback" },
+  { id = "nit", label = "nitpick", definition = "small optional tweaks", color = "#d19a66" }
+]
+```
+
+`comment_types` replaces the default list and defines Tab cycle order.
+Each entry requires `id` and can optionally set `label`, `definition`, and `color`.
+Color accepts terminal names (for example `yellow`, `light_red`) or hex (`#RRGGBB`).
+
+#### How `comment_types` works
+
+- `id` is the stable internal value that is saved in sessions and used for matching.
+- `label` is the visible tag shown in UI and export (`[QUESTION]`, `[NITPICK]`, etc.).
+- `definition` is guidance text for LLMs, included in the exported `Comment types:` legend.
+- `color` controls the comment badge/border color in the TUI.
+- Declaring `comment_types` is a full replacement, if you define 2 types, only those 2 are available.
+- If `comment_types` is missing, tuicr uses defaults: `note`, `suggestion`, `issue`, `praise`.
+- Invalid entries are ignored with startup warnings, if all entries are invalid, tuicr falls back to defaults.
+
+Minimal replacement example:
+
+```toml
+comment_types = [
+  { id = "question", definition = "ask for clarification" },
+  { id = "blocker", color = "red", definition = "must be fixed before merge" }
+]
 ```
 
 Theme resolution precedence:
@@ -222,7 +253,7 @@ dist/
 
 | Key | Action |
 |-----|--------|
-| `Tab` | Cycle comment type (Note → Suggestion → Issue → Praise) |
+| `Tab` | Cycle comment type (from `comment_types` order) |
 | `Enter` / `Ctrl-Enter` / `Ctrl-s` | Save comment |
 | `Shift-Enter` / `Ctrl-j` | Insert newline |
 | `←` / `→` | Move cursor |
@@ -295,6 +326,7 @@ Comment types: ISSUE (problems to fix), SUGGESTION (improvements), NOTE (observa
 ```
 
 Each comment is numbered and self-contained with its file path and line number or range (if applicable).
+If `comment_types` is configured, this legend and the `[TYPE]` tags reflect your configured labels and definitions.
 
 ## Session Persistence
 

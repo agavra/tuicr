@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// Which side of the diff a line comment belongs to
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -47,23 +47,58 @@ impl LineRange {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub enum CommentType {
+    #[default]
     Note,
     Suggestion,
     Issue,
     Praise,
+    Custom(String),
 }
 
 impl CommentType {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            CommentType::Note => "NOTE",
-            CommentType::Suggestion => "SUGGESTION",
-            CommentType::Issue => "ISSUE",
-            CommentType::Praise => "PRAISE",
+    pub fn from_id(id: &str) -> Self {
+        match id.to_ascii_lowercase().as_str() {
+            "note" => Self::Note,
+            "suggestion" => Self::Suggestion,
+            "issue" => Self::Issue,
+            "praise" => Self::Praise,
+            _ => Self::Custom(id.to_string()),
         }
+    }
+
+    pub fn id(&self) -> &str {
+        match self {
+            CommentType::Note => "note",
+            CommentType::Suggestion => "suggestion",
+            CommentType::Issue => "issue",
+            CommentType::Praise => "praise",
+            CommentType::Custom(id) => id.as_str(),
+        }
+    }
+
+    pub fn as_str(&self) -> String {
+        self.id().to_ascii_uppercase()
+    }
+}
+
+impl Serialize for CommentType {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.id())
+    }
+}
+
+impl<'de> Deserialize<'de> for CommentType {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Ok(Self::from_id(&value))
     }
 }
 
@@ -221,6 +256,20 @@ mod tests {
 
     mod comment_tests {
         use super::*;
+
+        #[test]
+        fn comment_type_serializes_custom_type_as_string() {
+            let comment_type = CommentType::from_id("question");
+            let json = serde_json::to_string(&comment_type).unwrap();
+            assert_eq!(json, "\"question\"");
+        }
+
+        #[test]
+        fn comment_type_deserializes_custom_type_from_string() {
+            let json = "\"question\"";
+            let comment_type: CommentType = serde_json::from_str(json).unwrap();
+            assert_eq!(comment_type.id(), "question");
+        }
 
         #[test]
         fn new_creates_comment_without_line_range() {

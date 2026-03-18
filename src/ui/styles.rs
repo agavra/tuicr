@@ -1,4 +1,4 @@
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 
 use crate::theme::Theme;
 
@@ -109,25 +109,11 @@ pub fn dir_icon_style(theme: &Theme) -> Style {
     Style::default().fg(theme.diff_hunk_header)
 }
 
-pub fn comment_type_style(theme: &Theme, comment_type: crate::model::CommentType) -> Style {
-    use crate::model::CommentType;
-    let color = match comment_type {
-        CommentType::Note => theme.comment_note,
-        CommentType::Suggestion => theme.comment_suggestion,
-        CommentType::Issue => theme.comment_issue,
-        CommentType::Praise => theme.comment_praise,
-    };
+pub fn comment_type_style(_theme: &Theme, color: Color) -> Style {
     Style::default().fg(color).add_modifier(Modifier::BOLD)
 }
 
-pub fn comment_border_style(theme: &Theme, comment_type: crate::model::CommentType) -> Style {
-    use crate::model::CommentType;
-    let color = match comment_type {
-        CommentType::Note => theme.comment_note,
-        CommentType::Suggestion => theme.comment_suggestion,
-        CommentType::Issue => theme.comment_issue,
-        CommentType::Praise => theme.comment_praise,
-    };
+pub fn comment_border_style(_theme: &Theme, color: Color) -> Style {
     Style::default().fg(color)
 }
 
