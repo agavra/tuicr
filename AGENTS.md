@@ -72,7 +72,7 @@ Repository-managed agent integrations:
 **App** (`src/app.rs`):
 - Central application state
 - Contains: `vcs` (Box<dyn VcsBackend>), `vcs_info`, `session`, `diff_files`, `input_mode`, scroll/cursor state
-- Methods: `scroll_down/up`, `next/prev_file`, `next/prev_hunk`, `toggle_reviewed`, `save_comment`
+- Methods: `scroll_down/up`, `next/prev_file`, `next/prev_hunk`, `go_to_source_line`, `toggle_reviewed`, `save_comment`
 
 **VcsBackend** (`src/vcs/traits.rs`):
 - Trait abstracting VCS operations

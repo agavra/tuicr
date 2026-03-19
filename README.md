@@ -200,6 +200,7 @@ dist/
 | `Ctrl-d` / `Ctrl-u` | Half page down/up |
 | `Ctrl-f` / `Ctrl-b` | Full page down/up |
 | `g` / `G` | Go to first/last file |
+| `{N}G` | Go to source line N in current file |
 | `{` / `}` | Jump to previous/next file |
 | `[` / `]` | Jump to previous/next hunk |
 | `/` | Search within diff |
