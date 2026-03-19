@@ -34,7 +34,24 @@ pub fn parse_unified_diff(
 
     while let Some(line) = lines.next() {
         if line.starts_with(header_prefix) {
-            let (old_path, new_path, status) = parse_file_header(&mut lines, format);
+            let (mut old_path, mut new_path, status) = parse_file_header(&mut lines, format);
+
+            // For git-style diffs (jj, git patches), if parse_file_header didn't find
+            // ---/+++ or rename/copy lines (e.g. empty new files, mode-only changes),
+            // fall back to parsing paths from the "diff --git a/X b/X" header.
+            if old_path.is_none()
+                && new_path.is_none()
+                && let Some((a, b)) = parse_diff_git_header(line)
+            {
+                match status {
+                    FileStatus::Deleted => old_path = Some(a),
+                    FileStatus::Added => new_path = Some(b),
+                    _ => {
+                        old_path = Some(a);
+                        new_path = Some(b);
+                    }
+                }
+            }
 
             // Check if binary - hg uses "Binary file", jj/git use just "Binary"
             if lines.peek().is_some_and(|l| l.contains("Binary")) {
@@ -318,6 +335,24 @@ fn parse_range(s: &str) -> (u32, u32) {
         (start.parse().unwrap_or(1), count.parse().unwrap_or(1))
     } else {
         (s.parse().unwrap_or(1), 1)
+    }
+}
+
+/// Parse paths from a "diff --git a/X b/X" header line.
+/// Returns (old_path, new_path) extracted from the a/ and b/ prefixes.
+fn parse_diff_git_header(line: &str) -> Option<(PathBuf, PathBuf)> {
+    let rest = line.strip_prefix("diff --git ")?;
+    // The format is "a/<path> b/<path>". Since paths can contain spaces,
+    // we find the " b/" separator. For paths without spaces, a simple split works.
+    // Try finding " b/" as separator (handles most cases).
+    if let Some(pos) = rest.find(" b/") {
+        let old_part = &rest[..pos];
+        let new_part = &rest[pos + 1..];
+        let old_path = old_part.strip_prefix("a/").unwrap_or(old_part);
+        let new_path = new_part.strip_prefix("b/").unwrap_or(new_part);
+        Some((PathBuf::from(old_path), PathBuf::from(new_path)))
+    } else {
+        None
     }
 }
 
@@ -980,5 +1015,40 @@ diff --git a/b.txt b/b.txt
 
         assert_eq!(hunk.lines[4].old_lineno, Some(7));
         assert_eq!(hunk.lines[4].new_lineno, Some(8));
+    }
+
+    #[test]
+    fn jj_should_parse_empty_new_file() {
+        // Empty new file: has "new file mode" and "index" lines but no ---/+++ or hunks
+        let diff = r#"diff --git a/empty.toml b/empty.toml
+new file mode 100644
+index 0000000000..e69de29bb2
+"#;
+        let files =
+            parse_unified_diff(diff, DiffFormat::GitStyle, &SyntaxHighlighter::default()).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].status, FileStatus::Added);
+        assert!(files[0].old_path.is_none());
+        assert_eq!(files[0].new_path, Some(PathBuf::from("empty.toml")));
+        assert!(files[0].hunks.is_empty());
+        // Must not panic
+        let _path = files[0].display_path();
+    }
+
+    #[test]
+    fn jj_should_parse_mode_only_change() {
+        // Mode-only change: no ---/+++ or hunks
+        let diff = r#"diff --git a/script.sh b/script.sh
+old mode 100644
+new mode 100755
+"#;
+        let files =
+            parse_unified_diff(diff, DiffFormat::GitStyle, &SyntaxHighlighter::default()).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].status, FileStatus::Modified);
+        assert_eq!(files[0].old_path, Some(PathBuf::from("script.sh")));
+        assert_eq!(files[0].new_path, Some(PathBuf::from("script.sh")));
+        assert!(files[0].hunks.is_empty());
+        let _path = files[0].display_path();
     }
 }
