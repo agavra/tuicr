@@ -23,7 +23,22 @@ pub struct AppConfig {
     pub theme_light: Option<String>,
     pub appearance: Option<String>,
     pub comment_types: Option<Vec<CommentTypeConfig>>,
+    pub show_file_list: Option<bool>,
+    pub diff_view: Option<String>,
+    pub wrap: Option<bool>,
 }
+
+/// Known top-level config keys. Used to warn about typos.
+const KNOWN_KEYS: &[&str] = &[
+    "theme",
+    "theme_dark",
+    "theme_light",
+    "appearance",
+    "comment_types",
+    "show_file_list",
+    "diff_view",
+    "wrap",
+];
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ConfigLoadOutcome {
@@ -82,6 +97,55 @@ pub fn load_config() -> Result<ConfigLoadOutcome> {
     load_config_from_path(&path)
 }
 
+/// Read a string value from the table, pushing a warning if the type is wrong.
+fn read_string(table: &toml::Table, key: &str, warnings: &mut Vec<String>) -> Option<String> {
+    let val = table.get(key)?;
+    if let Some(s) = val.as_str() {
+        Some(s.to_string())
+    } else {
+        warnings.push(format!(
+            "Warning: Config key '{key}' must be a string; ignoring value"
+        ));
+        None
+    }
+}
+
+/// Read a boolean value from the table, pushing a warning if the type is wrong.
+fn read_bool(table: &toml::Table, key: &str, warnings: &mut Vec<String>) -> Option<bool> {
+    let val = table.get(key)?;
+    if let Some(b) = val.as_bool() {
+        Some(b)
+    } else {
+        warnings.push(format!(
+            "Warning: Config key '{key}' must be a boolean; ignoring value"
+        ));
+        None
+    }
+}
+
+/// Read a string value constrained to a set of allowed values.
+fn read_enum(
+    table: &toml::Table,
+    key: &str,
+    allowed: &[&str],
+    warnings: &mut Vec<String>,
+) -> Option<String> {
+    let raw = read_string(table, key, warnings)?;
+    if allowed.contains(&raw.as_str()) {
+        Some(raw)
+    } else {
+        let choices = allowed
+            .iter()
+            .map(|s| format!("\"{s}\""))
+            .collect::<Vec<_>>()
+            .join(" or ");
+        warnings.push(format!(
+            "Warning: Config key '{key}' must be {choices}; got \"{raw}\", ignoring"
+        ));
+        None
+    }
+}
+
 fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
     let contents = match fs::read_to_string(path) {
         Ok(contents) => contents,
@@ -94,59 +158,28 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         .as_table()
         .ok_or_else(|| anyhow!("Config root must be a TOML table"))?;
 
-    let mut config = AppConfig::default();
     let mut warnings = Vec::new();
 
-    if let Some(theme) = table.get("theme") {
-        if let Some(theme_str) = theme.as_str() {
-            config.theme = Some(theme_str.to_string());
-        } else {
-            warnings
-                .push("Warning: Config key 'theme' must be a string; ignoring value".to_string());
-        }
-    }
-
-    if let Some(theme_dark) = table.get("theme_dark") {
-        if let Some(theme_dark_str) = theme_dark.as_str() {
-            config.theme_dark = Some(theme_dark_str.to_string());
-        } else {
-            warnings.push(
-                "Warning: Config key 'theme_dark' must be a string; ignoring value".to_string(),
-            );
-        }
-    }
-
-    if let Some(theme_light) = table.get("theme_light") {
-        if let Some(theme_light_str) = theme_light.as_str() {
-            config.theme_light = Some(theme_light_str.to_string());
-        } else {
-            warnings.push(
-                "Warning: Config key 'theme_light' must be a string; ignoring value".to_string(),
-            );
-        }
-    }
-
-    if let Some(appearance) = table.get("appearance") {
-        if let Some(appearance_str) = appearance.as_str() {
-            config.appearance = Some(appearance_str.to_string());
-        } else {
-            warnings.push(
-                "Warning: Config key 'appearance' must be a string; ignoring value".to_string(),
-            );
-        }
-    }
-
-    if let Some(comment_types) = table.get("comment_types") {
-        config.comment_types = parse_comment_types(comment_types, &mut warnings);
-    }
+    let config = AppConfig {
+        theme: read_string(table, "theme", &mut warnings),
+        theme_dark: read_string(table, "theme_dark", &mut warnings),
+        theme_light: read_string(table, "theme_light", &mut warnings),
+        appearance: read_string(table, "appearance", &mut warnings),
+        comment_types: table
+            .get("comment_types")
+            .and_then(|v| parse_comment_types(v, &mut warnings)),
+        show_file_list: read_bool(table, "show_file_list", &mut warnings),
+        diff_view: read_enum(
+            table,
+            "diff_view",
+            &["unified", "side-by-side"],
+            &mut warnings,
+        ),
+        wrap: read_bool(table, "wrap", &mut warnings),
+    };
 
     for key in table.keys() {
-        if key != "theme"
-            && key != "theme_dark"
-            && key != "theme_light"
-            && key != "appearance"
-            && key != "comment_types"
-        {
+        if !KNOWN_KEYS.contains(&key.as_str()) {
             warnings.push(format!("Warning: Unknown config key '{key}', ignoring"));
         }
     }
@@ -210,28 +243,8 @@ fn parse_comment_types(
             continue;
         }
 
-        let label = match entry.get("label") {
-            None => None,
-            Some(raw) => match raw.as_str() {
-                Some(text) => {
-                    let trimmed = text.trim();
-                    if trimmed.is_empty() {
-                        warnings.push(format!(
-                            "Warning: Config key 'comment_types[{index}].label' cannot be empty; ignoring value"
-                        ));
-                        None
-                    } else {
-                        Some(trimmed.to_string())
-                    }
-                }
-                None => {
-                    warnings.push(format!(
-                        "Warning: Config key 'comment_types[{index}].label' must be a string; ignoring value"
-                    ));
-                    None
-                }
-            },
-        };
+        let label = parse_optional_nonempty_string(entry, "label", index, warnings);
+        let definition = parse_optional_nonempty_string(entry, "definition", index, warnings);
 
         let color = match entry.get("color") {
             None => None,
@@ -261,29 +274,6 @@ fn parse_comment_types(
             },
         };
 
-        let definition = match entry.get("definition") {
-            None => None,
-            Some(raw) => match raw.as_str() {
-                Some(text) => {
-                    let trimmed = text.trim();
-                    if trimmed.is_empty() {
-                        warnings.push(format!(
-                            "Warning: Config key 'comment_types[{index}].definition' cannot be empty; ignoring value"
-                        ));
-                        None
-                    } else {
-                        Some(trimmed.to_string())
-                    }
-                }
-                None => {
-                    warnings.push(format!(
-                        "Warning: Config key 'comment_types[{index}].definition' must be a string; ignoring value"
-                    ));
-                    None
-                }
-            },
-        };
-
         seen_ids.insert(id.clone());
         parsed.push(CommentTypeConfig {
             id,
@@ -301,6 +291,35 @@ fn parse_comment_types(
         None
     } else {
         Some(parsed)
+    }
+}
+
+/// Parse an optional non-empty string field from a comment_types entry.
+fn parse_optional_nonempty_string(
+    entry: &toml::Table,
+    field: &str,
+    index: usize,
+    warnings: &mut Vec<String>,
+) -> Option<String> {
+    let raw = entry.get(field)?;
+    match raw.as_str() {
+        Some(text) => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                warnings.push(format!(
+                    "Warning: Config key 'comment_types[{index}].{field}' cannot be empty; ignoring value"
+                ));
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        None => {
+            warnings.push(format!(
+                "Warning: Config key 'comment_types[{index}].{field}' must be a string; ignoring value"
+            ));
+            None
+        }
     }
 }
 
@@ -350,6 +369,14 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    /// Helper: write a config file, parse it, and return the outcome.
+    fn parse_config(toml_content: &str) -> ConfigLoadOutcome {
+        let dir = tempdir().expect("failed to create temp dir");
+        let path = dir.path().join("config.toml");
+        fs::write(&path, toml_content).expect("failed to write config");
+        load_config_from_path(&path).expect("config should parse")
+    }
+
     #[test]
     fn should_return_none_when_config_file_missing() {
         let dir = tempdir().expect("failed to create temp dir");
@@ -361,11 +388,7 @@ mod tests {
 
     #[test]
     fn should_load_theme_from_valid_toml() {
-        let dir = tempdir().expect("failed to create temp dir");
-        let path = dir.path().join("config.toml");
-        fs::write(&path, "theme = \"light\"\n").expect("failed to write config");
-
-        let outcome = load_config_from_path(&path).expect("valid config should parse");
+        let outcome = parse_config("theme = \"light\"\n");
         assert_eq!(
             outcome.config.as_ref().and_then(|cfg| cfg.theme.as_deref()),
             Some("light")
@@ -375,46 +398,19 @@ mod tests {
 
     #[test]
     fn should_load_theme_variants_and_appearance_from_valid_toml() {
-        let dir = tempdir().expect("failed to create temp dir");
-        let path = dir.path().join("config.toml");
-        fs::write(
-            &path,
+        let outcome = parse_config(
             "theme_dark = \"gruvbox-dark\"\ntheme_light = \"gruvbox-light\"\nappearance = \"system\"\n",
-        )
-        .expect("failed to write config");
-
-        let outcome = load_config_from_path(&path).expect("valid config should parse");
-        assert_eq!(
-            outcome
-                .config
-                .as_ref()
-                .and_then(|cfg| cfg.theme_dark.as_deref()),
-            Some("gruvbox-dark")
         );
-        assert_eq!(
-            outcome
-                .config
-                .as_ref()
-                .and_then(|cfg| cfg.theme_light.as_deref()),
-            Some("gruvbox-light")
-        );
-        assert_eq!(
-            outcome
-                .config
-                .as_ref()
-                .and_then(|cfg| cfg.appearance.as_deref()),
-            Some("system")
-        );
+        let cfg = outcome.config.as_ref().unwrap();
+        assert_eq!(cfg.theme_dark.as_deref(), Some("gruvbox-dark"));
+        assert_eq!(cfg.theme_light.as_deref(), Some("gruvbox-light"));
+        assert_eq!(cfg.appearance.as_deref(), Some("system"));
         assert!(outcome.warnings.is_empty());
     }
 
     #[test]
     fn should_parse_empty_config_as_defaults() {
-        let dir = tempdir().expect("failed to create temp dir");
-        let path = dir.path().join("config.toml");
-        fs::write(&path, "").expect("failed to write config");
-
-        let outcome = load_config_from_path(&path).expect("empty config should parse");
+        let outcome = parse_config("");
         assert_eq!(outcome.config, Some(AppConfig::default()));
         assert!(outcome.warnings.is_empty());
     }
@@ -424,18 +420,13 @@ mod tests {
         let dir = tempdir().expect("failed to create temp dir");
         let path = dir.path().join("config.toml");
         fs::write(&path, "theme =\n").expect("failed to write config");
-
         let result = load_config_from_path(&path);
         assert!(result.is_err(), "invalid TOML should return error");
     }
 
     #[test]
     fn should_warn_on_unknown_keys_and_keep_known_values() {
-        let dir = tempdir().expect("failed to create temp dir");
-        let path = dir.path().join("config.toml");
-        fs::write(&path, "theme = \"light\"\nthemes = \"typo\"\n").expect("failed to write config");
-
-        let outcome = load_config_from_path(&path).expect("config should parse");
+        let outcome = parse_config("theme = \"light\"\nthemes = \"typo\"\n");
         assert_eq!(
             outcome.config.as_ref().and_then(|cfg| cfg.theme.as_deref()),
             Some("light")
@@ -449,11 +440,7 @@ mod tests {
 
     #[test]
     fn should_warn_on_unknown_keys_only_and_use_defaults() {
-        let dir = tempdir().expect("failed to create temp dir");
-        let path = dir.path().join("config.toml");
-        fs::write(&path, "themes = \"typo\"\n").expect("failed to write config");
-
-        let outcome = load_config_from_path(&path).expect("config should parse");
+        let outcome = parse_config("themes = \"typo\"\n");
         assert_eq!(outcome.config, Some(AppConfig::default()));
         assert_eq!(outcome.warnings.len(), 1);
         assert_eq!(
@@ -464,11 +451,7 @@ mod tests {
 
     #[test]
     fn should_warn_and_ignore_theme_with_invalid_type() {
-        let dir = tempdir().expect("failed to create temp dir");
-        let path = dir.path().join("config.toml");
-        fs::write(&path, "theme = 123\n").expect("failed to write config");
-
-        let outcome = load_config_from_path(&path).expect("config should parse");
+        let outcome = parse_config("theme = 123\n");
         assert_eq!(outcome.config, Some(AppConfig::default()));
         assert_eq!(outcome.warnings.len(), 1);
         assert_eq!(
@@ -479,11 +462,7 @@ mod tests {
 
     #[test]
     fn should_warn_and_ignore_theme_dark_with_invalid_type() {
-        let dir = tempdir().expect("failed to create temp dir");
-        let path = dir.path().join("config.toml");
-        fs::write(&path, "theme_dark = 123\n").expect("failed to write config");
-
-        let outcome = load_config_from_path(&path).expect("config should parse");
+        let outcome = parse_config("theme_dark = 123\n");
         assert_eq!(outcome.config, Some(AppConfig::default()));
         assert_eq!(outcome.warnings.len(), 1);
         assert_eq!(
@@ -492,20 +471,127 @@ mod tests {
         );
     }
 
+    // show_file_list
+
+    #[test]
+    fn should_parse_show_file_list_false() {
+        let outcome = parse_config("show_file_list = false\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.show_file_list),
+            Some(false)
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_warn_and_ignore_show_file_list_with_invalid_type() {
+        let outcome = parse_config("show_file_list = \"no\"\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.show_file_list),
+            None
+        );
+        assert_eq!(outcome.warnings.len(), 1);
+    }
+
+    // diff_view
+
+    #[test]
+    fn should_parse_diff_view_side_by_side() {
+        let outcome = parse_config("diff_view = \"side-by-side\"\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.diff_view.as_deref()),
+            Some("side-by-side")
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_parse_diff_view_unified() {
+        let outcome = parse_config("diff_view = \"unified\"\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.diff_view.as_deref()),
+            Some("unified")
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_warn_and_ignore_diff_view_with_invalid_value() {
+        let outcome = parse_config("diff_view = \"split\"\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.diff_view.as_deref()),
+            None
+        );
+        assert_eq!(outcome.warnings.len(), 1);
+        assert!(outcome.warnings[0].contains("\"unified\" or \"side-by-side\""));
+    }
+
+    #[test]
+    fn should_warn_and_ignore_diff_view_with_invalid_type() {
+        let outcome = parse_config("diff_view = true\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.diff_view.as_deref()),
+            None
+        );
+        assert_eq!(outcome.warnings.len(), 1);
+        assert_eq!(
+            outcome.warnings[0],
+            "Warning: Config key 'diff_view' must be a string; ignoring value"
+        );
+    }
+
+    // wrap
+
+    #[test]
+    fn should_parse_wrap_true() {
+        let outcome = parse_config("wrap = true\n");
+        assert_eq!(outcome.config.as_ref().and_then(|cfg| cfg.wrap), Some(true));
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_parse_wrap_false() {
+        let outcome = parse_config("wrap = false\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.wrap),
+            Some(false)
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_warn_and_ignore_wrap_with_invalid_type() {
+        let outcome = parse_config("wrap = \"yes\"\n");
+        assert_eq!(outcome.config.as_ref().and_then(|cfg| cfg.wrap), None);
+        assert_eq!(outcome.warnings.len(), 1);
+        assert_eq!(
+            outcome.warnings[0],
+            "Warning: Config key 'wrap' must be a boolean; ignoring value"
+        );
+    }
+
+    // comment_types
+
     #[test]
     fn should_parse_comment_types_from_array_of_objects() {
-        let dir = tempdir().expect("failed to create temp dir");
-        let path = dir.path().join("config.toml");
-        fs::write(
-            &path,
+        let outcome = parse_config(
             r#"comment_types = [
   { id = "note", label = "question", definition = "ask for clarification", color = "yellow" },
   { id = "issue" }
 ]"#,
-        )
-        .expect("failed to write config");
-
-        let outcome = load_config_from_path(&path).expect("config should parse");
+        );
         let comment_types = outcome
             .config
             .as_ref()
@@ -526,20 +612,14 @@ mod tests {
 
     #[test]
     fn should_warn_and_ignore_invalid_comment_type_entries() {
-        let dir = tempdir().expect("failed to create temp dir");
-        let path = dir.path().join("config.toml");
-        fs::write(
-            &path,
+        let outcome = parse_config(
             r#"comment_types = [
   { id = "" },
   { id = "note" },
   { id = "NOTE" },
   42
 ]"#,
-        )
-        .expect("failed to write config");
-
-        let outcome = load_config_from_path(&path).expect("config should parse");
+        );
         let comment_types = outcome
             .config
             .as_ref()
@@ -553,17 +633,11 @@ mod tests {
 
     #[test]
     fn should_warn_and_ignore_invalid_comment_type_color() {
-        let dir = tempdir().expect("failed to create temp dir");
-        let path = dir.path().join("config.toml");
-        fs::write(
-            &path,
+        let outcome = parse_config(
             r#"comment_types = [
   { id = "note", color = "not-a-color" }
 ]"#,
-        )
-        .expect("failed to write config");
-
-        let outcome = load_config_from_path(&path).expect("config should parse");
+        );
         let comment_types = outcome
             .config
             .as_ref()
@@ -575,6 +649,8 @@ mod tests {
         assert_eq!(comment_types[0].color, None);
         assert_eq!(outcome.warnings.len(), 1);
     }
+
+    // config path resolution
 
     #[cfg(not(windows))]
     #[test]

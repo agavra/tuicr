@@ -127,6 +127,10 @@ appearance = "system"
 theme_dark = "gruvbox-dark"
 theme_light = "gruvbox-light"
 
+show_file_list = false
+diff_view = "side-by-side"
+wrap = true
+
 comment_types = [
   { id = "note", label = "question", definition = "ask for clarification", color = "yellow" },
   { id = "suggestion", definition = "possible improvements" },
@@ -135,6 +139,12 @@ comment_types = [
   { id = "nit", label = "nitpick", definition = "small optional tweaks", color = "#d19a66" }
 ]
 ```
+
+`show_file_list` controls whether the file list panel is visible on startup (default: `true`). Toggle at runtime with `;e`.
+
+`diff_view` sets the default diff layout: `"unified"` (default) or `"side-by-side"`. Toggle at runtime with `:diff`.
+
+`wrap` enables line wrapping in the diff view (default: `false`). Toggle at runtime with `:set wrap!`.
 
 `comment_types` replaces the default list and defines Tab cycle order.
 Each entry requires `id` and can optionally set `label`, `definition`, and `color`.

@@ -153,6 +153,20 @@ fn main() -> anyhow::Result<()> {
     let backend = CrosstermBackend::new(tty_output);
     let mut terminal = Terminal::new(backend)?;
 
+    // Apply config-driven defaults
+    if let Some(ref cfg) = config_outcome.config {
+        if cfg.show_file_list == Some(false) {
+            app.show_file_list = false;
+            app.focused_panel = FocusedPanel::Diff;
+        }
+        if cfg.diff_view.as_deref() == Some("side-by-side") {
+            app.diff_view_mode = app::DiffViewMode::SideBySide;
+        }
+        if cfg.wrap == Some(true) {
+            app.set_diff_wrap(true);
+        }
+    }
+
     // On narrow terminals, start with only the diff panel visible.
     if let Ok((width, _)) = crossterm::terminal::size()
         && width < MIN_WIDTH_FOR_FILE_LIST
