@@ -17,6 +17,7 @@ src/
 │   └── mod.rs           # User config loading (XDG on Unix, %APPDATA% on Windows)
 ├── app.rs               # Application state (App struct, InputMode, etc.)
 ├── error.rs             # Error types (TuicrError enum)
+├── external_editor.rs   # Resolve $VISUAL/$EDITOR and launch the comment editor
 ├── tuicrignore.rs       # .tuicrignore loader + diff file filtering (gitignore-style patterns)
 ├── theme/
 │   └── mod.rs           # Theme palette definitions + CLI theme parsing/resolution
@@ -82,7 +83,7 @@ Repository-managed agent integrations:
 **InputMode** (`src/app.rs`):
 - `Normal` - default navigation mode
 - `Command` - after pressing `:`, vim-style commands
-- `Comment` - typing a comment (Ctrl-S saves, Ctrl-C cancels)
+- `Comment` - typing a comment (Ctrl-S saves, Ctrl-C cancels, Ctrl-G opens external editor)
 - `Search` - after pressing `/`, search pattern entry
 - `Help` - showing help popup
 - `Confirm` - Y/N confirmation dialog
@@ -102,6 +103,7 @@ Repository-managed agent integrations:
 1. **Startup**: Parse CLI args (invalid `--theme` exits non-zero), load config from `$XDG_CONFIG_HOME/tuicr/config.toml` (default `~/.config/tuicr/config.toml`, or `%APPDATA%\tuicr\config.toml` on Windows), ignore unknown config keys with startup warnings, resolve theme precedence (`--theme` > config > dark), then call `App::new()`. `App::new()` calls `detect_vcs()` (Jujutsu first, then Git, then Mercurial), filters diff files via repo-root `.tuicrignore`, then enters commit selection mode by default. If uncommitted changes exist, the first selection row is "Uncommitted changes". With `-r/--revisions`, it opens the requested commit range directly.
 2. **Render**: `ui::render()` draws the TUI based on `App` state
 3. **Input**: `crossterm` events → `map_key_to_action` → match on Action in main loop
+   Comment mode can hand the draft off to `external_editor.rs`, which suspends the TUI, opens `$VISUAL`/`$EDITOR`, then returns the updated text to the comment buffer.
 4. **Persistence**: `:w` calls `save_session()`, writes JSON to `~/.local/share/tuicr/reviews/`
 5. **Reload diff**: `:e` re-runs VCS diff loading and reapplies `.tuicrignore` filtering to refresh displayed files
 6. **Export**: `:clip` (alias `:export`) calls `export_to_clipboard()`, generating markdown and copying it to the clipboard (or stdout with `--stdout` flag)
@@ -110,6 +112,7 @@ Repository-managed agent integrations:
 
 - **Infinite scroll**: All files rendered into one `Vec<Line>`, then sliced by `scroll_offset`
 - **Inline comments**: Comments are rendered in `app_layout.rs` after file headers and after relevant diff lines
+- **External editor**: `Ctrl-G` in comment mode suspends the TUI, opens the current draft in `$VISUAL` or `$EDITOR`, then restores the terminal with the edited text
 - **Session loading**: `App::new()` calls `find_session_for_repo()` to restore previous review
 - **Clipboard**: Uses `arboard` crate for cross-platform clipboard support
 - **Hunk navigation**: `next_hunk()`/`prev_hunk()` calculate positions by iterating through files
@@ -125,6 +128,7 @@ Repository-managed agent integrations:
 - `ignore`: Gitignore-style matcher for `.tuicrignore`
 - `chrono`: Timestamps
 - `thiserror` + `anyhow`: Error handling
+- `shlex` + `tempfile`: External editor command parsing and temp-file staging
 
 ### Keeping Docs Updated
 

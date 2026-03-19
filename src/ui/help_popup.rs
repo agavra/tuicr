@@ -348,6 +348,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
             ),
             Span::raw("Cancel"),
         ]),
+        Line::from(vec![
+            Span::styled(
+                "  Ctrl-G    ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Open in external editor ($VISUAL/$EDITOR)"),
+        ]),
         Line::from(""),
         Line::from(Span::styled(
             "Commands",
