@@ -153,7 +153,15 @@ fn main() -> anyhow::Result<()> {
     let backend = CrosstermBackend::new(tty_output);
     let mut terminal = Terminal::new(backend)?;
 
-    // On narrow terminals, start with only the diff panel visible.
+    // Apply config-driven file list visibility, then narrow-terminal override.
+    if let Some(false) = config_outcome
+        .config
+        .as_ref()
+        .and_then(|cfg| cfg.show_file_list)
+    {
+        app.show_file_list = false;
+        app.focused_panel = FocusedPanel::Diff;
+    }
     if let Ok((width, _)) = crossterm::terminal::size()
         && width < MIN_WIDTH_FOR_FILE_LIST
     {

@@ -23,6 +23,7 @@ pub struct AppConfig {
     pub theme_light: Option<String>,
     pub appearance: Option<String>,
     pub comment_types: Option<Vec<CommentTypeConfig>>,
+    pub show_file_list: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -140,12 +141,24 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         config.comment_types = parse_comment_types(comment_types, &mut warnings);
     }
 
+    if let Some(show_file_list) = table.get("show_file_list") {
+        if let Some(val) = show_file_list.as_bool() {
+            config.show_file_list = Some(val);
+        } else {
+            warnings.push(
+                "Warning: Config key 'show_file_list' must be a boolean; ignoring value"
+                    .to_string(),
+            );
+        }
+    }
+
     for key in table.keys() {
         if key != "theme"
             && key != "theme_dark"
             && key != "theme_light"
             && key != "appearance"
             && key != "comment_types"
+            && key != "show_file_list"
         {
             warnings.push(format!("Warning: Unknown config key '{key}', ignoring"));
         }
@@ -489,6 +502,38 @@ mod tests {
         assert_eq!(
             outcome.warnings[0],
             "Warning: Config key 'theme_dark' must be a string; ignoring value"
+        );
+    }
+
+    #[test]
+    fn should_parse_show_file_list_false() {
+        let dir = tempdir().expect("failed to create temp dir");
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "show_file_list = false\n").expect("failed to write config");
+
+        let outcome = load_config_from_path(&path).expect("config should parse");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.show_file_list),
+            Some(false)
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_warn_and_ignore_show_file_list_with_invalid_type() {
+        let dir = tempdir().expect("failed to create temp dir");
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "show_file_list = \"no\"\n").expect("failed to write config");
+
+        let outcome = load_config_from_path(&path).expect("config should parse");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.show_file_list),
+            None
+        );
+        assert_eq!(outcome.warnings.len(), 1);
+        assert_eq!(
+            outcome.warnings[0],
+            "Warning: Config key 'show_file_list' must be a boolean; ignoring value"
         );
     }
 
