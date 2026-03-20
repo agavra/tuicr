@@ -8,10 +8,12 @@ use crate::text_edit::{
 
 /// Export review: either to clipboard or set pending stdout output based on app.output_to_stdout.
 /// When output_to_stdout is true, stores the content and sets should_quit.
+/// When MCP channel is active, also pushes feedback to the channel.
 fn handle_export(app: &mut App) {
     if app.output_to_stdout {
         match generate_export_content(&app.session, &app.diff_source, &app.comment_types) {
             Ok(content) => {
+                push_to_mcp_channel(app, &content);
                 app.pending_stdout_output = Some(content);
                 app.should_quit = true;
             }
@@ -19,9 +21,26 @@ fn handle_export(app: &mut App) {
         }
     } else {
         match export_to_clipboard(&app.session, &app.diff_source, &app.comment_types) {
-            Ok(msg) => app.set_message(msg),
+            Ok(msg) => {
+                // Also push to MCP channel if connected
+                if app.mcp_channel_state.is_some() {
+                    if let Ok(content) =
+                        generate_export_content(&app.session, &app.diff_source, &app.comment_types)
+                    {
+                        push_to_mcp_channel(app, &content);
+                    }
+                }
+                app.set_message(msg)
+            }
             Err(e) => app.set_warning(format!("{e}")),
         }
+    }
+}
+
+/// Push feedback to the MCP channel socket if connected.
+fn push_to_mcp_channel(app: &App, content: &str) {
+    if let Some(ref state) = app.mcp_channel_state {
+        crate::mcp_channel::server::submit_feedback(state, content.to_string());
     }
 }
 
@@ -340,12 +359,26 @@ pub fn handle_confirm_action(app: &mut App, action: Action) {
                         &app.diff_source,
                         &app.comment_types,
                     ) {
-                        Ok(content) => app.pending_stdout_output = Some(content),
+                        Ok(content) => {
+                            push_to_mcp_channel(app, &content);
+                            app.pending_stdout_output = Some(content);
+                        }
                         Err(e) => app.set_warning(format!("{e}")),
                     }
                 } else {
                     match export_to_clipboard(&app.session, &app.diff_source, &app.comment_types) {
-                        Ok(msg) => app.set_message(msg),
+                        Ok(msg) => {
+                            if app.mcp_channel_state.is_some() {
+                                if let Ok(content) = generate_export_content(
+                                    &app.session,
+                                    &app.diff_source,
+                                    &app.comment_types,
+                                ) {
+                                    push_to_mcp_channel(app, &content);
+                                }
+                            }
+                            app.set_message(msg)
+                        }
                         Err(e) => app.set_warning(format!("{e}")),
                     }
                 }

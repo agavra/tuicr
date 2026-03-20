@@ -925,6 +925,10 @@ pub struct CliArgs {
     pub revisions: Option<String>,
     /// Skip commit selector and review uncommitted changes directly
     pub working_tree: bool,
+    /// Enable MCP channel socket server for direct Claude Code communication
+    pub mcp_channel: bool,
+    /// MCP channel subcommand (e.g., "install", "uninstall")
+    pub mcp_channel_subcommand: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1277,9 +1281,14 @@ Options:
   -w, --working-tree     Include uncommitted changes (skip commit selector when used alone,
                          combine with commits when used with -r)
   --stdout               Output to stdout instead of clipboard when exporting
+  --mcp-channel          Enable MCP channel for direct Claude Code communication
   --no-update-check      Skip checking for updates on startup
   -V, --version          Print version
   -h, --help             Print this help message
+
+Subcommands:
+  mcp-channel install    Install MCP channel server for Claude Code integration
+  mcp-channel uninstall  Remove MCP channel server
 
 Press ? in the application for keybinding help."
     );
@@ -1385,6 +1394,19 @@ fn parse_cli_args_from(args: &[String]) -> Result<CliArgs, String> {
                     format!("Unknown appearance '{value}'. Valid options: {valid_values}")
                 })
                 .map(Some)?;
+        }
+
+        // Handle --mcp-channel (flag or subcommand)
+        if args[i] == "--mcp-channel" {
+            cli_args.mcp_channel = true;
+        }
+        if args[i] == "mcp-channel" && i > 0 {
+            // Subcommand: tuicr mcp-channel install/uninstall
+            if let Some(subcmd) = args.get(i + 1) {
+                cli_args.mcp_channel_subcommand = Some(subcmd.clone());
+            } else {
+                return Err("mcp-channel requires a subcommand: install or uninstall".to_string());
+            }
         }
 
         // Handle -r / --revisions value
