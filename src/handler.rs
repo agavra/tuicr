@@ -23,12 +23,11 @@ fn handle_export(app: &mut App) {
         match export_to_clipboard(&app.session, &app.diff_source, &app.comment_types) {
             Ok(msg) => {
                 // Also push to MCP channel if connected
-                if app.mcp_channel_state.is_some() {
-                    if let Ok(content) =
+                if app.mcp_channel_state.is_some()
+                    && let Ok(content) =
                         generate_export_content(&app.session, &app.diff_source, &app.comment_types)
-                    {
-                        push_to_mcp_channel(app, &content);
-                    }
+                {
+                    push_to_mcp_channel(app, &content);
                 }
                 app.set_message(msg)
             }
@@ -368,14 +367,14 @@ pub fn handle_confirm_action(app: &mut App, action: Action) {
                 } else {
                     match export_to_clipboard(&app.session, &app.diff_source, &app.comment_types) {
                         Ok(msg) => {
-                            if app.mcp_channel_state.is_some() {
-                                if let Ok(content) = generate_export_content(
+                            if app.mcp_channel_state.is_some()
+                                && let Ok(content) = generate_export_content(
                                     &app.session,
                                     &app.diff_source,
                                     &app.comment_types,
-                                ) {
-                                    push_to_mcp_channel(app, &content);
-                                }
+                                )
+                            {
+                                push_to_mcp_channel(app, &content);
                             }
                             app.set_message(msg)
                         }

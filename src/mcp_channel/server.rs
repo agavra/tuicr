@@ -199,12 +199,12 @@ fn handle_connection(
         _ => {
             // One-shot: handle the message, send response, close
             let response = handle_message(&msg, &state);
-            if let Some(resp) = response {
-                if let Ok(bytes) = protocol::encode(&resp) {
-                    let mut writer = BufWriter::new(&conn);
-                    let _ = writer.write_all(&bytes);
-                    let _ = writer.flush();
-                }
+            if let Some(resp) = response
+                && let Ok(bytes) = protocol::encode(&resp)
+            {
+                let mut writer = BufWriter::new(&conn);
+                let _ = writer.write_all(&bytes);
+                let _ = writer.flush();
             }
             let _ = conn.shutdown(Shutdown::Both);
         }
@@ -257,14 +257,14 @@ fn handle_subscription(
         };
 
         let response = handle_message(&msg, &state);
-        if let Some(resp) = response {
-            if let Ok(bytes) = protocol::encode(&resp) {
-                let mut sub = state.subscriber.lock().unwrap();
-                if let Some(ref mut w) = *sub {
-                    if w.write_all(&bytes).is_err() || w.flush().is_err() {
-                        break;
-                    }
-                }
+        if let Some(resp) = response
+            && let Ok(bytes) = protocol::encode(&resp)
+        {
+            let mut sub = state.subscriber.lock().unwrap();
+            if let Some(ref mut w) = *sub
+                && (w.write_all(&bytes).is_err() || w.flush().is_err())
+            {
+                break;
             }
         }
     }
