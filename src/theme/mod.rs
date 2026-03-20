@@ -498,6 +498,73 @@ impl Theme {
         };
         gruvbox_theme(flavor)
     }
+
+    pub fn nord() -> Self {
+        Self {
+            highlighter: OnceLock::new(),
+
+            // Base colors
+            panel_bg: Color::Rgb(46, 52, 64),      // nord0
+            bg_highlight: Color::Rgb(59, 66, 82),  // nord1
+            fg_primary: Color::Rgb(216, 222, 233), // nord4
+            fg_secondary: Color::Rgb(229, 233, 240), // nord5
+            fg_dim: Color::Rgb(76, 86, 106),       // nord3
+
+            // Diff colors
+            diff_add: Color::Rgb(163, 190, 140),   // nord14
+            diff_add_bg: Color::Rgb(54, 67, 51),   // nord14 blended ~15% toward nord0
+            diff_del: Color::Rgb(191, 97, 106),    // nord11
+            diff_del_bg: Color::Rgb(69, 52, 53),   // nord11 blended ~15% toward nord0
+            diff_context: Color::Rgb(216, 222, 233), // nord4
+            diff_hunk_header: Color::Rgb(136, 192, 208), // nord8
+            expanded_context_fg: Color::Rgb(76, 86, 106), // nord3
+
+            // Syntax highlighting diff backgrounds
+            syntax_add_bg: Color::Rgb(50, 62, 48), // nord14 blended ~10% toward nord0
+            syntax_del_bg: Color::Rgb(65, 48, 50), // nord11 blended ~10% toward nord0
+
+            // Syntect theme for syntax highlighting
+            syntect_theme: EmbeddedThemeName::Nord,
+
+            // File status colors
+            file_added: Color::Rgb(163, 190, 140),   // nord14
+            file_modified: Color::Rgb(235, 203, 139), // nord13
+            file_deleted: Color::Rgb(191, 97, 106),  // nord11
+            file_renamed: Color::Rgb(129, 161, 193), // nord9
+
+            // Review status colors
+            reviewed: Color::Rgb(163, 190, 140),  // nord14
+            pending: Color::Rgb(235, 203, 139),   // nord13
+
+            // Comment type colors
+            comment_note: Color::Rgb(136, 192, 208), // nord8
+            comment_suggestion: Color::Rgb(143, 188, 187), // nord7
+            comment_issue: Color::Rgb(191, 97, 106),  // nord11
+            comment_praise: Color::Rgb(163, 190, 140), // nord14
+
+            // UI element colors
+            border_focused: Color::Rgb(136, 192, 208), // nord8
+            border_unfocused: Color::Rgb(59, 66, 82),  // nord1
+            status_bar_bg: Color::Rgb(67, 76, 94),     // nord2
+            cursor_color: Color::Rgb(129, 161, 193),   // nord9
+            branch_name: Color::Rgb(143, 188, 187),    // nord7
+            help_indicator: Color::Rgb(76, 86, 106),   // nord3
+
+            // Message/update badge colors
+            message_info_fg: Color::Black,
+            message_info_bg: Color::Rgb(136, 192, 208),  // nord8
+            message_warning_fg: Color::Black,
+            message_warning_bg: Color::Rgb(208, 135, 112), // nord12
+            message_error_fg: Color::White,
+            message_error_bg: Color::Rgb(191, 97, 106),  // nord11
+            update_badge_fg: Color::Black,
+            update_badge_bg: Color::Rgb(208, 135, 112),  // nord12
+
+            // Mode indicator colors
+            mode_fg: Color::Rgb(46, 52, 64),           // nord0
+            mode_bg: Color::Rgb(136, 192, 208),        // nord8
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -727,9 +794,10 @@ pub enum ThemeArg {
     CatppuccinMocha,
     GruvboxDark,
     GruvboxLight,
+    Nord,
 }
 
-const THEME_CHOICES: [(&str, ThemeArg); 10] = [
+const THEME_CHOICES: [(&str, ThemeArg); 11] = [
     ("dark", ThemeArg::Dark),
     ("light", ThemeArg::Light),
     ("ayu-light", ThemeArg::AyuLight),
@@ -740,6 +808,7 @@ const THEME_CHOICES: [(&str, ThemeArg); 10] = [
     ("catppuccin-mocha", ThemeArg::CatppuccinMocha),
     ("gruvbox-dark", ThemeArg::GruvboxDark),
     ("gruvbox-light", ThemeArg::GruvboxLight),
+    ("nord", ThemeArg::Nord),
 ];
 
 /// CLI arguments parsed from command line
@@ -833,6 +902,7 @@ pub fn resolve_theme(arg: ThemeArg) -> Theme {
         ThemeArg::CatppuccinMocha => Theme::catppuccin_mocha(),
         ThemeArg::GruvboxDark => Theme::gruvbox_dark(),
         ThemeArg::GruvboxLight => Theme::gruvbox_light(),
+        ThemeArg::Nord => Theme::nord(),
     }
 }
 
