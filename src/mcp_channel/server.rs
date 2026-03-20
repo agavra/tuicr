@@ -341,10 +341,10 @@ pub fn notify_subscriber(state: &McpChannelState, event: &str, message: &str) {
 /// Submit feedback to the queue and wake any blocking poll_feedback requests.
 /// Called from the main TUI thread when the user exports.
 pub fn submit_feedback(state: &McpChannelState, content: String) {
-    // Store feedback
+    // Store feedback (for get_feedback tool fallback)
     {
         let mut feedback = state.feedback.lock().unwrap();
-        *feedback = Some(content);
+        *feedback = Some(content.clone());
     }
 
     // Wake blocking waiters
@@ -355,12 +355,8 @@ pub fn submit_feedback(state: &McpChannelState, content: String) {
         cvar.notify_all();
     }
 
-    // Push event notification
-    notify_subscriber(
-        state,
-        "feedback_submitted",
-        "Your reviewer has submitted feedback. Use the get_feedback tool to retrieve it.",
-    );
+    // Push event notification with the actual feedback content
+    notify_subscriber(state, "feedback_submitted", &content);
 }
 
 #[cfg(test)]

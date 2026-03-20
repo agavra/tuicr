@@ -233,8 +233,8 @@ const mcp = new Server(
       "Events from the tuicr channel arrive as <channel source=\"tuicr\" event=\"...\">.",
       "These are review events from your human reviewer who is watching your code changes using tuicr.",
       "",
-      "When you receive a feedback_submitted event, use the get_feedback tool to retrieve the detailed review feedback.",
-      "You can check the current review status at any time using the review_status tool.",
+      "When you receive a feedback_submitted event, the review feedback is included directly in the channel message body. Address the comments immediately.",
+      "You can also use the get_feedback tool to re-retrieve feedback, or the review_status tool to check progress.",
     ].join("\n"),
   },
 );
