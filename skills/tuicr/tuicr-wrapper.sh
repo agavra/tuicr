@@ -109,12 +109,21 @@ launch_tuicr_pane() {
   # Create unique channel for wait-for
   local wait_channel="tuicr-$$"
 
+  # Check if --mcp-channel flag was passed
+  local use_mcp_channel=false
+  if [[ "${MCP_CHANNEL:-}" == "true" ]]; then
+    use_mcp_channel=true
+  fi
+
   # Check if --stdout is supported and set up output capture
   local output_file=""
   local tuicr_cmd="tuicr"
   local use_stdout=false
 
-  if check_tuicr_stdout_support; then
+  if [[ "$use_mcp_channel" == true ]]; then
+    tuicr_cmd="tuicr --mcp-channel"
+    log_info "Using MCP channel mode (feedback will be sent directly to Claude)"
+  elif check_tuicr_stdout_support; then
     output_file=$(mktemp /tmp/tuicr-output.XXXXXX)
     tuicr_cmd="tuicr --stdout > '$output_file'"
     use_stdout=true
@@ -140,6 +149,12 @@ launch_tuicr_pane() {
 
   log_info "tuicr finished"
 
+  # In MCP channel mode, feedback is delivered directly via the socket — no output capture needed
+  if [[ "$use_mcp_channel" == true ]]; then
+    log_info "Feedback was delivered via MCP channel"
+    return
+  fi
+
   # Output captured instructions if --stdout was used
   if [[ "$use_stdout" == true ]] && [[ -f "$output_file" ]]; then
     if [[ -s "$output_file" ]]; then
@@ -162,6 +177,12 @@ main() {
   if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
     usage
     exit 0
+  fi
+
+  # Check for --mcp-channel flag
+  if [[ "${1:-}" == "--mcp-channel" ]]; then
+    export MCP_CHANNEL=true
+    shift
   fi
 
   # Check for tuicr

@@ -43,6 +43,7 @@ pub enum Action {
     // Session
     Quit,
     ExportToClipboard,
+    SubmitFeedback,
 
     // Mode changes
     EnterCommandMode,
@@ -141,6 +142,7 @@ fn map_normal_mode(key: KeyEvent) -> Action {
         (KeyCode::Char('d'), KeyModifiers::NONE) => Action::PendingDCommand,
         (KeyCode::Char('v') | KeyCode::Char('V'), _) => Action::EnterVisualMode,
         (KeyCode::Char('y'), KeyModifiers::NONE) => Action::ExportToClipboard,
+        (KeyCode::Char('S'), _) => Action::SubmitFeedback,
         (KeyCode::Char('n'), KeyModifiers::NONE) => Action::SearchNext,
         (KeyCode::Char('N'), _) => Action::SearchPrev,
 
