@@ -929,6 +929,8 @@ pub struct CliArgs {
     pub mcp_channel: bool,
     /// MCP channel subcommand (e.g., "install", "uninstall")
     pub mcp_channel_subcommand: Option<String>,
+    /// Use global ~/.mcp.json instead of local .mcp.json
+    pub mcp_channel_global: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1287,8 +1289,9 @@ Options:
   -h, --help             Print this help message
 
 Subcommands:
-  mcp-channel install    Install MCP channel server for Claude Code integration
-  mcp-channel uninstall  Remove MCP channel server
+  mcp-channel install [--global]  Install MCP channel server for Claude Code integration
+                                  --global writes to ~/.mcp.json instead of ./.mcp.json
+  mcp-channel uninstall [--global] Remove MCP channel server
 
 Press ? in the application for keybinding help."
     );
@@ -1401,12 +1404,19 @@ fn parse_cli_args_from(args: &[String]) -> Result<CliArgs, String> {
             cli_args.mcp_channel = true;
         }
         if args[i] == "mcp-channel" && i > 0 {
-            // Subcommand: tuicr mcp-channel install/uninstall
+            // Subcommand: tuicr mcp-channel install/uninstall [--global]
             if let Some(subcmd) = args.get(i + 1) {
                 cli_args.mcp_channel_subcommand = Some(subcmd.clone());
+                // Check for --global flag after the subcommand
+                if args.get(i + 2).map(|s| s.as_str()) == Some("--global") {
+                    cli_args.mcp_channel_global = true;
+                }
             } else {
                 return Err("mcp-channel requires a subcommand: install or uninstall".to_string());
             }
+        }
+        if args[i] == "--global" {
+            cli_args.mcp_channel_global = true;
         }
 
         // Handle -r / --revisions value

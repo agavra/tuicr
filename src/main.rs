@@ -53,7 +53,7 @@ fn main() -> anyhow::Result<()> {
 
     // Handle MCP channel subcommands (install/uninstall) before TUI initialization
     if let Some(ref subcmd) = cli_args.mcp_channel_subcommand {
-        return mcp_channel::install::run_subcommand(subcmd);
+        return mcp_channel::install::run_subcommand(subcmd, cli_args.mcp_channel_global);
     }
 
     // Setup panic hook to restore terminal on panic

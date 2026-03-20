@@ -9,10 +9,10 @@ const CHANNEL_TS: &str = include_str!("../../mcp_channel/channel.ts");
 const PACKAGE_JSON: &str = include_str!("../../mcp_channel/package.json");
 
 /// Run an MCP channel subcommand (install or uninstall).
-pub fn run_subcommand(subcmd: &str) -> anyhow::Result<()> {
+pub fn run_subcommand(subcmd: &str, global: bool) -> anyhow::Result<()> {
     match subcmd {
-        "install" => install(),
-        "uninstall" => uninstall(),
+        "install" => install(global),
+        "uninstall" => uninstall(global),
         _ => {
             eprintln!("Unknown mcp-channel subcommand: {subcmd}");
             eprintln!("Valid subcommands: install, uninstall");
@@ -53,7 +53,17 @@ fn dirs_for_install() -> PathBuf {
         })
 }
 
-fn install() -> anyhow::Result<()> {
+/// Get the .mcp.json path — either global (~/.mcp.json) or local (./.mcp.json).
+fn mcp_json_path(global: bool) -> PathBuf {
+    if global {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        PathBuf::from(home).join(".mcp.json")
+    } else {
+        PathBuf::from(".mcp.json")
+    }
+}
+
+fn install(global: bool) -> anyhow::Result<()> {
     // Check for a compatible runtime
     let Some((runtime, _)) = detect_runtime() else {
         eprintln!("Error: A Node.js-compatible runtime is required for the MCP channel.");
@@ -112,8 +122,8 @@ fn install() -> anyhow::Result<()> {
         ),
     };
 
-    // Update .mcp.json in current directory
-    let mcp_json_path = PathBuf::from(".mcp.json");
+    // Update .mcp.json
+    let mcp_json_path = mcp_json_path(global);
     let mut mcp_config: serde_json::Value = if mcp_json_path.exists() {
         let content = fs::read_to_string(&mcp_json_path)?;
         serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
@@ -148,11 +158,11 @@ fn install() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn uninstall() -> anyhow::Result<()> {
+fn uninstall(global: bool) -> anyhow::Result<()> {
     let dir = channel_dir();
 
     // Remove from .mcp.json
-    let mcp_json_path = PathBuf::from(".mcp.json");
+    let mcp_json_path = mcp_json_path(global);
     if mcp_json_path.exists() {
         let content = fs::read_to_string(&mcp_json_path)?;
         if let Ok(mut config) = serde_json::from_str::<serde_json::Value>(&content) {
