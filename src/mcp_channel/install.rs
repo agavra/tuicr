@@ -57,7 +57,9 @@ fn install() -> anyhow::Result<()> {
     // Check for a compatible runtime
     let Some((runtime, _)) = detect_runtime() else {
         eprintln!("Error: A Node.js-compatible runtime is required for the MCP channel.");
-        eprintln!("Install one of: bun (https://bun.sh), Node.js (https://nodejs.org), or Deno (https://deno.land)");
+        eprintln!(
+            "Install one of: bun (https://bun.sh), Node.js (https://nodejs.org), or Deno (https://deno.land)"
+        );
         std::process::exit(1);
     };
 
@@ -92,9 +94,22 @@ fn install() -> anyhow::Result<()> {
 
     // Determine the run command for .mcp.json
     let (run_cmd, run_args) = match runtime {
-        "bun" => ("bun", vec![dir.join("channel.ts").to_string_lossy().to_string()]),
-        "deno" => ("deno", vec!["run".to_string(), "--allow-all".to_string(), dir.join("channel.ts").to_string_lossy().to_string()]),
-        _ => ("node", vec![dir.join("channel.ts").to_string_lossy().to_string()]),
+        "bun" => (
+            "bun",
+            vec![dir.join("channel.ts").to_string_lossy().to_string()],
+        ),
+        "deno" => (
+            "deno",
+            vec![
+                "run".to_string(),
+                "--allow-all".to_string(),
+                dir.join("channel.ts").to_string_lossy().to_string(),
+            ],
+        ),
+        _ => (
+            "node",
+            vec![dir.join("channel.ts").to_string_lossy().to_string()],
+        ),
     };
 
     // Update .mcp.json in current directory

@@ -8,7 +8,7 @@ use std::thread::{self, JoinHandle};
 
 use sha2::{Digest, Sha256};
 
-use super::protocol::{self, InboundMessage, OutboundMessage, EventPayload};
+use super::protocol::{self, EventPayload, InboundMessage, OutboundMessage};
 
 /// Events sent from the socket server thread to the main TUI thread.
 #[derive(Debug)]
@@ -219,7 +219,10 @@ fn handle_subscription(
     state: Arc<McpChannelState>,
     event_tx: Sender<McpChannelEvent>,
 ) {
-    let writer = BufWriter::new(conn.try_clone().expect("failed to clone stream for subscriber"));
+    let writer = BufWriter::new(
+        conn.try_clone()
+            .expect("failed to clone stream for subscriber"),
+    );
 
     // Send ack
     {

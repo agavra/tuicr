@@ -129,7 +129,11 @@ impl ReviewSession {
     /// Returns (total_comment_count, files_reviewed, files_total).
     pub fn review_stats(&self) -> (usize, usize, usize) {
         let comment_count = self.review_comments.len()
-            + self.files.values().map(|f| f.comment_count()).sum::<usize>();
+            + self
+                .files
+                .values()
+                .map(|f| f.comment_count())
+                .sum::<usize>();
         let files_reviewed = self.files.values().filter(|f| f.reviewed).count();
         let files_total = self.files.len();
         (comment_count, files_reviewed, files_total)

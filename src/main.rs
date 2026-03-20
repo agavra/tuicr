@@ -143,10 +143,7 @@ fn main() -> anyhow::Result<()> {
     // Start MCP channel server if --mcp-channel flag is set
     let (mcp_channel_rx, _mcp_channel_server) = if cli_args.mcp_channel {
         let (tx, rx) = mpsc::channel();
-        let server = mcp_channel::server::McpChannelServer::new(
-            &app.session.repo_path,
-            tx,
-        );
+        let server = mcp_channel::server::McpChannelServer::new(&app.session.repo_path, tx);
         let state = server.state();
         app.mcp_channel_state = Some(state);
         let handle = server.start();
