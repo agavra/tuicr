@@ -1072,6 +1072,8 @@ pub struct CliArgs {
     pub revisions: Option<String>,
     /// Skip commit selector and review uncommitted changes directly
     pub working_tree: bool,
+    /// Filter diff to a specific file or directory path
+    pub path_filter: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1423,6 +1425,7 @@ Options:
                          Valid values: {appearance_values}
                          Used when no explicit theme is set
                          Precedence: --appearance > {config_path} > system
+  -p, --path <PATH>     Filter diff to a specific file or directory
   -w, --working-tree     Include uncommitted changes (skip commit selector when used alone,
                          combine with commits when used with -r)
   --stdout               Output to stdout instead of clipboard when exporting
@@ -1534,6 +1537,24 @@ fn parse_cli_args_from(args: &[String]) -> Result<CliArgs, String> {
                     format!("Unknown appearance '{value}'. Valid options: {valid_values}")
                 })
                 .map(Some)?;
+        }
+
+        // Handle -p / --path value
+        if args[i] == "-p" || args[i] == "--path" {
+            let value = args
+                .get(i + 1)
+                .ok_or_else(|| "--path requires a file or directory path".to_string())?;
+            if value.starts_with('-') {
+                return Err("--path requires a file or directory path".to_string());
+            }
+            cli_args.path_filter = Some(value.clone());
+        }
+        // Handle --path=value
+        if let Some(value) = args[i].strip_prefix("--path=") {
+            if value.is_empty() {
+                return Err("--path requires a file or directory path".to_string());
+            }
+            cli_args.path_filter = Some(value.to_string());
         }
 
         // Handle -r / --revisions value
@@ -1890,5 +1911,61 @@ mod tests {
     fn should_return_accent_for_non_rgb_blend_inputs() {
         let accent = Color::Rgb(100, 110, 120);
         assert_eq!(blend(Color::Reset, accent, 50), accent);
+    }
+
+    #[test]
+    fn should_parse_path_short_flag() {
+        let parsed = parse_for_test(&["tuicr", "-p", "src/main.rs"]).expect("parse should succeed");
+        assert_eq!(parsed.path_filter, Some("src/main.rs".to_string()));
+    }
+
+    #[test]
+    fn should_parse_path_long_flag() {
+        let parsed = parse_for_test(&["tuicr", "--path", "src/"]).expect("parse should succeed");
+        assert_eq!(parsed.path_filter, Some("src/".to_string()));
+    }
+
+    #[test]
+    fn should_parse_path_equals_syntax() {
+        let parsed = parse_for_test(&["tuicr", "--path=plans/current-plan.md"])
+            .expect("parse should succeed");
+        assert_eq!(
+            parsed.path_filter,
+            Some("plans/current-plan.md".to_string())
+        );
+    }
+
+    #[test]
+    fn should_error_when_path_value_missing() {
+        let err = parse_for_test(&["tuicr", "--path"]).expect_err("parse should fail");
+        assert!(err.contains("--path requires a file or directory path"));
+    }
+
+    #[test]
+    fn should_error_when_path_equals_empty() {
+        let err = parse_for_test(&["tuicr", "--path="]).expect_err("parse should fail");
+        assert!(err.contains("--path requires a file or directory path"));
+    }
+
+    #[test]
+    fn should_default_path_filter_to_none() {
+        let parsed = parse_for_test(&["tuicr"]).expect("parse should succeed");
+        assert_eq!(parsed.path_filter, None);
+    }
+
+    #[test]
+    fn should_parse_path_with_working_tree() {
+        let parsed =
+            parse_for_test(&["tuicr", "-p", "file.md", "-w"]).expect("parse should succeed");
+        assert_eq!(parsed.path_filter, Some("file.md".to_string()));
+        assert!(parsed.working_tree);
+    }
+
+    #[test]
+    fn should_parse_path_with_revisions() {
+        let parsed = parse_for_test(&["tuicr", "--path", "src/", "-r", "HEAD~3.."])
+            .expect("parse should succeed");
+        assert_eq!(parsed.path_filter, Some("src/".to_string()));
+        assert_eq!(parsed.revisions, Some("HEAD~3..".to_string()));
     }
 }

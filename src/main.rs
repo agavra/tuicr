@@ -61,7 +61,12 @@ fn main() -> anyhow::Result<()> {
 
     // Parse CLI arguments and resolve theme
     // This also configures syntax highlighting colors before diff parsing
-    let cli_args = parse_cli_args();
+    let mut cli_args = parse_cli_args();
+
+    // --path implies --working-tree unless -r is explicitly provided
+    if cli_args.path_filter.is_some() && !cli_args.working_tree && cli_args.revisions.is_none() {
+        cli_args.working_tree = true;
+    }
     let mut startup_warnings = Vec::new();
     let config_outcome = match config::load_config() {
         Ok(outcome) => outcome,
@@ -115,6 +120,7 @@ fn main() -> anyhow::Result<()> {
         cli_args.output_to_stdout,
         cli_args.revisions.as_deref(),
         cli_args.working_tree,
+        cli_args.path_filter.as_deref(),
     ) {
         Ok(mut app) => {
             app.supports_keyboard_enhancement = keyboard_enhancement_supported;
