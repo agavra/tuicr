@@ -3,6 +3,7 @@ mod config;
 mod error;
 mod handler;
 mod input;
+mod mcp_channel;
 mod model;
 mod output;
 mod persistence;
@@ -47,6 +48,14 @@ const CTRL_C_EXIT_TIMEOUT: Duration = Duration::from_secs(2);
 const MIN_WIDTH_FOR_FILE_LIST: u16 = 100;
 
 fn main() -> anyhow::Result<()> {
+    // Parse CLI arguments early so we can handle subcommands before TUI setup
+    let cli_args = parse_cli_args();
+
+    // Handle MCP channel subcommands (install/uninstall) before TUI initialization
+    if let Some(ref subcmd) = cli_args.mcp_channel_subcommand {
+        return mcp_channel::install::run_subcommand(subcmd, cli_args.mcp_channel_global);
+    }
+
     // Setup panic hook to restore terminal on panic
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
@@ -59,9 +68,8 @@ fn main() -> anyhow::Result<()> {
     // Check keyboard enhancement support before enabling raw mode
     let keyboard_enhancement_supported = matches!(supports_keyboard_enhancement(), Ok(true));
 
-    // Parse CLI arguments and resolve theme
+    // Resolve theme from CLI arguments
     // This also configures syntax highlighting colors before diff parsing
-    let cli_args = parse_cli_args();
     let mut startup_warnings = Vec::new();
     let config_outcome = match config::load_config() {
         Ok(outcome) => outcome,
@@ -132,6 +140,22 @@ fn main() -> anyhow::Result<()> {
         }
     };
 
+    // Start MCP channel server if --mcp-channel flag is set
+    let (mcp_channel_rx, _mcp_channel_server) = if cli_args.mcp_channel {
+        let (tx, rx) = mpsc::channel();
+        let server = mcp_channel::server::McpChannelServer::new(&app.session.repo_path, tx);
+        let state = server.state();
+        app.mcp_channel_state = Some(state);
+        let handle = server.start();
+        if handle.is_none() {
+            // Server couldn't bind — another instance is running for this repo
+            app.mcp_channel_state = None;
+        }
+        (Some(rx), Some(server))
+    } else {
+        (None, None)
+    };
+
     // Setup terminal
     // When --stdout is used, render TUI to /dev/tty so stdout is free for export output
     enable_raw_mode()?;
@@ -199,6 +223,38 @@ fn main() -> anyhow::Result<()> {
             ) = rx.try_recv()
         {
             app.update_info = Some(info);
+        }
+
+        // Check for MCP channel events (non-blocking)
+        if let Some(ref rx) = mcp_channel_rx {
+            while let Ok(event) = rx.try_recv() {
+                match event {
+                    mcp_channel::server::McpChannelEvent::Connected => {
+                        app.mcp_channel_connected = true;
+                    }
+                    mcp_channel::server::McpChannelEvent::Disconnected => {
+                        app.mcp_channel_connected = false;
+                    }
+                    mcp_channel::server::McpChannelEvent::BindFailed(msg) => {
+                        app.set_warning(msg);
+                    }
+                }
+            }
+
+            // Update review status for MCP channel consumers
+            if let Some(ref state) = app.mcp_channel_state {
+                let (comment_count, files_reviewed, files_total) = app.session.review_stats();
+                let summary = format!(
+                    "{} comment(s) on {}/{} files reviewed",
+                    comment_count, files_reviewed, files_total
+                );
+                if let Ok(mut status) = state.review_status.lock() {
+                    status.summary = summary;
+                    status.comment_count = comment_count;
+                    status.files_reviewed = files_reviewed;
+                    status.files_total = files_total;
+                }
+            }
         }
 
         // Auto-clear expired pending Ctrl+C state and message
@@ -373,6 +429,11 @@ fn main() -> anyhow::Result<()> {
         if app.should_quit {
             break;
         }
+    }
+
+    // Clean up MCP channel server
+    if let Some(ref server) = _mcp_channel_server {
+        server.cleanup();
     }
 
     // Restore terminal

@@ -17,6 +17,18 @@ Or simply mention wanting to review changes with tuicr.
 
 ## How It Works
 
+### MCP Channel Mode (Preferred)
+
+If the tuicr MCP channel is installed (`tuicr mcp-channel install`), feedback flows directly
+from tuicr to Claude Code via a Unix socket — no clipboard or stdout capture needed.
+
+1. Check if the `review_status` or `get_feedback` MCP tools are available
+2. If yes: Launch tuicr in a tmux pane with `--mcp-channel` flag
+3. Use the `get_feedback` tool with `wait=true` to block until the reviewer submits feedback
+4. Feedback arrives directly — no clipboard paste needed
+
+### Tmux Fallback Mode
+
 Since coding agents cannot run interactive TUI applications directly, this skill uses a tmux workaround:
 
 1. Detects if the current agent session is running inside tmux
@@ -45,7 +57,28 @@ Common patterns:
    - Consider recent file operations
    - Ask user if ambiguous
 
-2. **Run the wrapper script** with a 10-minute timeout:
+2. **Check for MCP channel availability**:
+   - If the `get_feedback` MCP tool is available, use MCP channel mode
+   - Otherwise, fall back to the wrapper script
+
+### MCP Channel Workflow
+
+1. **Launch tuicr** in a tmux pane with `--mcp-channel`:
+   ```bash
+   <skill-directory>/tuicr-wrapper.sh --mcp-channel [directory]
+   ```
+
+   **IMPORTANT:** Always set `timeout: 600000` (10 minutes) on the Bash tool call.
+
+2. **Wait for feedback** using the MCP tool:
+   - Call `get_feedback` with `wait=true` — this blocks until the reviewer submits
+   - The feedback markdown arrives directly, ready to process
+
+3. **Process the feedback**: Address each comment in the review.
+
+### Wrapper Script Fallback Workflow
+
+1. **Run the wrapper script** with a 10-minute timeout:
    ```bash
    <skill-directory>/tuicr-wrapper.sh [directory]
    ```
@@ -54,12 +87,12 @@ Common patterns:
    The script waits for tuicr to exit, and without the extended timeout the agent
    may background the command after 2 minutes.
 
-3. **Handle the result**:
+2. **Handle the result**:
    - If successful: tuicr opens in a split pane and blocks until user exits
    - If not in tmux: relay the instructions to the user
    - If not a git repo: inform user and ask for correct path
 
-4. **Process instructions from tuicr output**:
+3. **Process instructions from tuicr output**:
 
    The script output may contain instructions between markers:
    ```

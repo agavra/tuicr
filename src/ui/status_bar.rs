@@ -138,7 +138,22 @@ pub fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         (Span::raw(""), 0)
     };
 
-    let left_spans = vec![title_span, vcs_span, source_span, progress_span];
+    let (mcp_span, _mcp_width) = if app.mcp_channel_connected {
+        let text = " [MCP] ";
+        (
+            Span::styled(
+                text,
+                Style::default()
+                    .fg(theme.reviewed)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            text.len(),
+        )
+    } else {
+        (Span::raw(""), 0)
+    };
+
+    let left_spans = vec![title_span, vcs_span, source_span, progress_span, mcp_span];
     let left_width: usize = left_spans.iter().map(|s| s.content.len()).sum();
     let total_width = area.width as usize;
     let padding_width = total_width.saturating_sub(left_width + update_width);

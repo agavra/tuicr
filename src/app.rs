@@ -281,6 +281,11 @@ pub struct App {
     pub range_diff_files: Option<Vec<DiffFile>>,
     /// Saved inline selection range when entering full commit select mode via :commits
     pub saved_inline_selection: Option<(usize, usize)>,
+
+    /// MCP channel shared state (set when --mcp-channel is active)
+    pub mcp_channel_state: Option<std::sync::Arc<crate::mcp_channel::server::McpChannelState>>,
+    /// Whether an MCP channel client (channel.ts) is currently connected
+    pub mcp_channel_connected: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -717,6 +722,8 @@ impl App {
             commit_diff_cache: HashMap::new(),
             range_diff_files: None,
             saved_inline_selection: None,
+            mcp_channel_state: None,
+            mcp_channel_connected: false,
         };
         app.sort_files_by_directory(true);
         app.expand_all_dirs();

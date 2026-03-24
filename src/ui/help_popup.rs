@@ -25,7 +25,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let help_text = vec![
+    let mut help_text = vec![
         Line::from(Span::styled(
             "Navigation",
             Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
@@ -468,6 +468,32 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
             Span::raw("Toggle this help"),
         ]),
     ];
+
+    // Add MCP channel entries only when --mcp-channel is active
+    if app.mcp_channel_state.is_some() {
+        // Insert before the last entry (the "? Toggle this help" line)
+        let insert_pos = help_text.len() - 1;
+        help_text.insert(
+            insert_pos,
+            Line::from(vec![
+                Span::styled(
+                    "  S         ",
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("Submit review via MCP channel"),
+            ]),
+        );
+        help_text.insert(
+            insert_pos + 1,
+            Line::from(vec![
+                Span::styled(
+                    "  :submit   ",
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("Submit review via MCP channel"),
+            ]),
+        );
+    }
 
     // Update help state with total lines and viewport height
     let total_lines = help_text.len();
