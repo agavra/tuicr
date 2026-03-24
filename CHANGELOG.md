@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.0] - 2026-03-24
+
+### Bug Fixes
+
+- Append newline to lines passed to syntect parser for correct scope matching (#202)
+- **diff-parser:** Handle empty files and mode-only changes in git-style diffs (#215)
+- **input:** Support Shift+Tab reverse cycling (#213)
+
+### Documentation
+
+- Add {N}G jump-to-line shortcut to README and AGENTS.md (#216)
+
+### Features
+
+- **skill:** Improve skill integration with other agents (#201)
+- **config:** Customizable comment types with labels, colors and definitions (#211)
+- Add --version flag (#212)
+- **config:** Add show_file_list, diff_view, and wrap config options (#218)
+- Add Nord theme (#219)
+- Add staged and unstaged review options (#183)
 ## [0.8.0] - 2026-03-11
 
 ### Bug Fixes
@@ -9,6 +29,7 @@ All notable changes to this project will be documented in this file.
 - **ui:** Make diff row backgrounds consistent to eol (#180)
 - **diff:** Normalize tabs across parsers and add coverage (#179)
 - **ui:** Shift focus to diff when file list is collapsed (#185)
+- Remove nix result symlink that breaks cargo publish
 
 ### Features
 
