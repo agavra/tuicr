@@ -221,6 +221,149 @@ impl Theme {
         }
     }
 
+    pub fn solarized_light() -> Self {
+        // Solarized palette
+        let base03 = Color::Rgb(0, 43, 54);
+        let base01 = Color::Rgb(88, 110, 117);
+        let base00 = Color::Rgb(101, 123, 131);
+        let base1 = Color::Rgb(147, 161, 161);
+        let base2 = Color::Rgb(238, 232, 213);
+        let base3 = Color::Rgb(253, 246, 227);
+        let yellow = Color::Rgb(181, 137, 0);
+        let orange = Color::Rgb(203, 75, 22);
+        let red = Color::Rgb(220, 50, 47);
+        let violet = Color::Rgb(108, 113, 196);
+        let blue = Color::Rgb(38, 139, 210);
+        let cyan = Color::Rgb(42, 161, 152);
+        let green = Color::Rgb(133, 153, 0);
+
+        Self {
+            highlighter: OnceLock::new(),
+
+            panel_bg: base3,
+            bg_highlight: base2,
+            fg_primary: base00,
+            fg_secondary: base01,
+            fg_dim: base1,
+
+            diff_add: Color::Rgb(0, 80, 0),
+            diff_add_bg: Color::Rgb(222, 240, 205),
+            diff_del: Color::Rgb(140, 0, 0),
+            diff_del_bg: Color::Rgb(252, 225, 224),
+            diff_context: base00,
+            diff_hunk_header: blue,
+            expanded_context_fg: base1,
+
+            syntax_add_bg: Color::Rgb(222, 240, 205),
+            syntax_del_bg: Color::Rgb(252, 225, 224),
+
+            syntect_theme: EmbeddedThemeName::SolarizedLight,
+
+            file_added: green,
+            file_modified: yellow,
+            file_deleted: red,
+            file_renamed: violet,
+
+            reviewed: green,
+            pending: yellow,
+
+            comment_note: blue,
+            comment_suggestion: cyan,
+            comment_issue: red,
+            comment_praise: green,
+
+            border_focused: blue,
+            border_unfocused: base1,
+            status_bar_bg: base2,
+            cursor_color: orange,
+            branch_name: cyan,
+            help_indicator: base01,
+
+            message_info_fg: base3,
+            message_info_bg: blue,
+            message_warning_fg: base03,
+            message_warning_bg: yellow,
+            message_error_fg: base3,
+            message_error_bg: red,
+            update_badge_fg: base03,
+            update_badge_bg: yellow,
+
+            mode_fg: base3,
+            mode_bg: blue,
+        }
+    }
+
+    pub fn solarized_dark() -> Self {
+        let base03 = Color::Rgb(0, 43, 54);
+        let base02 = Color::Rgb(7, 54, 66);
+        let base01 = Color::Rgb(88, 110, 117);
+        let base00 = Color::Rgb(101, 123, 131);
+        let base0 = Color::Rgb(131, 148, 150);
+        let base3 = Color::Rgb(253, 246, 227);
+        let yellow = Color::Rgb(181, 137, 0);
+        let orange = Color::Rgb(203, 75, 22);
+        let red = Color::Rgb(220, 50, 47);
+        let violet = Color::Rgb(108, 113, 196);
+        let blue = Color::Rgb(38, 139, 210);
+        let cyan = Color::Rgb(42, 161, 152);
+        let green = Color::Rgb(133, 153, 0);
+
+        Self {
+            highlighter: OnceLock::new(),
+
+            panel_bg: base03,
+            bg_highlight: base02,
+            fg_primary: base0,
+            fg_secondary: base00,
+            fg_dim: base01,
+
+            diff_add: Color::Rgb(80, 220, 120),
+            diff_add_bg: Color::Rgb(0, 60, 20),
+            diff_del: Color::Rgb(240, 90, 90),
+            diff_del_bg: Color::Rgb(70, 0, 0),
+            diff_context: base0,
+            diff_hunk_header: blue,
+            expanded_context_fg: base01,
+
+            syntax_add_bg: Color::Rgb(0, 60, 20),
+            syntax_del_bg: Color::Rgb(70, 0, 0),
+
+            syntect_theme: EmbeddedThemeName::SolarizedDark,
+
+            file_added: green,
+            file_modified: yellow,
+            file_deleted: red,
+            file_renamed: violet,
+
+            reviewed: green,
+            pending: yellow,
+
+            comment_note: blue,
+            comment_suggestion: cyan,
+            comment_issue: red,
+            comment_praise: green,
+
+            border_focused: blue,
+            border_unfocused: base01,
+            status_bar_bg: base02,
+            cursor_color: orange,
+            branch_name: cyan,
+            help_indicator: base00,
+
+            message_info_fg: base03,
+            message_info_bg: blue,
+            message_warning_fg: base03,
+            message_warning_bg: yellow,
+            message_error_fg: base3,
+            message_error_bg: red,
+            update_badge_fg: base03,
+            update_badge_bg: yellow,
+
+            mode_fg: base3,
+            mode_bg: blue,
+        }
+    }
+
     pub fn catppuccin_latte() -> Self {
         let flavor = CatppuccinFlavor {
             dark: false,
@@ -893,9 +1036,11 @@ pub enum ThemeArg {
     NordLight,
     NordDarkHighContrast,
     NordLightHighContrast,
+    SolarizedLight,
+    SolarizedDark,
 }
 
-const THEME_CHOICES: [(&str, ThemeArg); 14] = [
+const THEME_CHOICES: [(&str, ThemeArg); 16] = [
     ("dark", ThemeArg::Dark),
     ("light", ThemeArg::Light),
     ("ayu-light", ThemeArg::AyuLight),
@@ -910,6 +1055,8 @@ const THEME_CHOICES: [(&str, ThemeArg); 14] = [
     ("nord-light", ThemeArg::NordLight),
     ("nord-dark-high-contrast", ThemeArg::NordDarkHighContrast),
     ("nord-light-high-contrast", ThemeArg::NordLightHighContrast),
+    ("solarized-light", ThemeArg::SolarizedLight),
+    ("solarized-dark", ThemeArg::SolarizedDark),
 ];
 
 /// CLI arguments parsed from command line
@@ -1007,6 +1154,8 @@ pub fn resolve_theme(arg: ThemeArg) -> Theme {
         ThemeArg::NordLight => Theme::nord_light(),
         ThemeArg::NordDarkHighContrast => Theme::nord_dark_high_contrast(),
         ThemeArg::NordLightHighContrast => Theme::nord_light_high_contrast(),
+        ThemeArg::SolarizedLight => Theme::solarized_light(),
+        ThemeArg::SolarizedDark => Theme::solarized_dark(),
     }
 }
 
