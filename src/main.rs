@@ -56,12 +56,18 @@ fn main() -> anyhow::Result<()> {
         original_hook(panic_info);
     }));
 
-    // Check keyboard enhancement support before enabling raw mode
-    let keyboard_enhancement_supported = matches!(supports_keyboard_enhancement(), Ok(true));
-
     // Parse CLI arguments and resolve theme
     // This also configures syntax highlighting colors before diff parsing
     let mut cli_args = parse_cli_args();
+
+    // Check keyboard enhancement support before enabling raw mode.
+    // Skip when --stdout is used because the probe writes escape sequences to stdout,
+    // which would leak into the captured export output.
+    let keyboard_enhancement_supported = if cli_args.output_to_stdout {
+        false
+    } else {
+        matches!(supports_keyboard_enhancement(), Ok(true))
+    };
 
     // --path implies --working-tree unless -r is explicitly provided
     if cli_args.path_filter.is_some() && !cli_args.working_tree && cli_args.revisions.is_none() {
