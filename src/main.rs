@@ -177,6 +177,8 @@ fn main() -> anyhow::Result<()> {
 
     // Track pending z command for zz centering
     let mut pending_z = false;
+    // Track pending Z command for ZZ export+quit / ZQ quit
+    let mut pending_shift_z = false;
     // Track pending d command for dd delete
     let mut pending_d = false;
     // Track pending ; command for ;e toggle file list
@@ -255,6 +257,30 @@ fn main() -> anyhow::Result<()> {
                         // Otherwise fall through to normal handling
                     }
 
+                    // Handle pending Z command for ZZ (export+quit) / ZQ (quit)
+                    if pending_shift_z {
+                        pending_shift_z = false;
+                        match key.code {
+                            crossterm::event::KeyCode::Char('Z') => {
+                                // ZZ: save session, export, and quit (same as :wq)
+                                let _ = persistence::save_session(&app.session);
+                                app.dirty = false;
+                                if app.session.has_comments() {
+                                    handler::handle_export_and_quit(&mut app);
+                                } else {
+                                    app.should_quit = true;
+                                }
+                                continue;
+                            }
+                            crossterm::event::KeyCode::Char('Q') => {
+                                // ZQ: quit without exporting (same as q)
+                                app.should_quit = true;
+                                continue;
+                            }
+                            _ => {} // Fall through to normal handling
+                        }
+                    }
+
                     // Handle pending d command for dd delete comment
                     if pending_d {
                         pending_d = false;
@@ -308,6 +334,11 @@ fn main() -> anyhow::Result<()> {
                     match action {
                         Action::PendingZCommand => {
                             pending_z = true;
+                            app.pending_count = None;
+                            continue;
+                        }
+                        Action::PendingShiftZCommand => {
+                            pending_shift_z = true;
                             app.pending_count = None;
                             continue;
                         }

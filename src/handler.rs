@@ -25,6 +25,14 @@ fn handle_export(app: &mut App) {
     }
 }
 
+/// Export and quit (used by ZZ keybinding).
+/// When --stdout is set, stores export content and quits.
+/// Otherwise, exports to clipboard and quits.
+pub fn handle_export_and_quit(app: &mut App) {
+    handle_export(app);
+    app.should_quit = true;
+}
+
 fn comment_line_start(buffer: &str, cursor: usize) -> usize {
     let cursor = cursor.min(buffer.len());
     match buffer[..cursor].rfind('\n') {
