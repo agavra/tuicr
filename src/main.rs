@@ -69,6 +69,22 @@ fn main() -> anyhow::Result<()> {
         matches!(supports_keyboard_enhancement(), Ok(true))
     };
 
+    // --file is mutually exclusive with --path, -r, and -w
+    if cli_args.file_path.is_some() {
+        if cli_args.path_filter.is_some() {
+            eprintln!("Error: --file cannot be combined with --path");
+            std::process::exit(2);
+        }
+        if cli_args.revisions.is_some() {
+            eprintln!("Error: --file cannot be combined with -r/--revisions");
+            std::process::exit(2);
+        }
+        if cli_args.working_tree {
+            eprintln!("Error: --file cannot be combined with -w/--working-tree");
+            std::process::exit(2);
+        }
+    }
+
     // --path implies --working-tree unless -r is explicitly provided
     if cli_args.path_filter.is_some() && !cli_args.working_tree && cli_args.revisions.is_none() {
         cli_args.working_tree = true;
@@ -127,6 +143,7 @@ fn main() -> anyhow::Result<()> {
         cli_args.revisions.as_deref(),
         cli_args.working_tree,
         cli_args.path_filter.as_deref(),
+        cli_args.file_path.as_deref(),
     ) {
         Ok(mut app) => {
             app.supports_keyboard_enhancement = keyboard_enhancement_supported;

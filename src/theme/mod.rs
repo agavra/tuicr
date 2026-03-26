@@ -1074,6 +1074,8 @@ pub struct CliArgs {
     pub working_tree: bool,
     /// Filter diff to a specific file or directory path
     pub path_filter: Option<String>,
+    /// Open a single file for annotation (no VCS required)
+    pub file_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1428,6 +1430,7 @@ Options:
   -p, --path <PATH>     Filter diff to a specific file or directory
   -w, --working-tree     Include uncommitted changes (skip commit selector when used alone,
                          combine with commits when used with -r)
+  --file <PATH>          Open a file for annotation (no VCS required)
   --stdout               Output to stdout instead of clipboard when exporting
   --no-update-check      Skip checking for updates on startup
   -V, --version          Print version
@@ -1555,6 +1558,24 @@ fn parse_cli_args_from(args: &[String]) -> Result<CliArgs, String> {
                 return Err("--path requires a file or directory path".to_string());
             }
             cli_args.path_filter = Some(value.to_string());
+        }
+
+        // Handle --file value
+        if args[i] == "--file" {
+            let value = args
+                .get(i + 1)
+                .ok_or_else(|| "--file requires a file path".to_string())?;
+            if value.starts_with('-') {
+                return Err("--file requires a file path".to_string());
+            }
+            cli_args.file_path = Some(value.clone());
+        }
+        // Handle --file=value
+        if let Some(value) = args[i].strip_prefix("--file=") {
+            if value.is_empty() {
+                return Err("--file requires a file path".to_string());
+            }
+            cli_args.file_path = Some(value.to_string());
         }
 
         // Handle -r / --revisions value

@@ -12,11 +12,13 @@
 //! is tried next, then Mercurial.
 
 mod diff_parser;
+pub mod file;
 pub mod git;
 mod hg;
 mod jj;
 pub(crate) mod traits;
 
+pub use file::FileBackend;
 pub use git::GitBackend;
 pub use hg::HgBackend;
 pub use jj::JjBackend;
