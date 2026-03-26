@@ -36,10 +36,7 @@ impl FileBackend {
             )));
         }
 
-        let root_path = file_path
-            .parent()
-            .unwrap_or(Path::new("/"))
-            .to_path_buf();
+        let root_path = file_path.parent().unwrap_or(Path::new("/")).to_path_buf();
 
         let info = VcsInfo {
             root_path,
@@ -66,10 +63,7 @@ impl VcsBackend for FileBackend {
         }
 
         // Build line contents and origins for syntax highlighting
-        let line_contents: Vec<String> = lines
-            .iter()
-            .map(|l| l.replace('\t', "    "))
-            .collect();
+        let line_contents: Vec<String> = lines.iter().map(|l| l.replace('\t', "    ")).collect();
         let line_origins: Vec<LineOrigin> = vec![LineOrigin::Addition; line_contents.len()];
 
         // Apply syntax highlighting
