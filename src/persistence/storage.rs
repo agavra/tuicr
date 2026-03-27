@@ -3,9 +3,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
+use crate::app::{CommentTypeDefinition, DiffSource};
 use crate::error::{Result, TuicrError};
 use crate::model::ReviewSession;
 use crate::model::review::SessionDiffSource;
+use crate::output::markdown::generate_markdown;
 
 const SESSION_MAX_AGE_DAYS: u64 = 7;
 const SESSION_FILENAME_MIN_PARTS: usize = 6;
@@ -187,13 +189,23 @@ fn session_filename(session: &ReviewSession) -> String {
     )
 }
 
-pub fn save_session(session: &ReviewSession, local_storage: bool) -> Result<PathBuf> {
+pub fn save_session(
+    session: &ReviewSession,
+    local_storage: bool,
+    diff_source: &DiffSource,
+    comment_types: &[CommentTypeDefinition],
+) -> Result<PathBuf> {
     let reviews_dir = get_storage_dir(&session.repo_path, local_storage)?;
     let filename = session_filename(session);
     let path = reviews_dir.join(&filename);
 
     let json = serde_json::to_string_pretty(session)?;
     fs::write(&path, json)?;
+
+    let md_filename = filename.replace(".json", ".md");
+    let md_path = reviews_dir.join(&md_filename);
+    let markdown = generate_markdown(session, diff_source, comment_types);
+    fs::write(&md_path, markdown)?;
 
     Ok(path)
 }
@@ -351,6 +363,7 @@ fn delete_session(path: &PathBuf) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::{CommentTypeDefinition, DiffSource};
     use crate::model::FileStatus;
     use std::path::PathBuf;
     use std::sync::{Mutex, OnceLock};
@@ -358,6 +371,39 @@ mod tests {
 
     const TEST_MTIME_RETRIES: usize = 40;
     const TEST_MTIME_SLEEP_MS: u64 = 100;
+
+    fn test_diff_source() -> DiffSource {
+        DiffSource::WorkingTree
+    }
+
+    fn test_comment_types() -> Vec<CommentTypeDefinition> {
+        vec![
+            CommentTypeDefinition {
+                id: "note".to_string(),
+                label: "note".to_string(),
+                definition: None,
+                color: None,
+            },
+            CommentTypeDefinition {
+                id: "suggestion".to_string(),
+                label: "suggestion".to_string(),
+                definition: None,
+                color: None,
+            },
+            CommentTypeDefinition {
+                id: "issue".to_string(),
+                label: "issue".to_string(),
+                definition: None,
+                color: None,
+            },
+            CommentTypeDefinition {
+                id: "praise".to_string(),
+                label: "praise".to_string(),
+                definition: None,
+                color: None,
+            },
+        ]
+    }
 
     fn create_test_session() -> ReviewSession {
         let mut session = ReviewSession::new(
@@ -492,7 +538,7 @@ mod tests {
     fn should_roundtrip_session() {
         let _guard = with_test_reviews_dir();
         let session = create_test_session();
-        let path = save_session(&session, false).unwrap();
+        let path = save_session(&session, false, &test_diff_source(), &test_comment_types()).unwrap();
         let loaded = load_session(&path).unwrap();
         assert_eq!(session.id, loaded.id);
         assert_eq!(session.base_commit, loaded.base_commit);
@@ -529,7 +575,7 @@ mod tests {
             SessionDiffSource::WorkingTree,
             None,
         );
-        let path1 = save_session(&session1, false).unwrap();
+        let path1 = save_session(&session1, false, &test_diff_source(), &test_comment_types()).unwrap();
 
         let session2 = create_session(
             repo_path.clone(),
@@ -538,7 +584,7 @@ mod tests {
             SessionDiffSource::WorkingTree,
             None,
         );
-        let path2 = save_session(&session2, false).unwrap();
+        let path2 = save_session(&session2, false, &test_diff_source(), &test_comment_types()).unwrap();
         ensure_newer_mtime(&path2, &path1);
         let (selected_path, selected) = load_latest_session_for_context(
             &repo_path,
@@ -568,7 +614,7 @@ mod tests {
             SessionDiffSource::WorkingTree,
             None,
         );
-        let _ = save_session(&session, false).unwrap();
+        let _ = save_session(&session, false, &test_diff_source(), &test_comment_types()).unwrap();
         let loaded = load_latest_session_for_context(
             &repo_path,
             Some("main"),
@@ -594,7 +640,7 @@ mod tests {
             SessionDiffSource::WorkingTree,
             None,
         );
-        let _ = save_session(&session, false).unwrap();
+        let _ = save_session(&session, false, &test_diff_source(), &test_comment_types()).unwrap();
         let loaded = load_latest_session_for_context(
             &repo_path,
             Some("feature/with_underscores"),
@@ -620,7 +666,7 @@ mod tests {
             SessionDiffSource::WorkingTree,
             None,
         );
-        let _ = save_session(&session, false).unwrap();
+        let _ = save_session(&session, false, &test_diff_source(), &test_comment_types()).unwrap();
         let loaded = load_latest_session_for_context(
             &repo_path,
             Some("feature/deadbeef_fix"),
@@ -646,7 +692,7 @@ mod tests {
             SessionDiffSource::WorkingTree,
             None,
         );
-        let branch_path = save_session(&branch_session, false).unwrap();
+        let branch_path = save_session(&branch_session, false, &test_diff_source(), &test_comment_types()).unwrap();
 
         let legacy_source = create_session(
             repo_path.clone(),
@@ -738,7 +784,7 @@ mod tests {
             SessionDiffSource::WorkingTree,
             None,
         );
-        let _ = save_session(&session, false).unwrap();
+        let _ = save_session(&session, false, &test_diff_source(), &test_comment_types()).unwrap();
         let mismatch = load_latest_session_for_context(
             &repo_path,
             None,
@@ -775,7 +821,7 @@ mod tests {
             SessionDiffSource::CommitRange,
             Some(commit_range.clone()),
         );
-        let _ = save_session(&commits_session, false).unwrap();
+        let _ = save_session(&commits_session, false, &test_diff_source(), &test_comment_types()).unwrap();
         let worktree = load_latest_session_for_context(
             &repo_path,
             Some("main"),
@@ -814,7 +860,7 @@ mod tests {
             SessionDiffSource::CommitRange,
             Some(commit_range_a.clone()),
         );
-        let path_a = save_session(&session_a, false).unwrap();
+        let path_a = save_session(&session_a, false, &test_diff_source(), &test_comment_types()).unwrap();
 
         let session_b = create_session(
             repo_path.clone(),
@@ -823,7 +869,7 @@ mod tests {
             SessionDiffSource::CommitRange,
             Some(commit_range_b.clone()),
         );
-        let path_b = save_session(&session_b, false).unwrap();
+        let path_b = save_session(&session_b, false, &test_diff_source(), &test_comment_types()).unwrap();
         let (selected_path, selected) = load_latest_session_for_context(
             &repo_path,
             Some("main"),
@@ -856,7 +902,7 @@ mod tests {
             SessionDiffSource::CommitRange,
             Some(commit_range.clone()),
         );
-        let path = save_session(&session, false).unwrap();
+        let path = save_session(&session, false, &test_diff_source(), &test_comment_types()).unwrap();
         let loaded = load_session(&path).unwrap();
         assert_eq!(loaded.commit_range, Some(commit_range));
         assert_eq!(loaded.diff_source, SessionDiffSource::CommitRange);
@@ -879,7 +925,7 @@ mod tests {
             SessionDiffSource::CommitRange,
             Some(commit_range),
         );
-        let _ = save_session(&session, false).unwrap();
+        let _ = save_session(&session, false, &test_diff_source(), &test_comment_types()).unwrap();
         let loaded = load_latest_session_for_context(
             &repo_path,
             Some("main"),
@@ -907,7 +953,7 @@ mod tests {
             SessionDiffSource::CommitRange,
             None,
         );
-        let _ = save_session(&session, false).unwrap();
+        let _ = save_session(&session, false, &test_diff_source(), &test_comment_types()).unwrap();
         let loaded = load_latest_session_for_context(
             &repo_path,
             Some("main"),
@@ -936,7 +982,7 @@ mod tests {
             SessionDiffSource::WorkingTree,
             None,
         );
-        let _ = save_session(&session_a, false).unwrap();
+        let _ = save_session(&session_a, false, &test_diff_source(), &test_comment_types()).unwrap();
 
         let session_b = create_session(
             repo_b.clone(),
@@ -945,7 +991,7 @@ mod tests {
             SessionDiffSource::WorkingTree,
             None,
         );
-        let _ = save_session(&session_b, false).unwrap();
+        let _ = save_session(&session_b, false, &test_diff_source(), &test_comment_types()).unwrap();
         let (_path, selected) = load_latest_session_for_context(
             &repo_a,
             Some("main"),
@@ -976,7 +1022,7 @@ mod tests {
             None,
         );
 
-        let path = save_session(&session, true).unwrap();
+        let path = save_session(&session, true, &test_diff_source(), &test_comment_types()).unwrap();
         assert!(path.starts_with(&repo_path.join(".tuicr").join("reviews")));
 
         let loaded = load_latest_session_for_context(
@@ -1010,7 +1056,7 @@ mod tests {
             None,
         );
 
-        let _path = save_session(&session, true).unwrap();
+        let _path = save_session(&session, true, &test_diff_source(), &test_comment_types()).unwrap();
 
         let not_found = load_latest_session_for_context(
             &repo_path,
