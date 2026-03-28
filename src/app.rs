@@ -391,7 +391,7 @@ impl App {
             let vcs = Box::new(FileBackend::new(file_path)?);
             let vcs_info = vcs.info().clone();
             let highlighter = theme.syntax_highlighter();
-            let diff_files = vcs.get_working_tree_diff(&highlighter)?;
+            let diff_files = vcs.get_working_tree_diff(highlighter)?;
             let session = Self::load_or_create_session(&vcs_info, SessionDiffSource::WorkingTree);
 
             let mut app = Self::build(
