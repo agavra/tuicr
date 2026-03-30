@@ -26,6 +26,7 @@ pub struct AppConfig {
     pub show_file_list: Option<bool>,
     pub diff_view: Option<String>,
     pub wrap: Option<bool>,
+    pub local_storage: Option<bool>,
 }
 
 /// Known top-level config keys. Used to warn about typos.
@@ -38,6 +39,7 @@ const KNOWN_KEYS: &[&str] = &[
     "show_file_list",
     "diff_view",
     "wrap",
+    "local_storage",
 ];
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -176,6 +178,7 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
             &mut warnings,
         ),
         wrap: read_bool(table, "wrap", &mut warnings),
+        local_storage: read_bool(table, "local_storage", &mut warnings),
     };
 
     for key in table.keys() {
@@ -579,6 +582,42 @@ mod tests {
         assert_eq!(
             outcome.warnings[0],
             "Warning: Config key 'wrap' must be a boolean; ignoring value"
+        );
+    }
+
+    // local_storage
+
+    #[test]
+    fn should_parse_local_storage_true() {
+        let outcome = parse_config("local_storage = true\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.local_storage),
+            Some(true)
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_parse_local_storage_false() {
+        let outcome = parse_config("local_storage = false\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.local_storage),
+            Some(false)
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_warn_and_ignore_local_storage_with_invalid_type() {
+        let outcome = parse_config("local_storage = \"yes\"\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.local_storage),
+            None
+        );
+        assert_eq!(outcome.warnings.len(), 1);
+        assert_eq!(
+            outcome.warnings[0],
+            "Warning: Config key 'local_storage' must be a boolean; ignoring value"
         );
     }
 

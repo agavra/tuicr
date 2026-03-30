@@ -269,6 +269,8 @@ pub struct App {
     pub update_info: Option<UpdateInfo>,
     /// Accumulated digit count for {N}G jump-to-line
     pub pending_count: Option<usize>,
+    /// Store review sessions in the repository (.tuicr/reviews/) instead of global directory
+    pub local_storage: bool,
 
     // Inline commit selector state (shown at top of diff view for multi-commit reviews)
     /// CommitInfo for commits in the current review (display order: newest first)
@@ -381,6 +383,7 @@ impl App {
         output_to_stdout: bool,
         revisions: Option<&str>,
         working_tree: bool,
+        local_storage: bool,
     ) -> Result<Self> {
         let vcs = detect_vcs()?;
         let vcs_info = vcs.info().clone();
@@ -405,6 +408,7 @@ impl App {
                 let session = Self::load_or_create_staged_unstaged_and_commits_session(
                     &vcs_info,
                     &commit_ids,
+                    local_storage,
                 );
                 let review_commits: Vec<CommitInfo> = vcs
                     .get_commits_info(&commit_ids)?
@@ -444,6 +448,7 @@ impl App {
                     DiffSource::StagedUnstagedAndCommits(commit_ids),
                     InputMode::Normal,
                     Vec::new(),
+                    local_storage,
                 )?;
 
                 app.range_diff_files = Some(app.diff_files.clone());
@@ -475,7 +480,8 @@ impl App {
                 &commit_ids,
                 highlighter,
             )?;
-            let session = Self::load_or_create_commit_range_session(&vcs_info, &commit_ids);
+            let session =
+                Self::load_or_create_commit_range_session(&vcs_info, &commit_ids, local_storage);
             // Get commit info for the inline commit selector
             let review_commits = vcs.get_commits_info(&commit_ids)?;
             // Reverse to newest-first display order
@@ -492,6 +498,7 @@ impl App {
                 DiffSource::CommitRange(commit_ids),
                 InputMode::Normal,
                 Vec::new(),
+                local_storage,
             )?;
 
             // Set up inline commit selector for multi-commit reviews
@@ -520,8 +527,11 @@ impl App {
                 &vcs_info.root_path,
                 highlighter,
             )?;
-            let session =
-                Self::load_or_create_session(&vcs_info, SessionDiffSource::StagedAndUnstaged);
+            let session = Self::load_or_create_session(
+                &vcs_info,
+                SessionDiffSource::StagedAndUnstaged,
+                local_storage,
+            );
 
             let mut app = Self::build(
                 vcs,
@@ -534,6 +544,7 @@ impl App {
                 DiffSource::StagedAndUnstaged,
                 InputMode::Normal,
                 Vec::new(),
+                local_storage,
             )?;
             app.sort_files_by_directory(true);
             app.expand_all_dirs();
@@ -610,7 +621,7 @@ impl App {
                 SessionDiffSource::WorkingTree
             };
 
-            let session = Self::load_or_create_session(&vcs_info, session_source);
+            let session = Self::load_or_create_session(&vcs_info, session_source, local_storage);
 
             let mut app = Self::build(
                 vcs,
@@ -623,6 +634,7 @@ impl App {
                 diff_source,
                 InputMode::CommitSelect,
                 commit_list,
+                local_storage,
             )?;
 
             app.has_more_commit = commits.len() >= VISIBLE_COMMIT_COUNT;
@@ -644,6 +656,7 @@ impl App {
         diff_source: DiffSource,
         input_mode: InputMode,
         commit_list: Vec<CommitInfo>,
+        local_storage: bool,
     ) -> Result<Self> {
         // Ensure all diff files are registered in the session
         for file in &diff_files {
@@ -712,6 +725,7 @@ impl App {
             comment_cursor_screen_pos: None,
             update_info: None,
             pending_count: None,
+            local_storage,
             review_commits: Vec::new(),
             show_commit_selector: false,
             commit_diff_cache: HashMap::new(),
@@ -863,6 +877,7 @@ impl App {
     fn load_or_create_commit_range_session(
         vcs_info: &VcsInfo,
         commit_ids: &[String],
+        local_storage: bool,
     ) -> ReviewSession {
         let newest_commit_id = commit_ids.last().unwrap().clone();
         let loaded = load_latest_session_for_context(
@@ -871,6 +886,7 @@ impl App {
             &newest_commit_id,
             SessionDiffSource::CommitRange,
             Some(commit_ids),
+            local_storage,
         )
         .ok()
         .and_then(|found| found.map(|(_path, session)| session));
@@ -896,6 +912,7 @@ impl App {
     fn load_or_create_staged_unstaged_and_commits_session(
         vcs_info: &VcsInfo,
         commit_ids: &[String],
+        local_storage: bool,
     ) -> ReviewSession {
         let newest_commit_id = commit_ids.last().unwrap().clone();
         let loaded = load_latest_session_for_context(
@@ -904,6 +921,7 @@ impl App {
             &newest_commit_id,
             SessionDiffSource::StagedUnstagedAndCommits,
             Some(commit_ids),
+            local_storage,
         )
         .ok()
         .and_then(|found| found.map(|(_path, session)| session));
@@ -926,7 +944,11 @@ impl App {
         session
     }
 
-    fn load_or_create_session(vcs_info: &VcsInfo, diff_source: SessionDiffSource) -> ReviewSession {
+    fn load_or_create_session(
+        vcs_info: &VcsInfo,
+        diff_source: SessionDiffSource,
+        local_storage: bool,
+    ) -> ReviewSession {
         let new_session = || {
             ReviewSession::new(
                 vcs_info.root_path.clone(),
@@ -942,6 +964,7 @@ impl App {
             &vcs_info.head_commit,
             diff_source,
             None,
+            local_storage,
         ) else {
             return new_session();
         };
@@ -1160,8 +1183,11 @@ impl App {
             Err(e) => return Err(e),
         };
 
-        self.session =
-            Self::load_or_create_session(&self.vcs_info, SessionDiffSource::StagedAndUnstaged);
+        self.session = Self::load_or_create_session(
+            &self.vcs_info,
+            SessionDiffSource::StagedAndUnstaged,
+            self.local_storage,
+        );
         for file in &diff_files {
             let path = file.display_path().clone();
             self.session.add_file(path, file.status);
@@ -1195,7 +1221,11 @@ impl App {
             Err(e) => return Err(e),
         };
 
-        self.session = Self::load_or_create_session(&self.vcs_info, SessionDiffSource::Staged);
+        self.session = Self::load_or_create_session(
+            &self.vcs_info,
+            SessionDiffSource::Staged,
+            self.local_storage,
+        );
         for file in &diff_files {
             let path = file.display_path().clone();
             self.session.add_file(path, file.status);
@@ -1229,7 +1259,11 @@ impl App {
             Err(e) => return Err(e),
         };
 
-        self.session = Self::load_or_create_session(&self.vcs_info, SessionDiffSource::Unstaged);
+        self.session = Self::load_or_create_session(
+            &self.vcs_info,
+            SessionDiffSource::Unstaged,
+            self.local_storage,
+        );
         for file in &diff_files {
             let path = file.display_path().clone();
             self.session.add_file(path, file.status);
@@ -3049,7 +3083,6 @@ impl App {
             return Ok(());
         }
 
-        // Update session with the newest commit as base
         let newest_commit_id = selected_ids.last().unwrap().clone();
         let loaded_session = load_latest_session_for_context(
             &self.vcs_info.root_path,
@@ -3057,6 +3090,7 @@ impl App {
             &newest_commit_id,
             SessionDiffSource::CommitRange,
             Some(selected_ids.as_slice()),
+            self.local_storage,
         )
         .ok()
         .and_then(|found| found.map(|(_path, session)| session));
@@ -3275,8 +3309,11 @@ impl App {
             Err(e) => return Err(e),
         };
 
-        self.session =
-            Self::load_or_create_staged_unstaged_and_commits_session(&self.vcs_info, &selected_ids);
+        self.session = Self::load_or_create_staged_unstaged_and_commits_session(
+            &self.vcs_info,
+            &selected_ids,
+            self.local_storage,
+        );
 
         for file in &diff_files {
             let path = file.display_path().clone();
@@ -4137,6 +4174,7 @@ mod commit_selection_tests {
             DiffSource::WorkingTree,
             InputMode::CommitSelect,
             commit_list,
+            false,
         )
         .expect("failed to build test app")
     }

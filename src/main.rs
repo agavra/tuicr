@@ -106,6 +106,13 @@ fn main() -> anyhow::Result<()> {
     };
 
     // Initialize app
+    // CLI flag takes precedence over config file setting for local_storage
+    let local_storage = cli_args.local_storage
+        || config_outcome
+            .config
+            .as_ref()
+            .and_then(|cfg| cfg.local_storage)
+            .unwrap_or(false);
     let mut app = match App::new(
         theme,
         config_outcome
@@ -115,6 +122,7 @@ fn main() -> anyhow::Result<()> {
         cli_args.output_to_stdout,
         cli_args.revisions.as_deref(),
         cli_args.working_tree,
+        local_storage,
     ) {
         Ok(mut app) => {
             app.supports_keyboard_enhancement = keyboard_enhancement_supported;
@@ -262,8 +270,12 @@ fn main() -> anyhow::Result<()> {
                         pending_shift_z = false;
                         match key.code {
                             crossterm::event::KeyCode::Char('Z') => {
-                                // ZZ: save session, export, and quit (same as :wq)
-                                let _ = persistence::save_session(&app.session);
+                                let _ = persistence::save_session(
+                                    &app.session,
+                                    app.local_storage,
+                                    &app.diff_source,
+                                    &app.comment_types,
+                                );
                                 app.dirty = false;
                                 if app.session.has_comments() {
                                     handler::handle_export_and_quit(&mut app);
