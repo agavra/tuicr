@@ -564,8 +564,13 @@ fn render_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {
 fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focused_panel == FocusedPanel::Diff;
 
+    let title = match app.current_file_path() {
+        Some(path) => format!(" Diff (Unified) \u{2014} {} ", path.display()),
+        None => " Diff (Unified) ".to_string(),
+    };
+
     let block = Block::default()
-        .title(" Diff (Unified) ")
+        .title(title)
         .borders(Borders::ALL)
         .style(styles::panel_style(&app.theme))
         .border_style(styles::border_style(&app.theme, focused));
@@ -1416,8 +1421,13 @@ fn comment_type_presentation(
 fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focused_panel == FocusedPanel::Diff;
 
+    let title = match app.current_file_path() {
+        Some(path) => format!(" Diff (Side-by-Side) \u{2014} {} ", path.display()),
+        None => " Diff (Side-by-Side) ".to_string(),
+    };
+
     let block = Block::default()
-        .title(" Diff (Side-by-Side) ")
+        .title(title)
         .borders(Borders::ALL)
         .style(styles::panel_style(&app.theme))
         .border_style(styles::border_style(&app.theme, focused));
