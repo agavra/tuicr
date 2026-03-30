@@ -527,8 +527,11 @@ impl App {
                 &vcs_info.root_path,
                 highlighter,
             )?;
-            let session =
-                Self::load_or_create_session(&vcs_info, SessionDiffSource::StagedAndUnstaged, local_storage);
+            let session = Self::load_or_create_session(
+                &vcs_info,
+                SessionDiffSource::StagedAndUnstaged,
+                local_storage,
+            );
 
             let mut app = Self::build(
                 vcs,
@@ -1180,8 +1183,11 @@ impl App {
             Err(e) => return Err(e),
         };
 
-        self.session =
-            Self::load_or_create_session(&self.vcs_info, SessionDiffSource::StagedAndUnstaged, self.local_storage);
+        self.session = Self::load_or_create_session(
+            &self.vcs_info,
+            SessionDiffSource::StagedAndUnstaged,
+            self.local_storage,
+        );
         for file in &diff_files {
             let path = file.display_path().clone();
             self.session.add_file(path, file.status);
@@ -1215,7 +1221,11 @@ impl App {
             Err(e) => return Err(e),
         };
 
-        self.session = Self::load_or_create_session(&self.vcs_info, SessionDiffSource::Staged, self.local_storage);
+        self.session = Self::load_or_create_session(
+            &self.vcs_info,
+            SessionDiffSource::Staged,
+            self.local_storage,
+        );
         for file in &diff_files {
             let path = file.display_path().clone();
             self.session.add_file(path, file.status);
@@ -1249,7 +1259,11 @@ impl App {
             Err(e) => return Err(e),
         };
 
-        self.session = Self::load_or_create_session(&self.vcs_info, SessionDiffSource::Unstaged, self.local_storage);
+        self.session = Self::load_or_create_session(
+            &self.vcs_info,
+            SessionDiffSource::Unstaged,
+            self.local_storage,
+        );
         for file in &diff_files {
             let path = file.display_path().clone();
             self.session.add_file(path, file.status);
@@ -3295,8 +3309,11 @@ impl App {
             Err(e) => return Err(e),
         };
 
-        self.session =
-            Self::load_or_create_staged_unstaged_and_commits_session(&self.vcs_info, &selected_ids, self.local_storage);
+        self.session = Self::load_or_create_staged_unstaged_and_commits_session(
+            &self.vcs_info,
+            &selected_ids,
+            self.local_storage,
+        );
 
         for file in &diff_files {
             let path = file.display_path().clone();

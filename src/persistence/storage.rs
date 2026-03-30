@@ -538,7 +538,8 @@ mod tests {
     fn should_roundtrip_session() {
         let _guard = with_test_reviews_dir();
         let session = create_test_session();
-        let path = save_session(&session, false, &test_diff_source(), &test_comment_types()).unwrap();
+        let path =
+            save_session(&session, false, &test_diff_source(), &test_comment_types()).unwrap();
         let loaded = load_session(&path).unwrap();
         assert_eq!(session.id, loaded.id);
         assert_eq!(session.base_commit, loaded.base_commit);
@@ -575,7 +576,8 @@ mod tests {
             SessionDiffSource::WorkingTree,
             None,
         );
-        let path1 = save_session(&session1, false, &test_diff_source(), &test_comment_types()).unwrap();
+        let path1 =
+            save_session(&session1, false, &test_diff_source(), &test_comment_types()).unwrap();
 
         let session2 = create_session(
             repo_path.clone(),
@@ -584,7 +586,8 @@ mod tests {
             SessionDiffSource::WorkingTree,
             None,
         );
-        let path2 = save_session(&session2, false, &test_diff_source(), &test_comment_types()).unwrap();
+        let path2 =
+            save_session(&session2, false, &test_diff_source(), &test_comment_types()).unwrap();
         ensure_newer_mtime(&path2, &path1);
         let (selected_path, selected) = load_latest_session_for_context(
             &repo_path,
@@ -692,7 +695,13 @@ mod tests {
             SessionDiffSource::WorkingTree,
             None,
         );
-        let branch_path = save_session(&branch_session, false, &test_diff_source(), &test_comment_types()).unwrap();
+        let branch_path = save_session(
+            &branch_session,
+            false,
+            &test_diff_source(),
+            &test_comment_types(),
+        )
+        .unwrap();
 
         let legacy_source = create_session(
             repo_path.clone(),
@@ -821,7 +830,13 @@ mod tests {
             SessionDiffSource::CommitRange,
             Some(commit_range.clone()),
         );
-        let _ = save_session(&commits_session, false, &test_diff_source(), &test_comment_types()).unwrap();
+        let _ = save_session(
+            &commits_session,
+            false,
+            &test_diff_source(),
+            &test_comment_types(),
+        )
+        .unwrap();
         let worktree = load_latest_session_for_context(
             &repo_path,
             Some("main"),
@@ -860,7 +875,13 @@ mod tests {
             SessionDiffSource::CommitRange,
             Some(commit_range_a.clone()),
         );
-        let path_a = save_session(&session_a, false, &test_diff_source(), &test_comment_types()).unwrap();
+        let path_a = save_session(
+            &session_a,
+            false,
+            &test_diff_source(),
+            &test_comment_types(),
+        )
+        .unwrap();
 
         let session_b = create_session(
             repo_path.clone(),
@@ -869,7 +890,13 @@ mod tests {
             SessionDiffSource::CommitRange,
             Some(commit_range_b.clone()),
         );
-        let path_b = save_session(&session_b, false, &test_diff_source(), &test_comment_types()).unwrap();
+        let path_b = save_session(
+            &session_b,
+            false,
+            &test_diff_source(),
+            &test_comment_types(),
+        )
+        .unwrap();
         let (selected_path, selected) = load_latest_session_for_context(
             &repo_path,
             Some("main"),
@@ -902,7 +929,8 @@ mod tests {
             SessionDiffSource::CommitRange,
             Some(commit_range.clone()),
         );
-        let path = save_session(&session, false, &test_diff_source(), &test_comment_types()).unwrap();
+        let path =
+            save_session(&session, false, &test_diff_source(), &test_comment_types()).unwrap();
         let loaded = load_session(&path).unwrap();
         assert_eq!(loaded.commit_range, Some(commit_range));
         assert_eq!(loaded.diff_source, SessionDiffSource::CommitRange);
@@ -982,7 +1010,13 @@ mod tests {
             SessionDiffSource::WorkingTree,
             None,
         );
-        let _ = save_session(&session_a, false, &test_diff_source(), &test_comment_types()).unwrap();
+        let _ = save_session(
+            &session_a,
+            false,
+            &test_diff_source(),
+            &test_comment_types(),
+        )
+        .unwrap();
 
         let session_b = create_session(
             repo_b.clone(),
@@ -991,7 +1025,13 @@ mod tests {
             SessionDiffSource::WorkingTree,
             None,
         );
-        let _ = save_session(&session_b, false, &test_diff_source(), &test_comment_types()).unwrap();
+        let _ = save_session(
+            &session_b,
+            false,
+            &test_diff_source(),
+            &test_comment_types(),
+        )
+        .unwrap();
         let (_path, selected) = load_latest_session_for_context(
             &repo_a,
             Some("main"),
@@ -1011,7 +1051,8 @@ mod tests {
 
     #[test]
     fn should_save_and_load_with_local_storage() {
-        let repo_path = std::env::temp_dir().join(format!("tuicr-local-repo-{}", uuid::Uuid::new_v4()));
+        let repo_path =
+            std::env::temp_dir().join(format!("tuicr-local-repo-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&repo_path).unwrap();
 
         let session = create_session(
@@ -1022,7 +1063,8 @@ mod tests {
             None,
         );
 
-        let path = save_session(&session, true, &test_diff_source(), &test_comment_types()).unwrap();
+        let path =
+            save_session(&session, true, &test_diff_source(), &test_comment_types()).unwrap();
         assert!(path.starts_with(&repo_path.join(".tuicr").join("reviews")));
 
         let loaded = load_latest_session_for_context(
@@ -1045,7 +1087,8 @@ mod tests {
     #[test]
     fn should_not_find_local_storage_session_in_global_dir() {
         let _guard = with_test_reviews_dir();
-        let repo_path = std::env::temp_dir().join(format!("tuicr-mixed-repo-{}", uuid::Uuid::new_v4()));
+        let repo_path =
+            std::env::temp_dir().join(format!("tuicr-mixed-repo-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&repo_path).unwrap();
 
         let session = create_session(
@@ -1056,7 +1099,8 @@ mod tests {
             None,
         );
 
-        let _path = save_session(&session, true, &test_diff_source(), &test_comment_types()).unwrap();
+        let _path =
+            save_session(&session, true, &test_diff_source(), &test_comment_types()).unwrap();
 
         let not_found = load_latest_session_for_context(
             &repo_path,

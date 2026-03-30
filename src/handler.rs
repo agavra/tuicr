@@ -154,14 +154,24 @@ pub fn handle_command_action(app: &mut App, action: Action) {
                     }
                 }
                 "q!" | "quit!" => app.should_quit = true,
-                "w" | "write" => match save_session(&app.session, app.local_storage, &app.diff_source, &app.comment_types) {
+                "w" | "write" => match save_session(
+                    &app.session,
+                    app.local_storage,
+                    &app.diff_source,
+                    &app.comment_types,
+                ) {
                     Ok(path) => {
                         app.dirty = false;
                         app.set_message(format!("Saved to {}", path.display()));
                     }
                     Err(e) => app.set_error(format!("Save failed: {e}")),
                 },
-                "x" | "wq" => match save_session(&app.session, app.local_storage, &app.diff_source, &app.comment_types) {
+                "x" | "wq" => match save_session(
+                    &app.session,
+                    app.local_storage,
+                    &app.diff_source,
+                    &app.comment_types,
+                ) {
                     Ok(_) => {
                         app.dirty = false;
                         if app.session.has_comments() {

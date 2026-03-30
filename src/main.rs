@@ -270,7 +270,12 @@ fn main() -> anyhow::Result<()> {
                         pending_shift_z = false;
                         match key.code {
                             crossterm::event::KeyCode::Char('Z') => {
-                                let _ = persistence::save_session(&app.session, app.local_storage, &app.diff_source, &app.comment_types);
+                                let _ = persistence::save_session(
+                                    &app.session,
+                                    app.local_storage,
+                                    &app.diff_source,
+                                    &app.comment_types,
+                                );
                                 app.dirty = false;
                                 if app.session.has_comments() {
                                     handler::handle_export_and_quit(&mut app);
