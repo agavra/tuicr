@@ -21,14 +21,23 @@ pub fn filter_diff_files(repo_root: &Path, diff_files: Vec<DiffFile>) -> Vec<Dif
 }
 
 fn load_matcher(repo_root: &Path) -> Option<ignore::gitignore::Gitignore> {
-    let ignore_file = repo_root.join(".tuicrignore");
-    if !ignore_file.is_file() {
+    let gitignore_file = repo_root.join(".gitignore");
+    let tuicrignore_file = repo_root.join(".tuicrignore");
+
+    if !gitignore_file.is_file() && !tuicrignore_file.is_file() {
         return None;
     }
 
     let mut builder = GitignoreBuilder::new(repo_root);
-    // Ignore malformed patterns and continue with valid ones.
-    let _ = builder.add(ignore_file);
+
+    // Load .gitignore first so .tuicrignore rules can override with `!` patterns.
+    if gitignore_file.is_file() {
+        let _ = builder.add(&gitignore_file);
+    }
+    if tuicrignore_file.is_file() {
+        let _ = builder.add(&tuicrignore_file);
+    }
+
     builder.build().ok()
 }
 
@@ -108,6 +117,71 @@ mod tests {
             .collect();
 
         assert_eq!(kept_paths, vec!["generated/keep.rs", "src/main.rs"]);
+    }
+
+    #[test]
+    fn respects_gitignore() {
+        let dir = tempdir().expect("failed to create temp dir");
+        let gitignore = dir.path().join(".gitignore");
+        fs::write(&gitignore, "target/\n*.log\n").expect("failed to write .gitignore");
+
+        let files = vec![
+            make_diff_file("src/main.rs"),
+            make_diff_file("target/debug/app"),
+            make_diff_file("build.log"),
+        ];
+
+        let filtered = filter_diff_files(dir.path(), files);
+        let kept: Vec<String> = filtered
+            .iter()
+            .map(|f| f.display_path().display().to_string())
+            .collect();
+
+        assert_eq!(kept, vec!["src/main.rs"]);
+    }
+
+    #[test]
+    fn tuicrignore_overrides_gitignore() {
+        let dir = tempdir().expect("failed to create temp dir");
+        let gitignore = dir.path().join(".gitignore");
+        fs::write(&gitignore, "*.lock\n").expect("failed to write .gitignore");
+        let tuicrignore = dir.path().join(".tuicrignore");
+        fs::write(&tuicrignore, "!Cargo.lock\n").expect("failed to write .tuicrignore");
+
+        let files = vec![
+            make_diff_file("Cargo.lock"),
+            make_diff_file("yarn.lock"),
+            make_diff_file("src/lib.rs"),
+        ];
+
+        let filtered = filter_diff_files(dir.path(), files);
+        let kept: Vec<String> = filtered
+            .iter()
+            .map(|f| f.display_path().display().to_string())
+            .collect();
+
+        // Cargo.lock is un-ignored by .tuicrignore, yarn.lock stays ignored
+        assert_eq!(kept, vec!["Cargo.lock", "src/lib.rs"]);
+    }
+
+    #[test]
+    fn gitignore_alone_filters_without_tuicrignore() {
+        let dir = tempdir().expect("failed to create temp dir");
+        let gitignore = dir.path().join(".gitignore");
+        fs::write(&gitignore, "dist/\n").expect("failed to write .gitignore");
+
+        let files = vec![
+            make_diff_file("src/index.ts"),
+            make_diff_file("dist/bundle.js"),
+        ];
+
+        let filtered = filter_diff_files(dir.path(), files);
+        let kept: Vec<String> = filtered
+            .iter()
+            .map(|f| f.display_path().display().to_string())
+            .collect();
+
+        assert_eq!(kept, vec!["src/index.ts"]);
     }
 
     #[test]
