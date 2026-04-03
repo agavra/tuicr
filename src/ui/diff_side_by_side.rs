@@ -128,7 +128,10 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                 "═══ Review Comments ",
                 styles::file_header_style(&app.theme),
             ),
-            Span::styled("═".repeat(40), styles::file_header_style(&app.theme)),
+            Span::styled(
+                crate::ui::diff_view::HEADER_RULE,
+                styles::file_header_style(&app.theme),
+            ),
         ]));
         line_idx += 1;
     }
@@ -232,7 +235,10 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
             lines.push(Line::from(vec![
                 Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
                 Span::styled(header_text, styles::file_header_style(&app.theme)),
-                Span::styled("═".repeat(40), styles::file_header_style(&app.theme)),
+                Span::styled(
+                    crate::ui::diff_view::HEADER_RULE,
+                    styles::file_header_style(&app.theme),
+                ),
             ]));
             line_idx += 1;
         }
@@ -381,8 +387,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                 .files
                 .get(path)
                 .map(|r| &r.line_comments)
-                .cloned()
-                .unwrap_or_default();
+                .unwrap_or(&crate::ui::diff_view::EMPTY_LINE_COMMENTS);
 
             for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
                 // Calculate and render gap before this hunk
@@ -507,7 +512,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                 // Process diff lines in side-by-side format
                 let (new_line_idx, cursor_info) = render_hunk_lines_side_by_side(
                     &hunk.lines,
-                    &line_comments,
+                    line_comments,
                     &ctx,
                     file_idx,
                     line_idx,

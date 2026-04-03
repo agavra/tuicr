@@ -8,12 +8,20 @@ use ratatui::{
 use crate::app::{
     AnnotatedLine, App, DiffViewMode, ExpandDirection, GAP_EXPAND_BATCH, VisualSelection,
 };
-use crate::model::LineSide;
+use crate::model::{Comment, LineSide};
 use crate::theme::Theme;
 use crate::ui::comment_panel;
 use crate::ui::diff_side_by_side::render_side_by_side_diff;
 use crate::ui::diff_unified::render_unified_diff;
 use crate::ui::styles;
+
+/// Static header rule used for file/section headers; avoids `"═".repeat(40)` per frame.
+pub(super) const HEADER_RULE: &str = "════════════════════════════════════════";
+
+/// Shared empty map so we can borrow `line_comments` without cloning per file per frame.
+pub(super) static EMPTY_LINE_COMMENTS: std::sync::LazyLock<
+    std::collections::HashMap<u32, Vec<Comment>>,
+> = std::sync::LazyLock::new(std::collections::HashMap::new);
 
 pub(super) fn render_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {
     match app.diff_view_mode {

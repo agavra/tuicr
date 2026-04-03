@@ -83,7 +83,10 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                 "═══ Review Comments ",
                 styles::file_header_style(&app.theme),
             ),
-            Span::styled("═".repeat(40), styles::file_header_style(&app.theme)),
+            Span::styled(
+                crate::ui::diff_view::HEADER_RULE,
+                styles::file_header_style(&app.theme),
+            ),
         ]));
         line_idx += 1;
     }
@@ -196,7 +199,10 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
             lines.push(Line::from(vec![
                 Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
                 Span::styled(header_text, styles::file_header_style(&app.theme)),
-                Span::styled("═".repeat(40), styles::file_header_style(&app.theme)),
+                Span::styled(
+                    crate::ui::diff_view::HEADER_RULE,
+                    styles::file_header_style(&app.theme),
+                ),
             ]));
             line_idx += 1;
         }
@@ -350,8 +356,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                 .files
                 .get(path)
                 .map(|r| &r.line_comments)
-                .cloned()
-                .unwrap_or_default();
+                .unwrap_or(&crate::ui::diff_view::EMPTY_LINE_COMMENTS);
 
             for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
                 // Calculate and render gap before this hunk
