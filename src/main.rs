@@ -29,10 +29,10 @@ use crossterm::{
         Event, KeyEventKind, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
         PushKeyboardEnhancementFlags,
     },
-    execute,
+    execute, queue,
     terminal::{
-        EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
-        supports_keyboard_enhancement,
+        BeginSynchronizedUpdate, EndSynchronizedUpdate, EnterAlternateScreen, LeaveAlternateScreen,
+        disable_raw_mode, enable_raw_mode, supports_keyboard_enhancement,
     },
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
@@ -324,10 +324,16 @@ fn main() -> anyhow::Result<()> {
         app.poll_pr_threads_events();
         app.poll_pr_submit_events();
 
-        // Render
+        // Render. Bracket the frame in a synchronized-output pair
+        // (CSI ?2026h/l) so terminals (and zellij) buffer the whole repaint
+        // and present it atomically. Without this, scrolling over a slow link
+        // visibly tears as escape sequences arrive in chunks. Terminals that
+        // do not support DEC 2026 ignore it.
+        queue!(terminal.backend_mut(), BeginSynchronizedUpdate)?;
         terminal.draw(|frame| {
             ui::render(frame, &mut app);
         })?;
+        execute!(terminal.backend_mut(), EndSynchronizedUpdate)?;
 
         // Handle events
         if event::poll(Duration::from_millis(100))? {
