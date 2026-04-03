@@ -259,8 +259,8 @@ fn main() -> anyhow::Result<()> {
         if cfg.diff_view.as_deref() == Some("side-by-side") {
             app.diff_view_mode = app::DiffViewMode::SideBySide;
         }
-        if cfg.wrap == Some(true) {
-            app.set_diff_wrap(true);
+        if let Some(wrap) = cfg.wrap {
+            app.diff_state.wrap_lines = wrap;
         }
         if cfg.export_legend == Some(false) {
             app.export_legend = false;
