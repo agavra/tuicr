@@ -55,6 +55,13 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
     let mut line_idx: usize = 0;
     let current_line_idx = app.diff_state.cursor_line;
 
+    // Only build the expensive per-diff-line spans for lines that are actually
+    // visible. Everything else still pushes (cheap) so `lines.len()` keeps
+    // matching `line_idx`, but the hot inner loops push `Line::default()` for
+    // off-screen rows. In Comment mode the scroll offset may be adjusted after
+    // building, so fall back to a full build there.
+    let (visible_start, visible_end) = crate::ui::diff_view::diff_visible_range(app, inner);
+
     // Track cursor position for IME when in Comment mode
     // Store the logical line index and column where the cursor should be
     let mut comment_cursor_logical_line: Option<usize> = None;
@@ -383,6 +390,11 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                     // Render top expanded lines
                     if let Some(top) = top_lines {
                         for expanded_line in top {
+                            if line_idx < visible_start || line_idx >= visible_end {
+                                lines.push(Line::default());
+                                line_idx += 1;
+                                continue;
+                            }
                             render_expanded_context_line(
                                 &mut lines,
                                 &mut line_idx,
@@ -453,6 +465,11 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                     // Render bottom expanded lines
                     if let Some(bot) = bot_lines {
                         for expanded_line in bot {
+                            if line_idx < visible_start || line_idx >= visible_end {
+                                lines.push(Line::default());
+                                line_idx += 1;
+                                continue;
+                            }
                             render_expanded_context_line(
                                 &mut lines,
                                 &mut line_idx,
@@ -478,76 +495,88 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
 
                 // Diff lines
                 for diff_line in &hunk.lines {
-                    let (prefix, base_style) = match diff_line.origin {
-                        LineOrigin::Addition => ("▌", styles::diff_add_style(&app.theme)),
-                        LineOrigin::Deletion => ("▌", styles::diff_del_style(&app.theme)),
-                        LineOrigin::Context => (" ", styles::diff_context_style(&app.theme)),
-                    };
-
-                    let style = base_style;
-
-                    let blank = " ".repeat(lw + 1);
-                    let line_num_str = match diff_line.origin {
-                        LineOrigin::Addition => diff_line
-                            .new_lineno
-                            .map(|n| format!("{n:>lw$} "))
-                            .unwrap_or_else(|| blank.clone()),
-                        LineOrigin::Deletion => diff_line
-                            .old_lineno
-                            .map(|n| format!("{n:>lw$} "))
-                            .unwrap_or_else(|| blank.clone()),
-                        _ => diff_line
-                            .new_lineno
-                            .or(diff_line.old_lineno)
-                            .map(|n| format!("{n:>lw$} "))
-                            .unwrap_or_else(|| blank),
-                    };
-
-                    let indicator = cursor_indicator(line_idx, current_line_idx);
-
-                    let line_num_style = styles::dim_style(&app.theme);
-
-                    let mut line_spans = vec![
-                        Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
-                        Span::styled(line_num_str, line_num_style),
-                        Span::styled(format!("{prefix} "), style),
-                    ];
-
-                    if let Some(ref highlighted) = diff_line.highlighted_spans {
-                        for (span_style, span_text) in highlighted {
-                            line_spans.push(Span::styled(span_text.clone(), *span_style));
-                        }
+                    // Hot path: skip span/style allocation entirely for diff
+                    // lines outside the viewport. Comment handling below still
+                    // runs so `line_idx` stays exact and any comment box that
+                    // crosses into the viewport is rendered.
+                    if line_idx < visible_start || line_idx >= visible_end {
+                        lines.push(Line::default());
+                        line_idx += 1;
                     } else {
-                        line_spans.push(Span::styled(diff_line.content.clone(), style));
-                    }
-
-                    // Mark add/del lines with their effective EOL style so we can paint full
-                    // row backgrounds later (including wrapped visual rows).
-                    if matches!(
-                        diff_line.origin,
-                        LineOrigin::Addition | LineOrigin::Deletion
-                    ) {
-                        let eol_style = match diff_line.highlighted_spans.as_ref() {
-                            // For syntax-highlighted lines (including empty highlighted lines),
-                            // use syntax diff background so row fill matches code spans.
-                            Some(_) => {
-                                let syntax_bg = match diff_line.origin {
-                                    LineOrigin::Addition => app.theme.syntax_add_bg,
-                                    LineOrigin::Deletion => app.theme.syntax_del_bg,
-                                    LineOrigin::Context => app.theme.panel_bg,
-                                };
-                                let base = line_spans.last().map(|s| s.style).unwrap_or(style);
-                                base.bg(syntax_bg)
-                            }
-                            // Non-highlighted lines keep classic diff background.
-                            None => line_spans.last().map(|s| s.style).unwrap_or(style),
+                        let (prefix, base_style) = match diff_line.origin {
+                            LineOrigin::Addition => ("▌", styles::diff_add_style(&app.theme)),
+                            LineOrigin::Deletion => ("▌", styles::diff_del_style(&app.theme)),
+                            LineOrigin::Context => (" ", styles::diff_context_style(&app.theme)),
                         };
-                        // Zero-width marker span carrying the background style.
-                        line_spans.push(Span::styled(String::new(), eol_style));
-                    }
 
-                    lines.push(Line::from(line_spans));
-                    line_idx += 1;
+                        let style = base_style;
+
+                        let blank = " ".repeat(lw + 1);
+                        let line_num_str = match diff_line.origin {
+                            LineOrigin::Addition => diff_line
+                                .new_lineno
+                                .map(|n| format!("{n:>lw$} "))
+                                .unwrap_or_else(|| blank.clone()),
+                            LineOrigin::Deletion => diff_line
+                                .old_lineno
+                                .map(|n| format!("{n:>lw$} "))
+                                .unwrap_or_else(|| blank.clone()),
+                            _ => diff_line
+                                .new_lineno
+                                .or(diff_line.old_lineno)
+                                .map(|n| format!("{n:>lw$} "))
+                                .unwrap_or_else(|| blank),
+                        };
+
+                        let indicator = cursor_indicator(line_idx, current_line_idx);
+
+                        let line_num_style = styles::dim_style(&app.theme);
+
+                        let mut line_spans = vec![
+                            Span::styled(
+                                indicator,
+                                styles::current_line_indicator_style(&app.theme),
+                            ),
+                            Span::styled(line_num_str, line_num_style),
+                            Span::styled(format!("{prefix} "), style),
+                        ];
+
+                        if let Some(ref highlighted) = diff_line.highlighted_spans {
+                            for (span_style, span_text) in highlighted {
+                                line_spans.push(Span::styled(span_text.clone(), *span_style));
+                            }
+                        } else {
+                            line_spans.push(Span::styled(diff_line.content.clone(), style));
+                        }
+
+                        // Mark add/del lines with their effective EOL style so we can paint full
+                        // row backgrounds later (including wrapped visual rows).
+                        if matches!(
+                            diff_line.origin,
+                            LineOrigin::Addition | LineOrigin::Deletion
+                        ) {
+                            let eol_style = match diff_line.highlighted_spans.as_ref() {
+                                // For syntax-highlighted lines (including empty highlighted lines),
+                                // use syntax diff background so row fill matches code spans.
+                                Some(_) => {
+                                    let syntax_bg = match diff_line.origin {
+                                        LineOrigin::Addition => app.theme.syntax_add_bg,
+                                        LineOrigin::Deletion => app.theme.syntax_del_bg,
+                                        LineOrigin::Context => app.theme.panel_bg,
+                                    };
+                                    let base = line_spans.last().map(|s| s.style).unwrap_or(style);
+                                    base.bg(syntax_bg)
+                                }
+                                // Non-highlighted lines keep classic diff background.
+                                None => line_spans.last().map(|s| s.style).unwrap_or(style),
+                            };
+                            // Zero-width marker span carrying the background style.
+                            line_spans.push(Span::styled(String::new(), eol_style));
+                        }
+
+                        lines.push(Line::from(line_spans));
+                        line_idx += 1;
+                    }
 
                     // Show line comments for both old side (deleted lines) and new side (added/context)
                     // Old side comments (for deleted lines)

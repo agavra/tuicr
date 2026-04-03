@@ -23,6 +23,21 @@ pub(super) static EMPTY_LINE_COMMENTS: std::sync::LazyLock<
     std::collections::HashMap<u32, Vec<Comment>>,
 > = std::sync::LazyLock::new(std::collections::HashMap::new);
 
+/// Compute the half-open `line_idx` range whose diff-line spans must be fully
+/// built this frame. Outside this range the hot loops push `Line::default()`
+/// placeholders so the bulk of per-line allocations are skipped.
+///
+/// In Comment mode the scroll offset may still be adjusted after building (to
+/// keep the inline input box visible), so fall back to building everything.
+pub(super) fn diff_visible_range(app: &App, inner: Rect) -> (usize, usize) {
+    if app.input_mode == crate::app::InputMode::Comment {
+        (0, usize::MAX)
+    } else {
+        let start = app.diff_state.scroll_offset;
+        (start, start.saturating_add(inner.height as usize))
+    }
+}
+
 pub(super) fn render_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {
     match app.diff_view_mode {
         DiffViewMode::Unified => render_unified_diff(frame, app, area),

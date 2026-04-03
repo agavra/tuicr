@@ -48,6 +48,16 @@ struct SideBySideContext<'a> {
     // RefCell so deeply-nested rendering helpers can push without each
     // intermediate function needing a `&mut Vec` parameter threaded through.
     comment_bars: std::cell::RefCell<Vec<crate::ui::diff_view::CommentBarAnchor>>,
+    // Only fully build spans for diff lines whose `line_idx` falls in this
+    // half-open range; off-screen rows push `Line::default()` placeholders.
+    visible_start: usize,
+    visible_end: usize,
+}
+
+impl SideBySideContext<'_> {
+    fn is_visible(&self, line_idx: usize) -> bool {
+        line_idx >= self.visible_start && line_idx < self.visible_end
+    }
 }
 
 pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -81,6 +91,8 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
         && !app.comment_is_file_level
         && !app.comment_is_review_level;
 
+    let (visible_start, visible_end) = crate::ui::diff_view::diff_visible_range(app, inner);
+
     let ctx = SideBySideContext {
         app,
         theme: &app.theme,
@@ -98,6 +110,8 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
         supports_keyboard_enhancement: app.supports_keyboard_enhancement,
         current_file_idx: app.diff_state.current_file_idx,
         comment_bars: std::cell::RefCell::new(Vec::new()),
+        visible_start,
+        visible_end,
     };
 
     // Build all diff lines for side-by-side view
@@ -414,6 +428,11 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                     // Render top expanded lines
                     if let Some(top) = top_lines {
                         for expanded_line in top {
+                            if !ctx.is_visible(line_idx) {
+                                lines.push(Line::default());
+                                line_idx += 1;
+                                continue;
+                            }
                             render_sbs_expanded_context_line(
                                 &mut lines,
                                 &mut line_idx,
@@ -485,6 +504,11 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                     // Render bottom expanded lines
                     if let Some(bot) = bot_lines {
                         for expanded_line in bot {
+                            if !ctx.is_visible(line_idx) {
+                                lines.push(Line::default());
+                                line_idx += 1;
+                                continue;
+                            }
                             render_sbs_expanded_context_line(
                                 &mut lines,
                                 &mut line_idx,
@@ -896,62 +920,66 @@ fn render_context_line_side_by_side(
     mut line_idx: usize,
     lines: &mut Vec<Line>,
 ) -> (usize, Option<SideBySideCursorInfo>) {
-    let w = ctx.lineno_width;
-    let old_line_num = diff_line
-        .old_lineno
-        .map(|n| format!("{n:>w$}"))
-        .unwrap_or_else(|| " ".repeat(w));
-    let new_line_num = diff_line
-        .new_lineno
-        .map(|n| format!("{n:>w$}"))
-        .unwrap_or_else(|| " ".repeat(w));
+    if ctx.is_visible(line_idx) {
+        let w = ctx.lineno_width;
+        let old_line_num = diff_line
+            .old_lineno
+            .map(|n| format!("{n:>w$}"))
+            .unwrap_or_else(|| " ".repeat(w));
+        let new_line_num = diff_line
+            .new_lineno
+            .map(|n| format!("{n:>w$}"))
+            .unwrap_or_else(|| " ".repeat(w));
 
-    let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
+        let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
 
-    let mut spans = vec![
-        Span::styled(indicator, styles::current_line_indicator_style(ctx.theme)),
-        Span::styled(format!("{old_line_num} "), styles::dim_style(ctx.theme)),
-        Span::styled(" ".to_string(), styles::diff_context_style(ctx.theme)),
-    ];
+        let mut spans = vec![
+            Span::styled(indicator, styles::current_line_indicator_style(ctx.theme)),
+            Span::styled(format!("{old_line_num} "), styles::dim_style(ctx.theme)),
+            Span::styled(" ".to_string(), styles::diff_context_style(ctx.theme)),
+        ];
 
-    // Left side content - use syntax highlighting if available
-    if let Some(ref highlighted) = diff_line.highlighted_spans {
-        let content_spans = truncate_or_pad_spans(
-            highlighted,
-            ctx.content_width,
+        // Left side content - use syntax highlighting if available
+        if let Some(ref highlighted) = diff_line.highlighted_spans {
+            let content_spans = truncate_or_pad_spans(
+                highlighted,
+                ctx.content_width,
+                styles::diff_context_style(ctx.theme),
+            );
+            spans.extend(content_spans);
+        } else {
+            let content = truncate_or_pad(&diff_line.content, ctx.content_width);
+            spans.push(Span::styled(content, styles::diff_context_style(ctx.theme)));
+        }
+
+        // Separator
+        spans.push(Span::styled(" │ ", styles::dim_style(ctx.theme)));
+        spans.push(Span::styled(
+            format!("{new_line_num} "),
+            styles::dim_style(ctx.theme),
+        ));
+        spans.push(Span::styled(
+            " ".to_string(),
             styles::diff_context_style(ctx.theme),
-        );
-        spans.extend(content_spans);
+        ));
+
+        // Right side content - use same highlighting
+        if let Some(ref highlighted) = diff_line.highlighted_spans {
+            let content_spans = truncate_or_pad_spans(
+                highlighted,
+                ctx.content_width,
+                styles::diff_context_style(ctx.theme),
+            );
+            spans.extend(content_spans);
+        } else {
+            let content = truncate_or_pad(&diff_line.content, ctx.content_width);
+            spans.push(Span::styled(content, styles::diff_context_style(ctx.theme)));
+        }
+
+        lines.push(Line::from(spans));
     } else {
-        let content = truncate_or_pad(&diff_line.content, ctx.content_width);
-        spans.push(Span::styled(content, styles::diff_context_style(ctx.theme)));
+        lines.push(Line::default());
     }
-
-    // Separator
-    spans.push(Span::styled(" │ ", styles::dim_style(ctx.theme)));
-    spans.push(Span::styled(
-        format!("{new_line_num} "),
-        styles::dim_style(ctx.theme),
-    ));
-    spans.push(Span::styled(
-        " ".to_string(),
-        styles::diff_context_style(ctx.theme),
-    ));
-
-    // Right side content - use same highlighting
-    if let Some(ref highlighted) = diff_line.highlighted_spans {
-        let content_spans = truncate_or_pad_spans(
-            highlighted,
-            ctx.content_width,
-            styles::diff_context_style(ctx.theme),
-        );
-        spans.extend(content_spans);
-    } else {
-        let content = truncate_or_pad(&diff_line.content, ctx.content_width);
-        spans.push(Span::styled(content, styles::diff_context_style(ctx.theme)));
-    }
-
-    lines.push(Line::from(spans));
     line_idx += 1;
 
     // Add comments if any
@@ -1014,44 +1042,48 @@ fn render_deletion_addition_pair_side_by_side(
 
     // Render each pair of deletion/addition
     for offset in 0..max_lines {
-        let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
+        if ctx.is_visible(line_idx) {
+            let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
 
-        let mut spans = vec![Span::styled(
-            indicator,
-            styles::current_line_indicator_style(ctx.theme),
-        )];
+            let mut spans = vec![Span::styled(
+                indicator,
+                styles::current_line_indicator_style(ctx.theme),
+            )];
 
-        // Left side (deletion)
-        if offset < del_count {
-            let del_line = &hunk_lines[start_idx + offset];
-            add_deletion_spans(
-                ctx.theme,
-                &mut spans,
-                del_line,
-                ctx.content_width,
-                ctx.lineno_width,
-            );
+            // Left side (deletion)
+            if offset < del_count {
+                let del_line = &hunk_lines[start_idx + offset];
+                add_deletion_spans(
+                    ctx.theme,
+                    &mut spans,
+                    del_line,
+                    ctx.content_width,
+                    ctx.lineno_width,
+                );
+            } else {
+                add_empty_column_spans(&mut spans, ctx.content_width, ctx.lineno_width);
+            }
+
+            spans.push(Span::styled(" │ ", styles::dim_style(ctx.theme)));
+
+            // Right side (addition)
+            if offset < add_count {
+                let add_line = &hunk_lines[add_start + offset];
+                add_addition_spans(
+                    ctx.theme,
+                    &mut spans,
+                    add_line,
+                    ctx.content_width,
+                    ctx.lineno_width,
+                );
+            } else {
+                add_empty_column_spans(&mut spans, ctx.content_width, ctx.lineno_width);
+            }
+
+            lines.push(Line::from(spans));
         } else {
-            add_empty_column_spans(&mut spans, ctx.content_width, ctx.lineno_width);
+            lines.push(Line::default());
         }
-
-        spans.push(Span::styled(" │ ", styles::dim_style(ctx.theme)));
-
-        // Right side (addition)
-        if offset < add_count {
-            let add_line = &hunk_lines[add_start + offset];
-            add_addition_spans(
-                ctx.theme,
-                &mut spans,
-                add_line,
-                ctx.content_width,
-                ctx.lineno_width,
-            );
-        } else {
-            add_empty_column_spans(&mut spans, ctx.content_width, ctx.lineno_width);
-        }
-
-        lines.push(Line::from(spans));
         line_idx += 1;
 
         // Add comments for deletion
@@ -1128,23 +1160,27 @@ fn render_standalone_addition_side_by_side(
     mut line_idx: usize,
     lines: &mut Vec<Line>,
 ) -> (usize, Option<SideBySideCursorInfo>) {
-    let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
+    if ctx.is_visible(line_idx) {
+        let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
 
-    let mut spans = vec![Span::styled(
-        indicator,
-        styles::current_line_indicator_style(ctx.theme),
-    )];
-    add_empty_column_spans(&mut spans, ctx.content_width, ctx.lineno_width);
-    spans.push(Span::styled(" │ ", styles::dim_style(ctx.theme)));
-    add_addition_spans(
-        ctx.theme,
-        &mut spans,
-        diff_line,
-        ctx.content_width,
-        ctx.lineno_width,
-    );
+        let mut spans = vec![Span::styled(
+            indicator,
+            styles::current_line_indicator_style(ctx.theme),
+        )];
+        add_empty_column_spans(&mut spans, ctx.content_width, ctx.lineno_width);
+        spans.push(Span::styled(" │ ", styles::dim_style(ctx.theme)));
+        add_addition_spans(
+            ctx.theme,
+            &mut spans,
+            diff_line,
+            ctx.content_width,
+            ctx.lineno_width,
+        );
 
-    lines.push(Line::from(spans));
+        lines.push(Line::from(spans));
+    } else {
+        lines.push(Line::default());
+    }
     line_idx += 1;
 
     // Add comments if any
