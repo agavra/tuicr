@@ -2395,15 +2395,20 @@ impl App {
     }
 
     pub fn clear_all_comments(&mut self) {
-        let cleared = self.session.clear_comments();
-        if cleared == 0 {
+        let (cleared, unreviewed) = self.session.clear_comments();
+        if cleared == 0 && unreviewed == 0 {
             self.set_message("No comments to clear");
             return;
         }
 
         self.dirty = true;
         self.rebuild_annotations();
-        self.set_message(format!("Cleared {cleared} comments"));
+        let msg = match (cleared, unreviewed) {
+            (0, n) => format!("Unreviewed {n} files"),
+            (c, 0) => format!("Cleared {c} comments"),
+            (c, n) => format!("Cleared {c} comments, unreviewed {n} files"),
+        };
+        self.set_message(msg);
     }
 
     /// Enter edit mode for the comment at the current cursor position
