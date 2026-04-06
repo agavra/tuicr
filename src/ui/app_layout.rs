@@ -1828,7 +1828,7 @@ fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
                                         line_num.clone(),
                                         styles::expanded_context_style(&app.theme),
                                     ),
-                                    Span::styled("  ", styles::expanded_context_style(&app.theme)),
+                                    Span::styled(" ", styles::expanded_context_style(&app.theme)),
                                     Span::styled(
                                         truncate_or_pad(&expanded_line.content, ctx.content_width),
                                         styles::expanded_context_style(&app.theme),
@@ -1838,7 +1838,7 @@ fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
                                         line_num,
                                         styles::expanded_context_style(&app.theme),
                                     ),
-                                    Span::styled("  ", styles::expanded_context_style(&app.theme)),
+                                    Span::styled(" ", styles::expanded_context_style(&app.theme)),
                                     Span::styled(
                                         truncate_or_pad(&expanded_line.content, ctx.content_width),
                                         styles::expanded_context_style(&app.theme),
@@ -2777,5 +2777,32 @@ mod tests {
         scroll_comment_input_into_view(&mut scroll, Some((8, 10)), Some(9), 10, 100);
         // then: scroll so box_end (10) is visible => scroll = 10 - 10 + 1 = 1
         assert_eq!(scroll, 1);
+    }
+
+    #[test]
+    fn should_pad_highlighted_spans_to_exact_width() {
+        // given - highlighted spans from the syntax highlighter (which strips
+        // the trailing \n that syntect includes). Short content gets padded
+        // by truncate_or_pad_spans; the result must have exactly `width`
+        // characters so the side-by-side separator stays aligned.
+        let highlighter = crate::syntax::SyntaxHighlighter::default();
+        let lines = vec!["let x = 1;".to_string()];
+        let highlighted = highlighter
+            .highlight_file_lines(std::path::Path::new("test.rs"), &lines)
+            .unwrap();
+        let spans = highlighted[0].as_ref().unwrap();
+
+        let width = 80;
+
+        // when
+        let result = truncate_or_pad_spans(spans, width, Style::default());
+
+        // then - total char count must equal the target width so each
+        // side-by-side column is the same size
+        let total_chars: usize = result.iter().map(|s| s.content.chars().count()).sum();
+        assert_eq!(
+            total_chars, width,
+            "padded spans should have exactly {width} chars, got {total_chars}"
+        );
     }
 }
