@@ -3513,12 +3513,10 @@ impl App {
         self.expanded_gaps.contains(gap_id)
     }
 
-    /// Expand a gap to show hidden context lines
-    pub fn expand_gap(&mut self, gap_id: GapId) -> Result<()> {
-        if self.expanded_gaps.contains(&gap_id) {
-            return Ok(()); // Already expanded
-        }
-
+    /// Expand a gap to show hidden context lines.
+    /// If `limit` is Some(n), only expand up to n additional lines.
+    /// If `limit` is None, expand all lines in the gap.
+    pub fn expand_gap(&mut self, gap_id: GapId, limit: Option<usize>) -> Result<()> {
         let file = self.diff_files.get(gap_id.file_idx).ok_or_else(|| {
             TuicrError::CorruptedSession(format!("Invalid file index: {}", gap_id.file_idx))
         })?;
@@ -3547,15 +3545,36 @@ impl App {
             return Ok(()); // No gap to expand
         }
 
+        // If already partially expanded, continue from where we left off
+        let already_expanded = self
+            .expanded_content
+            .get(&gap_id)
+            .map(|c| c.len() as u32)
+            .unwrap_or(0);
+        let fetch_start = start_line + already_expanded;
+
+        let fetch_end = match limit {
+            Some(n) => fetch_start.saturating_add(n as u32 - 1).min(end_line),
+            None => end_line,
+        };
+
+        if fetch_start > end_line {
+            return Ok(()); // Already fully expanded
+        }
+
         let file_path = file.display_path().clone();
         let file_status = file.status;
 
         // Fetch the context lines
-        let lines = self
-            .vcs
-            .fetch_context_lines(&file_path, file_status, start_line, end_line)?;
+        let new_lines =
+            self.vcs
+                .fetch_context_lines(&file_path, file_status, fetch_start, fetch_end)?;
 
-        self.expanded_content.insert(gap_id.clone(), lines);
+        // Append to existing content or insert new
+        self.expanded_content
+            .entry(gap_id.clone())
+            .or_default()
+            .extend(new_lines);
         self.expanded_gaps.insert(gap_id);
         self.rebuild_annotations();
 
@@ -3653,6 +3672,13 @@ impl App {
                                     self.line_annotations.push(AnnotatedLine::ExpandedContext {
                                         gap_id: gap_id.clone(),
                                         line_idx: content_idx,
+                                    });
+                                }
+                                // If partially expanded, show expander for remaining lines
+                                let remaining = (gap as usize).saturating_sub(content.len());
+                                if remaining > 0 {
+                                    self.line_annotations.push(AnnotatedLine::Expander {
+                                        gap_id: gap_id.clone(),
                                     });
                                 }
                             }
@@ -4625,5 +4651,344 @@ mod find_source_line_tests {
 
         let result = find_source_line(&annotations, 0, 20);
         assert_eq!(result, FindSourceLineResult::Nearest(0));
+    }
+}
+
+#[cfg(test)]
+mod expand_gap_tests {
+    use super::*;
+    use crate::model::{DiffHunk, DiffLine, FileStatus, LineOrigin};
+    use crate::vcs::traits::VcsType;
+
+    struct MockVcs {
+        info: VcsInfo,
+        /// Total lines available in the "file" (1-indexed)
+        total_lines: u32,
+    }
+
+    impl VcsBackend for MockVcs {
+        fn info(&self) -> &VcsInfo {
+            &self.info
+        }
+
+        fn get_working_tree_diff(&self, _highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+            Err(TuicrError::NoChanges)
+        }
+
+        fn fetch_context_lines(
+            &self,
+            _file_path: &Path,
+            _file_status: FileStatus,
+            start_line: u32,
+            end_line: u32,
+        ) -> Result<Vec<DiffLine>> {
+            let mut result = Vec::new();
+            for line_num in start_line..=end_line.min(self.total_lines) {
+                result.push(DiffLine {
+                    origin: LineOrigin::Context,
+                    content: format!("line {line_num}"),
+                    old_lineno: Some(line_num),
+                    new_lineno: Some(line_num),
+                    highlighted_spans: None,
+                });
+            }
+            Ok(result)
+        }
+    }
+
+    fn make_hunk(new_start: u32, new_count: u32) -> DiffHunk {
+        let mut lines = Vec::new();
+        for i in 0..new_count {
+            lines.push(DiffLine {
+                origin: LineOrigin::Context,
+                content: format!("hunk line {}", new_start + i),
+                old_lineno: Some(new_start + i),
+                new_lineno: Some(new_start + i),
+                highlighted_spans: None,
+            });
+        }
+        DiffHunk {
+            header: format!("@@ -{new_start},{new_count} +{new_start},{new_count} @@"),
+            lines,
+            old_start: new_start,
+            old_count: new_count,
+            new_start,
+            new_count,
+        }
+    }
+
+    fn build_app_with_files(files: Vec<DiffFile>, total_lines: u32) -> App {
+        let vcs_info = VcsInfo {
+            root_path: PathBuf::from("/tmp"),
+            head_commit: "abc123".to_string(),
+            branch_name: Some("main".to_string()),
+            vcs_type: VcsType::Git,
+        };
+        let session = ReviewSession::new(
+            vcs_info.root_path.clone(),
+            vcs_info.head_commit.clone(),
+            vcs_info.branch_name.clone(),
+            SessionDiffSource::WorkingTree,
+        );
+
+        App::build(
+            Box::new(MockVcs {
+                info: vcs_info.clone(),
+                total_lines,
+            }),
+            vcs_info,
+            Theme::dark(),
+            None,
+            false,
+            files,
+            session,
+            DiffSource::WorkingTree,
+            InputMode::Normal,
+            Vec::new(),
+            None,
+        )
+        .expect("failed to build test app")
+    }
+
+    fn make_file_with_hunks(path: &str, hunks: Vec<DiffHunk>) -> DiffFile {
+        DiffFile {
+            old_path: None,
+            new_path: Some(PathBuf::from(path)),
+            status: FileStatus::Modified,
+            hunks,
+            is_binary: false,
+            is_too_large: false,
+            is_commit_message: false,
+        }
+    }
+
+    #[test]
+    fn should_expand_only_limit_lines_when_limit_is_set() {
+        // given: file with 50-line gap before first hunk (hunk starts at line 51)
+        let file = make_file_with_hunks("test.rs", vec![make_hunk(51, 5)]);
+        let mut app = build_app_with_files(vec![file], 100);
+        let gap_id = GapId {
+            file_idx: 0,
+            hunk_idx: 0,
+        };
+
+        // when: expand with limit of 20
+        app.expand_gap(gap_id.clone(), Some(20)).unwrap();
+
+        // then: only 20 lines expanded
+        let content = app.expanded_content.get(&gap_id).unwrap();
+        assert_eq!(content.len(), 20);
+        assert_eq!(content[0].new_lineno, Some(1));
+        assert_eq!(content[19].new_lineno, Some(20));
+    }
+
+    #[test]
+    fn should_expand_all_lines_when_no_limit() {
+        // given: file with 50-line gap before first hunk
+        let file = make_file_with_hunks("test.rs", vec![make_hunk(51, 5)]);
+        let mut app = build_app_with_files(vec![file], 100);
+        let gap_id = GapId {
+            file_idx: 0,
+            hunk_idx: 0,
+        };
+
+        // when: expand with no limit
+        app.expand_gap(gap_id.clone(), None).unwrap();
+
+        // then: all 50 lines expanded
+        let content = app.expanded_content.get(&gap_id).unwrap();
+        assert_eq!(content.len(), 50);
+        assert_eq!(content[0].new_lineno, Some(1));
+        assert_eq!(content[49].new_lineno, Some(50));
+    }
+
+    #[test]
+    fn should_append_more_lines_on_subsequent_expand() {
+        // given: file with 50-line gap, already expanded 20 lines
+        let file = make_file_with_hunks("test.rs", vec![make_hunk(51, 5)]);
+        let mut app = build_app_with_files(vec![file], 100);
+        let gap_id = GapId {
+            file_idx: 0,
+            hunk_idx: 0,
+        };
+        app.expand_gap(gap_id.clone(), Some(20)).unwrap();
+
+        // when: expand 20 more
+        app.expand_gap(gap_id.clone(), Some(20)).unwrap();
+
+        // then: 40 lines total
+        let content = app.expanded_content.get(&gap_id).unwrap();
+        assert_eq!(content.len(), 40);
+        assert_eq!(content[0].new_lineno, Some(1));
+        assert_eq!(content[39].new_lineno, Some(40));
+    }
+
+    #[test]
+    fn should_cap_at_gap_size_when_limit_exceeds_remaining() {
+        // given: file with 50-line gap, already expanded 40 lines
+        let file = make_file_with_hunks("test.rs", vec![make_hunk(51, 5)]);
+        let mut app = build_app_with_files(vec![file], 100);
+        let gap_id = GapId {
+            file_idx: 0,
+            hunk_idx: 0,
+        };
+        app.expand_gap(gap_id.clone(), Some(40)).unwrap();
+
+        // when: expand 20 more (only 10 remain)
+        app.expand_gap(gap_id.clone(), Some(20)).unwrap();
+
+        // then: all 50 lines expanded (capped)
+        let content = app.expanded_content.get(&gap_id).unwrap();
+        assert_eq!(content.len(), 50);
+        assert_eq!(content[49].new_lineno, Some(50));
+    }
+
+    #[test]
+    fn should_show_remaining_expander_after_partial_expand() {
+        // given: file with 50-line gap, expanded 20 lines
+        let file = make_file_with_hunks("test.rs", vec![make_hunk(51, 5)]);
+        let mut app = build_app_with_files(vec![file], 100);
+        let gap_id = GapId {
+            file_idx: 0,
+            hunk_idx: 0,
+        };
+        app.expand_gap(gap_id.clone(), Some(20)).unwrap();
+
+        // then: annotations should have expanded context lines + an expander for remaining
+        let expander_count = app
+            .line_annotations
+            .iter()
+            .filter(|a| matches!(a, AnnotatedLine::Expander { gap_id: g } if *g == gap_id))
+            .count();
+        assert_eq!(
+            expander_count, 1,
+            "should have expander for remaining lines"
+        );
+
+        let expanded_count = app
+            .line_annotations
+            .iter()
+            .filter(
+                |a| matches!(a, AnnotatedLine::ExpandedContext { gap_id: g, .. } if *g == gap_id),
+            )
+            .count();
+        assert_eq!(expanded_count, 20);
+    }
+
+    #[test]
+    fn should_not_show_expander_when_fully_expanded() {
+        // given: file with 50-line gap, fully expanded
+        let file = make_file_with_hunks("test.rs", vec![make_hunk(51, 5)]);
+        let mut app = build_app_with_files(vec![file], 100);
+        let gap_id = GapId {
+            file_idx: 0,
+            hunk_idx: 0,
+        };
+        app.expand_gap(gap_id.clone(), None).unwrap();
+
+        // then: no expander line for this gap
+        let expander_count = app
+            .line_annotations
+            .iter()
+            .filter(|a| matches!(a, AnnotatedLine::Expander { gap_id: g } if *g == gap_id))
+            .count();
+        assert_eq!(
+            expander_count, 0,
+            "fully expanded gap should have no expander"
+        );
+    }
+
+    #[test]
+    fn should_expand_correct_gap_between_hunks() {
+        // given: file with two hunks and a gap between them
+        // hunk0: lines 1-5, hunk1: lines 30-35 => gap of 24 lines (6..29)
+        let file = make_file_with_hunks("test.rs", vec![make_hunk(1, 5), make_hunk(30, 5)]);
+        let mut app = build_app_with_files(vec![file], 100);
+        let gap_id = GapId {
+            file_idx: 0,
+            hunk_idx: 1,
+        };
+
+        // when: expand inter-hunk gap with limit 10
+        app.expand_gap(gap_id.clone(), Some(10)).unwrap();
+
+        // then: 10 lines starting from line 6
+        let content = app.expanded_content.get(&gap_id).unwrap();
+        assert_eq!(content.len(), 10);
+        assert_eq!(content[0].new_lineno, Some(6));
+        assert_eq!(content[9].new_lineno, Some(15));
+    }
+
+    #[test]
+    fn should_expand_gap_in_correct_file_not_adjacent_file() {
+        // given: two files, each with a gap before the first hunk
+        let file0 = make_file_with_hunks("a.rs", vec![make_hunk(31, 5)]);
+        let file1 = make_file_with_hunks("b.rs", vec![make_hunk(21, 5)]);
+        let mut app = build_app_with_files(vec![file0, file1], 100);
+
+        let gap_id_file1 = GapId {
+            file_idx: 1,
+            hunk_idx: 0,
+        };
+
+        // when: expand gap in file1
+        app.expand_gap(gap_id_file1.clone(), Some(10)).unwrap();
+
+        // then: expanded content is for file1's gap (lines 1-10, gap is 20 lines)
+        let content = app.expanded_content.get(&gap_id_file1).unwrap();
+        assert_eq!(content.len(), 10);
+        assert_eq!(content[0].new_lineno, Some(1));
+
+        // and file0's gap should not be expanded
+        let gap_id_file0 = GapId {
+            file_idx: 0,
+            hunk_idx: 0,
+        };
+        assert!(!app.expanded_gaps.contains(&gap_id_file0));
+    }
+
+    #[test]
+    fn should_noop_when_already_fully_expanded() {
+        // given: file with 10-line gap, fully expanded
+        let file = make_file_with_hunks("test.rs", vec![make_hunk(11, 5)]);
+        let mut app = build_app_with_files(vec![file], 100);
+        let gap_id = GapId {
+            file_idx: 0,
+            hunk_idx: 0,
+        };
+        app.expand_gap(gap_id.clone(), None).unwrap();
+        let len_before = app.expanded_content.get(&gap_id).unwrap().len();
+
+        // when: try to expand again
+        app.expand_gap(gap_id.clone(), Some(20)).unwrap();
+
+        // then: no change
+        let len_after = app.expanded_content.get(&gap_id).unwrap().len();
+        assert_eq!(len_before, len_after);
+    }
+
+    #[test]
+    fn should_expand_small_gap_fully_even_with_large_limit() {
+        // given: file with 5-line gap
+        let file = make_file_with_hunks("test.rs", vec![make_hunk(6, 5)]);
+        let mut app = build_app_with_files(vec![file], 100);
+        let gap_id = GapId {
+            file_idx: 0,
+            hunk_idx: 0,
+        };
+
+        // when: expand with limit 20 (gap is only 5 lines)
+        app.expand_gap(gap_id.clone(), Some(20)).unwrap();
+
+        // then: all 5 lines expanded, no expander remaining
+        let content = app.expanded_content.get(&gap_id).unwrap();
+        assert_eq!(content.len(), 5);
+
+        let expander_count = app
+            .line_annotations
+            .iter()
+            .filter(|a| matches!(a, AnnotatedLine::Expander { gap_id: g } if *g == gap_id))
+            .count();
+        assert_eq!(expander_count, 0);
     }
 }

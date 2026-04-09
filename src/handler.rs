@@ -505,8 +505,20 @@ pub fn handle_diff_action(app: &mut App, action: Action) {
                     // Collapse expanded content
                     app.collapse_gap(gap_id);
                 } else {
-                    // Expand the gap
-                    if let Err(e) = app.expand_gap(gap_id) {
+                    // Expand 20 lines of the gap
+                    if let Err(e) = app.expand_gap(gap_id, Some(20)) {
+                        app.set_error(format!("Failed to expand: {e}"));
+                    }
+                }
+            }
+        }
+        Action::SelectFileFull => {
+            // Expand all lines in the gap
+            if let Some((gap_id, is_expanded)) = app.get_gap_at_cursor() {
+                if is_expanded {
+                    app.collapse_gap(gap_id);
+                } else {
+                    if let Err(e) = app.expand_gap(gap_id, None) {
                         app.set_error(format!("Failed to expand: {e}"));
                     }
                 }
