@@ -537,10 +537,7 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
         Action::PageDown => app.scroll_down(app.diff_state.viewport_height),
         Action::PageUp => app.scroll_up(app.diff_state.viewport_height),
         Action::GoToTop => app.jump_to_file(0),
-        Action::GoToBottom => {
-            let last = app.file_count().saturating_sub(1);
-            app.jump_to_file(last);
-        }
+        Action::GoToBottom => app.jump_to_bottom(),
         Action::NextFile => app.next_file(),
         Action::PrevFile => app.prev_file(),
         Action::NextHunk => app.next_hunk(),

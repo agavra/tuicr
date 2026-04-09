@@ -1870,6 +1870,13 @@ impl App {
         }
     }
 
+    pub fn jump_to_bottom(&mut self) {
+        let max_line = self.total_lines().saturating_sub(1);
+        self.diff_state.cursor_line = max_line;
+        self.diff_state.scroll_offset = self.max_scroll_offset();
+        self.update_current_file_from_cursor();
+    }
+
     pub fn next_file(&mut self) {
         let visible_items = self.build_visible_items();
         let current_file_idx = self.diff_state.current_file_idx;
