@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.10.0] - 2026-04-10
+
+### Bug Fixes
+
+- Auto-scroll viewport to keep comment input box visible (#235)
+- Align side-by-side diff separator by stripping trailing \n from highlighted spans (#238)
+- GoToBottom (Shift+G) moves to last line, not top of last file (#240)
+- GoToBottom (Shift+G) positions last line at bottom of viewport, not top
+
+### Features
+
+- Add Solarized Light and Solarized Dark themes (#224)
+- Add ZZ (export+quit) and ZQ (quit) vim keybindings (#225)
+- Add --path flag to filter diff to a specific file or directory (#227)
+- **ignore:** Also read .gitignore when filtering diff files (#231)
+- **ui:** Show current file path in diff panel header (#234)
+- Update clear comments so that it resets reviewed status too, closes #228 (#237)
+- Incremental gap expansion with 20-line default, Shift+Enter for full expand (#239)
+- Directional gap expansion with ↓/↑/↕ arrows
+- **export:** Filter comment type legend to used types and add export_legend config (#242)
 ## [0.9.0] - 2026-03-24
 
 ### Bug Fixes
