@@ -194,6 +194,9 @@ fn main() -> anyhow::Result<()> {
         if cfg.wrap == Some(true) {
             app.set_diff_wrap(true);
         }
+        if cfg.export_legend == Some(false) {
+            app.export_legend = false;
+        }
     }
 
     // On narrow terminals, start with only the diff panel visible.

@@ -26,6 +26,7 @@ pub struct AppConfig {
     pub show_file_list: Option<bool>,
     pub diff_view: Option<String>,
     pub wrap: Option<bool>,
+    pub export_legend: Option<bool>,
 }
 
 /// Known top-level config keys. Used to warn about typos.
@@ -38,6 +39,7 @@ const KNOWN_KEYS: &[&str] = &[
     "show_file_list",
     "diff_view",
     "wrap",
+    "export_legend",
 ];
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -176,6 +178,7 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
             &mut warnings,
         ),
         wrap: read_bool(table, "wrap", &mut warnings),
+        export_legend: read_bool(table, "export_legend", &mut warnings),
     };
 
     for key in table.keys() {
@@ -579,6 +582,27 @@ mod tests {
         assert_eq!(
             outcome.warnings[0],
             "Warning: Config key 'wrap' must be a boolean; ignoring value"
+        );
+    }
+
+    // export_legend
+
+    #[test]
+    fn should_parse_export_legend_false() {
+        let outcome = parse_config("export_legend = false\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.export_legend),
+            Some(false)
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_default_export_legend_to_none() {
+        let outcome = parse_config("\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.export_legend),
+            None
         );
     }
 

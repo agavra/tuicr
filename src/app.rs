@@ -323,6 +323,8 @@ pub struct App {
     pub saved_inline_selection: Option<(usize, usize)>,
     /// Path filter for scoping diff to a specific file or directory
     pub path_filter: Option<String>,
+    /// Whether to include the "Comment types:" legend line in export
+    pub export_legend: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -801,6 +803,7 @@ impl App {
             range_diff_files: None,
             saved_inline_selection: None,
             path_filter: path_filter.map(|s| s.to_string()),
+            export_legend: true,
         };
         // Auto-hide file list when path filter matches exactly one file
         if app.path_filter.is_some() && app.diff_files.len() == 1 {
