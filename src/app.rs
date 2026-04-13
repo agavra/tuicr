@@ -1541,6 +1541,23 @@ impl App {
         self.session.reviewed_count()
     }
 
+    /// Returns `(total_files, total_additions, total_deletions)` across all diff files.
+    pub fn diff_stat(&self) -> (usize, usize, usize) {
+        let mut additions = 0;
+        let mut deletions = 0;
+        for file in &self.diff_files {
+            let (a, d) = file.stat();
+            additions += a;
+            deletions += d;
+        }
+        (self.diff_files.len(), additions, deletions)
+    }
+
+    /// Returns true when the cursor is in the review comments area above all files.
+    pub fn is_cursor_in_overview(&self) -> bool {
+        self.diff_state.cursor_line < self.review_comments_render_height()
+    }
+
     pub fn set_message(&mut self, msg: impl Into<String>) {
         self.message = Some(Message {
             content: msg.into(),

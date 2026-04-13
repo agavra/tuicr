@@ -76,4 +76,20 @@ impl DiffFile {
             .or(self.old_path.as_ref())
             .expect("DiffFile must have at least one path")
     }
+
+    /// Returns `(additions, deletions)` for this file.
+    pub fn stat(&self) -> (usize, usize) {
+        let mut additions = 0;
+        let mut deletions = 0;
+        for hunk in &self.hunks {
+            for line in &hunk.lines {
+                match line.origin {
+                    LineOrigin::Addition => additions += 1,
+                    LineOrigin::Deletion => deletions += 1,
+                    LineOrigin::Context => {}
+                }
+            }
+        }
+        (additions, deletions)
+    }
 }
