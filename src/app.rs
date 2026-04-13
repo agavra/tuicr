@@ -428,6 +428,31 @@ impl App {
         path_filter: Option<&str>,
         file_path: Option<&str>,
     ) -> Result<Self> {
+        let mut app = Self::new_inner(
+            theme,
+            comment_type_configs,
+            output_to_stdout,
+            revisions,
+            working_tree,
+            path_filter,
+            file_path,
+        )?;
+        // Start at the overview position (review comments header)
+        // so the diff title shows total stats on launch.
+        app.diff_state.cursor_line = 0;
+        app.diff_state.scroll_offset = 0;
+        Ok(app)
+    }
+
+    fn new_inner(
+        theme: Theme,
+        comment_type_configs: Option<Vec<CommentTypeConfig>>,
+        output_to_stdout: bool,
+        revisions: Option<&str>,
+        working_tree: bool,
+        path_filter: Option<&str>,
+        file_path: Option<&str>,
+    ) -> Result<Self> {
         // --file mode: open a single file for annotation without VCS
         if let Some(file_path) = file_path {
             let vcs = Box::new(FileBackend::new(file_path)?);
