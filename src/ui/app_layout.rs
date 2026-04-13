@@ -595,7 +595,10 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
     let title = if app.is_cursor_in_overview() || app.current_file_path().is_none() {
         " Diff (Unified) \u{2014} Overview ".to_string()
     } else {
-        format!(" Diff (Unified) \u{2014} {} ", app.current_file_path().unwrap().display())
+        format!(
+            " Diff (Unified) \u{2014} {} ",
+            app.current_file_path().unwrap().display()
+        )
     };
 
     let block = Block::default()
@@ -1685,7 +1688,10 @@ fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
     let title = if app.is_cursor_in_overview() || app.current_file_path().is_none() {
         " Diff (Side-by-Side) \u{2014} Overview ".to_string()
     } else {
-        format!(" Diff (Side-by-Side) \u{2014} {} ", app.current_file_path().unwrap().display())
+        format!(
+            " Diff (Side-by-Side) \u{2014} {} ",
+            app.current_file_path().unwrap().display()
+        )
     };
 
     let block = Block::default()
