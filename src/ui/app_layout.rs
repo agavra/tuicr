@@ -564,16 +564,43 @@ fn render_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
+/// Build a right-aligned title showing diff stats for the current scope.
+/// In overview: total stats across all files. In a file: that file's stats.
+fn diff_stat_title(app: &App) -> Line<'static> {
+    let (additions, deletions) = if app.is_cursor_in_overview() || app.current_file_path().is_none()
+    {
+        let (_, a, d) = app.diff_stat();
+        (a, d)
+    } else {
+        app.diff_files[app.diff_state.current_file_idx].stat()
+    };
+
+    let theme = &app.theme;
+    Line::from(vec![
+        Span::styled(
+            format!(" +{additions}"),
+            Style::default().fg(theme.diff_add),
+        ),
+        Span::raw(" "),
+        Span::styled(
+            format!("-{deletions} "),
+            Style::default().fg(theme.diff_del),
+        ),
+    ])
+}
+
 fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focused_panel == FocusedPanel::Diff;
 
-    let title = match app.current_file_path() {
-        Some(path) => format!(" Diff (Unified) \u{2014} {} ", path.display()),
-        None => " Diff (Unified) ".to_string(),
+    let title = if app.is_cursor_in_overview() || app.current_file_path().is_none() {
+        " Diff (Unified) \u{2014} Overview ".to_string()
+    } else {
+        format!(" Diff (Unified) \u{2014} {} ", app.current_file_path().unwrap().display())
     };
 
     let block = Block::default()
         .title(title)
+        .title_top(diff_stat_title(app).right_aligned())
         .borders(Borders::ALL)
         .style(styles::panel_style(&app.theme))
         .border_style(styles::border_style(&app.theme, focused));
@@ -1655,13 +1682,15 @@ fn scroll_comment_input_into_view(
 fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focused_panel == FocusedPanel::Diff;
 
-    let title = match app.current_file_path() {
-        Some(path) => format!(" Diff (Side-by-Side) \u{2014} {} ", path.display()),
-        None => " Diff (Side-by-Side) ".to_string(),
+    let title = if app.is_cursor_in_overview() || app.current_file_path().is_none() {
+        " Diff (Side-by-Side) \u{2014} Overview ".to_string()
+    } else {
+        format!(" Diff (Side-by-Side) \u{2014} {} ", app.current_file_path().unwrap().display())
     };
 
     let block = Block::default()
         .title(title)
+        .title_top(diff_stat_title(app).right_aligned())
         .borders(Borders::ALL)
         .style(styles::panel_style(&app.theme))
         .border_style(styles::border_style(&app.theme, focused));
