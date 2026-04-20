@@ -99,7 +99,14 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  Enter     ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Expand/collapse hidden context"),
+            Span::raw("Expand/collapse context (20 lines)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  S-Enter   ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Expand/collapse all hidden context"),
         ]),
         Line::from(vec![
             Span::styled(

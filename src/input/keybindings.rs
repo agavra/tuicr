@@ -86,6 +86,7 @@ pub enum Action {
     ToggleExpand,
     ExpandAll,
     CollapseAll,
+    SelectFileFull,
 
     // No-op
     None,
@@ -133,6 +134,7 @@ fn map_normal_mode(key: KeyEvent) -> Action {
         (KeyCode::Tab, KeyModifiers::NONE) => Action::ToggleFocus,
         (KeyCode::BackTab, _) => Action::ToggleFocusReverse,
         (KeyCode::Enter, KeyModifiers::NONE) => Action::SelectFile,
+        (KeyCode::Enter, KeyModifiers::SHIFT) => Action::SelectFileFull,
 
         // Horizontal scrolling
         (KeyCode::Char('h') | KeyCode::Left, KeyModifiers::NONE) => Action::ScrollLeft(4),

@@ -15,12 +15,26 @@ use crate::syntax::SyntaxHighlighter;
 use crate::theme::Theme;
 use crate::update::UpdateInfo;
 use crate::vcs::git::calculate_gap;
-use crate::vcs::{CommitInfo, VcsBackend, VcsInfo, detect_vcs};
+use crate::vcs::{CommitInfo, FileBackend, VcsBackend, VcsInfo, detect_vcs};
 
 const VISIBLE_COMMIT_COUNT: usize = 10;
 const COMMIT_PAGE_SIZE: usize = 10;
 pub const STAGED_SELECTION_ID: &str = "__tuicr_staged__";
 pub const UNSTAGED_SELECTION_ID: &str = "__tuicr_unstaged__";
+pub const GAP_EXPAND_BATCH: usize = 20;
+
+/// Count how many annotation lines a gap produces (expanders + hidden count).
+fn gap_annotation_line_count(is_top_of_file: bool, remaining: usize) -> usize {
+    if remaining == 0 {
+        0
+    } else if is_top_of_file {
+        // ↑ expander, plus a HiddenLines line when remaining > batch
+        if remaining > GAP_EXPAND_BATCH { 2 } else { 1 }
+    } else {
+        // Between hunks: ↓ + HiddenLines + ↑ when >= batch, else single ↕
+        if remaining >= GAP_EXPAND_BATCH { 3 } else { 1 }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum FileTreeItem {
@@ -43,6 +57,27 @@ pub struct GapId {
     pub hunk_idx: usize,
 }
 
+/// Direction of gap expansion
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ExpandDirection {
+    /// ↓ Expand downward from upper boundary
+    Down,
+    /// ↑ Expand upward from lower boundary
+    Up,
+    /// ↕ Expand all remaining lines in both directions (merged expander)
+    Both,
+}
+
+/// Result of checking what the cursor is on in a gap region
+pub enum GapCursorHit {
+    /// Cursor is on a directional expander
+    Expander(GapId, ExpandDirection),
+    /// Cursor is on the "N lines hidden" info line
+    HiddenLines(GapId),
+    /// Cursor is on already-expanded context
+    ExpandedContent(GapId),
+}
+
 /// Describes what a rendered line represents - built once and used for O(1) cursor queries
 #[derive(Debug, Clone)]
 pub enum AnnotatedLine {
@@ -54,8 +89,13 @@ pub enum AnnotatedLine {
     FileHeader { file_idx: usize },
     /// A file-level comment line (part of a multi-line comment box)
     FileComment { file_idx: usize, comment_idx: usize },
-    /// Expander line showing hidden context
-    Expander { gap_id: GapId },
+    /// Expander line showing hidden context with direction arrow
+    Expander {
+        gap_id: GapId,
+        direction: ExpandDirection,
+    },
+    /// Informational line showing count of hidden lines between expanders
+    HiddenLines { gap_id: GapId, count: usize },
     /// Expanded context line (muted text)
     ExpandedContext { gap_id: GapId, line_idx: usize },
     /// Hunk header (@@...@@)
@@ -252,10 +292,10 @@ pub struct App {
     pub file_list_area: Option<ratatui::layout::Rect>,
     pub diff_area: Option<ratatui::layout::Rect>,
     pub expanded_dirs: HashSet<String>,
-    /// Tracks which hunk gaps have been expanded to show more context
-    pub expanded_gaps: HashSet<GapId>,
-    /// Stores the expanded context lines for each gap
-    pub expanded_content: HashMap<GapId, Vec<DiffLine>>,
+    /// Stores lines expanded downward from the upper boundary of each gap
+    pub expanded_top: HashMap<GapId, Vec<DiffLine>>,
+    /// Stores lines expanded upward from the lower boundary of each gap (in ascending line order)
+    pub expanded_bottom: HashMap<GapId, Vec<DiffLine>>,
     /// Cached annotations describing what each rendered line represents
     pub line_annotations: Vec<AnnotatedLine>,
     /// Output to stdout instead of clipboard when exporting
@@ -283,6 +323,10 @@ pub struct App {
     pub range_diff_files: Option<Vec<DiffFile>>,
     /// Saved inline selection range when entering full commit select mode via :commits
     pub saved_inline_selection: Option<(usize, usize)>,
+    /// Path filter for scoping diff to a specific file or directory
+    pub path_filter: Option<String>,
+    /// Whether to include the "Comment types:" legend line in export
+    pub export_legend: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -383,8 +427,44 @@ impl App {
         output_to_stdout: bool,
         revisions: Option<&str>,
         working_tree: bool,
+        path_filter: Option<&str>,
+        file_path: Option<&str>,
         local_storage: bool,
     ) -> Result<Self> {
+        // --file mode: open a single file for annotation without VCS
+        if let Some(file_path) = file_path {
+            let vcs = Box::new(FileBackend::new(file_path)?);
+            let vcs_info = vcs.info().clone();
+            let highlighter = theme.syntax_highlighter();
+            let diff_files = vcs.get_working_tree_diff(highlighter)?;
+            let session = Self::load_or_create_session(
+                &vcs_info,
+                SessionDiffSource::WorkingTree,
+                local_storage,
+            );
+
+            let mut app = Self::build(
+                vcs,
+                vcs_info,
+                theme,
+                comment_type_configs,
+                output_to_stdout,
+                diff_files,
+                session,
+                DiffSource::WorkingTree,
+                InputMode::Normal,
+                Vec::new(),
+                None, // no path_filter
+                local_storage,
+            )?;
+
+            // Hide file list since there's only one file
+            app.show_file_list = false;
+            app.focused_panel = FocusedPanel::Diff;
+
+            return Ok(app);
+        }
+
         let vcs = detect_vcs()?;
         let vcs_info = vcs.info().clone();
         let highlighter = theme.syntax_highlighter();
@@ -404,6 +484,7 @@ impl App {
                     &vcs_info.root_path,
                     &commit_ids,
                     highlighter,
+                    path_filter,
                 )?;
                 let session = Self::load_or_create_staged_unstaged_and_commits_session(
                     &vcs_info,
@@ -420,12 +501,14 @@ impl App {
                     vcs.as_ref(),
                     &vcs_info.root_path,
                     highlighter,
+                    path_filter,
                 )
                 .is_ok();
                 let has_unstaged = Self::get_unstaged_diff_with_ignore(
                     vcs.as_ref(),
                     &vcs_info.root_path,
                     highlighter,
+                    path_filter,
                 )
                 .is_ok();
                 let mut all_commits = Vec::new();
@@ -448,6 +531,7 @@ impl App {
                     DiffSource::StagedUnstagedAndCommits(commit_ids),
                     InputMode::Normal,
                     Vec::new(),
+                    path_filter,
                     local_storage,
                 )?;
 
@@ -479,6 +563,7 @@ impl App {
                 &vcs_info.root_path,
                 &commit_ids,
                 highlighter,
+                path_filter,
             )?;
             let session =
                 Self::load_or_create_commit_range_session(&vcs_info, &commit_ids, local_storage);
@@ -498,6 +583,7 @@ impl App {
                 DiffSource::CommitRange(commit_ids),
                 InputMode::Normal,
                 Vec::new(),
+                path_filter,
                 local_storage,
             )?;
 
@@ -526,6 +612,7 @@ impl App {
                 vcs.as_ref(),
                 &vcs_info.root_path,
                 highlighter,
+                path_filter,
             )?;
             let session = Self::load_or_create_session(
                 &vcs_info,
@@ -533,7 +620,7 @@ impl App {
                 local_storage,
             );
 
-            let mut app = Self::build(
+            let app = Self::build(
                 vcs,
                 vcs_info,
                 theme,
@@ -544,11 +631,9 @@ impl App {
                 DiffSource::StagedAndUnstaged,
                 InputMode::Normal,
                 Vec::new(),
+                path_filter,
                 local_storage,
             )?;
-            app.sort_files_by_directory(true);
-            app.expand_all_dirs();
-            app.rebuild_annotations();
 
             Ok(app)
         } else {
@@ -556,6 +641,7 @@ impl App {
                 vcs.as_ref(),
                 &vcs_info.root_path,
                 highlighter,
+                path_filter,
             ) {
                 Ok(_) => true,
                 Err(TuicrError::NoChanges) => false,
@@ -567,6 +653,7 @@ impl App {
                 vcs.as_ref(),
                 &vcs_info.root_path,
                 highlighter,
+                path_filter,
             ) {
                 Ok(_) => true,
                 Err(TuicrError::NoChanges) => false,
@@ -579,6 +666,7 @@ impl App {
                     vcs.as_ref(),
                     &vcs_info.root_path,
                     highlighter,
+                    path_filter,
                 ) {
                     Ok(diff_files) => Some(diff_files),
                     Err(TuicrError::NoChanges) => None,
@@ -634,6 +722,7 @@ impl App {
                 diff_source,
                 InputMode::CommitSelect,
                 commit_list,
+                path_filter,
                 local_storage,
             )?;
 
@@ -656,6 +745,7 @@ impl App {
         diff_source: DiffSource,
         input_mode: InputMode,
         commit_list: Vec<CommitInfo>,
+        path_filter: Option<&str>,
         local_storage: bool,
     ) -> Result<Self> {
         // Ensure all diff files are registered in the session
@@ -717,8 +807,8 @@ impl App {
             file_list_area: None,
             diff_area: None,
             expanded_dirs: HashSet::new(),
-            expanded_gaps: HashSet::new(),
-            expanded_content: HashMap::new(),
+            expanded_top: HashMap::new(),
+            expanded_bottom: HashMap::new(),
             line_annotations: Vec::new(),
             output_to_stdout,
             pending_stdout_output: None,
@@ -731,7 +821,14 @@ impl App {
             commit_diff_cache: HashMap::new(),
             range_diff_files: None,
             saved_inline_selection: None,
+            path_filter: path_filter.map(|s| s.to_string()),
+            export_legend: true,
         };
+        // Auto-hide file list when path filter matches exactly one file
+        if app.path_filter.is_some() && app.diff_files.len() == 1 {
+            app.show_file_list = false;
+            app.focused_panel = FocusedPanel::Diff;
+        }
         app.sort_files_by_directory(true);
         app.expand_all_dirs();
         app.rebuild_annotations();
@@ -1105,6 +1202,17 @@ impl App {
         crate::tuicrignore::filter_diff_files(repo_root, diff_files)
     }
 
+    fn filter_by_path(diff_files: Vec<DiffFile>, path: &str) -> Vec<DiffFile> {
+        let path = path.trim_end_matches('/');
+        diff_files
+            .into_iter()
+            .filter(|f| {
+                let display = f.display_path().to_string_lossy();
+                display == path || display.starts_with(&format!("{path}/"))
+            })
+            .collect()
+    }
+
     fn require_non_empty_diff_files(diff_files: Vec<DiffFile>) -> Result<Vec<DiffFile>> {
         if diff_files.is_empty() {
             return Err(TuicrError::NoChanges);
@@ -1116,9 +1224,15 @@ impl App {
         vcs: &dyn VcsBackend,
         repo_root: &Path,
         highlighter: &SyntaxHighlighter,
+        path_filter: Option<&str>,
     ) -> Result<Vec<DiffFile>> {
         let diff_files = vcs.get_working_tree_diff(highlighter)?;
         let diff_files = Self::filter_ignored_diff_files(repo_root, diff_files);
+        let diff_files = if let Some(path) = path_filter {
+            Self::filter_by_path(diff_files, path)
+        } else {
+            diff_files
+        };
         Self::require_non_empty_diff_files(diff_files)
     }
 
@@ -1126,9 +1240,15 @@ impl App {
         vcs: &dyn VcsBackend,
         repo_root: &Path,
         highlighter: &SyntaxHighlighter,
+        path_filter: Option<&str>,
     ) -> Result<Vec<DiffFile>> {
         let diff_files = vcs.get_staged_diff(highlighter)?;
         let diff_files = Self::filter_ignored_diff_files(repo_root, diff_files);
+        let diff_files = if let Some(path) = path_filter {
+            Self::filter_by_path(diff_files, path)
+        } else {
+            diff_files
+        };
         Self::require_non_empty_diff_files(diff_files)
     }
 
@@ -1136,6 +1256,7 @@ impl App {
         vcs: &dyn VcsBackend,
         repo_root: &Path,
         highlighter: &SyntaxHighlighter,
+        path_filter: Option<&str>,
     ) -> Result<Vec<DiffFile>> {
         let diff_files = match vcs.get_unstaged_diff(highlighter) {
             Ok(diff_files) => diff_files,
@@ -1143,6 +1264,11 @@ impl App {
             Err(e) => return Err(e),
         };
         let diff_files = Self::filter_ignored_diff_files(repo_root, diff_files);
+        let diff_files = if let Some(path) = path_filter {
+            Self::filter_by_path(diff_files, path)
+        } else {
+            diff_files
+        };
         Self::require_non_empty_diff_files(diff_files)
     }
 
@@ -1151,9 +1277,15 @@ impl App {
         repo_root: &Path,
         commit_ids: &[String],
         highlighter: &SyntaxHighlighter,
+        path_filter: Option<&str>,
     ) -> Result<Vec<DiffFile>> {
         let diff_files = vcs.get_commit_range_diff(commit_ids, highlighter)?;
         let diff_files = Self::filter_ignored_diff_files(repo_root, diff_files);
+        let diff_files = if let Some(path) = path_filter {
+            Self::filter_by_path(diff_files, path)
+        } else {
+            diff_files
+        };
         Self::require_non_empty_diff_files(diff_files)
     }
 
@@ -1162,9 +1294,15 @@ impl App {
         repo_root: &Path,
         commit_ids: &[String],
         highlighter: &SyntaxHighlighter,
+        path_filter: Option<&str>,
     ) -> Result<Vec<DiffFile>> {
         let diff_files = vcs.get_working_tree_with_commits_diff(commit_ids, highlighter)?;
         let diff_files = Self::filter_ignored_diff_files(repo_root, diff_files);
+        let diff_files = if let Some(path) = path_filter {
+            Self::filter_by_path(diff_files, path)
+        } else {
+            diff_files
+        };
         Self::require_non_empty_diff_files(diff_files)
     }
 
@@ -1174,6 +1312,7 @@ impl App {
             self.vcs.as_ref(),
             &self.vcs_info.root_path,
             highlighter,
+            self.path_filter.as_deref(),
         ) {
             Ok(diff_files) => diff_files,
             Err(TuicrError::NoChanges) => {
@@ -1212,6 +1351,7 @@ impl App {
             self.vcs.as_ref(),
             &self.vcs_info.root_path,
             highlighter,
+            self.path_filter.as_deref(),
         ) {
             Ok(diff_files) => diff_files,
             Err(TuicrError::NoChanges) => {
@@ -1250,6 +1390,7 @@ impl App {
             self.vcs.as_ref(),
             &self.vcs_info.root_path,
             highlighter,
+            self.path_filter.as_deref(),
         ) {
             Ok(diff_files) => diff_files,
             Err(TuicrError::NoChanges) => {
@@ -1304,6 +1445,7 @@ impl App {
                 &self.vcs_info.root_path,
                 commit_ids,
                 highlighter,
+                self.path_filter.as_deref(),
             )?,
             DiffSource::StagedUnstagedAndCommits(commit_ids) => {
                 let ids = commit_ids.clone();
@@ -1312,23 +1454,27 @@ impl App {
                     &self.vcs_info.root_path,
                     &ids,
                     highlighter,
+                    self.path_filter.as_deref(),
                 )?
             }
             DiffSource::Staged => Self::get_staged_diff_with_ignore(
                 self.vcs.as_ref(),
                 &self.vcs_info.root_path,
                 highlighter,
+                self.path_filter.as_deref(),
             )?,
             DiffSource::Unstaged => Self::get_unstaged_diff_with_ignore(
                 self.vcs.as_ref(),
                 &self.vcs_info.root_path,
                 highlighter,
+                self.path_filter.as_deref(),
             )?,
             DiffSource::StagedAndUnstaged | DiffSource::WorkingTree => {
                 Self::get_working_tree_diff_with_ignore(
                     self.vcs.as_ref(),
                     &self.vcs_info.root_path,
                     highlighter,
+                    self.path_filter.as_deref(),
                 )?
             }
         };
@@ -1432,6 +1578,23 @@ impl App {
 
     pub fn reviewed_count(&self) -> usize {
         self.session.reviewed_count()
+    }
+
+    /// Returns `(total_files, total_additions, total_deletions)` across all diff files.
+    pub fn diff_stat(&self) -> (usize, usize, usize) {
+        let mut additions = 0;
+        let mut deletions = 0;
+        for file in &self.diff_files {
+            let (a, d) = file.stat();
+            additions += a;
+            deletions += d;
+        }
+        (self.diff_files.len(), additions, deletions)
+    }
+
+    /// Returns true when the cursor is in the review comments area above all files.
+    pub fn is_cursor_in_overview(&self) -> bool {
+        self.diff_state.cursor_line < self.review_comments_render_height()
     }
 
     pub fn set_message(&mut self, msg: impl Into<String>) {
@@ -1661,15 +1824,27 @@ impl App {
                 let comment = comments.get(*comment_idx)?;
                 Some(comment.content.clone())
             }
-            AnnotatedLine::Expander { gap_id } => {
+            AnnotatedLine::Expander { gap_id, direction } => {
+                let arrow = match direction {
+                    ExpandDirection::Down => "↓",
+                    ExpandDirection::Up => "↑",
+                    ExpandDirection::Both => "↕",
+                };
                 let gap = self.gap_size(gap_id)?;
-                Some(format!("... expand ({gap} lines) ..."))
+                let top_len = self.expanded_top.get(gap_id).map_or(0, |v| v.len());
+                let bot_len = self.expanded_bottom.get(gap_id).map_or(0, |v| v.len());
+                let remaining = (gap as usize).saturating_sub(top_len + bot_len);
+                let count = remaining.min(GAP_EXPAND_BATCH);
+                Some(format!("... {arrow} expand ({count} lines) ..."))
+            }
+            AnnotatedLine::HiddenLines { count, .. } => {
+                Some(format!("... {count} lines hidden ..."))
             }
             AnnotatedLine::ExpandedContext {
                 gap_id,
                 line_idx: context_idx,
             } => {
-                let content = self.expanded_content.get(gap_id)?.get(*context_idx)?;
+                let content = self.get_expanded_line(gap_id, *context_idx)?;
                 Some(content.content.clone())
             }
             AnnotatedLine::HunkHeader { file_idx, hunk_idx } => {
@@ -1804,6 +1979,15 @@ impl App {
                 self.file_list_state.select(tree_idx);
             }
         }
+    }
+
+    pub fn jump_to_bottom(&mut self) {
+        let max_line = self.total_lines().saturating_sub(1);
+        self.diff_state.cursor_line = max_line;
+        // Always position so the last line is at the bottom of the viewport
+        let viewport = self.diff_state.viewport_height.max(1);
+        self.diff_state.scroll_offset = self.total_lines().saturating_sub(viewport);
+        self.update_current_file_from_cursor();
     }
 
     pub fn next_file(&mut self) {
@@ -1996,15 +2180,11 @@ impl App {
                 let gap_id = GapId { file_idx, hunk_idx };
 
                 if gap > 0 {
-                    if self.expanded_gaps.contains(&gap_id) {
-                        // Expanded content lines
-                        if let Some(expanded) = self.expanded_content.get(&gap_id) {
-                            content_lines += expanded.len();
-                        }
-                    } else {
-                        // Expander line
-                        content_lines += 1;
-                    }
+                    let top_len = self.expanded_top.get(&gap_id).map_or(0, |v| v.len());
+                    let bot_len = self.expanded_bottom.get(&gap_id).map_or(0, |v| v.len());
+                    let remaining = (gap as usize).saturating_sub(top_len + bot_len);
+                    content_lines += top_len + bot_len;
+                    content_lines += gap_annotation_line_count(hunk_idx == 0, remaining);
                 }
 
                 // Hunk header + diff lines
@@ -2331,15 +2511,20 @@ impl App {
     }
 
     pub fn clear_all_comments(&mut self) {
-        let cleared = self.session.clear_comments();
-        if cleared == 0 {
+        let (cleared, unreviewed) = self.session.clear_comments();
+        if cleared == 0 && unreviewed == 0 {
             self.set_message("No comments to clear");
             return;
         }
 
         self.dirty = true;
         self.rebuild_annotations();
-        self.set_message(format!("Cleared {cleared} comments"));
+        let msg = match (cleared, unreviewed) {
+            (0, n) => format!("Unreviewed {n} files"),
+            (c, 0) => format!("Cleared {c} comments"),
+            (c, n) => format!("Cleared {c} comments, unreviewed {n} files"),
+        };
+        self.set_message(msg);
     }
 
     /// Enter edit mode for the comment at the current cursor position
@@ -2708,6 +2893,7 @@ impl App {
             self.vcs.as_ref(),
             &self.vcs_info.root_path,
             highlighter,
+            self.path_filter.as_deref(),
         ) {
             Ok(_) => true,
             Err(TuicrError::NoChanges) => false,
@@ -2719,6 +2905,7 @@ impl App {
             self.vcs.as_ref(),
             &self.vcs_info.root_path,
             highlighter,
+            self.path_filter.as_deref(),
         ) {
             Ok(_) => true,
             Err(TuicrError::NoChanges) => false,
@@ -2779,6 +2966,7 @@ impl App {
                 self.vcs.as_ref(),
                 &self.vcs_info.root_path,
                 highlighter,
+                self.path_filter.as_deref(),
             ) {
                 Ok(diff_files) => {
                     self.diff_files = diff_files;
@@ -3076,6 +3264,7 @@ impl App {
             &self.vcs_info.root_path,
             &selected_ids,
             highlighter,
+            self.path_filter.as_deref(),
         )?;
 
         if diff_files.is_empty() {
@@ -3173,8 +3362,8 @@ impl App {
             self.diff_state = DiffState::default();
             self.diff_state.wrap_lines = wrap;
             self.file_list_state = FileListState::default();
-            self.expanded_gaps.clear();
-            self.expanded_content.clear();
+            self.expanded_top.clear();
+            self.expanded_bottom.clear();
             self.insert_commit_message_if_single();
             self.sort_files_by_directory(true);
             self.expand_all_dirs();
@@ -3189,8 +3378,8 @@ impl App {
             self.diff_state = DiffState::default();
             self.diff_state.wrap_lines = wrap;
             self.file_list_state = FileListState::default();
-            self.expanded_gaps.clear();
-            self.expanded_content.clear();
+            self.expanded_top.clear();
+            self.expanded_bottom.clear();
             self.insert_commit_message_if_single();
             self.sort_files_by_directory(true);
             self.expand_all_dirs();
@@ -3223,6 +3412,7 @@ impl App {
                 &self.vcs_info.root_path,
                 &selected_ids,
                 highlighter,
+                self.path_filter.as_deref(),
             ) {
                 Ok(files) => files,
                 Err(TuicrError::NoChanges) => Vec::new(),
@@ -3233,6 +3423,7 @@ impl App {
                 self.vcs.as_ref(),
                 &self.vcs_info.root_path,
                 highlighter,
+                self.path_filter.as_deref(),
             ) {
                 Ok(files) => files,
                 Err(TuicrError::NoChanges) => Vec::new(),
@@ -3243,6 +3434,7 @@ impl App {
                 self.vcs.as_ref(),
                 &self.vcs_info.root_path,
                 highlighter,
+                self.path_filter.as_deref(),
             ) {
                 Ok(files) => files,
                 Err(TuicrError::NoChanges) => Vec::new(),
@@ -3253,6 +3445,7 @@ impl App {
                 self.vcs.as_ref(),
                 &self.vcs_info.root_path,
                 highlighter,
+                self.path_filter.as_deref(),
             ) {
                 Ok(files) => files,
                 Err(TuicrError::NoChanges) => Vec::new(),
@@ -3264,6 +3457,7 @@ impl App {
                 &self.vcs_info.root_path,
                 &selected_ids,
                 highlighter,
+                self.path_filter.as_deref(),
             ) {
                 Ok(files) => files,
                 Err(TuicrError::NoChanges) => Vec::new(),
@@ -3279,8 +3473,8 @@ impl App {
         self.diff_state = DiffState::default();
         self.diff_state.wrap_lines = wrap;
         self.file_list_state = FileListState::default();
-        self.expanded_gaps.clear();
-        self.expanded_content.clear();
+        self.expanded_top.clear();
+        self.expanded_bottom.clear();
         self.insert_commit_message_if_single();
         self.sort_files_by_directory(true);
         self.expand_all_dirs();
@@ -3300,6 +3494,7 @@ impl App {
             &self.vcs_info.root_path,
             &selected_ids,
             highlighter,
+            self.path_filter.as_deref(),
         ) {
             Ok(diff_files) => diff_files,
             Err(TuicrError::NoChanges) => {
@@ -3397,7 +3592,11 @@ impl App {
             return;
         }
 
-        self.jump_to_file(0);
+        // Start at the overview position (review comments header)
+        // so the diff title shows total stats on launch.
+        self.diff_state.cursor_line = 0;
+        self.diff_state.scroll_offset = 0;
+        self.diff_state.current_file_idx = 0;
     }
 
     pub fn expand_all_dirs(&mut self) {
@@ -3432,71 +3631,126 @@ impl App {
         }
     }
 
-    /// Check if a hunk gap has been expanded
-    pub fn is_gap_expanded(&self, gap_id: &GapId) -> bool {
-        self.expanded_gaps.contains(gap_id)
-    }
-
-    /// Expand a gap to show hidden context lines
-    pub fn expand_gap(&mut self, gap_id: GapId) -> Result<()> {
-        if self.expanded_gaps.contains(&gap_id) {
-            return Ok(()); // Already expanded
-        }
-
-        let file = self.diff_files.get(gap_id.file_idx).ok_or_else(|| {
-            TuicrError::CorruptedSession(format!("Invalid file index: {}", gap_id.file_idx))
-        })?;
-
-        let hunk = file.hunks.get(gap_id.hunk_idx).ok_or_else(|| {
-            TuicrError::CorruptedSession(format!("Invalid hunk index: {}", gap_id.hunk_idx))
-        })?;
-
-        // Get previous hunk to calculate gap boundaries
+    /// Get the line boundaries (start_line, end_line) of a gap.
+    fn gap_boundaries(&self, gap_id: &GapId) -> Option<(u32, u32)> {
+        let file = self.diff_files.get(gap_id.file_idx)?;
+        let hunk = file.hunks.get(gap_id.hunk_idx)?;
         let prev_hunk = if gap_id.hunk_idx > 0 {
             file.hunks.get(gap_id.hunk_idx - 1)
         } else {
             None
         };
-
-        // Calculate line range to fetch
-        let (start_line, end_line) = match prev_hunk {
+        let (start, end) = match prev_hunk {
             None => (1, hunk.new_start.saturating_sub(1)),
-            Some(prev) => {
-                let prev_end = prev.new_start + prev.new_count;
-                (prev_end, hunk.new_start.saturating_sub(1))
-            }
+            Some(prev) => (
+                prev.new_start + prev.new_count,
+                hunk.new_start.saturating_sub(1),
+            ),
         };
+        if start > end {
+            None
+        } else {
+            Some((start, end))
+        }
+    }
 
-        if start_line > end_line {
-            return Ok(()); // No gap to expand
+    /// Look up an expanded context line by sequential index across top + bottom.
+    fn get_expanded_line(&self, gap_id: &GapId, idx: usize) -> Option<&DiffLine> {
+        let top = self.expanded_top.get(gap_id);
+        let top_len = top.map_or(0, |v| v.len());
+        if idx < top_len {
+            top?.get(idx)
+        } else {
+            self.expanded_bottom.get(gap_id)?.get(idx - top_len)
+        }
+    }
+
+    /// Expand a gap in the given direction.
+    /// If `limit` is Some(n), expand up to n lines. If None, expand all remaining.
+    pub fn expand_gap(
+        &mut self,
+        gap_id: GapId,
+        direction: ExpandDirection,
+        limit: Option<usize>,
+    ) -> Result<()> {
+        let (gap_start, gap_end) = self
+            .gap_boundaries(&gap_id)
+            .ok_or_else(|| TuicrError::CorruptedSession(format!("Invalid gap: {:?}", gap_id)))?;
+
+        let file_path = self.diff_files[gap_id.file_idx].display_path().clone();
+        let file_status = self.diff_files[gap_id.file_idx].status;
+
+        let top_len = self.expanded_top.get(&gap_id).map_or(0, |v| v.len()) as u32;
+        let bot_len = self.expanded_bottom.get(&gap_id).map_or(0, |v| v.len()) as u32;
+
+        // The unexpanded region runs from (gap_start + top_len) to (gap_end - bot_len)
+        let inner_start = gap_start + top_len;
+        let inner_end = gap_end.saturating_sub(bot_len);
+
+        if inner_start > inner_end {
+            return Ok(()); // Fully expanded
         }
 
-        let file_path = file.display_path().clone();
-        let file_status = file.status;
+        match direction {
+            ExpandDirection::Down => {
+                let n = limit.unwrap_or(usize::MAX) as u32;
+                let fetch_end = inner_start.saturating_add(n - 1).min(inner_end);
+                let new_lines = self.vcs.fetch_context_lines(
+                    &file_path,
+                    file_status,
+                    inner_start,
+                    fetch_end,
+                )?;
+                self.expanded_top
+                    .entry(gap_id.clone())
+                    .or_default()
+                    .extend(new_lines);
+            }
+            ExpandDirection::Up => {
+                let n = limit.unwrap_or(usize::MAX) as u32;
+                let fetch_start = inner_end.saturating_sub(n - 1).max(inner_start);
+                let new_lines = self.vcs.fetch_context_lines(
+                    &file_path,
+                    file_status,
+                    fetch_start,
+                    inner_end,
+                )?;
+                // Prepend: new lines go before existing bottom lines
+                let existing = self.expanded_bottom.remove(&gap_id).unwrap_or_default();
+                let mut combined = new_lines;
+                combined.extend(existing);
+                self.expanded_bottom.insert(gap_id.clone(), combined);
+            }
+            ExpandDirection::Both => {
+                // Fetch everything remaining
+                let new_lines = self.vcs.fetch_context_lines(
+                    &file_path,
+                    file_status,
+                    inner_start,
+                    inner_end,
+                )?;
+                self.expanded_top
+                    .entry(gap_id.clone())
+                    .or_default()
+                    .extend(new_lines);
+            }
+        }
 
-        // Fetch the context lines
-        let lines = self
-            .vcs
-            .fetch_context_lines(&file_path, file_status, start_line, end_line)?;
-
-        self.expanded_content.insert(gap_id.clone(), lines);
-        self.expanded_gaps.insert(gap_id);
         self.rebuild_annotations();
-
         Ok(())
     }
 
     /// Collapse an expanded gap
     pub fn collapse_gap(&mut self, gap_id: GapId) {
-        self.expanded_gaps.remove(&gap_id);
-        self.expanded_content.remove(&gap_id);
+        self.expanded_top.remove(&gap_id);
+        self.expanded_bottom.remove(&gap_id);
         self.rebuild_annotations();
     }
 
     /// Clear all expanded gaps (called when reloading diffs)
     pub fn clear_expanded_gaps(&mut self) {
-        self.expanded_gaps.clear();
-        self.expanded_content.clear();
+        self.expanded_top.clear();
+        self.expanded_bottom.clear();
     }
 
     /// Rebuild the line annotations cache. Call this when:
@@ -3570,21 +3824,67 @@ impl App {
                     let gap_id = GapId { file_idx, hunk_idx };
 
                     if gap > 0 {
-                        if self.expanded_gaps.contains(&gap_id) {
-                            // Expanded content lines
-                            if let Some(content) = self.expanded_content.get(&gap_id) {
-                                for (content_idx, _) in content.iter().enumerate() {
-                                    self.line_annotations.push(AnnotatedLine::ExpandedContext {
+                        let top_len = self.expanded_top.get(&gap_id).map_or(0, |v| v.len());
+                        let bot_len = self.expanded_bottom.get(&gap_id).map_or(0, |v| v.len());
+                        let remaining = (gap as usize).saturating_sub(top_len + bot_len);
+                        let is_top_of_file = hunk_idx == 0;
+
+                        // Sequential line_idx counter across top + bottom
+                        let mut ctx_idx = 0;
+
+                        // --- Top expanded lines (↓ direction) ---
+                        for _ in 0..top_len {
+                            self.line_annotations.push(AnnotatedLine::ExpandedContext {
+                                gap_id: gap_id.clone(),
+                                line_idx: ctx_idx,
+                            });
+                            ctx_idx += 1;
+                        }
+
+                        // --- Expanders / hidden lines ---
+                        if remaining > 0 {
+                            if is_top_of_file {
+                                // Top-of-file: HiddenLines (if > batch) + ↑
+                                if remaining > GAP_EXPAND_BATCH {
+                                    self.line_annotations.push(AnnotatedLine::HiddenLines {
                                         gap_id: gap_id.clone(),
-                                        line_idx: content_idx,
+                                        count: remaining,
                                     });
                                 }
+                                self.line_annotations.push(AnnotatedLine::Expander {
+                                    gap_id: gap_id.clone(),
+                                    direction: ExpandDirection::Up,
+                                });
+                            } else if remaining >= GAP_EXPAND_BATCH {
+                                // Between-hunk, large: ↓ + HiddenLines + ↑
+                                self.line_annotations.push(AnnotatedLine::Expander {
+                                    gap_id: gap_id.clone(),
+                                    direction: ExpandDirection::Down,
+                                });
+                                self.line_annotations.push(AnnotatedLine::HiddenLines {
+                                    gap_id: gap_id.clone(),
+                                    count: remaining,
+                                });
+                                self.line_annotations.push(AnnotatedLine::Expander {
+                                    gap_id: gap_id.clone(),
+                                    direction: ExpandDirection::Up,
+                                });
+                            } else {
+                                // Between-hunk, small: merged ↕
+                                self.line_annotations.push(AnnotatedLine::Expander {
+                                    gap_id: gap_id.clone(),
+                                    direction: ExpandDirection::Both,
+                                });
                             }
-                        } else {
-                            // Expander line
-                            self.line_annotations.push(AnnotatedLine::Expander {
+                        }
+
+                        // --- Bottom expanded lines (↑ direction) ---
+                        for _ in 0..bot_len {
+                            self.line_annotations.push(AnnotatedLine::ExpandedContext {
                                 gap_id: gap_id.clone(),
+                                line_idx: ctx_idx,
                             });
+                            ctx_idx += 1;
                         }
                     }
 
@@ -3816,13 +4116,19 @@ impl App {
         }
     }
 
-    /// Check if cursor is on an expander line or expanded content and return GapId and whether expanded
-    /// Returns (GapId, is_expanded) - is_expanded is true if cursor is on expanded content
-    pub fn get_gap_at_cursor(&self) -> Option<(GapId, bool)> {
+    /// What the cursor is on in a gap region
+    pub fn get_gap_at_cursor(&self) -> Option<GapCursorHit> {
         let target = self.diff_state.cursor_line;
         match self.line_annotations.get(target) {
-            Some(AnnotatedLine::Expander { gap_id, .. }) => Some((gap_id.clone(), false)),
-            Some(AnnotatedLine::ExpandedContext { gap_id, .. }) => Some((gap_id.clone(), true)),
+            Some(AnnotatedLine::Expander { gap_id, direction }) => {
+                Some(GapCursorHit::Expander(gap_id.clone(), *direction))
+            }
+            Some(AnnotatedLine::HiddenLines { gap_id, .. }) => {
+                Some(GapCursorHit::HiddenLines(gap_id.clone()))
+            }
+            Some(AnnotatedLine::ExpandedContext { gap_id, .. }) => {
+                Some(GapCursorHit::ExpandedContent(gap_id.clone()))
+            }
             _ => None,
         }
     }
@@ -4174,6 +4480,7 @@ mod commit_selection_tests {
             DiffSource::WorkingTree,
             InputMode::CommitSelect,
             commit_list,
+            None,
             false,
         )
         .expect("failed to build test app")
@@ -4549,5 +4856,475 @@ mod find_source_line_tests {
 
         let result = find_source_line(&annotations, 0, 20);
         assert_eq!(result, FindSourceLineResult::Nearest(0));
+    }
+}
+
+#[cfg(test)]
+mod expand_gap_tests {
+    use super::*;
+    use crate::model::{DiffHunk, DiffLine, FileStatus, LineOrigin};
+    use crate::vcs::traits::VcsType;
+
+    struct MockVcs {
+        info: VcsInfo,
+        /// Total lines available in the "file" (1-indexed)
+        total_lines: u32,
+    }
+
+    impl VcsBackend for MockVcs {
+        fn info(&self) -> &VcsInfo {
+            &self.info
+        }
+
+        fn get_working_tree_diff(&self, _highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+            Err(TuicrError::NoChanges)
+        }
+
+        fn fetch_context_lines(
+            &self,
+            _file_path: &Path,
+            _file_status: FileStatus,
+            start_line: u32,
+            end_line: u32,
+        ) -> Result<Vec<DiffLine>> {
+            let mut result = Vec::new();
+            for line_num in start_line..=end_line.min(self.total_lines) {
+                result.push(DiffLine {
+                    origin: LineOrigin::Context,
+                    content: format!("line {line_num}"),
+                    old_lineno: Some(line_num),
+                    new_lineno: Some(line_num),
+                    highlighted_spans: None,
+                });
+            }
+            Ok(result)
+        }
+    }
+
+    fn make_hunk(new_start: u32, new_count: u32) -> DiffHunk {
+        let mut lines = Vec::new();
+        for i in 0..new_count {
+            lines.push(DiffLine {
+                origin: LineOrigin::Context,
+                content: format!("hunk line {}", new_start + i),
+                old_lineno: Some(new_start + i),
+                new_lineno: Some(new_start + i),
+                highlighted_spans: None,
+            });
+        }
+        DiffHunk {
+            header: format!("@@ -{new_start},{new_count} +{new_start},{new_count} @@"),
+            lines,
+            old_start: new_start,
+            old_count: new_count,
+            new_start,
+            new_count,
+        }
+    }
+
+    fn build_app_with_files(files: Vec<DiffFile>, total_lines: u32) -> App {
+        let vcs_info = VcsInfo {
+            root_path: PathBuf::from("/tmp"),
+            head_commit: "abc123".to_string(),
+            branch_name: Some("main".to_string()),
+            vcs_type: VcsType::Git,
+        };
+        let session = ReviewSession::new(
+            vcs_info.root_path.clone(),
+            vcs_info.head_commit.clone(),
+            vcs_info.branch_name.clone(),
+            SessionDiffSource::WorkingTree,
+        );
+
+        App::build(
+            Box::new(MockVcs {
+                info: vcs_info.clone(),
+                total_lines,
+            }),
+            vcs_info,
+            Theme::dark(),
+            None,
+            false,
+            files,
+            session,
+            DiffSource::WorkingTree,
+            InputMode::Normal,
+            Vec::new(),
+            None,
+        )
+        .expect("failed to build test app")
+    }
+
+    fn make_file_with_hunks(path: &str, hunks: Vec<DiffHunk>) -> DiffFile {
+        DiffFile {
+            old_path: None,
+            new_path: Some(PathBuf::from(path)),
+            status: FileStatus::Modified,
+            hunks,
+            is_binary: false,
+            is_too_large: false,
+            is_commit_message: false,
+        }
+    }
+
+    #[test]
+    fn should_expand_up_from_first_hunk() {
+        // given: file with 50-line gap before first hunk (hunk starts at line 51)
+        let file = make_file_with_hunks("test.rs", vec![make_hunk(51, 5)]);
+        let mut app = build_app_with_files(vec![file], 100);
+        let gap_id = GapId {
+            file_idx: 0,
+            hunk_idx: 0,
+        };
+
+        // when: expand Up with limit 20 (reveals lines closest to hunk)
+        app.expand_gap(gap_id.clone(), ExpandDirection::Up, Some(20))
+            .unwrap();
+
+        // then: 20 lines expanded from the bottom of the gap (lines 31-50)
+        let content = app.expanded_bottom.get(&gap_id).unwrap();
+        assert_eq!(content.len(), 20);
+        assert_eq!(content[0].new_lineno, Some(31));
+        assert_eq!(content[19].new_lineno, Some(50));
+    }
+
+    #[test]
+    fn should_expand_all_lines_with_both_direction() {
+        // given: file with 50-line gap before first hunk
+        let file = make_file_with_hunks("test.rs", vec![make_hunk(51, 5)]);
+        let mut app = build_app_with_files(vec![file], 100);
+        let gap_id = GapId {
+            file_idx: 0,
+            hunk_idx: 0,
+        };
+
+        // when: expand Both (all remaining)
+        app.expand_gap(gap_id.clone(), ExpandDirection::Both, None)
+            .unwrap();
+
+        // then: all 50 lines in expanded_top
+        let content = app.expanded_top.get(&gap_id).unwrap();
+        assert_eq!(content.len(), 50);
+        assert_eq!(content[0].new_lineno, Some(1));
+        assert_eq!(content[49].new_lineno, Some(50));
+    }
+
+    #[test]
+    fn should_expand_down_from_upper_hunk() {
+        // given: file with two hunks, gap of 24 lines (6..29) between them
+        let file = make_file_with_hunks("test.rs", vec![make_hunk(1, 5), make_hunk(30, 5)]);
+        let mut app = build_app_with_files(vec![file], 100);
+        let gap_id = GapId {
+            file_idx: 0,
+            hunk_idx: 1,
+        };
+
+        // when: expand Down with limit 10
+        app.expand_gap(gap_id.clone(), ExpandDirection::Down, Some(10))
+            .unwrap();
+
+        // then: 10 lines from top of gap (lines 6-15)
+        let content = app.expanded_top.get(&gap_id).unwrap();
+        assert_eq!(content.len(), 10);
+        assert_eq!(content[0].new_lineno, Some(6));
+        assert_eq!(content[9].new_lineno, Some(15));
+    }
+
+    #[test]
+    fn should_expand_up_from_lower_hunk() {
+        // given: file with two hunks, gap of 24 lines (6..29) between them
+        let file = make_file_with_hunks("test.rs", vec![make_hunk(1, 5), make_hunk(30, 5)]);
+        let mut app = build_app_with_files(vec![file], 100);
+        let gap_id = GapId {
+            file_idx: 0,
+            hunk_idx: 1,
+        };
+
+        // when: expand Up with limit 10
+        app.expand_gap(gap_id.clone(), ExpandDirection::Up, Some(10))
+            .unwrap();
+
+        // then: 10 lines from bottom of gap (lines 20-29)
+        let content = app.expanded_bottom.get(&gap_id).unwrap();
+        assert_eq!(content.len(), 10);
+        assert_eq!(content[0].new_lineno, Some(20));
+        assert_eq!(content[9].new_lineno, Some(29));
+    }
+
+    #[test]
+    fn should_append_on_subsequent_down_expand() {
+        // given: already expanded 20 lines down
+        let file = make_file_with_hunks("test.rs", vec![make_hunk(1, 5), make_hunk(50, 5)]);
+        let mut app = build_app_with_files(vec![file], 100);
+        let gap_id = GapId {
+            file_idx: 0,
+            hunk_idx: 1,
+        };
+        app.expand_gap(gap_id.clone(), ExpandDirection::Down, Some(20))
+            .unwrap();
+
+        // when: expand Down 20 more
+        app.expand_gap(gap_id.clone(), ExpandDirection::Down, Some(20))
+            .unwrap();
+
+        // then: 40 lines total in top
+        let content = app.expanded_top.get(&gap_id).unwrap();
+        assert_eq!(content.len(), 40);
+        assert_eq!(content[0].new_lineno, Some(6));
+        assert_eq!(content[39].new_lineno, Some(45));
+    }
+
+    #[test]
+    fn should_prepend_on_subsequent_up_expand() {
+        // given: already expanded 10 lines up from bottom
+        let file = make_file_with_hunks("test.rs", vec![make_hunk(1, 5), make_hunk(50, 5)]);
+        let mut app = build_app_with_files(vec![file], 100);
+        let gap_id = GapId {
+            file_idx: 0,
+            hunk_idx: 1,
+        };
+        app.expand_gap(gap_id.clone(), ExpandDirection::Up, Some(10))
+            .unwrap();
+
+        // when: expand Up 10 more
+        app.expand_gap(gap_id.clone(), ExpandDirection::Up, Some(10))
+            .unwrap();
+
+        // then: 20 lines total in bottom, in ascending order
+        let content = app.expanded_bottom.get(&gap_id).unwrap();
+        assert_eq!(content.len(), 20);
+        assert_eq!(content[0].new_lineno, Some(30));
+        assert_eq!(content[19].new_lineno, Some(49));
+    }
+
+    #[test]
+    fn should_cap_at_gap_boundaries() {
+        // given: file with 50-line gap, already expanded 40 up
+        let file = make_file_with_hunks("test.rs", vec![make_hunk(51, 5)]);
+        let mut app = build_app_with_files(vec![file], 100);
+        let gap_id = GapId {
+            file_idx: 0,
+            hunk_idx: 0,
+        };
+        app.expand_gap(gap_id.clone(), ExpandDirection::Up, Some(40))
+            .unwrap();
+
+        // when: expand Up 20 more (only 10 remain)
+        app.expand_gap(gap_id.clone(), ExpandDirection::Up, Some(20))
+            .unwrap();
+
+        // then: all 50 lines in bottom
+        let content = app.expanded_bottom.get(&gap_id).unwrap();
+        assert_eq!(content.len(), 50);
+        assert_eq!(content[0].new_lineno, Some(1));
+    }
+
+    #[test]
+    fn should_show_up_expander_for_top_of_file_partial() {
+        // given: file with 50-line gap, expanded 20 lines up
+        let file = make_file_with_hunks("test.rs", vec![make_hunk(51, 5)]);
+        let mut app = build_app_with_files(vec![file], 100);
+        let gap_id = GapId {
+            file_idx: 0,
+            hunk_idx: 0,
+        };
+        app.expand_gap(gap_id.clone(), ExpandDirection::Up, Some(20))
+            .unwrap();
+
+        // then: should have ↑ expander + hidden lines annotation
+        let expander_count = app
+            .line_annotations
+            .iter()
+            .filter(|a| matches!(a, AnnotatedLine::Expander { gap_id: g, direction: ExpandDirection::Up } if *g == gap_id))
+            .count();
+        assert_eq!(expander_count, 1);
+
+        let hidden_count = app
+            .line_annotations
+            .iter()
+            .filter(|a| matches!(a, AnnotatedLine::HiddenLines { gap_id: g, .. } if *g == gap_id))
+            .count();
+        assert_eq!(hidden_count, 1, "should show hidden lines count");
+
+        let expanded_count = app
+            .line_annotations
+            .iter()
+            .filter(
+                |a| matches!(a, AnnotatedLine::ExpandedContext { gap_id: g, .. } if *g == gap_id),
+            )
+            .count();
+        assert_eq!(expanded_count, 20);
+    }
+
+    #[test]
+    fn should_not_show_expander_when_fully_expanded() {
+        // given: file with 50-line gap, fully expanded
+        let file = make_file_with_hunks("test.rs", vec![make_hunk(51, 5)]);
+        let mut app = build_app_with_files(vec![file], 100);
+        let gap_id = GapId {
+            file_idx: 0,
+            hunk_idx: 0,
+        };
+        app.expand_gap(gap_id.clone(), ExpandDirection::Both, None)
+            .unwrap();
+
+        // then: no expander or hidden lines
+        let expander_count = app
+            .line_annotations
+            .iter()
+            .filter(|a| matches!(a, AnnotatedLine::Expander { gap_id: g, .. } if *g == gap_id))
+            .count();
+        assert_eq!(expander_count, 0);
+    }
+
+    #[test]
+    fn should_show_merged_expander_for_small_between_hunk_gap() {
+        // given: file with two hunks and a 15-line gap between them
+        let file = make_file_with_hunks("test.rs", vec![make_hunk(1, 5), make_hunk(21, 5)]);
+        let app = build_app_with_files(vec![file], 100);
+        let gap_id = GapId {
+            file_idx: 0,
+            hunk_idx: 1,
+        };
+
+        // then: should show single ↕ expander (gap=15, < 20)
+        let both_count = app
+            .line_annotations
+            .iter()
+            .filter(|a| matches!(a, AnnotatedLine::Expander { gap_id: g, direction: ExpandDirection::Both } if *g == gap_id))
+            .count();
+        assert_eq!(both_count, 1, "small gap should show merged ↕ expander");
+    }
+
+    #[test]
+    fn should_show_split_expanders_for_large_between_hunk_gap() {
+        // given: file with two hunks and a 30-line gap between them
+        let file = make_file_with_hunks("test.rs", vec![make_hunk(1, 5), make_hunk(36, 5)]);
+        let app = build_app_with_files(vec![file], 100);
+        let gap_id = GapId {
+            file_idx: 0,
+            hunk_idx: 1,
+        };
+
+        // then: should show ↓ + hidden + ↑
+        let down_count = app
+            .line_annotations
+            .iter()
+            .filter(|a| matches!(a, AnnotatedLine::Expander { gap_id: g, direction: ExpandDirection::Down } if *g == gap_id))
+            .count();
+        let up_count = app
+            .line_annotations
+            .iter()
+            .filter(|a| matches!(a, AnnotatedLine::Expander { gap_id: g, direction: ExpandDirection::Up } if *g == gap_id))
+            .count();
+        let hidden_count = app
+            .line_annotations
+            .iter()
+            .filter(|a| matches!(a, AnnotatedLine::HiddenLines { gap_id: g, .. } if *g == gap_id))
+            .count();
+        assert_eq!(down_count, 1);
+        assert_eq!(up_count, 1);
+        assert_eq!(hidden_count, 1);
+    }
+
+    #[test]
+    fn should_expand_gap_in_correct_file_not_adjacent_file() {
+        // given: two files, each with a gap before the first hunk
+        let file0 = make_file_with_hunks("a.rs", vec![make_hunk(31, 5)]);
+        let file1 = make_file_with_hunks("b.rs", vec![make_hunk(21, 5)]);
+        let mut app = build_app_with_files(vec![file0, file1], 100);
+
+        let gap_id_file1 = GapId {
+            file_idx: 1,
+            hunk_idx: 0,
+        };
+
+        // when: expand gap in file1
+        app.expand_gap(gap_id_file1.clone(), ExpandDirection::Up, Some(10))
+            .unwrap();
+
+        // then: expanded content is for file1's gap (10 lines from bottom)
+        let content = app.expanded_bottom.get(&gap_id_file1).unwrap();
+        assert_eq!(content.len(), 10);
+        assert_eq!(content[9].new_lineno, Some(20));
+
+        // and file0's gap should not be expanded
+        let gap_id_file0 = GapId {
+            file_idx: 0,
+            hunk_idx: 0,
+        };
+        assert!(
+            !app.expanded_top.contains_key(&gap_id_file0)
+                && !app.expanded_bottom.contains_key(&gap_id_file0)
+        );
+    }
+
+    #[test]
+    fn should_noop_when_already_fully_expanded() {
+        // given: file with 10-line gap, fully expanded
+        let file = make_file_with_hunks("test.rs", vec![make_hunk(11, 5)]);
+        let mut app = build_app_with_files(vec![file], 100);
+        let gap_id = GapId {
+            file_idx: 0,
+            hunk_idx: 0,
+        };
+        app.expand_gap(gap_id.clone(), ExpandDirection::Both, None)
+            .unwrap();
+        let len_before = app.expanded_top.get(&gap_id).unwrap().len();
+
+        // when: try to expand again
+        app.expand_gap(gap_id.clone(), ExpandDirection::Up, Some(20))
+            .unwrap();
+
+        // then: no change
+        let len_after = app.expanded_top.get(&gap_id).unwrap().len();
+        assert_eq!(len_before, len_after);
+    }
+
+    #[test]
+    fn should_expand_small_gap_fully_even_with_large_limit() {
+        // given: file with 5-line gap
+        let file = make_file_with_hunks("test.rs", vec![make_hunk(6, 5)]);
+        let mut app = build_app_with_files(vec![file], 100);
+        let gap_id = GapId {
+            file_idx: 0,
+            hunk_idx: 0,
+        };
+
+        // when: expand Up with limit 20 (gap is only 5 lines)
+        app.expand_gap(gap_id.clone(), ExpandDirection::Up, Some(20))
+            .unwrap();
+
+        // then: all 5 lines expanded, no expander remaining
+        let content = app.expanded_bottom.get(&gap_id).unwrap();
+        assert_eq!(content.len(), 5);
+
+        let expander_count = app
+            .line_annotations
+            .iter()
+            .filter(|a| matches!(a, AnnotatedLine::Expander { gap_id: g, .. } if *g == gap_id))
+            .count();
+        assert_eq!(expander_count, 0);
+    }
+
+    #[test]
+    fn should_merge_to_both_when_remaining_drops_below_batch() {
+        // given: 30-line between-hunk gap, expand 20 down => 10 remaining
+        let file = make_file_with_hunks("test.rs", vec![make_hunk(1, 5), make_hunk(36, 5)]);
+        let mut app = build_app_with_files(vec![file], 100);
+        let gap_id = GapId {
+            file_idx: 0,
+            hunk_idx: 1,
+        };
+        app.expand_gap(gap_id.clone(), ExpandDirection::Down, Some(20))
+            .unwrap();
+
+        // then: remaining=10, should show ↕ merged expander
+        let both_count = app
+            .line_annotations
+            .iter()
+            .filter(|a| matches!(a, AnnotatedLine::Expander { gap_id: g, direction: ExpandDirection::Both } if *g == gap_id))
+            .count();
+        assert_eq!(both_count, 1, "should merge to ↕ when <20 remaining");
     }
 }

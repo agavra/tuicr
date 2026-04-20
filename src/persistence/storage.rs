@@ -204,7 +204,7 @@ pub fn save_session(
 
     let md_filename = filename.replace(".json", ".md");
     let md_path = reviews_dir.join(&md_filename);
-    let markdown = generate_markdown(session, diff_source, comment_types);
+    let markdown = generate_markdown(session, diff_source, comment_types, local_storage);
     fs::write(&md_path, markdown)?;
 
     Ok(path)

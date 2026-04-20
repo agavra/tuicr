@@ -81,12 +81,24 @@ impl SyntaxHighlighter {
                 .highlight_line(&format!("{}\n", line), &self.syntax_set)
                 .ok()
                 .map(|ranges| {
-                    ranges
+                    let mut spans: Vec<(Style, String)> = ranges
                         .into_iter()
                         .map(|(style, text)| {
                             (Self::syntect_to_ratatui_style(style), text.to_string())
                         })
-                        .collect()
+                        .collect();
+                    // Strip trailing \n that syntect includes from the input.
+                    // Leaving it causes ratatui to allocate an extra buffer cell,
+                    // misaligning side-by-side diff columns on short (padded) lines.
+                    if let Some(last) = spans.last_mut()
+                        && last.1.ends_with('\n')
+                    {
+                        last.1.truncate(last.1.len() - 1);
+                        if last.1.is_empty() {
+                            spans.pop();
+                        }
+                    }
+                    spans
                 })
         }))
     }
@@ -509,5 +521,34 @@ mod tests {
         assert_eq!(context.len(), 1);
         assert_eq!(context[0].0.bg, None);
         assert_eq!(context[0].1, "new");
+    }
+
+    #[test]
+    fn should_not_include_trailing_newline_in_highlighted_spans() {
+        // given - syntect requires a trailing \n for highlight_line, but the
+        // resulting spans must not include it. A leaked \n occupies an extra
+        // buffer cell in ratatui, misaligning side-by-side diff columns on
+        // short (padded) lines while truncated lines stay correct.
+        let highlighter = SyntaxHighlighter::default();
+        let lines = vec![
+            "fn main() {".to_string(),
+            "    let x = 42;".to_string(),
+            "}".to_string(),
+        ];
+
+        // when
+        let highlighted = highlighter
+            .highlight_file_lines(Path::new("test.rs"), &lines)
+            .unwrap();
+
+        // then
+        for (i, line) in highlighted.iter().enumerate() {
+            let spans = line.as_ref().unwrap();
+            let full_text: String = spans.iter().map(|(_, t)| t.as_str()).collect();
+            assert!(
+                !full_text.contains('\n'),
+                "line {i} spans should not contain newline, got: {full_text:?}"
+            );
+        }
     }
 }

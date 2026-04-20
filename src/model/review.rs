@@ -115,18 +115,133 @@ impl ReviewSession {
         !self.review_comments.is_empty() || self.files.values().any(|f| f.comment_count() > 0)
     }
 
-    pub fn clear_comments(&mut self) -> usize {
+    pub fn clear_comments(&mut self) -> (usize, usize) {
         let mut cleared = self.review_comments.len();
+        let mut unreviewed = 0;
         self.review_comments.clear();
         for file in self.files.values_mut() {
             cleared += file.comment_count();
             file.file_comments.clear();
             file.line_comments.clear();
+            if file.reviewed {
+                file.reviewed = false;
+                unreviewed += 1;
+            }
         }
-        cleared
+        (cleared, unreviewed)
     }
 
     pub fn is_file_reviewed(&self, path: &PathBuf) -> bool {
         self.files.get(path).map(|r| r.reviewed).unwrap_or(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::comment::{Comment, CommentType};
+
+    fn test_session() -> ReviewSession {
+        ReviewSession::new(
+            PathBuf::from("/repo"),
+            "abc123".to_string(),
+            None,
+            SessionDiffSource::WorkingTree,
+        )
+    }
+
+    #[test]
+    fn should_return_zero_when_clearing_empty_session() {
+        let mut session = test_session();
+        let (cleared, unreviewed) = session.clear_comments();
+        assert_eq!(cleared, 0);
+        assert_eq!(unreviewed, 0);
+    }
+
+    #[test]
+    fn should_clear_review_level_comments() {
+        let mut session = test_session();
+        session
+            .review_comments
+            .push(Comment::new("note".to_string(), CommentType::Note, None));
+        session
+            .review_comments
+            .push(Comment::new("issue".to_string(), CommentType::Issue, None));
+
+        let (cleared, unreviewed) = session.clear_comments();
+        assert_eq!(cleared, 2);
+        assert_eq!(unreviewed, 0);
+        assert!(session.review_comments.is_empty());
+    }
+
+    #[test]
+    fn should_clear_file_and_line_comments() {
+        let mut session = test_session();
+        let path = PathBuf::from("src/main.rs");
+        session.add_file(path.clone(), FileStatus::Modified);
+        let file = session.get_file_mut(&path).unwrap();
+        file.add_file_comment(Comment::new("comment".to_string(), CommentType::Note, None));
+        file.add_line_comment(
+            10,
+            Comment::new("line".to_string(), CommentType::Note, None),
+        );
+
+        let (cleared, _) = session.clear_comments();
+        assert_eq!(cleared, 2);
+
+        let file = session.files.get(&path).unwrap();
+        assert!(file.file_comments.is_empty());
+        assert!(file.line_comments.is_empty());
+    }
+
+    #[test]
+    fn should_reset_reviewed_status_on_all_files() {
+        let mut session = test_session();
+        let path_a = PathBuf::from("a.rs");
+        let path_b = PathBuf::from("b.rs");
+        session.add_file(path_a.clone(), FileStatus::Modified);
+        session.add_file(path_b.clone(), FileStatus::Added);
+
+        session.get_file_mut(&path_a).unwrap().reviewed = true;
+        session.get_file_mut(&path_b).unwrap().reviewed = true;
+
+        let (cleared, unreviewed) = session.clear_comments();
+        assert_eq!(cleared, 0);
+        assert_eq!(unreviewed, 2);
+        assert!(!session.is_file_reviewed(&path_a));
+        assert!(!session.is_file_reviewed(&path_b));
+    }
+
+    #[test]
+    fn should_only_count_reviewed_files_as_unreviewed() {
+        let mut session = test_session();
+        let reviewed = PathBuf::from("reviewed.rs");
+        let pending = PathBuf::from("pending.rs");
+        session.add_file(reviewed.clone(), FileStatus::Modified);
+        session.add_file(pending.clone(), FileStatus::Modified);
+
+        session.get_file_mut(&reviewed).unwrap().reviewed = true;
+
+        let (_, unreviewed) = session.clear_comments();
+        assert_eq!(unreviewed, 1);
+    }
+
+    #[test]
+    fn should_clear_both_comments_and_reviewed_status() {
+        let mut session = test_session();
+        let path = PathBuf::from("src/lib.rs");
+        session.add_file(path.clone(), FileStatus::Modified);
+        let file = session.get_file_mut(&path).unwrap();
+        file.reviewed = true;
+        file.add_file_comment(Comment::new("comment".to_string(), CommentType::Note, None));
+
+        session
+            .review_comments
+            .push(Comment::new("review".to_string(), CommentType::Note, None));
+
+        let (cleared, unreviewed) = session.clear_comments();
+        assert_eq!(cleared, 2);
+        assert_eq!(unreviewed, 1);
+        assert!(!session.is_file_reviewed(&path));
     }
 }

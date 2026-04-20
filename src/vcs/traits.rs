@@ -11,6 +11,7 @@ pub enum VcsType {
     Git,
     Mercurial,
     Jujutsu,
+    File,
 }
 
 impl std::fmt::Display for VcsType {
@@ -19,6 +20,7 @@ impl std::fmt::Display for VcsType {
             VcsType::Git => write!(f, "git"),
             VcsType::Mercurial => write!(f, "hg"),
             VcsType::Jujutsu => write!(f, "jj"),
+            VcsType::File => write!(f, "file"),
         }
     }
 }

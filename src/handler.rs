@@ -1,4 +1,4 @@
-use crate::app::{self, App, FileTreeItem, FocusedPanel};
+use crate::app::{self, App, ExpandDirection, FileTreeItem, FocusedPanel, GapCursorHit};
 use crate::input::Action;
 use crate::output::{export_to_clipboard, generate_export_content};
 use crate::persistence::save_session;
@@ -10,7 +10,12 @@ use crate::text_edit::{
 /// When output_to_stdout is true, stores the content and sets should_quit.
 fn handle_export(app: &mut App) {
     if app.output_to_stdout {
-        match generate_export_content(&app.session, &app.diff_source, &app.comment_types) {
+        match generate_export_content(
+            &app.session,
+            &app.diff_source,
+            &app.comment_types,
+            app.export_legend,
+        ) {
             Ok(content) => {
                 app.pending_stdout_output = Some(content);
                 app.should_quit = true;
@@ -18,7 +23,12 @@ fn handle_export(app: &mut App) {
             Err(e) => app.set_warning(format!("{e}")),
         }
     } else {
-        match export_to_clipboard(&app.session, &app.diff_source, &app.comment_types) {
+        match export_to_clipboard(
+            &app.session,
+            &app.diff_source,
+            &app.comment_types,
+            app.export_legend,
+        ) {
             Ok(msg) => app.set_message(msg),
             Err(e) => app.set_warning(format!("{e}")),
         }
@@ -358,12 +368,18 @@ pub fn handle_confirm_action(app: &mut App, action: Action) {
                         &app.session,
                         &app.diff_source,
                         &app.comment_types,
+                        app.export_legend,
                     ) {
                         Ok(content) => app.pending_stdout_output = Some(content),
                         Err(e) => app.set_warning(format!("{e}")),
                     }
                 } else {
-                    match export_to_clipboard(&app.session, &app.diff_source, &app.comment_types) {
+                    match export_to_clipboard(
+                        &app.session,
+                        &app.diff_source,
+                        &app.comment_types,
+                        app.export_legend,
+                    ) {
                         Ok(msg) => app.set_message(msg),
                         Err(e) => app.set_warning(format!("{e}")),
                     }
@@ -509,15 +525,39 @@ pub fn handle_diff_action(app: &mut App, action: Action) {
         Action::ScrollLeft(n) => app.scroll_left(n),
         Action::ScrollRight(n) => app.scroll_right(n),
         Action::SelectFile => {
-            // Check if cursor is on an expander line or expanded content
-            if let Some((gap_id, is_expanded)) = app.get_gap_at_cursor() {
-                if is_expanded {
-                    // Collapse expanded content
-                    app.collapse_gap(gap_id);
-                } else {
-                    // Expand the gap
-                    if let Err(e) = app.expand_gap(gap_id) {
-                        app.set_error(format!("Failed to expand: {e}"));
+            if let Some(hit) = app.get_gap_at_cursor() {
+                match hit {
+                    GapCursorHit::Expander(gap_id, dir) => {
+                        let limit = if dir == ExpandDirection::Both {
+                            None
+                        } else {
+                            Some(20)
+                        };
+                        if let Err(e) = app.expand_gap(gap_id, dir, limit) {
+                            app.set_error(format!("Failed to expand: {e}"));
+                        }
+                    }
+                    GapCursorHit::HiddenLines(gap_id) => {
+                        if let Err(e) = app.expand_gap(gap_id, ExpandDirection::Both, None) {
+                            app.set_error(format!("Failed to expand: {e}"));
+                        }
+                    }
+                    GapCursorHit::ExpandedContent(gap_id) => {
+                        app.collapse_gap(gap_id);
+                    }
+                }
+            }
+        }
+        Action::SelectFileFull => {
+            if let Some(hit) = app.get_gap_at_cursor() {
+                match hit {
+                    GapCursorHit::Expander(gap_id, _) | GapCursorHit::HiddenLines(gap_id) => {
+                        if let Err(e) = app.expand_gap(gap_id, ExpandDirection::Both, None) {
+                            app.set_error(format!("Failed to expand: {e}"));
+                        }
+                    }
+                    GapCursorHit::ExpandedContent(gap_id) => {
+                        app.collapse_gap(gap_id);
                     }
                 }
             }
@@ -547,10 +587,7 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
         Action::PageDown => app.scroll_down(app.diff_state.viewport_height),
         Action::PageUp => app.scroll_up(app.diff_state.viewport_height),
         Action::GoToTop => app.jump_to_file(0),
-        Action::GoToBottom => {
-            let last = app.file_count().saturating_sub(1);
-            app.jump_to_file(last);
-        }
+        Action::GoToBottom => app.jump_to_bottom(),
         Action::NextFile => app.next_file(),
         Action::PrevFile => app.prev_file(),
         Action::NextHunk => app.next_hunk(),
