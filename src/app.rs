@@ -2413,14 +2413,14 @@ impl App {
         let location = self.find_comment_at_cursor();
 
         match location {
-            Some(CommentLocation::Review { index }) => {
-                if index < self.session.review_comments.len() {
-                    self.session.review_comments.remove(index);
-                    self.dirty = true;
-                    self.set_message("Review comment deleted");
-                    self.rebuild_annotations();
-                    return true;
-                }
+            Some(CommentLocation::Review { index })
+                if index < self.session.review_comments.len() =>
+            {
+                self.session.review_comments.remove(index);
+                self.dirty = true;
+                self.set_message("Review comment deleted");
+                self.rebuild_annotations();
+                return true;
             }
             Some(CommentLocation::File { path, index }) => {
                 if let Some(review) = self.session.get_file_mut(&path) {
@@ -2465,7 +2465,7 @@ impl App {
                     }
                 }
             }
-            None => {}
+            Some(CommentLocation::Review { .. }) | None => {}
         }
 
         false

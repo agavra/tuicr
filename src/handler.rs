@@ -269,26 +269,24 @@ pub fn handle_search_action(app: &mut App, action: Action) {
         Action::DeleteChar => {
             app.search_buffer.pop();
         }
-        Action::DeleteWord => {
-            if !app.search_buffer.is_empty() {
-                while app
-                    .search_buffer
-                    .chars()
-                    .last()
-                    .map(|c| c.is_whitespace())
-                    .unwrap_or(false)
-                {
-                    app.search_buffer.pop();
-                }
-                while app
-                    .search_buffer
-                    .chars()
-                    .last()
-                    .map(|c| !c.is_whitespace())
-                    .unwrap_or(false)
-                {
-                    app.search_buffer.pop();
-                }
+        Action::DeleteWord if !app.search_buffer.is_empty() => {
+            while app
+                .search_buffer
+                .chars()
+                .last()
+                .map(|c| c.is_whitespace())
+                .unwrap_or(false)
+            {
+                app.search_buffer.pop();
+            }
+            while app
+                .search_buffer
+                .chars()
+                .last()
+                .map(|c| !c.is_whitespace())
+                .unwrap_or(false)
+            {
+                app.search_buffer.pop();
             }
         }
         Action::ClearLine => {
@@ -624,10 +622,8 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
             }
         }
         Action::AddFileComment => app.enter_comment_mode(true, None),
-        Action::EditComment => {
-            if !app.enter_edit_mode() {
-                app.set_message("No comment at cursor");
-            }
+        Action::EditComment if !app.enter_edit_mode() => {
+            app.set_message("No comment at cursor");
         }
         Action::ExportToClipboard => handle_export(app),
         Action::SearchNext => {
@@ -643,20 +639,16 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
                 app.set_message("Move cursor to a diff line to start visual selection");
             }
         }
-        Action::CycleCommitNext => {
-            if app.has_inline_commit_selector() {
-                app.cycle_commit_next();
-                if let Err(e) = app.reload_inline_selection() {
-                    app.set_error(format!("Failed to load diff: {e}"));
-                }
+        Action::CycleCommitNext if app.has_inline_commit_selector() => {
+            app.cycle_commit_next();
+            if let Err(e) = app.reload_inline_selection() {
+                app.set_error(format!("Failed to load diff: {e}"));
             }
         }
-        Action::CycleCommitPrev => {
-            if app.has_inline_commit_selector() {
-                app.cycle_commit_prev();
-                if let Err(e) = app.reload_inline_selection() {
-                    app.set_error(format!("Failed to load diff: {e}"));
-                }
+        Action::CycleCommitPrev if app.has_inline_commit_selector() => {
+            app.cycle_commit_prev();
+            if let Err(e) = app.reload_inline_selection() {
+                app.set_error(format!("Failed to load diff: {e}"));
             }
         }
         _ => {}
