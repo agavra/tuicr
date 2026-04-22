@@ -15,9 +15,7 @@ pub struct Fnv1aHasher {
 
 impl Fnv1aHasher {
     pub fn new() -> Self {
-        Self {
-            hash: OFFSET_BASIS,
-        }
+        Self { hash: OFFSET_BASIS }
     }
 
     pub fn write(&mut self, bytes: &[u8]) {
