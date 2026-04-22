@@ -13,16 +13,19 @@ pub struct FileReview {
     pub status: FileStatus,
     pub file_comments: Vec<Comment>,
     pub line_comments: HashMap<u32, Vec<Comment>>,
+    #[serde(default)]
+    pub content_hash: Option<u64>,
 }
 
 impl FileReview {
-    pub fn new(path: PathBuf, status: FileStatus) -> Self {
+    pub fn new(path: PathBuf, status: FileStatus, content_hash: u64) -> Self {
         Self {
             path,
             reviewed: false,
             status,
             file_comments: Vec::new(),
             line_comments: HashMap::new(),
+            content_hash: Some(content_hash),
         }
     }
 
@@ -101,10 +104,21 @@ impl ReviewSession {
         self.files.values().filter(|f| f.reviewed).count()
     }
 
-    pub fn add_file(&mut self, path: PathBuf, status: FileStatus) {
+    /// Registers a file in the session. Returns true if the file was previously
+    /// reviewed but its content changed, causing reviewed status to be reset.
+    pub fn add_file(&mut self, path: PathBuf, status: FileStatus, content_hash: u64) -> bool {
+        if let Some(review) = self.files.get_mut(&path) {
+            let old_hash = review.content_hash;
+            review.content_hash = Some(content_hash);
+            if review.reviewed && old_hash != Some(content_hash) {
+                review.reviewed = false;
+                return true;
+            }
+            return false;
+        }
         self.files
-            .entry(path.clone())
-            .or_insert_with(|| FileReview::new(path, status));
+            .insert(path.clone(), FileReview::new(path, status, content_hash));
+        false
     }
 
     pub fn get_file_mut(&mut self, path: &PathBuf) -> Option<&mut FileReview> {
@@ -140,6 +154,9 @@ impl ReviewSession {
 mod tests {
     use super::*;
     use crate::model::comment::{Comment, CommentType};
+
+    // Arbitrary hash value for tests that don't care about the specific hash.
+    const SOME_HASH: u64 = 0xdeadbeef;
 
     fn test_session() -> ReviewSession {
         ReviewSession::new(
@@ -178,7 +195,7 @@ mod tests {
     fn should_clear_file_and_line_comments() {
         let mut session = test_session();
         let path = PathBuf::from("src/main.rs");
-        session.add_file(path.clone(), FileStatus::Modified);
+        session.add_file(path.clone(), FileStatus::Modified, SOME_HASH);
         let file = session.get_file_mut(&path).unwrap();
         file.add_file_comment(Comment::new("comment".to_string(), CommentType::Note, None));
         file.add_line_comment(
@@ -199,8 +216,8 @@ mod tests {
         let mut session = test_session();
         let path_a = PathBuf::from("a.rs");
         let path_b = PathBuf::from("b.rs");
-        session.add_file(path_a.clone(), FileStatus::Modified);
-        session.add_file(path_b.clone(), FileStatus::Added);
+        session.add_file(path_a.clone(), FileStatus::Modified, SOME_HASH);
+        session.add_file(path_b.clone(), FileStatus::Added, SOME_HASH);
 
         session.get_file_mut(&path_a).unwrap().reviewed = true;
         session.get_file_mut(&path_b).unwrap().reviewed = true;
@@ -217,8 +234,8 @@ mod tests {
         let mut session = test_session();
         let reviewed = PathBuf::from("reviewed.rs");
         let pending = PathBuf::from("pending.rs");
-        session.add_file(reviewed.clone(), FileStatus::Modified);
-        session.add_file(pending.clone(), FileStatus::Modified);
+        session.add_file(reviewed.clone(), FileStatus::Modified, SOME_HASH);
+        session.add_file(pending.clone(), FileStatus::Modified, SOME_HASH);
 
         session.get_file_mut(&reviewed).unwrap().reviewed = true;
 
@@ -230,7 +247,7 @@ mod tests {
     fn should_clear_both_comments_and_reviewed_status() {
         let mut session = test_session();
         let path = PathBuf::from("src/lib.rs");
-        session.add_file(path.clone(), FileStatus::Modified);
+        session.add_file(path.clone(), FileStatus::Modified, SOME_HASH);
         let file = session.get_file_mut(&path).unwrap();
         file.reviewed = true;
         file.add_file_comment(Comment::new("comment".to_string(), CommentType::Note, None));
@@ -243,5 +260,86 @@ mod tests {
         assert_eq!(cleared, 2);
         assert_eq!(unreviewed, 1);
         assert!(!session.is_file_reviewed(&path));
+    }
+
+    #[test]
+    fn should_store_content_hash_on_new_file() {
+        let mut session = test_session();
+        let path = PathBuf::from("new.rs");
+        session.add_file(path.clone(), FileStatus::Added, 42);
+
+        let file = session.files.get(&path).unwrap();
+        assert_eq!(file.content_hash, Some(42));
+        assert!(!file.reviewed);
+    }
+
+    #[test]
+    fn should_keep_reviewed_when_hash_unchanged() {
+        let mut session = test_session();
+        let path = PathBuf::from("stable.rs");
+        session.add_file(path.clone(), FileStatus::Modified, 100);
+        session.get_file_mut(&path).unwrap().reviewed = true;
+
+        let invalidated = session.add_file(path.clone(), FileStatus::Modified, 100);
+        assert!(!invalidated);
+        assert!(session.is_file_reviewed(&path));
+    }
+
+    #[test]
+    fn should_reset_reviewed_when_hash_changes() {
+        let mut session = test_session();
+        let path = PathBuf::from("changed.rs");
+        session.add_file(path.clone(), FileStatus::Modified, 100);
+        session.get_file_mut(&path).unwrap().reviewed = true;
+
+        let invalidated = session.add_file(path.clone(), FileStatus::Modified, 200);
+        assert!(invalidated);
+        assert!(!session.is_file_reviewed(&path));
+    }
+
+    #[test]
+    fn should_not_report_invalidated_for_unreviewed_file_with_changed_hash() {
+        let mut session = test_session();
+        let path = PathBuf::from("pending.rs");
+        session.add_file(path.clone(), FileStatus::Modified, 100);
+
+        let invalidated = session.add_file(path.clone(), FileStatus::Modified, 200);
+        assert!(!invalidated);
+        assert!(!session.is_file_reviewed(&path));
+    }
+
+    #[test]
+    fn should_update_hash_even_when_not_reviewed() {
+        let mut session = test_session();
+        let path = PathBuf::from("evolving.rs");
+        session.add_file(path.clone(), FileStatus::Modified, 100);
+        session.add_file(path.clone(), FileStatus::Modified, 200);
+
+        let file = session.files.get(&path).unwrap();
+        assert_eq!(file.content_hash, Some(200));
+    }
+
+    #[test]
+    fn should_reset_reviewed_when_legacy_session_has_no_hash() {
+        let mut session = test_session();
+        let path = PathBuf::from("legacy.rs");
+
+        // Simulate a legacy session entry without content_hash.
+        session.files.insert(
+            path.clone(),
+            FileReview {
+                path: path.clone(),
+                reviewed: true,
+                status: FileStatus::Modified,
+                file_comments: Vec::new(),
+                line_comments: HashMap::new(),
+                content_hash: None,
+            },
+        );
+
+        let invalidated = session.add_file(path.clone(), FileStatus::Modified, 999);
+        assert!(invalidated);
+        assert!(!session.is_file_reviewed(&path));
+        assert_eq!(session.files.get(&path).unwrap().content_hash, Some(999));
     }
 }

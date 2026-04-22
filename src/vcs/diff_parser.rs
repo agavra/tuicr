@@ -64,6 +64,7 @@ pub fn parse_unified_diff(
                     is_binary: true,
                     is_too_large: false,
                     is_commit_message: false,
+                    content_hash: 0,
                 });
                 continue;
             }
@@ -86,6 +87,7 @@ pub fn parse_unified_diff(
                 }
             }
 
+            let content_hash = DiffFile::compute_content_hash(&hunks);
             files.push(DiffFile {
                 old_path,
                 new_path,
@@ -94,6 +96,7 @@ pub fn parse_unified_diff(
                 is_binary: false,
                 is_too_large: false,
                 is_commit_message: false,
+                content_hash,
             });
         }
     }

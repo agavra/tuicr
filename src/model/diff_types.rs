@@ -2,6 +2,8 @@ use ratatui::style::Style;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+use crate::hash::Fnv1aHasher;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum FileStatus {
@@ -67,9 +69,27 @@ pub struct DiffFile {
     pub is_binary: bool,
     pub is_too_large: bool,
     pub is_commit_message: bool,
+    pub content_hash: u64,
 }
 
 impl DiffFile {
+    /// Computes a hash of the diff content (all hunk line contents) for change detection.
+    pub fn compute_content_hash(hunks: &[DiffHunk]) -> u64 {
+        let mut hasher = Fnv1aHasher::new();
+        for hunk in hunks {
+            for line in &hunk.lines {
+                hasher.write(match line.origin {
+                    LineOrigin::Addition => b"+",
+                    LineOrigin::Deletion => b"-",
+                    LineOrigin::Context => b" ",
+                });
+                hasher.write(line.content.as_bytes());
+                hasher.write(b"\n");
+            }
+        }
+        hasher.finish()
+    }
+
     pub fn display_path(&self) -> &PathBuf {
         self.new_path
             .as_ref()

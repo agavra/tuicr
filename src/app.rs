@@ -732,7 +732,7 @@ impl App {
     ) -> Result<Self> {
         // Ensure all diff files are registered in the session
         for file in &diff_files {
-            session.add_file(file.display_path().clone(), file.status);
+            session.add_file(file.display_path().clone(), file.status, file.content_hash);
         }
 
         let has_more_commit = commit_list.len() >= VISIBLE_COMMIT_COUNT;
@@ -1124,25 +1124,31 @@ impl App {
             })
             .collect();
         let line_count = diff_lines.len() as u32;
+        let hunks = vec![DiffHunk {
+            header: String::new(),
+            lines: diff_lines,
+            old_start: 0,
+            old_count: 0,
+            new_start: 1,
+            new_count: line_count,
+        }];
+        let content_hash = DiffFile::compute_content_hash(&hunks);
         let commit_msg_file = DiffFile {
             old_path: None,
             new_path: Some(PathBuf::from("Commit Message")),
             status: FileStatus::Added,
-            hunks: vec![DiffHunk {
-                header: String::new(),
-                lines: diff_lines,
-                old_start: 0,
-                old_count: 0,
-                new_start: 1,
-                new_count: line_count,
-            }],
+            hunks,
             is_binary: false,
             is_too_large: false,
             is_commit_message: true,
+            content_hash,
         };
         self.diff_files.insert(0, commit_msg_file);
-        self.session
-            .add_file(PathBuf::from("Commit Message"), FileStatus::Added);
+        self.session.add_file(
+            PathBuf::from("Commit Message"),
+            FileStatus::Added,
+            content_hash,
+        );
     }
 
     fn is_staged_commit(commit: &CommitInfo) -> bool {
@@ -1298,7 +1304,7 @@ impl App {
             Self::load_or_create_session(&self.vcs_info, SessionDiffSource::StagedAndUnstaged);
         for file in &diff_files {
             let path = file.display_path().clone();
-            self.session.add_file(path, file.status);
+            self.session.add_file(path, file.status, file.content_hash);
         }
 
         self.diff_files = diff_files;
@@ -1333,7 +1339,7 @@ impl App {
         self.session = Self::load_or_create_session(&self.vcs_info, SessionDiffSource::Staged);
         for file in &diff_files {
             let path = file.display_path().clone();
-            self.session.add_file(path, file.status);
+            self.session.add_file(path, file.status, file.content_hash);
         }
 
         self.diff_files = diff_files;
@@ -1368,7 +1374,7 @@ impl App {
         self.session = Self::load_or_create_session(&self.vcs_info, SessionDiffSource::Unstaged);
         for file in &diff_files {
             let path = file.display_path().clone();
-            self.session.add_file(path, file.status);
+            self.session.add_file(path, file.status, file.content_hash);
         }
 
         self.diff_files = diff_files;
@@ -1384,7 +1390,9 @@ impl App {
         Ok(())
     }
 
-    pub fn reload_diff_files(&mut self) -> Result<usize> {
+    /// Reloads diff files from disk. Returns `(file_count, invalidated_count)` where
+    /// `invalidated_count` is the number of previously reviewed files whose content changed.
+    pub fn reload_diff_files(&mut self) -> Result<(usize, usize)> {
         let current_path = self.current_file_path().cloned();
         let prev_file_idx = self.diff_state.current_file_idx;
         let prev_cursor_line = self.diff_state.cursor_line;
@@ -1440,9 +1448,12 @@ impl App {
             }
         };
 
+        let mut invalidated = 0;
         for file in &diff_files {
             let path = file.display_path().clone();
-            self.session.add_file(path, file.status);
+            if self.session.add_file(path, file.status, file.content_hash) {
+                invalidated += 1;
+            }
         }
 
         self.diff_files = diff_files;
@@ -1493,7 +1504,7 @@ impl App {
         }
 
         self.rebuild_annotations();
-        Ok(self.diff_files.len())
+        Ok((self.diff_files.len(), invalidated))
     }
 
     pub fn current_file(&self) -> Option<&DiffFile> {
@@ -2936,7 +2947,7 @@ impl App {
                     // Update session for new files
                     for file in &self.diff_files {
                         let path = file.display_path().clone();
-                        self.session.add_file(path, file.status);
+                        self.session.add_file(path, file.status, file.content_hash);
                     }
 
                     self.sort_files_by_directory(true);
@@ -3266,7 +3277,7 @@ impl App {
         // Add files to session
         for file in &diff_files {
             let path = file.display_path().clone();
-            self.session.add_file(path, file.status);
+            self.session.add_file(path, file.status, file.content_hash);
         }
 
         // Update app state
@@ -3470,7 +3481,7 @@ impl App {
 
         for file in &diff_files {
             let path = file.display_path().clone();
-            self.session.add_file(path, file.status);
+            self.session.add_file(path, file.status, file.content_hash);
         }
 
         self.diff_files = diff_files;
@@ -4200,6 +4211,7 @@ mod tree_tests {
             is_binary: false,
             is_too_large: false,
             is_commit_message: false,
+            content_hash: 0,
         }
     }
 
@@ -4913,6 +4925,7 @@ mod expand_gap_tests {
     }
 
     fn make_file_with_hunks(path: &str, hunks: Vec<DiffHunk>) -> DiffFile {
+        let content_hash = DiffFile::compute_content_hash(&hunks);
         DiffFile {
             old_path: None,
             new_path: Some(PathBuf::from(path)),
@@ -4921,6 +4934,7 @@ mod expand_gap_tests {
             is_binary: false,
             is_too_large: false,
             is_commit_message: false,
+            content_hash,
         }
     }
 

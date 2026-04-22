@@ -396,7 +396,7 @@ mod tests {
             Some("main".to_string()),
             SessionDiffSource::WorkingTree,
         );
-        session.add_file(PathBuf::from("src/main.rs"), FileStatus::Modified);
+        session.add_file(PathBuf::from("src/main.rs"), FileStatus::Modified, 0);
 
         // Add a file comment
         if let Some(review) = session.get_file_mut(&PathBuf::from("src/main.rs")) {
@@ -451,7 +451,7 @@ mod tests {
             Some("main".to_string()),
             SessionDiffSource::WorkingTree,
         );
-        session.add_file(PathBuf::from("src/main.rs"), FileStatus::Modified);
+        session.add_file(PathBuf::from("src/main.rs"), FileStatus::Modified, 0);
         if let Some(review) = session.get_file_mut(&PathBuf::from("src/main.rs")) {
             review.add_file_comment(Comment::new(
                 "Needs clarification".to_string(),
@@ -689,7 +689,7 @@ mod tests {
             Some("main".to_string()),
             SessionDiffSource::WorkingTree,
         );
-        session.add_file(PathBuf::from("src/main.rs"), FileStatus::Modified);
+        session.add_file(PathBuf::from("src/main.rs"), FileStatus::Modified, 0);
 
         if let Some(review) = session.get_file_mut(&PathBuf::from("src/main.rs")) {
             let range = LineRange::single(42);
@@ -722,7 +722,7 @@ mod tests {
             Some("main".to_string()),
             SessionDiffSource::WorkingTree,
         );
-        session.add_file(PathBuf::from("src/main.rs"), FileStatus::Modified);
+        session.add_file(PathBuf::from("src/main.rs"), FileStatus::Modified, 0);
 
         if let Some(review) = session.get_file_mut(&PathBuf::from("src/main.rs")) {
             let range = LineRange::new(10, 15);
@@ -755,7 +755,7 @@ mod tests {
             Some("main".to_string()),
             SessionDiffSource::WorkingTree,
         );
-        session.add_file(PathBuf::from("src/main.rs"), FileStatus::Modified);
+        session.add_file(PathBuf::from("src/main.rs"), FileStatus::Modified, 0);
 
         if let Some(review) = session.get_file_mut(&PathBuf::from("src/main.rs")) {
             let range = LineRange::new(20, 25);
@@ -787,7 +787,7 @@ mod tests {
             Some("main".to_string()),
             SessionDiffSource::WorkingTree,
         );
-        session.add_file(PathBuf::from("src/main.rs"), FileStatus::Modified);
+        session.add_file(PathBuf::from("src/main.rs"), FileStatus::Modified, 0);
 
         if let Some(review) = session.get_file_mut(&PathBuf::from("src/main.rs")) {
             let range = LineRange::single(30);
@@ -820,7 +820,7 @@ mod tests {
             Some("main".to_string()),
             SessionDiffSource::WorkingTree,
         );
-        session.add_file(PathBuf::from("src/main.rs"), FileStatus::Modified);
+        session.add_file(PathBuf::from("src/main.rs"), FileStatus::Modified, 0);
 
         if let Some(review) = session.get_file_mut(&PathBuf::from("src/main.rs")) {
             // Use Comment::new which sets line_range to None
@@ -862,7 +862,7 @@ mod tests {
             Some("main".to_string()),
             SessionDiffSource::WorkingTree,
         );
-        session.add_file(PathBuf::from("src/main.rs"), FileStatus::Modified);
+        session.add_file(PathBuf::from("src/main.rs"), FileStatus::Modified, 0);
         if let Some(review) = session.get_file_mut(&PathBuf::from("src/main.rs")) {
             review.add_file_comment(Comment::new(
                 "Great work!".to_string(),
@@ -888,7 +888,7 @@ mod tests {
             Some("main".to_string()),
             SessionDiffSource::WorkingTree,
         );
-        session.add_file(PathBuf::from("src/main.rs"), FileStatus::Modified);
+        session.add_file(PathBuf::from("src/main.rs"), FileStatus::Modified, 0);
         if let Some(review) = session.get_file_mut(&PathBuf::from("src/main.rs")) {
             review.add_file_comment(Comment::new(
                 "Needs clarification".to_string(),

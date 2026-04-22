@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use crate::error::{Result, TuicrError};
+use crate::hash::fnv1a_64;
 use crate::model::ReviewSession;
 use crate::model::review::SessionDiffSource;
 
@@ -107,18 +108,6 @@ fn sanitize_filename_component(value: &str) -> String {
     } else {
         sanitized.to_string()
     }
-}
-
-fn fnv1a_64(bytes: &[u8]) -> u64 {
-    const OFFSET_BASIS: u64 = 0xcbf29ce484222325;
-    const PRIME: u64 = 0x100000001b3;
-
-    let mut hash = OFFSET_BASIS;
-    for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(PRIME);
-    }
-    hash
 }
 
 fn repo_path_fingerprint(repo_path: &Path) -> String {
@@ -349,7 +338,7 @@ mod tests {
             Some("main".to_string()),
             SessionDiffSource::WorkingTree,
         );
-        session.add_file(PathBuf::from("src/main.rs"), FileStatus::Modified);
+        session.add_file(PathBuf::from("src/main.rs"), FileStatus::Modified, 0);
         session
     }
 
@@ -395,7 +384,7 @@ mod tests {
             diff_source,
         );
         session.commit_range = commit_range;
-        session.add_file(PathBuf::from("src/main.rs"), FileStatus::Modified);
+        session.add_file(PathBuf::from("src/main.rs"), FileStatus::Modified, 0);
         session
     }
 

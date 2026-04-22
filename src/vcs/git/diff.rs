@@ -146,6 +146,7 @@ fn parse_diff(diff: &Diff, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFi
             parse_hunks(diff, delta_idx, file_path, highlighter)?
         };
 
+        let content_hash = DiffFile::compute_content_hash(&hunks);
         files.push(DiffFile {
             old_path,
             new_path,
@@ -154,6 +155,7 @@ fn parse_diff(diff: &Diff, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFi
             is_binary,
             is_too_large,
             is_commit_message: false,
+            content_hash,
         });
     }
 

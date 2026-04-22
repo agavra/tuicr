@@ -112,14 +112,17 @@ impl VcsBackend for FileBackend {
             new_count: total_lines,
         };
 
+        let hunks = vec![hunk];
+        let content_hash = DiffFile::compute_content_hash(&hunks);
         let file = DiffFile {
             old_path: None,
             new_path: Some(rel_path),
             status: FileStatus::Added,
-            hunks: vec![hunk],
+            hunks,
             is_binary: false,
             is_too_large: false,
             is_commit_message: false,
+            content_hash,
         };
 
         Ok(vec![file])

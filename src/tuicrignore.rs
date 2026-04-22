@@ -60,6 +60,7 @@ mod tests {
             is_binary: false,
             is_too_large: false,
             is_commit_message: false,
+            content_hash: 0,
         }
     }
 
@@ -198,6 +199,7 @@ mod tests {
             is_binary: false,
             is_too_large: false,
             is_commit_message: false,
+            content_hash: 0,
         };
         let kept = make_diff_file("src/lib.rs");
 

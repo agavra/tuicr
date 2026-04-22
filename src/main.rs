@@ -2,6 +2,7 @@ mod app;
 mod config;
 mod error;
 mod handler;
+mod hash;
 mod input;
 mod model;
 mod output;
