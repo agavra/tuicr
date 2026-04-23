@@ -22,6 +22,7 @@ All notable changes to this project will be documented in this file.
 - Incremental gap expansion with 20-line default, Shift+Enter for full expand (#239)
 - Directional gap expansion with ↓/↑/↕ arrows
 - **export:** Filter comment type legend to used types and add export_legend config (#242)
+
 ## [0.9.0] - 2026-03-24
 
 ### Bug Fixes
@@ -42,6 +43,7 @@ All notable changes to this project will be documented in this file.
 - **config:** Add show_file_list, diff_view, and wrap config options (#218)
 - Add Nord theme (#219)
 - Add staged and unstaged review options (#183)
+
 ## [0.8.0] - 2026-03-11
 
 ### Bug Fixes
@@ -59,12 +61,14 @@ All notable changes to this project will be documented in this file.
 - **theme:** Add ayu-light and onedark themes (#195)
 - **theme:** Add appearance mode and split dark/light config variants (#196)
 - **comments:** Add review-level comments across review scope (#197)
+
 ## [0.7.2] - 2026-02-12
 
 ### Bug Fixes
 
 - Skip large untracked files to prevent startup hang (#177)
 - Prefer OSC 52 clipboard in Zellij sessions (#176)
+
 ## [0.7.0] - 2026-02-10
 
 ### Bug Fixes
@@ -79,6 +83,7 @@ All notable changes to this project will be documented in this file.
 - Add inline commit selector for multi-commit reviews (#160)
 - Allow selecting both worktree and commits in the selector (#161)
 - Add configuration file support and catppuccin themes (#162)
+
 ## [0.6.0] - 2026-01-30
 
 ### Bug Fixes
@@ -97,6 +102,7 @@ All notable changes to this project will be documented in this file.
 - **skill:** Add Claude Code skill for interactive review (#143)
 - **app:** Support expandable commit list and adjust default commit loading (#138)
 - **update:** Check crates.io for new releases and surface update status in UI (#150)
+
 ## [0.5.0] - 2026-01-23
 
 ### Bug Fixes
@@ -116,6 +122,7 @@ All notable changes to this project will be documented in this file.
 ### Ci
 
 - Use cargo-binstall for faster jj installation (#126)
+
 ## [0.4.0] - 2026-01-17
 
 ### Bug Fixes
@@ -143,6 +150,7 @@ All notable changes to this project will be documented in this file.
 ### Ui
 
 - Add theme support with dark and light modes (#105)
+
 ## [0.3.0] - 2026-01-15
 
 ### Bug Fixes
@@ -159,6 +167,7 @@ All notable changes to this project will be documented in this file.
 - Improve color theme contrast (#84)
 - Support cmd+delete to delete last word in comment (#87)
 - Add line wrapping for unified view (#88)
+
 ## [0.2.0] - 2026-01-13
 
 ### Bug Fixes
@@ -175,11 +184,13 @@ All notable changes to this project will be documented in this file.
 ### Refactor
 
 - Improve signal handling (#65)
+
 ## [0.1.3] - 2026-01-11
 
 ### Features
 
 - Add scrolling support for file list panel (#47)
+
 ## [0.1.2] - 2026-01-10
 
 ### Documentation
@@ -193,6 +204,7 @@ All notable changes to this project will be documented in this file.
 ### Release
 
 - V0.1.2 (#46)
+
 ## [0.1.1] - 2026-01-09
 
 ### Bug Fixes
@@ -206,4 +218,3 @@ All notable changes to this project will be documented in this file.
 
 - Reload command refreshes diffs w/ scroll preservation and adds :clip export (#23)
 - Add cross-compiled binary builds to release workflow (#33)
-

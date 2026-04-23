@@ -27,6 +27,7 @@ pub struct AppConfig {
     pub diff_view: Option<String>,
     pub wrap: Option<bool>,
     pub export_legend: Option<bool>,
+    pub local_storage: Option<bool>,
 }
 
 /// Known top-level config keys. Used to warn about typos.
@@ -40,6 +41,7 @@ const KNOWN_KEYS: &[&str] = &[
     "diff_view",
     "wrap",
     "export_legend",
+    "local_storage",
 ];
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -179,6 +181,7 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         ),
         wrap: read_bool(table, "wrap", &mut warnings),
         export_legend: read_bool(table, "export_legend", &mut warnings),
+        local_storage: read_bool(table, "local_storage", &mut warnings),
     };
 
     for key in table.keys() {
@@ -585,8 +588,28 @@ mod tests {
         );
     }
 
-    // export_legend
+    // local_storage
+    #[test]
+    fn should_parse_local_storage_true() {
+        let outcome = parse_config("local_storage = true\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.local_storage),
+            Some(true)
+        );
+        assert!(outcome.warnings.is_empty());
+    }
 
+    #[test]
+    fn should_parse_local_storage_false() {
+        let outcome = parse_config("local_storage = false\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.local_storage),
+            Some(false)
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    // export_legend
     #[test]
     fn should_parse_export_legend_false() {
         let outcome = parse_config("export_legend = false\n");
@@ -598,6 +621,18 @@ mod tests {
     }
 
     #[test]
+    fn should_warn_and_ignore_local_storage_with_invalid_type() {
+        let outcome = parse_config("local_storage = \"yes\"\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.local_storage),
+            None
+        );
+        assert_eq!(outcome.warnings.len(), 1);
+        assert_eq!(
+            outcome.warnings[0],
+            "Warning: Config key 'local_storage' must be a boolean; ignoring value"
+        );
+    }
     fn should_default_export_legend_to_none() {
         let outcome = parse_config("\n");
         assert_eq!(

@@ -137,7 +137,8 @@ fn review_scope_label(diff_source: &DiffSource) -> String {
     format!("Review Comment (scope: {scope})")
 }
 
-fn generate_markdown(
+/// Generate markdown content from the review session.
+pub fn generate_markdown(
     session: &ReviewSession,
     diff_source: &DiffSource,
     comment_types: &[CommentTypeDefinition],

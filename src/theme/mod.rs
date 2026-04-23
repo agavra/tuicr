@@ -1076,6 +1076,8 @@ pub struct CliArgs {
     pub path_filter: Option<String>,
     /// Open a single file for annotation (no VCS required)
     pub file_path: Option<String>,
+    /// Store review sessions in the repository instead of global directory
+    pub local_storage: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1431,6 +1433,8 @@ Options:
   -w, --working-tree     Include uncommitted changes (skip commit selector when used alone,
                          combine with commits when used with -r)
   --file <PATH>          Open a file for annotation (no VCS required)
+  --local-storage        Store review sessions in .tuicr/reviews/ within the repository
+                          instead of ~/.local/share/tuicr/reviews/
   --stdout               Output to stdout instead of clipboard when exporting
   --no-update-check      Skip checking for updates on startup
   -V, --version          Print version
@@ -1481,6 +1485,11 @@ fn parse_cli_args_from(args: &[String]) -> Result<CliArgs, String> {
         // Handle -w / --working-tree
         if args[i] == "-w" || args[i] == "--working-tree" {
             cli_args.working_tree = true;
+        }
+
+        // Handle --local-storage
+        if args[i] == "--local-storage" {
+            cli_args.local_storage = true;
         }
 
         // Handle --theme value
@@ -1677,6 +1686,18 @@ mod tests {
             parse_for_test(&["tuicr", "-w", "-r", "HEAD~3..HEAD"]).expect("parse should succeed");
         assert!(parsed.working_tree);
         assert_eq!(parsed.revisions, Some("HEAD~3..HEAD".to_string()));
+    }
+
+    #[test]
+    fn should_parse_local_storage_flag() {
+        let parsed = parse_for_test(&["tuicr", "--local-storage"]).expect("parse should succeed");
+        assert!(parsed.local_storage);
+    }
+
+    #[test]
+    fn should_default_local_storage_to_false() {
+        let parsed = parse_for_test(&["tuicr"]).expect("parse should succeed");
+        assert!(!parsed.local_storage);
     }
 
     #[test]
