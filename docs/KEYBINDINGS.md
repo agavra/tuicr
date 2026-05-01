@@ -62,6 +62,7 @@ Shown below the file tree when local comments or visible remote PR threads exist
 | Key | Action |
 |-----|--------|
 | `r` | Toggle file reviewed |
+| `R` | Toggle hunk reviewed |
 | `c` | Add line comment (or file comment if not on a diff line) |
 | `C` | Add file comment |
 | `<leader>c` | Add review comment |

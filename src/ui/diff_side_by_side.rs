@@ -15,9 +15,9 @@ use crate::theme::Theme;
 use crate::ui::comment_panel;
 use crate::ui::diff_view::{
     apply_horizontal_scroll, comment_type_presentation, cursor_indicator, cursor_indicator_spaced,
-    diff_stat_title, is_line_highlighted, paint_visual_selection_overlay,
-    populate_row_to_annotation, render_expander_line, render_hidden_lines,
-    scroll_comment_input_into_view,
+    diff_stat_title, hunk_header_text_and_style, is_line_highlighted,
+    paint_visual_selection_overlay, populate_row_to_annotation, render_expander_line,
+    render_hidden_lines, scroll_comment_input_into_view,
 };
 use crate::ui::styles;
 use crate::ui::text_utils::{truncate_or_pad, truncate_or_pad_spans};
@@ -432,7 +432,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
 
                 let gap_id = GapId { file_idx, hunk_idx };
 
-                if gap > 0 {
+                if gap > 0 && app.should_render_gap_before_hunk(file_idx, hunk_idx) {
                     let top_lines = app.expanded_top.get(&gap_id);
                     let bot_lines = app.expanded_bottom.get(&gap_id);
                     let top_len = top_lines.map_or(0, |v| v.len());
@@ -538,15 +538,18 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                 }
 
                 // Hunk header
+                let is_hunk_reviewed = app.is_hunk_reviewed(file_idx, hunk_idx);
+                let (hunk_header_text, hunk_header_style) =
+                    hunk_header_text_and_style(&app.theme, hunk, is_hunk_reviewed);
                 let indicator = cursor_indicator_spaced(line_idx, ctx.current_line_idx);
                 lines.push(Line::from(vec![
                     Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
-                    Span::styled(
-                        hunk.header.to_string(),
-                        styles::diff_hunk_header_style(&app.theme),
-                    ),
+                    Span::styled(hunk_header_text, hunk_header_style),
                 ]));
                 line_idx += 1;
+                if is_hunk_reviewed {
+                    continue;
+                }
 
                 // Process diff lines in side-by-side format
                 let (new_line_idx, cursor_info) = render_hunk_lines_side_by_side(

@@ -1,6 +1,6 @@
 use ratatui::style::Style;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::{collections::HashMap, path::PathBuf};
 
 use crate::hash::Fnv1aHasher;
 use crate::model::comment::LineSide;
@@ -73,20 +73,62 @@ pub struct DiffFile {
     pub content_hash: u64,
 }
 
+impl DiffHunk {
+    fn review_content_hash(&self) -> u64 {
+        let mut hasher = Fnv1aHasher::new();
+        write_hunk_content_hash(&mut hasher, &self.lines);
+        hasher.finish()
+    }
+}
+
 impl DiffFile {
+    /// Stable key for a reviewed hunk.
+    ///
+    /// Unique hunk content ignores hunk header line numbers so unrelated
+    /// edits above a hunk do not clear its reviewed state. Repeated identical
+    /// hunks fall back to a line-aware key because a pure occurrence count can
+    /// move reviewed state onto a different hunk when one duplicate changes.
+    pub fn hunk_review_key(&self, hunk_idx: usize) -> Option<String> {
+        let hash_counts = self.hunk_content_hash_counts();
+        self.hunks
+            .get(hunk_idx)
+            .map(|hunk| self.hunk_review_key_with_counts(hunk, &hash_counts))
+    }
+
+    pub fn hunk_review_keys(&self) -> Vec<String> {
+        let hash_counts = self.hunk_content_hash_counts();
+        self.hunks
+            .iter()
+            .map(|hunk| self.hunk_review_key_with_counts(hunk, &hash_counts))
+            .collect()
+    }
+
+    fn hunk_content_hash_counts(&self) -> HashMap<u64, usize> {
+        let mut hash_counts = HashMap::new();
+        for hunk in &self.hunks {
+            *hash_counts.entry(hunk.review_content_hash()).or_insert(0) += 1;
+        }
+        hash_counts
+    }
+
+    fn hunk_review_key_with_counts(
+        &self,
+        hunk: &DiffHunk,
+        hash_counts: &HashMap<u64, usize>,
+    ) -> String {
+        let hash = hunk.review_content_hash();
+        if hash_counts.get(&hash).copied().unwrap_or_default() > 1 {
+            format_hunk_review_span_key(hunk, hash)
+        } else {
+            format_hunk_review_content_key(hash)
+        }
+    }
+
     /// Computes a hash of the diff content (all hunk line contents) for change detection.
     pub fn compute_content_hash(hunks: &[DiffHunk]) -> u64 {
         let mut hasher = Fnv1aHasher::new();
         for hunk in hunks {
-            for line in &hunk.lines {
-                hasher.write(match line.origin {
-                    LineOrigin::Addition => b"+",
-                    LineOrigin::Deletion => b"-",
-                    LineOrigin::Context => b" ",
-                });
-                hasher.write(line.content.as_bytes());
-                hasher.write(b"\n");
-            }
+            write_hunk_content_hash(&mut hasher, &hunk.lines);
         }
         hasher.finish()
     }
@@ -158,5 +200,28 @@ impl DiffFile {
             }
         }
         (additions, deletions)
+    }
+}
+
+fn format_hunk_review_content_key(hash: u64) -> String {
+    format!("hunk-content-v1:{hash:016x}:0")
+}
+
+fn format_hunk_review_span_key(hunk: &DiffHunk, hash: u64) -> String {
+    format!(
+        "hunk-span-v1:{hash:016x}:{}:{}:{}:{}",
+        hunk.old_start, hunk.old_count, hunk.new_start, hunk.new_count
+    )
+}
+
+fn write_hunk_content_hash(hasher: &mut Fnv1aHasher, lines: &[DiffLine]) {
+    for line in lines {
+        hasher.write(match line.origin {
+            LineOrigin::Addition => b"+",
+            LineOrigin::Deletion => b"-",
+            LineOrigin::Context => b" ",
+        });
+        hasher.write(line.content.as_bytes());
+        hasher.write(b"\n");
     }
 }

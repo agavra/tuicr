@@ -118,7 +118,7 @@ Repository-managed agent integrations:
 
 **ReviewSession** (`src/model/review.rs`):
 - Persisted review state with `files: HashMap<PathBuf, FileReview>`
-- Each `FileReview` has: `reviewed: bool`, `file_comments: Vec<Comment>`, `line_comments: HashMap<u32, Vec<Comment>>`
+- Each `FileReview` has: `reviewed: bool`, `reviewed_hunks: BTreeSet<String>`, `file_comments: Vec<Comment>`, `line_comments: HashMap<u32, Vec<Comment>>`
 
 **ReviewStore** (`src/review_store.rs`):
 - Public library facade for persisted review sessions

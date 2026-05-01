@@ -1736,10 +1736,12 @@ impl App {
         path_filter: Option<&str>,
         repo_url_override: Option<ForgeRepository>,
     ) -> Result<Self> {
-        // Ensure all diff files are registered in the session
-        for file in &diff_files {
-            session.add_file(file.display_path().clone(), file.status, file.content_hash);
-        }
+        // Ensure all diff files are registered in the session. Persisted PR
+        // subsets hydrate through the full PR diff first; keep subset-specific
+        // hunk keys alive until the selected diff is loaded.
+        let preserve_hunks = matches!(diff_source, DiffSource::PullRequest(_))
+            && session.commit_selection_range.is_some();
+        Self::register_diff_files(&mut session, &diff_files, preserve_hunks);
 
         let has_more_commit = commit_list.len() >= VISIBLE_COMMIT_COUNT;
         let visible_commit_count = if commit_list.is_empty() {
@@ -2509,14 +2511,37 @@ impl App {
         // Re-register diff files against the loaded session so any new files
         // in the PR appear with content_hash tracking, and any deleted files
         // simply stop appearing in the file list.
-        for file in &opened.diff_files {
-            let path = file.display_path().clone();
-            persisted.add_file(path, file.status, file.content_hash);
-        }
+        // Strict subset sessions are reloaded through a full PR diff first, so
+        // pruning here would discard hunk keys hidden by the active selector.
+        let preserve_hunks = Self::is_strict_commit_selection(
+            persisted.commit_selection_range,
+            opened.commits.len(),
+        );
+        Self::register_diff_files(&mut persisted, &opened.diff_files, preserve_hunks);
         persisted.pr_session_key = Some(key);
         persisted.diff_source = SessionDiffSource::PullRequest;
         persisted.updated_at = chrono::Utc::now();
         opened.session = persisted;
+    }
+
+    fn is_strict_commit_selection(range: Option<(usize, usize)>, total: usize) -> bool {
+        range.is_some_and(|(start, end)| {
+            total > 0 && start <= end && end < total && (start > 0 || end + 1 < total)
+        })
+    }
+
+    fn register_diff_files(
+        session: &mut ReviewSession,
+        diff_files: &[DiffFile],
+        preserve_hunks: bool,
+    ) {
+        for file in diff_files {
+            if preserve_hunks {
+                session.add_diff_file_preserving_hunks(file);
+            } else {
+                session.add_diff_file(file);
+            }
+        }
     }
 
     /// Direct-entry PR open: `tuicr pr <target>`.
@@ -2723,11 +2748,11 @@ impl App {
             self.review_commits = mapped;
         }
 
-        // Ensure session has all files registered after the swap.
-        for file in &self.diff_files {
-            let path = file.display_path().clone();
-            self.session.add_file(path, file.status, file.content_hash);
-        }
+        // Ensure session has all files registered after the swap. A strict
+        // selector range is a filtered view, not a new review scope.
+        let preserve_hunks =
+            Self::is_strict_commit_selection(self.commit_selection_range, self.pr_commits.len());
+        Self::register_diff_files(&mut self.session, &self.diff_files, preserve_hunks);
 
         self.sort_files_by_directory(true);
         self.expand_all_dirs();
@@ -2927,8 +2952,7 @@ impl App {
         self.diff_files = files;
         self.clear_expanded_gaps();
         for file in &self.diff_files {
-            let path = file.display_path().clone();
-            self.session.add_file(path, file.status, file.content_hash);
+            self.session.add_diff_file(file);
         }
         self.sort_files_by_directory(true);
         self.expand_all_dirs();
@@ -3078,10 +3102,9 @@ impl App {
 
         self.diff_files = files;
         self.clear_expanded_gaps();
-        for file in &self.diff_files {
-            let path = file.display_path().clone();
-            self.session.add_file(path, file.status, file.content_hash);
-        }
+        // Range diffs can hide hunks that are still reviewed in the broader
+        // PR session, so registration must not prune them.
+        Self::register_diff_files(&mut self.session, &self.diff_files, true);
         self.sort_files_by_directory(true);
         self.expand_all_dirs();
         self.rebuild_annotations();
@@ -3215,8 +3238,7 @@ impl App {
             self.diff_files = opened.diff_files;
             self.clear_expanded_gaps();
             for file in &self.diff_files {
-                let path = file.display_path().clone();
-                self.session.add_file(path, file.status, file.content_hash);
+                self.session.add_diff_file(file);
             }
             self.sort_files_by_directory(true);
             self.expand_all_dirs();
@@ -3298,8 +3320,7 @@ impl App {
             self.diff_files = opened.diff_files;
             self.clear_expanded_gaps();
             for file in &self.diff_files {
-                let path = file.display_path().clone();
-                self.session.add_file(path, file.status, file.content_hash);
+                self.session.add_diff_file(file);
             }
             self.sort_files_by_directory(true);
             self.expand_all_dirs();
@@ -3393,11 +3414,7 @@ impl App {
             content_hash,
         };
         self.diff_files.insert(0, commit_msg_file);
-        self.session.add_file(
-            PathBuf::from("Commit Message"),
-            FileStatus::Added,
-            content_hash,
-        );
+        self.session.add_diff_file(&self.diff_files[0]);
     }
 
     fn is_staged_commit(commit: &CommitInfo) -> bool {
@@ -3718,8 +3735,7 @@ impl App {
         self.session =
             Self::load_or_create_session(&self.vcs_info, SessionDiffSource::StagedAndUnstaged);
         for file in &diff_files {
-            let path = file.display_path().clone();
-            self.session.add_file(path, file.status, file.content_hash);
+            self.session.add_diff_file(file);
         }
         self.reset_persisted_session_tracking();
 
@@ -3754,8 +3770,7 @@ impl App {
 
         self.session = Self::load_or_create_session(&self.vcs_info, SessionDiffSource::Staged);
         for file in &diff_files {
-            let path = file.display_path().clone();
-            self.session.add_file(path, file.status, file.content_hash);
+            self.session.add_diff_file(file);
         }
         self.reset_persisted_session_tracking();
 
@@ -3790,8 +3805,7 @@ impl App {
 
         self.session = Self::load_or_create_session(&self.vcs_info, SessionDiffSource::Unstaged);
         for file in &diff_files {
-            let path = file.display_path().clone();
-            self.session.add_file(path, file.status, file.content_hash);
+            self.session.add_diff_file(file);
         }
         self.reset_persisted_session_tracking();
 
@@ -3877,8 +3891,7 @@ impl App {
 
         let mut invalidated = 0;
         for file in &diff_files {
-            let path = file.display_path().clone();
-            if self.session.add_file(path, file.status, file.content_hash) {
+            if self.session.add_diff_file(file) {
                 invalidated += 1;
             }
         }
@@ -4101,6 +4114,95 @@ impl App {
                 self.diff_state.cursor_line = header_line;
                 self.ensure_cursor_visible();
             }
+        }
+    }
+
+    fn hunk_at_cursor(&self) -> Option<(usize, usize)> {
+        match self.line_annotations.get(self.diff_state.cursor_line)? {
+            AnnotatedLine::HunkHeader { file_idx, hunk_idx }
+            | AnnotatedLine::DiffLine {
+                file_idx, hunk_idx, ..
+            }
+            | AnnotatedLine::SideBySideLine {
+                file_idx, hunk_idx, ..
+            } => Some((*file_idx, *hunk_idx)),
+            _ => None,
+        }
+    }
+
+    fn hunk_review_target(&self, file_idx: usize, hunk_idx: usize) -> Option<(PathBuf, String)> {
+        let file = self.diff_files.get(file_idx)?;
+        let key = file.hunk_review_key(hunk_idx)?;
+        Some((file.display_path().clone(), key))
+    }
+
+    fn hunk_header_line(&self, file_idx: usize, hunk_idx: usize) -> Option<usize> {
+        self.line_annotations.iter().position(|line| {
+            matches!(
+                line,
+                AnnotatedLine::HunkHeader {
+                    file_idx: candidate_file_idx,
+                    hunk_idx: candidate_hunk_idx
+                } if *candidate_file_idx == file_idx && *candidate_hunk_idx == hunk_idx
+            )
+        })
+    }
+
+    pub fn is_hunk_reviewed(&self, file_idx: usize, hunk_idx: usize) -> bool {
+        // Skip key computation (which hashes every hunk in the file) when this
+        // file has no reviewed hunks — the common case for users not using `R`.
+        let Some(file) = self.diff_files.get(file_idx) else {
+            return false;
+        };
+        match self.session.files.get(file.display_path()) {
+            Some(review) if !review.reviewed_hunks.is_empty() => {}
+            _ => return false,
+        }
+
+        let Some((path, key)) = self.hunk_review_target(file_idx, hunk_idx) else {
+            return false;
+        };
+        self.session.is_hunk_reviewed(&path, &key)
+    }
+
+    pub fn should_render_gap_before_hunk(&self, file_idx: usize, hunk_idx: usize) -> bool {
+        // Reviewed hunks collapse as a complete review unit: their body and
+        // adjoining hidden-context controls disappear with the header.
+        !self.is_hunk_reviewed(file_idx, hunk_idx)
+            && (hunk_idx == 0 || !self.is_hunk_reviewed(file_idx, hunk_idx - 1))
+    }
+
+    pub fn toggle_hunk_reviewed(&mut self) {
+        let Some((file_idx, hunk_idx)) = self.hunk_at_cursor() else {
+            self.set_warning("Move cursor to a hunk to toggle reviewed");
+            return;
+        };
+
+        let Some((path, key)) = self.hunk_review_target(file_idx, hunk_idx) else {
+            self.set_warning("Move cursor to a hunk to toggle reviewed");
+            return;
+        };
+
+        let Some(review) = self.session.get_file_mut(&path) else {
+            return;
+        };
+
+        let reviewed = review.toggle_hunk_reviewed(key);
+        self.dirty = true;
+        self.rebuild_annotations();
+        self.diff_state.current_file_idx = file_idx;
+        if let Some(tree_idx) = self.file_idx_to_tree_idx(file_idx) {
+            self.file_list_state.select(tree_idx);
+        }
+        if let Some(header_line) = self.hunk_header_line(file_idx, hunk_idx) {
+            self.diff_state.cursor_line = header_line;
+        }
+        self.ensure_cursor_visible();
+
+        if reviewed {
+            self.set_message("Hunk marked reviewed");
+        } else {
+            self.set_message("Hunk marked unreviewed");
         }
     }
 
@@ -5623,10 +5725,12 @@ impl App {
             if file.is_binary || file.hunks.is_empty() {
                 cumulative += 1;
             } else {
-                for hunk in &file.hunks {
+                for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
                     positions.push(cumulative);
                     cumulative += 1;
-                    cumulative += hunk.lines.len();
+                    if !self.is_hunk_reviewed(file_idx, hunk_idx) {
+                        cumulative += hunk.lines.len();
+                    }
                 }
             }
             cumulative += 1; // trailing spacing or "next file" hint
@@ -5800,7 +5904,7 @@ impl App {
 
                 let gap_id = GapId { file_idx, hunk_idx };
 
-                if gap > 0 {
+                if gap > 0 && self.should_render_gap_before_hunk(file_idx, hunk_idx) {
                     let top_len = self.expanded_top.get(&gap_id).map_or(0, |v| v.len());
                     let bot_len = self.expanded_bottom.get(&gap_id).map_or(0, |v| v.len());
                     let remaining = (gap as usize).saturating_sub(top_len + bot_len);
@@ -5810,6 +5914,9 @@ impl App {
 
                 // Hunk header + diff lines
                 content_lines += 1; // Hunk header
+                if self.is_hunk_reviewed(file_idx, hunk_idx) {
+                    continue;
+                }
 
                 // Count diff lines based on view mode
                 match self.diff_view_mode {
@@ -7411,8 +7518,7 @@ impl App {
 
                     // Update session for new files
                     for file in &self.diff_files {
-                        let path = file.display_path().clone();
-                        self.session.add_file(path, file.status, file.content_hash);
+                        self.session.add_diff_file(file);
                     }
 
                     self.sort_files_by_directory(true);
@@ -8369,8 +8475,7 @@ impl App {
 
         // Add files to session
         for file in &diff_files {
-            let path = file.display_path().clone();
-            self.session.add_file(path, file.status, file.content_hash);
+            self.session.add_diff_file(file);
         }
         self.reset_persisted_session_tracking();
 
@@ -8570,8 +8675,7 @@ impl App {
             Self::load_or_create_staged_unstaged_and_commits_session(&self.vcs_info, &selected_ids);
 
         for file in &diff_files {
-            let path = file.display_path().clone();
-            self.session.add_file(path, file.status, file.content_hash);
+            self.session.add_diff_file(file);
         }
         self.reset_persisted_session_tracking();
 
@@ -9043,7 +9147,7 @@ impl App {
 
                     let gap_id = GapId { file_idx, hunk_idx };
 
-                    if gap > 0 {
+                    if gap > 0 && self.should_render_gap_before_hunk(file_idx, hunk_idx) {
                         let top_len = self.expanded_top.get(&gap_id).map_or(0, |v| v.len());
                         let bot_len = self.expanded_bottom.get(&gap_id).map_or(0, |v| v.len());
                         let remaining = (gap as usize).saturating_sub(top_len + bot_len);
@@ -9111,6 +9215,9 @@ impl App {
                     // Hunk header
                     self.line_annotations
                         .push(AnnotatedLine::HunkHeader { file_idx, hunk_idx });
+                    if self.is_hunk_reviewed(file_idx, hunk_idx) {
+                        continue;
+                    }
 
                     // Diff lines - handle differently based on view mode
                     match self.diff_view_mode {
@@ -10442,6 +10549,31 @@ mod target_selector_tests {
         }
     }
 
+    fn two_hunk_patch() -> &'static str {
+        r#"diff --git a/src/lib.rs b/src/lib.rs
+index 1111111..2222222 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1 +1 @@
+-old one
++new one
+@@ -10 +10 @@
+-old two
++new two
+"#
+    }
+
+    fn first_hunk_patch() -> &'static str {
+        r#"diff --git a/src/lib.rs b/src/lib.rs
+index 1111111..2222222 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1 +1 @@
+-old one
++new one
+"#
+    }
+
     #[test]
     fn should_populate_inline_selector_when_pr_has_multiple_commits() {
         // given a PR open path where the forge returns 3 commits
@@ -10555,6 +10687,48 @@ mod target_selector_tests {
         // then — start falls back to the PR's base_sha.
         let expected_base = test_pr_details(42, "base").base_sha;
         assert_eq!(pair, Some((expected_base, "aaa".to_string())));
+    }
+
+    #[test]
+    fn should_preserve_hunk_marks_hidden_by_pr_range_diff() {
+        let mut app = build_app();
+        app.forge_repository = Some(ForgeRepository::github("github.com", "agavra", "tuicr"));
+        app.pr_tab = PullRequestsTab::new(app.forge_repository.clone());
+        app.pr_tab.start_initial_load();
+        let summary = sample_pr(42, "ranges");
+        app.pr_tab
+            .apply_initial_load(Ok((vec![summary.clone()], false)));
+        let mut backend = FakeForgeBackend::open_pr_details(
+            test_pr_details(42, "ranges"),
+            two_hunk_patch().to_string(),
+        );
+        backend.commits = vec![
+            sample_pr_commit("aaa1111", "first"),
+            sample_pr_commit("bbb2222", "second"),
+        ];
+        app.open_pr_with_backend(&summary, Box::new(backend), None)
+            .unwrap();
+        let path = app.diff_files[0].display_path().clone();
+        let hidden_key = app.diff_files[0].hunk_review_key(1).unwrap();
+        app.session
+            .get_file_mut(&path)
+            .unwrap()
+            .toggle_hunk_reviewed(hidden_key.clone());
+
+        let request = PrRangeReloadRequest {
+            repository: ForgeRepository::github("github.com", "agavra", "tuicr"),
+            pr_number: 42,
+            head_sha: "abcdef0123456789".to_string(),
+            start_sha: "aaa1111".to_string(),
+            end_sha: "bbb2222".to_string(),
+            range: (1, 1),
+            started_at: Instant::now(),
+            anchor: None,
+        };
+        app.finish_pr_range_reload(&request, first_hunk_patch())
+            .unwrap();
+
+        assert!(app.session.is_hunk_reviewed(&path, &hidden_key));
     }
 
     #[test]
@@ -12404,6 +12578,145 @@ mod expand_gap_tests {
             is_commit_message: false,
             content_hash,
         }
+    }
+
+    fn hunk_diff_line(app: &App, file_idx: usize, hunk_idx: usize) -> usize {
+        app.line_annotations
+            .iter()
+            .position(|line| {
+                matches!(
+                    line,
+                    AnnotatedLine::DiffLine {
+                        file_idx: candidate_file_idx,
+                        hunk_idx: candidate_hunk_idx,
+                        ..
+                    } if *candidate_file_idx == file_idx && *candidate_hunk_idx == hunk_idx
+                )
+            })
+            .expect("missing hunk diff annotation")
+    }
+
+    #[test]
+    fn should_toggle_hunk_reviewed_from_header() {
+        let file = make_file_with_hunks("test.rs", vec![make_hunk(1, 3)]);
+        let mut app = build_app_with_files(vec![file], 20);
+        let path = app.diff_files[0].display_path().clone();
+        let key = app.diff_files[0].hunk_review_key(0).unwrap();
+
+        app.diff_state.cursor_line = app.hunk_header_line(0, 0).expect("missing hunk header");
+        app.toggle_hunk_reviewed();
+
+        assert!(app.session.is_hunk_reviewed(&path, &key));
+        assert_eq!(
+            app.message.as_ref().unwrap().content,
+            "Hunk marked reviewed"
+        );
+        assert!(matches!(
+            app.line_annotations[app.diff_state.cursor_line],
+            AnnotatedLine::HunkHeader {
+                file_idx: 0,
+                hunk_idx: 0
+            }
+        ));
+    }
+
+    #[test]
+    fn should_toggle_hunk_reviewed_from_diff_line() {
+        let file = make_file_with_hunks("test.rs", vec![make_hunk(1, 3)]);
+        let mut app = build_app_with_files(vec![file], 20);
+        let path = app.diff_files[0].display_path().clone();
+        let key = app.diff_files[0].hunk_review_key(0).unwrap();
+
+        app.diff_state.cursor_line = hunk_diff_line(&app, 0, 0);
+        app.toggle_hunk_reviewed();
+
+        assert!(app.session.is_hunk_reviewed(&path, &key));
+    }
+
+    #[test]
+    fn should_warn_when_toggling_hunk_outside_hunk() {
+        let file = make_file_with_hunks("test.rs", vec![make_hunk(1, 3)]);
+        let mut app = build_app_with_files(vec![file], 20);
+        let path = app.diff_files[0].display_path().clone();
+        let key = app.diff_files[0].hunk_review_key(0).unwrap();
+
+        app.diff_state.cursor_line = 0;
+        app.toggle_hunk_reviewed();
+
+        assert!(!app.session.is_hunk_reviewed(&path, &key));
+        assert_eq!(
+            app.message.as_ref().unwrap().content,
+            "Move cursor to a hunk to toggle reviewed"
+        );
+        assert_eq!(
+            app.message.as_ref().unwrap().message_type,
+            MessageType::Warning
+        );
+    }
+
+    #[test]
+    fn should_fold_reviewed_hunk_body() {
+        let file = make_file_with_hunks("test.rs", vec![make_hunk(1, 3), make_hunk(10, 2)]);
+        let mut app = build_app_with_files(vec![file], 20);
+        let before = app.total_lines();
+
+        app.diff_state.cursor_line = app.hunk_header_line(0, 0).expect("missing hunk header");
+        app.toggle_hunk_reviewed();
+
+        assert_eq!(app.total_lines(), before - 4);
+        assert!(!app.line_annotations.iter().any(|line| {
+            matches!(
+                line,
+                AnnotatedLine::DiffLine {
+                    file_idx: 0,
+                    hunk_idx: 0,
+                    ..
+                }
+            )
+        }));
+        assert!(!app.line_annotations.iter().any(|line| {
+            matches!(
+                line,
+                AnnotatedLine::Expander {
+                    gap_id: GapId {
+                        file_idx: 0,
+                        hunk_idx: 1
+                    },
+                    ..
+                } | AnnotatedLine::HiddenLines {
+                    gap_id: GapId {
+                        file_idx: 0,
+                        hunk_idx: 1
+                    },
+                    ..
+                }
+            )
+        }));
+        assert!(app.line_annotations.iter().any(|line| {
+            matches!(
+                line,
+                AnnotatedLine::DiffLine {
+                    file_idx: 0,
+                    hunk_idx: 1,
+                    ..
+                }
+            )
+        }));
+    }
+
+    #[test]
+    fn should_keep_file_and_hunk_reviewed_state_independent() {
+        let file = make_file_with_hunks("test.rs", vec![make_hunk(1, 3)]);
+        let mut app = build_app_with_files(vec![file], 20);
+        let path = app.diff_files[0].display_path().clone();
+        let key = app.diff_files[0].hunk_review_key(0).unwrap();
+
+        app.diff_state.cursor_line = app.hunk_header_line(0, 0).expect("missing hunk header");
+        app.toggle_hunk_reviewed();
+        app.toggle_reviewed_for_file_idx(0, false);
+
+        assert!(app.session.is_file_reviewed(&path));
+        assert!(app.session.is_hunk_reviewed(&path, &key));
     }
 
     #[test]

@@ -271,7 +271,7 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         } else {
             match app.input_mode {
                 InputMode::Normal => Cow::Borrowed(
-                    "   j/k scroll \u{00b7} {/} file \u{00b7} r reviewed \u{00b7} c comment \u{00b7} ? help",
+                    "   j/k scroll \u{00b7} {/} file \u{00b7} r file \u{00b7} R hunk \u{00b7} c comment \u{00b7} ? help",
                 ),
                 InputMode::Command => {
                     Cow::Borrowed("   tab complete \u{00b7} \u{21b5} execute \u{00b7} esc cancel")

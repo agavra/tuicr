@@ -18,7 +18,7 @@ use crate::error::{Result, TuicrError};
 use crate::forge::traits::{
     ForgeBackend, PrSessionKey, PullRequestCommit, PullRequestDetails, PullRequestTarget,
 };
-use crate::model::{DiffFile, FileStatus, ReviewSession, SessionDiffSource};
+use crate::model::{DiffFile, ReviewSession, SessionDiffSource};
 use crate::syntax::SyntaxHighlighter;
 use crate::tuicrignore;
 use crate::vcs::diff_parser::{DiffFormat, parse_unified_diff};
@@ -130,9 +130,7 @@ fn build_session(
     );
     session.pr_session_key = Some(key.clone());
     for file in diff_files {
-        let path: PathBuf = file.display_path().clone();
-        let status: FileStatus = file.status;
-        session.add_file(path, status, file.content_hash);
+        session.add_diff_file(file);
     }
     session
 }

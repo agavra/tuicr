@@ -35,6 +35,7 @@ pub enum Action {
 
     // Review actions
     ToggleReviewed,
+    ToggleHunkReviewed,
     AddLineComment,
     AddFileComment,
     EditComment,
@@ -189,6 +190,7 @@ fn map_normal_mode(key: KeyEvent, leader_key: char) -> Action {
 
         // Review actions
         (KeyCode::Char('r'), KeyModifiers::NONE) => Action::ToggleReviewed,
+        (KeyCode::Char('R'), _) => Action::ToggleHunkReviewed,
         (KeyCode::Char('c'), KeyModifiers::NONE) => Action::AddLineComment,
         (KeyCode::Char('C'), _) => Action::AddFileComment,
         (KeyCode::Char('i'), KeyModifiers::NONE) => Action::EditComment,
@@ -462,6 +464,12 @@ mod tests {
             DEFAULT_LEADER_KEY,
         );
         assert_eq!(action, Action::ScrollViewDown(1));
+    }
+
+    #[test]
+    fn should_map_uppercase_r_to_toggle_hunk_reviewed_in_normal_mode() {
+        let action = map_normal_mode(key_shift('R'), DEFAULT_LEADER_KEY);
+        assert_eq!(action, Action::ToggleHunkReviewed);
     }
 
     #[test]

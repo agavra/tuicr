@@ -1,10 +1,10 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 
 use super::comment::Comment;
-use super::diff_types::FileStatus;
+use super::diff_types::{DiffFile, FileStatus};
 use crate::forge::remote_comments::PrCommentsVisibility;
 use crate::forge::traits::PrSessionKey;
 
@@ -22,6 +22,8 @@ pub struct FileReview {
     pub file_comments: Vec<Comment>,
     pub line_comments: HashMap<u32, Vec<Comment>>,
     #[serde(default)]
+    pub reviewed_hunks: BTreeSet<String>,
+    #[serde(default)]
     pub content_hash: Option<u64>,
 }
 
@@ -33,6 +35,7 @@ impl FileReview {
             status,
             file_comments: Vec::new(),
             line_comments: HashMap::new(),
+            reviewed_hunks: BTreeSet::new(),
             content_hash: Some(content_hash),
         }
     }
@@ -47,6 +50,16 @@ impl FileReview {
 
     pub fn add_line_comment(&mut self, line: u32, comment: Comment) {
         self.line_comments.entry(line).or_default().push(comment);
+    }
+
+    pub fn toggle_hunk_reviewed(&mut self, key: String) -> bool {
+        if self.reviewed_hunks.contains(&key) {
+            self.reviewed_hunks.remove(&key);
+            false
+        } else {
+            self.reviewed_hunks.insert(key);
+            true
+        }
     }
 }
 
@@ -119,7 +132,7 @@ impl ReviewSession {
         let now = Utc::now();
         Self {
             id: uuid::Uuid::new_v4().to_string(),
-            version: "1.2".to_string(),
+            version: "1.3".to_string(),
             repo_path,
             branch_name,
             base_commit,
@@ -157,6 +170,24 @@ impl ReviewSession {
         false
     }
 
+    pub fn add_diff_file(&mut self, file: &DiffFile) -> bool {
+        let path = file.display_path().clone();
+        let invalidated = self.add_file(path.clone(), file.status, file.content_hash);
+        if let Some(review) = self.files.get_mut(&path) {
+            let valid_hunks: BTreeSet<_> = file.hunk_review_keys().into_iter().collect();
+            review
+                .reviewed_hunks
+                .retain(|key| valid_hunks.contains(key));
+        }
+        invalidated
+    }
+
+    /// Register a transient filtered diff without dropping hunk keys that
+    /// belong to the broader persisted review scope.
+    pub fn add_diff_file_preserving_hunks(&mut self, file: &DiffFile) -> bool {
+        self.add_file(file.display_path().clone(), file.status, file.content_hash)
+    }
+
     pub fn get_file_mut(&mut self, path: &PathBuf) -> Option<&mut FileReview> {
         self.files.get_mut(path)
     }
@@ -173,9 +204,12 @@ impl ReviewSession {
             cleared += file.comment_count();
             file.file_comments.clear();
             file.line_comments.clear();
-            if scope == ClearScope::CommentsAndReviewed && file.reviewed {
+            if scope == ClearScope::CommentsAndReviewed {
+                if file.reviewed || !file.reviewed_hunks.is_empty() {
+                    unreviewed += 1;
+                }
                 file.reviewed = false;
-                unreviewed += 1;
+                file.reviewed_hunks.clear();
             }
         }
         (cleared, unreviewed)
@@ -184,12 +218,19 @@ impl ReviewSession {
     pub fn is_file_reviewed(&self, path: &PathBuf) -> bool {
         self.files.get(path).map(|r| r.reviewed).unwrap_or(false)
     }
+
+    pub fn is_hunk_reviewed(&self, path: &PathBuf, key: &str) -> bool {
+        self.files
+            .get(path)
+            .is_some_and(|review| review.reviewed_hunks.contains(key))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::comment::{Comment, CommentType};
+    use crate::model::{DiffHunk, DiffLine, LineOrigin};
 
     // Arbitrary hash value for tests that don't care about the specific hash.
     const SOME_HASH: u64 = 0xdeadbeef;
@@ -201,6 +242,37 @@ mod tests {
             None,
             SessionDiffSource::WorkingTree,
         )
+    }
+
+    fn test_hunk(new_start: u32, content: &str) -> DiffHunk {
+        DiffHunk {
+            header: format!("@@ -{new_start},1 +{new_start},1 @@"),
+            lines: vec![DiffLine {
+                origin: LineOrigin::Context,
+                content: content.to_string(),
+                old_lineno: Some(new_start),
+                new_lineno: Some(new_start),
+                highlighted_spans: None,
+            }],
+            old_start: new_start,
+            old_count: 1,
+            new_start,
+            new_count: 1,
+        }
+    }
+
+    fn test_diff_file(path: &str, hunks: Vec<DiffHunk>) -> DiffFile {
+        let content_hash = DiffFile::compute_content_hash(&hunks);
+        DiffFile {
+            old_path: None,
+            new_path: Some(PathBuf::from(path)),
+            status: FileStatus::Modified,
+            hunks,
+            is_binary: false,
+            is_too_large: false,
+            is_commit_message: false,
+            content_hash,
+        }
     }
 
     #[test]
@@ -296,6 +368,26 @@ mod tests {
         assert_eq!(cleared, 2);
         assert_eq!(unreviewed, 1);
         assert!(!session.is_file_reviewed(&path));
+    }
+
+    #[test]
+    fn should_clear_hunk_reviewed_status() {
+        let mut session = test_session();
+        let file = test_diff_file("src/main.rs", vec![test_hunk(10, "same")]);
+        let path = file.display_path().clone();
+        let key = file.hunk_review_key(0).unwrap();
+
+        session.add_diff_file(&file);
+        session
+            .get_file_mut(&path)
+            .unwrap()
+            .toggle_hunk_reviewed(key.clone());
+
+        let (cleared, unreviewed) = session.clear_comments(ClearScope::CommentsAndReviewed);
+
+        assert_eq!(cleared, 0);
+        assert_eq!(unreviewed, 1);
+        assert!(!session.is_hunk_reviewed(&path, &key));
     }
 
     #[test]
@@ -482,6 +574,179 @@ mod tests {
     }
 
     #[test]
+    fn should_default_reviewed_hunks_for_legacy_file_review() {
+        let json = r#"{
+            "path": "src/main.rs",
+            "reviewed": false,
+            "status": "modified",
+            "file_comments": [],
+            "line_comments": {},
+            "content_hash": 123
+        }"#;
+
+        let review: FileReview = serde_json::from_str(json).unwrap();
+        assert!(review.reviewed_hunks.is_empty());
+    }
+
+    #[test]
+    fn should_roundtrip_reviewed_hunks() {
+        let mut session = test_session();
+        let file = test_diff_file("src/main.rs", vec![test_hunk(10, "same")]);
+        let path = file.display_path().clone();
+        let key = file.hunk_review_key(0).unwrap();
+
+        session.add_diff_file(&file);
+        session
+            .get_file_mut(&path)
+            .unwrap()
+            .toggle_hunk_reviewed(key.clone());
+
+        let json = serde_json::to_string(&session).unwrap();
+        let loaded: ReviewSession = serde_json::from_str(&json).unwrap();
+        assert!(loaded.is_hunk_reviewed(&path, &key));
+    }
+
+    #[test]
+    fn should_preserve_reviewed_hunk_when_only_line_numbers_shift() {
+        let mut session = test_session();
+        let original = test_diff_file("src/main.rs", vec![test_hunk(10, "same")]);
+        let path = original.display_path().clone();
+        let key = original.hunk_review_key(0).unwrap();
+
+        session.add_diff_file(&original);
+        session
+            .get_file_mut(&path)
+            .unwrap()
+            .toggle_hunk_reviewed(key.clone());
+
+        let shifted = test_diff_file("src/main.rs", vec![test_hunk(30, "same")]);
+        let shifted_key = shifted.hunk_review_key(0).unwrap();
+        session.add_diff_file(&shifted);
+
+        assert_eq!(key, shifted_key);
+        assert!(session.is_hunk_reviewed(&path, &shifted_key));
+    }
+
+    #[test]
+    fn should_use_line_aware_keys_for_repeated_identical_hunks() {
+        let mut session = test_session();
+        let original = test_diff_file(
+            "src/main.rs",
+            vec![test_hunk(10, "same"), test_hunk(20, "same")],
+        );
+        let path = original.display_path().clone();
+        let first_key = original.hunk_review_key(0).unwrap();
+        let second_key = original.hunk_review_key(1).unwrap();
+
+        session.add_diff_file(&original);
+        session
+            .get_file_mut(&path)
+            .unwrap()
+            .toggle_hunk_reviewed(first_key.clone());
+
+        let shifted = test_diff_file(
+            "src/main.rs",
+            vec![test_hunk(30, "same"), test_hunk(40, "same")],
+        );
+        session.add_diff_file(&shifted);
+
+        assert_ne!(first_key, second_key);
+        assert_ne!(first_key, shifted.hunk_review_key(0).unwrap());
+        assert_ne!(second_key, shifted.hunk_review_key(1).unwrap());
+        assert!(!session.is_hunk_reviewed(&path, &first_key));
+        assert!(!session.is_hunk_reviewed(&path, &second_key));
+    }
+
+    #[test]
+    fn should_not_move_reviewed_status_between_identical_hunks() {
+        let mut session = test_session();
+        let original = test_diff_file(
+            "src/main.rs",
+            vec![
+                test_hunk(10, "same"),
+                test_hunk(20, "same"),
+                test_hunk(30, "same"),
+            ],
+        );
+        let path = original.display_path().clone();
+        let first_key = original.hunk_review_key(0).unwrap();
+        let second_key = original.hunk_review_key(1).unwrap();
+        let third_key = original.hunk_review_key(2).unwrap();
+
+        session.add_diff_file(&original);
+        let review = session.get_file_mut(&path).unwrap();
+        review.toggle_hunk_reviewed(first_key.clone());
+        review.toggle_hunk_reviewed(second_key.clone());
+
+        let updated = test_diff_file(
+            "src/main.rs",
+            vec![
+                test_hunk(10, "same"),
+                test_hunk(20, "changed"),
+                test_hunk(30, "same"),
+            ],
+        );
+        let updated_first_key = updated.hunk_review_key(0).unwrap();
+        let updated_third_key = updated.hunk_review_key(2).unwrap();
+        session.add_diff_file(&updated);
+
+        assert_eq!(first_key, updated_first_key);
+        assert_eq!(third_key, updated_third_key);
+        assert!(session.is_hunk_reviewed(&path, &updated_first_key));
+        assert!(!session.is_hunk_reviewed(&path, &updated.hunk_review_key(1).unwrap()));
+        assert!(!session.is_hunk_reviewed(&path, &updated_third_key));
+    }
+
+    #[test]
+    fn should_prune_reviewed_hunks_that_no_longer_exist() {
+        let mut session = test_session();
+        let original = test_diff_file(
+            "src/main.rs",
+            vec![test_hunk(10, "kept"), test_hunk(20, "removed")],
+        );
+        let path = original.display_path().clone();
+        let kept_key = original.hunk_review_key(0).unwrap();
+        let removed_key = original.hunk_review_key(1).unwrap();
+
+        session.add_diff_file(&original);
+        let review = session.get_file_mut(&path).unwrap();
+        review.toggle_hunk_reviewed(kept_key.clone());
+        review.toggle_hunk_reviewed(removed_key.clone());
+
+        let updated = test_diff_file(
+            "src/main.rs",
+            vec![test_hunk(10, "kept"), test_hunk(30, "new")],
+        );
+        session.add_diff_file(&updated);
+
+        assert!(session.is_hunk_reviewed(&path, &kept_key));
+        assert!(!session.is_hunk_reviewed(&path, &removed_key));
+    }
+
+    #[test]
+    fn should_preserve_reviewed_hunks_for_transient_diff_views() {
+        let mut session = test_session();
+        let full = test_diff_file(
+            "src/main.rs",
+            vec![test_hunk(10, "first"), test_hunk(20, "second")],
+        );
+        let path = full.display_path().clone();
+        let first_key = full.hunk_review_key(0).unwrap();
+        let second_key = full.hunk_review_key(1).unwrap();
+
+        session.add_diff_file(&full);
+        let review = session.get_file_mut(&path).unwrap();
+        review.toggle_hunk_reviewed(first_key.clone());
+        review.toggle_hunk_reviewed(second_key.clone());
+
+        let subset = test_diff_file("src/main.rs", vec![test_hunk(10, "first")]);
+        session.add_diff_file_preserving_hunks(&subset);
+
+        assert!(session.is_hunk_reviewed(&path, &first_key));
+        assert!(session.is_hunk_reviewed(&path, &second_key));
+    }
+
+    #[test]
     fn should_reset_reviewed_when_legacy_session_has_no_hash() {
         let mut session = test_session();
         let path = PathBuf::from("legacy.rs");
@@ -495,6 +760,7 @@ mod tests {
                 status: FileStatus::Modified,
                 file_comments: Vec::new(),
                 line_comments: HashMap::new(),
+                reviewed_hunks: BTreeSet::new(),
                 content_hash: None,
             },
         );

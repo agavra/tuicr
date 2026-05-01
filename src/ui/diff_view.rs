@@ -8,7 +8,7 @@ use ratatui::{
 use crate::app::{
     AnnotatedLine, App, DiffViewMode, ExpandDirection, GAP_EXPAND_BATCH, VisualSelection,
 };
-use crate::model::{Comment, LineSide};
+use crate::model::{Comment, DiffHunk, LineSide};
 use crate::theme::Theme;
 use crate::ui::comment_panel;
 use crate::ui::diff_side_by_side::render_side_by_side_diff;
@@ -143,6 +143,21 @@ pub(super) fn cursor_indicator_spaced(line_idx: usize, current_line_idx: usize) 
         "▶ "
     } else {
         "  "
+    }
+}
+
+pub(super) fn hunk_header_text_and_style(
+    theme: &Theme,
+    hunk: &DiffHunk,
+    is_hunk_reviewed: bool,
+) -> (String, Style) {
+    if is_hunk_reviewed {
+        (format!("✓ {}", hunk.header), styles::reviewed_style(theme))
+    } else {
+        (
+            hunk.header.to_string(),
+            styles::diff_hunk_header_style(theme),
+        )
     }
 }
 

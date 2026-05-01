@@ -1358,6 +1358,7 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
         Action::NextHunk => app.next_hunk(),
         Action::PrevHunk => app.prev_hunk(),
         Action::ToggleReviewed => app.toggle_reviewed(),
+        Action::ToggleHunkReviewed => app.toggle_hunk_reviewed(),
         Action::ToggleFocus => {
             let has_selector = app.has_inline_commit_selector();
             let has_comments = app.has_comment_navigator_items();

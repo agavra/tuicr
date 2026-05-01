@@ -16,6 +16,7 @@
 - GitHub-style continuous diff in the terminal. Scroll through every changed file in one stream.
 - PR-style comments at the line, range, file, and review level, with classifications like
   `issue`, `suggestion`, `note`, and `praise`.
+- Review tracking at file or hunk granularity, persisted across sessions.
 - Three export targets: push a real PR review to GitHub, copy structured markdown to your
   clipboard, or pipe to stdout.
 - Works with git, jj, and mercurial. Reviews uncommitted changes, commit ranges, or any GitHub PR.
@@ -218,6 +219,7 @@ A first-session cheatsheet. Press `?` inside tuicr for the full reference.
 | `c` / `C` | Add line / file comment |
 | `v` / `V` | Visual mode (range comment) |
 | `r` | Toggle file reviewed |
+| `R` | Toggle hunk reviewed |
 | `y` | Copy review to clipboard |
 | `:edit` | Open focused file in `$EDITOR` |
 | `:submit` | Push review to GitHub |
