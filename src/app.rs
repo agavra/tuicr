@@ -289,6 +289,7 @@ pub struct App {
     pub pending_confirm: Option<ConfirmAction>,
     pub supports_keyboard_enhancement: bool,
     pub show_file_list: bool,
+    pub cursor_line_highlight: bool,
     pub file_list_area: Option<ratatui::layout::Rect>,
     pub diff_area: Option<ratatui::layout::Rect>,
     pub expanded_dirs: HashSet<String>,
@@ -305,6 +306,13 @@ pub struct App {
     /// Calculated screen position for comment input cursor (col, row) for IME positioning.
     /// Set during render when in Comment mode, None otherwise.
     pub comment_cursor_screen_pos: Option<(u16, u16)>,
+    /// During render, the comment input box may introduce lines that have no corresponding
+    /// entry in `line_annotations`. This field stores `(box_start, box_len, annotations_replaced)`
+    /// where `box_start` is the absolute rendered line index where the input box begins,
+    /// `box_len` is the number of rendered lines the input box occupies, and
+    /// `annotations_replaced` is how many annotation entries exist for the comment being
+    /// edited (0 for a new comment). Used by `is_line_highlighted` to adjust annotation lookups.
+    pub comment_input_annotation_offset: Option<(usize, usize, usize)>,
     /// Information about available updates (set by background check)
     pub update_info: Option<UpdateInfo>,
     /// Accumulated digit count for {N}G jump-to-line
@@ -786,6 +794,7 @@ impl App {
             pending_confirm: None,
             supports_keyboard_enhancement: false,
             show_file_list: true,
+            cursor_line_highlight: false,
             file_list_area: None,
             diff_area: None,
             expanded_dirs: HashSet::new(),
@@ -795,6 +804,7 @@ impl App {
             output_to_stdout,
             pending_stdout_output: None,
             comment_cursor_screen_pos: None,
+            comment_input_annotation_offset: None,
             update_info: None,
             pending_count: None,
             review_commits: Vec::new(),

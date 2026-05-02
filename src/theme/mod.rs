@@ -59,6 +59,7 @@ pub struct Theme {
     pub border_unfocused: Color,
     pub status_bar_bg: Color,
     pub cursor_color: Color,
+    pub cursor_line_bg: Color,
     pub branch_name: Color,
     pub help_indicator: Color,
 
@@ -133,6 +134,7 @@ impl Theme {
             border_unfocused: Color::Rgb(110, 110, 110),
             status_bar_bg: Color::Rgb(30, 30, 30),
             cursor_color: Color::Rgb(255, 210, 90),
+            cursor_line_bg: Color::Rgb(40, 40, 45),
             branch_name: Color::Rgb(90, 220, 240),
             help_indicator: Color::Rgb(110, 110, 110),
 
@@ -202,6 +204,7 @@ impl Theme {
             border_unfocused: Color::Rgb(100, 100, 100),
             status_bar_bg: Color::Rgb(210, 210, 220),
             cursor_color: Color::Rgb(140, 80, 0),
+            cursor_line_bg: Color::Rgb(225, 225, 235),
             branch_name: Color::Rgb(0, 100, 120),
             help_indicator: Color::Rgb(90, 90, 90),
 
@@ -276,6 +279,7 @@ impl Theme {
             border_unfocused: base1,
             status_bar_bg: base2,
             cursor_color: orange,
+            cursor_line_bg: Color::Rgb(225, 222, 200),
             branch_name: cyan,
             help_indicator: base01,
 
@@ -347,6 +351,7 @@ impl Theme {
             border_unfocused: base01,
             status_bar_bg: base02,
             cursor_color: orange,
+            cursor_line_bg: Color::Rgb(15, 60, 75),
             branch_name: cyan,
             help_indicator: base00,
 
@@ -508,6 +513,7 @@ impl Theme {
             border_unfocused: Color::Rgb(217, 216, 215),
             status_bar_bg: Color::Rgb(255, 255, 255),
             cursor_color: Color::Rgb(255, 106, 0),
+            cursor_line_bg: Color::Rgb(235, 237, 240),
             branch_name: Color::Rgb(54, 163, 217),
             help_indicator: Color::Rgb(171, 176, 182),
 
@@ -575,6 +581,7 @@ impl Theme {
             border_unfocused: Color::Rgb(62, 68, 82),
             status_bar_bg: Color::Rgb(33, 37, 43),
             cursor_color: Color::Rgb(229, 192, 123),
+            cursor_line_bg: Color::Rgb(44, 49, 58),
             branch_name: Color::Rgb(86, 182, 194),
             help_indicator: Color::Rgb(92, 99, 112),
 
@@ -862,6 +869,7 @@ fn catppuccin_theme(flavor: CatppuccinFlavor, syntect_theme: EmbeddedThemeName) 
         border_unfocused: flavor.surface2,
         status_bar_bg: flavor.mantle,
         cursor_color: flavor.peach,
+        cursor_line_bg: flavor.surface1,
         branch_name: flavor.teal,
         help_indicator: flavor.overlay0,
 
@@ -936,6 +944,7 @@ fn gruvbox_theme(flavor: GruvboxFlavor) -> Theme {
         border_unfocused: flavor.bg4,
         status_bar_bg: flavor.bg1,
         cursor_color: flavor.orange,
+        cursor_line_bg: flavor.selected_bg,
         branch_name: flavor.aqua,
         help_indicator: flavor.grey0,
 
@@ -1001,6 +1010,7 @@ fn nord_theme(flavor: NordFlavor) -> Theme {
         border_unfocused: flavor.bg1,
         status_bar_bg: flavor.bg2,
         cursor_color: flavor.frost2,
+        cursor_line_bg: flavor.bg2,
         branch_name: flavor.frost0,
         help_indicator: flavor.bg3,
 

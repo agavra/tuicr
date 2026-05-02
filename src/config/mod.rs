@@ -27,6 +27,7 @@ pub struct AppConfig {
     pub diff_view: Option<String>,
     pub wrap: Option<bool>,
     pub export_legend: Option<bool>,
+    pub cursor_line: Option<bool>,
 }
 
 /// Known top-level config keys. Used to warn about typos.
@@ -40,6 +41,7 @@ const KNOWN_KEYS: &[&str] = &[
     "diff_view",
     "wrap",
     "export_legend",
+    "cursor_line",
 ];
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -179,6 +181,7 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         ),
         wrap: read_bool(table, "wrap", &mut warnings),
         export_legend: read_bool(table, "export_legend", &mut warnings),
+        cursor_line: read_bool(table, "cursor_line", &mut warnings),
     };
 
     for key in table.keys() {

@@ -8,8 +8,8 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{
-    App, DiffViewMode, ExpandDirection, FileTreeItem, FocusedPanel, GAP_EXPAND_BATCH, GapId,
-    InputMode,
+    AnnotatedLine, App, DiffViewMode, ExpandDirection, FileTreeItem, FocusedPanel,
+    GAP_EXPAND_BATCH, GapId, InputMode,
 };
 use crate::model::{LineOrigin, LineRange, LineSide};
 use crate::theme::Theme;
@@ -614,6 +614,9 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
     // Update viewport height for scroll calculations
     app.diff_state.viewport_height = inner.height as usize;
 
+    // Reset comment input annotation offset (will be set if a comment input box is rendered)
+    app.comment_input_annotation_offset = None;
+
     // Build all diff lines for infinite scroll
     // Track line index to mark the current line (cursor position)
     let mut lines: Vec<Line> = Vec::new();
@@ -663,6 +666,9 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
             comment_cursor_column = 1 + cursor_info.column;
             comment_input_box_range =
                 Some((line_idx, line_idx + input_lines.len().saturating_sub(1)));
+            let annotations_replaced = 2 + comment.content.split('\n').count();
+            app.comment_input_annotation_offset =
+                Some((line_idx, input_lines.len(), annotations_replaced));
 
             for mut input_line in input_lines {
                 let indicator = cursor_indicator(line_idx, current_line_idx);
@@ -705,6 +711,7 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
         comment_cursor_logical_line = Some(line_idx + cursor_info.line_offset);
         comment_cursor_column = 1 + cursor_info.column;
         comment_input_box_range = Some((line_idx, line_idx + input_lines.len().saturating_sub(1)));
+        app.comment_input_annotation_offset = Some((line_idx, input_lines.len(), 0));
 
         for mut input_line in input_lines {
             let indicator = cursor_indicator(line_idx, current_line_idx);
@@ -774,6 +781,9 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
                     comment_cursor_column = 1 + cursor_info.column;
                     comment_input_box_range =
                         Some((line_idx, line_idx + input_lines.len().saturating_sub(1)));
+                    let annotations_replaced = 2 + comment.content.split('\n').count();
+                    app.comment_input_annotation_offset =
+                        Some((line_idx, input_lines.len(), annotations_replaced));
 
                     for mut input_line in input_lines {
                         let indicator = cursor_indicator(line_idx, current_line_idx);
@@ -826,6 +836,7 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
             comment_cursor_column = 1 + cursor_info.column;
             comment_input_box_range =
                 Some((line_idx, line_idx + input_lines.len().saturating_sub(1)));
+            app.comment_input_annotation_offset = Some((line_idx, input_lines.len(), 0));
 
             for mut input_line in input_lines {
                 let indicator = cursor_indicator(line_idx, current_line_idx);
@@ -1129,6 +1140,13 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
                                             line_idx,
                                             line_idx + input_lines.len().saturating_sub(1),
                                         ));
+                                        let annotations_replaced =
+                                            2 + comment.content.split('\n').count();
+                                        app.comment_input_annotation_offset = Some((
+                                            line_idx,
+                                            input_lines.len(),
+                                            annotations_replaced,
+                                        ));
 
                                         for mut input_line in input_lines {
                                             let indicator =
@@ -1195,6 +1213,8 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
                             comment_cursor_column = 1 + cursor_info.column;
                             comment_input_box_range =
                                 Some((line_idx, line_idx + input_lines.len().saturating_sub(1)));
+                            app.comment_input_annotation_offset =
+                                Some((line_idx, input_lines.len(), 0));
 
                             for mut input_line in input_lines {
                                 let indicator = cursor_indicator(line_idx, current_line_idx);
@@ -1247,6 +1267,13 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
                                         comment_input_box_range = Some((
                                             line_idx,
                                             line_idx + input_lines.len().saturating_sub(1),
+                                        ));
+                                        let annotations_replaced =
+                                            2 + comment.content.split('\n').count();
+                                        app.comment_input_annotation_offset = Some((
+                                            line_idx,
+                                            input_lines.len(),
+                                            annotations_replaced,
                                         ));
 
                                         for mut input_line in input_lines {
@@ -1314,6 +1341,8 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
                             comment_cursor_column = 1 + cursor_info.column;
                             comment_input_box_range =
                                 Some((line_idx, line_idx + input_lines.len().saturating_sub(1)));
+                            app.comment_input_annotation_offset =
+                                Some((line_idx, input_lines.len(), 0));
 
                             for mut input_line in input_lines {
                                 let indicator = cursor_indicator(line_idx, current_line_idx);
@@ -1426,7 +1455,7 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
         &line_widths,
         app.diff_state.wrap_lines,
         inner.width as usize,
-        &app.theme,
+        app,
     );
 
     // Keep paragraph bg unset so pre-painted per-row diff backgrounds remain visible.
@@ -1485,7 +1514,7 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
 
 /// Cursor info for the inline comment input box in side-by-side view:
 /// (cursor_logical_line, cursor_column, box_start_line, box_end_line)
-type SideBySideCursorInfo = (usize, u16, usize, usize);
+type SideBySideCursorInfo = (usize, u16, usize, usize, usize);
 
 /// Context for rendering side-by-side diff lines
 struct SideBySideContext<'a> {
@@ -1708,6 +1737,9 @@ fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
     // Update viewport height for scroll calculations
     app.diff_state.viewport_height = inner.height as usize;
 
+    // Reset comment input annotation offset (will be set if a comment input box is rendered)
+    app.comment_input_annotation_offset = None;
+
     // Calculate column widths (split the area in half)
     // Layout: indicator(1) + linenum(4) + space(1) + prefix(1) + content + " │ "(3) + linenum(4) + space(1) + prefix(1) + content
     // Total overhead: 1 + 5 + 1 + 3 + 5 + 1 = 16
@@ -1745,6 +1777,7 @@ fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
     // Track the full extent of the comment input box so we can auto-scroll
     // the viewport to keep it visible while the user types.
     let mut comment_input_box_range: Option<(usize, usize)> = None;
+    let mut annotation_offset: Option<(usize, usize, usize)> = None;
 
     let is_review_comment_mode =
         app.input_mode == InputMode::Comment && app.comment_is_review_level;
@@ -1781,6 +1814,8 @@ fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
             comment_cursor_column = 1 + cursor_info.column;
             comment_input_box_range =
                 Some((line_idx, line_idx + input_lines.len().saturating_sub(1)));
+            let annotations_replaced = 2 + comment.content.split('\n').count();
+            annotation_offset = Some((line_idx, input_lines.len(), annotations_replaced));
 
             for mut input_line in input_lines {
                 let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
@@ -1823,6 +1858,7 @@ fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
         comment_cursor_logical_line = Some(line_idx + cursor_info.line_offset);
         comment_cursor_column = 1 + cursor_info.column;
         comment_input_box_range = Some((line_idx, line_idx + input_lines.len().saturating_sub(1)));
+        annotation_offset = Some((line_idx, input_lines.len(), 0));
 
         for mut input_line in input_lines {
             let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
@@ -1889,6 +1925,8 @@ fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
                     comment_cursor_column = 1 + cursor_info.column;
                     comment_input_box_range =
                         Some((line_idx, line_idx + input_lines.len().saturating_sub(1)));
+                    let annotations_replaced = 2 + comment.content.split('\n').count();
+                    annotation_offset = Some((line_idx, input_lines.len(), annotations_replaced));
 
                     for mut input_line in input_lines {
                         let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
@@ -1940,6 +1978,7 @@ fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
             comment_cursor_column = 1 + cursor_info.column;
             comment_input_box_range =
                 Some((line_idx, line_idx + input_lines.len().saturating_sub(1)));
+            annotation_offset = Some((line_idx, input_lines.len(), 0));
 
             for mut input_line in input_lines {
                 let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
@@ -2110,10 +2149,12 @@ fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
                     &mut lines,
                 );
                 line_idx = new_line_idx;
-                if let Some((line, col, box_start, box_end)) = cursor_info {
+                if let Some((line, col, box_start, box_end, annotations_replaced)) = cursor_info {
                     comment_cursor_logical_line = Some(line);
                     comment_cursor_column = col;
                     comment_input_box_range = Some((box_start, box_end));
+                    let box_len = box_end - box_start + 1;
+                    annotation_offset = Some((box_start, box_len, annotations_replaced));
                 }
             }
         }
@@ -2126,6 +2167,9 @@ fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
         )));
         line_idx += 1;
     }
+
+    drop(ctx);
+    app.comment_input_annotation_offset = annotation_offset;
 
     // Auto-scroll so the comment input box stays visible while the user types.
     scroll_comment_input_into_view(
@@ -2205,6 +2249,24 @@ fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
         diff = diff.wrap(Wrap { trim: false });
     }
     frame.render_widget(diff, inner);
+
+    // Paint cursor/selection line highlights for side-by-side view
+    if app.cursor_line_highlight {
+        let viewport_height = inner.height as usize;
+        for offset in 0..viewport_height {
+            if is_line_highlighted(app, offset) {
+                let row_rect = Rect {
+                    x: inner.x,
+                    y: inner.y + offset as u16,
+                    width: inner.width,
+                    height: 1,
+                };
+                frame
+                    .buffer_mut()
+                    .set_style(row_rect, Style::default().bg(app.theme.cursor_line_bg));
+            }
+        }
+    }
 
     // Calculate screen position for comment cursor if in Comment mode
     if let Some(cursor_logical_line) = comment_cursor_logical_line {
@@ -2655,11 +2717,13 @@ fn add_comments_to_line(
                         ctx.supports_keyboard_enhancement,
                     );
                     let box_end = line_idx + input_lines.len().saturating_sub(1);
+                    let annotations_replaced = 2 + comment.content.split('\n').count();
                     cursor_info_out = Some((
                         line_idx + cursor_info.line_offset,
                         1 + cursor_info.column,
                         line_idx,
                         box_end,
+                        annotations_replaced,
                     ));
 
                     for mut input_line in input_lines {
@@ -2721,6 +2785,7 @@ fn add_comments_to_line(
             1 + cursor_info.column,
             line_idx,
             box_end,
+            0,
         ));
 
         for mut input_line in input_lines {
@@ -2814,6 +2879,75 @@ fn truncate_or_pad_spans(
     }
 }
 
+fn is_line_highlighted(app: &App, viewport_idx: usize) -> bool {
+    if !app.cursor_line_highlight {
+        return false;
+    }
+
+    let abs_idx = viewport_idx + app.diff_state.scroll_offset;
+
+    // Cursor line
+    if abs_idx == app.diff_state.cursor_line {
+        return true;
+    }
+
+    // Visual selection or comment-mode range (preserved from visual selection)
+    let Some((range, sel_side)) = app.get_visual_selection().or(app.comment_line_range) else {
+        return false;
+    };
+
+    // Adjust the annotation index to account for the comment input box, which
+    // may have a different line count than what line_annotations expects.
+    let annotation_idx =
+        if let Some((box_start, box_len, replaced)) = app.comment_input_annotation_offset {
+            if abs_idx < box_start {
+                abs_idx
+            } else if abs_idx < box_start + box_len {
+                // Inside the comment input box - only highlight the portion that
+                // maps to annotation entries being replaced (edited comment lines)
+                let offset_in_box = abs_idx - box_start;
+                if offset_in_box < replaced {
+                    box_start + offset_in_box
+                } else {
+                    return false;
+                }
+            } else {
+                // After the box: shift by the difference between rendered and annotation counts
+                // box_len > replaced: input box added extra lines → shift back
+                // box_len < replaced: input box is shorter → shift forward
+                abs_idx + replaced - box_len
+            }
+        } else {
+            abs_idx
+        };
+
+    let Some(annotation) = app.line_annotations.get(annotation_idx) else {
+        return false;
+    };
+    let (file_idx, lineno) = match annotation {
+        AnnotatedLine::DiffLine {
+            file_idx,
+            old_lineno,
+            new_lineno,
+            ..
+        }
+        | AnnotatedLine::SideBySideLine {
+            file_idx,
+            old_lineno,
+            new_lineno,
+            ..
+        } => {
+            let ln = match sel_side {
+                LineSide::New => *new_lineno,
+                LineSide::Old => *old_lineno,
+            };
+            (*file_idx, ln)
+        }
+        _ => return false,
+    };
+    file_idx == app.diff_state.current_file_idx && lineno.is_some_and(|ln| range.contains(ln))
+}
+
 fn unified_line_bg_style(line: &Line, theme: &Theme) -> Option<Style> {
     let prefix = line.spans.get(2)?.content.as_ref();
     let default_bg = match prefix {
@@ -2838,7 +2972,7 @@ fn paint_unified_diff_row_backgrounds(
     line_widths: &[usize],
     wrap_lines: bool,
     viewport_width: usize,
-    theme: &Theme,
+    app: &App,
 ) {
     let mut visual_row: usize = 0;
 
@@ -2858,7 +2992,13 @@ fn paint_unified_diff_row_backgrounds(
             1
         };
 
-        if let Some(row_style) = unified_line_bg_style(line, theme) {
+        let row_style = if is_line_highlighted(app, idx) {
+            Some(Style::default().bg(app.theme.cursor_line_bg))
+        } else {
+            unified_line_bg_style(line, &app.theme)
+        };
+
+        if let Some(row_style) = row_style {
             for _ in 0..rows_for_line {
                 if visual_row >= inner.height as usize {
                     break;
