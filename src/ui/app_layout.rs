@@ -1502,6 +1502,7 @@ struct SideBySideContext<'a> {
     comment_line_range: Option<LineRange>,
     editing_comment_id: Option<&'a str>,
     supports_keyboard_enhancement: bool,
+    current_file_idx: usize,
 }
 
 /// Get cursor indicator (single character for inline content)
@@ -1731,6 +1732,7 @@ fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
         comment_line_range: app.comment_line_range.map(|(r, _)| r),
         editing_comment_id: app.editing_comment_id.as_deref(),
         supports_keyboard_enhancement: app.supports_keyboard_enhancement,
+        current_file_idx: app.diff_state.current_file_idx,
     };
 
     // Build all diff lines for side-by-side view
@@ -2103,6 +2105,7 @@ fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
                     &hunk.lines,
                     &line_comments,
                     &ctx,
+                    file_idx,
                     line_idx,
                     &mut lines,
                 );
@@ -2250,6 +2253,7 @@ fn render_hunk_lines_side_by_side(
     hunk_lines: &[crate::model::DiffLine],
     line_comments: &std::collections::HashMap<u32, Vec<crate::model::Comment>>,
     ctx: &SideBySideContext,
+    file_idx: usize,
     mut line_idx: usize,
     lines: &mut Vec<Line>,
 ) -> (usize, Option<SideBySideCursorInfo>) {
@@ -2265,6 +2269,7 @@ fn render_hunk_lines_side_by_side(
                     diff_line,
                     line_comments,
                     ctx,
+                    file_idx,
                     line_idx,
                     lines,
                 );
@@ -2281,6 +2286,7 @@ fn render_hunk_lines_side_by_side(
                         i,
                         line_comments,
                         ctx,
+                        file_idx,
                         line_idx,
                         lines,
                     );
@@ -2295,6 +2301,7 @@ fn render_hunk_lines_side_by_side(
                     diff_line,
                     line_comments,
                     ctx,
+                    file_idx,
                     line_idx,
                     lines,
                 );
@@ -2315,6 +2322,7 @@ fn render_context_line_side_by_side(
     diff_line: &crate::model::DiffLine,
     line_comments: &std::collections::HashMap<u32, Vec<crate::model::Comment>>,
     ctx: &SideBySideContext,
+    file_idx: usize,
     mut line_idx: usize,
     lines: &mut Vec<Line>,
 ) -> (usize, Option<SideBySideCursorInfo>) {
@@ -2375,8 +2383,15 @@ fn render_context_line_side_by_side(
     // Add comments if any
     let mut cursor_info_out: Option<SideBySideCursorInfo> = None;
     if let Some(new_ln) = diff_line.new_lineno {
-        let (new_line_idx, cursor_info) =
-            add_comments_to_line(new_ln, line_comments, LineSide::New, ctx, line_idx, lines);
+        let (new_line_idx, cursor_info) = add_comments_to_line(
+            new_ln,
+            line_comments,
+            LineSide::New,
+            ctx,
+            file_idx,
+            line_idx,
+            lines,
+        );
         line_idx = new_line_idx;
         cursor_info_out = cursor_info;
     }
@@ -2391,6 +2406,7 @@ fn render_deletion_addition_pair_side_by_side(
     start_idx: usize,
     line_comments: &std::collections::HashMap<u32, Vec<crate::model::Comment>>,
     ctx: &SideBySideContext,
+    file_idx: usize,
     mut line_idx: usize,
     lines: &mut Vec<Line>,
 ) -> (usize, usize, Option<SideBySideCursorInfo>) {
@@ -2451,6 +2467,7 @@ fn render_deletion_addition_pair_side_by_side(
                     line_comments,
                     LineSide::Old,
                     ctx,
+                    file_idx,
                     line_idx,
                     lines,
                 );
@@ -2470,6 +2487,7 @@ fn render_deletion_addition_pair_side_by_side(
                     line_comments,
                     LineSide::New,
                     ctx,
+                    file_idx,
                     line_idx,
                     lines,
                 );
@@ -2490,6 +2508,7 @@ fn render_standalone_addition_side_by_side(
     diff_line: &crate::model::DiffLine,
     line_comments: &std::collections::HashMap<u32, Vec<crate::model::Comment>>,
     ctx: &SideBySideContext,
+    file_idx: usize,
     mut line_idx: usize,
     lines: &mut Vec<Line>,
 ) -> (usize, Option<SideBySideCursorInfo>) {
@@ -2509,8 +2528,15 @@ fn render_standalone_addition_side_by_side(
     // Add comments if any
     let mut cursor_info_out: Option<SideBySideCursorInfo> = None;
     if let Some(new_ln) = diff_line.new_lineno {
-        let (new_line_idx, cursor_info) =
-            add_comments_to_line(new_ln, line_comments, LineSide::New, ctx, line_idx, lines);
+        let (new_line_idx, cursor_info) = add_comments_to_line(
+            new_ln,
+            line_comments,
+            LineSide::New,
+            ctx,
+            file_idx,
+            line_idx,
+            lines,
+        );
         line_idx = new_line_idx;
         cursor_info_out = cursor_info;
     }
@@ -2594,11 +2620,14 @@ fn add_comments_to_line(
     line_comments: &std::collections::HashMap<u32, Vec<crate::model::Comment>>,
     side: LineSide,
     ctx: &SideBySideContext,
+    file_idx: usize,
     mut line_idx: usize,
     lines: &mut Vec<Line>,
 ) -> (usize, Option<SideBySideCursorInfo>) {
     // Check if we're adding/editing a comment on this line and side
-    let is_line_comment_mode = ctx.comment_input_mode && ctx.comment_line == Some((line_num, side));
+    let is_line_comment_mode = ctx.comment_input_mode
+        && file_idx == ctx.current_file_idx
+        && ctx.comment_line == Some((line_num, side));
     let mut cursor_info_out: Option<SideBySideCursorInfo> = None;
 
     if let Some(comments) = line_comments.get(&line_num) {
