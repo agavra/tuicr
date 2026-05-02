@@ -40,6 +40,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  Ctrl-e/y  ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Scroll view down/up"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  Ctrl-d/u  ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),

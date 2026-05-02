@@ -521,6 +521,8 @@ pub fn handle_diff_action(app: &mut App, action: Action) {
     match action {
         Action::CursorDown(n) => app.cursor_down(n),
         Action::CursorUp(n) => app.cursor_up(n),
+        Action::ScrollViewDown(n) => app.scroll_view_down(n),
+        Action::ScrollViewUp(n) => app.scroll_view_up(n),
         Action::ScrollLeft(n) => app.scroll_left(n),
         Action::ScrollRight(n) => app.scroll_right(n),
         Action::SelectFile => {

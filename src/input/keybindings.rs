@@ -23,6 +23,8 @@ pub enum Action {
     PendingSemicolonCommand,
     ScrollLeft(usize),
     ScrollRight(usize),
+    ScrollViewDown(usize),
+    ScrollViewUp(usize),
 
     // Panel focus
     ToggleFocus,
@@ -110,6 +112,8 @@ fn map_normal_mode(key: KeyEvent) -> Action {
         // Cursor movement (vim-like: cursor moves, scroll follows when needed)
         (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => Action::CursorDown(1),
         (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => Action::CursorUp(1),
+        (KeyCode::Char('e'), KeyModifiers::CONTROL) => Action::ScrollViewDown(1),
+        (KeyCode::Char('y'), KeyModifiers::CONTROL) => Action::ScrollViewUp(1),
         (KeyCode::Char('d'), KeyModifiers::CONTROL) => Action::HalfPageDown,
         (KeyCode::Char('u'), KeyModifiers::CONTROL) => Action::HalfPageUp,
         (KeyCode::Char('f'), KeyModifiers::CONTROL) => Action::PageDown,

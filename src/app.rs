@@ -1622,6 +1622,29 @@ impl App {
         self.update_current_file_from_cursor();
     }
 
+    pub fn scroll_view_down(&mut self, lines: usize) {
+        let max_scroll = self.max_scroll_offset();
+        self.diff_state.scroll_offset = (self.diff_state.scroll_offset + lines).min(max_scroll);
+        if self.diff_state.cursor_line < self.diff_state.scroll_offset {
+            self.diff_state.cursor_line = self.diff_state.scroll_offset;
+            self.update_current_file_from_cursor();
+        }
+    }
+
+    pub fn scroll_view_up(&mut self, lines: usize) {
+        self.diff_state.scroll_offset = self.diff_state.scroll_offset.saturating_sub(lines);
+        let visible_lines = if self.diff_state.visible_line_count > 0 {
+            self.diff_state.visible_line_count
+        } else {
+            self.diff_state.viewport_height.max(1)
+        };
+        let bottom = self.diff_state.scroll_offset + visible_lines.saturating_sub(1);
+        if self.diff_state.cursor_line > bottom {
+            self.diff_state.cursor_line = bottom;
+            self.update_current_file_from_cursor();
+        }
+    }
+
     pub fn scroll_left(&mut self, cols: usize) {
         if self.diff_state.wrap_lines {
             return;
