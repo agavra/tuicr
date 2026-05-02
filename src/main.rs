@@ -327,14 +327,24 @@ fn main() -> anyhow::Result<()> {
                         app.message = None;
                     }
 
-                    // Handle pending z command for zz centering
+                    // Handle pending z command for zz/zt/zb viewport positioning
                     if pending_z {
                         pending_z = false;
-                        if key.code == crossterm::event::KeyCode::Char('z') {
-                            app.center_cursor();
-                            continue;
+                        match key.code {
+                            crossterm::event::KeyCode::Char('z') => {
+                                app.center_cursor();
+                                continue;
+                            }
+                            crossterm::event::KeyCode::Char('t') => {
+                                app.cursor_to_top();
+                                continue;
+                            }
+                            crossterm::event::KeyCode::Char('b') => {
+                                app.cursor_to_bottom();
+                                continue;
+                            }
+                            _ => {} // Fall through to normal handling
                         }
-                        // Otherwise fall through to normal handling
                     }
 
                     // Handle pending Z command for ZZ (export+quit) / ZQ (quit)

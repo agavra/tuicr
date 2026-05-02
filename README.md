@@ -247,7 +247,9 @@ For full native terminal selection across the whole UI, hold your terminal's byp
 | `/` | Search within diff |
 | `n` / `N` | Next/previous search match |
 | `Enter` | Expand/collapse hidden context between hunks |
+| `zt` | Scroll cursor to top of screen |
 | `zz` | Center cursor on screen |
+| `zb` | Scroll cursor to bottom of screen |
 
 #### File Tree
 

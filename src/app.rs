@@ -2300,6 +2300,27 @@ impl App {
             .min(max_scroll);
     }
 
+    pub fn cursor_to_top(&mut self) {
+        let scroll_margin = self.diff_state.effective_scroll_margin(self.scroll_offset);
+        let max_scroll = self.max_scroll_offset();
+        self.diff_state.scroll_offset = self
+            .diff_state
+            .cursor_line
+            .saturating_sub(scroll_margin)
+            .min(max_scroll);
+    }
+
+    pub fn cursor_to_bottom(&mut self) {
+        let visible_lines = self.diff_state.effective_visible_lines();
+        let scroll_margin = self.diff_state.effective_scroll_margin(self.scroll_offset);
+        let max_scroll = self.max_scroll_offset();
+        self.diff_state.scroll_offset = self
+            .diff_state
+            .cursor_line
+            .saturating_sub(visible_lines.saturating_sub(1 + scroll_margin))
+            .min(max_scroll);
+    }
+
     pub fn go_to_source_line(&mut self, target_lineno: u32) {
         let current_file = self.diff_state.current_file_idx;
         let result = find_source_line(&self.line_annotations, current_file, target_lineno);
