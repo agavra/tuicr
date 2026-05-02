@@ -421,6 +421,7 @@ pub struct App {
     pub supports_keyboard_enhancement: bool,
     pub show_file_list: bool,
     pub cursor_line_highlight: bool,
+    pub scroll_offset: usize,
     pub file_list_area: Option<ratatui::layout::Rect>,
     pub diff_area: Option<ratatui::layout::Rect>,
     /// Inner content rect of the file list panel; populated during render.
@@ -525,6 +526,26 @@ pub struct DiffState {
     /// Number of logical lines that fit in the viewport (set during render).
     /// When wrapping is enabled, this accounts for lines expanding to multiple visual rows.
     pub visible_line_count: usize,
+}
+
+impl DiffState {
+    /// Number of logical lines that fit in the viewport. Uses the render-computed
+    /// `visible_line_count` (which accounts for line wrapping), falling back to
+    /// `viewport_height` before the first render.
+    pub fn effective_visible_lines(&self) -> usize {
+        if self.visible_line_count > 0 {
+            self.visible_line_count
+        } else {
+            self.viewport_height.max(1)
+        }
+    }
+
+    /// Minimum number of lines kept between the cursor and the viewport edge
+    /// (equivalent to vim's `scrolloff`). Must be strictly less than half the
+    /// viewport to guarantee a stable free zone after centering (zz).
+    pub fn effective_scroll_margin(&self, scroll_offset: usize) -> usize {
+        scroll_offset.min((self.effective_visible_lines() / 2).saturating_sub(1))
+    }
 }
 
 impl Default for DiffState {
@@ -937,6 +958,7 @@ impl App {
             supports_keyboard_enhancement: false,
             show_file_list: true,
             cursor_line_highlight: true,
+            scroll_offset: 0,
             file_list_area: None,
             diff_area: None,
             file_list_inner_area: None,
@@ -1809,22 +1831,42 @@ impl App {
     }
 
     pub fn cursor_down(&mut self, lines: usize) {
-        let max_line = self.total_lines().saturating_sub(1);
+        let max_line = self.max_cursor_line();
+        let prev_cursor = self.diff_state.cursor_line;
+        let prev_scroll = self.diff_state.scroll_offset;
         self.diff_state.cursor_line = (self.diff_state.cursor_line + lines).min(max_line);
-        self.ensure_cursor_visible();
+        if self.diff_state.cursor_line != prev_cursor {
+            self.ensure_cursor_visible();
+            // Cap scroll change to cursor movement to prevent multi-line jumps
+            // when the view is catching up from a non-steady-state position.
+            let cursor_moved = self.diff_state.cursor_line - prev_cursor;
+            if self.diff_state.scroll_offset > prev_scroll + cursor_moved {
+                self.diff_state.scroll_offset = prev_scroll + cursor_moved;
+            }
+        }
         self.update_current_file_from_cursor();
     }
 
     pub fn cursor_up(&mut self, lines: usize) {
         self.diff_state.cursor_line = self.diff_state.cursor_line.saturating_sub(lines);
-        self.ensure_cursor_visible();
+        let visible_lines = self.diff_state.effective_visible_lines();
+        let scroll_margin = self.diff_state.effective_scroll_margin(self.scroll_offset);
+        // Enforce top margin
+        if self.diff_state.cursor_line < self.diff_state.scroll_offset + scroll_margin {
+            self.diff_state.scroll_offset =
+                self.diff_state.cursor_line.saturating_sub(scroll_margin);
+        }
+        // Ensure cursor is at least within the viewport (no bottom margin enforcement,
+        // just basic visibility — handles viewport shrink or wrap-mode changes).
+        if self.diff_state.cursor_line >= self.diff_state.scroll_offset + visible_lines {
+            self.diff_state.scroll_offset = self.diff_state.cursor_line - visible_lines + 1;
+        }
         self.update_current_file_from_cursor();
     }
 
     pub fn scroll_down(&mut self, lines: usize) {
         // For half-page/page scrolling, move both cursor and scroll
-        let total = self.total_lines();
-        let max_line = total.saturating_sub(1);
+        let max_line = self.max_cursor_line();
         let max_scroll = self.max_scroll_offset();
         self.diff_state.cursor_line = (self.diff_state.cursor_line + lines).min(max_line);
         self.diff_state.scroll_offset = (self.diff_state.scroll_offset + lines).min(max_scroll);
@@ -1843,8 +1885,11 @@ impl App {
     pub fn scroll_view_down(&mut self, lines: usize) {
         let max_scroll = self.max_scroll_offset();
         self.diff_state.scroll_offset = (self.diff_state.scroll_offset + lines).min(max_scroll);
-        if self.diff_state.cursor_line < self.diff_state.scroll_offset {
-            self.diff_state.cursor_line = self.diff_state.scroll_offset;
+        let scroll_margin = self.diff_state.effective_scroll_margin(self.scroll_offset);
+        let min_cursor =
+            (self.diff_state.scroll_offset + scroll_margin).min(self.max_cursor_line());
+        if self.diff_state.cursor_line < min_cursor {
+            self.diff_state.cursor_line = min_cursor;
             self.update_current_file_from_cursor();
         }
     }
@@ -1900,21 +1945,31 @@ impl App {
         self.set_message(format!("Diff wrapping: {status}"));
     }
 
+    /// Adjusts scroll_offset so the cursor stays within the visible viewport,
+    /// respecting the configured scroll margin (minimum lines from edge).
     fn ensure_cursor_visible(&mut self) {
         // Use visible_line_count which is computed during render based on actual line widths.
-        // Fall back to viewport_height if not yet set (before first render).
-        let visible_lines = if self.diff_state.visible_line_count > 0 {
-            self.diff_state.visible_line_count
-        } else {
-            self.diff_state.viewport_height.max(1)
-        };
+        // Falls back to viewport_height if not yet set (before first render).
+        let visible_lines = self.diff_state.effective_visible_lines();
         let max_scroll = self.max_scroll_offset();
-        if self.diff_state.cursor_line < self.diff_state.scroll_offset {
-            self.diff_state.scroll_offset = self.diff_state.cursor_line;
-        }
-        if self.diff_state.cursor_line >= self.diff_state.scroll_offset + visible_lines {
+        let scroll_margin = self.diff_state.effective_scroll_margin(self.scroll_offset);
+        // Cursor too close to the top edge — scroll up
+        if self.diff_state.cursor_line < self.diff_state.scroll_offset + scroll_margin {
             self.diff_state.scroll_offset =
-                (self.diff_state.cursor_line - visible_lines + 1).min(max_scroll);
+                self.diff_state.cursor_line.saturating_sub(scroll_margin);
+        }
+        // Cursor too close to the bottom edge — scroll down.
+        // Reduce the margin near EOF so we don't scroll to show empty space
+        // when the last line is already visible (matches Vim behavior).
+        let lines_below = self
+            .max_cursor_line()
+            .saturating_sub(self.diff_state.cursor_line);
+        let bottom_margin = scroll_margin.min(lines_below);
+        if self.diff_state.cursor_line + bottom_margin
+            >= self.diff_state.scroll_offset + visible_lines
+        {
+            self.diff_state.scroll_offset =
+                (self.diff_state.cursor_line + bottom_margin - visible_lines + 1).min(max_scroll);
         }
     }
 
@@ -2482,11 +2537,11 @@ impl App {
     }
 
     pub fn jump_to_bottom(&mut self) {
-        let max_line = self.total_lines().saturating_sub(1);
+        let max_line = self.max_cursor_line();
         self.diff_state.cursor_line = max_line;
-        // Always position so the last line is at the bottom of the viewport
+        // Position so the last navigable line is at the bottom of the viewport
         let viewport = self.diff_state.viewport_height.max(1);
-        self.diff_state.scroll_offset = self.total_lines().saturating_sub(viewport);
+        self.diff_state.scroll_offset = (max_line + 1).saturating_sub(viewport);
         self.update_current_file_from_cursor();
     }
 
@@ -2862,24 +2917,24 @@ impl App {
                 .sum::<usize>()
     }
 
+    /// Last line the cursor can occupy. If the final annotation is a Spacing
+    /// separator it is not navigable content and is excluded.
+    pub fn max_cursor_line(&self) -> usize {
+        let total = self.total_lines();
+        if matches!(self.line_annotations.last(), Some(AnnotatedLine::Spacing)) {
+            total.saturating_sub(2)
+        } else {
+            total.saturating_sub(1)
+        }
+    }
+
     /// Calculate the maximum scroll offset.
     ///
-    /// When line wrapping is enabled, logical lines may expand to multiple visual rows.
-    /// This means we need to allow scrolling further to ensure all content is reachable.
-    /// We allow scrolling to `total - 1` so the last logical line can be at the top.
-    ///
-    /// When wrapping is disabled, each logical line is one visual row, so we use
-    /// `total - viewport` which stops when the last line reaches the bottom.
+    /// Allows scrolling until the last line of content is at the top of the viewport.
+    /// This permits empty space below content (e.g. when centering the cursor near EOF)
+    /// while ensuring there is always at least one line of content visible at the top.
     pub fn max_scroll_offset(&self) -> usize {
-        let total = self.total_lines();
-        let viewport = self.diff_state.viewport_height.max(1);
-        if self.diff_state.wrap_lines {
-            // With wrapping, allow scrolling to show the last line at the top
-            total.saturating_sub(1)
-        } else {
-            // Without wrapping, stop when last line is at the bottom
-            total.saturating_sub(viewport)
-        }
+        self.total_lines().saturating_sub(1)
     }
 
     /// Calculate the number of display lines a comment takes (header + content + footer)
@@ -5071,145 +5126,414 @@ mod commit_selection_tests {
 
 #[cfg(test)]
 mod scroll_tests {
-    use super::*;
-
-    /// Test the max_scroll_offset calculation logic directly using DiffState
-    /// This tests the core algorithm without needing full App setup
-    fn calc_max_scroll(total_lines: usize, viewport_height: usize, wrap_lines: bool) -> usize {
-        let viewport = viewport_height.max(1);
-        if wrap_lines {
-            // With wrapping, allow scrolling to show the last line at the top
-            total_lines.saturating_sub(1)
-        } else {
-            // Without wrapping, stop when last line is at the bottom
-            total_lines.saturating_sub(viewport)
-        }
+    /// max_scroll_offset is simply total_lines - 1 (last line can be at top).
+    fn calc_max_scroll(total_lines: usize) -> usize {
+        total_lines.saturating_sub(1)
     }
 
     #[test]
-    fn should_calculate_max_scroll_without_wrapping() {
-        // Given 103 total lines and viewport of 20 (simulating header + 100 lines + spacing)
-        let total = 103;
-        let viewport = 20;
-
-        // When we calculate max_scroll without wrapping
-        let max_scroll = calc_max_scroll(total, viewport, false);
-
-        // Then max_scroll should be total - viewport (allows last line at bottom)
-        assert_eq!(max_scroll, 83); // 103 - 20
+    fn should_calculate_max_scroll() {
+        // Last line can be scrolled to the top of the viewport
+        assert_eq!(calc_max_scroll(103), 102);
+        assert_eq!(calc_max_scroll(20), 19);
     }
 
     #[test]
-    fn should_calculate_max_scroll_with_wrapping() {
-        // Given 103 total lines and viewport of 20, with wrapping enabled
-        let total = 103;
-        let viewport = 20;
-
-        // When we calculate max_scroll with wrapping
-        let max_scroll = calc_max_scroll(total, viewport, true);
-
-        // Then max_scroll should be total - 1 (allows last line at top)
-        assert_eq!(max_scroll, 102); // 103 - 1
-    }
-
-    #[test]
-    fn should_allow_scrolling_further_with_wrapping() {
-        // Given identical content with and without wrapping
-        let total = 103;
-        let viewport = 20;
-
-        // When we calculate max_scroll for both
-        let max_no_wrap = calc_max_scroll(total, viewport, false);
-        let max_with_wrap = calc_max_scroll(total, viewport, true);
-
-        // Then wrapping should allow scrolling further
-        assert!(
-            max_with_wrap > max_no_wrap,
-            "With wrapping, max_scroll ({}) should be greater than without ({})",
-            max_with_wrap,
-            max_no_wrap
-        );
-
-        // The difference should be viewport - 1
-        assert_eq!(max_with_wrap - max_no_wrap, viewport - 1);
-    }
-
-    #[test]
-    fn should_handle_small_content_without_wrapping() {
-        // Given content smaller than viewport (13 lines in viewport of 50)
-        let total = 13;
-        let viewport = 50;
-
-        // When we calculate max_scroll
-        let max_scroll = calc_max_scroll(total, viewport, false);
-
-        // Then max_scroll should be 0 (no scrolling needed)
-        assert_eq!(max_scroll, 0);
-    }
-
-    #[test]
-    fn should_handle_small_content_with_wrapping() {
-        // Given content smaller than viewport with wrapping
-        let total = 13;
-        let viewport = 50;
-
-        // When we calculate max_scroll
-        let max_scroll = calc_max_scroll(total, viewport, true);
-
-        // Then max_scroll should still allow scrolling to the last line
-        assert_eq!(max_scroll, 12); // total - 1
+    fn should_handle_small_content() {
+        // Even with few lines, can scroll last line to top
+        assert_eq!(calc_max_scroll(13), 12);
+        assert_eq!(calc_max_scroll(1), 0);
     }
 
     #[test]
     fn should_handle_empty_content() {
-        // Given no content (0 lines)
-        let total = 0;
-        let viewport = 20;
+        assert_eq!(calc_max_scroll(0), 0);
+    }
+}
 
-        // When we calculate max_scroll
-        let max_scroll_no_wrap = calc_max_scroll(total, viewport, false);
-        let max_scroll_wrap = calc_max_scroll(total, viewport, true);
+#[cfg(test)]
+mod scroll_behavior_tests {
+    use super::*;
+    use crate::model::FileStatus;
+    use crate::vcs::traits::VcsType;
 
-        // Then both should be 0
-        assert_eq!(max_scroll_no_wrap, 0);
-        assert_eq!(max_scroll_wrap, 0);
+    struct DummyVcs {
+        info: VcsInfo,
+    }
+
+    impl VcsBackend for DummyVcs {
+        fn info(&self) -> &VcsInfo {
+            &self.info
+        }
+
+        fn get_working_tree_diff(&self, _highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+            Err(TuicrError::NoChanges)
+        }
+
+        fn fetch_context_lines(
+            &self,
+            _file_path: &Path,
+            _file_status: FileStatus,
+            _start_line: u32,
+            _end_line: u32,
+        ) -> Result<Vec<DiffLine>> {
+            Ok(Vec::new())
+        }
+    }
+
+    /// Build a test App with a single file containing `n` context lines.
+    /// Total rendered lines = 1 (review header) + 1 (file header) + 1 (spacing)
+    ///                       + 1 (hunk header) + n (diff lines) = n + 4.
+    /// The viewport is set to `viewport` lines.
+    fn build_scroll_app(n: usize, viewport: usize, scroll_offset_config: usize) -> App {
+        let lines: Vec<DiffLine> = (1..=n)
+            .map(|i| DiffLine {
+                origin: crate::model::LineOrigin::Context,
+                content: format!("line {i}"),
+                old_lineno: Some(i as u32),
+                new_lineno: Some(i as u32),
+                highlighted_spans: None,
+            })
+            .collect();
+
+        let hunk = DiffHunk {
+            header: "@@ -1,N +1,N @@".to_string(),
+            lines,
+            old_start: 1,
+            old_count: n as u32,
+            new_start: 1,
+            new_count: n as u32,
+        };
+
+        let file = DiffFile {
+            old_path: None,
+            new_path: Some(PathBuf::from("test.rs")),
+            status: FileStatus::Modified,
+            hunks: vec![hunk],
+            is_binary: false,
+            is_too_large: false,
+            is_commit_message: false,
+            content_hash: 0,
+        };
+
+        let vcs_info = VcsInfo {
+            root_path: PathBuf::from("/tmp"),
+            head_commit: "abc".to_string(),
+            branch_name: Some("main".to_string()),
+            vcs_type: VcsType::Git,
+        };
+        let session = ReviewSession::new(
+            vcs_info.root_path.clone(),
+            vcs_info.head_commit.clone(),
+            vcs_info.branch_name.clone(),
+            SessionDiffSource::WorkingTree,
+        );
+
+        let mut app = App::build(
+            Box::new(DummyVcs {
+                info: vcs_info.clone(),
+            }),
+            vcs_info,
+            Theme::dark(),
+            None,
+            false,
+            vec![file],
+            session,
+            DiffSource::WorkingTree,
+            InputMode::Normal,
+            Vec::new(),
+            None,
+        )
+        .expect("failed to build test app");
+
+        app.diff_state.viewport_height = viewport;
+        app.diff_state.visible_line_count = viewport;
+        app.scroll_offset = scroll_offset_config;
+        app
     }
 
     #[test]
-    fn should_handle_zero_viewport() {
-        // Given content with viewport of 0 (edge case)
-        let total = 100;
-        let viewport = 0;
+    fn zz_on_last_line_centers_cursor() {
+        // 40 diff lines + 4 overhead = 44 total. max_cursor = 42. Viewport = 20.
+        let mut app = build_scroll_app(40, 20, 5);
+        assert_eq!(app.total_lines(), 44);
+        let last = app.max_cursor_line(); // 42
 
-        // When we calculate max_scroll (viewport.max(1) makes it 1)
-        let max_scroll_no_wrap = calc_max_scroll(total, viewport, false);
-        let max_scroll_wrap = calc_max_scroll(total, viewport, true);
+        app.diff_state.cursor_line = last;
+        app.center_cursor();
 
-        // Then no_wrap should be total - 1, wrap should be total - 1
-        assert_eq!(max_scroll_no_wrap, 99); // total - 1 (since viewport becomes 1)
-        assert_eq!(max_scroll_wrap, 99); // total - 1
+        // scroll = cursor - viewport/2 = 42 - 10 = 32
+        assert_eq!(app.diff_state.scroll_offset, 32);
+        assert_eq!(app.diff_state.cursor_line, 42);
     }
 
     #[test]
-    fn should_match_max_scroll_offset_implementation() {
-        // Verify calc_max_scroll matches the actual implementation
-        let diff_state_no_wrap = DiffState {
-            viewport_height: 20,
-            wrap_lines: false,
-            ..Default::default()
-        };
+    fn after_zz_on_last_line_j_does_not_change_scroll() {
+        let mut app = build_scroll_app(40, 20, 5);
+        let last = app.max_cursor_line();
 
-        let diff_state_wrap = DiffState {
-            viewport_height: 20,
-            wrap_lines: true,
-            ..Default::default()
-        };
+        app.diff_state.cursor_line = last;
+        app.center_cursor();
+        let scroll_after_zz = app.diff_state.scroll_offset;
 
-        // Test that DiffState defaults match our expectations
-        assert!(!diff_state_no_wrap.wrap_lines);
-        assert!(diff_state_wrap.wrap_lines);
-        assert_eq!(diff_state_no_wrap.viewport_height, 20);
-        assert_eq!(diff_state_wrap.viewport_height, 20);
+        // Press j — cursor is already at max, and it's centered (not near bottom margin)
+        app.cursor_down(1);
+
+        assert_eq!(app.diff_state.cursor_line, last);
+        assert_eq!(
+            app.diff_state.scroll_offset, scroll_after_zz,
+            "j after zz on last line should not change scroll"
+        );
+    }
+
+    #[test]
+    fn after_zz_on_last_line_k_does_not_change_scroll() {
+        let mut app = build_scroll_app(40, 20, 5);
+        let last = app.max_cursor_line();
+
+        app.diff_state.cursor_line = last;
+        app.center_cursor();
+        let scroll_after_zz = app.diff_state.scroll_offset;
+
+        // Press k — cursor moves up 1, still in free zone
+        app.cursor_up(1);
+
+        assert_eq!(app.diff_state.cursor_line, last - 1);
+        assert_eq!(
+            app.diff_state.scroll_offset, scroll_after_zz,
+            "k after zz on last line should not change scroll"
+        );
+    }
+
+    #[test]
+    fn after_zz_no_oscillation_with_k_then_j() {
+        let mut app = build_scroll_app(40, 20, 5);
+        let last = app.max_cursor_line();
+
+        app.diff_state.cursor_line = last;
+        app.center_cursor();
+        let scroll_after_zz = app.diff_state.scroll_offset;
+
+        // k then j should return to the same state
+        app.cursor_up(1);
+        app.cursor_down(1);
+
+        assert_eq!(app.diff_state.cursor_line, last);
+        assert_eq!(
+            app.diff_state.scroll_offset, scroll_after_zz,
+            "k then j after zz should not cause oscillation"
+        );
+    }
+
+    #[test]
+    fn j_scrolls_one_line_at_a_time() {
+        // Viewport 20, total 44. Start at the middle and scroll down.
+        let mut app = build_scroll_app(40, 20, 5);
+
+        // Position cursor and scroll in steady state near the bottom margin
+        app.diff_state.cursor_line = 20;
+        app.diff_state.scroll_offset = 6;
+        // steady state: cursor at bottom margin = scroll + visible - margin - 1
+
+        // Scroll down multiple times and verify single-line increments
+        for _ in 0..10 {
+            let prev_scroll = app.diff_state.scroll_offset;
+            let prev_cursor = app.diff_state.cursor_line;
+            app.cursor_down(1);
+            let scroll_delta = app.diff_state.scroll_offset - prev_scroll;
+            let cursor_delta = app.diff_state.cursor_line - prev_cursor;
+            assert_eq!(cursor_delta, 1, "cursor should advance by exactly 1");
+            assert!(
+                scroll_delta <= 1,
+                "scroll should advance by at most 1, got {scroll_delta}"
+            );
+        }
+    }
+
+    #[test]
+    fn j_on_last_line_near_bottom_does_not_scroll() {
+        let mut app = build_scroll_app(40, 20, 5);
+        let last = app.max_cursor_line();
+
+        // Put cursor at last line with it near the bottom of viewport
+        app.diff_state.cursor_line = last;
+        app.diff_state.scroll_offset = last.saturating_sub(19); // cursor at bottom of viewport
+
+        let prev_scroll = app.diff_state.scroll_offset;
+        app.cursor_down(1);
+
+        assert_eq!(app.diff_state.cursor_line, last);
+        assert_eq!(
+            app.diff_state.scroll_offset, prev_scroll,
+            "j on last line should never scroll the view"
+        );
+    }
+
+    #[test]
+    fn j_on_last_line_centered_does_not_scroll() {
+        let mut app = build_scroll_app(40, 20, 5);
+        let last = app.max_cursor_line();
+
+        // Center cursor on last line
+        app.diff_state.cursor_line = last;
+        app.center_cursor();
+        let scroll_after_center = app.diff_state.scroll_offset;
+
+        app.cursor_down(1);
+
+        assert_eq!(
+            app.diff_state.scroll_offset, scroll_after_center,
+            "j on last line when centered should not scroll"
+        );
+    }
+
+    #[test]
+    fn k_reclaims_empty_space_below() {
+        let mut app = build_scroll_app(40, 20, 5);
+        let last = app.max_cursor_line();
+
+        // Put cursor at last line at top of view (maximum empty space below)
+        app.diff_state.cursor_line = last;
+        app.diff_state.scroll_offset = last; // only 1 line visible
+
+        // Press k — should immediately reclaim space (reduce scroll)
+        app.cursor_up(1);
+
+        assert_eq!(app.diff_state.cursor_line, last - 1);
+        assert!(
+            app.diff_state.scroll_offset < last,
+            "k should reclaim empty space below, scroll was {} expected less than {}",
+            app.diff_state.scroll_offset,
+            last
+        );
+    }
+
+    #[test]
+    fn max_scroll_allows_last_line_at_top() {
+        let app = build_scroll_app(40, 20, 5);
+        let total = app.total_lines();
+
+        assert_eq!(
+            app.max_scroll_offset(),
+            total - 1,
+            "max scroll should allow last line at top of viewport"
+        );
+    }
+
+    #[test]
+    fn smooth_scroll_to_end_no_jumps() {
+        // Start at beginning, scroll all the way to the end with j presses
+        let mut app = build_scroll_app(40, 20, 5);
+        let last = app.max_cursor_line();
+
+        app.diff_state.cursor_line = 0;
+        app.diff_state.scroll_offset = 0;
+
+        let mut max_scroll_delta = 0;
+        for _ in 0..last {
+            let prev_scroll = app.diff_state.scroll_offset;
+            app.cursor_down(1);
+            let delta = app.diff_state.scroll_offset.saturating_sub(prev_scroll);
+            if delta > max_scroll_delta {
+                max_scroll_delta = delta;
+            }
+        }
+
+        assert_eq!(app.diff_state.cursor_line, last);
+        assert!(
+            max_scroll_delta <= 1,
+            "scroll should never jump more than 1 line at a time, max was {max_scroll_delta}"
+        );
+    }
+
+    #[test]
+    fn k_below_midpoint_only_moves_cursor() {
+        // After G, cursor is near the bottom of viewport. Pressing k should
+        // only move the cursor, not also scroll the view (which would cause
+        // a visual 2-line jump).
+        let mut app = build_scroll_app(40, 20, 5);
+        let last = app.max_cursor_line();
+
+        // Simulate G: cursor at last line, scroll positions it at bottom
+        app.diff_state.cursor_line = last;
+        app.diff_state.scroll_offset = last.saturating_sub(19);
+        let scroll_before = app.diff_state.scroll_offset;
+
+        // k should only move cursor, not scroll
+        app.cursor_up(1);
+        assert_eq!(app.diff_state.cursor_line, last - 1);
+        assert_eq!(
+            app.diff_state.scroll_offset, scroll_before,
+            "k when cursor is below midpoint should not change scroll"
+        );
+    }
+
+    #[test]
+    fn no_scroll_when_last_line_visible() {
+        // When the last content line is visible, cursor should descend
+        // to it without the view scrolling (no bottom margin near EOF).
+        let mut app = build_scroll_app(40, 20, 5);
+        let last = app.max_cursor_line(); // 42
+
+        // Position so last line is visible at viewport bottom: scroll=23, shows lines 23-42
+        app.diff_state.scroll_offset = last.saturating_sub(19); // 23
+        app.diff_state.cursor_line = last - 5; // 37, viewport position 14
+
+        // Descend toward the last line — scroll should not change
+        for i in 0..5 {
+            let scroll_before = app.diff_state.scroll_offset;
+            app.cursor_down(1);
+            assert_eq!(
+                app.diff_state.scroll_offset, scroll_before,
+                "scroll should not change on step {i} (cursor near EOF with last line visible)"
+            );
+        }
+        assert_eq!(app.diff_state.cursor_line, last);
+    }
+
+    #[test]
+    fn cursor_cannot_go_past_last_content_line() {
+        let mut app = build_scroll_app(40, 20, 5);
+        let last = app.max_cursor_line();
+        let total = app.total_lines();
+
+        // max_cursor should be strictly less than total_lines - 1
+        // (total-1 is the trailing Spacing line)
+        assert_eq!(last, total - 2);
+
+        // cursor_down from last line should not advance
+        app.diff_state.cursor_line = last;
+        app.cursor_down(1);
+        assert_eq!(app.diff_state.cursor_line, last);
+    }
+
+    #[test]
+    fn effective_scroll_margin_prevents_oscillation() {
+        // With viewport 21 (odd), margin should be at most 9 (= 21/2 - 1 = 9)
+        // so that after centering at position 10 (= 21/2), there's free space
+        let state = DiffState {
+            visible_line_count: 21,
+            viewport_height: 21,
+            ..DiffState::default()
+        };
+        let margin = state.effective_scroll_margin(100);
+        assert!(
+            margin < 21 / 2,
+            "margin ({margin}) must be strictly less than half viewport ({})",
+            21 / 2
+        );
+    }
+
+    #[test]
+    fn scroll_offset_zero_means_no_margin() {
+        // When scroll_offset is 0, effective margin should be 0 (no margin at file start)
+        let state = DiffState {
+            visible_line_count: 20,
+            viewport_height: 20,
+            ..DiffState::default()
+        };
+        let margin = state.effective_scroll_margin(0);
+        assert_eq!(margin, 0, "margin should be 0 when scroll_offset is 0");
     }
 }
 
