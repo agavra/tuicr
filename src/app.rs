@@ -794,7 +794,7 @@ impl App {
             pending_confirm: None,
             supports_keyboard_enhancement: false,
             show_file_list: true,
-            cursor_line_highlight: false,
+            cursor_line_highlight: true,
             file_list_area: None,
             diff_area: None,
             expanded_dirs: HashSet::new(),

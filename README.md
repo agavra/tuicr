@@ -130,6 +130,7 @@ theme_light = "gruvbox-light"
 show_file_list = false
 diff_view = "side-by-side"
 wrap = true
+cursor_line = false
 
 comment_types = [
   { id = "note", label = "question", definition = "ask for clarification", color = "yellow" },
@@ -145,6 +146,8 @@ comment_types = [
 `diff_view` sets the default diff layout: `"unified"` (default) or `"side-by-side"`. Toggle at runtime with `:diff`.
 
 `wrap` enables line wrapping in the diff view (default: `false`). Toggle at runtime with `:set wrap!`.
+
+`cursor_line` highlights the current cursor line and visual selection in the diff view (default: `true`). Set to `false` to disable.
 
 `comment_types` replaces the default list and defines Tab cycle order.
 Each entry requires `id` and can optionally set `label`, `definition`, and `color`.
