@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.11.0] - 2026-05-04
+
+### Bug Fixes
+
+- Reset cursor to overview in sort_files_by_directory, not just new() (#246)
+- Hitting esc on commit selection shows empty diff (#249)
+
+### Features
+
+- Display diff stats (+insertions -deletions) in diff panel title (#245)
+- Unset reviewed if file has changed, fixes #191 (#250)
 ## [0.10.0] - 2026-04-10
 
 ### Bug Fixes
