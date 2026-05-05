@@ -1524,21 +1524,41 @@ impl App {
         )
     }
 
-    pub fn stage_current_file(&mut self) {
+    pub fn stage_reviewed_files(&mut self) {
         if !self.can_stage() {
             self.set_error("Staging only available when viewing unstaged diffs");
             return;
         }
-        let Some(file) = self.diff_files.get(self.diff_state.current_file_idx) else {
-            return;
-        };
-        let path = file.display_path().clone();
-        if let Err(e) = self.vcs.stage_file(&path) {
-            self.set_error(format!("Failed to stage file: {e}"));
+        let reviewed_paths: Vec<_> = self
+            .session
+            .files
+            .iter()
+            .filter(|(_, review)| review.reviewed)
+            .map(|(path, _)| path.clone())
+            .collect();
+        if reviewed_paths.is_empty() {
+            self.set_warning("No reviewed files to stage");
             return;
         }
-        self.set_message(format!("Staged {}", path.display()));
-        let _ = self.reload_diff_files();
+        let mut staged = 0;
+        for path in &reviewed_paths {
+            if let Err(e) = self.vcs.stage_file(path) {
+                self.set_error(format!("Failed to stage {}: {e}", path.display()));
+                return;
+            }
+            staged += 1;
+        }
+        self.set_message(format!("Staged {} reviewed file(s)", staged));
+        match self.reload_diff_files() {
+            Err(TuicrError::NoChanges) => {
+                self.diff_files.clear();
+                self.diff_state = DiffState::default();
+                self.file_list_state = FileListState::default();
+                self.clear_expanded_gaps();
+                self.rebuild_annotations();
+            }
+            _ => {}
+        }
     }
 
     pub fn current_file(&self) -> Option<&DiffFile> {

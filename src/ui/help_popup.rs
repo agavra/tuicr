@@ -226,13 +226,6 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
-                "  s         ",
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("Stage current file"),
-        ]),
-        Line::from(vec![
-            Span::styled(
                 "  c         ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
@@ -409,6 +402,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("Toggle line wrap in diff view"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :stage    ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Stage reviewed files"),
         ]),
         Line::from(vec![
             Span::styled(

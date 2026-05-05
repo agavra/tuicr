@@ -90,9 +90,6 @@ pub enum Action {
     CollapseAll,
     SelectFileFull,
 
-    // Staging
-    StageFile,
-
     // No-op
     None,
 }
@@ -170,9 +167,6 @@ fn map_normal_mode(key: KeyEvent) -> Action {
         (KeyCode::Char(' '), KeyModifiers::NONE) => Action::ToggleExpand,
         (KeyCode::Char('o'), KeyModifiers::NONE) => Action::ExpandAll,
         (KeyCode::Char('O'), _) => Action::CollapseAll,
-
-        // Staging
-        (KeyCode::Char('s'), KeyModifiers::NONE) => Action::StageFile,
 
         (KeyCode::Char(c @ '0'..='9'), KeyModifiers::NONE) => Action::Digit(c as u8 - b'0'),
 

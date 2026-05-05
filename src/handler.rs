@@ -254,6 +254,7 @@ pub fn handle_command_action(app: &mut App, action: Action) {
                     app.set_message(format!("Commit selector: {status}"));
                 }
                 "diff" => app.toggle_diff_view_mode(),
+                "stage" => app.stage_reviewed_files(),
                 "commits" => {
                     if let Err(e) = app.enter_commit_select_mode() {
                         app.set_error(format!("Failed to load commits: {e}"));
@@ -512,7 +513,6 @@ pub fn handle_file_list_action(app: &mut App, action: Action) {
                 app.set_warning("Select a file to toggle reviewed");
             }
         }
-        Action::StageFile => app.stage_current_file(),
         _ => handle_shared_normal_action(app, action),
     }
 }
@@ -564,7 +564,6 @@ pub fn handle_diff_action(app: &mut App, action: Action) {
                 }
             }
         }
-        Action::StageFile => app.stage_current_file(),
         _ => handle_shared_normal_action(app, action),
     }
 }
