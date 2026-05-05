@@ -1,5 +1,6 @@
 use crate::app::{self, App, ExpandDirection, FileTreeItem, FocusedPanel, GapCursorHit};
 use crate::input::Action;
+use crate::model::ClearScope;
 use crate::output::{export_to_clipboard, generate_export_content};
 use crate::persistence::save_session;
 use crate::text_edit::{
@@ -202,7 +203,8 @@ pub fn handle_command_action(app: &mut App, action: Action) {
                     Err(e) => app.set_error(format!("Reload failed: {e}")),
                 },
                 "clip" | "export" => handle_export(app),
-                "clear" => app.clear_all_comments(),
+                "clear" => app.clear_comments(ClearScope::CommentsAndReviewed),
+                "clearc" => app.clear_comments(ClearScope::CommentsOnly),
                 "version" => {
                     app.set_message(format!("tuicr v{}", env!("CARGO_PKG_VERSION")));
                 }

@@ -443,7 +443,14 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  :clear    ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Clear all comments"),
+            Span::raw("Clear all comments and reviewed marks"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :clearc   ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Clear comments only"),
         ]),
         Line::from(vec![
             Span::styled(

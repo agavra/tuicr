@@ -7,8 +7,8 @@ use ratatui::style::Color;
 use crate::config::CommentTypeConfig;
 use crate::error::{Result, TuicrError};
 use crate::model::{
-    Comment, CommentType, DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin, LineRange,
-    LineSide, ReviewSession, SessionDiffSource,
+    ClearScope, Comment, CommentType, DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin,
+    LineRange, LineSide, ReviewSession, SessionDiffSource,
 };
 use crate::persistence::load_latest_session_for_context;
 use crate::syntax::SyntaxHighlighter;
@@ -2515,8 +2515,8 @@ impl App {
         false
     }
 
-    pub fn clear_all_comments(&mut self) {
-        let (cleared, unreviewed) = self.session.clear_comments();
+    pub fn clear_comments(&mut self, scope: ClearScope) {
+        let (cleared, unreviewed) = self.session.clear_comments(scope);
         if cleared == 0 && unreviewed == 0 {
             self.set_message("No comments to clear");
             return;

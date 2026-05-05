@@ -6,6 +6,12 @@ use std::path::PathBuf;
 use super::comment::Comment;
 use super::diff_types::FileStatus;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClearScope {
+    CommentsOnly,
+    CommentsAndReviewed,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileReview {
     pub path: PathBuf,
@@ -129,7 +135,7 @@ impl ReviewSession {
         !self.review_comments.is_empty() || self.files.values().any(|f| f.comment_count() > 0)
     }
 
-    pub fn clear_comments(&mut self) -> (usize, usize) {
+    pub fn clear_comments(&mut self, scope: ClearScope) -> (usize, usize) {
         let mut cleared = self.review_comments.len();
         let mut unreviewed = 0;
         self.review_comments.clear();
@@ -137,7 +143,7 @@ impl ReviewSession {
             cleared += file.comment_count();
             file.file_comments.clear();
             file.line_comments.clear();
-            if file.reviewed {
+            if scope == ClearScope::CommentsAndReviewed && file.reviewed {
                 file.reviewed = false;
                 unreviewed += 1;
             }
@@ -170,7 +176,7 @@ mod tests {
     #[test]
     fn should_return_zero_when_clearing_empty_session() {
         let mut session = test_session();
-        let (cleared, unreviewed) = session.clear_comments();
+        let (cleared, unreviewed) = session.clear_comments(ClearScope::CommentsAndReviewed);
         assert_eq!(cleared, 0);
         assert_eq!(unreviewed, 0);
     }
@@ -185,7 +191,7 @@ mod tests {
             .review_comments
             .push(Comment::new("issue".to_string(), CommentType::Issue, None));
 
-        let (cleared, unreviewed) = session.clear_comments();
+        let (cleared, unreviewed) = session.clear_comments(ClearScope::CommentsAndReviewed);
         assert_eq!(cleared, 2);
         assert_eq!(unreviewed, 0);
         assert!(session.review_comments.is_empty());
@@ -203,7 +209,7 @@ mod tests {
             Comment::new("line".to_string(), CommentType::Note, None),
         );
 
-        let (cleared, _) = session.clear_comments();
+        let (cleared, _) = session.clear_comments(ClearScope::CommentsAndReviewed);
         assert_eq!(cleared, 2);
 
         let file = session.files.get(&path).unwrap();
@@ -222,7 +228,7 @@ mod tests {
         session.get_file_mut(&path_a).unwrap().reviewed = true;
         session.get_file_mut(&path_b).unwrap().reviewed = true;
 
-        let (cleared, unreviewed) = session.clear_comments();
+        let (cleared, unreviewed) = session.clear_comments(ClearScope::CommentsAndReviewed);
         assert_eq!(cleared, 0);
         assert_eq!(unreviewed, 2);
         assert!(!session.is_file_reviewed(&path_a));
@@ -239,7 +245,7 @@ mod tests {
 
         session.get_file_mut(&reviewed).unwrap().reviewed = true;
 
-        let (_, unreviewed) = session.clear_comments();
+        let (_, unreviewed) = session.clear_comments(ClearScope::CommentsAndReviewed);
         assert_eq!(unreviewed, 1);
     }
 
@@ -256,10 +262,29 @@ mod tests {
             .review_comments
             .push(Comment::new("review".to_string(), CommentType::Note, None));
 
-        let (cleared, unreviewed) = session.clear_comments();
+        let (cleared, unreviewed) = session.clear_comments(ClearScope::CommentsAndReviewed);
         assert_eq!(cleared, 2);
         assert_eq!(unreviewed, 1);
         assert!(!session.is_file_reviewed(&path));
+    }
+
+    #[test]
+    fn should_preserve_reviewed_status_when_requested() {
+        let mut session = test_session();
+        let path = PathBuf::from("src/lib.rs");
+        session.add_file(path.clone(), FileStatus::Modified, SOME_HASH);
+        let file = session.get_file_mut(&path).unwrap();
+        file.reviewed = true;
+        file.add_file_comment(Comment::new("comment".to_string(), CommentType::Note, None));
+
+        session
+            .review_comments
+            .push(Comment::new("review".to_string(), CommentType::Note, None));
+
+        let (cleared, unreviewed) = session.clear_comments(ClearScope::CommentsOnly);
+        assert_eq!(cleared, 2);
+        assert_eq!(unreviewed, 0);
+        assert!(session.is_file_reviewed(&path));
     }
 
     #[test]
