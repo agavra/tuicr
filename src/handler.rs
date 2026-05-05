@@ -512,6 +512,7 @@ pub fn handle_file_list_action(app: &mut App, action: Action) {
                 app.set_warning("Select a file to toggle reviewed");
             }
         }
+        Action::StageFile => app.stage_current_file(),
         _ => handle_shared_normal_action(app, action),
     }
 }
@@ -563,6 +564,7 @@ pub fn handle_diff_action(app: &mut App, action: Action) {
                 }
             }
         }
+        Action::StageFile => app.stage_current_file(),
         _ => handle_shared_normal_action(app, action),
     }
 }

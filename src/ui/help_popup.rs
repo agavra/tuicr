@@ -226,6 +226,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  s         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Stage current file"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  c         ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),

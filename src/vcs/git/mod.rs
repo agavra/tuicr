@@ -1,6 +1,7 @@
 pub mod context;
 pub mod diff;
 pub mod repository;
+pub mod staging;
 
 use git2::Repository;
 use std::path::Path;
@@ -138,5 +139,9 @@ impl VcsBackend for GitBackend {
         highlighter: &SyntaxHighlighter,
     ) -> Result<Vec<DiffFile>> {
         get_working_tree_with_commits_diff(&self.repo, commit_ids, highlighter)
+    }
+
+    fn stage_file(&self, path: &Path) -> Result<()> {
+        staging::stage_file(&self.repo, path)
     }
 }

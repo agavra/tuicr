@@ -1517,6 +1517,31 @@ impl App {
         Ok((self.diff_files.len(), invalidated))
     }
 
+    pub fn can_stage(&self) -> bool {
+        matches!(
+            self.diff_source,
+            DiffSource::Unstaged | DiffSource::StagedAndUnstaged
+        )
+    }
+
+    pub fn stage_current_file(&mut self) {
+        if !self.can_stage() {
+            self.set_error("Staging only available when viewing unstaged diffs");
+            return;
+        }
+        let Some(file) = self.diff_files.get(self.diff_state.current_file_idx) else {
+            return;
+        };
+        let path = file.display_path().clone();
+        if let Err(e) = self.vcs.stage_file(&path) {
+            self.set_error(format!("Failed to stage file: {e}"));
+            return;
+        }
+        self.set_message(format!("Staged {}", path.display()));
+        let _ = self.reload_diff_files();
+    }
+
+
     pub fn current_file(&self) -> Option<&DiffFile> {
         self.diff_files.get(self.diff_state.current_file_idx)
     }
