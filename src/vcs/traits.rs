@@ -132,7 +132,6 @@ pub trait VcsBackend: Send {
             "Staging not supported for this VCS".into(),
         ))
     }
-
 }
 
 #[cfg(test)]

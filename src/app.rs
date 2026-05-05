@@ -1541,7 +1541,6 @@ impl App {
         let _ = self.reload_diff_files();
     }
 
-
     pub fn current_file(&self) -> Option<&DiffFile> {
         self.diff_files.get(self.diff_state.current_file_idx)
     }
