@@ -1426,6 +1426,8 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
         Action::PrevFile => app.prev_file(),
         Action::NextHunk => app.next_hunk(),
         Action::PrevHunk => app.prev_hunk(),
+        Action::NextComment => app.next_comment(),
+        Action::PrevComment => app.prev_comment(),
         Action::ToggleReviewed => app.toggle_reviewed(),
         Action::ToggleHunkReviewed => app.toggle_hunk_reviewed(),
         Action::ToggleFocus => {

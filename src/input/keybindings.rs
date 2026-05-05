@@ -18,6 +18,8 @@ pub enum Action {
     PrevFile,
     NextHunk,
     PrevHunk,
+    NextComment,
+    PrevComment,
     PendingZCommand,
     PendingShiftZCommand,
     PendingLeaderCommand,
@@ -179,6 +181,8 @@ fn map_normal_mode(key: KeyEvent, leader_key: char) -> Action {
         (KeyCode::Char('{'), _) => Action::PrevFile,
         (KeyCode::Char(']'), _) => Action::NextHunk,
         (KeyCode::Char('['), _) => Action::PrevHunk,
+        (KeyCode::Char('m'), KeyModifiers::NONE) => Action::NextComment,
+        (KeyCode::Char('M'), _) => Action::PrevComment,
         (KeyCode::Char(')'), _) => Action::CycleCommitNext,
         (KeyCode::Char('('), _) => Action::CycleCommitPrev,
 
@@ -515,6 +519,15 @@ mod tests {
     fn should_map_uppercase_r_to_toggle_hunk_reviewed_in_normal_mode() {
         let action = map_normal_mode(key_shift('R'), DEFAULT_LEADER_KEY);
         assert_eq!(action, Action::ToggleHunkReviewed);
+    }
+
+    #[test]
+    fn should_map_m_to_comment_navigation_in_normal_mode() {
+        let action = map_normal_mode(key(KeyCode::Char('m')), DEFAULT_LEADER_KEY);
+        assert_eq!(action, Action::NextComment);
+
+        let action = map_normal_mode(key_shift('M'), DEFAULT_LEADER_KEY);
+        assert_eq!(action, Action::PrevComment);
     }
 
     #[test]

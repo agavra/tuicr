@@ -93,6 +93,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  m/M       ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Jump to next/previous comment"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  /         ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),

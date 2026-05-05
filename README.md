@@ -242,6 +242,7 @@ A first-session cheatsheet. Press `?` inside tuicr for the full reference.
 | `g` / `G` | Top / bottom |
 | `{` / `}` | Previous / next file |
 | `[` / `]` | Previous / next hunk |
+| `m` / `M` | Next / previous comment |
 | `/` | Search the diff, or search help while help is open (case-insensitive) |
 | `c` / `C` | Add line / file comment |
 | `v` / `V` | Visual mode (range comment) |

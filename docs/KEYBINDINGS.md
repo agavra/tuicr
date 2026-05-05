@@ -19,6 +19,7 @@ Full reference. Press `?` inside tuicr for an in-app version of this list.
 | `{N}{motion}` | Vim-style count prefix — repeats `j` / `k` / `h` / `l` / `{` / `}` / `[` / `]` `N` times |
 | `{` / `}` | Jump to previous / next file |
 | `[` / `]` | Jump to previous / next hunk |
+| `m` / `M` | Jump to next / previous comment |
 | `/` | Search within diff (case-insensitive) |
 | `n` / `N` | Next / previous search match |
 | `Enter` | Expand or collapse hidden context between hunks |

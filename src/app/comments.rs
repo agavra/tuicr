@@ -238,10 +238,70 @@ impl App {
             self.set_message("No comments to navigate");
             return false;
         };
+        let file_idx = item.path.as_deref().and_then(|path| {
+            self.diff_files
+                .iter()
+                .position(|file| file.display_path() == Path::new(path))
+        });
         self.move_cursor_to_annotation(item.target_annotation);
+        if let Some(file_idx) = file_idx {
+            let file_changed = self.diff_state.current_file_idx != file_idx;
+            self.diff_state.current_file_idx = file_idx;
+            if self.is_single_file_view && file_changed {
+                self.rebuild_annotations();
+            }
+        }
         self.center_cursor();
         self.focused_panel = FocusedPanel::Diff;
         true
+    }
+
+    pub fn next_comment(&mut self) {
+        let items = self.build_comment_navigator_items();
+        if items.is_empty() {
+            self.set_message("No comments");
+            return;
+        }
+
+        let cursor = self
+            .diff_state
+            .cursor_line
+            .min(self.line_annotations.len().saturating_sub(1));
+        let target_idx = items
+            .iter()
+            .position(|item| item.target_annotation > cursor)
+            .unwrap_or(0);
+
+        self.comment_navigator_state.select(target_idx);
+        self.jump_to_selected_comment();
+        self.set_message(format!("Comment {}/{}", target_idx + 1, items.len()));
+    }
+
+    pub fn prev_comment(&mut self) {
+        let items = self.build_comment_navigator_items();
+        if items.is_empty() {
+            self.set_message("No comments");
+            return;
+        }
+
+        let cursor = self
+            .diff_state
+            .cursor_line
+            .min(self.line_annotations.len().saturating_sub(1));
+        let current_key = self
+            .line_annotations
+            .get(cursor)
+            .and_then(Self::comment_navigator_key);
+        let target_idx = items
+            .iter()
+            .rposition(|item| {
+                item.target_annotation < cursor && Some(&item.key) != current_key.as_ref()
+            })
+            .unwrap_or(items.len() - 1);
+
+        self.comment_navigator_state.select(target_idx);
+        self.jump_to_selected_comment();
+        self.set_message(format!("Comment {}/{}", target_idx + 1, items.len()));
     }
 
     /// True when the cursor sits on a local comment whose lifecycle state
