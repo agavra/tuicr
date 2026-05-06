@@ -271,7 +271,7 @@ dist/
 | `Enter` / `Ctrl-Enter` / `Ctrl-s` | Save comment |
 | `Shift-Enter` / `Ctrl-j` | Insert newline |
 | `←` / `→` | Move cursor |
-| `Ctrl-w` | Delete word |
+| `Ctrl-w` / `Alt-Backspace` / `Cmd-Backspace` | Delete word |
 | `Ctrl-u` | Clear line |
 | `Esc` / `Ctrl-c` | Cancel |
 
