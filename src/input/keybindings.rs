@@ -25,6 +25,8 @@ pub enum Action {
     ScrollRight(usize),
     ScrollViewDown(usize),
     ScrollViewUp(usize),
+    MouseScrollUp(usize),
+    MouseScrollDown(usize),
 
     // Panel focus
     ToggleFocus,
@@ -414,5 +416,47 @@ mod tests {
         assert_eq!(map_comment_mode(alt_backspace), Action::DeleteWord);
         assert_eq!(map_command_mode(alt_backspace), Action::DeleteWord);
         assert_eq!(map_search_mode(alt_backspace), Action::DeleteWord);
+    }
+
+    #[test]
+    fn no_key_should_produce_mouse_scroll_actions() {
+        let codes = [
+            KeyCode::Up,
+            KeyCode::Down,
+            KeyCode::Left,
+            KeyCode::Right,
+            KeyCode::PageDown,
+            KeyCode::PageUp,
+            KeyCode::Char('j'),
+            KeyCode::Char('k'),
+            KeyCode::Char('e'),
+            KeyCode::Char('y'),
+        ];
+        let mod_sets = [
+            KeyModifiers::NONE,
+            KeyModifiers::CONTROL,
+            KeyModifiers::ALT,
+            KeyModifiers::SHIFT,
+        ];
+        for code in codes {
+            for mods in mod_sets {
+                let ev = KeyEvent::new(code, mods);
+                for action in [
+                    map_normal_mode(ev),
+                    map_command_mode(ev),
+                    map_search_mode(ev),
+                    map_comment_mode(ev),
+                    map_help_mode(ev),
+                ] {
+                    assert!(
+                        !matches!(
+                            action,
+                            Action::MouseScrollUp(_) | Action::MouseScrollDown(_)
+                        ),
+                        "key {code:?} + {mods:?} produced a mouse-scroll action"
+                    );
+                }
+            }
+        }
     }
 }

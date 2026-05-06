@@ -141,6 +141,24 @@ pub enum FindSourceLineResult {
     NotFound,
 }
 
+pub fn annotation_file_idx(annotation: &AnnotatedLine) -> Option<usize> {
+    match annotation {
+        AnnotatedLine::FileHeader { file_idx }
+        | AnnotatedLine::FileComment { file_idx, .. }
+        | AnnotatedLine::HunkHeader { file_idx, .. }
+        | AnnotatedLine::DiffLine { file_idx, .. }
+        | AnnotatedLine::SideBySideLine { file_idx, .. }
+        | AnnotatedLine::LineComment { file_idx, .. }
+        | AnnotatedLine::BinaryOrEmpty { file_idx } => Some(*file_idx),
+        AnnotatedLine::ReviewCommentsHeader
+        | AnnotatedLine::ReviewComment { .. }
+        | AnnotatedLine::Expander { .. }
+        | AnnotatedLine::HiddenLines { .. }
+        | AnnotatedLine::ExpandedContext { .. }
+        | AnnotatedLine::Spacing => None,
+    }
+}
+
 /// Search `line_annotations` for the annotation whose `new_lineno` best matches
 /// `target_lineno` within the file identified by `current_file`.
 pub fn find_source_line(
@@ -292,6 +310,13 @@ pub struct App {
     pub cursor_line_highlight: bool,
     pub file_list_area: Option<ratatui::layout::Rect>,
     pub diff_area: Option<ratatui::layout::Rect>,
+    /// Inner content rect of the file list panel; populated during render.
+    pub file_list_inner_area: Option<ratatui::layout::Rect>,
+    /// Inner content rect of the diff panel; populated during render.
+    pub diff_inner_area: Option<ratatui::layout::Rect>,
+    /// Visual-row -> annotation-index map for the diff viewport. Wrapped
+    /// logical lines repeat their annotation index across multiple rows.
+    pub diff_row_to_annotation: Vec<usize>,
     pub expanded_dirs: HashSet<String>,
     /// Stores lines expanded downward from the upper boundary of each gap
     pub expanded_top: HashMap<GapId, Vec<DiffLine>>,
@@ -797,6 +822,9 @@ impl App {
             cursor_line_highlight: true,
             file_list_area: None,
             diff_area: None,
+            file_list_inner_area: None,
+            diff_inner_area: None,
+            diff_row_to_annotation: Vec::new(),
             expanded_dirs: HashSet::new(),
             expanded_top: HashMap::new(),
             expanded_bottom: HashMap::new(),
@@ -2000,6 +2028,73 @@ impl App {
     pub fn file_list_up(&mut self, n: usize) {
         let new_idx = self.file_list_state.selected().saturating_sub(n);
         self.file_list_state.select(new_idx);
+    }
+
+    /// Scroll the file-list viewport down by `lines` without moving the
+    /// selection unless it would fall off the top of the viewport.
+    pub fn file_list_viewport_scroll_down(&mut self, lines: usize) {
+        let total = self.build_visible_items().len();
+        let viewport = self.file_list_state.viewport_height.max(1);
+        let max_offset = total.saturating_sub(viewport);
+        let new_offset = (self.file_list_state.list_state.offset() + lines).min(max_offset);
+        *self.file_list_state.list_state.offset_mut() = new_offset;
+        if self.file_list_state.selected() < new_offset {
+            self.file_list_state.select(new_offset);
+        }
+    }
+
+    /// Scroll the file-list viewport up by `lines` without moving the
+    /// selection unless it would fall off the bottom of the viewport.
+    pub fn file_list_viewport_scroll_up(&mut self, lines: usize) {
+        let viewport = self.file_list_state.viewport_height.max(1);
+        let new_offset = self
+            .file_list_state
+            .list_state
+            .offset()
+            .saturating_sub(lines);
+        *self.file_list_state.list_state.offset_mut() = new_offset;
+        let max_visible = (new_offset + viewport).saturating_sub(1);
+        if self.file_list_state.selected() > max_visible {
+            self.file_list_state.select(max_visible);
+        }
+    }
+
+    pub fn diff_annotation_at_screen_row(&self, screen_row: u16) -> Option<usize> {
+        let inner = self.diff_inner_area?;
+        if screen_row < inner.y || screen_row >= inner.y + inner.height {
+            return None;
+        }
+        let rel = (screen_row - inner.y) as usize;
+        self.diff_row_to_annotation.get(rel).copied()
+    }
+
+    pub fn file_list_idx_at_screen_row(&self, screen_row: u16) -> Option<usize> {
+        let inner = self.file_list_inner_area?;
+        if screen_row < inner.y || screen_row >= inner.y + inner.height {
+            return None;
+        }
+        let rel = (screen_row - inner.y) as usize;
+        let idx = self.file_list_state.list_state.offset() + rel;
+        let total = self.build_visible_items().len();
+        (idx < total).then_some(idx)
+    }
+
+    /// Syncs `current_file_idx` so the file list selection follows when the
+    /// new cursor lands on an annotation belonging to a file.
+    pub fn move_cursor_to_annotation(&mut self, idx: usize) {
+        if idx >= self.line_annotations.len() {
+            return;
+        }
+        self.diff_state.cursor_line = idx;
+        if let Some(file_idx) = annotation_file_idx(&self.line_annotations[idx]) {
+            self.diff_state.current_file_idx = file_idx;
+        }
+        let viewport = self.diff_state.viewport_height.max(1);
+        if idx < self.diff_state.scroll_offset {
+            self.diff_state.scroll_offset = idx;
+        } else if idx >= self.diff_state.scroll_offset + viewport {
+            self.diff_state.scroll_offset = idx + 1 - viewport;
+        }
     }
 
     pub fn jump_to_file(&mut self, idx: usize) {

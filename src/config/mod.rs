@@ -28,6 +28,7 @@ pub struct AppConfig {
     pub wrap: Option<bool>,
     pub export_legend: Option<bool>,
     pub cursor_line: Option<bool>,
+    pub mouse: Option<bool>,
 }
 
 /// Known top-level config keys. Used to warn about typos.
@@ -42,6 +43,7 @@ const KNOWN_KEYS: &[&str] = &[
     "wrap",
     "export_legend",
     "cursor_line",
+    "mouse",
 ];
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -182,6 +184,7 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         wrap: read_bool(table, "wrap", &mut warnings),
         export_legend: read_bool(table, "export_legend", &mut warnings),
         cursor_line: read_bool(table, "cursor_line", &mut warnings),
+        mouse: read_bool(table, "mouse", &mut warnings),
     };
 
     for key in table.keys() {
@@ -585,6 +588,35 @@ mod tests {
         assert_eq!(
             outcome.warnings[0],
             "Warning: Config key 'wrap' must be a boolean; ignoring value"
+        );
+    }
+
+    // mouse
+
+    #[test]
+    fn should_parse_mouse_true() {
+        let outcome = parse_config("mouse = true\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.mouse),
+            Some(true)
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_default_mouse_to_none() {
+        let outcome = parse_config("\n");
+        assert_eq!(outcome.config.as_ref().and_then(|cfg| cfg.mouse), None);
+    }
+
+    #[test]
+    fn should_warn_and_ignore_mouse_with_invalid_type() {
+        let outcome = parse_config("mouse = \"on\"\n");
+        assert_eq!(outcome.config.as_ref().and_then(|cfg| cfg.mouse), None);
+        assert_eq!(outcome.warnings.len(), 1);
+        assert_eq!(
+            outcome.warnings[0],
+            "Warning: Config key 'mouse' must be a boolean; ignoring value"
         );
     }
 

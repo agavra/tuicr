@@ -408,6 +408,7 @@ fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
         .border_style(styles::border_style(&app.theme, focused));
 
     let inner = block.inner(area);
+    app.file_list_inner_area = Some(inner);
     let visible_items = app.build_visible_items();
 
     let max_content_width = visible_items
@@ -613,6 +614,7 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
 
     // Update viewport height for scroll calculations
     app.diff_state.viewport_height = inner.height as usize;
+    app.diff_inner_area = Some(inner);
 
     // Reset comment input annotation offset (will be set if a comment input box is rendered)
     app.comment_input_annotation_offset = None;
@@ -1404,29 +1406,16 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
     app.diff_state.viewport_width = inner.width as usize;
     app.diff_state.max_content_width = max_content_width;
 
-    // Calculate how many logical lines actually fit in the viewport when wrapped
-    let viewport_width = inner.width as usize;
-    let viewport_height = inner.height as usize;
-    app.diff_state.visible_line_count = if app.diff_state.wrap_lines && viewport_width > 0 {
-        let mut visual_rows_used = 0;
-        let mut logical_lines_visible = 0;
-        for &width in &line_widths {
-            // Each line takes at least 1 row, plus extra rows if it wraps
-            let rows_for_line = if width == 0 {
-                1
-            } else {
-                width.div_ceil(viewport_width)
-            };
-            if visual_rows_used + rows_for_line > viewport_height {
-                break;
-            }
-            visual_rows_used += rows_for_line;
-            logical_lines_visible += 1;
-        }
-        logical_lines_visible.max(1)
-    } else {
-        viewport_height
-    };
+    let scroll_offset = app.diff_state.scroll_offset;
+    let wrap = app.diff_state.wrap_lines;
+    app.diff_state.visible_line_count = populate_row_to_annotation(
+        &mut app.diff_row_to_annotation,
+        &line_widths,
+        inner.width as usize,
+        inner.height as usize,
+        wrap,
+        scroll_offset,
+    );
 
     let max_scroll_x = max_content_width.saturating_sub(inner.width as usize);
     if app.diff_state.scroll_x > max_scroll_x {
@@ -1535,6 +1524,46 @@ struct SideBySideContext<'a> {
 }
 
 /// Get cursor indicator (single character for inline content)
+/// Populates `out` with the visual-row -> annotation-index map for the diff
+/// viewport and returns how many logical lines fit. Reuses the buffer's
+/// capacity to avoid per-frame allocations.
+fn populate_row_to_annotation(
+    out: &mut Vec<usize>,
+    line_widths: &[usize],
+    viewport_width: usize,
+    viewport_height: usize,
+    wrap: bool,
+    scroll_offset: usize,
+) -> usize {
+    out.clear();
+    out.reserve(viewport_height);
+    if wrap && viewport_width > 0 {
+        let mut visual_rows_used = 0;
+        let mut logical_lines_visible = 0;
+        for (i, &width) in line_widths.iter().enumerate() {
+            let rows_for_line = if width == 0 {
+                1
+            } else {
+                width.div_ceil(viewport_width)
+            };
+            if visual_rows_used + rows_for_line > viewport_height {
+                break;
+            }
+            for _ in 0..rows_for_line {
+                out.push(scroll_offset + i);
+            }
+            visual_rows_used += rows_for_line;
+            logical_lines_visible += 1;
+        }
+        logical_lines_visible.max(1)
+    } else {
+        for i in 0..line_widths.len().min(viewport_height) {
+            out.push(scroll_offset + i);
+        }
+        viewport_height
+    }
+}
+
 fn cursor_indicator(line_idx: usize, current_line_idx: usize) -> &'static str {
     if line_idx == current_line_idx {
         "▶"
@@ -1736,6 +1765,7 @@ fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
 
     // Update viewport height for scroll calculations
     app.diff_state.viewport_height = inner.height as usize;
+    app.diff_inner_area = Some(inner);
 
     // Reset comment input annotation offset (will be set if a comment input box is rendered)
     app.comment_input_annotation_offset = None;
@@ -2202,29 +2232,16 @@ fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
     app.diff_state.viewport_width = inner.width as usize;
     app.diff_state.max_content_width = max_content_width;
 
-    // Calculate how many logical lines actually fit in the viewport when wrapped
-    let viewport_width = inner.width as usize;
-    let viewport_height = inner.height as usize;
-    app.diff_state.visible_line_count = if app.diff_state.wrap_lines && viewport_width > 0 {
-        let mut visual_rows_used = 0;
-        let mut logical_lines_visible = 0;
-        for &width in &line_widths {
-            // Each line takes at least 1 row, plus extra rows if it wraps
-            let rows_for_line = if width == 0 {
-                1
-            } else {
-                width.div_ceil(viewport_width)
-            };
-            if visual_rows_used + rows_for_line > viewport_height {
-                break;
-            }
-            visual_rows_used += rows_for_line;
-            logical_lines_visible += 1;
-        }
-        logical_lines_visible.max(1)
-    } else {
-        viewport_height
-    };
+    let scroll_offset = app.diff_state.scroll_offset;
+    let wrap = app.diff_state.wrap_lines;
+    app.diff_state.visible_line_count = populate_row_to_annotation(
+        &mut app.diff_row_to_annotation,
+        &line_widths,
+        inner.width as usize,
+        inner.height as usize,
+        wrap,
+        scroll_offset,
+    );
 
     let max_scroll_x = max_content_width.saturating_sub(inner.width as usize);
     if app.diff_state.scroll_x > max_scroll_x {
