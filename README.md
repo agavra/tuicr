@@ -106,7 +106,7 @@ Detection order: Jujutsu → Git → Mercurial. Jujutsu is tried first because j
 | `--appearance <MODE>` | Appearance mode for default theme (`dark`, `light`, `system`) |
 | `--stdout` | Output to stdout instead of clipboard when exporting |
 | `--no-update-check` | Skip checking for updates on startup |
-| `--transparent` | Don't paint the panel background (let the terminal background show through) |
+| `--transparent` | Use the terminal's background color |
 
 By default, `tuicr` starts in commit selection mode.  
 If staged or unstaged changes exist, the first selectable entries are `Staged changes` and/or `Unstaged changes`.  

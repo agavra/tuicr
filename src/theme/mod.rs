@@ -1569,7 +1569,7 @@ Options:
   --file <PATH>          Open a file for annotation (no VCS required)
   --stdout               Output to stdout instead of clipboard when exporting
   --no-update-check      Skip checking for updates on startup
-  --transparent          Don't paint the panel background (let the terminal background show through)
+  --transparent          Use the terminal's background color
   -V, --version          Print version
   -h, --help             Print this help message
 
