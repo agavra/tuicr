@@ -264,7 +264,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  y         ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Yank (copy) review to clipboard"),
+            Span::raw("Yank: mouse selection if any, else review to clipboard"),
         ]),
         Line::from(vec![
             Span::styled(

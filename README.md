@@ -214,8 +214,9 @@ mouse = true
 | Click on a file | Jump to that file (lazygit-style) |
 | Click on a directory | Expand or collapse it |
 | Click on a diff line | Position the cursor on that line |
+| Drag in diff | Highlight a range; press `y` to copy the selected source lines |
 
-When mouse capture is on, the terminal stops handling drag-to-select natively. To copy text, hold your terminal's bypass modifier while dragging (commonly **Shift** or **Option/Alt**, depending on the terminal). Check your terminal's docs if neither works.
+For full native terminal selection across the whole UI, hold your terminal's bypass modifier while dragging (commonly **Shift** or **Option/Alt**, depending on the terminal). Check your terminal's docs if neither works.
 
 ### Keybindings
 

@@ -194,7 +194,7 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             InputMode::Confirm => " CONFIRM ".to_string(),
             InputMode::CommitSelect => " SELECT ".to_string(),
             InputMode::VisualSelect => {
-                if let Some((range, _)) = app.get_visual_selection() {
+                if let Some((range, _)) = app.visual_selection_line_range() {
                     if range.is_single() {
                         format!(" VISUAL L{} ", range.start)
                     } else {
@@ -220,7 +220,7 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             InputMode::CommitSelect => {
                 " j/k:navigate  Space:select  Enter:confirm  Esc:back  q:quit "
             }
-            InputMode::VisualSelect => " j/k:extend  c/Enter:comment  Esc/V:cancel ",
+            InputMode::VisualSelect => " j/k:extend  c/Enter:comment  y:yank  Esc/V:cancel ",
         };
         let hints_span = Span::styled(hints, Style::default().fg(theme.fg_secondary));
 

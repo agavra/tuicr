@@ -38,20 +38,27 @@ pub fn export_to_clipboard(
     show_legend: bool,
 ) -> Result<String> {
     let content = generate_export_content(session, diff_source, comment_types, show_legend)?;
+    let via_terminal = copy_text_to_clipboard(&content)?;
+    Ok(if via_terminal {
+        "Review copied to clipboard (via terminal)".to_string()
+    } else {
+        "Review copied to clipboard".to_string()
+    })
+}
 
-    // Prefer OSC 52 in tmux/SSH where arboard may silently fail
+/// Copy arbitrary text to the system clipboard. Returns `Ok(true)` if the
+/// terminal-based fallback (tmux/OSC 52) was used, `Ok(false)` if the
+/// platform clipboard handled it.
+pub fn copy_text_to_clipboard(text: &str) -> Result<bool> {
     if should_prefer_osc52() {
-        copy_osc52(&content)?;
-        return Ok("Review copied to clipboard (via terminal)".to_string());
+        copy_osc52(text)?;
+        return Ok(true);
     }
-
-    // Try arboard (system clipboard) first, fall back to OSC 52 for SSH/remote sessions
-    match Clipboard::new().and_then(|mut cb| cb.set_text(&content)) {
-        Ok(_) => Ok("Review copied to clipboard".to_string()),
+    match Clipboard::new().and_then(|mut cb| cb.set_text(text)) {
+        Ok(_) => Ok(false),
         Err(_) => {
-            // Fall back to OSC 52 escape sequence (works over SSH)
-            copy_osc52(&content)?;
-            Ok("Review copied to clipboard (via terminal)".to_string())
+            copy_osc52(text)?;
+            Ok(true)
         }
     }
 }

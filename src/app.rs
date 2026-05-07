@@ -24,6 +24,25 @@ pub const UNSTAGED_SELECTION_ID: &str = "__tuicr_unstaged__";
 pub const GAP_EXPAND_BATCH: usize = 20;
 
 /// Count how many annotation lines a gap produces (expanders + hidden count).
+/// `hi_char = None` means slice to the end.
+fn char_slice(s: &str, lo_char: usize, hi_char: Option<usize>) -> &str {
+    let mut indices = s.char_indices();
+    let lo_byte = indices
+        .by_ref()
+        .nth(lo_char)
+        .map(|(b, _)| b)
+        .unwrap_or(s.len());
+    let hi_byte = match hi_char {
+        None => s.len(),
+        Some(hi) if hi <= lo_char => return "",
+        Some(hi) => indices
+            .nth(hi - lo_char - 1)
+            .map(|(b, _)| b)
+            .unwrap_or(s.len()),
+    };
+    &s[lo_byte..hi_byte]
+}
+
 fn gap_annotation_line_count(is_top_of_file: bool, remaining: usize) -> usize {
     if remaining == 0 {
         0
@@ -66,6 +85,72 @@ pub enum ExpandDirection {
     Up,
     /// ↕ Expand all remaining lines in both directions (merged expander)
     Both,
+}
+
+/// Unified diff gutter: 1 (cursor indicator) + 5 (line_num + space) + 2 (prefix + space).
+pub const UNIFIED_GUTTER: u16 = 8;
+/// Side-by-side leading width before Old content: indicator(1) + lineno(4) + space(1) + prefix(1).
+pub const SBS_LEFT_GUTTER: u16 = 7;
+/// Side-by-side fixed overhead (both gutters + " │ " divider). The two content
+/// panes share what's left of the inner width equally.
+pub const SBS_OVERHEAD: u16 = 16;
+
+/// X-coords of one diff content pane. SBS has Old and New; Unified has one.
+#[derive(Debug, Clone, Copy)]
+pub struct PaneGeom {
+    pub content_x_start: u16,
+    pub content_x_end: u16,
+    pub content_width: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SelPoint {
+    pub annotation_idx: usize,
+    pub char_offset: usize,
+    pub side: LineSide,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VisualSelection {
+    pub anchor: SelPoint,
+    pub head: SelPoint,
+}
+
+impl VisualSelection {
+    pub fn collapsed(point: SelPoint) -> Self {
+        Self {
+            anchor: point,
+            head: point,
+        }
+    }
+
+    pub fn ordered(&self) -> (SelPoint, SelPoint) {
+        if (self.anchor.annotation_idx, self.anchor.char_offset)
+            <= (self.head.annotation_idx, self.head.char_offset)
+        {
+            (self.anchor, self.head)
+        } else {
+            (self.head, self.anchor)
+        }
+    }
+
+    /// Char range `[lo, hi)` of `total_chars` covered by this selection on the
+    /// annotation `ann_idx`. Returns `(0, total_chars)` for annotations
+    /// strictly between start and end.
+    pub fn char_range(&self, ann_idx: usize, total_chars: usize) -> (usize, usize) {
+        let (start, end) = self.ordered();
+        let lo = if ann_idx == start.annotation_idx {
+            start.char_offset.min(total_chars)
+        } else {
+            0
+        };
+        let hi = if ann_idx == end.annotation_idx {
+            end.char_offset.min(total_chars)
+        } else {
+            total_chars
+        };
+        (lo, hi)
+    }
 }
 
 /// Result of checking what the cursor is on in a gap region
@@ -139,6 +224,26 @@ pub enum FindSourceLineResult {
     Nearest(usize),
     /// No matching lines found in the current file at all.
     NotFound,
+}
+
+/// Best-guess side for an annotation: New for everything except a Side-by-Side
+/// line that only has an Old number (a deletion). Mouse cells outside content
+/// annotations get New as a harmless default; range-comment line resolution
+/// later filters non-diff annotations anyway.
+pub fn annotation_side_default(annotation: &AnnotatedLine) -> LineSide {
+    match annotation {
+        AnnotatedLine::SideBySideLine {
+            new_lineno: None,
+            old_lineno: Some(_),
+            ..
+        } => LineSide::Old,
+        AnnotatedLine::DiffLine {
+            new_lineno: None,
+            old_lineno: Some(_),
+            ..
+        } => LineSide::Old,
+        _ => LineSide::New,
+    }
 }
 
 pub fn annotation_file_idx(annotation: &AnnotatedLine) -> Option<usize> {
@@ -282,8 +387,10 @@ pub struct App {
     pub comment_line: Option<(u32, LineSide)>,
     pub editing_comment_id: Option<String>,
 
-    /// Visual selection anchor point (starting line, side)
-    pub visual_anchor: Option<(u32, LineSide)>,
+    pub visual_selection: Option<VisualSelection>,
+    /// True once the active mouse drag has actually moved off the press cell.
+    /// Lets Up distinguish click from drag-back-to-anchor.
+    pub mouse_drag_active: bool,
     /// Line range for range comments (used when creating comments from visual selection)
     pub comment_line_range: Option<(LineRange, LineSide)>,
 
@@ -802,7 +909,8 @@ impl App {
             comment_is_file_level: true,
             comment_line: None,
             editing_comment_id: None,
-            visual_anchor: None,
+            visual_selection: None,
+            mouse_drag_active: false,
             comment_line_range: None,
             commit_list,
             commit_list_cursor: 0,
@@ -2097,6 +2205,210 @@ impl App {
         }
     }
 
+    /// In SBS, picks Old or New per `side`, falling back to the other pane
+    /// if the requested one is empty. Unified diff rows ignore `side`.
+    pub fn content_for_side(&self, ann_idx: usize, side: LineSide) -> Option<&str> {
+        let ann = self.line_annotations.get(ann_idx)?;
+        match ann {
+            AnnotatedLine::DiffLine {
+                file_idx,
+                hunk_idx,
+                line_idx,
+                ..
+            } => {
+                let line = self
+                    .diff_files
+                    .get(*file_idx)?
+                    .hunks
+                    .get(*hunk_idx)?
+                    .lines
+                    .get(*line_idx)?;
+                Some(line.content.as_str())
+            }
+            AnnotatedLine::SideBySideLine {
+                file_idx,
+                hunk_idx,
+                del_line_idx,
+                add_line_idx,
+                ..
+            } => {
+                let hunk = self.diff_files.get(*file_idx)?.hunks.get(*hunk_idx)?;
+                let add = add_line_idx
+                    .and_then(|i| hunk.lines.get(i))
+                    .map(|l| l.content.as_str());
+                let del = del_line_idx
+                    .and_then(|i| hunk.lines.get(i))
+                    .map(|l| l.content.as_str());
+                match side {
+                    LineSide::New => add.or(del),
+                    LineSide::Old => del.or(add),
+                }
+            }
+            AnnotatedLine::ExpandedContext { gap_id, line_idx } => self
+                .get_expanded_line(gap_id, *line_idx)
+                .map(|l| l.content.as_str()),
+            _ => None,
+        }
+    }
+
+    /// For annotations rendered outside the content gutter (hunk headers,
+    /// file headers): returns a clean copy text. The selection's char range
+    /// is meaningless for these — they're emitted whole or not at all.
+    fn atomic_text_for_annotation(&self, ann_idx: usize) -> Option<String> {
+        match self.line_annotations.get(ann_idx)? {
+            AnnotatedLine::HunkHeader { file_idx, hunk_idx } => {
+                let hunk = self.diff_files.get(*file_idx)?.hunks.get(*hunk_idx)?;
+                Some(hunk.header.clone())
+            }
+            AnnotatedLine::FileHeader { file_idx } => {
+                let file = self.diff_files.get(*file_idx)?;
+                if file.is_commit_message {
+                    Some("Commit Message".to_string())
+                } else {
+                    Some(format!(
+                        "{} [{}]",
+                        file.display_path().display(),
+                        file.status.as_char()
+                    ))
+                }
+            }
+            _ => None,
+        }
+    }
+
+    pub fn copy_visual_selection(&mut self) -> Result<usize> {
+        let Some(sel) = self.visual_selection else {
+            return Ok(0);
+        };
+        let (start, end) = sel.ordered();
+        let side = sel.anchor.side;
+        let mut out = String::new();
+        let mut emitted = 0usize;
+        for idx in start.annotation_idx..=end.annotation_idx {
+            let snippet = if let Some(content) = self.content_for_side(idx, side) {
+                let total = content.chars().count();
+                let (lo, hi) = sel.char_range(idx, total);
+                char_slice(content, lo, Some(hi)).to_string()
+            } else if let Some(text) = self.atomic_text_for_annotation(idx) {
+                text
+            } else {
+                continue;
+            };
+            if emitted > 0 {
+                out.push('\n');
+            }
+            out.push_str(&snippet);
+            emitted += 1;
+        }
+        if out.is_empty() {
+            return Ok(0);
+        }
+        let count = out.chars().count();
+        crate::output::copy_text_to_clipboard(&out)
+            .map_err(|e| TuicrError::Clipboard(format!("{e}")))?;
+        Ok(count)
+    }
+
+    pub fn pane_geometry(&self, inner: ratatui::layout::Rect, side: LineSide) -> PaneGeom {
+        match self.diff_view_mode {
+            DiffViewMode::Unified => {
+                let content_width = (inner.width as usize).saturating_sub(UNIFIED_GUTTER as usize);
+                PaneGeom {
+                    content_x_start: inner.x + UNIFIED_GUTTER,
+                    content_x_end: inner.x + inner.width,
+                    content_width,
+                }
+            }
+            DiffViewMode::SideBySide => {
+                let half_w = (inner.width.saturating_sub(SBS_OVERHEAD) / 2) as usize;
+                match side {
+                    LineSide::Old => PaneGeom {
+                        content_x_start: inner.x + SBS_LEFT_GUTTER,
+                        content_x_end: inner.x + SBS_LEFT_GUTTER + half_w as u16,
+                        content_width: half_w,
+                    },
+                    LineSide::New => {
+                        let start = inner.x + SBS_OVERHEAD + half_w as u16;
+                        PaneGeom {
+                            content_x_start: start,
+                            content_x_end: start + half_w as u16,
+                            content_width: half_w,
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn side_at_x(
+        &self,
+        inner: ratatui::layout::Rect,
+        x: u16,
+        ann_default: LineSide,
+    ) -> LineSide {
+        match self.diff_view_mode {
+            DiffViewMode::Unified => ann_default,
+            DiffViewMode::SideBySide => {
+                let half_w = inner.width.saturating_sub(SBS_OVERHEAD) / 2;
+                let divider = inner.x + SBS_LEFT_GUTTER + half_w;
+                if x < divider {
+                    LineSide::Old
+                } else {
+                    LineSide::New
+                }
+            }
+        }
+    }
+
+    pub fn cell_to_sel_point(&self, screen_col: u16, screen_row: u16) -> Option<SelPoint> {
+        let idx = self.diff_annotation_at_screen_row(screen_row)?;
+        let inner = self.diff_inner_area?;
+        let ann = self.line_annotations.get(idx)?;
+        let side = self.side_at_x(inner, screen_col, annotation_side_default(ann));
+
+        let zero_point = SelPoint {
+            annotation_idx: idx,
+            char_offset: 0,
+            side,
+        };
+        let Some(content) = self.content_for_side(idx, side) else {
+            return Some(zero_point);
+        };
+        let geom = self.pane_geometry(inner, side);
+        if geom.content_width == 0 {
+            return Some(zero_point);
+        }
+        let last_col = geom.content_x_end.saturating_sub(1);
+        let col = screen_col.clamp(geom.content_x_start, last_col);
+        let col_in_row = (col - geom.content_x_start) as usize;
+
+        let rel = (screen_row - inner.y) as usize;
+        let mut walker = rel;
+        while walker > 0 && self.diff_row_to_annotation.get(walker - 1).copied() == Some(idx) {
+            walker -= 1;
+        }
+        let which_row = rel - walker;
+        let total_chars = content.chars().count();
+        let char_offset = (which_row * geom.content_width + col_in_row).min(total_chars);
+        Some(SelPoint {
+            annotation_idx: idx,
+            char_offset,
+            side,
+        })
+    }
+
+    /// Mirrors `ensure_cursor_visible`'s notion of visibility (uses the
+    /// renderer's `visible_line_count` when present so wrapping is honored).
+    pub fn is_cursor_visible(&self) -> bool {
+        let visible = if self.diff_state.visible_line_count > 0 {
+            self.diff_state.visible_line_count
+        } else {
+            self.diff_state.viewport_height.max(1)
+        };
+        let cursor = self.diff_state.cursor_line;
+        cursor >= self.diff_state.scroll_offset && cursor < self.diff_state.scroll_offset + visible
+    }
+
     pub fn jump_to_file(&mut self, idx: usize) {
         use std::path::Path;
 
@@ -2789,58 +3101,113 @@ impl App {
         self.comment_line_range = None;
     }
 
-    /// Enter visual selection mode, anchoring at the current cursor position
-    pub fn enter_visual_mode(&mut self, line: u32, side: LineSide) {
+    pub fn enter_visual_mode_at_cursor(&mut self) {
+        let idx = self.diff_state.cursor_line;
+        let side = self
+            .get_line_at_cursor()
+            .map(|(_, s)| s)
+            .unwrap_or(LineSide::New);
+        let len = self.annotation_content_len(idx, side);
+        let anchor = SelPoint {
+            annotation_idx: idx,
+            char_offset: 0,
+            side,
+        };
+        let head = SelPoint {
+            annotation_idx: idx,
+            char_offset: len,
+            side,
+        };
         self.input_mode = InputMode::VisualSelect;
-        self.visual_anchor = Some((line, side));
+        self.visual_selection = Some(VisualSelection { anchor, head });
     }
 
-    /// Exit visual selection mode and return to normal mode
     pub fn exit_visual_mode(&mut self) {
         self.input_mode = InputMode::Normal;
-        self.visual_anchor = None;
+        self.visual_selection = None;
     }
 
-    /// Get the current visual selection range (if in visual mode)
-    /// Returns None if not in visual mode or if there's no valid selection
-    pub fn get_visual_selection(&self) -> Option<(LineRange, LineSide)> {
+    pub fn get_visual_selection(&self) -> Option<&VisualSelection> {
         if self.input_mode != InputMode::VisualSelect {
             return None;
         }
-
-        let (anchor_line, anchor_side) = self.visual_anchor?;
-        let (current_line, current_side) = self.get_line_at_cursor()?;
-
-        // Don't allow selection across sides (old vs new)
-        if anchor_side != current_side {
-            return None;
-        }
-
-        let range = LineRange::new(anchor_line, current_line);
-        Some((range, anchor_side))
+        self.visual_selection.as_ref()
     }
 
-    /// Check if a given line is within the current visual selection
-    pub fn is_line_in_visual_selection(&self, line: u32, side: LineSide) -> bool {
-        if let Some((range, sel_side)) = self.get_visual_selection() {
-            sel_side == side && range.contains(line)
+    pub fn annotation_content_len(&self, idx: usize, side: LineSide) -> usize {
+        self.content_for_side(idx, side)
+            .map(|s| s.chars().count())
+            .unwrap_or(0)
+    }
+
+    pub fn extend_visual_to_cursor(&mut self) {
+        let Some(sel) = self.visual_selection else {
+            return;
+        };
+        let anchor_idx = sel.anchor.annotation_idx;
+        let cursor_idx = self.diff_state.cursor_line;
+        let side = sel.anchor.side;
+        let anchor_len = self.annotation_content_len(anchor_idx, side);
+        let cursor_len = self.annotation_content_len(cursor_idx, side);
+        let (anchor_char, head_char) = if cursor_idx >= anchor_idx {
+            (0, cursor_len)
         } else {
-            false
+            (anchor_len, 0)
+        };
+        self.visual_selection = Some(VisualSelection {
+            anchor: SelPoint {
+                annotation_idx: anchor_idx,
+                char_offset: anchor_char,
+                side,
+            },
+            head: SelPoint {
+                annotation_idx: cursor_idx,
+                char_offset: head_char,
+                side,
+            },
+        });
+    }
+
+    pub fn visual_selection_line_range(&self) -> Option<(LineRange, LineSide)> {
+        let sel = self.get_visual_selection()?;
+        let (start, end) = sel.ordered();
+        let start_line = self.annotation_line_for_side(start.annotation_idx, start.side);
+        let end_line = self.annotation_line_for_side(end.annotation_idx, end.side);
+        let start_ln = start_line?;
+        let end_ln = end_line?;
+        Some((LineRange::new(start_ln, end_ln), start.side))
+    }
+
+    fn annotation_line_for_side(&self, idx: usize, side: LineSide) -> Option<u32> {
+        match self.line_annotations.get(idx)? {
+            AnnotatedLine::DiffLine {
+                old_lineno,
+                new_lineno,
+                ..
+            }
+            | AnnotatedLine::SideBySideLine {
+                old_lineno,
+                new_lineno,
+                ..
+            } => match side {
+                LineSide::New => *new_lineno,
+                LineSide::Old => *old_lineno,
+            },
+            _ => None,
         }
     }
 
-    /// Enter comment mode from visual selection
     pub fn enter_comment_from_visual(&mut self) {
-        if let Some((range, side)) = self.get_visual_selection() {
+        if let Some((range, side)) = self.visual_selection_line_range() {
             self.comment_line_range = Some((range, side));
-            self.comment_line = Some((range.end, side)); // Key by end line
+            self.comment_line = Some((range.end, side));
             self.input_mode = InputMode::Comment;
             self.comment_buffer.clear();
             self.comment_cursor = 0;
             self.comment_type = self.default_comment_type();
             self.comment_is_review_level = false;
             self.comment_is_file_level = false;
-            self.visual_anchor = None;
+            self.visual_selection = None;
         } else {
             self.set_warning("Invalid visual selection");
             self.exit_visual_mode();
@@ -5466,5 +5833,58 @@ mod expand_gap_tests {
             .filter(|a| matches!(a, AnnotatedLine::Expander { gap_id: g, direction: ExpandDirection::Both } if *g == gap_id))
             .count();
         assert_eq!(both_count, 1, "should merge to ↕ when <20 remaining");
+    }
+}
+
+#[cfg(test)]
+mod visual_selection_tests {
+    use super::*;
+
+    fn p(idx: usize, off: usize) -> SelPoint {
+        SelPoint {
+            annotation_idx: idx,
+            char_offset: off,
+            side: LineSide::New,
+        }
+    }
+
+    #[test]
+    fn collapsed_starts_at_point() {
+        let sel = VisualSelection::collapsed(p(5, 3));
+        assert_eq!(sel.anchor, p(5, 3));
+        assert_eq!(sel.head, p(5, 3));
+    }
+
+    #[test]
+    fn ordered_returns_anchor_head_when_already_in_order() {
+        let sel = VisualSelection {
+            anchor: p(1, 0),
+            head: p(4, 8),
+        };
+        let (start, end) = sel.ordered();
+        assert_eq!(start, p(1, 0));
+        assert_eq!(end, p(4, 8));
+    }
+
+    #[test]
+    fn ordered_swaps_when_head_before_anchor_by_idx() {
+        let sel = VisualSelection {
+            anchor: p(4, 0),
+            head: p(1, 0),
+        };
+        let (start, end) = sel.ordered();
+        assert_eq!(start, p(1, 0));
+        assert_eq!(end, p(4, 0));
+    }
+
+    #[test]
+    fn ordered_breaks_ties_on_idx_by_char_offset() {
+        let sel = VisualSelection {
+            anchor: p(7, 20),
+            head: p(7, 5),
+        };
+        let (start, end) = sel.ordered();
+        assert_eq!(start, p(7, 5));
+        assert_eq!(end, p(7, 20));
     }
 }

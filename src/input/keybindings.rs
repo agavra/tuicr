@@ -306,13 +306,11 @@ fn map_visual_mode(key: KeyEvent) -> Action {
         // Extend selection
         (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => Action::CursorDown(1),
         (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => Action::CursorUp(1),
-        // Create range comment
         (KeyCode::Char('c'), KeyModifiers::NONE) => Action::AddRangeComment,
         (KeyCode::Enter, KeyModifiers::NONE) => Action::AddRangeComment,
-        // Cancel selection
+        (KeyCode::Char('y'), KeyModifiers::NONE) => Action::ExportToClipboard,
         (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
         (KeyCode::Char('v') | KeyCode::Char('V'), _) => Action::ExitMode,
-        // Quick quit
         (KeyCode::Char('q'), KeyModifiers::NONE) => Action::Quit,
         _ => Action::None,
     }
