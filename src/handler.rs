@@ -63,6 +63,7 @@ fn handle_left_click(app: &mut App, pos: Position) {
     {
         app.focused_panel = FocusedPanel::Diff;
         app.move_cursor_to_annotation(idx);
+        handle_diff_action(app, Action::SelectFile);
     }
 }
 
