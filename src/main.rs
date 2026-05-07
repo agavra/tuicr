@@ -123,12 +123,11 @@ fn main() -> anyhow::Result<()> {
     );
     startup_warnings.extend(theme_warnings);
 
-    let transparent = cli_args.transparent
-        || config_outcome
-            .config
-            .as_ref()
-            .and_then(|cfg| cfg.transparent_background)
-            .unwrap_or(false);
+    let transparent = config_outcome
+        .config
+        .as_ref()
+        .and_then(|cfg| cfg.transparent_background)
+        .unwrap_or(true);
     if transparent {
         theme.panel_bg = ratatui::style::Color::Reset;
     }

@@ -1208,8 +1208,6 @@ pub struct CliArgs {
     pub path_filter: Option<String>,
     /// Open a single file for annotation (no VCS required)
     pub file_path: Option<String>,
-    /// Don't paint panel backgrounds (let the terminal background show through)
-    pub transparent: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1569,7 +1567,6 @@ Options:
   --file <PATH>          Open a file for annotation (no VCS required)
   --stdout               Output to stdout instead of clipboard when exporting
   --no-update-check      Skip checking for updates on startup
-  --transparent          Use the terminal's background color
   -V, --version          Print version
   -h, --help             Print this help message
 
@@ -1613,11 +1610,6 @@ fn parse_cli_args_from(args: &[String]) -> Result<CliArgs, String> {
         // Handle --no-update-check
         if args[i] == "--no-update-check" {
             cli_args.no_update_check = true;
-        }
-
-        // Handle --transparent
-        if args[i] == "--transparent" {
-            cli_args.transparent = true;
         }
 
         // Handle -w / --working-tree

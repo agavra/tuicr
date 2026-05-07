@@ -106,7 +106,6 @@ Detection order: Jujutsu → Git → Mercurial. Jujutsu is tried first because j
 | `--appearance <MODE>` | Appearance mode for default theme (`dark`, `light`, `system`) |
 | `--stdout` | Output to stdout instead of clipboard when exporting |
 | `--no-update-check` | Skip checking for updates on startup |
-| `--transparent` | Use the terminal's background color |
 
 By default, `tuicr` starts in commit selection mode.  
 If staged or unstaged changes exist, the first selectable entries are `Staged changes` and/or `Unstaged changes`.  
@@ -132,7 +131,7 @@ show_file_list = false
 diff_view = "side-by-side"
 wrap = true
 cursor_line = false
-transparent_background = true
+transparent_background = false
 
 comment_types = [
   { id = "note", label = "question", definition = "ask for clarification", color = "yellow" },
@@ -150,6 +149,8 @@ comment_types = [
 `wrap` enables line wrapping in the diff view (default: `false`). Toggle at runtime with `:set wrap!`.
 
 `cursor_line` highlights the current cursor line and visual selection in the diff view (default: `true`). Set to `false` to disable.
+
+`transparent_background` lets the terminal background show through panels (default: `true`). Set to `false` to paint the theme's `panel_bg` color instead.
 
 `comment_types` replaces the default list and defines Tab cycle order.
 Each entry requires `id` and can optionally set `label`, `definition`, and `color`.
