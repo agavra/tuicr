@@ -601,6 +601,124 @@ impl Theme {
         }
     }
 
+    /// GitHub light theme (matches the github.com diff palette: Primer light tokens)
+    pub fn github_light() -> Self {
+        Self {
+            highlighter: OnceLock::new(),
+
+            panel_bg: Color::Rgb(255, 255, 255),
+            bg_highlight: Color::Rgb(221, 244, 255),
+            fg_primary: Color::Rgb(31, 35, 40),
+            fg_secondary: Color::Rgb(89, 99, 110),
+            fg_dim: Color::Rgb(110, 119, 129),
+
+            diff_add: Color::Rgb(26, 127, 55),
+            diff_add_bg: Color::Rgb(230, 255, 236),
+            diff_del: Color::Rgb(207, 34, 46),
+            diff_del_bg: Color::Rgb(255, 235, 233),
+            diff_context: Color::Rgb(31, 35, 40),
+            diff_hunk_header: Color::Rgb(9, 105, 218),
+            expanded_context_fg: Color::Rgb(110, 119, 129),
+
+            syntax_add_bg: Color::Rgb(230, 255, 236),
+            syntax_del_bg: Color::Rgb(255, 235, 233),
+
+            syntect_theme: EmbeddedThemeName::InspiredGithub,
+
+            file_added: Color::Rgb(26, 127, 55),
+            file_modified: Color::Rgb(154, 103, 0),
+            file_deleted: Color::Rgb(207, 34, 46),
+            file_renamed: Color::Rgb(130, 80, 223),
+
+            reviewed: Color::Rgb(26, 127, 55),
+            pending: Color::Rgb(154, 103, 0),
+
+            comment_note: Color::Rgb(9, 105, 218),
+            comment_suggestion: Color::Rgb(20, 130, 130),
+            comment_issue: Color::Rgb(207, 34, 46),
+            comment_praise: Color::Rgb(26, 127, 55),
+
+            border_focused: Color::Rgb(9, 105, 218),
+            border_unfocused: Color::Rgb(208, 215, 222),
+            status_bar_bg: Color::Rgb(246, 248, 250),
+            cursor_color: Color::Rgb(154, 103, 0),
+            cursor_line_bg: Color::Rgb(221, 244, 255),
+            branch_name: Color::Rgb(9, 105, 218),
+            help_indicator: Color::Rgb(110, 119, 129),
+
+            message_info_fg: Color::White,
+            message_info_bg: Color::Rgb(9, 105, 218),
+            message_warning_fg: Color::White,
+            message_warning_bg: Color::Rgb(154, 103, 0),
+            message_error_fg: Color::White,
+            message_error_bg: Color::Rgb(207, 34, 46),
+            update_badge_fg: Color::White,
+            update_badge_bg: Color::Rgb(154, 103, 0),
+
+            mode_fg: Color::White,
+            mode_bg: Color::Rgb(9, 105, 218),
+        }
+    }
+
+    /// GitHub dark theme (matches the github.com dark mode diff palette: Primer dark tokens)
+    pub fn github_dark() -> Self {
+        Self {
+            highlighter: OnceLock::new(),
+
+            panel_bg: Color::Rgb(13, 17, 23),
+            bg_highlight: Color::Rgb(33, 38, 45),
+            fg_primary: Color::Rgb(230, 237, 243),
+            fg_secondary: Color::Rgb(201, 209, 217),
+            fg_dim: Color::Rgb(139, 148, 158),
+
+            diff_add: Color::Rgb(63, 185, 80),
+            diff_add_bg: Color::Rgb(16, 35, 28),
+            diff_del: Color::Rgb(248, 81, 73),
+            diff_del_bg: Color::Rgb(48, 27, 31),
+            diff_context: Color::Rgb(230, 237, 243),
+            diff_hunk_header: Color::Rgb(88, 166, 255),
+            expanded_context_fg: Color::Rgb(139, 148, 158),
+
+            syntax_add_bg: Color::Rgb(16, 35, 28),
+            syntax_del_bg: Color::Rgb(48, 27, 31),
+
+            syntect_theme: EmbeddedThemeName::OneHalfDark,
+
+            file_added: Color::Rgb(63, 185, 80),
+            file_modified: Color::Rgb(210, 153, 34),
+            file_deleted: Color::Rgb(248, 81, 73),
+            file_renamed: Color::Rgb(163, 113, 247),
+
+            reviewed: Color::Rgb(63, 185, 80),
+            pending: Color::Rgb(210, 153, 34),
+
+            comment_note: Color::Rgb(88, 166, 255),
+            comment_suggestion: Color::Rgb(86, 212, 221),
+            comment_issue: Color::Rgb(248, 81, 73),
+            comment_praise: Color::Rgb(63, 185, 80),
+
+            border_focused: Color::Rgb(88, 166, 255),
+            border_unfocused: Color::Rgb(48, 54, 61),
+            status_bar_bg: Color::Rgb(22, 27, 34),
+            cursor_color: Color::Rgb(210, 153, 34),
+            cursor_line_bg: Color::Rgb(22, 27, 34),
+            branch_name: Color::Rgb(88, 166, 255),
+            help_indicator: Color::Rgb(139, 148, 158),
+
+            message_info_fg: Color::Rgb(13, 17, 23),
+            message_info_bg: Color::Rgb(88, 166, 255),
+            message_warning_fg: Color::Rgb(13, 17, 23),
+            message_warning_bg: Color::Rgb(210, 153, 34),
+            message_error_fg: Color::White,
+            message_error_bg: Color::Rgb(248, 81, 73),
+            update_badge_fg: Color::Rgb(13, 17, 23),
+            update_badge_bg: Color::Rgb(210, 153, 34),
+
+            mode_fg: Color::White,
+            mode_bg: Color::Rgb(88, 166, 255),
+        }
+    }
+
     pub fn gruvbox_dark() -> Self {
         let flavor = GruvboxFlavor {
             dark: true,
@@ -1036,6 +1154,8 @@ pub enum ThemeArg {
     Light,
     AyuLight,
     Onedark,
+    GithubLight,
+    GithubDark,
     CatppuccinLatte,
     CatppuccinFrappe,
     CatppuccinMacchiato,
@@ -1050,11 +1170,13 @@ pub enum ThemeArg {
     SolarizedDark,
 }
 
-const THEME_CHOICES: [(&str, ThemeArg); 16] = [
+const THEME_CHOICES: [(&str, ThemeArg); 18] = [
     ("dark", ThemeArg::Dark),
     ("light", ThemeArg::Light),
     ("ayu-light", ThemeArg::AyuLight),
     ("onedark", ThemeArg::Onedark),
+    ("github-light", ThemeArg::GithubLight),
+    ("github-dark", ThemeArg::GithubDark),
     ("catppuccin-latte", ThemeArg::CatppuccinLatte),
     ("catppuccin-frappe", ThemeArg::CatppuccinFrappe),
     ("catppuccin-macchiato", ThemeArg::CatppuccinMacchiato),
@@ -1086,6 +1208,8 @@ pub struct CliArgs {
     pub path_filter: Option<String>,
     /// Open a single file for annotation (no VCS required)
     pub file_path: Option<String>,
+    /// Don't paint panel backgrounds (let the terminal background show through)
+    pub transparent: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1158,6 +1282,8 @@ pub fn resolve_theme(arg: ThemeArg) -> Theme {
         ThemeArg::Light => Theme::light(),
         ThemeArg::AyuLight => Theme::ayu_light(),
         ThemeArg::Onedark => Theme::onedark(),
+        ThemeArg::GithubLight => Theme::github_light(),
+        ThemeArg::GithubDark => Theme::github_dark(),
         ThemeArg::CatppuccinLatte => Theme::catppuccin_latte(),
         ThemeArg::CatppuccinFrappe => Theme::catppuccin_frappe(),
         ThemeArg::CatppuccinMacchiato => Theme::catppuccin_macchiato(),
@@ -1443,6 +1569,7 @@ Options:
   --file <PATH>          Open a file for annotation (no VCS required)
   --stdout               Output to stdout instead of clipboard when exporting
   --no-update-check      Skip checking for updates on startup
+  --transparent          Don't paint the panel background (let the terminal background show through)
   -V, --version          Print version
   -h, --help             Print this help message
 
@@ -1486,6 +1613,11 @@ fn parse_cli_args_from(args: &[String]) -> Result<CliArgs, String> {
         // Handle --no-update-check
         if args[i] == "--no-update-check" {
             cli_args.no_update_check = true;
+        }
+
+        // Handle --transparent
+        if args[i] == "--transparent" {
+            cli_args.transparent = true;
         }
 
         // Handle -w / --working-tree

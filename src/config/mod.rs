@@ -29,6 +29,7 @@ pub struct AppConfig {
     pub export_legend: Option<bool>,
     pub cursor_line: Option<bool>,
     pub mouse: Option<bool>,
+    pub transparent_background: Option<bool>,
 }
 
 /// Known top-level config keys. Used to warn about typos.
@@ -44,6 +45,7 @@ const KNOWN_KEYS: &[&str] = &[
     "export_legend",
     "cursor_line",
     "mouse",
+    "transparent_background",
 ];
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -185,6 +187,7 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         export_legend: read_bool(table, "export_legend", &mut warnings),
         cursor_line: read_bool(table, "cursor_line", &mut warnings),
         mouse: read_bool(table, "mouse", &mut warnings),
+        transparent_background: read_bool(table, "transparent_background", &mut warnings),
     };
 
     for key in table.keys() {
