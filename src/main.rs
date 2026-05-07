@@ -244,11 +244,6 @@ fn main() -> anyhow::Result<()> {
 
     // Main loop
     loop {
-        // Render
-        terminal.draw(|frame| {
-            ui::render(frame, &mut app);
-        })?;
-
         // Check for update result (non-blocking)
         if let Some(ref rx) = update_rx
             && let Ok(
@@ -266,6 +261,13 @@ fn main() -> anyhow::Result<()> {
             pending_ctrl_c = None;
             app.message = None;
         }
+
+        app.clear_expired_message();
+
+        // Render
+        terminal.draw(|frame| {
+            ui::render(frame, &mut app);
+        })?;
 
         // Handle events
         if event::poll(Duration::from_millis(100))? {

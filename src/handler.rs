@@ -756,7 +756,7 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
     match action {
         Action::Quit => {
             if app.dirty && !app.quit_warned {
-                app.set_warning("Unsaved changes. Press q again to quit.");
+                app.set_sticky_warning("Unsaved changes. Press q again to quit.");
                 app.quit_warned = true;
             } else {
                 app.should_quit = true;

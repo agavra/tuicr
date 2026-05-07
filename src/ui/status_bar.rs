@@ -255,6 +255,7 @@ mod tests {
         Message {
             content: "hello".to_string(),
             message_type,
+            expires_at: None,
         }
     }
 

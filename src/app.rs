@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use ratatui::style::Color;
@@ -358,7 +359,12 @@ pub enum MessageType {
 pub struct Message {
     pub content: String,
     pub message_type: MessageType,
+    /// When this message should be auto-cleared. `None` means sticky.
+    pub expires_at: Option<Instant>,
 }
+
+const MESSAGE_TTL_INFO: Duration = Duration::from_secs(3);
+const MESSAGE_TTL_WARNING: Duration = Duration::from_secs(5);
 
 pub struct App {
     pub theme: Theme,
@@ -1761,24 +1767,45 @@ impl App {
     }
 
     pub fn set_message(&mut self, msg: impl Into<String>) {
-        self.message = Some(Message {
-            content: msg.into(),
-            message_type: MessageType::Info,
-        });
+        self.set_message_inner(msg, MessageType::Info, Some(MESSAGE_TTL_INFO));
     }
 
     pub fn set_warning(&mut self, msg: impl Into<String>) {
-        self.message = Some(Message {
-            content: msg.into(),
-            message_type: MessageType::Warning,
-        });
+        self.set_message_inner(msg, MessageType::Warning, Some(MESSAGE_TTL_WARNING));
     }
 
     pub fn set_error(&mut self, msg: impl Into<String>) {
+        self.set_message_inner(msg, MessageType::Error, None);
+    }
+
+    /// Warning that stays until something else overwrites it. Used for state-tied
+    /// messages like the dirty-quit prompt where the visual must outlive any TTL.
+    pub fn set_sticky_warning(&mut self, msg: impl Into<String>) {
+        self.set_message_inner(msg, MessageType::Warning, None);
+    }
+
+    fn set_message_inner(
+        &mut self,
+        msg: impl Into<String>,
+        message_type: MessageType,
+        ttl: Option<Duration>,
+    ) {
         self.message = Some(Message {
             content: msg.into(),
-            message_type: MessageType::Error,
+            message_type,
+            expires_at: ttl.map(|d| Instant::now() + d),
         });
+    }
+
+    pub fn clear_expired_message(&mut self) {
+        let expired = self
+            .message
+            .as_ref()
+            .and_then(|m| m.expires_at)
+            .is_some_and(|t| Instant::now() >= t);
+        if expired {
+            self.message = None;
+        }
     }
 
     pub fn cursor_down(&mut self, lines: usize) {
