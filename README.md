@@ -204,10 +204,10 @@ dist/
 
 ### Mouse
 
-Mouse support is **opt-in**. Enable it in your config:
+Mouse support is **on by default**. To disable, set in your config:
 
 ```toml
-mouse = true
+mouse = false
 ```
 
 | Action | Effect |

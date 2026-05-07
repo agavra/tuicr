@@ -187,7 +187,7 @@ fn main() -> anyhow::Result<()> {
         .config
         .as_ref()
         .and_then(|cfg| cfg.mouse)
-        .unwrap_or(false);
+        .unwrap_or(true);
     if mouse_enabled {
         execute!(tty_output, EnableMouseCapture)?;
     }
