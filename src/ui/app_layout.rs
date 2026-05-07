@@ -1406,14 +1406,14 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
     };
 
     // Paint per-visual-row add/del backgrounds across full row width.
-    paint_unified_diff_row_backgrounds(
+    paint_unified_diff_rows_with(
         frame,
         inner,
         &visible_lines_unscrolled_for_bg,
         &line_widths,
         app.diff_state.wrap_lines,
         inner.width as usize,
-        app,
+        |_idx, line| unified_line_bg_style(line, &app.theme),
     );
 
     // Keep paragraph bg unset so pre-painted per-row diff backgrounds remain visible.
@@ -1422,6 +1422,23 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
         diff = diff.wrap(Wrap { trim: false });
     }
     frame.render_widget(diff, inner);
+
+    // Cursor-line bg has to land after the paragraph: spans on +/- lines carry
+    // explicit diff_add_bg/diff_del_bg that would mask a pre-paint over the code.
+    if app.cursor_line_highlight {
+        paint_unified_diff_rows_with(
+            frame,
+            inner,
+            &visible_lines_unscrolled_for_bg,
+            &line_widths,
+            app.diff_state.wrap_lines,
+            inner.width as usize,
+            |idx, _line| {
+                is_line_highlighted(app, idx)
+                    .then(|| Style::default().bg(app.theme.cursor_line_bg))
+            },
+        );
+    }
 
     if let Some(sel) = app.visual_selection {
         paint_visual_selection_overlay(frame, inner, app, sel, &app.theme);
@@ -3078,15 +3095,17 @@ fn unified_line_bg_style(line: &Line, theme: &Theme) -> Option<Style> {
     Some(Style::default().bg(bg))
 }
 
-fn paint_unified_diff_row_backgrounds(
+fn paint_unified_diff_rows_with<F>(
     frame: &mut Frame,
     inner: Rect,
     visible_lines_unscrolled: &[Line],
     line_widths: &[usize],
     wrap_lines: bool,
     viewport_width: usize,
-    app: &App,
-) {
+    style_for: F,
+) where
+    F: Fn(usize, &Line) -> Option<Style>,
+{
     let mut visual_row: usize = 0;
 
     for (idx, line) in visible_lines_unscrolled.iter().enumerate() {
@@ -3105,18 +3124,11 @@ fn paint_unified_diff_row_backgrounds(
             1
         };
 
-        let row_style = if is_line_highlighted(app, idx) {
-            Some(Style::default().bg(app.theme.cursor_line_bg))
-        } else {
-            unified_line_bg_style(line, &app.theme)
-        };
-
-        if let Some(row_style) = row_style {
+        if let Some(row_style) = style_for(idx, line) {
             for _ in 0..rows_for_line {
                 if visual_row >= inner.height as usize {
                     break;
                 }
-
                 let row_rect = Rect {
                     x: inner.x,
                     y: inner.y + visual_row as u16,
