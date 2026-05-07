@@ -104,6 +104,7 @@ fn render_commit_select(frame: &mut Frame, app: &mut App) {
 
     // Update viewport height for scroll calculations
     app.commit_list_viewport_height = inner.height as usize;
+    app.commit_list_inner_area = Some(inner);
 
     // Get range info for visual indicators
     let range = app.commit_selection_range;
@@ -272,6 +273,7 @@ fn render_main_content(frame: &mut Frame, app: &mut App, area: Rect) {
         render_inline_commit_selector(frame, app, chunks[0]);
         chunks[1]
     } else {
+        app.commit_list_inner_area = None;
         area
     };
 
@@ -309,6 +311,7 @@ fn render_inline_commit_selector(frame: &mut Frame, app: &mut App, area: Rect) {
 
     // Update viewport height for scroll
     app.commit_list_viewport_height = inner.height as usize;
+    app.commit_list_inner_area = Some(inner);
 
     {
         let range = app.commit_selection_range;

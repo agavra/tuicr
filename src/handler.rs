@@ -19,15 +19,20 @@ pub fn handle_mouse_event(app: &mut App, event: MouseEvent) {
     let pos = Position::new(event.column, event.row);
     match event.kind {
         MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
-            let action = if matches!(event.kind, MouseEventKind::ScrollUp) {
+            let scroll_up = matches!(event.kind, MouseEventKind::ScrollUp);
+            let action = if scroll_up {
                 Action::MouseScrollUp(WHEEL_LINES)
             } else {
                 Action::MouseScrollDown(WHEEL_LINES)
             };
             let over_file_list = app.file_list_area.is_some_and(|r| r.contains(pos));
             let over_diff = app.diff_area.is_some_and(|r| r.contains(pos));
+            let over_commit_list = app.commit_list_inner_area.is_some_and(|r| r.contains(pos));
             match app.input_mode {
                 InputMode::Help => handle_help_action(app, action),
+                InputMode::CommitSelect | InputMode::Normal if over_commit_list => {
+                    wheel_commit_list(app, scroll_up);
+                }
                 InputMode::Normal if over_file_list => handle_file_list_action(app, action),
                 InputMode::Normal if over_diff => handle_diff_action(app, action),
                 InputMode::VisualSelect if over_diff => handle_diff_action(app, action),
@@ -53,6 +58,12 @@ pub fn handle_mouse_event(app: &mut App, event: MouseEvent) {
             } else {
                 app.visual_selection = None;
                 handle_left_click(app, pos);
+            }
+        }
+        MouseEventKind::Down(MouseButton::Left) if app.input_mode == InputMode::CommitSelect => {
+            if let Some(idx) = app.commit_list_idx_at_screen_row(pos.y) {
+                app.commit_list_cursor = idx;
+                handle_commit_select_action(app, Action::ToggleCommitSelect);
             }
         }
         MouseEventKind::Drag(MouseButton::Left)
@@ -113,6 +124,19 @@ pub fn clear_visual_if_cursor_offscreen(app: &mut App) {
     }
 }
 
+/// Wheel scroll inside a commit list (full-screen picker or inline selector).
+/// The list is short and selection-oriented, so each tick moves the cursor
+/// rather than the viewport, matching how arrow keys behave.
+fn wheel_commit_list(app: &mut App, scroll_up: bool) {
+    for _ in 0..WHEEL_LINES {
+        if scroll_up {
+            app.commit_select_up();
+        } else {
+            app.commit_select_down();
+        }
+    }
+}
+
 fn handle_left_click(app: &mut App, pos: Position) {
     if app.file_list_inner_area.is_some_and(|r| r.contains(pos))
         && let Some(idx) = app.file_list_idx_at_screen_row(pos.y)
@@ -128,6 +152,16 @@ fn handle_left_click(app: &mut App, pos: Position) {
                 }
             }
         }
+        return;
+    }
+
+    if app.has_inline_commit_selector()
+        && app.commit_list_inner_area.is_some_and(|r| r.contains(pos))
+        && let Some(idx) = app.commit_list_idx_at_screen_row(pos.y)
+    {
+        app.focused_panel = FocusedPanel::CommitSelector;
+        app.commit_list_cursor = idx;
+        handle_commit_selector_action(app, Action::SelectFile);
         return;
     }
 

@@ -421,6 +421,9 @@ pub struct App {
     pub file_list_inner_area: Option<ratatui::layout::Rect>,
     /// Inner content rect of the diff panel; populated during render.
     pub diff_inner_area: Option<ratatui::layout::Rect>,
+    /// Inner content rect of the commit list panel (full-screen picker or inline selector);
+    /// populated during render.
+    pub commit_list_inner_area: Option<ratatui::layout::Rect>,
     /// Visual-row -> annotation-index map for the diff viewport. Wrapped
     /// logical lines repeat their annotation index across multiple rows.
     pub diff_row_to_annotation: Vec<usize>,
@@ -932,6 +935,7 @@ impl App {
             diff_area: None,
             file_list_inner_area: None,
             diff_inner_area: None,
+            commit_list_inner_area: None,
             diff_row_to_annotation: Vec::new(),
             expanded_dirs: HashSet::new(),
             expanded_top: HashMap::new(),
@@ -2184,6 +2188,22 @@ impl App {
         let rel = (screen_row - inner.y) as usize;
         let idx = self.file_list_state.list_state.offset() + rel;
         let total = self.build_visible_items().len();
+        (idx < total).then_some(idx)
+    }
+
+    pub fn commit_list_idx_at_screen_row(&self, screen_row: u16) -> Option<usize> {
+        let inner = self.commit_list_inner_area?;
+        if screen_row < inner.y || screen_row >= inner.y + inner.height {
+            return None;
+        }
+        let rel = (screen_row - inner.y) as usize;
+        let idx = self.commit_list_scroll_offset + rel;
+        let total = match self.input_mode {
+            InputMode::CommitSelect => {
+                self.visible_commit_count + usize::from(self.can_show_more_commits())
+            }
+            _ => self.review_commits.len(),
+        };
         (idx < total).then_some(idx)
     }
 

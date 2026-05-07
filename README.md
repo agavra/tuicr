@@ -212,10 +212,11 @@ mouse = true
 
 | Action | Effect |
 |--------|--------|
-| Wheel up/down | Scroll the panel under the cursor (file list, diff, or help popup) without moving the cursor line |
+| Wheel up/down | Scroll the panel under the cursor (file list, diff, commit list, or help popup) without moving the cursor line |
 | Click on a file | Jump to that file (lazygit-style) |
 | Click on a directory | Expand or collapse it |
 | Click on a diff line | Position the cursor on that line |
+| Click on a commit | Toggle selection (or expand the row to load more) |
 | Drag in diff | Highlight a range; press `y` to copy the selected source lines |
 
 For full native terminal selection across the whole UI, hold your terminal's bypass modifier while dragging (commonly **Shift** or **Option/Alt**, depending on the terminal). Check your terminal's docs if neither works.
