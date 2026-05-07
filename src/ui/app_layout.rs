@@ -1434,8 +1434,7 @@ fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
             app.diff_state.wrap_lines,
             inner.width as usize,
             |idx, _line| {
-                is_line_highlighted(app, idx)
-                    .then(|| Style::default().bg(app.theme.cursor_line_bg))
+                is_line_highlighted(app, idx).then(|| Style::default().bg(app.theme.cursor_line_bg))
             },
         );
     }
