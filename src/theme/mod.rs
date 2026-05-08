@@ -719,6 +719,82 @@ impl Theme {
         }
     }
 
+    /// Tokyo Night Storm (folke/tokyonight.nvim "storm" variant)
+    pub fn tokyo_night_storm() -> Self {
+        let bg = Color::Rgb(36, 40, 59); // #24283b
+        let bg_dark = Color::Rgb(31, 35, 53); // #1f2335
+        let bg_highlight = Color::Rgb(41, 46, 66); // #292e42
+        let terminal_black = Color::Rgb(65, 72, 104); // #414868
+        let fg = Color::Rgb(192, 202, 245); // #c0caf5
+        let fg_dark = Color::Rgb(169, 177, 214); // #a9b1d6
+        let dark3 = Color::Rgb(84, 92, 126); // #545c7e
+        let comment = Color::Rgb(86, 95, 137); // #565f89
+        let blue = Color::Rgb(122, 162, 247); // #7aa2f7
+        let cyan = Color::Rgb(125, 207, 255); // #7dcfff
+        let magenta = Color::Rgb(187, 154, 247); // #bb9af7
+        let orange = Color::Rgb(255, 158, 100); // #ff9e64
+        let yellow = Color::Rgb(224, 175, 104); // #e0af68
+        let green = Color::Rgb(158, 206, 106); // #9ece6a
+        let red = Color::Rgb(247, 118, 142); // #f7768e
+
+        Self {
+            highlighter: OnceLock::new(),
+
+            panel_bg: bg,
+            bg_highlight,
+            fg_primary: fg,
+            fg_secondary: fg_dark,
+            fg_dim: dark3,
+
+            diff_add: green,
+            diff_add_bg: Color::Rgb(32, 48, 59), // #20303b
+            diff_del: red,
+            diff_del_bg: Color::Rgb(55, 34, 44), // #37222c
+            diff_context: fg_dark,
+            diff_hunk_header: blue,
+            expanded_context_fg: dark3,
+
+            syntax_add_bg: Color::Rgb(28, 42, 52),
+            syntax_del_bg: Color::Rgb(47, 30, 38),
+
+            // Closest embedded base16 dark with the muted blue/purple feel
+            syntect_theme: EmbeddedThemeName::Base16EightiesDark,
+
+            file_added: green,
+            file_modified: yellow,
+            file_deleted: red,
+            file_renamed: magenta,
+
+            reviewed: green,
+            pending: yellow,
+
+            comment_note: blue,
+            comment_suggestion: cyan,
+            comment_issue: red,
+            comment_praise: green,
+
+            border_focused: blue,
+            border_unfocused: terminal_black,
+            status_bar_bg: bg_dark,
+            cursor_color: orange,
+            cursor_line_bg: bg_highlight,
+            branch_name: cyan,
+            help_indicator: comment,
+
+            message_info_fg: bg_dark,
+            message_info_bg: blue,
+            message_warning_fg: bg_dark,
+            message_warning_bg: yellow,
+            message_error_fg: fg,
+            message_error_bg: red,
+            update_badge_fg: bg_dark,
+            update_badge_bg: yellow,
+
+            mode_fg: bg_dark,
+            mode_bg: blue,
+        }
+    }
+
     pub fn gruvbox_dark() -> Self {
         let flavor = GruvboxFlavor {
             dark: true,
@@ -1168,9 +1244,10 @@ pub enum ThemeArg {
     NordLightHighContrast,
     SolarizedLight,
     SolarizedDark,
+    TokyoNightStorm,
 }
 
-const THEME_CHOICES: [(&str, ThemeArg); 18] = [
+const THEME_CHOICES: [(&str, ThemeArg); 19] = [
     ("dark", ThemeArg::Dark),
     ("light", ThemeArg::Light),
     ("ayu-light", ThemeArg::AyuLight),
@@ -1189,6 +1266,7 @@ const THEME_CHOICES: [(&str, ThemeArg); 18] = [
     ("nord-light-high-contrast", ThemeArg::NordLightHighContrast),
     ("solarized-light", ThemeArg::SolarizedLight),
     ("solarized-dark", ThemeArg::SolarizedDark),
+    ("tokyo-night-storm", ThemeArg::TokyoNightStorm),
 ];
 
 /// CLI arguments parsed from command line
@@ -1294,6 +1372,7 @@ pub fn resolve_theme(arg: ThemeArg) -> Theme {
         ThemeArg::NordLightHighContrast => Theme::nord_light_high_contrast(),
         ThemeArg::SolarizedLight => Theme::solarized_light(),
         ThemeArg::SolarizedDark => Theme::solarized_dark(),
+        ThemeArg::TokyoNightStorm => Theme::tokyo_night_storm(),
     }
 }
 
