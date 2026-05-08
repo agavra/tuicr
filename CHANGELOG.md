@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.12.0] - 2026-05-08
+
+### Bug Fixes
+
+- **ui:** Cursor-line highlight covers +/- code in unified diff (#267)
+
+### Features
+
+- Add command :clearc to clear comments without clearing reviewed files marks (#258)
+- Stage file (#259)
+- **input:** Support Alt+Backspace to delete previous word (#260)
+- **mouse:** Wheel + clicks behind opt-in 'mouse = true' (closes #140) (#261)
+- **mouse:** Drag-to-select with cell-precise copy and visual range comments (#262)
+- **theme:** Github-light, github-dark, and --transparent (#264)
+- **mouse:** Click on expand/hidden markers to toggle them (#263)
+- **mouse:** Wheel + click on commit list (full-screen and inline) (#266)
+- **ui:** Auto-clear status messages after a TTL (#268)
+- **mouse:** On by default (#270)
+- **theme:** Default to transparent panel background (#269)
+
+### Miscellaneous
+
+- **help:** Shorten --transparent description (#265)
 ## [0.11.0] - 2026-05-04
 
 ### Bug Fixes
