@@ -132,6 +132,7 @@ diff_view = "side-by-side"
 wrap = true
 cursor_line = false
 transparent_background = false
+scroll_offset = 5
 
 comment_types = [
   { id = "note", label = "question", definition = "ask for clarification", color = "yellow" },
@@ -151,6 +152,8 @@ comment_types = [
 `cursor_line` highlights the current cursor line and visual selection in the diff view (default: `true`). Set to `false` to disable.
 
 `transparent_background` lets the terminal background show through panels (default: `true`). Set to `false` to paint the theme's `panel_bg` color instead.
+
+`scroll_offset` keeps a minimum number of lines visible above and below the cursor when scrolling (similar to Vim's `scrolloff`). Default: `0` (no margin).
 
 `comment_types` replaces the default list and defines Tab cycle order.
 Each entry requires `id` and can optionally set `label`, `definition`, and `color`.
