@@ -1,9 +1,10 @@
 use git2::{Delta, Diff, DiffOptions, Repository};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::error::{Result, TuicrError};
 use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin};
-use crate::syntax::SyntaxHighlighter;
+use crate::syntax::{SyntaxHighlighter, needs_full_file_highlight};
+use crate::vcs::{enhance_with_full_file_highlight, tabify};
 
 pub fn get_working_tree_diff(
     repo: &Repository,
@@ -17,8 +18,14 @@ pub fn get_working_tree_diff(
     opts.recurse_untracked_dirs(true);
 
     let diff = repo.diff_tree_to_workdir_with_index(Some(&head), Some(&mut opts))?;
-
-    parse_diff(&diff, highlighter)
+    let mut files = parse_diff(&diff, highlighter)?;
+    enhance_with_full_file_highlight(
+        &mut files,
+        highlighter,
+        |path| read_path_from_tree(repo, &head, path),
+        |path| read_path_from_workdir(repo, path),
+    );
+    Ok(files)
 }
 
 /// Get the staged diff (index vs HEAD)
@@ -30,7 +37,17 @@ pub fn get_staged_diff(
     let head = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
     let index = repo.index()?;
     let diff = repo.diff_tree_to_index(head.as_ref(), Some(&index), None)?;
-    parse_diff(&diff, highlighter)
+    let mut files = parse_diff(&diff, highlighter)?;
+    enhance_with_full_file_highlight(
+        &mut files,
+        highlighter,
+        |path| {
+            head.as_ref()
+                .and_then(|tree| read_path_from_tree(repo, tree, path))
+        },
+        |path| read_path_from_index(repo, &index, path),
+    );
+    Ok(files)
 }
 
 /// Get the unstaged diff (working tree vs index)
@@ -45,7 +62,14 @@ pub fn get_unstaged_diff(
     opts.recurse_untracked_dirs(true);
 
     let diff = repo.diff_index_to_workdir(Some(&index), Some(&mut opts))?;
-    parse_diff(&diff, highlighter)
+    let mut files = parse_diff(&diff, highlighter)?;
+    enhance_with_full_file_highlight(
+        &mut files,
+        highlighter,
+        |path| read_path_from_index(repo, &index, path),
+        |path| read_path_from_workdir(repo, path),
+    );
+    Ok(files)
 }
 
 /// Get the diff for a range of commits.
@@ -60,15 +84,12 @@ pub fn get_commit_range_diff(
         return Err(TuicrError::NoChanges);
     }
 
-    // Find the oldest commit (last in our list since commits are oldest to newest)
     let oldest_id = git2::Oid::from_str(&commit_ids[0])?;
     let oldest_commit = repo.find_commit(oldest_id)?;
 
-    // Find the newest commit (first in our list)
     let newest_id = git2::Oid::from_str(commit_ids.last().unwrap())?;
     let newest_commit = repo.find_commit(newest_id)?;
 
-    // Get the parent of the oldest commit, or use an empty tree if it's the initial commit
     let old_tree = if oldest_commit.parent_count() > 0 {
         Some(oldest_commit.parent(0)?.tree()?)
     } else {
@@ -78,8 +99,18 @@ pub fn get_commit_range_diff(
     let new_tree = newest_commit.tree()?;
 
     let diff = repo.diff_tree_to_tree(old_tree.as_ref(), Some(&new_tree), None)?;
-
-    parse_diff(&diff, highlighter)
+    let mut files = parse_diff(&diff, highlighter)?;
+    enhance_with_full_file_highlight(
+        &mut files,
+        highlighter,
+        |path| {
+            old_tree
+                .as_ref()
+                .and_then(|tree| read_path_from_tree(repo, tree, path))
+        },
+        |path| read_path_from_tree(repo, &new_tree, path),
+    );
+    Ok(files)
 }
 
 /// Get a combined diff from the parent of the oldest commit through to the working tree.
@@ -93,11 +124,9 @@ pub fn get_working_tree_with_commits_diff(
         return Err(TuicrError::NoChanges);
     }
 
-    // Find the oldest commit (first in our list since commits are oldest to newest)
     let oldest_id = git2::Oid::from_str(&commit_ids[0])?;
     let oldest_commit = repo.find_commit(oldest_id)?;
 
-    // Get the parent of the oldest commit, or use an empty tree if it's the initial commit
     let old_tree = if oldest_commit.parent_count() > 0 {
         Some(oldest_commit.parent(0)?.tree()?)
     } else {
@@ -110,8 +139,34 @@ pub fn get_working_tree_with_commits_diff(
     opts.recurse_untracked_dirs(true);
 
     let diff = repo.diff_tree_to_workdir_with_index(old_tree.as_ref(), Some(&mut opts))?;
+    let mut files = parse_diff(&diff, highlighter)?;
+    enhance_with_full_file_highlight(
+        &mut files,
+        highlighter,
+        |path| {
+            old_tree
+                .as_ref()
+                .and_then(|tree| read_path_from_tree(repo, tree, path))
+        },
+        |path| read_path_from_workdir(repo, path),
+    );
+    Ok(files)
+}
 
-    parse_diff(&diff, highlighter)
+fn read_path_from_tree(repo: &Repository, tree: &git2::Tree, path: &Path) -> Option<String> {
+    let entry = tree.get_path(path).ok()?;
+    let blob = repo.find_blob(entry.id()).ok()?;
+    Some(String::from_utf8_lossy(blob.content()).into_owned())
+}
+
+fn read_path_from_workdir(repo: &Repository, path: &Path) -> Option<String> {
+    crate::vcs::read_workdir_file(repo.workdir()?, path)
+}
+
+fn read_path_from_index(repo: &Repository, index: &git2::Index, path: &Path) -> Option<String> {
+    let entry = index.get_path(path, 0)?;
+    let blob = repo.find_blob(entry.id).ok()?;
+    Some(String::from_utf8_lossy(blob.content()).into_owned())
 }
 
 fn parse_diff(diff: &Diff, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
@@ -137,13 +192,11 @@ fn parse_diff(diff: &Diff, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFi
         let is_too_large =
             delta.status() == Delta::Untracked && delta.new_file().size() > MAX_UNTRACKED_FILE_SIZE;
 
-        // Use new_path for highlighting (the current version of the file)
-        let file_path = new_path.as_ref().or(old_path.as_ref());
-
+        let syntax_path = new_path.as_ref().or(old_path.as_ref()).map(|p| p.as_path());
         let hunks = if is_binary || is_too_large {
             Vec::new()
         } else {
-            parse_hunks(diff, delta_idx, file_path, highlighter)?
+            parse_hunks(diff, delta_idx, highlighter, syntax_path)?
         };
 
         let content_hash = DiffFile::compute_content_hash(&hunks);
@@ -169,8 +222,8 @@ fn parse_diff(diff: &Diff, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFi
 fn parse_hunks(
     diff: &Diff,
     delta_idx: usize,
-    file_path: Option<&PathBuf>,
     highlighter: &SyntaxHighlighter,
+    file_path: Option<&Path>,
 ) -> Result<Vec<DiffHunk>> {
     let mut hunks: Vec<DiffHunk> = Vec::new();
 
@@ -186,11 +239,9 @@ fn parse_hunks(
             let new_start = hunk.new_start();
             let new_count = hunk.new_lines();
 
-            let mut lines: Vec<DiffLine> = Vec::new();
-
-            // First, collect all line content for syntax highlighting
             let mut line_contents: Vec<String> = Vec::new();
             let mut line_origins: Vec<LineOrigin> = Vec::new();
+            let mut line_numbers: Vec<(Option<u32>, Option<u32>)> = Vec::new();
 
             for line_idx in 0..patch.num_lines_in_hunk(hunk_idx)? {
                 let line = patch.line_in_hunk(hunk_idx, line_idx)?;
@@ -202,42 +253,36 @@ fn parse_hunks(
                     _ => LineOrigin::Context,
                 };
 
-                let content = String::from_utf8_lossy(line.content())
-                    .trim_end_matches('\n')
-                    .trim_end_matches('\r')
-                    .replace('\t', "    ")
-                    .to_string();
+                let raw = String::from_utf8_lossy(line.content());
+                let content = tabify(raw.trim_end_matches(['\n', '\r']));
 
                 line_contents.push(content);
                 line_origins.push(origin);
+                line_numbers.push((line.old_lineno(), line.new_lineno()));
             }
 
-            // Apply syntax highlighting if we have a file path
-            let highlight_sequences =
+            let sequences =
                 SyntaxHighlighter::split_diff_lines_for_highlighting(&line_contents, &line_origins);
-            let (old_highlighted_lines, new_highlighted_lines) = if let Some(path) = file_path {
-                (
-                    highlighter.highlight_file_lines(path, &highlight_sequences.old_lines),
-                    highlighter.highlight_file_lines(path, &highlight_sequences.new_lines),
-                )
-            } else {
-                (None, None)
+            // Container grammars skip per-hunk highlighting; the full-file
+            // post-pass overwrites these spans anyway.
+            let (old_highlighted, new_highlighted) = match file_path {
+                Some(path) if !needs_full_file_highlight(path) => (
+                    highlighter.highlight_file_lines(path, &sequences.old_lines),
+                    highlighter.highlight_file_lines(path, &sequences.new_lines),
+                ),
+                _ => (None, None),
             };
 
-            // Now create DiffLines with syntax highlighting applied
-            for line_idx in 0..patch.num_lines_in_hunk(hunk_idx)? {
-                let line = patch.line_in_hunk(hunk_idx, line_idx)?;
-                let old_lineno = line.old_lineno();
-                let new_lineno = line.new_lineno();
-                let content = line_contents[line_idx].clone();
-                let origin = line_origins[line_idx];
+            let mut lines: Vec<DiffLine> = Vec::with_capacity(line_contents.len());
+            for (idx, content) in line_contents.into_iter().enumerate() {
+                let origin = line_origins[idx];
+                let (old_lineno, new_lineno) = line_numbers[idx];
 
-                // Get highlighted spans and apply diff background
                 let highlighted_spans = highlighter.highlighted_line_for_diff_with_background(
-                    old_highlighted_lines.as_deref(),
-                    new_highlighted_lines.as_deref(),
-                    highlight_sequences.old_line_indices[line_idx],
-                    highlight_sequences.new_line_indices[line_idx],
+                    old_highlighted.as_deref(),
+                    new_highlighted.as_deref(),
+                    sequences.old_line_indices[idx],
+                    sequences.new_line_indices[idx],
                     origin,
                 );
 
@@ -291,7 +336,6 @@ mod tests {
 
     #[test]
     fn should_return_no_changes_for_clean_repo() {
-        // given
         let repo = Repository::discover(".").unwrap();
         let head = repo.head().unwrap().peel_to_tree().unwrap();
         let diff = repo
@@ -299,10 +343,8 @@ mod tests {
             .unwrap();
         let highlighter = SyntaxHighlighter::default();
 
-        // when
         let result = parse_diff(&diff, &highlighter);
 
-        // then
         assert!(matches!(result, Err(TuicrError::NoChanges)));
     }
 
@@ -334,6 +376,42 @@ mod tests {
             "expected tab-expanded content in git diff lines"
         );
         assert!(lines.iter().all(|l| !l.content.contains('\t')));
+    }
+
+    #[test]
+    fn should_highlight_vue_script_hunk_using_full_file_context() {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let repo = Repository::init(temp_dir.path()).expect("failed to init repo");
+
+        let initial = "<template>\n  <div>{{ msg }}</div>\n</template>\n\n<script setup>\nimport { ref } from 'vue'\nconst msg = ref('hi')\nconst other = 1\n</script>\n";
+        create_initial_commit(&repo, "App.vue", initial);
+
+        let edited = "<template>\n  <div>{{ msg }}</div>\n</template>\n\n<script setup>\nimport { ref } from 'vue'\nconst msg = ref('hello')\nconst other = 1\n</script>\n";
+        fs::write(temp_dir.path().join("App.vue"), edited).expect("failed to update file");
+
+        let files = get_working_tree_diff(&repo, &SyntaxHighlighter::default())
+            .expect("failed to get diff");
+        assert_eq!(files.len(), 1);
+
+        let changed_lines: Vec<_> = files[0].hunks[0]
+            .lines
+            .iter()
+            .filter(|l| matches!(l.origin, LineOrigin::Addition | LineOrigin::Deletion))
+            .collect();
+        assert!(!changed_lines.is_empty(), "expected change lines in hunk");
+
+        for line in changed_lines {
+            let spans = line
+                .highlighted_spans
+                .as_ref()
+                .unwrap_or_else(|| panic!("vue line should be highlighted: {line:?}"));
+            let unique_fgs: std::collections::HashSet<_> =
+                spans.iter().filter_map(|(s, _)| s.fg).collect();
+            assert!(
+                unique_fgs.len() >= 2,
+                "vue hunk line {line:?} should have varied fg colors, got {unique_fgs:?}"
+            );
+        }
     }
 
     #[test]

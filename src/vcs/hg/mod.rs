@@ -9,6 +9,7 @@ use crate::model::{DiffFile, DiffLine, FileStatus, LineOrigin};
 use crate::syntax::SyntaxHighlighter;
 use crate::vcs::diff_parser::{self, DiffFormat};
 use crate::vcs::traits::{CommitInfo, VcsBackend, VcsInfo, VcsType};
+use crate::vcs::{FULL_FILE_CONTEXT, enhance_with_full_context_diff};
 
 /// Parse an hg description into (summary, optional body).
 fn parse_hg_description(desc: &str) -> (String, Option<String>) {
@@ -81,14 +82,19 @@ impl VcsBackend for HgBackend {
     }
 
     fn get_working_tree_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
-        // Get unified diff output from hg
-        let diff_output = run_hg_command(&self.info.root_path, &["diff"])?;
+        // Get unified diff output from hg with full file context so the parser
+        // sees every line; the post-pass reconstructs file content from hunks
+        // when a container grammar needs end-to-end highlighting.
+        let context = FULL_FILE_CONTEXT.to_string();
+        let diff_output = run_hg_command(&self.info.root_path, &["diff", "-U", &context])?;
 
         if diff_output.trim().is_empty() {
             return Err(TuicrError::NoChanges);
         }
 
-        diff_parser::parse_unified_diff(&diff_output, DiffFormat::Hg, highlighter)
+        let mut files = diff_parser::parse_unified_diff(&diff_output, DiffFormat::Hg, highlighter)?;
+        enhance_with_full_context_diff(&mut files, highlighter);
+        Ok(files)
     }
 
     fn fetch_context_lines(
@@ -267,16 +273,19 @@ impl VcsBackend for HgBackend {
             _ => "null".to_string(),
         };
 
+        let context = FULL_FILE_CONTEXT.to_string();
         let diff_output = run_hg_command(
             &self.info.root_path,
-            &["diff", "-r", &from_rev, "-r", newest_short],
+            &["diff", "-U", &context, "-r", &from_rev, "-r", newest_short],
         )?;
 
         if diff_output.trim().is_empty() {
             return Err(TuicrError::NoChanges);
         }
 
-        diff_parser::parse_unified_diff(&diff_output, DiffFormat::Hg, highlighter)
+        let mut files = diff_parser::parse_unified_diff(&diff_output, DiffFormat::Hg, highlighter)?;
+        enhance_with_full_context_diff(&mut files, highlighter);
+        Ok(files)
     }
 
     fn get_commits_info(&self, ids: &[String]) -> Result<Vec<CommitInfo>> {
@@ -375,13 +384,19 @@ impl VcsBackend for HgBackend {
         };
 
         // Diff from parent of oldest to working directory (omit --to)
-        let diff_output = run_hg_command(&self.info.root_path, &["diff", "-r", &from_rev])?;
+        let context = FULL_FILE_CONTEXT.to_string();
+        let diff_output = run_hg_command(
+            &self.info.root_path,
+            &["diff", "-U", &context, "-r", &from_rev],
+        )?;
 
         if diff_output.trim().is_empty() {
             return Err(TuicrError::NoChanges);
         }
 
-        diff_parser::parse_unified_diff(&diff_output, DiffFormat::Hg, highlighter)
+        let mut files = diff_parser::parse_unified_diff(&diff_output, DiffFormat::Hg, highlighter)?;
+        enhance_with_full_context_diff(&mut files, highlighter);
+        Ok(files)
     }
 }
 
@@ -873,6 +888,76 @@ mod tests {
         // Verify we can get display_path without panic (the bug we fixed)
         // Don't assert exact path/status as hg implementations differ (Sapling vs standard hg)
         let _path = file.display_path();
+    }
+
+    /// Set up an hg repo with a committed Vue file ready to be edited.
+    fn setup_test_repo_with_vue() -> Option<tempfile::TempDir> {
+        if !hg_available() {
+            return None;
+        }
+
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let root = temp_dir.path();
+
+        Command::new("hg")
+            .args(["init"])
+            .current_dir(root)
+            .output()
+            .expect("Failed to init hg repo");
+
+        let initial = "<template>\n  <div>{{ msg }}</div>\n</template>\n\n<script setup>\nimport { ref } from 'vue'\nconst msg = ref('hi')\nconst other = 1\n</script>\n";
+        fs::write(root.join("App.vue"), initial).expect("Failed to write Vue file");
+
+        Command::new("hg")
+            .args(["add", "App.vue"])
+            .current_dir(root)
+            .output()
+            .expect("Failed to add file");
+        Command::new("hg")
+            .args(["commit", "-m", "Add Vue file"])
+            .current_dir(root)
+            .output()
+            .expect("Failed to commit");
+
+        let edited = "<template>\n  <div>{{ msg }}</div>\n</template>\n\n<script setup>\nimport { ref } from 'vue'\nconst msg = ref('hello')\nconst other = 1\n</script>\n";
+        fs::write(root.join("App.vue"), edited).expect("Failed to modify Vue file");
+
+        Some(temp_dir)
+    }
+
+    #[test]
+    fn test_hg_highlights_vue_script_hunk_using_full_file_context() {
+        let Some(temp) = setup_test_repo_with_vue() else {
+            eprintln!("Skipping test: hg command not available");
+            return;
+        };
+
+        let backend =
+            HgBackend::from_path(temp.path().to_path_buf()).expect("Failed to create hg backend");
+        let files = backend
+            .get_working_tree_diff(&SyntaxHighlighter::default())
+            .expect("Failed to get diff");
+        assert_eq!(files.len(), 1);
+
+        let changed_lines: Vec<_> = files[0].hunks[0]
+            .lines
+            .iter()
+            .filter(|l| matches!(l.origin, LineOrigin::Addition | LineOrigin::Deletion))
+            .collect();
+        assert!(!changed_lines.is_empty(), "expected change lines in hunk");
+
+        for line in changed_lines {
+            let spans = line
+                .highlighted_spans
+                .as_ref()
+                .unwrap_or_else(|| panic!("vue line should be highlighted: {line:?}"));
+            let unique_fgs: std::collections::HashSet<_> =
+                spans.iter().filter_map(|(s, _)| s.fg).collect();
+            assert!(
+                unique_fgs.len() >= 2,
+                "vue hunk line {line:?} should have varied fg colors, got {unique_fgs:?}"
+            );
+        }
     }
 
     #[test]

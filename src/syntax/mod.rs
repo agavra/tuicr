@@ -5,10 +5,42 @@ use two_face::theme::EmbeddedThemeName;
 use crate::model::diff_types::LineOrigin;
 
 /// A single line of highlighted spans (style + text pairs).
-type HighlightedSpans = Vec<(Style, String)>;
+pub(crate) type HighlightedSpans = Vec<(Style, String)>;
 
 /// Per-line highlight results for a file: `Some` if the line was highlighted, `None` on failure.
-type HighlightedLines = Vec<Option<HighlightedSpans>>;
+pub(crate) type HighlightedLines = Vec<Option<HighlightedSpans>>;
+
+/// Whether `path` belongs to a "container" syntax that embeds other languages
+/// and so needs the full file (not just a hunk slice) in scope before its
+/// nested grammars activate.
+///
+/// Sublime-syntax grammars start in a `main` context entered at the top of the
+/// file. For Vue, syntect stays in `text.html.vue`'s outer scope until it
+/// sees `<template>`, `<script>`, or `<style>`. Same shape for Svelte / Astro
+/// / MDX (fenced code blocks) / PHP / ERB-family templates: anything inside a
+/// nested block in a hunk that doesn't include the opening tag will fall back
+/// to the theme's default foreground.
+///
+/// Container extensions kept narrow. `html` and `md` are intentionally
+/// omitted: the vast majority of changes in those files are outside any
+/// embedded-language block, so paying the full-file cost on every diff would
+/// be a net regression. Add only when an extension is overwhelmingly used as
+/// a container (i.e. most hunks live inside a nested grammar).
+pub(crate) fn needs_full_file_highlight(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|e| e.to_str()),
+        Some(
+            "vue"     // text.html.vue: HTML + JS/TS + CSS blocks
+            | "svelte" // source.svelte: HTML + JS/TS + CSS blocks
+            | "astro"  // source.astro: frontmatter + HTML + JS
+            | "mdx"    // text.html.markdown with JSX inside
+            | "php"    // text.html.php: outer HTML, switches at <?php
+            | "erb"    // text.html.erb: outer HTML, switches at <% %>
+            | "eex"    // text.html.elixir: same shape as erb
+            | "heex" // text.html.heex: Phoenix component templates
+        )
+    )
+}
 
 /// Helper to highlight lines of code from a diff
 pub struct SyntaxHighlighter {

@@ -63,7 +63,7 @@ impl VcsBackend for FileBackend {
         }
 
         // Build line contents and origins for syntax highlighting
-        let line_contents: Vec<String> = lines.iter().map(|l| l.replace('\t', "    ")).collect();
+        let line_contents: Vec<String> = lines.iter().map(|l| super::tabify(l)).collect();
         let line_origins: Vec<LineOrigin> = vec![LineOrigin::Addition; line_contents.len()];
 
         // Apply syntax highlighting

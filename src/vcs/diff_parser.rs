@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use crate::error::{Result, TuicrError};
 use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin};
-use crate::syntax::SyntaxHighlighter;
+use crate::syntax::{SyntaxHighlighter, needs_full_file_highlight};
 
 /// Diff format variants for different VCS tools.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -263,23 +263,22 @@ where
             continue;
         };
 
-        // Match git backend behavior: normalize tabs to 4 spaces so rendering is consistent
-        // across all VCS backends.
-        line_contents.push(content.replace('\t', "    "));
+        line_contents.push(super::tabify(content));
         line_origins.push(origin);
         line_numbers.push((old_ln, new_ln));
     }
 
     // Apply syntax highlighting by side-specific sequence to keep parser state valid.
+    // Container grammars skip per-hunk highlighting; the full-file post-pass
+    // (`enhance_with_full_file_highlight`) overwrites these spans anyway.
     let highlight_sequences =
         SyntaxHighlighter::split_diff_lines_for_highlighting(&line_contents, &line_origins);
-    let (old_highlighted_lines, new_highlighted_lines) = if let Some(path) = file_path {
-        (
+    let (old_highlighted_lines, new_highlighted_lines) = match file_path {
+        Some(path) if !needs_full_file_highlight(path) => (
             highlighter.highlight_file_lines(path, &highlight_sequences.old_lines),
             highlighter.highlight_file_lines(path, &highlight_sequences.new_lines),
-        )
-    } else {
-        (None, None)
+        ),
+        _ => (None, None),
     };
 
     // Build DiffLines

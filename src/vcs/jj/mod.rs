@@ -11,6 +11,7 @@ use crate::model::{DiffFile, DiffLine, FileStatus, LineOrigin};
 use crate::syntax::SyntaxHighlighter;
 use crate::vcs::diff_parser::{self, DiffFormat};
 use crate::vcs::traits::{CommitInfo, VcsBackend, VcsInfo, VcsType};
+use crate::vcs::{FULL_FILE_CONTEXT, enhance_with_full_context_diff};
 
 /// Parse a jj description into (summary, optional body).
 fn parse_description(desc: &str) -> (String, Option<String>) {
@@ -118,14 +119,23 @@ impl VcsBackend for JjBackend {
     }
 
     fn get_working_tree_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
-        // Get unified diff output from jj using --git format
-        let diff_output = run_jj_command(&self.info.root_path, &["diff", "--git"])?;
+        // Get unified diff output from jj with full file context so the parser
+        // sees every line; the post-pass reconstructs file content from hunks
+        // when a container grammar needs end-to-end highlighting.
+        let context = FULL_FILE_CONTEXT.to_string();
+        let diff_output = run_jj_command(
+            &self.info.root_path,
+            &["diff", "--git", "--context", &context],
+        )?;
 
         if diff_output.trim().is_empty() {
             return Err(TuicrError::NoChanges);
         }
 
-        diff_parser::parse_unified_diff(&diff_output, DiffFormat::GitStyle, highlighter)
+        let mut files =
+            diff_parser::parse_unified_diff(&diff_output, DiffFormat::GitStyle, highlighter)?;
+        enhance_with_full_context_diff(&mut files, highlighter);
+        Ok(files)
     }
 
     fn fetch_context_lines(
@@ -278,15 +288,19 @@ impl VcsBackend for JjBackend {
 
         // Get the parent of the oldest commit to include its changes
         // In jj, we use {commit}- to get the parent(s)
+        let from_rev = format!("{}-", oldest);
+        let context = FULL_FILE_CONTEXT.to_string();
         let diff_output = run_jj_command(
             &self.info.root_path,
             &[
                 "diff",
                 "--from",
-                &format!("{}-", oldest),
+                &from_rev,
                 "--to",
                 newest,
                 "--git",
+                "--context",
+                &context,
             ],
         )?;
 
@@ -294,7 +308,10 @@ impl VcsBackend for JjBackend {
             return Err(TuicrError::NoChanges);
         }
 
-        diff_parser::parse_unified_diff(&diff_output, DiffFormat::GitStyle, highlighter)
+        let mut files =
+            diff_parser::parse_unified_diff(&diff_output, DiffFormat::GitStyle, highlighter)?;
+        enhance_with_full_context_diff(&mut files, highlighter);
+        Ok(files)
     }
 
     fn get_commits_info(&self, ids: &[String]) -> Result<Vec<CommitInfo>> {
@@ -361,15 +378,19 @@ impl VcsBackend for JjBackend {
         let oldest = &commit_ids[0];
 
         // Diff from the parent of the oldest commit to the working copy (@)
+        let from_rev = format!("{}-", oldest);
+        let context = FULL_FILE_CONTEXT.to_string();
         let diff_output = run_jj_command(
             &self.info.root_path,
             &[
                 "diff",
                 "--from",
-                &format!("{}-", oldest),
+                &from_rev,
                 "--to",
                 "@",
                 "--git",
+                "--context",
+                &context,
             ],
         )?;
 
@@ -377,7 +398,10 @@ impl VcsBackend for JjBackend {
             return Err(TuicrError::NoChanges);
         }
 
-        diff_parser::parse_unified_diff(&diff_output, DiffFormat::GitStyle, highlighter)
+        let mut files =
+            diff_parser::parse_unified_diff(&diff_output, DiffFormat::GitStyle, highlighter)?;
+        enhance_with_full_context_diff(&mut files, highlighter);
+        Ok(files)
     }
 }
 
@@ -859,6 +883,74 @@ mod tests {
             .expect("Failed to create bookmark");
 
         Some(temp_dir)
+    }
+
+    /// Set up a jj repo with a committed Vue file ready to be edited.
+    fn setup_test_repo_with_vue() -> Option<tempfile::TempDir> {
+        if !jj_available() {
+            return None;
+        }
+
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let root = temp_dir.path();
+
+        let output = Command::new("jj")
+            .args(["git", "init"])
+            .current_dir(root)
+            .output()
+            .expect("Failed to init jj repo");
+        if !output.status.success() {
+            return None;
+        }
+
+        let initial = "<template>\n  <div>{{ msg }}</div>\n</template>\n\n<script setup>\nimport { ref } from 'vue'\nconst msg = ref('hi')\nconst other = 1\n</script>\n";
+        fs::write(root.join("App.vue"), initial).expect("Failed to write Vue file");
+
+        Command::new("jj")
+            .args(["commit", "-m", "Add Vue file"])
+            .current_dir(root)
+            .output()
+            .expect("Failed to commit");
+
+        let edited = "<template>\n  <div>{{ msg }}</div>\n</template>\n\n<script setup>\nimport { ref } from 'vue'\nconst msg = ref('hello')\nconst other = 1\n</script>\n";
+        fs::write(root.join("App.vue"), edited).expect("Failed to modify Vue file");
+
+        Some(temp_dir)
+    }
+
+    #[test]
+    fn test_jj_highlights_vue_script_hunk_using_full_file_context() {
+        let Some(temp) = setup_test_repo_with_vue() else {
+            eprintln!("Skipping test: jj command not available");
+            return;
+        };
+
+        let backend =
+            JjBackend::from_path(temp.path().to_path_buf()).expect("Failed to create jj backend");
+        let files = backend
+            .get_working_tree_diff(&SyntaxHighlighter::default())
+            .expect("Failed to get diff");
+        assert_eq!(files.len(), 1);
+
+        let changed_lines: Vec<_> = files[0].hunks[0]
+            .lines
+            .iter()
+            .filter(|l| matches!(l.origin, LineOrigin::Addition | LineOrigin::Deletion))
+            .collect();
+        assert!(!changed_lines.is_empty(), "expected change lines in hunk");
+
+        for line in changed_lines {
+            let spans = line
+                .highlighted_spans
+                .as_ref()
+                .unwrap_or_else(|| panic!("vue line should be highlighted: {line:?}"));
+            let unique_fgs: std::collections::HashSet<_> =
+                spans.iter().filter_map(|(s, _)| s.fg).collect();
+            assert!(
+                unique_fgs.len() >= 2,
+                "vue hunk line {line:?} should have varied fg colors, got {unique_fgs:?}"
+            );
+        }
     }
 
     #[test]
