@@ -24,19 +24,39 @@ pub use hg::HgBackend;
 pub use jj::JjBackend;
 pub use traits::{CommitInfo, VcsBackend, VcsInfo};
 
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use crate::error::{Result, TuicrError};
-use crate::model::{DiffFile, LineOrigin};
+use crate::model::{DiffFile, LineSide};
 use crate::syntax::{
     HighlightedLines, HighlightedSpans, SyntaxHighlighter, needs_full_file_highlight,
 };
 
-/// Context size used by hg / jj diff calls when we want the diff text to act
-/// as the file's full content. Generous enough to cover any reasonable source
-/// file end-to-end, so the unified-diff parser sees every line as a context,
-/// addition, or deletion entry.
-pub(crate) const FULL_FILE_CONTEXT: usize = 1_000_000;
+/// Boundary marker emitted between files in batched `hg cat` / `jj file show`
+/// output. The long random suffix makes accidental collision with real source
+/// content effectively impossible.
+pub(crate) const BATCH_BOUNDARY: &str = "@@TUICR_BATCH_BOUNDARY_e97f2d44_8b1a@@";
+
+/// Collect the unique paths of files that need full-file syntax highlighting
+/// (Vue, Svelte, PHP and friends) on the given side, skipping binary, too-large,
+/// or empty entries. Used by hg / jj to know which files to batch-fetch.
+pub(crate) fn container_file_paths(files: &[DiffFile], side: LineSide) -> Vec<PathBuf> {
+    files
+        .iter()
+        .filter(|f| !f.is_binary && !f.is_too_large && !f.hunks.is_empty())
+        .filter_map(|f| {
+            let syntax_path = f.new_path.as_deref().or(f.old_path.as_deref())?;
+            if !needs_full_file_highlight(syntax_path) {
+                return None;
+            }
+            match side {
+                LineSide::Old => f.old_path.clone(),
+                LineSide::New => f.new_path.clone(),
+            }
+        })
+        .collect()
+}
 
 /// Expand tabs to spaces in diff line content so highlighted spans line up
 /// with the displayed text in side-by-side and unified rendering.
@@ -47,6 +67,68 @@ pub(crate) fn tabify(s: &str) -> String {
 /// Read a file from the working tree, returning `None` on any IO error.
 pub(crate) fn read_workdir_file(root: &Path, rel: &Path) -> Option<String> {
     std::fs::read_to_string(root.join(rel)).ok()
+}
+
+/// Parse the output of a batched `hg cat` / `jj file show` invocation whose
+/// template prefixed each file with `\n{BATCH_BOUNDARY}\n{path}\n` before
+/// emitting `{data}`. Returns a `path → data` map.
+pub(crate) fn parse_batched_files(output: &str) -> HashMap<PathBuf, String> {
+    let sep = format!("\n{BATCH_BOUNDARY}\n");
+    output
+        .split(&sep)
+        .filter(|s| !s.is_empty())
+        .filter_map(|block| {
+            let mut iter = block.splitn(2, '\n');
+            let path = iter.next()?;
+            let data = iter.next().unwrap_or("");
+            Some((PathBuf::from(path), data.to_string()))
+        })
+        .collect()
+}
+
+/// Re-highlight container-grammar files (Vue, Svelte, etc) using their full
+/// content at the requested revisions. `new_rev = None` reads the new side
+/// from the working tree on disk instead of calling `fetch_batch`. The
+/// `fetch_batch` closure is the backend-specific batched-fetch primitive
+/// (`hg cat -r REV ...` or `jj file show -r REV ...`).
+pub(crate) fn apply_container_full_file_highlight<F>(
+    root: &Path,
+    old_rev: &str,
+    new_rev: Option<&str>,
+    files: &mut [DiffFile],
+    highlighter: &SyntaxHighlighter,
+    fetch_batch: F,
+) -> Result<()>
+where
+    F: Fn(&Path, &str, &[PathBuf]) -> Result<HashMap<PathBuf, String>>,
+{
+    let old_paths = container_file_paths(files, LineSide::Old);
+    let new_paths = container_file_paths(files, LineSide::New);
+
+    if old_paths.is_empty() && new_paths.is_empty() {
+        return Ok(());
+    }
+
+    let old_map = fetch_batch(root, old_rev, &old_paths)?;
+    let new_map = match new_rev {
+        Some(rev) => fetch_batch(root, rev, &new_paths)?,
+        None => HashMap::new(),
+    };
+
+    let workdir = new_rev.is_none().then(|| root.to_path_buf());
+
+    enhance_with_full_file_highlight(
+        files,
+        highlighter,
+        |p| old_map.get(p).cloned(),
+        |p| match (new_map.get(p), workdir.as_deref()) {
+            (Some(content), _) => Some(content.clone()),
+            (None, Some(root)) => read_workdir_file(root, p),
+            (None, None) => None,
+        },
+    );
+
+    Ok(())
 }
 
 /// Files larger than this skip the full-file highlight pass and fall back to
@@ -119,47 +201,6 @@ fn highlight_content(
     highlighter.highlight_file_lines(path, &lines)
 }
 
-/// Re-highlight container-grammar files in place by reconstructing the old and
-/// new file content directly from the diff's own hunks. Assumes the diff was
-/// generated with `FULL_FILE_CONTEXT` so that every line of the file appears
-/// as a context, addition, or deletion entry. Avoids any extra subprocess.
-pub(crate) fn enhance_with_full_context_diff(
-    files: &mut [DiffFile],
-    highlighter: &SyntaxHighlighter,
-) {
-    for file in files.iter_mut() {
-        if file.is_binary || file.is_too_large || file.hunks.is_empty() {
-            continue;
-        }
-        let Some(syntax_path) = file.new_path.as_deref().or(file.old_path.as_deref()) else {
-            continue;
-        };
-        if !needs_full_file_highlight(syntax_path) {
-            continue;
-        }
-
-        let old_content = reconstruct_side(file, false);
-        let new_content = reconstruct_side(file, true);
-        let old_highlight = old_content
-            .as_deref()
-            .and_then(|c| highlight_content(highlighter, syntax_path, c));
-        let new_highlight = new_content
-            .as_deref()
-            .and_then(|c| highlight_content(highlighter, syntax_path, c));
-
-        if old_highlight.is_none() && new_highlight.is_none() {
-            continue;
-        }
-
-        apply_full_file_spans(
-            file,
-            highlighter,
-            old_highlight.as_deref(),
-            new_highlight.as_deref(),
-        );
-    }
-}
-
 fn apply_full_file_spans(
     file: &mut DiffFile,
     highlighter: &SyntaxHighlighter,
@@ -182,30 +223,6 @@ fn apply_full_file_spans(
             }
         }
     }
-}
-
-/// Concatenate the side-relevant lines from a DiffFile's hunks into a single
-/// string. Pass `new_side = true` for additions + context (the new file),
-/// `false` for deletions + context (the old file).
-fn reconstruct_side(file: &DiffFile, new_side: bool) -> Option<String> {
-    let mut lines: Vec<&str> = Vec::new();
-    for hunk in &file.hunks {
-        for line in &hunk.lines {
-            let include = matches!(
-                (line.origin, new_side),
-                (LineOrigin::Context, _)
-                    | (LineOrigin::Addition, true)
-                    | (LineOrigin::Deletion, false)
-            );
-            if include {
-                lines.push(&line.content);
-            }
-        }
-    }
-    if lines.is_empty() {
-        return None;
-    }
-    Some(lines.join("\n"))
 }
 
 /// Detect the VCS type and return the appropriate backend.

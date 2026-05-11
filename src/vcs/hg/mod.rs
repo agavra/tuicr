@@ -9,7 +9,7 @@ use crate::model::{DiffFile, DiffLine, FileStatus, LineOrigin};
 use crate::syntax::SyntaxHighlighter;
 use crate::vcs::diff_parser::{self, DiffFormat};
 use crate::vcs::traits::{CommitInfo, VcsBackend, VcsInfo, VcsType};
-use crate::vcs::{FULL_FILE_CONTEXT, enhance_with_full_context_diff};
+use crate::vcs::{BATCH_BOUNDARY, apply_container_full_file_highlight, parse_batched_files};
 
 /// Parse an hg description into (summary, optional body).
 fn parse_hg_description(desc: &str) -> (String, Option<String>) {
@@ -82,18 +82,21 @@ impl VcsBackend for HgBackend {
     }
 
     fn get_working_tree_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
-        // Get unified diff output from hg with full file context so the parser
-        // sees every line; the post-pass reconstructs file content from hunks
-        // when a container grammar needs end-to-end highlighting.
-        let context = FULL_FILE_CONTEXT.to_string();
-        let diff_output = run_hg_command(&self.info.root_path, &["diff", "-U", &context])?;
+        let diff_output = run_hg_command(&self.info.root_path, &["diff"])?;
 
         if diff_output.trim().is_empty() {
             return Err(TuicrError::NoChanges);
         }
 
         let mut files = diff_parser::parse_unified_diff(&diff_output, DiffFormat::Hg, highlighter)?;
-        enhance_with_full_context_diff(&mut files, highlighter);
+        apply_container_full_file_highlight(
+            &self.info.root_path,
+            ".",
+            None,
+            &mut files,
+            highlighter,
+            hg_cat_batch,
+        )?;
         Ok(files)
     }
 
@@ -273,10 +276,9 @@ impl VcsBackend for HgBackend {
             _ => "null".to_string(),
         };
 
-        let context = FULL_FILE_CONTEXT.to_string();
         let diff_output = run_hg_command(
             &self.info.root_path,
-            &["diff", "-U", &context, "-r", &from_rev, "-r", newest_short],
+            &["diff", "-r", &from_rev, "-r", newest_short],
         )?;
 
         if diff_output.trim().is_empty() {
@@ -284,7 +286,14 @@ impl VcsBackend for HgBackend {
         }
 
         let mut files = diff_parser::parse_unified_diff(&diff_output, DiffFormat::Hg, highlighter)?;
-        enhance_with_full_context_diff(&mut files, highlighter);
+        apply_container_full_file_highlight(
+            &self.info.root_path,
+            &from_rev,
+            Some(newest_short),
+            &mut files,
+            highlighter,
+            hg_cat_batch,
+        )?;
         Ok(files)
     }
 
@@ -383,21 +392,48 @@ impl VcsBackend for HgBackend {
             _ => "null".to_string(),
         };
 
-        // Diff from parent of oldest to working directory (omit --to)
-        let context = FULL_FILE_CONTEXT.to_string();
-        let diff_output = run_hg_command(
-            &self.info.root_path,
-            &["diff", "-U", &context, "-r", &from_rev],
-        )?;
+        let diff_output =
+            run_hg_command(&self.info.root_path, &["diff", "-r", &from_rev])?;
 
         if diff_output.trim().is_empty() {
             return Err(TuicrError::NoChanges);
         }
 
         let mut files = diff_parser::parse_unified_diff(&diff_output, DiffFormat::Hg, highlighter)?;
-        enhance_with_full_context_diff(&mut files, highlighter);
+        apply_container_full_file_highlight(
+            &self.info.root_path,
+            &from_rev,
+            None,
+            &mut files,
+            highlighter,
+            hg_cat_batch,
+        )?;
         Ok(files)
     }
+}
+
+/// Fetch the full content of `paths` at `rev` in a single `hg cat` subprocess.
+///
+/// hg cat is dominated by Python startup (~280 ms) regardless of file count,
+/// so batching every container file into one call is significantly faster than
+/// fetching each one separately.
+fn hg_cat_batch(
+    root: &Path,
+    rev: &str,
+    paths: &[PathBuf],
+) -> Result<HashMap<PathBuf, String>> {
+    if paths.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let template = format!("\n{BATCH_BOUNDARY}\n{{path}}\n{{data}}");
+    let path_strs: Vec<String> = paths
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    let mut args: Vec<&str> = vec!["cat", "-r", rev, "--template", &template];
+    args.extend(path_strs.iter().map(String::as_str));
+    let output = run_hg_command(root, &args)?;
+    Ok(parse_batched_files(&output))
 }
 
 /// Run an hg command and return its stdout

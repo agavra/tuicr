@@ -11,7 +11,7 @@ use crate::model::{DiffFile, DiffLine, FileStatus, LineOrigin};
 use crate::syntax::SyntaxHighlighter;
 use crate::vcs::diff_parser::{self, DiffFormat};
 use crate::vcs::traits::{CommitInfo, VcsBackend, VcsInfo, VcsType};
-use crate::vcs::{FULL_FILE_CONTEXT, enhance_with_full_context_diff};
+use crate::vcs::{BATCH_BOUNDARY, apply_container_full_file_highlight, parse_batched_files};
 
 /// Parse a jj description into (summary, optional body).
 fn parse_description(desc: &str) -> (String, Option<String>) {
@@ -119,14 +119,7 @@ impl VcsBackend for JjBackend {
     }
 
     fn get_working_tree_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
-        // Get unified diff output from jj with full file context so the parser
-        // sees every line; the post-pass reconstructs file content from hunks
-        // when a container grammar needs end-to-end highlighting.
-        let context = FULL_FILE_CONTEXT.to_string();
-        let diff_output = run_jj_command(
-            &self.info.root_path,
-            &["diff", "--git", "--context", &context],
-        )?;
+        let diff_output = run_jj_command(&self.info.root_path, &["diff", "--git"])?;
 
         if diff_output.trim().is_empty() {
             return Err(TuicrError::NoChanges);
@@ -134,7 +127,14 @@ impl VcsBackend for JjBackend {
 
         let mut files =
             diff_parser::parse_unified_diff(&diff_output, DiffFormat::GitStyle, highlighter)?;
-        enhance_with_full_context_diff(&mut files, highlighter);
+        apply_container_full_file_highlight(
+            &self.info.root_path,
+            "@-",
+            None,
+            &mut files,
+            highlighter,
+            jj_show_batch,
+        )?;
         Ok(files)
     }
 
@@ -289,19 +289,9 @@ impl VcsBackend for JjBackend {
         // Get the parent of the oldest commit to include its changes
         // In jj, we use {commit}- to get the parent(s)
         let from_rev = format!("{}-", oldest);
-        let context = FULL_FILE_CONTEXT.to_string();
         let diff_output = run_jj_command(
             &self.info.root_path,
-            &[
-                "diff",
-                "--from",
-                &from_rev,
-                "--to",
-                newest,
-                "--git",
-                "--context",
-                &context,
-            ],
+            &["diff", "--from", &from_rev, "--to", newest, "--git"],
         )?;
 
         if diff_output.trim().is_empty() {
@@ -310,7 +300,14 @@ impl VcsBackend for JjBackend {
 
         let mut files =
             diff_parser::parse_unified_diff(&diff_output, DiffFormat::GitStyle, highlighter)?;
-        enhance_with_full_context_diff(&mut files, highlighter);
+        apply_container_full_file_highlight(
+            &self.info.root_path,
+            &from_rev,
+            Some(newest),
+            &mut files,
+            highlighter,
+            jj_show_batch,
+        )?;
         Ok(files)
     }
 
@@ -379,19 +376,9 @@ impl VcsBackend for JjBackend {
 
         // Diff from the parent of the oldest commit to the working copy (@)
         let from_rev = format!("{}-", oldest);
-        let context = FULL_FILE_CONTEXT.to_string();
         let diff_output = run_jj_command(
             &self.info.root_path,
-            &[
-                "diff",
-                "--from",
-                &from_rev,
-                "--to",
-                "@",
-                "--git",
-                "--context",
-                &context,
-            ],
+            &["diff", "--from", &from_rev, "--to", "@", "--git"],
         )?;
 
         if diff_output.trim().is_empty() {
@@ -400,9 +387,38 @@ impl VcsBackend for JjBackend {
 
         let mut files =
             diff_parser::parse_unified_diff(&diff_output, DiffFormat::GitStyle, highlighter)?;
-        enhance_with_full_context_diff(&mut files, highlighter);
+        apply_container_full_file_highlight(
+            &self.info.root_path,
+            &from_rev,
+            None,
+            &mut files,
+            highlighter,
+            jj_show_batch,
+        )?;
         Ok(files)
     }
+}
+
+/// Fetch the full content of `paths` at `rev` in a single `jj file show`
+/// subprocess. jj is much cheaper per-call than hg, but batching still avoids
+/// repeated process startup when there are many container files in a diff.
+fn jj_show_batch(
+    root: &Path,
+    rev: &str,
+    paths: &[PathBuf],
+) -> Result<HashMap<PathBuf, String>> {
+    if paths.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let template = format!("\"\\n{BATCH_BOUNDARY}\\n\" ++ path ++ \"\\n\"");
+    let path_strs: Vec<String> = paths
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    let mut args: Vec<&str> = vec!["file", "show", "-r", rev, "-T", &template];
+    args.extend(path_strs.iter().map(String::as_str));
+    let output = run_jj_command(root, &args)?;
+    Ok(parse_batched_files(&output))
 }
 
 /// Run a jj command and return its stdout
