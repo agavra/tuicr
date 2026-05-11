@@ -402,11 +402,7 @@ impl VcsBackend for JjBackend {
 /// Fetch the full content of `paths` at `rev` in a single `jj file show`
 /// subprocess. jj is much cheaper per-call than hg, but batching still avoids
 /// repeated process startup when there are many container files in a diff.
-fn jj_show_batch(
-    root: &Path,
-    rev: &str,
-    paths: &[PathBuf],
-) -> Result<HashMap<PathBuf, String>> {
+fn jj_show_batch(root: &Path, rev: &str, paths: &[PathBuf]) -> Result<HashMap<PathBuf, String>> {
     if paths.is_empty() {
         return Ok(HashMap::new());
     }

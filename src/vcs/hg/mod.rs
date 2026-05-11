@@ -392,8 +392,7 @@ impl VcsBackend for HgBackend {
             _ => "null".to_string(),
         };
 
-        let diff_output =
-            run_hg_command(&self.info.root_path, &["diff", "-r", &from_rev])?;
+        let diff_output = run_hg_command(&self.info.root_path, &["diff", "-r", &from_rev])?;
 
         if diff_output.trim().is_empty() {
             return Err(TuicrError::NoChanges);
@@ -417,11 +416,7 @@ impl VcsBackend for HgBackend {
 /// hg cat is dominated by Python startup (~280 ms) regardless of file count,
 /// so batching every container file into one call is significantly faster than
 /// fetching each one separately.
-fn hg_cat_batch(
-    root: &Path,
-    rev: &str,
-    paths: &[PathBuf],
-) -> Result<HashMap<PathBuf, String>> {
+fn hg_cat_batch(root: &Path, rev: &str, paths: &[PathBuf]) -> Result<HashMap<PathBuf, String>> {
     if paths.is_empty() {
         return Ok(HashMap::new());
     }
