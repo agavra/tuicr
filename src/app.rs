@@ -945,6 +945,13 @@ pub struct App {
 
     pub file_list_state: FileListState,
     pub comment_navigator_state: CommentNavigatorState,
+    /// True while the user has manually scrolled the file list independently
+    /// of the diff cursor. Suppresses the render-time "sync selection to
+    /// diff's current file" path so wheel scrolls aren't snapped back by
+    /// ratatui's auto-adjust-on-selection-change. Cleared when something
+    /// else changes the diff's current file (cursor moving into a new file,
+    /// click jump, } / { navigation).
+    pub manual_file_list_scroll: bool,
     pub diff_state: DiffState,
     pub help_state: HelpState,
     pub command_buffer: String,
@@ -1803,6 +1810,7 @@ impl App {
             diff_view_mode: DiffViewMode::Unified,
             file_list_state: FileListState::default(),
             comment_navigator_state: CommentNavigatorState::default(),
+            manual_file_list_scroll: false,
             diff_state: DiffState::default(),
             help_state: HelpState::default(),
             command_buffer: String::new(),
@@ -5064,6 +5072,7 @@ impl App {
         if self.file_list_state.selected() < new_offset {
             self.file_list_state.select(new_offset);
         }
+        self.manual_file_list_scroll = true;
     }
 
     /// Scroll the file-list viewport up by `lines` without moving the
@@ -5080,6 +5089,7 @@ impl App {
         if self.file_list_state.selected() > max_visible {
             self.file_list_state.select(max_visible);
         }
+        self.manual_file_list_scroll = true;
     }
 
     pub fn diff_annotation_at_screen_row(&self, screen_row: u16) -> Option<usize> {
@@ -6204,10 +6214,11 @@ impl App {
         Some(self.diff_files.len() - 1)
     }
 
-    fn reprioritize_highlights_if_file_changed(&self, prev: usize) {
+    fn reprioritize_highlights_if_file_changed(&mut self, prev: usize) {
         if prev == self.diff_state.current_file_idx {
             return;
         }
+        self.manual_file_list_scroll = false;
         if let Some(session) = self.highlight_session.as_ref() {
             session.prioritize_around(self.diff_state.current_file_idx);
         }
