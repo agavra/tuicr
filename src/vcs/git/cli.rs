@@ -97,6 +97,7 @@ impl GitCliBackend {
         if include_untracked {
             append_untracked_cli_diffs(&self.root_path, &mut files, highlighter)?;
         }
+        normalize_git_cli_paths(&mut files);
 
         if files.is_empty() {
             return Err(TuicrError::NoChanges);
@@ -193,7 +194,13 @@ impl VcsBackend for GitCliBackend {
         // have not already proven the "unstaged" row should be shown.
         let staged = has_diff_changes(&self.root_path, &["diff", "--quiet", "--cached", "--"])?;
         let tracked_unstaged = has_diff_changes(&self.root_path, &["diff", "--quiet", "--"])?;
-        let unstaged = tracked_unstaged || has_untracked_changes(&self.root_path)?;
+        let untracked_pathspecs = if tracked_unstaged {
+            Vec::new()
+        } else {
+            sparse_checkout_untracked_pathspecs(&self.root_path)?
+        };
+        let unstaged =
+            tracked_unstaged || has_untracked_changes(&self.root_path, &untracked_pathspecs)?;
 
         Ok(VcsChangeStatus { staged, unstaged })
     }
@@ -254,7 +261,10 @@ impl VcsBackend for GitCliBackend {
 
     fn resolve_revisions(&self, revisions: &str) -> Result<Vec<String>> {
         let commit_ids = if revisions.contains("..") {
-            let output = run_git_command(&self.root_path, &["rev-list", "--reverse", revisions])?;
+            let output = run_git_command(
+                &self.root_path,
+                &["rev-list", "--topo-order", "--reverse", revisions],
+            )?;
             output
                 .lines()
                 .filter(|line| !line.is_empty())
@@ -422,16 +432,22 @@ fn has_diff_changes(workdir: &Path, args: &[&str]) -> Result<bool> {
     }
 }
 
-fn has_untracked_changes(workdir: &Path) -> Result<bool> {
+fn has_untracked_changes(workdir: &Path, pathspecs: &[String]) -> Result<bool> {
+    let mut args = vec![
+        "ls-files",
+        "--others",
+        "--exclude-standard",
+        "-z",
+        "--directory",
+    ];
+    if !pathspecs.is_empty() {
+        args.push("--");
+        args.extend(pathspecs.iter().map(String::as_str));
+    }
+
     let mut child = Command::new("git")
         .current_dir(workdir)
-        .args([
-            "ls-files",
-            "--others",
-            "--exclude-standard",
-            "-z",
-            "--directory",
-        ])
+        .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -651,6 +667,20 @@ fn diff_file_without_hunks(path: &Path, is_binary: bool, is_too_large: bool) -> 
     }
 }
 
+fn normalize_git_cli_paths(files: &mut [DiffFile]) {
+    for file in files {
+        match file.status {
+            FileStatus::Added if file.old_path.is_none() => {
+                file.old_path = file.new_path.clone();
+            }
+            FileStatus::Deleted if file.new_path.is_none() => {
+                file.new_path = file.old_path.clone();
+            }
+            _ => {}
+        }
+    }
+}
+
 fn for_each_untracked_path<F>(workdir: &Path, pathspecs: &[String], mut visit: F) -> Result<()>
 where
     F: FnMut(PathBuf) -> Result<()>,
@@ -665,6 +695,7 @@ where
         .current_dir(workdir)
         .args(args)
         .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| TuicrError::VcsCommand(format!("Failed to run git: {e}")))?;
 
@@ -697,11 +728,13 @@ where
         visit(PathBuf::from(String::from_utf8_lossy(&path).into_owned()))?;
     }
 
-    let status = child.wait()?;
-    if !status.success() {
-        return Err(TuicrError::VcsCommand(format!(
-            "git ls-files failed with status {status}"
-        )));
+    let output = child
+        .wait_with_output()
+        .map_err(|e| TuicrError::VcsCommand(format!("git ls-files failed: {e}")))?;
+    if !output.status.success() {
+        return Err(TuicrError::VcsCommand(
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        ));
     }
 
     Ok(())
@@ -969,6 +1002,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vcs::git::{diff, repository};
 
     fn git(workdir: &Path, args: &[&str]) {
         let output = Command::new("git")
@@ -989,6 +1023,26 @@ mod tests {
         fs::create_dir_all(full_path.parent().expect("test path should have parent"))
             .expect("failed to create parent");
         fs::write(full_path, content).expect("failed to write file");
+    }
+
+    fn remove_file(workdir: &Path, path: &str) {
+        fs::remove_file(workdir.join(path)).expect("failed to remove file");
+    }
+
+    fn summarize_files(
+        files: Vec<DiffFile>,
+    ) -> Vec<(Option<PathBuf>, Option<PathBuf>, FileStatus)> {
+        let mut summary: Vec<_> = files
+            .into_iter()
+            .map(|file| (file.old_path, file.new_path, file.status))
+            .collect();
+        summary.sort_by(|left, right| {
+            left.0
+                .cmp(&right.0)
+                .then_with(|| left.1.cmp(&right.1))
+                .then_with(|| left.2.as_char().cmp(&right.2.as_char()))
+        });
+        summary
     }
 
     fn setup_sparse_index_repo() -> (tempfile::TempDir, GitCliBackend, Vec<String>) {
@@ -1022,6 +1076,49 @@ mod tests {
 
         let backend = GitCliBackend::discover_from(workdir).expect("failed to discover backend");
         (temp_dir, backend, vec![first_id, second_id])
+    }
+
+    fn setup_standard_parity_repo() -> (
+        tempfile::TempDir,
+        GitCliBackend,
+        git2::Repository,
+        Vec<String>,
+    ) {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let workdir = temp_dir.path();
+
+        git(workdir, &["init"]);
+        git(workdir, &["config", "user.email", "test@example.com"]);
+        git(workdir, &["config", "user.name", "Test User"]);
+        write_file(workdir, "modified.txt", "modified base\n");
+        write_file(workdir, "deleted.txt", "deleted base\n");
+        write_file(workdir, "staged.txt", "staged base\n");
+        write_file(workdir, "range.txt", "range base\n");
+        git(workdir, &["add", "."]);
+        git(workdir, &["commit", "-m", "initial"]);
+        let first_id = run_git_command(workdir, &["rev-parse", "HEAD"])
+            .expect("failed to resolve first commit")
+            .trim()
+            .to_string();
+
+        write_file(workdir, "range.txt", "range changed\n");
+        git(workdir, &["add", "range.txt"]);
+        git(workdir, &["commit", "-m", "second"]);
+        let second_id = run_git_command(workdir, &["rev-parse", "HEAD"])
+            .expect("failed to resolve second commit")
+            .trim()
+            .to_string();
+
+        write_file(workdir, "modified.txt", "modified changed\n");
+        remove_file(workdir, "deleted.txt");
+        write_file(workdir, "staged.txt", "staged changed\n");
+        git(workdir, &["add", "staged.txt"]);
+        write_file(workdir, "untracked.txt", "untracked\n");
+
+        let cli_backend =
+            GitCliBackend::discover_from(workdir).expect("failed to discover cli backend");
+        let repo = git2::Repository::open(workdir).expect("failed to open git2 repo");
+        (temp_dir, cli_backend, repo, vec![first_id, second_id])
     }
 
     #[test]
@@ -1156,6 +1253,108 @@ mod tests {
                 staged: false,
                 unstaged: true,
             }
+        );
+    }
+
+    #[test]
+    fn ignores_untracked_files_outside_sparse_cone_in_change_status() {
+        let (temp_dir, backend, _ids) = setup_sparse_index_repo();
+        write_file(temp_dir.path(), "hidden/outside.txt", "outside cone\n");
+
+        let status = backend
+            .get_change_status()
+            .expect("failed to get change status");
+
+        assert_eq!(status, VcsChangeStatus::default());
+    }
+
+    #[test]
+    fn detects_untracked_files_inside_sparse_cone_in_change_status() {
+        let (temp_dir, backend, _ids) = setup_sparse_index_repo();
+        write_file(temp_dir.path(), "keep/new.txt", "inside cone\n");
+
+        let status = backend
+            .get_change_status()
+            .expect("failed to get change status");
+
+        assert_eq!(
+            status,
+            VcsChangeStatus {
+                staged: false,
+                unstaged: true,
+            }
+        );
+    }
+
+    #[test]
+    fn cli_diff_outputs_match_libgit2_for_shared_git_operations() {
+        let (_temp_dir, cli_backend, repo, ids) = setup_standard_parity_repo();
+        let highlighter = SyntaxHighlighter::default();
+
+        assert_eq!(
+            summarize_files(cli_backend.get_working_tree_diff(&highlighter).unwrap()),
+            summarize_files(diff::get_working_tree_diff(&repo, &highlighter).unwrap())
+        );
+        assert_eq!(
+            summarize_files(cli_backend.get_staged_diff(&highlighter).unwrap()),
+            summarize_files(diff::get_staged_diff(&repo, &highlighter).unwrap())
+        );
+        assert_eq!(
+            summarize_files(cli_backend.get_unstaged_diff(&highlighter).unwrap()),
+            summarize_files(diff::get_unstaged_diff(&repo, &highlighter).unwrap())
+        );
+        assert_eq!(
+            summarize_files(
+                cli_backend
+                    .get_commit_range_diff(&[ids[1].clone()], &highlighter)
+                    .unwrap()
+            ),
+            summarize_files(
+                diff::get_commit_range_diff(&repo, &[ids[1].clone()], &highlighter).unwrap()
+            )
+        );
+        assert_eq!(
+            summarize_files(
+                cli_backend
+                    .get_working_tree_with_commits_diff(&[ids[1].clone()], &highlighter)
+                    .unwrap()
+            ),
+            summarize_files(
+                diff::get_working_tree_with_commits_diff(&repo, &[ids[1].clone()], &highlighter)
+                    .unwrap()
+            )
+        );
+
+        let cli_commits = cli_backend.get_recent_commits(0, 10).unwrap();
+        let libgit2_commits = repository::get_recent_commits(&repo, 0, 10).unwrap();
+        assert_eq!(
+            cli_commits
+                .iter()
+                .map(|commit| (&commit.id, &commit.summary, &commit.body))
+                .collect::<Vec<_>>(),
+            libgit2_commits
+                .iter()
+                .map(|commit| (&commit.id, &commit.summary, &commit.body))
+                .collect::<Vec<_>>()
+        );
+
+        let revset = format!("{}..{}", ids[0], ids[1]);
+        assert_eq!(
+            cli_backend.resolve_revisions(&revset).unwrap(),
+            repository::resolve_revisions(&repo, &revset).unwrap()
+        );
+
+        let cli_commit_info = cli_backend.get_commits_info(&ids).unwrap();
+        let libgit2_commit_info = repository::get_commits_info(&repo, &ids).unwrap();
+        assert_eq!(
+            cli_commit_info
+                .iter()
+                .map(|commit| (&commit.id, &commit.summary, &commit.body))
+                .collect::<Vec<_>>(),
+            libgit2_commit_info
+                .iter()
+                .map(|commit| (&commit.id, &commit.summary, &commit.body))
+                .collect::<Vec<_>>()
         );
     }
 }
