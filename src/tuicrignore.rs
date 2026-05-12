@@ -20,11 +20,16 @@ pub fn filter_diff_files(repo_root: &Path, diff_files: Vec<DiffFile>) -> Vec<Dif
         .collect()
 }
 
+/// Return true when repo-level ignore rules can affect tuicr's diff file list.
+pub fn has_ignore_rules(repo_root: &Path) -> bool {
+    repo_root.join(".gitignore").is_file() || repo_root.join(".tuicrignore").is_file()
+}
+
 fn load_matcher(repo_root: &Path) -> Option<ignore::gitignore::Gitignore> {
     let gitignore_file = repo_root.join(".gitignore");
     let tuicrignore_file = repo_root.join(".tuicrignore");
 
-    if !gitignore_file.is_file() && !tuicrignore_file.is_file() {
+    if !has_ignore_rules(repo_root) {
         return None;
     }
 
@@ -75,6 +80,15 @@ mod tests {
         let filtered = filter_diff_files(dir.path(), files);
 
         assert_eq!(filtered.len(), 2);
+    }
+
+    #[test]
+    fn detects_ignore_rule_files() {
+        let dir = tempdir().expect("failed to create temp dir");
+        assert!(!has_ignore_rules(dir.path()));
+
+        fs::write(dir.path().join(".gitignore"), "target/\n").expect("failed to write .gitignore");
+        assert!(has_ignore_rules(dir.path()));
     }
 
     #[test]

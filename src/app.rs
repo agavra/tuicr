@@ -1394,6 +1394,14 @@ impl App {
         Ok(diff_files)
     }
 
+    fn diff_exists(diff_files: Result<Vec<DiffFile>>) -> Result<bool> {
+        match diff_files {
+            Ok(_) => Ok(true),
+            Err(TuicrError::NoChanges) | Err(TuicrError::UnsupportedOperation(_)) => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
     fn get_working_tree_diff_with_ignore(
         vcs: &dyn VcsBackend,
         repo_root: &Path,
@@ -1512,24 +1520,45 @@ impl App {
     ) -> Result<(VcsChangeStatus, bool)> {
         if path_filter.is_none() {
             match vcs.get_change_status() {
-                Ok(status) => return Ok((status, true)),
+                Ok(status) => {
+                    if !crate::tuicrignore::has_ignore_rules(repo_root) {
+                        return Ok((status, true));
+                    }
+
+                    let staged = status.staged
+                        && Self::diff_exists(Self::get_staged_diff_with_ignore(
+                            vcs,
+                            repo_root,
+                            highlighter,
+                            path_filter,
+                        ))?;
+                    let unstaged = status.unstaged
+                        && Self::diff_exists(Self::get_unstaged_diff_with_ignore(
+                            vcs,
+                            repo_root,
+                            highlighter,
+                            path_filter,
+                        ))?;
+
+                    return Ok((VcsChangeStatus { staged, unstaged }, true));
+                }
                 Err(TuicrError::UnsupportedOperation(_)) => {}
                 Err(e) => return Err(e),
             }
         }
 
-        let staged =
-            match Self::get_staged_diff_with_ignore(vcs, repo_root, highlighter, path_filter) {
-                Ok(_) => true,
-                Err(TuicrError::NoChanges) | Err(TuicrError::UnsupportedOperation(_)) => false,
-                Err(e) => return Err(e),
-            };
-        let unstaged =
-            match Self::get_unstaged_diff_with_ignore(vcs, repo_root, highlighter, path_filter) {
-                Ok(_) => true,
-                Err(TuicrError::NoChanges) | Err(TuicrError::UnsupportedOperation(_)) => false,
-                Err(e) => return Err(e),
-            };
+        let staged = Self::diff_exists(Self::get_staged_diff_with_ignore(
+            vcs,
+            repo_root,
+            highlighter,
+            path_filter,
+        ))?;
+        let unstaged = Self::diff_exists(Self::get_unstaged_diff_with_ignore(
+            vcs,
+            repo_root,
+            highlighter,
+            path_filter,
+        ))?;
 
         Ok((VcsChangeStatus { staged, unstaged }, false))
     }
@@ -5804,6 +5833,143 @@ mod find_source_line_tests {
 
         let result = find_source_line(&annotations, 0, 20);
         assert_eq!(result, FindSourceLineResult::Nearest(0));
+    }
+}
+
+#[cfg(test)]
+mod change_status_tests {
+    use std::fs;
+
+    use tempfile::tempdir;
+
+    use super::*;
+    use crate::vcs::traits::VcsType;
+
+    struct StatusProbeMock {
+        info: VcsInfo,
+        status: VcsChangeStatus,
+        staged_files: Vec<DiffFile>,
+        unstaged_files: Vec<DiffFile>,
+    }
+
+    impl VcsBackend for StatusProbeMock {
+        fn info(&self) -> &VcsInfo {
+            &self.info
+        }
+
+        fn get_working_tree_diff(&self, _highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+            Err(TuicrError::NoChanges)
+        }
+
+        fn get_staged_diff(&self, _highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+            if self.staged_files.is_empty() {
+                Err(TuicrError::NoChanges)
+            } else {
+                Ok(self.staged_files.clone())
+            }
+        }
+
+        fn get_unstaged_diff(&self, _highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+            if self.unstaged_files.is_empty() {
+                Err(TuicrError::NoChanges)
+            } else {
+                Ok(self.unstaged_files.clone())
+            }
+        }
+
+        fn get_change_status(&self) -> Result<VcsChangeStatus> {
+            Ok(self.status)
+        }
+
+        fn fetch_context_lines(
+            &self,
+            _file_path: &Path,
+            _file_status: FileStatus,
+            _start_line: u32,
+            _end_line: u32,
+        ) -> Result<Vec<DiffLine>> {
+            Ok(Vec::new())
+        }
+    }
+
+    fn diff_file(path: &str) -> DiffFile {
+        DiffFile {
+            old_path: None,
+            new_path: Some(PathBuf::from(path)),
+            status: FileStatus::Modified,
+            hunks: Vec::new(),
+            is_binary: false,
+            is_too_large: false,
+            is_commit_message: false,
+            content_hash: 0,
+        }
+    }
+
+    fn mock_vcs(root_path: PathBuf) -> StatusProbeMock {
+        StatusProbeMock {
+            info: VcsInfo {
+                root_path,
+                head_commit: "HEAD".to_string(),
+                branch_name: Some("main".to_string()),
+                vcs_type: VcsType::Git,
+            },
+            status: VcsChangeStatus {
+                staged: true,
+                unstaged: true,
+            },
+            staged_files: Vec::new(),
+            unstaged_files: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn status_probe_rechecks_positive_rows_when_ignore_rules_exist() {
+        let dir = tempdir().expect("failed to create temp dir");
+        fs::write(dir.path().join(".tuicrignore"), "ignored/\n")
+            .expect("failed to write .tuicrignore");
+        let mut vcs = mock_vcs(dir.path().to_path_buf());
+        vcs.staged_files = vec![diff_file("ignored/generated.rs")];
+        vcs.unstaged_files = vec![diff_file("src/lib.rs")];
+
+        let (status, used_probe) = App::get_change_status_with_ignore(
+            &vcs,
+            dir.path(),
+            &SyntaxHighlighter::default(),
+            None,
+        )
+        .expect("failed to get change status");
+
+        assert!(used_probe);
+        assert_eq!(
+            status,
+            VcsChangeStatus {
+                staged: false,
+                unstaged: true,
+            }
+        );
+    }
+
+    #[test]
+    fn status_probe_does_not_load_diffs_without_ignore_rules() {
+        let dir = tempdir().expect("failed to create temp dir");
+        let vcs = mock_vcs(dir.path().to_path_buf());
+
+        let (status, used_probe) = App::get_change_status_with_ignore(
+            &vcs,
+            dir.path(),
+            &SyntaxHighlighter::default(),
+            None,
+        )
+        .expect("failed to get change status");
+
+        assert!(used_probe);
+        assert_eq!(
+            status,
+            VcsChangeStatus {
+                staged: true,
+                unstaged: true,
+            }
+        );
     }
 }
 
