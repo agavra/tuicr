@@ -66,6 +66,14 @@ pub trait VcsBackend: Send {
         Vec::new()
     }
 
+    /// Whether this concrete backend can operate on Git sparse-checkout repos.
+    ///
+    /// Non-Git VCS implementations keep the default `false`; Git backends
+    /// override this based on the selected implementation.
+    fn supports_sparse_checkout(&self) -> bool {
+        false
+    }
+
     /// Get the working tree diff (staged + unstaged changes)
     fn get_working_tree_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>>;
 

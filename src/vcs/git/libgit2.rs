@@ -54,6 +54,10 @@ impl VcsBackend for Libgit2Backend {
         &self.info
     }
 
+    fn supports_sparse_checkout(&self) -> bool {
+        false
+    }
+
     fn get_working_tree_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
         diff::get_working_tree_diff(&self.repo, highlighter)
     }

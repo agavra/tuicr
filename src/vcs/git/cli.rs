@@ -133,7 +133,7 @@ impl VcsBackend for GitCliBackend {
     }
 
     fn startup_warnings(&self) -> Vec<String> {
-        if !self.repo_mode.is_sparse_checkout() {
+        if !self.repo_mode().is_sparse_checkout() {
             return Vec::new();
         }
 
@@ -151,6 +151,10 @@ impl VcsBackend for GitCliBackend {
         }
 
         warnings
+    }
+
+    fn supports_sparse_checkout(&self) -> bool {
+        true
     }
 
     fn get_working_tree_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {

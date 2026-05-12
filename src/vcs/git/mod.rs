@@ -110,13 +110,13 @@ impl GitBackend {
             return Ok(Self::Cli(GitCliBackend::discover_from(cwd)?));
         }
 
-        if let Ok(cli_backend) = GitCliBackend::discover_from(cwd)
-            && cli_backend.repo_mode().is_sparse_checkout()
-        {
-            return Ok(Self::Cli(cli_backend));
+        let backend = Self::Libgit2(Libgit2Backend::discover_from(cwd)?);
+        let repo_mode = GitRepoMode::detect(&backend.info().root_path)?;
+        if repo_mode.is_sparse_checkout() && !backend.supports_sparse_checkout() {
+            return Ok(Self::Cli(GitCliBackend::discover_from(cwd)?));
         }
 
-        Ok(Self::Libgit2(Libgit2Backend::discover_from(cwd)?))
+        Ok(backend)
     }
 }
 
@@ -158,6 +158,13 @@ impl VcsBackend for GitBackend {
         match self {
             Self::Libgit2(backend) => backend.startup_warnings(),
             Self::Cli(backend) => backend.startup_warnings(),
+        }
+    }
+
+    fn supports_sparse_checkout(&self) -> bool {
+        match self {
+            Self::Libgit2(backend) => backend.supports_sparse_checkout(),
+            Self::Cli(backend) => backend.supports_sparse_checkout(),
         }
     }
 
@@ -313,10 +320,13 @@ mod tests {
             .expect("failed to discover backend");
 
         match backend {
-            GitBackend::Cli(backend) => assert_eq!(
-                backend.startup_warnings().first().map(String::as_str),
-                Some("Sparse checkout detected; using Git CLI backend.")
-            ),
+            GitBackend::Cli(backend) => {
+                assert!(backend.supports_sparse_checkout());
+                assert_eq!(
+                    backend.startup_warnings().first().map(String::as_str),
+                    Some("Sparse checkout detected; using Git CLI backend.")
+                );
+            }
             GitBackend::Libgit2(_) => panic!("sparse-index repo should use Git CLI backend"),
         }
     }
@@ -331,7 +341,7 @@ mod tests {
             .expect("failed to discover backend");
 
         match backend {
-            GitBackend::Libgit2(_) => {}
+            GitBackend::Libgit2(backend) => assert!(!backend.supports_sparse_checkout()),
             GitBackend::Cli(_) => panic!("standard repo should use libgit2 by default"),
         }
     }

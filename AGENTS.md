@@ -79,6 +79,7 @@ Repository-managed agent integrations:
 **VcsBackend** (`src/vcs/traits.rs`):
 - Trait abstracting VCS operations
 - Methods: `info()`, `get_working_tree_diff()`, `fetch_context_lines()`, `get_recent_commits()`, `get_commit_range_diff()`
+- Capability hooks: `supports_sparse_checkout()` advertises whether the selected backend can operate on Git sparse-checkout repos
 - Implementations: `GitBackend`, `HgBackend`, `JjBackend` (all always compiled)
 
 **InputMode** (`src/app.rs`):
