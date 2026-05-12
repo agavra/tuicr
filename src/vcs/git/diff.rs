@@ -1,4 +1,5 @@
 use git2::{Delta, Diff, DiffOptions, Repository};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -289,52 +290,98 @@ fn append_untracked_cli_diffs(
     files: &mut Vec<DiffFile>,
     highlighter: &SyntaxHighlighter,
 ) -> Result<()> {
+    let Some(workdir) = repo.workdir() else {
+        return Ok(());
+    };
+
     for path in untracked_paths(repo)? {
-        let Some(workdir) = repo.workdir() else {
+        let full_path = workdir.join(&path);
+        let Some(file) = build_untracked_diff_file(&path, &full_path, highlighter) else {
             continue;
         };
-        let full_path = workdir.join(&path);
-        if full_path
-            .metadata()
-            .is_ok_and(|metadata| metadata.len() > MAX_UNTRACKED_FILE_SIZE)
-        {
-            files.push(DiffFile {
-                old_path: None,
-                new_path: Some(path),
-                status: FileStatus::Added,
-                hunks: Vec::new(),
-                is_binary: false,
-                is_too_large: true,
-                is_commit_message: false,
-                content_hash: 0,
-            });
-            continue;
-        }
-
-        let path_arg = path.to_string_lossy();
-        let diff_output = run_git_command(
-            repo,
-            &[
-                "diff",
-                "--no-ext-diff",
-                "--binary",
-                "--no-index",
-                "--",
-                "/dev/null",
-                &path_arg,
-            ],
-            true,
-        )?;
-        if diff_output.trim().is_empty() {
-            continue;
-        }
-        match diff_parser::parse_unified_diff(&diff_output, DiffFormat::GitStyle, highlighter) {
-            Ok(mut parsed) => files.append(&mut parsed),
-            Err(TuicrError::NoChanges) => {}
-            Err(err) => return Err(err),
-        }
+        files.push(file);
     }
     Ok(())
+}
+
+fn build_untracked_diff_file(
+    path: &Path,
+    full_path: &Path,
+    highlighter: &SyntaxHighlighter,
+) -> Option<DiffFile> {
+    let metadata = full_path.metadata().ok()?;
+    if metadata.len() > MAX_UNTRACKED_FILE_SIZE {
+        return Some(diff_file_without_hunks(path, false, true));
+    }
+
+    let bytes = fs::read(full_path).ok()?;
+    if bytes.contains(&0) {
+        return Some(diff_file_without_hunks(path, true, false));
+    }
+
+    let content = String::from_utf8_lossy(&bytes);
+    let lines: Vec<String> = content
+        .lines()
+        .map(|line| tabify(line.trim_end_matches('\r')))
+        .collect();
+
+    if lines.is_empty() {
+        return Some(diff_file_without_hunks(path, false, false));
+    }
+
+    let highlighted = highlighter.highlight_file_lines(path, &lines);
+    let diff_lines: Vec<DiffLine> = lines
+        .into_iter()
+        .enumerate()
+        .map(|(idx, content)| DiffLine {
+            origin: LineOrigin::Addition,
+            content,
+            old_lineno: None,
+            new_lineno: Some((idx + 1) as u32),
+            highlighted_spans: highlighter.highlighted_line_for_diff_with_background(
+                None,
+                highlighted.as_deref(),
+                None,
+                Some(idx),
+                LineOrigin::Addition,
+            ),
+        })
+        .collect();
+
+    let new_count = diff_lines.len() as u32;
+    let hunks = vec![DiffHunk {
+        header: format!("@@ -0,0 +1,{} @@", new_count),
+        lines: diff_lines,
+        old_start: 0,
+        old_count: 0,
+        new_start: 1,
+        new_count,
+    }];
+    let content_hash = DiffFile::compute_content_hash(&hunks);
+
+    Some(DiffFile {
+        old_path: None,
+        new_path: Some(path.to_path_buf()),
+        status: FileStatus::Added,
+        hunks,
+        is_binary: false,
+        is_too_large: false,
+        is_commit_message: false,
+        content_hash,
+    })
+}
+
+fn diff_file_without_hunks(path: &Path, is_binary: bool, is_too_large: bool) -> DiffFile {
+    DiffFile {
+        old_path: None,
+        new_path: Some(path.to_path_buf()),
+        status: FileStatus::Added,
+        hunks: Vec::new(),
+        is_binary,
+        is_too_large,
+        is_commit_message: false,
+        content_hash: 0,
+    }
 }
 
 fn untracked_paths(repo: &Repository) -> Result<Vec<PathBuf>> {
@@ -782,6 +829,79 @@ mod tests {
             Some(Path::new("keep/new.txt"))
         );
         assert_eq!(files[0].status, FileStatus::Added);
+        assert_eq!(files[0].hunks.len(), 1);
+        assert_eq!(files[0].hunks[0].lines.len(), 1);
+        assert_eq!(files[0].hunks[0].lines[0].content, "new sparse file");
+        assert_eq!(files[0].hunks[0].lines[0].new_lineno, Some(1));
+    }
+
+    #[test]
+    fn should_mark_binary_untracked_files_in_sparse_checkout() {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let repo = Repository::init(temp_dir.path()).expect("failed to init repo");
+
+        create_initial_commit_with_files(
+            &repo,
+            &[
+                ("keep/file.txt", "keep base\n"),
+                ("hidden/file.txt", "hidden base\n"),
+            ],
+        );
+
+        git(&repo, &["sparse-checkout", "init", "--cone"]);
+        git(&repo, &["sparse-checkout", "set", "keep"]);
+        git(&repo, &["sparse-checkout", "reapply", "--sparse-index"]);
+
+        fs::write(temp_dir.path().join("keep/image.bin"), [0_u8, 1, 2, 3])
+            .expect("failed to write binary untracked file");
+
+        let files = get_working_tree_diff(&repo, &SyntaxHighlighter::default())
+            .expect("failed to get sparse checkout diff");
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(
+            files[0].new_path.as_deref(),
+            Some(Path::new("keep/image.bin"))
+        );
+        assert_eq!(files[0].status, FileStatus::Added);
+        assert!(files[0].is_binary);
+        assert!(files[0].hunks.is_empty());
+    }
+
+    #[test]
+    fn should_cap_large_untracked_files_in_sparse_checkout() {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let repo = Repository::init(temp_dir.path()).expect("failed to init repo");
+
+        create_initial_commit_with_files(
+            &repo,
+            &[
+                ("keep/file.txt", "keep base\n"),
+                ("hidden/file.txt", "hidden base\n"),
+            ],
+        );
+
+        git(&repo, &["sparse-checkout", "init", "--cone"]);
+        git(&repo, &["sparse-checkout", "set", "keep"]);
+        git(&repo, &["sparse-checkout", "reapply", "--sparse-index"]);
+
+        fs::write(
+            temp_dir.path().join("keep/dump.txt"),
+            vec![b'a'; (MAX_UNTRACKED_FILE_SIZE + 1) as usize],
+        )
+        .expect("failed to write large untracked file");
+
+        let files = get_working_tree_diff(&repo, &SyntaxHighlighter::default())
+            .expect("failed to get sparse checkout diff");
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(
+            files[0].new_path.as_deref(),
+            Some(Path::new("keep/dump.txt"))
+        );
+        assert_eq!(files[0].status, FileStatus::Added);
+        assert!(files[0].is_too_large);
+        assert!(files[0].hunks.is_empty());
     }
 
     #[test]
