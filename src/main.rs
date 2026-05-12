@@ -7,6 +7,7 @@ mod input;
 mod model;
 mod output;
 mod persistence;
+mod profile;
 mod syntax;
 mod text_edit;
 mod theme;
@@ -49,6 +50,8 @@ const CTRL_C_EXIT_TIMEOUT: Duration = Duration::from_secs(2);
 const MIN_WIDTH_FOR_FILE_LIST: u16 = 100;
 
 fn main() -> anyhow::Result<()> {
+    profile::init_from_env();
+
     // Setup panic hook to restore terminal on panic
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
@@ -61,7 +64,7 @@ fn main() -> anyhow::Result<()> {
 
     // Parse CLI arguments and resolve theme
     // This also configures syntax highlighting colors before diff parsing
-    let mut cli_args = parse_cli_args();
+    let mut cli_args = profile::time("startup.parse_cli_args", parse_cli_args);
 
     // Check keyboard enhancement support before enabling raw mode.
     // Skip when --stdout is used because the probe writes escape sequences to stdout,
@@ -93,34 +96,36 @@ fn main() -> anyhow::Result<()> {
         cli_args.working_tree = true;
     }
     let mut startup_warnings = Vec::new();
-    let config_outcome = match config::load_config() {
+    let config_outcome = profile::time("startup.load_config", || match config::load_config() {
         Ok(outcome) => outcome,
         Err(e) => {
             startup_warnings.push(format!("Failed to load config: {e}"));
             config::ConfigLoadOutcome::default()
         }
-    };
+    });
     startup_warnings.extend(config_outcome.warnings);
-    let (mut theme, theme_warnings) = resolve_theme_with_config(
-        cli_args.theme,
-        cli_args.appearance,
-        config_outcome
-            .config
-            .as_ref()
-            .and_then(|cfg| cfg.theme.as_deref()),
-        config_outcome
-            .config
-            .as_ref()
-            .and_then(|cfg| cfg.theme_dark.as_deref()),
-        config_outcome
-            .config
-            .as_ref()
-            .and_then(|cfg| cfg.theme_light.as_deref()),
-        config_outcome
-            .config
-            .as_ref()
-            .and_then(|cfg| cfg.appearance.as_deref()),
-    );
+    let (mut theme, theme_warnings) = profile::time("startup.resolve_theme", || {
+        resolve_theme_with_config(
+            cli_args.theme,
+            cli_args.appearance,
+            config_outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.theme.as_deref()),
+            config_outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.theme_dark.as_deref()),
+            config_outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.theme_light.as_deref()),
+            config_outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.appearance.as_deref()),
+        )
+    });
     startup_warnings.extend(theme_warnings);
 
     let transparent = config_outcome
@@ -145,18 +150,20 @@ fn main() -> anyhow::Result<()> {
     };
 
     // Initialize app
-    let mut app = match App::new(
-        theme,
-        config_outcome
-            .config
-            .as_ref()
-            .and_then(|cfg| cfg.comment_types.clone()),
-        cli_args.output_to_stdout,
-        cli_args.revisions.as_deref(),
-        cli_args.working_tree,
-        cli_args.path_filter.as_deref(),
-        cli_args.file_path.as_deref(),
-    ) {
+    let mut app = match profile::time("startup.app_init", || {
+        App::new(
+            theme,
+            config_outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.comment_types.clone()),
+            cli_args.output_to_stdout,
+            cli_args.revisions.as_deref(),
+            cli_args.working_tree,
+            cli_args.path_filter.as_deref(),
+            cli_args.file_path.as_deref(),
+        )
+    }) {
         Ok(mut app) => {
             app.supports_keyboard_enhancement = keyboard_enhancement_supported;
             if let Some(message) = startup_warnings.first() {

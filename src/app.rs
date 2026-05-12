@@ -56,6 +56,27 @@ fn gap_annotation_line_count(is_top_of_file: bool, remaining: usize) -> usize {
     }
 }
 
+fn profile_diff_result(result: &Result<Vec<DiffFile>>) -> String {
+    match result {
+        Ok(files) => format!("files={}", files.len()),
+        Err(e) => format!("error={e}"),
+    }
+}
+
+fn profile_commit_result(result: &Result<Vec<CommitInfo>>) -> String {
+    match result {
+        Ok(commits) => format!("commits={}", commits.len()),
+        Err(e) => format!("error={e}"),
+    }
+}
+
+fn profile_unit_result(result: &Result<()>) -> String {
+    match result {
+        Ok(()) => "result=ok".to_string(),
+        Err(e) => format!("error={e}"),
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum FileTreeItem {
     Directory {
@@ -627,9 +648,10 @@ impl App {
             return Ok(app);
         }
 
-        let vcs = detect_vcs()?;
+        let vcs = crate::profile::time("startup.detect_vcs", detect_vcs)?;
         let vcs_info = vcs.info().clone();
-        let highlighter = theme.syntax_highlighter();
+        let highlighter =
+            crate::profile::time("startup.syntax_highlighter", || theme.syntax_highlighter());
         // Determine the diff source, files, and session based on input.
         // Four paths:
         //   1. -r + -w: combined commit range and uncommitted changes
@@ -637,7 +659,14 @@ impl App {
         //   3. -w only: working tree directly (skip commit selector)
         //   4. neither: commit selection UI
         if let Some(revisions) = revisions {
-            let commit_ids = vcs.resolve_revisions(revisions)?;
+            let commit_ids = crate::profile::time_with(
+                "startup.resolve_revisions",
+                || vcs.resolve_revisions(revisions),
+                |result| match result {
+                    Ok(ids) => format!("commits={}", ids.len()),
+                    Err(e) => format!("error={e}"),
+                },
+            )?;
 
             if working_tree {
                 // Combined: commit range + staged/unstaged changes
@@ -652,11 +681,14 @@ impl App {
                     &vcs_info,
                     &commit_ids,
                 );
-                let review_commits: Vec<CommitInfo> = vcs
-                    .get_commits_info(&commit_ids)?
-                    .into_iter()
-                    .rev()
-                    .collect();
+                let review_commits: Vec<CommitInfo> = crate::profile::time_with(
+                    "startup.selected_commit_info",
+                    || vcs.get_commits_info(&commit_ids),
+                    profile_commit_result,
+                )?
+                .into_iter()
+                .rev()
+                .collect();
                 // Prepend staged/unstaged entries only when the backend supports them
                 let has_staged = Self::get_staged_diff_with_ignore(
                     vcs.as_ref(),
@@ -727,7 +759,11 @@ impl App {
             )?;
             let session = Self::load_or_create_commit_range_session(&vcs_info, &commit_ids);
             // Get commit info for the inline commit selector
-            let review_commits = vcs.get_commits_info(&commit_ids)?;
+            let review_commits = crate::profile::time_with(
+                "startup.selected_commit_info",
+                || vcs.get_commits_info(&commit_ids),
+                profile_commit_result,
+            )?;
             // Reverse to newest-first display order
             let review_commits: Vec<CommitInfo> = review_commits.into_iter().rev().collect();
 
@@ -830,7 +866,11 @@ impl App {
                 None
             };
 
-            let commits = vcs.get_recent_commits(0, VISIBLE_COMMIT_COUNT)?;
+            let commits = crate::profile::time_with(
+                "startup.recent_commits",
+                || vcs.get_recent_commits(0, VISIBLE_COMMIT_COUNT),
+                profile_commit_result,
+            )?;
             if !has_staged_changes && !has_unstaged_changes && commits.is_empty() {
                 return Err(TuicrError::NoChanges);
             }
@@ -1382,7 +1422,11 @@ impl App {
         highlighter: &SyntaxHighlighter,
         path_filter: Option<&str>,
     ) -> Result<Vec<DiffFile>> {
-        let diff_files = vcs.get_working_tree_diff(highlighter)?;
+        let diff_files = crate::profile::time_with(
+            "diff.load_working_tree",
+            || vcs.get_working_tree_diff(highlighter),
+            profile_diff_result,
+        )?;
         let diff_files = Self::filter_ignored_diff_files(repo_root, diff_files);
         let diff_files = if let Some(path) = path_filter {
             Self::filter_by_path(diff_files, path)
@@ -1398,7 +1442,11 @@ impl App {
         highlighter: &SyntaxHighlighter,
         path_filter: Option<&str>,
     ) -> Result<Vec<DiffFile>> {
-        let diff_files = vcs.get_staged_diff(highlighter)?;
+        let diff_files = crate::profile::time_with(
+            "diff.load_staged",
+            || vcs.get_staged_diff(highlighter),
+            profile_diff_result,
+        )?;
         let diff_files = Self::filter_ignored_diff_files(repo_root, diff_files);
         let diff_files = if let Some(path) = path_filter {
             Self::filter_by_path(diff_files, path)
@@ -1414,9 +1462,17 @@ impl App {
         highlighter: &SyntaxHighlighter,
         path_filter: Option<&str>,
     ) -> Result<Vec<DiffFile>> {
-        let diff_files = match vcs.get_unstaged_diff(highlighter) {
+        let diff_files = match crate::profile::time_with(
+            "diff.load_unstaged",
+            || vcs.get_unstaged_diff(highlighter),
+            profile_diff_result,
+        ) {
             Ok(diff_files) => diff_files,
-            Err(TuicrError::UnsupportedOperation(_)) => vcs.get_working_tree_diff(highlighter)?,
+            Err(TuicrError::UnsupportedOperation(_)) => crate::profile::time_with(
+                "diff.load_unstaged_fallback_working_tree",
+                || vcs.get_working_tree_diff(highlighter),
+                profile_diff_result,
+            )?,
             Err(e) => return Err(e),
         };
         let diff_files = Self::filter_ignored_diff_files(repo_root, diff_files);
@@ -1435,7 +1491,11 @@ impl App {
         highlighter: &SyntaxHighlighter,
         path_filter: Option<&str>,
     ) -> Result<Vec<DiffFile>> {
-        let diff_files = vcs.get_commit_range_diff(commit_ids, highlighter)?;
+        let diff_files = crate::profile::time_with(
+            "diff.load_commit_range",
+            || vcs.get_commit_range_diff(commit_ids, highlighter),
+            profile_diff_result,
+        )?;
         let diff_files = Self::filter_ignored_diff_files(repo_root, diff_files);
         let diff_files = if let Some(path) = path_filter {
             Self::filter_by_path(diff_files, path)
@@ -1452,7 +1512,11 @@ impl App {
         highlighter: &SyntaxHighlighter,
         path_filter: Option<&str>,
     ) -> Result<Vec<DiffFile>> {
-        let diff_files = vcs.get_working_tree_with_commits_diff(commit_ids, highlighter)?;
+        let diff_files = crate::profile::time_with(
+            "diff.load_working_tree_with_commits",
+            || vcs.get_working_tree_with_commits_diff(commit_ids, highlighter),
+            profile_diff_result,
+        )?;
         let diff_files = Self::filter_ignored_diff_files(repo_root, diff_files);
         let diff_files = if let Some(path) = path_filter {
             Self::filter_by_path(diff_files, path)
@@ -3826,6 +3890,21 @@ impl App {
     }
 
     pub fn confirm_commit_selection(&mut self) -> Result<()> {
+        let selection = match self.commit_selection_range {
+            Some((start, end)) => format!(
+                "range={start}..={end}, rows={}",
+                end.saturating_sub(start) + 1
+            ),
+            None => "range=none, rows=0".to_string(),
+        };
+        crate::profile::time_with(
+            "commit_select.confirm_selection",
+            || self.confirm_commit_selection_inner(),
+            |result| format!("{selection}, {}", profile_unit_result(result)),
+        )
+    }
+
+    fn confirm_commit_selection_inner(&mut self) -> Result<()> {
         let Some((start, end)) = self.commit_selection_range else {
             self.set_message("Select at least one commit");
             return Ok(());

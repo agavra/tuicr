@@ -38,6 +38,8 @@ uuid = { version = "1.0", features = ["v4"] }
 arboard = { version = "3.4", features = ["wayland-data-control"] }
 base64 = "0.22"
 ignore = "0.4"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt"] }
 
 # Syntax highlighting
 syntect = "5.2"
