@@ -146,7 +146,7 @@ fn git_config(workdir: &Path) -> (bool, bool, bool, bool) {
         &[
             "config",
             "--get-regexp",
-            r"^(core\.sparsecheckout|index\.sparse|core\.untrackedcache|core\.fsmonitor)$",
+            r"^(core\.sparsecheckout|index\.sparse|core\.untrackedcache|core\.fsmonitor|feature\.manyfiles)$",
         ],
     )
     .unwrap_or_default();
@@ -157,8 +157,9 @@ fn git_config(workdir: &Path) -> (bool, bool, bool, bool) {
 fn parse_git_config(output: &str) -> (bool, bool, bool, bool) {
     let mut sparse_checkout = false;
     let mut sparse_index = false;
-    let mut untracked_cache = false;
+    let mut untracked_cache = None;
     let mut fsmonitor = false;
+    let mut many_files = false;
 
     for line in output.lines() {
         let mut parts = line.splitn(2, char::is_whitespace);
@@ -170,11 +171,16 @@ fn parse_git_config(output: &str) -> (bool, bool, bool, bool) {
         match key {
             "core.sparsecheckout" => sparse_checkout = git_bool_config_enabled(raw_value),
             "index.sparse" => sparse_index = git_bool_config_enabled(raw_value),
-            "core.untrackedcache" => untracked_cache = git_bool_config_enabled(raw_value),
+            "core.untrackedcache" => untracked_cache = Some(git_bool_config_enabled(raw_value)),
             "core.fsmonitor" => fsmonitor = git_fsmonitor_config_enabled(raw_value),
+            "feature.manyfiles" => many_files = git_bool_config_enabled(raw_value),
             _ => {}
         }
     }
+
+    // `feature.manyFiles` makes core.untrackedCache default to true, but
+    // `git config --get core.untrackedCache` does not print that implied value.
+    let untracked_cache = untracked_cache.unwrap_or(many_files);
 
     (sparse_checkout, sparse_index, untracked_cache, fsmonitor)
 }
@@ -455,6 +461,20 @@ mod tests {
         let output = "core.sparsecheckout true\nindex.sparse true\ncore.untrackedcache true\ncore.fsmonitor true\n";
 
         assert_eq!(parse_git_config(output), (true, true, true, true));
+    }
+
+    #[test]
+    fn treats_feature_many_files_as_enabling_untracked_cache_by_default() {
+        let output = "feature.manyfiles true\n";
+
+        assert_eq!(parse_git_config(output), (false, false, true, false));
+    }
+
+    #[test]
+    fn explicit_untracked_cache_config_overrides_feature_many_files_default() {
+        let output = "feature.manyfiles true\ncore.untrackedcache keep\n";
+
+        assert_eq!(parse_git_config(output), (false, false, false, false));
     }
 
     #[test]
