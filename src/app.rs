@@ -16,7 +16,7 @@ use crate::syntax::SyntaxHighlighter;
 use crate::theme::Theme;
 use crate::update::UpdateInfo;
 use crate::vcs::git::calculate_gap;
-use crate::vcs::{CommitInfo, FileBackend, VcsBackend, VcsInfo, detect_vcs};
+use crate::vcs::{CommitInfo, FileBackend, VcsBackend, VcsChangeStatus, VcsInfo, detect_vcs};
 
 const VISIBLE_COMMIT_COUNT: usize = 10;
 const COMMIT_PAGE_SIZE: usize = 10;
@@ -53,6 +53,34 @@ fn gap_annotation_line_count(is_top_of_file: bool, remaining: usize) -> usize {
     } else {
         // Between hunks: ↓ + HiddenLines + ↑ when >= batch, else single ↕
         if remaining >= GAP_EXPAND_BATCH { 3 } else { 1 }
+    }
+}
+
+fn profile_diff_result(result: &Result<Vec<DiffFile>>) -> String {
+    match result {
+        Ok(files) => format!("files={}", files.len()),
+        Err(e) => format!("error={e}"),
+    }
+}
+
+fn profile_commit_result(result: &Result<Vec<CommitInfo>>) -> String {
+    match result {
+        Ok(commits) => format!("commits={}", commits.len()),
+        Err(e) => format!("error={e}"),
+    }
+}
+
+fn profile_change_status_result(result: &Result<VcsChangeStatus>) -> String {
+    match result {
+        Ok(status) => format!("staged={}, unstaged={}", status.staged, status.unstaged),
+        Err(e) => format!("error={e}"),
+    }
+}
+
+fn profile_unit_result(result: &Result<()>) -> String {
+    match result {
+        Ok(()) => "result=ok".to_string(),
+        Err(e) => format!("error={e}"),
     }
 }
 
@@ -627,9 +655,11 @@ impl App {
             return Ok(app);
         }
 
-        let vcs = detect_vcs()?;
+        let vcs = crate::profile::time("startup: detect vcs", detect_vcs)?;
         let vcs_info = vcs.info().clone();
-        let highlighter = theme.syntax_highlighter();
+        let highlighter = crate::profile::time("startup: initialize syntax highlighter", || {
+            theme.syntax_highlighter()
+        });
         // Determine the diff source, files, and session based on input.
         // Four paths:
         //   1. -r + -w: combined commit range and uncommitted changes
@@ -637,7 +667,14 @@ impl App {
         //   3. -w only: working tree directly (skip commit selector)
         //   4. neither: commit selection UI
         if let Some(revisions) = revisions {
-            let commit_ids = vcs.resolve_revisions(revisions)?;
+            let commit_ids = crate::profile::time_with(
+                "startup: resolve revisions",
+                || vcs.resolve_revisions(revisions),
+                |result| match result {
+                    Ok(ids) => format!("commits={}", ids.len()),
+                    Err(e) => format!("error={e}"),
+                },
+            )?;
 
             if working_tree {
                 // Combined: commit range + staged/unstaged changes
@@ -652,31 +689,26 @@ impl App {
                     &vcs_info,
                     &commit_ids,
                 );
-                let review_commits: Vec<CommitInfo> = vcs
-                    .get_commits_info(&commit_ids)?
-                    .into_iter()
-                    .rev()
-                    .collect();
+                let review_commits: Vec<CommitInfo> = crate::profile::time_with(
+                    "startup: selected commit info",
+                    || vcs.get_commits_info(&commit_ids),
+                    profile_commit_result,
+                )?
+                .into_iter()
+                .rev()
+                .collect();
                 // Prepend staged/unstaged entries only when the backend supports them
-                let has_staged = Self::get_staged_diff_with_ignore(
+                let change_status = Self::get_change_status_with_ignore(
                     vcs.as_ref(),
                     &vcs_info.root_path,
                     highlighter,
                     path_filter,
-                )
-                .is_ok();
-                let has_unstaged = Self::get_unstaged_diff_with_ignore(
-                    vcs.as_ref(),
-                    &vcs_info.root_path,
-                    highlighter,
-                    path_filter,
-                )
-                .is_ok();
+                )?;
                 let mut all_commits = Vec::new();
-                if has_staged {
+                if change_status.staged {
                     all_commits.push(Self::staged_commit_entry());
                 }
-                if has_unstaged {
+                if change_status.unstaged {
                     all_commits.push(Self::unstaged_commit_entry());
                 }
                 all_commits.extend(review_commits);
@@ -710,9 +742,7 @@ impl App {
                 app.commit_diff_cache.clear();
                 app.review_commits = all_commits;
                 app.insert_commit_message_if_single();
-                app.sort_files_by_directory(true);
-                app.expand_all_dirs();
-                app.rebuild_annotations();
+                app.profile_rebuild_view("startup: rebuild commits plus working tree view", false);
 
                 return Ok(app);
             }
@@ -727,7 +757,11 @@ impl App {
             )?;
             let session = Self::load_or_create_commit_range_session(&vcs_info, &commit_ids);
             // Get commit info for the inline commit selector
-            let review_commits = vcs.get_commits_info(&commit_ids)?;
+            let review_commits = crate::profile::time_with(
+                "startup: selected commit info",
+                || vcs.get_commits_info(&commit_ids),
+                profile_commit_result,
+            )?;
             // Reverse to newest-first display order
             let review_commits: Vec<CommitInfo> = review_commits.into_iter().rev().collect();
 
@@ -759,9 +793,7 @@ impl App {
             }
             app.review_commits = review_commits;
             app.insert_commit_message_if_single();
-            app.sort_files_by_directory(true);
-            app.expand_all_dirs();
-            app.rebuild_annotations();
+            app.profile_rebuild_view("startup: rebuild commit range view", false);
 
             Ok(app)
         } else if working_tree {
@@ -791,46 +823,20 @@ impl App {
 
             Ok(app)
         } else {
-            let has_staged_changes = match Self::get_staged_diff_with_ignore(
+            let change_status = Self::get_change_status_with_ignore(
                 vcs.as_ref(),
                 &vcs_info.root_path,
                 highlighter,
                 path_filter,
-            ) {
-                Ok(_) => true,
-                Err(TuicrError::NoChanges) => false,
-                Err(TuicrError::UnsupportedOperation(_)) => false,
-                Err(e) => return Err(e),
-            };
+            )?;
+            let has_staged_changes = change_status.staged;
+            let has_unstaged_changes = change_status.unstaged;
 
-            let has_unstaged_changes = match Self::get_unstaged_diff_with_ignore(
-                vcs.as_ref(),
-                &vcs_info.root_path,
-                highlighter,
-                path_filter,
-            ) {
-                Ok(_) => true,
-                Err(TuicrError::NoChanges) => false,
-                Err(TuicrError::UnsupportedOperation(_)) => false,
-                Err(e) => return Err(e),
-            };
-
-            let working_tree_diff = if has_staged_changes || has_unstaged_changes {
-                match Self::get_working_tree_diff_with_ignore(
-                    vcs.as_ref(),
-                    &vcs_info.root_path,
-                    highlighter,
-                    path_filter,
-                ) {
-                    Ok(diff_files) => Some(diff_files),
-                    Err(TuicrError::NoChanges) => None,
-                    Err(e) => return Err(e),
-                }
-            } else {
-                None
-            };
-
-            let commits = vcs.get_recent_commits(0, VISIBLE_COMMIT_COUNT)?;
+            let commits = crate::profile::time_with(
+                "startup: recent commits",
+                || vcs.get_recent_commits(0, VISIBLE_COMMIT_COUNT),
+                profile_commit_result,
+            )?;
             if !has_staged_changes && !has_unstaged_changes && commits.is_empty() {
                 return Err(TuicrError::NoChanges);
             }
@@ -871,7 +877,7 @@ impl App {
                 theme,
                 comment_type_configs,
                 output_to_stdout,
-                working_tree_diff.unwrap_or_default(),
+                Vec::new(),
                 session,
                 diff_source,
                 InputMode::CommitSelect,
@@ -988,9 +994,7 @@ impl App {
             app.show_file_list = false;
             app.focused_panel = FocusedPanel::Diff;
         }
-        app.sort_files_by_directory(true);
-        app.expand_all_dirs();
-        app.rebuild_annotations();
+        app.profile_rebuild_view("startup: rebuild initial view", false);
         Ok(app)
     }
 
@@ -1382,7 +1386,11 @@ impl App {
         highlighter: &SyntaxHighlighter,
         path_filter: Option<&str>,
     ) -> Result<Vec<DiffFile>> {
-        let diff_files = vcs.get_working_tree_diff(highlighter)?;
+        let diff_files = crate::profile::time_with(
+            "diff: load working tree",
+            || vcs.get_working_tree_diff(highlighter),
+            profile_diff_result,
+        )?;
         let diff_files = Self::filter_ignored_diff_files(repo_root, diff_files);
         let diff_files = if let Some(path) = path_filter {
             Self::filter_by_path(diff_files, path)
@@ -1398,7 +1406,11 @@ impl App {
         highlighter: &SyntaxHighlighter,
         path_filter: Option<&str>,
     ) -> Result<Vec<DiffFile>> {
-        let diff_files = vcs.get_staged_diff(highlighter)?;
+        let diff_files = crate::profile::time_with(
+            "diff: load staged",
+            || vcs.get_staged_diff(highlighter),
+            profile_diff_result,
+        )?;
         let diff_files = Self::filter_ignored_diff_files(repo_root, diff_files);
         let diff_files = if let Some(path) = path_filter {
             Self::filter_by_path(diff_files, path)
@@ -1414,9 +1426,17 @@ impl App {
         highlighter: &SyntaxHighlighter,
         path_filter: Option<&str>,
     ) -> Result<Vec<DiffFile>> {
-        let diff_files = match vcs.get_unstaged_diff(highlighter) {
+        let diff_files = match crate::profile::time_with(
+            "diff: load unstaged",
+            || vcs.get_unstaged_diff(highlighter),
+            profile_diff_result,
+        ) {
             Ok(diff_files) => diff_files,
-            Err(TuicrError::UnsupportedOperation(_)) => vcs.get_working_tree_diff(highlighter)?,
+            Err(TuicrError::UnsupportedOperation(_)) => crate::profile::time_with(
+                "diff: load working tree fallback",
+                || vcs.get_working_tree_diff(highlighter),
+                profile_diff_result,
+            )?,
             Err(e) => return Err(e),
         };
         let diff_files = Self::filter_ignored_diff_files(repo_root, diff_files);
@@ -1435,7 +1455,11 @@ impl App {
         highlighter: &SyntaxHighlighter,
         path_filter: Option<&str>,
     ) -> Result<Vec<DiffFile>> {
-        let diff_files = vcs.get_commit_range_diff(commit_ids, highlighter)?;
+        let diff_files = crate::profile::time_with(
+            "diff: load commit range",
+            || vcs.get_commit_range_diff(commit_ids, highlighter),
+            profile_diff_result,
+        )?;
         let diff_files = Self::filter_ignored_diff_files(repo_root, diff_files);
         let diff_files = if let Some(path) = path_filter {
             Self::filter_by_path(diff_files, path)
@@ -1452,7 +1476,11 @@ impl App {
         highlighter: &SyntaxHighlighter,
         path_filter: Option<&str>,
     ) -> Result<Vec<DiffFile>> {
-        let diff_files = vcs.get_working_tree_with_commits_diff(commit_ids, highlighter)?;
+        let diff_files = crate::profile::time_with(
+            "diff: load commits and working tree",
+            || vcs.get_working_tree_with_commits_diff(commit_ids, highlighter),
+            profile_diff_result,
+        )?;
         let diff_files = Self::filter_ignored_diff_files(repo_root, diff_files);
         let diff_files = if let Some(path) = path_filter {
             Self::filter_by_path(diff_files, path)
@@ -1460,6 +1488,56 @@ impl App {
             diff_files
         };
         Self::require_non_empty_diff_files(diff_files)
+    }
+
+    fn get_change_status_with_ignore(
+        vcs: &dyn VcsBackend,
+        repo_root: &Path,
+        highlighter: &SyntaxHighlighter,
+        path_filter: Option<&str>,
+    ) -> Result<VcsChangeStatus> {
+        if path_filter.is_none() {
+            match crate::profile::time_with(
+                "vcs: change status",
+                || vcs.get_change_status(),
+                profile_change_status_result,
+            ) {
+                Ok(status) => return Ok(status),
+                Err(TuicrError::UnsupportedOperation(_)) => {}
+                Err(e) => return Err(e),
+            }
+        }
+
+        let staged =
+            match Self::get_staged_diff_with_ignore(vcs, repo_root, highlighter, path_filter) {
+                Ok(_) => true,
+                Err(TuicrError::NoChanges) | Err(TuicrError::UnsupportedOperation(_)) => false,
+                Err(e) => return Err(e),
+            };
+        let unstaged =
+            match Self::get_unstaged_diff_with_ignore(vcs, repo_root, highlighter, path_filter) {
+                Ok(_) => true,
+                Err(TuicrError::NoChanges) | Err(TuicrError::UnsupportedOperation(_)) => false,
+                Err(e) => return Err(e),
+            };
+
+        Ok(VcsChangeStatus { staged, unstaged })
+    }
+
+    fn profile_rebuild_view(&mut self, label: &str, preserve_wrap: bool) {
+        crate::profile::time(label, || {
+            let wrap = self.diff_state.wrap_lines;
+            self.diff_state = DiffState::default();
+            if preserve_wrap {
+                self.diff_state.wrap_lines = wrap;
+            }
+            self.file_list_state = FileListState::default();
+            self.expanded_top.clear();
+            self.expanded_bottom.clear();
+            self.sort_files_by_directory(true);
+            self.expand_all_dirs();
+            self.rebuild_annotations();
+        });
     }
 
     fn load_staged_and_unstaged_selection(&mut self) -> Result<()> {
@@ -1488,12 +1566,8 @@ impl App {
         self.diff_files = diff_files;
         self.diff_source = DiffSource::StagedAndUnstaged;
         self.input_mode = InputMode::Normal;
-        self.diff_state = DiffState::default();
-        self.file_list_state = FileListState::default();
         self.clear_expanded_gaps();
-        self.sort_files_by_directory(true);
-        self.expand_all_dirs();
-        self.rebuild_annotations();
+        self.profile_rebuild_view("selection: rebuild staged and unstaged view", false);
 
         Ok(())
     }
@@ -1523,12 +1597,8 @@ impl App {
         self.diff_files = diff_files;
         self.diff_source = DiffSource::Staged;
         self.input_mode = InputMode::Normal;
-        self.diff_state = DiffState::default();
-        self.file_list_state = FileListState::default();
         self.clear_expanded_gaps();
-        self.sort_files_by_directory(true);
-        self.expand_all_dirs();
-        self.rebuild_annotations();
+        self.profile_rebuild_view("selection: rebuild staged view", false);
 
         Ok(())
     }
@@ -1558,12 +1628,8 @@ impl App {
         self.diff_files = diff_files;
         self.diff_source = DiffSource::Unstaged;
         self.input_mode = InputMode::Normal;
-        self.diff_state = DiffState::default();
-        self.file_list_state = FileListState::default();
         self.clear_expanded_gaps();
-        self.sort_files_by_directory(true);
-        self.expand_all_dirs();
-        self.rebuild_annotations();
+        self.profile_rebuild_view("selection: rebuild unstaged view", false);
 
         Ok(())
     }
@@ -3499,31 +3565,20 @@ impl App {
         }
 
         let highlighter = self.theme.syntax_highlighter();
-        let has_staged_changes = match Self::get_staged_diff_with_ignore(
+        let change_status = Self::get_change_status_with_ignore(
             self.vcs.as_ref(),
             &self.vcs_info.root_path,
             highlighter,
             self.path_filter.as_deref(),
-        ) {
-            Ok(_) => true,
-            Err(TuicrError::NoChanges) => false,
-            Err(TuicrError::UnsupportedOperation(_)) => false,
-            Err(e) => return Err(e),
-        };
+        )?;
+        let has_staged_changes = change_status.staged;
+        let has_unstaged_changes = change_status.unstaged;
 
-        let has_unstaged_changes = match Self::get_unstaged_diff_with_ignore(
-            self.vcs.as_ref(),
-            &self.vcs_info.root_path,
-            highlighter,
-            self.path_filter.as_deref(),
-        ) {
-            Ok(_) => true,
-            Err(TuicrError::NoChanges) => false,
-            Err(TuicrError::UnsupportedOperation(_)) => false,
-            Err(e) => return Err(e),
-        };
-
-        let commits = self.vcs.get_recent_commits(0, VISIBLE_COMMIT_COUNT)?;
+        let commits = crate::profile::time_with(
+            "commit select: recent commits",
+            || self.vcs.get_recent_commits(0, VISIBLE_COMMIT_COUNT),
+            profile_commit_result,
+        )?;
         if commits.is_empty() && !has_staged_changes && !has_unstaged_changes {
             self.set_message("No commits or staged/unstaged changes found");
             return Ok(());
@@ -3826,6 +3881,18 @@ impl App {
     }
 
     pub fn confirm_commit_selection(&mut self) -> Result<()> {
+        let selection = self
+            .commit_selection_range
+            .map(|(start, end)| format!("range={start}..={end}, rows={}", end - start + 1))
+            .unwrap_or_else(|| "range=none, rows=0".to_string());
+        crate::profile::time_with(
+            "commit select: confirm selection",
+            || self.confirm_commit_selection_inner(),
+            |result| format!("{selection}, {}", profile_unit_result(result)),
+        )
+    }
+
+    fn confirm_commit_selection_inner(&mut self) -> Result<()> {
         let Some((start, end)) = self.commit_selection_range else {
             self.set_message("Select at least one commit");
             return Ok(());
@@ -3884,15 +3951,17 @@ impl App {
 
         // Update session with the newest commit as base
         let newest_commit_id = selected_ids.last().unwrap().clone();
-        let loaded_session = load_latest_session_for_context(
-            &self.vcs_info.root_path,
-            self.vcs_info.branch_name.as_deref(),
-            &newest_commit_id,
-            SessionDiffSource::CommitRange,
-            Some(selected_ids.as_slice()),
-        )
-        .ok()
-        .and_then(|found| found.map(|(_path, session)| session));
+        let loaded_session = crate::profile::time("commit select: load review session", || {
+            load_latest_session_for_context(
+                &self.vcs_info.root_path,
+                self.vcs_info.branch_name.as_deref(),
+                &newest_commit_id,
+                SessionDiffSource::CommitRange,
+                Some(selected_ids.as_slice()),
+            )
+            .ok()
+            .and_then(|found| found.map(|(_path, session)| session))
+        });
 
         let mut session = loaded_session.unwrap_or_else(|| {
             let mut session = ReviewSession::new(
@@ -3948,15 +4017,25 @@ impl App {
         self.commit_diff_cache.clear();
         self.saved_inline_selection = None;
 
-        self.sort_files_by_directory(true);
-        self.expand_all_dirs();
-        self.rebuild_annotations();
+        self.profile_rebuild_view("commit select: rebuild selected commit view", false);
 
         Ok(())
     }
 
     /// Reload the diff for the currently selected inline commit subrange.
     pub fn reload_inline_selection(&mut self) -> Result<()> {
+        let selection = self
+            .commit_selection_range
+            .map(|(start, end)| format!("range={start}..={end}, rows={}", end - start + 1))
+            .unwrap_or_else(|| "range=none, rows=0".to_string());
+        crate::profile::time_with(
+            "commit select: reload inline selection",
+            || self.reload_inline_selection_inner(),
+            |result| format!("{selection}, {}", profile_unit_result(result)),
+        )
+    }
+
+    fn reload_inline_selection_inner(&mut self) -> Result<()> {
         let Some((start, end)) = self.commit_selection_range else {
             self.set_message("Select at least one commit");
             return Ok(());
@@ -3975,9 +4054,7 @@ impl App {
             self.expanded_top.clear();
             self.expanded_bottom.clear();
             self.insert_commit_message_if_single();
-            self.sort_files_by_directory(true);
-            self.expand_all_dirs();
-            self.rebuild_annotations();
+            self.profile_rebuild_view("commit select: rebuild cached full-range view", true);
             return Ok(());
         }
 
@@ -3991,9 +4068,7 @@ impl App {
             self.expanded_top.clear();
             self.expanded_bottom.clear();
             self.insert_commit_message_if_single();
-            self.sort_files_by_directory(true);
-            self.expand_all_dirs();
-            self.rebuild_annotations();
+            self.profile_rebuild_view("commit select: rebuild cached subrange view", true);
             return Ok(());
         }
 
@@ -4086,9 +4161,7 @@ impl App {
         self.expanded_top.clear();
         self.expanded_bottom.clear();
         self.insert_commit_message_if_single();
-        self.sort_files_by_directory(true);
-        self.expand_all_dirs();
-        self.rebuild_annotations();
+        self.profile_rebuild_view("commit select: rebuild inline subrange view", true);
 
         Ok(())
     }
@@ -4146,9 +4219,10 @@ impl App {
         self.saved_inline_selection = None;
 
         self.insert_commit_message_if_single();
-        self.sort_files_by_directory(true);
-        self.expand_all_dirs();
-        self.rebuild_annotations();
+        self.profile_rebuild_view(
+            "commit select: rebuild commits plus working tree view",
+            false,
+        );
         Ok(())
     }
 

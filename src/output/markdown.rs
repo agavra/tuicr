@@ -37,8 +37,12 @@ pub fn export_to_clipboard(
     comment_types: &[CommentTypeDefinition],
     show_legend: bool,
 ) -> Result<String> {
-    let content = generate_export_content(session, diff_source, comment_types, show_legend)?;
-    let via_terminal = copy_text_to_clipboard(&content)?;
+    let content = crate::profile::time("export: generate markdown", || {
+        generate_export_content(session, diff_source, comment_types, show_legend)
+    })?;
+    let via_terminal = crate::profile::time("export: copy to clipboard", || {
+        copy_text_to_clipboard(&content)
+    })?;
     Ok(if via_terminal {
         "Review copied to clipboard (via terminal)".to_string()
     } else {

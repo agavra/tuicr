@@ -178,12 +178,14 @@ fn handle_left_click(app: &mut App, pos: Position) {
 /// When output_to_stdout is true, stores the content and sets should_quit.
 fn handle_export(app: &mut App) {
     if app.output_to_stdout {
-        match generate_export_content(
-            &app.session,
-            &app.diff_source,
-            &app.comment_types,
-            app.export_legend,
-        ) {
+        match crate::profile::time("export: generate stdout markdown", || {
+            generate_export_content(
+                &app.session,
+                &app.diff_source,
+                &app.comment_types,
+                app.export_legend,
+            )
+        }) {
             Ok(content) => {
                 app.pending_stdout_output = Some(content);
                 app.should_quit = true;
