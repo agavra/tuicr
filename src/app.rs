@@ -2540,7 +2540,9 @@ impl App {
         use std::path::Path;
 
         if idx < self.diff_files.len() {
+            let prev = self.diff_state.current_file_idx;
             self.diff_state.current_file_idx = idx;
+            self.reprioritize_highlights_if_file_changed(prev);
             self.diff_state.cursor_line = self.calculate_file_scroll_offset(idx);
             let max_scroll = self.max_scroll_offset();
             self.diff_state.scroll_offset = self.diff_state.cursor_line.min(max_scroll);
@@ -2909,26 +2911,38 @@ impl App {
     }
 
     fn update_current_file_from_cursor(&mut self) {
+        let prev = self.diff_state.current_file_idx;
+        if let Some(new_idx) = self.file_idx_at_cursor() {
+            self.diff_state.current_file_idx = new_idx;
+            self.file_list_state.select(new_idx);
+        }
+        self.reprioritize_highlights_if_file_changed(prev);
+    }
+
+    fn file_idx_at_cursor(&self) -> Option<usize> {
+        if self.diff_files.is_empty() {
+            return None;
+        }
         let mut cumulative = self.review_comments_render_height();
         if self.diff_state.cursor_line < cumulative {
-            if !self.diff_files.is_empty() {
-                self.diff_state.current_file_idx = 0;
-                self.file_list_state.select(0);
-            }
-            return;
+            return Some(0);
         }
         for (i, file) in self.diff_files.iter().enumerate() {
             let height = self.file_render_height(i, file);
             if cumulative + height > self.diff_state.cursor_line {
-                self.diff_state.current_file_idx = i;
-                self.file_list_state.select(i);
-                return;
+                return Some(i);
             }
             cumulative += height;
         }
-        if !self.diff_files.is_empty() {
-            self.diff_state.current_file_idx = self.diff_files.len() - 1;
-            self.file_list_state.select(self.diff_files.len() - 1);
+        Some(self.diff_files.len() - 1)
+    }
+
+    fn reprioritize_highlights_if_file_changed(&self, prev: usize) {
+        if prev == self.diff_state.current_file_idx {
+            return;
+        }
+        if let Some(session) = self.highlight_session.as_ref() {
+            session.prioritize_around(self.diff_state.current_file_idx);
         }
     }
 

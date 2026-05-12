@@ -10,11 +10,11 @@
 //! `SyntaxSet` / `Theme` are `Sync`, so the highlight phase parallelises
 //! cleanly across threads as long as inputs are owned strings.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 use crate::model::diff_types::LineOrigin;
@@ -68,16 +68,21 @@ pub(crate) enum HighlightUpdateKind {
     },
 }
 
+/// Shared queue of pending jobs. Workers pop from the front under the
+/// mutex; the App can reorder the queue by file-index proximity when the
+/// user navigates, so visible files get highlighted first.
+pub(crate) type SharedQueue = Arc<Mutex<VecDeque<HighlightJob>>>;
+
 /// Spawn the highlight worker. Returns the join handle; the caller usually
 /// doesn't need to wait on it (the worker exits when its send fails on a
 /// dropped receiver, or when `cancel` is set).
 pub(crate) fn spawn_highlight_worker(
-    jobs: Vec<HighlightJob>,
+    queue: SharedQueue,
     highlighter: Arc<SyntaxHighlighter>,
     cancel: Arc<AtomicBool>,
     tx: Sender<HighlightUpdate>,
 ) -> thread::JoinHandle<()> {
-    thread::spawn(move || run_worker(jobs, highlighter, cancel, tx))
+    thread::spawn(move || run_worker(queue, highlighter, cancel, tx))
 }
 
 /// Run the highlight pipeline synchronously on the current thread. Used by
@@ -87,54 +92,31 @@ pub(crate) fn run_blocking(
     jobs: Vec<HighlightJob>,
     highlighter: &SyntaxHighlighter,
 ) -> Vec<HighlightUpdate> {
-    let mut out = Vec::with_capacity(jobs.len());
-    for job in jobs {
-        if let Some(update) = run_job(&job, highlighter) {
-            out.push(update);
-        }
-    }
-    out
+    jobs.iter()
+        .filter_map(|job| run_job(job, highlighter))
+        .collect()
 }
 
 fn run_worker(
-    jobs: Vec<HighlightJob>,
+    queue: SharedQueue,
     highlighter: Arc<SyntaxHighlighter>,
     cancel: Arc<AtomicBool>,
     tx: Sender<HighlightUpdate>,
 ) {
-    if jobs.is_empty() {
+    let initial_len = queue.lock().unwrap().len();
+    if initial_len == 0 {
         return;
     }
 
     let parallelism = thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1)
-        .min(jobs.len())
+        .min(initial_len)
         .max(1);
 
-    if parallelism <= 1 {
-        for job in &jobs {
-            if cancel.load(Ordering::Relaxed) {
-                return;
-            }
-            if let Some(update) = run_job(job, &highlighter)
-                && tx.send(update).is_err()
-            {
-                return;
-            }
-        }
-        return;
-    }
-
-    // Atomic-cursor work stealing: every worker pulls the next index from
-    // a shared counter. Beats static chunking when job sizes are skewed
-    // (e.g. one giant file + many small ones).
-    let cursor = Arc::new(AtomicUsize::new(0));
-    let jobs = Arc::new(jobs);
     thread::scope(|s| {
         for _ in 0..parallelism {
-            let cursor = Arc::clone(&cursor);
-            let jobs = Arc::clone(&jobs);
+            let queue = Arc::clone(&queue);
             let cancel = Arc::clone(&cancel);
             let tx = tx.clone();
             let highlighter = Arc::clone(&highlighter);
@@ -143,11 +125,11 @@ fn run_worker(
                     if cancel.load(Ordering::Relaxed) {
                         return;
                     }
-                    let idx = cursor.fetch_add(1, Ordering::Relaxed);
-                    if idx >= jobs.len() {
+                    let job = queue.lock().unwrap().pop_front();
+                    let Some(job) = job else {
                         return;
-                    }
-                    if let Some(update) = run_job(&jobs[idx], &highlighter)
+                    };
+                    if let Some(update) = run_job(&job, &highlighter)
                         && tx.send(update).is_err()
                     {
                         return;
@@ -222,12 +204,13 @@ fn highlight_full(
     h.highlight_file_lines(path, &lines)
 }
 
-/// A running highlight session: receiver for streamed results plus the
-/// cancel token shared with the worker. The two are always twinned, so they
-/// live behind a single `Option<HighlightSession>` on `App`.
+/// A running highlight session: receiver for streamed results, the cancel
+/// token shared with the worker, and the shared job queue (so the App can
+/// reprioritize pending work when the user navigates).
 pub(crate) struct HighlightSession {
     rx: mpsc::Receiver<HighlightUpdate>,
     cancel: Arc<AtomicBool>,
+    queue: SharedQueue,
 }
 
 impl HighlightSession {
@@ -240,10 +223,11 @@ impl HighlightSession {
         if jobs.is_empty() {
             return None;
         }
+        let queue: SharedQueue = Arc::new(Mutex::new(VecDeque::from(jobs)));
         let cancel = Arc::new(AtomicBool::new(false));
         let (tx, rx) = mpsc::channel();
-        spawn_highlight_worker(jobs, highlighter, Arc::clone(&cancel), tx);
-        Some(Self { rx, cancel })
+        spawn_highlight_worker(Arc::clone(&queue), highlighter, Arc::clone(&cancel), tx);
+        Some(Self { rx, cancel, queue })
     }
 
     /// Re-resolve each job's `file_idx` by `syntax_path` against
@@ -283,6 +267,15 @@ impl HighlightSession {
 
     pub(crate) fn try_recv(&self) -> Result<HighlightUpdate, mpsc::TryRecvError> {
         self.rx.try_recv()
+    }
+
+    /// Reorder the pending queue so jobs nearest `file_idx` run next.
+    /// Called when the user navigates to a new file, so the visible
+    /// viewport gets highlighted before far-away files.
+    pub(crate) fn prioritize_around(&self, file_idx: usize) {
+        let mut q = self.queue.lock().unwrap();
+        q.make_contiguous()
+            .sort_by_key(|job| job.file_idx.abs_diff(file_idx));
     }
 }
 
