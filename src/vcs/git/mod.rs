@@ -5,6 +5,7 @@ pub mod staging;
 
 use git2::Repository;
 use std::path::Path;
+use std::process::Command;
 
 use crate::error::{Result, TuicrError};
 use crate::model::{DiffFile, DiffLine, FileStatus};
@@ -36,20 +37,16 @@ impl GitBackend {
             .ok_or(TuicrError::NotARepository)?
             .to_path_buf();
 
-        let head_commit = repo
-            .head()
+        let head_commit = run_git_command(&root_path, &["rev-parse", "--verify", "HEAD"])
             .ok()
-            .and_then(|h| h.peel_to_commit().ok())
-            .map(|c| c.id().to_string())
+            .map(|value| value.trim().to_string())
             .unwrap_or_else(|| "HEAD".to_string());
 
-        let branch_name = repo.head().ok().and_then(|h| {
-            if h.is_branch() {
-                h.shorthand().map(|s| s.to_string())
-            } else {
-                None
-            }
-        });
+        let branch_name =
+            run_git_command(&root_path, &["symbolic-ref", "--quiet", "--short", "HEAD"])
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty());
 
         let info = VcsInfo {
             root_path,
@@ -60,6 +57,22 @@ impl GitBackend {
 
         Ok(Self { repo, info })
     }
+}
+
+fn run_git_command(workdir: &Path, args: &[&str]) -> Result<String> {
+    let output = Command::new("git")
+        .current_dir(workdir)
+        .args(args)
+        .output()
+        .map_err(|e| TuicrError::VcsCommand(format!("Failed to run git: {}", e)))?;
+
+    if !output.status.success() {
+        return Err(TuicrError::VcsCommand(
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        ));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 impl VcsBackend for GitBackend {

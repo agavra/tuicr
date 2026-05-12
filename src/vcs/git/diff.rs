@@ -130,6 +130,26 @@ pub fn get_commit_range_diff(
         return Err(TuicrError::NoChanges);
     }
 
+    if is_sparse_checkout(repo) {
+        let base_rev = parent_rev_or_empty(repo, &commit_ids[0]);
+        let newest_rev = commit_ids.last().unwrap();
+        return get_cli_diff(
+            repo,
+            &[
+                "diff",
+                "--no-ext-diff",
+                "--binary",
+                &base_rev,
+                newest_rev,
+                "--",
+            ],
+            false,
+            GitContentSource::Revision(&base_rev),
+            GitContentSource::Revision(newest_rev),
+            highlighter,
+        );
+    }
+
     let oldest_id = git2::Oid::from_str(&commit_ids[0])?;
     let oldest_commit = repo.find_commit(oldest_id)?;
 
@@ -170,21 +190,8 @@ pub fn get_working_tree_with_commits_diff(
         return Err(TuicrError::NoChanges);
     }
 
-    let oldest_id = git2::Oid::from_str(&commit_ids[0])?;
-    let oldest_commit = repo.find_commit(oldest_id)?;
-
-    let old_tree = if oldest_commit.parent_count() > 0 {
-        Some(oldest_commit.parent(0)?.tree()?)
-    } else {
-        None
-    };
-
     if is_sparse_checkout(repo) {
-        let base_rev = if oldest_commit.parent_count() > 0 {
-            oldest_commit.parent(0)?.id().to_string()
-        } else {
-            empty_tree_oid().to_string()
-        };
+        let base_rev = parent_rev_or_empty(repo, &commit_ids[0]);
         return get_cli_diff(
             repo,
             &["diff", "--no-ext-diff", "--binary", &base_rev, "--"],
@@ -194,6 +201,15 @@ pub fn get_working_tree_with_commits_diff(
             highlighter,
         );
     }
+
+    let oldest_id = git2::Oid::from_str(&commit_ids[0])?;
+    let oldest_commit = repo.find_commit(oldest_id)?;
+
+    let old_tree = if oldest_commit.parent_count() > 0 {
+        Some(oldest_commit.parent(0)?.tree()?)
+    } else {
+        None
+    };
 
     let mut opts = DiffOptions::new();
     opts.include_untracked(true);
@@ -240,7 +256,9 @@ enum GitContentSource<'a> {
 }
 
 fn is_sparse_checkout(repo: &Repository) -> bool {
-    git_config_bool(repo, "core.sparseCheckout") || git_config_bool(repo, "index.sparse")
+    git_config_bool(repo, "core.sparseCheckout")
+        || git_config_bool(repo, "index.sparse")
+        || run_git_command(repo, &["sparse-checkout", "list"], false).is_ok()
 }
 
 fn git_config_bool(repo: &Repository, key: &str) -> bool {
@@ -252,6 +270,13 @@ fn git_config_bool(repo: &Repository, key: &str) -> bool {
 fn empty_tree_oid() -> git2::Oid {
     git2::Oid::from_str("4b825dc642cb6eb9a060e54bf8d69288fbee4904")
         .expect("empty tree oid should be valid")
+}
+
+fn parent_rev_or_empty(repo: &Repository, commit_id: &str) -> String {
+    let parent_spec = format!("{commit_id}^");
+    run_git_command(repo, &["rev-parse", &parent_spec], false)
+        .map(|rev| rev.trim().to_string())
+        .unwrap_or_else(|_| empty_tree_oid().to_string())
 }
 
 fn get_cli_diff(
@@ -716,6 +741,26 @@ mod tests {
             .expect("failed to create commit");
     }
 
+    fn commit_paths(repo: &Repository, message: &str, paths: &[&str]) -> String {
+        let mut index = repo.index().expect("failed to open index");
+        for path in paths {
+            index
+                .add_path(Path::new(path))
+                .expect("failed to add file to index");
+        }
+        index.write().expect("failed to write index");
+
+        let tree_id = index.write_tree().expect("failed to write tree");
+        let tree = repo.find_tree(tree_id).expect("failed to find tree");
+        let sig = git2::Signature::now("Test User", "test@example.com")
+            .expect("failed to create signature");
+        let parent = repo.head().unwrap().peel_to_commit().unwrap();
+        let oid = repo
+            .commit(Some("HEAD"), &sig, &sig, message, &tree, &[&parent])
+            .expect("failed to create commit");
+        oid.to_string()
+    }
+
     fn git(repo: &Repository, args: &[&str]) {
         let status = Command::new("git")
             .args(args)
@@ -1025,5 +1070,85 @@ mod tests {
             Some(Path::new("keep/file.txt"))
         );
         assert_eq!(files[0].status, FileStatus::Modified);
+    }
+
+    #[test]
+    fn should_read_commit_range_diff_in_sparse_checkout() {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let repo = Repository::init(temp_dir.path()).expect("failed to init repo");
+
+        create_initial_commit_with_files(
+            &repo,
+            &[
+                ("keep/file.txt", "keep base\n"),
+                ("hidden/file.txt", "hidden base\n"),
+            ],
+        );
+
+        fs::write(temp_dir.path().join("keep/file.txt"), "keep commit\n")
+            .expect("failed to update included file");
+        let second_id = commit_paths(&repo, "second", &["keep/file.txt"]);
+
+        git(&repo, &["sparse-checkout", "init", "--cone"]);
+        git(&repo, &["sparse-checkout", "set", "keep"]);
+        git(&repo, &["sparse-checkout", "reapply", "--sparse-index"]);
+
+        let files = get_commit_range_diff(&repo, &[second_id], &SyntaxHighlighter::default())
+            .expect("failed to get sparse checkout commit range diff");
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(
+            files[0].new_path.as_deref(),
+            Some(Path::new("keep/file.txt"))
+        );
+        assert!(
+            files[0]
+                .hunks
+                .iter()
+                .flat_map(|hunk| &hunk.lines)
+                .any(|line| line.content == "keep commit")
+        );
+    }
+
+    #[test]
+    fn should_read_working_tree_with_commits_diff_in_sparse_checkout() {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let repo = Repository::init(temp_dir.path()).expect("failed to init repo");
+
+        create_initial_commit_with_files(
+            &repo,
+            &[
+                ("keep/file.txt", "keep base\n"),
+                ("hidden/file.txt", "hidden base\n"),
+            ],
+        );
+
+        fs::write(temp_dir.path().join("keep/file.txt"), "keep commit\n")
+            .expect("failed to update included file");
+        let second_id = commit_paths(&repo, "second", &["keep/file.txt"]);
+
+        git(&repo, &["sparse-checkout", "init", "--cone"]);
+        git(&repo, &["sparse-checkout", "set", "keep"]);
+        git(&repo, &["sparse-checkout", "reapply", "--sparse-index"]);
+
+        fs::write(temp_dir.path().join("keep/file.txt"), "keep worktree\n")
+            .expect("failed to update included file");
+
+        let files =
+            get_working_tree_with_commits_diff(&repo, &[second_id], &SyntaxHighlighter::default())
+                .expect("failed to get sparse checkout working tree + commits diff");
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(
+            files[0].new_path.as_deref(),
+            Some(Path::new("keep/file.txt"))
+        );
+        assert!(
+            files[0]
+                .hunks
+                .iter()
+                .flat_map(|hunk| &hunk.lines)
+                .any(|line| line.content == "keep worktree")
+        );
     }
 }

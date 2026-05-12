@@ -1,5 +1,6 @@
 use git2::Repository;
 use std::path::Path;
+use std::process::Command;
 
 use crate::error::{Result, TuicrError};
 use crate::model::{DiffLine, FileStatus, LineOrigin};
@@ -53,12 +54,22 @@ pub fn fetch_context_lines(
 
 /// Fetch content from a git blob (for deleted files)
 fn fetch_blob_content(repo: &Repository, file_path: &Path) -> Result<String> {
-    let head = repo.head()?.peel_to_tree()?;
-    let entry = head.get_path(file_path)?;
-    let blob = repo.find_blob(entry.id())?;
-    let content = std::str::from_utf8(blob.content())
-        .map_err(|e| TuicrError::CorruptedSession(format!("Invalid UTF-8 in file: {e}")))?;
-    Ok(content.to_string())
+    let workdir = repo.workdir().ok_or(TuicrError::NotARepository)?;
+    let spec = format!("HEAD:{}", file_path.to_string_lossy());
+    let output = Command::new("git")
+        .current_dir(workdir)
+        .args(["show", &spec])
+        .output()
+        .map_err(|e| TuicrError::VcsCommand(format!("Failed to run git: {}", e)))?;
+
+    if !output.status.success() {
+        return Err(TuicrError::VcsCommand(
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        ));
+    }
+
+    String::from_utf8(output.stdout)
+        .map_err(|e| TuicrError::CorruptedSession(format!("Invalid UTF-8 in file: {e}")))
 }
 
 /// Calculate the number of hidden lines (gap) before a hunk.
@@ -85,6 +96,22 @@ pub fn calculate_gap(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::process::Command;
+
+    fn git(repo: &Repository, args: &[&str]) {
+        let output = Command::new("git")
+            .current_dir(repo.workdir().expect("test repo should have workdir"))
+            .args(args)
+            .output()
+            .expect("failed to run git");
+        assert!(
+            output.status.success(),
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 
     #[test]
     fn should_calculate_gap_before_first_hunk() {
@@ -138,5 +165,34 @@ mod tests {
 
         // then
         assert_eq!(gap, 0); // saturating_sub prevents underflow
+    }
+
+    #[test]
+    fn fetch_deleted_context_lines_supports_sparse_index() {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let repo = Repository::init(temp_dir.path()).expect("failed to init repo");
+
+        git(&repo, &["config", "user.email", "test@example.com"]);
+        git(&repo, &["config", "user.name", "Test User"]);
+        fs::create_dir_all(temp_dir.path().join("keep")).expect("failed to create keep dir");
+        fs::create_dir_all(temp_dir.path().join("hidden")).expect("failed to create hidden dir");
+        fs::write(temp_dir.path().join("keep/file.txt"), "one\ntwo\nthree\n")
+            .expect("failed to write keep file");
+        fs::write(temp_dir.path().join("hidden/file.txt"), "hidden\n")
+            .expect("failed to write hidden file");
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-m", "initial"]);
+        git(&repo, &["sparse-checkout", "init", "--cone"]);
+        git(&repo, &["sparse-checkout", "set", "keep"]);
+        git(&repo, &["sparse-checkout", "reapply", "--sparse-index"]);
+        fs::remove_file(temp_dir.path().join("keep/file.txt")).expect("failed to delete file");
+
+        let lines =
+            fetch_context_lines(&repo, Path::new("keep/file.txt"), FileStatus::Deleted, 2, 3)
+                .expect("failed to fetch context lines");
+
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].content, "two");
+        assert_eq!(lines[1].content, "three");
     }
 }
