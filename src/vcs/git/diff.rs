@@ -283,30 +283,54 @@ fn get_cli_diff(
     new_source: GitContentSource<'_>,
     highlighter: &SyntaxHighlighter,
 ) -> Result<Vec<DiffFile>> {
-    let mut files = match run_git_diff_command(repo, args, highlighter) {
+    let mut files = match crate::profile::time_with(
+        "vcs: git cli diff command",
+        || run_git_diff_command(repo, args, highlighter),
+        profile_diff_result,
+    ) {
         Ok(files) => files,
         Err(TuicrError::NoChanges) => Vec::new(),
         Err(err) => return Err(err),
     };
 
     if include_untracked {
-        append_untracked_cli_diffs(repo, &mut files, highlighter)?;
+        crate::profile::time_with(
+            "vcs: git cli untracked diff",
+            || append_untracked_cli_diffs(repo, &mut files, highlighter),
+            |result| match result {
+                Ok(count) => format!("files={count}"),
+                Err(e) => format!("error={e}"),
+            },
+        )?;
     }
 
     if files.is_empty() {
         return Err(TuicrError::NoChanges);
     }
 
-    let old_cache = git_source_content_cache(repo, old_source, &files, LineSide::Old);
-    let new_cache = git_source_content_cache(repo, new_source, &files, LineSide::New);
+    let old_cache = crate::profile::time("vcs: git cli old content cache", || {
+        git_source_content_cache(repo, old_source, &files, LineSide::Old)
+    });
+    let new_cache = crate::profile::time("vcs: git cli new content cache", || {
+        git_source_content_cache(repo, new_source, &files, LineSide::New)
+    });
 
-    enhance_with_full_file_highlight(
-        &mut files,
-        highlighter,
-        |path| read_path_from_git_source_cached(repo, old_source, old_cache.as_ref(), path),
-        |path| read_path_from_git_source_cached(repo, new_source, new_cache.as_ref(), path),
-    );
+    crate::profile::time("vcs: git cli full-file highlight", || {
+        enhance_with_full_file_highlight(
+            &mut files,
+            highlighter,
+            |path| read_path_from_git_source_cached(repo, old_source, old_cache.as_ref(), path),
+            |path| read_path_from_git_source_cached(repo, new_source, new_cache.as_ref(), path),
+        );
+    });
     Ok(files)
+}
+
+fn profile_diff_result(result: &Result<Vec<DiffFile>>) -> String {
+    match result {
+        Ok(files) => format!("files={}", files.len()),
+        Err(e) => format!("error={e}"),
+    }
 }
 
 fn run_git_diff_command(
@@ -364,11 +388,12 @@ fn append_untracked_cli_diffs(
     repo: &Repository,
     files: &mut Vec<DiffFile>,
     highlighter: &SyntaxHighlighter,
-) -> Result<()> {
+) -> Result<usize> {
     let Some(workdir) = repo.workdir() else {
-        return Ok(());
+        return Ok(0);
     };
 
+    let previous_len = files.len();
     for_each_untracked_path(repo, |path| {
         let full_path = workdir.join(&path);
         let Some(file) = build_untracked_diff_file(&path, &full_path, highlighter) else {
@@ -377,7 +402,7 @@ fn append_untracked_cli_diffs(
         files.push(file);
         Ok(())
     })?;
-    Ok(())
+    Ok(files.len().saturating_sub(previous_len))
 }
 
 fn build_untracked_diff_file(

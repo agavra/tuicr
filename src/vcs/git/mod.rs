@@ -168,53 +168,38 @@ fn run_git_command(workdir: &Path, args: &[&str]) -> Result<String> {
 }
 
 fn get_change_status(repo: &Repository, _capabilities: GitCapabilities) -> Result<VcsChangeStatus> {
-    let mut status = crate::profile::time("vcs: git status tracked changes", || {
-        get_tracked_change_status(repo)
+    let staged = crate::profile::time("vcs: git staged diff probe", || {
+        has_diff_changes(repo, &["diff", "--quiet", "--cached", "--"])
     })?;
+    let tracked_unstaged = crate::profile::time("vcs: git unstaged diff probe", || {
+        has_diff_changes(repo, &["diff", "--quiet", "--"])
+    })?;
+    let unstaged = if tracked_unstaged {
+        true
+    } else {
+        crate::profile::time("vcs: git untracked scan", || has_untracked_changes(repo))?
+    };
 
-    if !status.unstaged {
-        status.unstaged =
-            crate::profile::time("vcs: git untracked scan", || has_untracked_changes(repo))?;
-    }
-
-    Ok(status)
+    Ok(VcsChangeStatus { staged, unstaged })
 }
 
-fn get_tracked_change_status(repo: &Repository) -> Result<VcsChangeStatus> {
+fn has_diff_changes(repo: &Repository, args: &[&str]) -> Result<bool> {
     let workdir = repo.workdir().ok_or(TuicrError::NotARepository)?;
-    let mut child = Command::new("git")
+    let output = Command::new("git")
         .current_dir(workdir)
-        .args(["status", "--porcelain=v1", "-z", "--untracked-files=no"])
-        .stdout(Stdio::piped())
+        .args(args)
+        .stdout(Stdio::null())
         .stderr(Stdio::piped())
-        .spawn()
+        .output()
         .map_err(|e| TuicrError::VcsCommand(format!("Failed to run git: {}", e)))?;
 
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| TuicrError::VcsCommand("git status stdout unavailable".into()))?;
-
-    let mut status = VcsChangeStatus::default();
-    let stopped_early = parse_change_status_stream(BufReader::new(stdout), &mut status)?;
-
-    if stopped_early {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Ok(status);
-    }
-
-    let output = child
-        .wait_with_output()
-        .map_err(|e| TuicrError::VcsCommand(format!("git status failed: {e}")))?;
-
-    if !output.status.success() {
-        return Err(TuicrError::VcsCommand(
+    match output.status.code() {
+        Some(0) => Ok(false),
+        Some(1) => Ok(true),
+        _ => Err(TuicrError::VcsCommand(
             String::from_utf8_lossy(&output.stderr).trim().to_string(),
-        ));
+        )),
     }
-
-    Ok(status)
 }
 
 fn has_untracked_changes(repo: &Repository) -> Result<bool> {
@@ -257,45 +242,6 @@ fn has_untracked_changes(repo: &Repository) -> Result<bool> {
     }
 
     Ok(false)
-}
-
-fn parse_change_status_stream<R: BufRead>(
-    mut reader: R,
-    status: &mut VcsChangeStatus,
-) -> Result<bool> {
-    let mut record = Vec::new();
-    loop {
-        record.clear();
-        let read = reader.read_until(0, &mut record)?;
-        if read == 0 {
-            return Ok(false);
-        }
-        if record.last() == Some(&0) {
-            record.pop();
-        }
-        parse_change_status_record(&record, status);
-        if status.staged && status.unstaged {
-            return Ok(true);
-        }
-    }
-}
-
-fn parse_change_status_record(record: &[u8], status: &mut VcsChangeStatus) {
-    if record.len() < 3 || record[2] != b' ' {
-        return;
-    }
-
-    match (record[0], record[1]) {
-        (b'?', b'?') => status.unstaged = true,
-        (x, y) => {
-            if x != b' ' {
-                status.staged = true;
-            }
-            if y != b' ' {
-                status.unstaged = true;
-            }
-        }
-    }
 }
 
 impl VcsBackend for GitBackend {
@@ -450,50 +396,6 @@ mod tests {
         let output = "core.sparsecheckout true\nindex.sparse true\n";
 
         assert_eq!(parse_sparse_config(output), (true, true));
-    }
-
-    #[test]
-    fn parses_change_status_records() {
-        let mut status = VcsChangeStatus::default();
-        parse_change_status_record(b" M src/main.rs", &mut status);
-        assert_eq!(
-            status,
-            VcsChangeStatus {
-                staged: false,
-                unstaged: true,
-            }
-        );
-
-        let mut status = VcsChangeStatus::default();
-        parse_change_status_record(b"M  src/main.rs", &mut status);
-        assert_eq!(
-            status,
-            VcsChangeStatus {
-                staged: true,
-                unstaged: false,
-            }
-        );
-
-        let mut status = VcsChangeStatus::default();
-        parse_change_status_record(b"?? new-file.rs", &mut status);
-        assert_eq!(
-            status,
-            VcsChangeStatus {
-                staged: false,
-                unstaged: true,
-            }
-        );
-
-        let mut status = VcsChangeStatus::default();
-        parse_change_status_record(b"R  new-name.rs", &mut status);
-        parse_change_status_record(b"old-name.rs", &mut status);
-        assert_eq!(
-            status,
-            VcsChangeStatus {
-                staged: true,
-                unstaged: false,
-            }
-        );
     }
 
     #[test]
