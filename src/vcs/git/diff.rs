@@ -1,15 +1,32 @@
 use git2::{Delta, Diff, DiffOptions, Repository};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use crate::error::{Result, TuicrError};
 use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin};
 use crate::syntax::{SyntaxHighlighter, needs_full_file_highlight};
+use crate::vcs::diff_parser::{self, DiffFormat};
 use crate::vcs::{enhance_with_full_file_highlight, tabify};
+
+// Untracked files larger than this are shown in the file list but their
+// content is not parsed — they are likely logs, dumps, or build artefacts.
+const MAX_UNTRACKED_FILE_SIZE: u64 = 10 * 1_024 * 1_024;
 
 pub fn get_working_tree_diff(
     repo: &Repository,
     highlighter: &SyntaxHighlighter,
 ) -> Result<Vec<DiffFile>> {
+    if is_sparse_checkout(repo) {
+        return get_cli_diff(
+            repo,
+            &["diff", "--no-ext-diff", "--binary", "HEAD", "--"],
+            true,
+            GitContentSource::Revision("HEAD"),
+            GitContentSource::Workdir,
+            highlighter,
+        );
+    }
+
     let head = repo.head()?.peel_to_tree()?;
 
     let mut opts = DiffOptions::new();
@@ -34,6 +51,22 @@ pub fn get_staged_diff(
     repo: &Repository,
     highlighter: &SyntaxHighlighter,
 ) -> Result<Vec<DiffFile>> {
+    if is_sparse_checkout(repo) {
+        let old_source = if repo.head().is_ok() {
+            GitContentSource::Revision("HEAD")
+        } else {
+            GitContentSource::None
+        };
+        return get_cli_diff(
+            repo,
+            &["diff", "--no-ext-diff", "--binary", "--cached", "--"],
+            false,
+            old_source,
+            GitContentSource::Index,
+            highlighter,
+        );
+    }
+
     let head = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
     let index = repo.index()?;
     let diff = repo.diff_tree_to_index(head.as_ref(), Some(&index), None)?;
@@ -55,6 +88,17 @@ pub fn get_unstaged_diff(
     repo: &Repository,
     highlighter: &SyntaxHighlighter,
 ) -> Result<Vec<DiffFile>> {
+    if is_sparse_checkout(repo) {
+        return get_cli_diff(
+            repo,
+            &["diff", "--no-ext-diff", "--binary", "--"],
+            true,
+            GitContentSource::Index,
+            GitContentSource::Workdir,
+            highlighter,
+        );
+    }
+
     let index = repo.index()?;
     let mut opts = DiffOptions::new();
     opts.include_untracked(true);
@@ -133,6 +177,22 @@ pub fn get_working_tree_with_commits_diff(
         None
     };
 
+    if is_sparse_checkout(repo) {
+        let base_rev = if oldest_commit.parent_count() > 0 {
+            oldest_commit.parent(0)?.id().to_string()
+        } else {
+            empty_tree_oid().to_string()
+        };
+        return get_cli_diff(
+            repo,
+            &["diff", "--no-ext-diff", "--binary", &base_rev, "--"],
+            true,
+            GitContentSource::Revision(&base_rev),
+            GitContentSource::Workdir,
+            highlighter,
+        );
+    }
+
     let mut opts = DiffOptions::new();
     opts.include_untracked(true);
     opts.show_untracked_content(true);
@@ -169,12 +229,169 @@ fn read_path_from_index(repo: &Repository, index: &git2::Index, path: &Path) -> 
     Some(String::from_utf8_lossy(blob.content()).into_owned())
 }
 
+#[derive(Clone, Copy)]
+enum GitContentSource<'a> {
+    None,
+    Workdir,
+    Index,
+    Revision(&'a str),
+}
+
+fn is_sparse_checkout(repo: &Repository) -> bool {
+    git_config_bool(repo, "core.sparseCheckout") || git_config_bool(repo, "index.sparse")
+}
+
+fn git_config_bool(repo: &Repository, key: &str) -> bool {
+    run_git_command(repo, &["config", "--bool", "--get", key], false)
+        .ok()
+        .is_some_and(|value| matches!(value.trim(), "true" | "1" | "yes" | "on"))
+}
+
+fn empty_tree_oid() -> git2::Oid {
+    git2::Oid::from_str("4b825dc642cb6eb9a060e54bf8d69288fbee4904")
+        .expect("empty tree oid should be valid")
+}
+
+fn get_cli_diff(
+    repo: &Repository,
+    args: &[&str],
+    include_untracked: bool,
+    old_source: GitContentSource<'_>,
+    new_source: GitContentSource<'_>,
+    highlighter: &SyntaxHighlighter,
+) -> Result<Vec<DiffFile>> {
+    let diff_output = run_git_command(repo, args, false)?;
+    let mut files = if diff_output.trim().is_empty() {
+        Vec::new()
+    } else {
+        diff_parser::parse_unified_diff(&diff_output, DiffFormat::GitStyle, highlighter)?
+    };
+
+    if include_untracked {
+        append_untracked_cli_diffs(repo, &mut files, highlighter)?;
+    }
+
+    if files.is_empty() {
+        return Err(TuicrError::NoChanges);
+    }
+
+    enhance_with_full_file_highlight(
+        &mut files,
+        highlighter,
+        |path| read_path_from_git_source(repo, old_source, path),
+        |path| read_path_from_git_source(repo, new_source, path),
+    );
+    Ok(files)
+}
+
+fn append_untracked_cli_diffs(
+    repo: &Repository,
+    files: &mut Vec<DiffFile>,
+    highlighter: &SyntaxHighlighter,
+) -> Result<()> {
+    for path in untracked_paths(repo)? {
+        let Some(workdir) = repo.workdir() else {
+            continue;
+        };
+        let full_path = workdir.join(&path);
+        if full_path
+            .metadata()
+            .is_ok_and(|metadata| metadata.len() > MAX_UNTRACKED_FILE_SIZE)
+        {
+            files.push(DiffFile {
+                old_path: None,
+                new_path: Some(path),
+                status: FileStatus::Added,
+                hunks: Vec::new(),
+                is_binary: false,
+                is_too_large: true,
+                is_commit_message: false,
+                content_hash: 0,
+            });
+            continue;
+        }
+
+        let path_arg = path.to_string_lossy();
+        let diff_output = run_git_command(
+            repo,
+            &[
+                "diff",
+                "--no-ext-diff",
+                "--binary",
+                "--no-index",
+                "--",
+                "/dev/null",
+                &path_arg,
+            ],
+            true,
+        )?;
+        if diff_output.trim().is_empty() {
+            continue;
+        }
+        match diff_parser::parse_unified_diff(&diff_output, DiffFormat::GitStyle, highlighter) {
+            Ok(mut parsed) => files.append(&mut parsed),
+            Err(TuicrError::NoChanges) => {}
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(())
+}
+
+fn untracked_paths(repo: &Repository) -> Result<Vec<PathBuf>> {
+    let output = run_git_command(
+        repo,
+        &["ls-files", "--others", "--exclude-standard", "-z"],
+        false,
+    )?;
+    Ok(output
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .collect())
+}
+
+fn read_path_from_git_source(
+    repo: &Repository,
+    source: GitContentSource<'_>,
+    path: &Path,
+) -> Option<String> {
+    match source {
+        GitContentSource::None => None,
+        GitContentSource::Workdir => read_path_from_workdir(repo, path),
+        GitContentSource::Index => read_git_object(repo, &format!(":0:{}", path.to_string_lossy())),
+        GitContentSource::Revision(rev) => {
+            read_git_object(repo, &format!("{}:{}", rev, path.to_string_lossy()))
+        }
+    }
+}
+
+fn read_git_object(repo: &Repository, spec: &str) -> Option<String> {
+    let output = run_git_command(repo, &["show", spec], false).ok()?;
+    Some(output)
+}
+
+fn run_git_command(repo: &Repository, args: &[&str], allow_diff_exit: bool) -> Result<String> {
+    let workdir = repo.workdir().ok_or(TuicrError::NotARepository)?;
+    let output = Command::new("git")
+        .current_dir(workdir)
+        .args(args)
+        .output()
+        .map_err(|e| TuicrError::VcsCommand(format!("Failed to run git: {}", e)))?;
+
+    if !output.status.success() && !(allow_diff_exit && output.status.code() == Some(1)) {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(TuicrError::VcsCommand(format!(
+            "git {} failed: {}",
+            args.join(" "),
+            stderr
+        )));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
 fn parse_diff(diff: &Diff, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
     let mut files: Vec<DiffFile> = Vec::new();
-
-    // Untracked files larger than this are shown in the file list but their
-    // content is not parsed — they are likely logs, dumps, or build artefacts.
-    const MAX_UNTRACKED_FILE_SIZE: u64 = 10 * 1_024 * 1_024;
 
     for (delta_idx, delta) in diff.deltas().enumerate() {
         let status = match delta.status() {
@@ -314,6 +531,7 @@ mod tests {
     use super::*;
     use std::fs;
     use std::path::Path;
+    use std::process::Command;
 
     fn create_initial_commit(repo: &Repository, file_name: &str, content: &str) {
         fs::write(repo.workdir().unwrap().join(file_name), content)
@@ -332,6 +550,41 @@ mod tests {
 
         repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
             .expect("failed to create commit");
+    }
+
+    fn create_initial_commit_with_files(repo: &Repository, files: &[(&str, &str)]) {
+        for (file_name, content) in files {
+            let path = repo.workdir().unwrap().join(file_name);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).expect("failed to create parent directory");
+            }
+            fs::write(path, content).expect("failed to write initial file");
+        }
+
+        let mut index = repo.index().expect("failed to open index");
+        for (file_name, _) in files {
+            index
+                .add_path(Path::new(file_name))
+                .expect("failed to add file to index");
+        }
+        index.write().expect("failed to write index");
+
+        let tree_id = index.write_tree().expect("failed to write tree");
+        let tree = repo.find_tree(tree_id).expect("failed to find tree");
+        let sig = git2::Signature::now("Test User", "test@example.com")
+            .expect("failed to create signature");
+
+        repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .expect("failed to create commit");
+    }
+
+    fn git(repo: &Repository, args: &[&str]) {
+        let status = Command::new("git")
+            .args(args)
+            .current_dir(repo.workdir().unwrap())
+            .status()
+            .expect("failed to run git");
+        assert!(status.success(), "git {args:?} failed with {status}");
     }
 
     #[test]
@@ -444,5 +697,122 @@ mod tests {
             get_unstaged_diff(&repo, &highlighter),
             Err(TuicrError::NoChanges)
         ));
+    }
+
+    #[test]
+    fn should_ignore_paths_outside_sparse_checkout_cone() {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let repo = Repository::init(temp_dir.path()).expect("failed to init repo");
+
+        create_initial_commit_with_files(
+            &repo,
+            &[
+                ("keep/file.txt", "keep base\n"),
+                ("hidden/file.txt", "hidden base\n"),
+            ],
+        );
+
+        git(&repo, &["sparse-checkout", "init", "--cone"]);
+        git(&repo, &["sparse-checkout", "set", "keep"]);
+        git(&repo, &["sparse-checkout", "reapply", "--sparse-index"]);
+
+        fs::write(temp_dir.path().join("keep/file.txt"), "keep changed\n")
+            .expect("failed to update included file");
+
+        let files = get_working_tree_diff(&repo, &SyntaxHighlighter::default())
+            .expect("failed to get sparse checkout diff");
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(
+            files[0].new_path.as_deref(),
+            Some(Path::new("keep/file.txt"))
+        );
+        assert_eq!(files[0].status, FileStatus::Modified);
+    }
+
+    #[test]
+    fn should_return_no_changes_for_clean_sparse_checkout() {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let repo = Repository::init(temp_dir.path()).expect("failed to init repo");
+
+        create_initial_commit_with_files(
+            &repo,
+            &[
+                ("keep/file.txt", "keep base\n"),
+                ("hidden/file.txt", "hidden base\n"),
+            ],
+        );
+
+        git(&repo, &["sparse-checkout", "init", "--cone"]);
+        git(&repo, &["sparse-checkout", "set", "keep"]);
+        git(&repo, &["sparse-checkout", "reapply", "--sparse-index"]);
+
+        assert!(matches!(
+            get_working_tree_diff(&repo, &SyntaxHighlighter::default()),
+            Err(TuicrError::NoChanges)
+        ));
+    }
+
+    #[test]
+    fn should_include_untracked_files_in_sparse_checkout() {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let repo = Repository::init(temp_dir.path()).expect("failed to init repo");
+
+        create_initial_commit_with_files(
+            &repo,
+            &[
+                ("keep/file.txt", "keep base\n"),
+                ("hidden/file.txt", "hidden base\n"),
+            ],
+        );
+
+        git(&repo, &["sparse-checkout", "init", "--cone"]);
+        git(&repo, &["sparse-checkout", "set", "keep"]);
+        git(&repo, &["sparse-checkout", "reapply", "--sparse-index"]);
+
+        fs::write(temp_dir.path().join("keep/new.txt"), "new sparse file\n")
+            .expect("failed to write untracked file");
+
+        let files = get_working_tree_diff(&repo, &SyntaxHighlighter::default())
+            .expect("failed to get sparse checkout diff");
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(
+            files[0].new_path.as_deref(),
+            Some(Path::new("keep/new.txt"))
+        );
+        assert_eq!(files[0].status, FileStatus::Added);
+    }
+
+    #[test]
+    fn should_read_staged_diff_in_sparse_checkout() {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let repo = Repository::init(temp_dir.path()).expect("failed to init repo");
+
+        create_initial_commit_with_files(
+            &repo,
+            &[
+                ("keep/file.txt", "keep base\n"),
+                ("hidden/file.txt", "hidden base\n"),
+            ],
+        );
+
+        git(&repo, &["sparse-checkout", "init", "--cone"]);
+        git(&repo, &["sparse-checkout", "set", "keep"]);
+        git(&repo, &["sparse-checkout", "reapply", "--sparse-index"]);
+
+        fs::write(temp_dir.path().join("keep/file.txt"), "keep staged\n")
+            .expect("failed to update included file");
+        git(&repo, &["add", "keep/file.txt"]);
+
+        let files = get_staged_diff(&repo, &SyntaxHighlighter::default())
+            .expect("failed to get sparse checkout staged diff");
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(
+            files[0].new_path.as_deref(),
+            Some(Path::new("keep/file.txt"))
+        );
+        assert_eq!(files[0].status, FileStatus::Modified);
     }
 }

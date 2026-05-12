@@ -24,9 +24,9 @@ src/
 ├── vcs/                 # VCS abstraction layer
 │   ├── mod.rs           # detect_vcs(): auto-detect VCS (jj first, then git, then hg)
 │   ├── traits.rs        # VcsBackend trait, VcsInfo, VcsType, CommitInfo
-│   ├── diff_parser.rs   # Unified diff text parser (shared by hg/jj)
+│   ├── diff_parser.rs   # Unified diff text parser (shared by hg/jj and Git sparse-checkout diffs)
 │   │                    # DiffFormat enum: Hg (with timestamps), GitStyle (jj/git patches)
-│   ├── git/             # Git backend (uses native git2 library, not diff_parser)
+│   ├── git/             # Git backend (uses git2 normally; Git CLI + diff_parser for sparse checkouts)
 │   │   ├── mod.rs       # GitBackend: wraps git2 library
 │   │   ├── repository.rs # CommitInfo, get_recent_commits()
 │   │   ├── diff.rs      # get_working_tree_diff(), get_commit_range_diff()
