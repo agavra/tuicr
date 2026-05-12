@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
+use chrono::{DateTime, Utc};
 use tracing::field;
 use tracing_subscriber::fmt::format::FmtSpan;
 
@@ -90,8 +91,35 @@ fn profile_path() -> Option<PathBuf> {
     }
 
     if matches!(normalized.as_str(), "1" | "true" | "on" | "yes") {
-        return Some(std::env::temp_dir().join("tuicr-profile.log"));
+        return Some(std::env::temp_dir().join(default_profile_filename(Utc::now())));
     }
 
     Some(PathBuf::from(value.as_ref()))
+}
+
+fn default_profile_filename(started_at: DateTime<Utc>) -> String {
+    format!(
+        "tuicr-profile.{}.log",
+        started_at.format("%Y%m%dT%H%M%S%.3fZ")
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::{TimeZone, Utc};
+
+    use super::default_profile_filename;
+
+    #[test]
+    fn default_profile_filename_includes_start_timestamp() {
+        let started_at = Utc
+            .with_ymd_and_hms(2026, 5, 12, 22, 24, 41)
+            .single()
+            .expect("valid timestamp");
+
+        assert_eq!(
+            default_profile_filename(started_at),
+            "tuicr-profile.20260512T222441.000Z.log"
+        );
+    }
 }
