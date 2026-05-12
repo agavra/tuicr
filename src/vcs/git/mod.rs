@@ -316,12 +316,13 @@ impl VcsBackend for GitBackend {
     }
 
     fn get_change_status(&self) -> Result<VcsChangeStatus> {
-        if !self.capabilities.requires_git_cli() {
-            return Err(TuicrError::UnsupportedOperation(
-                "Git change status probe only used for sparse checkouts".into(),
-            ));
+        if self.capabilities.requires_git_cli() {
+            return get_change_status(&self.repo, self.capabilities);
         }
-        get_change_status(&self.repo, self.capabilities)
+
+        Err(TuicrError::UnsupportedOperation(
+            "Git change status probe only used for sparse checkouts".into(),
+        ))
     }
 
     fn fetch_context_lines(

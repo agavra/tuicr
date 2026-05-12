@@ -1525,19 +1525,47 @@ impl App {
     }
 
     fn profile_rebuild_view(&mut self, label: &str, preserve_wrap: bool) {
-        crate::profile::time(label, || {
-            let wrap = self.diff_state.wrap_lines;
-            self.diff_state = DiffState::default();
-            if preserve_wrap {
-                self.diff_state.wrap_lines = wrap;
-            }
-            self.file_list_state = FileListState::default();
-            self.expanded_top.clear();
-            self.expanded_bottom.clear();
-            self.sort_files_by_directory(true);
-            self.expand_all_dirs();
-            self.rebuild_annotations();
-        });
+        let started = Instant::now();
+        let wrap = self.diff_state.wrap_lines;
+        self.diff_state = DiffState::default();
+        if preserve_wrap {
+            self.diff_state.wrap_lines = wrap;
+        }
+        self.file_list_state = FileListState::default();
+        self.expanded_top.clear();
+        self.expanded_bottom.clear();
+        self.sort_files_by_directory(true);
+        self.expand_all_dirs();
+        self.rebuild_annotations();
+        crate::profile::log_with(label, started.elapsed(), self.profile_view_metadata());
+    }
+
+    fn profile_view_metadata(&self) -> String {
+        let visible_items = self.build_visible_items();
+        let directories = visible_items
+            .iter()
+            .filter(|item| matches!(item, FileTreeItem::Directory { .. }))
+            .count();
+        let files = visible_items.len().saturating_sub(directories);
+        let commit_messages = self
+            .diff_files
+            .iter()
+            .filter(|file| file.is_commit_message)
+            .count();
+
+        format!(
+            "diff_files={}, tree_items={}, tree_dirs={}, tree_files={}, commit_messages={}, expanded_dirs={}, selected_tree={}, current_file={}, show_file_list={}, focused={:?}",
+            self.diff_files.len(),
+            visible_items.len(),
+            directories,
+            files,
+            commit_messages,
+            self.expanded_dirs.len(),
+            self.file_list_state.selected(),
+            self.diff_state.current_file_idx,
+            self.show_file_list,
+            self.focused_panel,
+        )
     }
 
     fn load_staged_and_unstaged_selection(&mut self) -> Result<()> {

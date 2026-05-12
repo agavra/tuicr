@@ -120,10 +120,18 @@ pub fn get_recent_commits(
     offset: usize,
     limit: usize,
 ) -> Result<Vec<CommitInfo>> {
-    if !capabilities.requires_git_cli() {
-        return get_recent_commits_libgit2(repo, offset, limit);
+    if capabilities.requires_git_cli() {
+        return get_recent_commits_cli(repo, offset, limit);
     }
 
+    get_recent_commits_libgit2(repo, offset, limit)
+}
+
+fn get_recent_commits_cli(
+    repo: &Repository,
+    offset: usize,
+    limit: usize,
+) -> Result<Vec<CommitInfo>> {
     let branch_tip_names = get_branch_tip_names_cli(repo);
     let output = run_git_command(
         repo,
@@ -143,10 +151,14 @@ pub fn get_commits_info(
     capabilities: GitCapabilities,
     ids: &[String],
 ) -> Result<Vec<CommitInfo>> {
-    if !capabilities.requires_git_cli() {
-        return get_commits_info_libgit2(repo, ids);
+    if capabilities.requires_git_cli() {
+        return get_commits_info_cli(repo, ids);
     }
 
+    get_commits_info_libgit2(repo, ids)
+}
+
+fn get_commits_info_cli(repo: &Repository, ids: &[String]) -> Result<Vec<CommitInfo>> {
     if ids.is_empty() {
         return Ok(Vec::new());
     }
@@ -173,10 +185,14 @@ pub fn resolve_revisions(
     capabilities: GitCapabilities,
     revisions: &str,
 ) -> Result<Vec<String>> {
-    if !capabilities.requires_git_cli() {
-        return resolve_revisions_libgit2(repo, revisions);
+    if capabilities.requires_git_cli() {
+        return resolve_revisions_cli(repo, revisions);
     }
 
+    resolve_revisions_libgit2(repo, revisions)
+}
+
+fn resolve_revisions_cli(repo: &Repository, revisions: &str) -> Result<Vec<String>> {
     let commit_ids = if revisions.contains("..") {
         let output = run_git_command(repo, ["rev-list", "--reverse", revisions])?;
         output

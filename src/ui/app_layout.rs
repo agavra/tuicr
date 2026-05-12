@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::Style,
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
 };
 use unicode_width::UnicodeWidthStr;
 
@@ -17,6 +17,7 @@ use crate::ui::{comment_panel, help_popup, status_bar, styles};
 use crate::vcs::git::calculate_gap;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
+    frame.render_widget(Clear, frame.area());
     frame.render_widget(
         Block::default().style(styles::panel_style(&app.theme)),
         frame.area(),
