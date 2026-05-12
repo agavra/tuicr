@@ -38,16 +38,23 @@ pub enum GitRepoMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GitCapabilities {
     pub mode: GitRepoMode,
+    pub untracked_cache: bool,
+    pub fsmonitor: bool,
 }
 
 impl GitCapabilities {
     fn detect(root_path: &Path) -> Self {
-        let (sparse_checkout, sparse_index) = git_sparse_config(root_path);
+        let (sparse_checkout, sparse_index, untracked_cache, fsmonitor) = git_config(root_path);
 
-        Self::from_config(sparse_checkout, sparse_index)
+        Self::from_config(sparse_checkout, sparse_index, untracked_cache, fsmonitor)
     }
 
-    fn from_config(sparse_checkout: bool, sparse_index: bool) -> Self {
+    fn from_config(
+        sparse_checkout: bool,
+        sparse_index: bool,
+        untracked_cache: bool,
+        fsmonitor: bool,
+    ) -> Self {
         let mode = if sparse_index {
             GitRepoMode::SparseIndex
         } else if sparse_checkout {
@@ -56,7 +63,11 @@ impl GitCapabilities {
             GitRepoMode::Standard
         };
 
-        Self { mode }
+        Self {
+            mode,
+            untracked_cache,
+            fsmonitor,
+        }
     }
 
     pub fn is_sparse_checkout(self) -> bool {
@@ -68,6 +79,16 @@ impl GitCapabilities {
 
     pub fn requires_git_cli(self) -> bool {
         self.is_sparse_checkout()
+    }
+
+    pub fn startup_warnings(self) -> Vec<String> {
+        if self.is_sparse_checkout() && !self.untracked_cache {
+            vec![
+                "Sparse checkout without core.untrackedCache can make untracked scans slow; run `git update-index --test-untracked-cache` then `git config core.untrackedCache true` if it passes.".to_string(),
+            ]
+        } else {
+            Vec::new()
+        }
     }
 }
 
@@ -113,42 +134,54 @@ impl GitBackend {
     }
 }
 
-fn git_sparse_config(workdir: &Path) -> (bool, bool) {
+fn git_config(workdir: &Path) -> (bool, bool, bool, bool) {
     let output = run_git_command(
         workdir,
         &[
             "config",
-            "--bool",
             "--get-regexp",
-            r"^(core\.sparsecheckout|index\.sparse)$",
+            r"^(core\.sparsecheckout|index\.sparse|core\.untrackedcache|core\.fsmonitor)$",
         ],
     )
     .unwrap_or_default();
 
-    parse_sparse_config(&output)
+    parse_git_config(&output)
 }
 
-fn parse_sparse_config(output: &str) -> (bool, bool) {
+fn parse_git_config(output: &str) -> (bool, bool, bool, bool) {
     let mut sparse_checkout = false;
     let mut sparse_index = false;
+    let mut untracked_cache = false;
+    let mut fsmonitor = false;
 
     for line in output.lines() {
-        let mut parts = line.split_whitespace();
+        let mut parts = line.splitn(2, char::is_whitespace);
         let Some(key) = parts.next() else {
             continue;
         };
-        let enabled = parts
-            .next()
-            .is_some_and(|value| matches!(value, "true" | "1" | "yes" | "on"));
+        let raw_value = parts.next().unwrap_or_default();
 
         match key {
-            "core.sparsecheckout" => sparse_checkout = enabled,
-            "index.sparse" => sparse_index = enabled,
+            "core.sparsecheckout" => sparse_checkout = git_bool_config_enabled(raw_value),
+            "index.sparse" => sparse_index = git_bool_config_enabled(raw_value),
+            "core.untrackedcache" => untracked_cache = git_bool_config_enabled(raw_value),
+            "core.fsmonitor" => fsmonitor = git_fsmonitor_config_enabled(raw_value),
             _ => {}
         }
     }
 
-    (sparse_checkout, sparse_index)
+    (sparse_checkout, sparse_index, untracked_cache, fsmonitor)
+}
+
+fn git_bool_config_enabled(value: &str) -> bool {
+    let value = value.trim();
+    matches!(value, "true" | "1" | "yes" | "on")
+}
+
+fn git_fsmonitor_config_enabled(value: &str) -> bool {
+    let value = value.trim();
+    git_bool_config_enabled(value)
+        || (!value.is_empty() && !matches!(value, "false" | "0" | "no" | "off"))
 }
 
 fn run_git_command(workdir: &Path, args: &[&str]) -> Result<String> {
@@ -167,7 +200,7 @@ fn run_git_command(workdir: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-fn get_change_status(repo: &Repository, _capabilities: GitCapabilities) -> Result<VcsChangeStatus> {
+fn get_change_status(repo: &Repository, capabilities: GitCapabilities) -> Result<VcsChangeStatus> {
     let staged = crate::profile::time("vcs: git staged diff probe", || {
         has_diff_changes(repo, &["diff", "--quiet", "--cached", "--"])
     })?;
@@ -177,7 +210,20 @@ fn get_change_status(repo: &Repository, _capabilities: GitCapabilities) -> Resul
     let unstaged = if tracked_unstaged {
         true
     } else {
-        crate::profile::time("vcs: git untracked scan", || has_untracked_changes(repo))?
+        crate::profile::time_with(
+            "vcs: git untracked scan",
+            || has_untracked_changes(repo),
+            |result| match result {
+                Ok(has_untracked) => format!(
+                    "result={has_untracked}, untracked_cache={}, fsmonitor={}",
+                    capabilities.untracked_cache, capabilities.fsmonitor
+                ),
+                Err(e) => format!(
+                    "error={e}, untracked_cache={}, fsmonitor={}",
+                    capabilities.untracked_cache, capabilities.fsmonitor
+                ),
+            },
+        )?
     };
 
     Ok(VcsChangeStatus { staged, unstaged })
@@ -247,6 +293,10 @@ fn has_untracked_changes(repo: &Repository) -> Result<bool> {
 impl VcsBackend for GitBackend {
     fn info(&self) -> &VcsInfo {
         &self.info
+    }
+
+    fn startup_warnings(&self) -> Vec<String> {
+        self.capabilities.startup_warnings()
     }
 
     fn get_working_tree_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
@@ -378,24 +428,57 @@ mod tests {
     #[test]
     fn derives_git_repo_mode_from_sparse_config() {
         assert_eq!(
-            GitCapabilities::from_config(false, false).mode,
+            GitCapabilities::from_config(false, false, false, false).mode,
             GitRepoMode::Standard
         );
         assert_eq!(
-            GitCapabilities::from_config(true, false).mode,
+            GitCapabilities::from_config(true, false, false, false).mode,
             GitRepoMode::SparseCheckout
         );
         assert_eq!(
-            GitCapabilities::from_config(true, true).mode,
+            GitCapabilities::from_config(true, true, false, false).mode,
             GitRepoMode::SparseIndex
         );
     }
 
     #[test]
-    fn parses_sparse_config_from_single_git_config_read() {
-        let output = "core.sparsecheckout true\nindex.sparse true\n";
+    fn parses_git_config_from_single_git_config_read() {
+        let output = "core.sparsecheckout true\nindex.sparse true\ncore.untrackedcache true\ncore.fsmonitor true\n";
 
-        assert_eq!(parse_sparse_config(output), (true, true));
+        assert_eq!(parse_git_config(output), (true, true, true, true));
+    }
+
+    #[test]
+    fn treats_custom_fsmonitor_hook_as_enabled() {
+        let output = "core.fsmonitor .git/hooks/fsmonitor-watchman\n";
+
+        assert_eq!(parse_git_config(output), (false, false, false, true));
+    }
+
+    #[test]
+    fn warns_when_sparse_checkout_lacks_untracked_cache() {
+        let capabilities = GitCapabilities::from_config(true, false, false, true);
+
+        assert_eq!(
+            capabilities.startup_warnings(),
+            vec![
+                "Sparse checkout without core.untrackedCache can make untracked scans slow; run `git update-index --test-untracked-cache` then `git config core.untrackedCache true` if it passes.".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn does_not_warn_for_standard_repos_or_sparse_repos_with_untracked_cache() {
+        assert!(
+            GitCapabilities::from_config(false, false, false, false)
+                .startup_warnings()
+                .is_empty()
+        );
+        assert!(
+            GitCapabilities::from_config(true, false, true, false)
+                .startup_warnings()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -422,6 +505,8 @@ mod tests {
             &repo,
             GitCapabilities {
                 mode: GitRepoMode::Standard,
+                untracked_cache: false,
+                fsmonitor: false,
             },
         )
         .expect("failed to get change status");
@@ -439,6 +524,8 @@ mod tests {
             &repo,
             GitCapabilities {
                 mode: GitRepoMode::Standard,
+                untracked_cache: false,
+                fsmonitor: false,
             },
         )
         .expect("failed to get change status");

@@ -61,6 +61,11 @@ pub trait VcsBackend: Send {
     /// Get repository information
     fn info(&self) -> &VcsInfo;
 
+    /// Non-fatal notices that should be shown after startup.
+    fn startup_warnings(&self) -> Vec<String> {
+        Vec::new()
+    }
+
     /// Get the working tree diff (staged + unstaged changes)
     fn get_working_tree_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>>;
 

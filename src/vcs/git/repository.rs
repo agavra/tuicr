@@ -442,6 +442,8 @@ mod tests {
     fn sparse_index_capabilities() -> GitCapabilities {
         GitCapabilities {
             mode: GitRepoMode::SparseIndex,
+            untracked_cache: false,
+            fsmonitor: false,
         }
     }
 

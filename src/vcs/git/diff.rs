@@ -404,8 +404,16 @@ fn append_untracked_cli_diffs(
         "vcs: git cli untracked pathspecs",
         || sparse_checkout_untracked_pathspecs(repo, capabilities),
         |result| match result {
-            Ok(pathspecs) => format!("pathspecs={}", pathspecs.len()),
-            Err(e) => format!("error={e}"),
+            Ok(pathspecs) => format!(
+                "pathspecs={}, untracked_cache={}, fsmonitor={}",
+                pathspecs.len(),
+                capabilities.untracked_cache,
+                capabilities.fsmonitor
+            ),
+            Err(e) => format!(
+                "error={e}, untracked_cache={}, fsmonitor={}",
+                capabilities.untracked_cache, capabilities.fsmonitor
+            ),
         },
     )?;
     let previous_len = files.len();
@@ -985,12 +993,16 @@ mod tests {
     fn standard_capabilities() -> GitCapabilities {
         GitCapabilities {
             mode: GitRepoMode::Standard,
+            untracked_cache: false,
+            fsmonitor: false,
         }
     }
 
     fn sparse_index_capabilities() -> GitCapabilities {
         GitCapabilities {
             mode: GitRepoMode::SparseIndex,
+            untracked_cache: false,
+            fsmonitor: false,
         }
     }
 

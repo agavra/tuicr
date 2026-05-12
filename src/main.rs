@@ -164,6 +164,7 @@ fn main() -> anyhow::Result<()> {
     }) {
         Ok(mut app) => {
             app.supports_keyboard_enhancement = keyboard_enhancement_supported;
+            startup_warnings.extend(app.vcs.startup_warnings());
             if let Some(message) = startup_warnings.first() {
                 app.set_warning(message.clone());
             }
