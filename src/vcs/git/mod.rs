@@ -30,6 +30,21 @@ pub enum GitBackend {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GitBackendPreference {
+    Libgit2,
+    Cli,
+}
+
+impl GitBackendPreference {
+    pub fn from_config(value: Option<&str>) -> Self {
+        match value {
+            Some("cli") => Self::Cli,
+            _ => Self::Libgit2,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GitRepoMode {
     Standard,
     SparseCheckout,
@@ -85,14 +100,23 @@ impl GitRepoMode {
 
 impl GitBackend {
     /// Discover a git repository from the current directory.
-    pub fn discover() -> Result<Self> {
-        if let Ok(cli_backend) = GitCliBackend::discover()
+    pub fn discover(preference: GitBackendPreference) -> Result<Self> {
+        let cwd = std::env::current_dir().map_err(|_| TuicrError::NotARepository)?;
+        Self::discover_from(&cwd, preference)
+    }
+
+    fn discover_from(cwd: &Path, preference: GitBackendPreference) -> Result<Self> {
+        if preference == GitBackendPreference::Cli {
+            return Ok(Self::Cli(GitCliBackend::discover_from(cwd)?));
+        }
+
+        if let Ok(cli_backend) = GitCliBackend::discover_from(cwd)
             && cli_backend.repo_mode().is_sparse_checkout()
         {
             return Ok(Self::Cli(cli_backend));
         }
 
-        Ok(Self::Libgit2(Libgit2Backend::discover()?))
+        Ok(Self::Libgit2(Libgit2Backend::discover_from(cwd)?))
     }
 }
 
@@ -240,6 +264,8 @@ impl VcsBackend for GitBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use tempfile::tempdir;
 
     #[test]
     fn derives_git_repo_mode_from_config() {
@@ -252,5 +278,74 @@ mod tests {
             GitRepoMode::from_config("core.sparsecheckout true\nindex.sparse true\n"),
             GitRepoMode::SparseIndex
         );
+    }
+
+    #[test]
+    fn derives_backend_preference_from_config() {
+        assert_eq!(
+            GitBackendPreference::from_config(None),
+            GitBackendPreference::Libgit2
+        );
+        assert_eq!(
+            GitBackendPreference::from_config(Some("libgit2")),
+            GitBackendPreference::Libgit2
+        );
+        assert_eq!(
+            GitBackendPreference::from_config(Some("cli")),
+            GitBackendPreference::Cli
+        );
+    }
+
+    #[test]
+    fn default_preference_routes_sparse_index_repo_to_cli_with_warning() {
+        let temp_dir = tempdir().expect("failed to create temp dir");
+        let root = temp_dir.path();
+        setup_standard_repo(root);
+        run_git_command(
+            root,
+            &["sparse-checkout", "init", "--cone", "--sparse-index"],
+        )
+        .expect("failed to enable sparse checkout");
+        run_git_command(root, &["sparse-checkout", "set", "src"])
+            .expect("failed to set sparse checkout paths");
+
+        let backend = GitBackend::discover_from(root, GitBackendPreference::Libgit2)
+            .expect("failed to discover backend");
+
+        match backend {
+            GitBackend::Cli(backend) => assert_eq!(
+                backend.startup_warnings().first().map(String::as_str),
+                Some("Sparse checkout detected; using Git CLI backend.")
+            ),
+            GitBackend::Libgit2(_) => panic!("sparse-index repo should use Git CLI backend"),
+        }
+    }
+
+    #[test]
+    fn default_preference_keeps_standard_repo_on_libgit2() {
+        let temp_dir = tempdir().expect("failed to create temp dir");
+        let root = temp_dir.path();
+        setup_standard_repo(root);
+
+        let backend = GitBackend::discover_from(root, GitBackendPreference::Libgit2)
+            .expect("failed to discover backend");
+
+        match backend {
+            GitBackend::Libgit2(_) => {}
+            GitBackend::Cli(_) => panic!("standard repo should use libgit2 by default"),
+        }
+    }
+
+    fn setup_standard_repo(root: &Path) {
+        fs::create_dir(root.join("src")).expect("failed to create src dir");
+        fs::write(root.join("src/file.txt"), "one\n").expect("failed to write file");
+
+        run_git_command(root, &["init"]).expect("failed to init repo");
+        run_git_command(root, &["config", "user.name", "Tuicr Test"])
+            .expect("failed to set user name");
+        run_git_command(root, &["config", "user.email", "tuicr@example.com"])
+            .expect("failed to set user email");
+        run_git_command(root, &["add", "src/file.txt"]).expect("failed to add file");
+        run_git_command(root, &["commit", "-m", "initial"]).expect("failed to commit");
     }
 }

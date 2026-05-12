@@ -208,19 +208,23 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
 
         let mode_span = Span::styled(mode_str, styles::mode_style(theme));
 
-        let hints = match app.input_mode {
-            InputMode::Normal => {
-                " j/k:scroll  {/}:file  r:reviewed  c:comment  ;c:review  V:visual  /:search  ?:help  :q:quit "
+        let hints = if app.message.is_some() {
+            ""
+        } else {
+            match app.input_mode {
+                InputMode::Normal => {
+                    " j/k:scroll  {/}:file  r:reviewed  c:comment  ;c:review  V:visual  /:search  ?:help  :q:quit "
+                }
+                InputMode::Command => " Enter:execute  Esc:cancel ",
+                InputMode::Search => " Enter:search  Esc:cancel ",
+                InputMode::Comment => " Ctrl-S:save  Esc:cancel ",
+                InputMode::Help => " q/?/Esc:close ",
+                InputMode::Confirm => " y:yes  n:no ",
+                InputMode::CommitSelect => {
+                    " j/k:navigate  Space:select  Enter:confirm  Esc:back  q:quit "
+                }
+                InputMode::VisualSelect => " j/k:extend  c/Enter:comment  y:yank  Esc/V:cancel ",
             }
-            InputMode::Command => " Enter:execute  Esc:cancel ",
-            InputMode::Search => " Enter:search  Esc:cancel ",
-            InputMode::Comment => " Ctrl-S:save  Esc:cancel ",
-            InputMode::Help => " q/?/Esc:close ",
-            InputMode::Confirm => " y:yes  n:no ",
-            InputMode::CommitSelect => {
-                " j/k:navigate  Space:select  Enter:confirm  Esc:back  q:quit "
-            }
-            InputMode::VisualSelect => " j/k:extend  c/Enter:comment  y:yank  Esc/V:cancel ",
         };
         let hints_span = Span::styled(hints, Style::default().fg(theme.fg_secondary));
 

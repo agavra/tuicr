@@ -16,7 +16,9 @@ use crate::syntax::SyntaxHighlighter;
 use crate::theme::Theme;
 use crate::update::UpdateInfo;
 use crate::vcs::git::calculate_gap;
-use crate::vcs::{CommitInfo, FileBackend, VcsBackend, VcsChangeStatus, VcsInfo, detect_vcs};
+use crate::vcs::{
+    CommitInfo, FileBackend, GitBackendPreference, VcsBackend, VcsChangeStatus, VcsInfo, detect_vcs,
+};
 
 const VISIBLE_COMMIT_COUNT: usize = 10;
 const COMMIT_PAGE_SIZE: usize = 10;
@@ -609,18 +611,23 @@ enum CommentLocation {
     },
 }
 
+pub struct AppStartupOptions<'a> {
+    pub revisions: Option<&'a str>,
+    pub working_tree: bool,
+    pub path_filter: Option<&'a str>,
+    pub file_path: Option<&'a str>,
+    pub git_backend_preference: GitBackendPreference,
+}
+
 impl App {
     pub fn new(
         theme: Theme,
         comment_type_configs: Option<Vec<CommentTypeConfig>>,
         output_to_stdout: bool,
-        revisions: Option<&str>,
-        working_tree: bool,
-        path_filter: Option<&str>,
-        file_path: Option<&str>,
+        options: AppStartupOptions<'_>,
     ) -> Result<Self> {
         // --file mode: open a single file for annotation without VCS
-        if let Some(file_path) = file_path {
+        if let Some(file_path) = options.file_path {
             let vcs = Box::new(FileBackend::new(file_path)?);
             let vcs_info = vcs.info().clone();
             let highlighter = theme.syntax_highlighter();
@@ -648,7 +655,9 @@ impl App {
             return Ok(app);
         }
 
-        let vcs = crate::profile::time("startup.detect_vcs", detect_vcs)?;
+        let vcs = crate::profile::time("startup.detect_vcs", || {
+            detect_vcs(options.git_backend_preference)
+        })?;
         let vcs_info = vcs.info().clone();
         let highlighter =
             crate::profile::time("startup.syntax_highlighter", || theme.syntax_highlighter());
@@ -658,7 +667,7 @@ impl App {
         //   2. -r only: commit range
         //   3. -w only: working tree directly (skip commit selector)
         //   4. neither: commit selection UI
-        if let Some(revisions) = revisions {
+        if let Some(revisions) = options.revisions {
             let commit_ids = crate::profile::time_with(
                 "startup.resolve_revisions",
                 || vcs.resolve_revisions(revisions),
@@ -668,14 +677,14 @@ impl App {
                 },
             )?;
 
-            if working_tree {
+            if options.working_tree {
                 // Combined: commit range + staged/unstaged changes
                 let diff_files = Self::get_working_tree_with_commits_diff_with_ignore(
                     vcs.as_ref(),
                     &vcs_info.root_path,
                     &commit_ids,
                     highlighter,
-                    path_filter,
+                    options.path_filter,
                 )?;
                 let session = Self::load_or_create_staged_unstaged_and_commits_session(
                     &vcs_info,
@@ -694,7 +703,7 @@ impl App {
                     vcs.as_ref(),
                     &vcs_info.root_path,
                     highlighter,
-                    path_filter,
+                    options.path_filter,
                 )?;
                 let mut all_commits = Vec::new();
                 if change_status.staged {
@@ -716,7 +725,7 @@ impl App {
                     DiffSource::StagedUnstagedAndCommits(commit_ids),
                     InputMode::Normal,
                     Vec::new(),
-                    path_filter,
+                    options.path_filter,
                 )?;
 
                 app.range_diff_files = Some(app.diff_files.clone());
@@ -747,7 +756,7 @@ impl App {
                 &vcs_info.root_path,
                 &commit_ids,
                 highlighter,
-                path_filter,
+                options.path_filter,
             )?;
             let session = Self::load_or_create_commit_range_session(&vcs_info, &commit_ids);
             // Get commit info for the inline commit selector
@@ -770,7 +779,7 @@ impl App {
                 DiffSource::CommitRange(commit_ids),
                 InputMode::Normal,
                 Vec::new(),
-                path_filter,
+                options.path_filter,
             )?;
 
             // Set up inline commit selector for multi-commit reviews
@@ -792,13 +801,13 @@ impl App {
             app.rebuild_annotations();
 
             Ok(app)
-        } else if working_tree {
+        } else if options.working_tree {
             // Skip commit selector, go straight to working tree diff
             let diff_files = Self::get_working_tree_diff_with_ignore(
                 vcs.as_ref(),
                 &vcs_info.root_path,
                 highlighter,
-                path_filter,
+                options.path_filter,
             )?;
             let session =
                 Self::load_or_create_session(&vcs_info, SessionDiffSource::StagedAndUnstaged);
@@ -814,7 +823,7 @@ impl App {
                 DiffSource::StagedAndUnstaged,
                 InputMode::Normal,
                 Vec::new(),
-                path_filter,
+                options.path_filter,
             )?;
 
             Ok(app)
@@ -823,7 +832,7 @@ impl App {
                 vcs.as_ref(),
                 &vcs_info.root_path,
                 highlighter,
-                path_filter,
+                options.path_filter,
             )?;
             let has_staged_changes = change_status.staged;
             let has_unstaged_changes = change_status.unstaged;
@@ -834,7 +843,7 @@ impl App {
                         vcs.as_ref(),
                         &vcs_info.root_path,
                         highlighter,
-                        path_filter,
+                        options.path_filter,
                     ) {
                         Ok(diff_files) => Some(diff_files),
                         Err(TuicrError::NoChanges) => None,
@@ -894,7 +903,7 @@ impl App {
                 diff_source,
                 InputMode::CommitSelect,
                 commit_list,
-                path_filter,
+                options.path_filter,
             )?;
 
             app.has_more_commit = commits.len() >= VISIBLE_COMMIT_COUNT;

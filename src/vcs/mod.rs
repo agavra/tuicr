@@ -19,7 +19,7 @@ mod jj;
 pub(crate) mod traits;
 
 pub use file::FileBackend;
-pub use git::GitBackend;
+pub use git::{GitBackend, GitBackendPreference};
 pub use hg::HgBackend;
 pub use jj::JjBackend;
 pub use traits::{CommitInfo, VcsBackend, VcsChangeStatus, VcsInfo};
@@ -295,14 +295,14 @@ fn apply_full_file_spans(
 ///
 /// Detection order: Jujutsu → Git → Mercurial.
 /// Jujutsu is tried first because jj repos are Git-backed.
-pub fn detect_vcs() -> Result<Box<dyn VcsBackend>> {
+pub fn detect_vcs(git_backend_preference: GitBackendPreference) -> Result<Box<dyn VcsBackend>> {
     // Try jj first since jj repos are Git-backed
     if let Ok(backend) = JjBackend::discover() {
         return Ok(Box::new(backend));
     }
 
     // Try git
-    if let Ok(backend) = GitBackend::discover() {
+    if let Ok(backend) = GitBackend::discover(git_backend_preference) {
         return Ok(Box::new(backend));
     }
 
@@ -323,7 +323,7 @@ mod tests {
     #[test]
     fn exports_are_accessible() {
         // Verify that public types are properly exported
-        let _: fn() -> Result<Box<dyn VcsBackend>> = detect_vcs;
+        let _: fn(GitBackendPreference) -> Result<Box<dyn VcsBackend>> = detect_vcs;
 
         // VcsInfo can be constructed
         let info = VcsInfo {
@@ -353,7 +353,7 @@ mod tests {
         // Note: This test may pass or fail depending on where tests are run
         // In CI or outside a repo, it should fail with NotARepository
         // Inside the tuicr repo (which is git), it will succeed
-        let result = detect_vcs();
+        let result = detect_vcs(GitBackendPreference::Libgit2);
 
         // We just verify the function runs without panic
         // The actual result depends on the environment

@@ -41,12 +41,7 @@ enum GitContentSource<'a> {
 }
 
 impl GitCliBackend {
-    pub fn discover() -> Result<Self> {
-        let cwd = std::env::current_dir().map_err(|_| TuicrError::NotARepository)?;
-        Self::discover_from(&cwd)
-    }
-
-    fn discover_from(cwd: &Path) -> Result<Self> {
+    pub(super) fn discover_from(cwd: &Path) -> Result<Self> {
         let root_path =
             PathBuf::from(run_git_command(cwd, &["rev-parse", "--show-toplevel"])?.trim());
         let repo_mode = GitRepoMode::detect(&root_path)?;
@@ -138,18 +133,24 @@ impl VcsBackend for GitCliBackend {
     }
 
     fn startup_warnings(&self) -> Vec<String> {
-        if self.repo_mode.is_sparse_checkout() && !self.untracked_cache {
+        if !self.repo_mode.is_sparse_checkout() {
+            return Vec::new();
+        }
+
+        let mut warnings = vec!["Sparse checkout detected; using Git CLI backend.".to_string()];
+
+        if !self.untracked_cache {
             let fsmonitor_state = if self.fsmonitor {
                 "enabled"
             } else {
                 "not enabled"
             };
-            vec![format!(
+            warnings.push(format!(
                 "Sparse checkout without core.untrackedCache can make untracked scans slow; run `git update-index --test-untracked-cache` then `git config core.untrackedCache true` if it passes (fsmonitor: {fsmonitor_state})."
-            )]
-        } else {
-            Vec::new()
+            ));
         }
+
+        warnings
     }
 
     fn get_working_tree_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {

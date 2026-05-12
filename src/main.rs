@@ -34,7 +34,7 @@ use crossterm::{
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
 
-use app::{App, FocusedPanel, InputMode};
+use app::{App, AppStartupOptions, FocusedPanel, InputMode};
 use handler::{
     handle_command_action, handle_comment_action, handle_commit_select_action,
     handle_commit_selector_action, handle_confirm_action, handle_diff_action,
@@ -43,6 +43,7 @@ use handler::{
 };
 use input::{Action, map_key_to_action};
 use theme::{parse_cli_args, resolve_theme_with_config};
+use vcs::GitBackendPreference;
 
 /// Timeout for the "press Ctrl+C again to exit" feature
 const CTRL_C_EXIT_TIMEOUT: Duration = Duration::from_secs(2);
@@ -150,6 +151,13 @@ fn main() -> anyhow::Result<()> {
     };
 
     // Initialize app
+    let git_backend_preference = GitBackendPreference::from_config(
+        config_outcome
+            .config
+            .as_ref()
+            .and_then(|cfg| cfg.backend.as_deref()),
+    );
+
     let mut app = match profile::time("startup.app_init", || {
         App::new(
             theme,
@@ -158,18 +166,18 @@ fn main() -> anyhow::Result<()> {
                 .as_ref()
                 .and_then(|cfg| cfg.comment_types.clone()),
             cli_args.output_to_stdout,
-            cli_args.revisions.as_deref(),
-            cli_args.working_tree,
-            cli_args.path_filter.as_deref(),
-            cli_args.file_path.as_deref(),
+            AppStartupOptions {
+                revisions: cli_args.revisions.as_deref(),
+                working_tree: cli_args.working_tree,
+                path_filter: cli_args.path_filter.as_deref(),
+                file_path: cli_args.file_path.as_deref(),
+                git_backend_preference,
+            },
         )
     }) {
         Ok(mut app) => {
             app.supports_keyboard_enhancement = keyboard_enhancement_supported;
             startup_warnings.extend(app.vcs.startup_warnings());
-            if let Some(message) = startup_warnings.first() {
-                app.set_warning(message.clone());
-            }
             app
         }
         Err(e) => {
@@ -239,6 +247,10 @@ fn main() -> anyhow::Result<()> {
     {
         app.show_file_list = false;
         app.focused_panel = FocusedPanel::Diff;
+    }
+
+    if let Some(message) = startup_warnings.first() {
+        app.set_warning(message.clone());
     }
 
     // Track pending z command for zz centering

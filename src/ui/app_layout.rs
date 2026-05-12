@@ -229,7 +229,11 @@ fn render_commit_select(frame: &mut Frame, app: &mut App) {
     } else {
         String::new()
     };
-    let hints = format!(" j/k:navigate  Space:select range  Enter:confirm  q:quit{selection_info}");
+    let hints = if app.message.is_some() {
+        String::new()
+    } else {
+        format!(" j/k:navigate  Space:select range  Enter:confirm  q:quit{selection_info}")
+    };
     let hints_span = Span::styled(hints, Style::default().fg(theme.fg_secondary));
 
     let left_spans = vec![mode_span, hints_span];

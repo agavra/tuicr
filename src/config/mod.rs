@@ -22,6 +22,7 @@ pub struct AppConfig {
     pub theme_dark: Option<String>,
     pub theme_light: Option<String>,
     pub appearance: Option<String>,
+    pub backend: Option<String>,
     pub comment_types: Option<Vec<CommentTypeConfig>>,
     pub show_file_list: Option<bool>,
     pub diff_view: Option<String>,
@@ -39,6 +40,7 @@ const KNOWN_KEYS: &[&str] = &[
     "theme_dark",
     "theme_light",
     "appearance",
+    "backend",
     "comment_types",
     "show_file_list",
     "diff_view",
@@ -196,6 +198,7 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         theme_dark: read_string(table, "theme_dark", &mut warnings),
         theme_light: read_string(table, "theme_light", &mut warnings),
         appearance: read_string(table, "appearance", &mut warnings),
+        backend: read_enum(table, "backend", &["libgit2", "cli"], &mut warnings),
         comment_types: table
             .get("comment_types")
             .and_then(|v| parse_comment_types(v, &mut warnings)),
@@ -442,6 +445,48 @@ mod tests {
         assert_eq!(cfg.theme_light.as_deref(), Some("gruvbox-light"));
         assert_eq!(cfg.appearance.as_deref(), Some("system"));
         assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_parse_backend_option() {
+        let cli = parse_config("backend = \"cli\"\n");
+        assert_eq!(
+            cli.config.as_ref().and_then(|cfg| cfg.backend.as_deref()),
+            Some("cli")
+        );
+        assert!(cli.warnings.is_empty());
+
+        let libgit2 = parse_config("backend = \"libgit2\"\n");
+        assert_eq!(
+            libgit2
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.backend.as_deref()),
+            Some("libgit2")
+        );
+        assert!(libgit2.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_warn_and_ignore_invalid_backend_option() {
+        let outcome = parse_config("backend = \"gitoxide\"\n");
+        assert_eq!(outcome.config, Some(AppConfig::default()));
+        assert_eq!(outcome.warnings.len(), 1);
+        assert_eq!(
+            outcome.warnings[0],
+            "Warning: Config key 'backend' must be \"libgit2\" or \"cli\"; got \"gitoxide\", ignoring"
+        );
+    }
+
+    #[test]
+    fn should_warn_and_ignore_backend_with_invalid_type() {
+        let outcome = parse_config("backend = true\n");
+        assert_eq!(outcome.config, Some(AppConfig::default()));
+        assert_eq!(outcome.warnings.len(), 1);
+        assert_eq!(
+            outcome.warnings[0],
+            "Warning: Config key 'backend' must be a string; ignoring value"
+        );
     }
 
     #[test]

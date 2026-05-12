@@ -129,6 +129,7 @@ theme_light = "gruvbox-light"
 
 show_file_list = false
 diff_view = "side-by-side"
+backend = "libgit2"
 wrap = true
 cursor_line = false
 transparent_background = false
@@ -146,6 +147,8 @@ comment_types = [
 `show_file_list` controls whether the file list panel is visible on startup (default: `true`). Toggle at runtime with `;e`.
 
 `diff_view` sets the default diff layout: `"unified"` (default) or `"side-by-side"`. Toggle at runtime with `:diff`.
+
+`backend` selects the Git implementation: `"libgit2"` (default for normal Git repos) or `"cli"`. Sparse checkout repositories are automatically routed to the Git CLI backend because libgit2 does not support sparse-index checkouts reliably.
 
 `wrap` enables line wrapping in the diff view (default: `false`). Toggle at runtime with `:set wrap!`.
 
