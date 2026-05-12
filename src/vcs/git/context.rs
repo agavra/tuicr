@@ -5,12 +5,15 @@ use std::process::Command;
 use crate::error::{Result, TuicrError};
 use crate::model::{DiffLine, FileStatus, LineOrigin};
 
+use super::GitCapabilities;
+
 /// Fetch context lines from a file for gap expansion.
 ///
 /// For Added/Modified files: reads from working tree
 /// For Deleted files: reads from HEAD blob
 pub fn fetch_context_lines(
     repo: &Repository,
+    _capabilities: GitCapabilities,
     file_path: &Path,
     file_status: FileStatus,
     start_line: u32,
@@ -96,6 +99,7 @@ pub fn calculate_gap(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vcs::git::GitRepoMode;
     use std::fs;
     use std::process::Command;
 
@@ -111,6 +115,12 @@ mod tests {
             args.join(" "),
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    fn sparse_index_capabilities() -> GitCapabilities {
+        GitCapabilities {
+            mode: GitRepoMode::SparseIndex,
+        }
     }
 
     #[test]
@@ -187,9 +197,15 @@ mod tests {
         git(&repo, &["sparse-checkout", "reapply", "--sparse-index"]);
         fs::remove_file(temp_dir.path().join("keep/file.txt")).expect("failed to delete file");
 
-        let lines =
-            fetch_context_lines(&repo, Path::new("keep/file.txt"), FileStatus::Deleted, 2, 3)
-                .expect("failed to fetch context lines");
+        let lines = fetch_context_lines(
+            &repo,
+            sparse_index_capabilities(),
+            Path::new("keep/file.txt"),
+            FileStatus::Deleted,
+            2,
+            3,
+        )
+        .expect("failed to fetch context lines");
 
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[0].content, "two");

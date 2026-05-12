@@ -4,7 +4,9 @@ use std::process::Command;
 
 use crate::error::{Result, TuicrError};
 
-pub fn stage_file(repo: &Repository, path: &Path) -> Result<()> {
+use super::GitCapabilities;
+
+pub fn stage_file(repo: &Repository, _capabilities: GitCapabilities, path: &Path) -> Result<()> {
     let workdir = repo.workdir().ok_or(TuicrError::NotARepository)?;
     let output = Command::new("git")
         .current_dir(workdir)
@@ -26,7 +28,20 @@ pub fn stage_file(repo: &Repository, path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vcs::git::GitRepoMode;
     use std::fs;
+
+    fn standard_capabilities() -> GitCapabilities {
+        GitCapabilities {
+            mode: GitRepoMode::Standard,
+        }
+    }
+
+    fn sparse_index_capabilities() -> GitCapabilities {
+        GitCapabilities {
+            mode: GitRepoMode::SparseIndex,
+        }
+    }
 
     #[test]
     fn stage_file_adds_to_index() {
@@ -36,7 +51,7 @@ mod tests {
         let file_path = temp_dir.path().join("test.txt");
         fs::write(&file_path, "hello\n").unwrap();
 
-        stage_file(&repo, Path::new("test.txt")).unwrap();
+        stage_file(&repo, standard_capabilities(), Path::new("test.txt")).unwrap();
 
         let output = Command::new("git")
             .current_dir(temp_dir.path())
@@ -84,7 +99,12 @@ mod tests {
 
         fs::write(temp_dir.path().join("keep/file.txt"), "keep staged\n").unwrap();
 
-        stage_file(&repo, Path::new("keep/file.txt")).unwrap();
+        stage_file(
+            &repo,
+            sparse_index_capabilities(),
+            Path::new("keep/file.txt"),
+        )
+        .unwrap();
 
         let output = Command::new("git")
             .current_dir(temp_dir.path())

@@ -6,6 +6,8 @@ use std::process::Command;
 
 use crate::error::{Result, TuicrError};
 
+use super::GitCapabilities;
+
 #[derive(Debug, Clone)]
 pub struct CommitInfo {
     pub id: String,
@@ -87,6 +89,7 @@ fn get_branch_tip_names(repo: &Repository) -> HashMap<String, Vec<String>> {
 
 pub fn get_recent_commits(
     repo: &Repository,
+    _capabilities: GitCapabilities,
     offset: usize,
     limit: usize,
 ) -> Result<Vec<CommitInfo>> {
@@ -104,9 +107,11 @@ pub fn get_recent_commits(
     Ok(parse_commit_records(&output, &branch_tip_names))
 }
 
-/// Get commit info for specific commit IDs.
-/// Returns CommitInfo in the same order as the input IDs.
-pub fn get_commits_info(repo: &Repository, ids: &[String]) -> Result<Vec<CommitInfo>> {
+pub fn get_commits_info(
+    repo: &Repository,
+    _capabilities: GitCapabilities,
+    ids: &[String],
+) -> Result<Vec<CommitInfo>> {
     if ids.is_empty() {
         return Ok(Vec::new());
     }
@@ -128,7 +133,11 @@ pub fn get_commits_info(repo: &Repository, ids: &[String]) -> Result<Vec<CommitI
 /// Supports both single revisions ("HEAD~3") and ranges ("main..feature").
 /// For a range A..B, walks from B back to (but not including) A.
 /// For a single revision, returns just that commit.
-pub fn resolve_revisions(repo: &Repository, revisions: &str) -> Result<Vec<String>> {
+pub fn resolve_revisions(
+    repo: &Repository,
+    _capabilities: GitCapabilities,
+    revisions: &str,
+) -> Result<Vec<String>> {
     let commit_ids = if revisions.contains("..") {
         let output = run_git_command(repo, ["rev-list", "--reverse", revisions])?;
         output
@@ -200,6 +209,7 @@ fn parse_commit_record(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vcs::git::GitRepoMode;
     use std::fs;
     use std::process::Command;
 
@@ -256,11 +266,18 @@ mod tests {
         (temp_dir, repo, vec![first_id, second_id])
     }
 
+    fn sparse_index_capabilities() -> GitCapabilities {
+        GitCapabilities {
+            mode: GitRepoMode::SparseIndex,
+        }
+    }
+
     #[test]
     fn get_recent_commits_supports_sparse_index() {
         let (_temp_dir, repo, _ids) = setup_sparse_index_repo();
 
-        let commits = get_recent_commits(&repo, 0, 10).expect("failed to get commits");
+        let commits = get_recent_commits(&repo, sparse_index_capabilities(), 0, 10)
+            .expect("failed to get commits");
 
         assert_eq!(commits.len(), 2);
         assert_eq!(commits[0].summary, "second");
@@ -271,8 +288,12 @@ mod tests {
     fn get_commits_info_supports_sparse_index() {
         let (_temp_dir, repo, ids) = setup_sparse_index_repo();
 
-        let commits = get_commits_info(&repo, &[ids[0].clone(), ids[1].clone()])
-            .expect("failed to get commit info");
+        let commits = get_commits_info(
+            &repo,
+            sparse_index_capabilities(),
+            &[ids[0].clone(), ids[1].clone()],
+        )
+        .expect("failed to get commit info");
 
         assert_eq!(commits.len(), 2);
         assert_eq!(commits[0].id, ids[0]);
@@ -286,7 +307,8 @@ mod tests {
         let (_temp_dir, repo, ids) = setup_sparse_index_repo();
         let revset = format!("{}..{}", ids[0], ids[1]);
 
-        let resolved = resolve_revisions(&repo, &revset).expect("failed to resolve revisions");
+        let resolved = resolve_revisions(&repo, sparse_index_capabilities(), &revset)
+            .expect("failed to resolve revisions");
 
         assert_eq!(resolved, vec![ids[1].clone()]);
     }

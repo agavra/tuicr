@@ -24,6 +24,48 @@ pub use diff::{
 pub struct GitBackend {
     repo: Repository,
     info: VcsInfo,
+    capabilities: GitCapabilities,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GitRepoMode {
+    Standard,
+    SparseCheckout,
+    SparseIndex,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GitCapabilities {
+    pub mode: GitRepoMode,
+}
+
+impl GitCapabilities {
+    fn detect(root_path: &Path) -> Self {
+        let sparse_index = git_config_bool(root_path, "index.sparse");
+        let sparse_checkout = git_config_bool(root_path, "core.sparseCheckout")
+            || run_git_command(root_path, &["sparse-checkout", "list"]).is_ok();
+
+        let mode = if sparse_index {
+            GitRepoMode::SparseIndex
+        } else if sparse_checkout {
+            GitRepoMode::SparseCheckout
+        } else {
+            GitRepoMode::Standard
+        };
+
+        Self { mode }
+    }
+
+    pub fn is_sparse_checkout(self) -> bool {
+        matches!(
+            self.mode,
+            GitRepoMode::SparseCheckout | GitRepoMode::SparseIndex
+        )
+    }
+
+    pub fn requires_git_cli(self) -> bool {
+        self.is_sparse_checkout()
+    }
 }
 
 impl GitBackend {
@@ -47,6 +89,7 @@ impl GitBackend {
                 .ok()
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty());
+        let capabilities = GitCapabilities::detect(&root_path);
 
         let info = VcsInfo {
             root_path,
@@ -55,8 +98,18 @@ impl GitBackend {
             vcs_type: VcsType::Git,
         };
 
-        Ok(Self { repo, info })
+        Ok(Self {
+            repo,
+            info,
+            capabilities,
+        })
     }
+}
+
+fn git_config_bool(workdir: &Path, key: &str) -> bool {
+    run_git_command(workdir, &["config", "--bool", "--get", key])
+        .ok()
+        .is_some_and(|value| matches!(value.trim(), "true" | "1" | "yes" | "on"))
 }
 
 fn run_git_command(workdir: &Path, args: &[&str]) -> Result<String> {
@@ -81,15 +134,15 @@ impl VcsBackend for GitBackend {
     }
 
     fn get_working_tree_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
-        get_working_tree_diff(&self.repo, highlighter)
+        get_working_tree_diff(&self.repo, self.capabilities, highlighter)
     }
 
     fn get_staged_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
-        get_staged_diff(&self.repo, highlighter)
+        get_staged_diff(&self.repo, self.capabilities, highlighter)
     }
 
     fn get_unstaged_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
-        get_unstaged_diff(&self.repo, highlighter)
+        get_unstaged_diff(&self.repo, self.capabilities, highlighter)
     }
 
     fn fetch_context_lines(
@@ -99,11 +152,19 @@ impl VcsBackend for GitBackend {
         start_line: u32,
         end_line: u32,
     ) -> Result<Vec<DiffLine>> {
-        fetch_context_lines(&self.repo, file_path, file_status, start_line, end_line)
+        fetch_context_lines(
+            &self.repo,
+            self.capabilities,
+            file_path,
+            file_status,
+            start_line,
+            end_line,
+        )
     }
 
     fn get_recent_commits(&self, offset: usize, limit: usize) -> Result<Vec<CommitInfo>> {
-        let git_commits = repository::get_recent_commits(&self.repo, offset, limit)?;
+        let git_commits =
+            repository::get_recent_commits(&self.repo, self.capabilities, offset, limit)?;
         Ok(git_commits
             .into_iter()
             .map(|c| CommitInfo {
@@ -119,7 +180,7 @@ impl VcsBackend for GitBackend {
     }
 
     fn resolve_revisions(&self, revisions: &str) -> Result<Vec<String>> {
-        repository::resolve_revisions(&self.repo, revisions)
+        repository::resolve_revisions(&self.repo, self.capabilities, revisions)
     }
 
     fn get_commit_range_diff(
@@ -127,11 +188,11 @@ impl VcsBackend for GitBackend {
         commit_ids: &[String],
         highlighter: &SyntaxHighlighter,
     ) -> Result<Vec<DiffFile>> {
-        get_commit_range_diff(&self.repo, commit_ids, highlighter)
+        get_commit_range_diff(&self.repo, self.capabilities, commit_ids, highlighter)
     }
 
     fn get_commits_info(&self, ids: &[String]) -> Result<Vec<CommitInfo>> {
-        let git_commits = repository::get_commits_info(&self.repo, ids)?;
+        let git_commits = repository::get_commits_info(&self.repo, self.capabilities, ids)?;
         Ok(git_commits
             .into_iter()
             .map(|c| CommitInfo {
@@ -151,10 +212,72 @@ impl VcsBackend for GitBackend {
         commit_ids: &[String],
         highlighter: &SyntaxHighlighter,
     ) -> Result<Vec<DiffFile>> {
-        get_working_tree_with_commits_diff(&self.repo, commit_ids, highlighter)
+        get_working_tree_with_commits_diff(&self.repo, self.capabilities, commit_ids, highlighter)
     }
 
     fn stage_file(&self, path: &Path) -> Result<()> {
-        staging::stage_file(&self.repo, path)
+        staging::stage_file(&self.repo, self.capabilities, path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn git(workdir: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .current_dir(workdir)
+            .args(args)
+            .output()
+            .expect("failed to run git");
+        assert!(
+            output.status.success(),
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn detects_standard_git_repo_mode() {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        git(temp_dir.path(), &["init"]);
+
+        let capabilities = GitCapabilities::detect(temp_dir.path());
+
+        assert_eq!(capabilities.mode, GitRepoMode::Standard);
+        assert!(!capabilities.requires_git_cli());
+    }
+
+    #[test]
+    fn detects_sparse_index_repo_mode_once() {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        git(temp_dir.path(), &["init"]);
+        git(
+            temp_dir.path(),
+            &["config", "user.email", "test@example.com"],
+        );
+        git(temp_dir.path(), &["config", "user.name", "Test User"]);
+        std::fs::create_dir_all(temp_dir.path().join("keep")).expect("failed to create keep dir");
+        std::fs::create_dir_all(temp_dir.path().join("hidden"))
+            .expect("failed to create hidden dir");
+        std::fs::write(temp_dir.path().join("keep/file.txt"), "keep\n")
+            .expect("failed to write keep file");
+        std::fs::write(temp_dir.path().join("hidden/file.txt"), "hidden\n")
+            .expect("failed to write hidden file");
+        git(temp_dir.path(), &["add", "."]);
+        git(temp_dir.path(), &["commit", "-m", "initial"]);
+        git(temp_dir.path(), &["sparse-checkout", "init", "--cone"]);
+        git(temp_dir.path(), &["sparse-checkout", "set", "keep"]);
+        git(
+            temp_dir.path(),
+            &["sparse-checkout", "reapply", "--sparse-index"],
+        );
+
+        let capabilities = GitCapabilities::detect(temp_dir.path());
+
+        assert_eq!(capabilities.mode, GitRepoMode::SparseIndex);
+        assert!(capabilities.is_sparse_checkout());
+        assert!(capabilities.requires_git_cli());
     }
 }

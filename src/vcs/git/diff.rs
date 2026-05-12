@@ -10,15 +10,18 @@ use crate::syntax::{SyntaxHighlighter, needs_full_file_highlight};
 use crate::vcs::diff_parser::{self, DiffFormat};
 use crate::vcs::{enhance_with_full_file_highlight, tabify};
 
+use super::GitCapabilities;
+
 // Untracked files larger than this are shown in the file list but their
 // content is not parsed — they are likely logs, dumps, or build artefacts.
 const MAX_UNTRACKED_FILE_SIZE: u64 = 10 * 1_024 * 1_024;
 
 pub fn get_working_tree_diff(
     repo: &Repository,
+    capabilities: GitCapabilities,
     highlighter: &SyntaxHighlighter,
 ) -> Result<Vec<DiffFile>> {
-    if is_sparse_checkout(repo) {
+    if capabilities.requires_git_cli() {
         return get_cli_diff(
             repo,
             &["diff", "--no-ext-diff", "--binary", "HEAD", "--"],
@@ -51,9 +54,10 @@ pub fn get_working_tree_diff(
 /// On repos with no commits (unborn HEAD), diffs against an empty tree.
 pub fn get_staged_diff(
     repo: &Repository,
+    capabilities: GitCapabilities,
     highlighter: &SyntaxHighlighter,
 ) -> Result<Vec<DiffFile>> {
-    if is_sparse_checkout(repo) {
+    if capabilities.requires_git_cli() {
         let old_source = if repo.head().is_ok() {
             GitContentSource::Revision("HEAD")
         } else {
@@ -88,9 +92,10 @@ pub fn get_staged_diff(
 /// Get the unstaged diff (working tree vs index)
 pub fn get_unstaged_diff(
     repo: &Repository,
+    capabilities: GitCapabilities,
     highlighter: &SyntaxHighlighter,
 ) -> Result<Vec<DiffFile>> {
-    if is_sparse_checkout(repo) {
+    if capabilities.requires_git_cli() {
         return get_cli_diff(
             repo,
             &["diff", "--no-ext-diff", "--binary", "--"],
@@ -123,6 +128,7 @@ pub fn get_unstaged_diff(
 /// The diff compares the oldest commit's parent to the newest commit.
 pub fn get_commit_range_diff(
     repo: &Repository,
+    capabilities: GitCapabilities,
     commit_ids: &[String],
     highlighter: &SyntaxHighlighter,
 ) -> Result<Vec<DiffFile>> {
@@ -130,7 +136,7 @@ pub fn get_commit_range_diff(
         return Err(TuicrError::NoChanges);
     }
 
-    if is_sparse_checkout(repo) {
+    if capabilities.requires_git_cli() {
         let base_rev = parent_rev_or_empty(repo, &commit_ids[0]);
         let newest_rev = commit_ids.last().unwrap();
         return get_cli_diff(
@@ -183,6 +189,7 @@ pub fn get_commit_range_diff(
 /// This shows both committed and working tree changes in a single diff.
 pub fn get_working_tree_with_commits_diff(
     repo: &Repository,
+    capabilities: GitCapabilities,
     commit_ids: &[String],
     highlighter: &SyntaxHighlighter,
 ) -> Result<Vec<DiffFile>> {
@@ -190,7 +197,7 @@ pub fn get_working_tree_with_commits_diff(
         return Err(TuicrError::NoChanges);
     }
 
-    if is_sparse_checkout(repo) {
+    if capabilities.requires_git_cli() {
         let base_rev = parent_rev_or_empty(repo, &commit_ids[0]);
         return get_cli_diff(
             repo,
@@ -253,18 +260,6 @@ enum GitContentSource<'a> {
     Workdir,
     Index,
     Revision(&'a str),
-}
-
-fn is_sparse_checkout(repo: &Repository) -> bool {
-    git_config_bool(repo, "core.sparseCheckout")
-        || git_config_bool(repo, "index.sparse")
-        || run_git_command(repo, &["sparse-checkout", "list"], false).is_ok()
-}
-
-fn git_config_bool(repo: &Repository, key: &str) -> bool {
-    run_git_command(repo, &["config", "--bool", "--get", key], false)
-        .ok()
-        .is_some_and(|value| matches!(value.trim(), "true" | "1" | "yes" | "on"))
 }
 
 fn empty_tree_oid() -> git2::Oid {
@@ -692,6 +687,7 @@ fn parse_hunks(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vcs::git::GitRepoMode;
     use std::fs;
     use std::path::Path;
     use std::process::Command;
@@ -770,6 +766,18 @@ mod tests {
         assert!(status.success(), "git {args:?} failed with {status}");
     }
 
+    fn standard_capabilities() -> GitCapabilities {
+        GitCapabilities {
+            mode: GitRepoMode::Standard,
+        }
+    }
+
+    fn sparse_index_capabilities() -> GitCapabilities {
+        GitCapabilities {
+            mode: GitRepoMode::SparseIndex,
+        }
+    }
+
     #[test]
     fn should_return_no_changes_for_clean_repo() {
         let repo = Repository::discover(".").unwrap();
@@ -801,8 +809,12 @@ mod tests {
         )
         .expect("failed to update file");
 
-        let files = get_working_tree_diff(&repo, &SyntaxHighlighter::default())
-            .expect("failed to get diff");
+        let files = get_working_tree_diff(
+            &repo,
+            standard_capabilities(),
+            &SyntaxHighlighter::default(),
+        )
+        .expect("failed to get diff");
 
         assert_eq!(files.len(), 1);
         let lines = &files[0].hunks[0].lines;
@@ -825,8 +837,12 @@ mod tests {
         let edited = "<template>\n  <div>{{ msg }}</div>\n</template>\n\n<script setup>\nimport { ref } from 'vue'\nconst msg = ref('hello')\nconst other = 1\n</script>\n";
         fs::write(temp_dir.path().join("App.vue"), edited).expect("failed to update file");
 
-        let files = get_working_tree_diff(&repo, &SyntaxHighlighter::default())
-            .expect("failed to get diff");
+        let files = get_working_tree_diff(
+            &repo,
+            standard_capabilities(),
+            &SyntaxHighlighter::default(),
+        )
+        .expect("failed to get diff");
         assert_eq!(files.len(), 1);
 
         let changed_lines: Vec<_> = files[0].hunks[0]
@@ -861,10 +877,11 @@ mod tests {
 
         let highlighter = SyntaxHighlighter::default();
 
-        let unstaged = get_unstaged_diff(&repo, &highlighter).expect("unstaged diff failed");
+        let unstaged = get_unstaged_diff(&repo, standard_capabilities(), &highlighter)
+            .expect("unstaged diff failed");
         assert_eq!(unstaged.len(), 1);
         assert!(matches!(
-            get_staged_diff(&repo, &highlighter),
+            get_staged_diff(&repo, standard_capabilities(), &highlighter),
             Err(TuicrError::NoChanges)
         ));
 
@@ -874,10 +891,11 @@ mod tests {
             .expect("failed to add file to index");
         index.write().expect("failed to write index");
 
-        let staged = get_staged_diff(&repo, &highlighter).expect("staged diff failed");
+        let staged = get_staged_diff(&repo, standard_capabilities(), &highlighter)
+            .expect("staged diff failed");
         assert_eq!(staged.len(), 1);
         assert!(matches!(
-            get_unstaged_diff(&repo, &highlighter),
+            get_unstaged_diff(&repo, standard_capabilities(), &highlighter),
             Err(TuicrError::NoChanges)
         ));
     }
@@ -902,8 +920,12 @@ mod tests {
         fs::write(temp_dir.path().join("keep/file.txt"), "keep changed\n")
             .expect("failed to update included file");
 
-        let files = get_working_tree_diff(&repo, &SyntaxHighlighter::default())
-            .expect("failed to get sparse checkout diff");
+        let files = get_working_tree_diff(
+            &repo,
+            sparse_index_capabilities(),
+            &SyntaxHighlighter::default(),
+        )
+        .expect("failed to get sparse checkout diff");
 
         assert_eq!(files.len(), 1);
         assert_eq!(
@@ -931,7 +953,11 @@ mod tests {
         git(&repo, &["sparse-checkout", "reapply", "--sparse-index"]);
 
         assert!(matches!(
-            get_working_tree_diff(&repo, &SyntaxHighlighter::default()),
+            get_working_tree_diff(
+                &repo,
+                sparse_index_capabilities(),
+                &SyntaxHighlighter::default()
+            ),
             Err(TuicrError::NoChanges)
         ));
     }
@@ -956,8 +982,12 @@ mod tests {
         fs::write(temp_dir.path().join("keep/new.txt"), "new sparse file\n")
             .expect("failed to write untracked file");
 
-        let files = get_working_tree_diff(&repo, &SyntaxHighlighter::default())
-            .expect("failed to get sparse checkout diff");
+        let files = get_working_tree_diff(
+            &repo,
+            sparse_index_capabilities(),
+            &SyntaxHighlighter::default(),
+        )
+        .expect("failed to get sparse checkout diff");
 
         assert_eq!(files.len(), 1);
         assert_eq!(
@@ -991,8 +1021,12 @@ mod tests {
         fs::write(temp_dir.path().join("keep/image.bin"), [0_u8, 1, 2, 3])
             .expect("failed to write binary untracked file");
 
-        let files = get_working_tree_diff(&repo, &SyntaxHighlighter::default())
-            .expect("failed to get sparse checkout diff");
+        let files = get_working_tree_diff(
+            &repo,
+            sparse_index_capabilities(),
+            &SyntaxHighlighter::default(),
+        )
+        .expect("failed to get sparse checkout diff");
 
         assert_eq!(files.len(), 1);
         assert_eq!(
@@ -1027,8 +1061,12 @@ mod tests {
         )
         .expect("failed to write large untracked file");
 
-        let files = get_working_tree_diff(&repo, &SyntaxHighlighter::default())
-            .expect("failed to get sparse checkout diff");
+        let files = get_working_tree_diff(
+            &repo,
+            sparse_index_capabilities(),
+            &SyntaxHighlighter::default(),
+        )
+        .expect("failed to get sparse checkout diff");
 
         assert_eq!(files.len(), 1);
         assert_eq!(
@@ -1061,8 +1099,12 @@ mod tests {
             .expect("failed to update included file");
         git(&repo, &["add", "keep/file.txt"]);
 
-        let files = get_staged_diff(&repo, &SyntaxHighlighter::default())
-            .expect("failed to get sparse checkout staged diff");
+        let files = get_staged_diff(
+            &repo,
+            sparse_index_capabilities(),
+            &SyntaxHighlighter::default(),
+        )
+        .expect("failed to get sparse checkout staged diff");
 
         assert_eq!(files.len(), 1);
         assert_eq!(
@@ -1093,8 +1135,13 @@ mod tests {
         git(&repo, &["sparse-checkout", "set", "keep"]);
         git(&repo, &["sparse-checkout", "reapply", "--sparse-index"]);
 
-        let files = get_commit_range_diff(&repo, &[second_id], &SyntaxHighlighter::default())
-            .expect("failed to get sparse checkout commit range diff");
+        let files = get_commit_range_diff(
+            &repo,
+            sparse_index_capabilities(),
+            &[second_id],
+            &SyntaxHighlighter::default(),
+        )
+        .expect("failed to get sparse checkout commit range diff");
 
         assert_eq!(files.len(), 1);
         assert_eq!(
@@ -1134,9 +1181,13 @@ mod tests {
         fs::write(temp_dir.path().join("keep/file.txt"), "keep worktree\n")
             .expect("failed to update included file");
 
-        let files =
-            get_working_tree_with_commits_diff(&repo, &[second_id], &SyntaxHighlighter::default())
-                .expect("failed to get sparse checkout working tree + commits diff");
+        let files = get_working_tree_with_commits_diff(
+            &repo,
+            sparse_index_capabilities(),
+            &[second_id],
+            &SyntaxHighlighter::default(),
+        )
+        .expect("failed to get sparse checkout working tree + commits diff");
 
         assert_eq!(files.len(), 1);
         assert_eq!(
