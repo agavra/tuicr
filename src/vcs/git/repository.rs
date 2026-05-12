@@ -120,6 +120,8 @@ pub fn get_recent_commits(
     offset: usize,
     limit: usize,
 ) -> Result<Vec<CommitInfo>> {
+    // Standard repos keep the original libgit2 path. Sparse checkouts use CLI
+    // revision helpers because opening sparse indexes through libgit2 can fail.
     if capabilities.requires_git_cli() {
         return get_recent_commits_cli(repo, offset, limit);
     }
@@ -151,6 +153,7 @@ pub fn get_commits_info(
     capabilities: GitCapabilities,
     ids: &[String],
 ) -> Result<Vec<CommitInfo>> {
+    // Returns CommitInfo in the same order as the input IDs.
     if capabilities.requires_git_cli() {
         return get_commits_info_cli(repo, ids);
     }
@@ -293,9 +296,11 @@ fn get_commits_info_libgit2(repo: &Repository, ids: &[String]) -> Result<Vec<Com
 }
 
 fn resolve_revisions_libgit2(repo: &Repository, revisions: &str) -> Result<Vec<String>> {
+    // Try parsing as a range first (e.g., "A..B").
     let revspec = repo.revparse(revisions)?;
 
     let mut commit_ids = if revspec.mode().contains(git2::RevparseMode::RANGE) {
+        // Range: walk from `to` back, stopping before `from`.
         let from = revspec.from().ok_or_else(|| {
             TuicrError::VcsCommand("Invalid revision range: missing 'from'".into())
         })?;
@@ -314,6 +319,7 @@ fn resolve_revisions_libgit2(repo: &Repository, revisions: &str) -> Result<Vec<S
         }
         ids
     } else {
+        // Single revision.
         let obj = revspec
             .from()
             .ok_or_else(|| TuicrError::VcsCommand("Invalid revision expression".into()))?;
@@ -327,6 +333,7 @@ fn resolve_revisions_libgit2(repo: &Repository, revisions: &str) -> Result<Vec<S
         return Err(TuicrError::NoChanges);
     }
 
+    // revwalk outputs newest first; reverse so oldest is first.
     commit_ids.reverse();
     Ok(commit_ids)
 }

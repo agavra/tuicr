@@ -1,4 +1,5 @@
 use git2::{Delta, Diff, DiffOptions, Repository};
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -369,7 +370,7 @@ fn run_git_diff_command(
 
     let diff_lines = BufReader::new(stdout)
         .lines()
-        .map(|line| line.map_err(TuicrError::from));
+        .map(|line| line.map(Cow::Owned).map_err(TuicrError::from));
     let parse_result =
         diff_parser::parse_unified_diff_lines(diff_lines, DiffFormat::GitStyle, highlighter);
 
@@ -436,6 +437,9 @@ fn sparse_checkout_untracked_pathspecs(
         return Ok(Vec::new());
     }
 
+    // Simple cone sparse patterns can narrow `git ls-files --others` to the
+    // checked-out cones. Complex patterns fall back to Git's full scan so we do
+    // not accidentally hide valid untracked files.
     let workdir = repo.workdir().ok_or(TuicrError::NotARepository)?;
     let output = Command::new("git")
         .current_dir(workdir)

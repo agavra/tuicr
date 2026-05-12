@@ -1,8 +1,10 @@
-//! Unified diff parser for text-based VCS backends (hg, jj).
+//! Unified diff parser for text-based VCS backends (hg, jj, sparse Git).
 //!
 //! Parses unified diff format output from CLI tools into DiffFile structures.
-//! Git uses the native git2 library instead and has its own parser.
+//! Standard Git uses the native git2 library; sparse Git feeds CLI diff output
+//! through this parser to avoid sparse-index limitations in libgit2.
 
+use std::borrow::Cow;
 use std::path::PathBuf;
 
 use crate::error::{Result, TuicrError};
@@ -25,7 +27,7 @@ pub fn parse_unified_diff(
     highlighter: &SyntaxHighlighter,
 ) -> Result<Vec<DiffFile>> {
     parse_unified_diff_lines(
-        diff_text.lines().map(|line| Ok(line.to_string())),
+        diff_text.lines().map(|line| Ok(Cow::Borrowed(line))),
         format,
         highlighter,
     )
@@ -36,13 +38,13 @@ pub fn parse_unified_diff(
 /// This entry point is used by Git's sparse-checkout fallback so large diffs
 /// can be parsed directly from command stdout instead of first buffering the
 /// whole patch into one String.
-pub fn parse_unified_diff_lines<I>(
+pub fn parse_unified_diff_lines<'a, I>(
     diff_lines: I,
     format: DiffFormat,
     highlighter: &SyntaxHighlighter,
 ) -> Result<Vec<DiffFile>>
 where
-    I: Iterator<Item = Result<String>>,
+    I: Iterator<Item = Result<Cow<'a, str>>>,
 {
     let mut files: Vec<DiffFile> = Vec::new();
     let mut lines = diff_lines.peekable();
@@ -52,6 +54,8 @@ where
         DiffFormat::GitStyle => "diff --git ",
     };
 
+    // `diff_lines` may be streaming from a child process, so each read can
+    // fail. Use `next_line` instead of `lines.next()` to propagate I/O errors.
     while let Some(line) = next_line(&mut lines)? {
         if line.starts_with(header_prefix) {
             let (mut old_path, mut new_path, status) = parse_file_header(&mut lines, format)?;
@@ -126,16 +130,19 @@ where
     Ok(files)
 }
 
-fn next_line<I>(lines: &mut std::iter::Peekable<I>) -> Result<Option<String>>
+fn next_line<'a, I>(lines: &mut std::iter::Peekable<I>) -> Result<Option<Cow<'a, str>>>
 where
-    I: Iterator<Item = Result<String>>,
+    I: Iterator<Item = Result<Cow<'a, str>>>,
 {
     lines.next().transpose()
 }
 
-fn peek_line<I>(lines: &mut std::iter::Peekable<I>) -> Result<Option<&str>>
+fn peek_line<'lines, 'a, I>(
+    lines: &'lines mut std::iter::Peekable<I>,
+) -> Result<Option<&'lines str>>
 where
-    I: Iterator<Item = Result<String>>,
+    I: Iterator<Item = Result<Cow<'a, str>>>,
+    'a: 'lines,
 {
     let has_error = matches!(lines.peek(), Some(Err(_)));
     if has_error && let Some(Err(err)) = lines.next() {
@@ -145,16 +152,16 @@ where
     Ok(lines.peek().map(|line| {
         line.as_ref()
             .expect("peeked line errors are consumed before borrowing")
-            .as_str()
+            .as_ref()
     }))
 }
 
-fn parse_file_header<I>(
+fn parse_file_header<'a, I>(
     lines: &mut std::iter::Peekable<I>,
     format: DiffFormat,
 ) -> Result<(Option<PathBuf>, Option<PathBuf>, FileStatus)>
 where
-    I: Iterator<Item = Result<String>>,
+    I: Iterator<Item = Result<Cow<'a, str>>>,
 {
     let mut old_path: Option<PathBuf> = None;
     let mut new_path: Option<PathBuf> = None;
@@ -237,13 +244,13 @@ where
     Ok((old_path, new_path, status))
 }
 
-fn parse_hunk<I>(
+fn parse_hunk<'a, I>(
     lines: &mut std::iter::Peekable<I>,
     file_path: Option<&PathBuf>,
     highlighter: &SyntaxHighlighter,
 ) -> Result<Option<DiffHunk>>
 where
-    I: Iterator<Item = Result<String>>,
+    I: Iterator<Item = Result<Cow<'a, str>>>,
 {
     let Some(header_line) = next_line(lines)? else {
         return Ok(None);
@@ -1110,7 +1117,7 @@ new mode 100755
             "+new",
         ]
         .into_iter()
-        .map(|line| Ok(line.to_string()));
+        .map(|line| Ok(Cow::Owned(line.to_string())));
 
         let files =
             parse_unified_diff_lines(lines, DiffFormat::GitStyle, &SyntaxHighlighter::default())

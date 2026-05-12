@@ -6,7 +6,22 @@ use crate::error::{Result, TuicrError};
 
 use super::GitCapabilities;
 
-pub fn stage_file(repo: &Repository, _capabilities: GitCapabilities, path: &Path) -> Result<()> {
+pub fn stage_file(repo: &Repository, capabilities: GitCapabilities, path: &Path) -> Result<()> {
+    if capabilities.requires_git_cli() {
+        return stage_file_cli(repo, path);
+    }
+
+    stage_file_libgit2(repo, path)
+}
+
+fn stage_file_libgit2(repo: &Repository, path: &Path) -> Result<()> {
+    let mut index = repo.index()?;
+    index.add_path(path)?;
+    index.write()?;
+    Ok(())
+}
+
+fn stage_file_cli(repo: &Repository, path: &Path) -> Result<()> {
     let workdir = repo.workdir().ok_or(TuicrError::NotARepository)?;
     let output = Command::new("git")
         .current_dir(workdir)
@@ -57,12 +72,8 @@ mod tests {
 
         stage_file(&repo, standard_capabilities(), Path::new("test.txt")).unwrap();
 
-        let output = Command::new("git")
-            .current_dir(temp_dir.path())
-            .args(["diff", "--cached", "--name-only"])
-            .output()
-            .expect("failed to run git");
-        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "test.txt");
+        let index = repo.index().unwrap();
+        assert!(index.get_path(Path::new("test.txt"), 0).is_some());
     }
 
     #[test]

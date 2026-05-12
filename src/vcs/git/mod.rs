@@ -38,7 +38,11 @@ pub enum GitRepoMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GitCapabilities {
     pub mode: GitRepoMode,
+    /// Git's untracked cache avoids re-reading unchanged directories during
+    /// exact untracked-file scans. This matters most for sparse monorepos.
     pub untracked_cache: bool,
+    /// `core.fsmonitor` may be `true` or a custom hook path; both mean Git can
+    /// avoid broad tracked-file stat walks.
     pub fsmonitor: bool,
 }
 
@@ -135,6 +139,8 @@ impl GitBackend {
 }
 
 fn git_config(workdir: &Path) -> (bool, bool, bool, bool) {
+    // Keep this as a raw config read: core.fsmonitor can be a custom hook path,
+    // so `git config --bool` would reject valid enabled configurations.
     let output = run_git_command(
         workdir,
         &[
@@ -201,6 +207,9 @@ fn run_git_command(workdir: &Path, args: &[&str]) -> Result<String> {
 }
 
 fn get_change_status(repo: &Repository, capabilities: GitCapabilities) -> Result<VcsChangeStatus> {
+    // Tracked changes have a cheap exact probe. Untracked files require a
+    // working-tree scan, so only pay that cost when no tracked unstaged changes
+    // already prove the "unstaged" row should be shown.
     let staged = crate::profile::time("vcs: git staged diff probe", || {
         has_diff_changes(repo, &["diff", "--quiet", "--cached", "--"])
     })?;
