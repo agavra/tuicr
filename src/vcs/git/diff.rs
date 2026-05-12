@@ -1,7 +1,8 @@
 use git2::{Delta, Diff, DiffOptions, Repository};
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use crate::error::{Result, TuicrError};
 use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin};
@@ -294,13 +295,14 @@ fn append_untracked_cli_diffs(
         return Ok(());
     };
 
-    for path in untracked_paths(repo)? {
+    for_each_untracked_path(repo, |path| {
         let full_path = workdir.join(&path);
         let Some(file) = build_untracked_diff_file(&path, &full_path, highlighter) else {
-            continue;
+            return Ok(());
         };
         files.push(file);
-    }
+        Ok(())
+    })?;
     Ok(())
 }
 
@@ -384,17 +386,56 @@ fn diff_file_without_hunks(path: &Path, is_binary: bool, is_too_large: bool) -> 
     }
 }
 
-fn untracked_paths(repo: &Repository) -> Result<Vec<PathBuf>> {
-    let output = run_git_command(
-        repo,
-        &["ls-files", "--others", "--exclude-standard", "-z"],
-        false,
-    )?;
-    Ok(output
-        .split('\0')
-        .filter(|path| !path.is_empty())
-        .map(PathBuf::from)
-        .collect())
+fn for_each_untracked_path<F>(repo: &Repository, mut visit: F) -> Result<()>
+where
+    F: FnMut(PathBuf) -> Result<()>,
+{
+    let workdir = repo.workdir().ok_or(TuicrError::NotARepository)?;
+    let mut child = Command::new("git")
+        .current_dir(workdir)
+        .args(["ls-files", "--others", "--exclude-standard", "-z"])
+        .stdout(Stdio::piped())
+        .spawn()
+        .map_err(|e| TuicrError::VcsCommand(format!("Failed to run git: {}", e)))?;
+
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| TuicrError::VcsCommand("git ls-files stdout unavailable".into()))?;
+    let mut buffer = [0; 8192];
+    let mut path = Vec::new();
+
+    loop {
+        let read = stdout.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+
+        for &byte in &buffer[..read] {
+            if byte == 0 {
+                if !path.is_empty() {
+                    visit(PathBuf::from(String::from_utf8_lossy(&path).into_owned()))?;
+                    path.clear();
+                }
+            } else {
+                path.push(byte);
+            }
+        }
+    }
+
+    if !path.is_empty() {
+        visit(PathBuf::from(String::from_utf8_lossy(&path).into_owned()))?;
+    }
+
+    let status = child.wait()?;
+    if !status.success() {
+        return Err(TuicrError::VcsCommand(format!(
+            "git ls-files failed with status {}",
+            status
+        )));
+    }
+
+    Ok(())
 }
 
 fn read_path_from_git_source(
@@ -425,7 +466,7 @@ fn run_git_command(repo: &Repository, args: &[&str], allow_diff_exit: bool) -> R
         .output()
         .map_err(|e| TuicrError::VcsCommand(format!("Failed to run git: {}", e)))?;
 
-    if !output.status.success() && !(allow_diff_exit && output.status.code() == Some(1)) {
+    if !(output.status.success() || allow_diff_exit && output.status.code() == Some(1)) {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(TuicrError::VcsCommand(format!(
             "git {} failed: {}",
