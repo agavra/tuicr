@@ -1,5 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::mpsc::TryRecvError;
 use std::time::{Duration, Instant, SystemTime};
 
 use chrono::Utc;
@@ -17,14 +19,15 @@ use crate::model::{
 };
 use crate::persistence::load_latest_session_for_context;
 use crate::review_store::{AddCommentRequest, CommentTarget, add_comment_to_session};
-use crate::syntax::SyntaxHighlighter;
+use crate::syntax::streaming::{self, HighlightJob, HighlightSession};
 use crate::theme::Theme;
 use crate::update::UpdateInfo;
 use crate::vcs::git::calculate_gap;
 use crate::vcs::traits::VcsType;
 use crate::vcs::{
-    ChangeKind, CommitInfo, DiffWhitespaceMode, FileBackend, GitBackendPreference, PrNoopVcs,
-    ResolvedRevisionRange, RevisionDiffTarget, VcsBackend, VcsChangeStatus, VcsInfo, detect_vcs,
+    ChangeKind, CommitInfo, DiffWhitespaceMode, DiffWithJobs, FileBackend, GitBackendPreference,
+    PrNoopVcs, ResolvedRevisionRange, RevisionDiffTarget, VcsBackend, VcsChangeStatus, VcsInfo,
+    detect_vcs,
 };
 
 const VISIBLE_COMMIT_COUNT: usize = 10;
@@ -91,9 +94,9 @@ fn gap_annotation_line_count(
     }
 }
 
-fn profile_diff_result(result: &Result<Vec<DiffFile>>) -> String {
+fn profile_diff_result(result: &Result<DiffWithJobs>) -> String {
     match result {
-        Ok(files) => format!("files={}", files.len()),
+        Ok((files, _)) => format!("files={}", files.len()),
         Err(e) => format!("error={e}"),
     }
 }
@@ -924,6 +927,18 @@ pub struct App {
     pub diff_source: DiffSource,
     pub pending_editor_target: Option<EditorTarget>,
 
+    /// Background syntax-highlight worker. `None` once the current diff is
+    /// fully highlighted (or had nothing to highlight). Replacing the diff
+    /// cancels the old session so its in-flight work is discarded.
+    pub(crate) highlight_session: Option<HighlightSession>,
+
+    /// Jobs handed to `install_diff` but not yet given to a worker. Holding
+    /// them here lets follow-up `diff_files` reorderings (commit-message
+    /// insert, directory sort) settle before the worker starts emitting
+    /// updates keyed by `file_idx`; the first `drain_highlight_updates` call
+    /// resolves indices by `syntax_path` and spawns the worker.
+    pub(crate) pending_highlight_jobs: Vec<HighlightJob>,
+
     pub input_mode: InputMode,
     pub focused_panel: FocusedPanel,
     pub diff_view_mode: DiffViewMode,
@@ -1384,8 +1399,7 @@ impl App {
         if let Some(file_path) = options.file_path {
             let vcs = Box::new(FileBackend::new(file_path)?);
             let vcs_info = vcs.info().clone();
-            let highlighter = theme.syntax_highlighter();
-            let diff_files = vcs.get_working_tree_diff(highlighter)?;
+            let diff = vcs.get_working_tree_diff()?;
             let session = Self::load_or_create_session(&vcs_info, SessionDiffSource::WorkingTree);
 
             let mut app = Self::build(
@@ -1394,7 +1408,7 @@ impl App {
                 theme,
                 comment_type_configs,
                 output_to_stdout,
-                diff_files,
+                diff,
                 session,
                 DiffSource::WorkingTree,
                 InputMode::Normal,
@@ -1435,14 +1449,13 @@ impl App {
             let vcs = Box::new(FileBackend::new_pristine(paths, cwd.clone())?);
             let mut vcs_info = vcs.info().clone();
             vcs_info.head_commit = base_commit;
-            let highlighter = theme.syntax_highlighter();
-            let diff_files = vcs.get_working_tree_diff(highlighter)?;
+            let diff = vcs.get_working_tree_diff()?;
             // `git ls-files` already honors `.gitignore`, but `.tuicrignore`
             // is tuicr-specific and not known to git. Run the same post-VCS
             // filter every other mode uses so users can elide tracked-but-
             // boring files (lockfiles, generated docs) from the review surface.
-            let diff_files = Self::filter_ignored_diff_files(&cwd, diff_files);
-            if diff_files.is_empty() {
+            let diff = Self::filter_ignored_diff(&cwd, diff);
+            if diff.0.is_empty() {
                 return Err(TuicrError::NoChanges);
             }
             let session = Self::load_or_create_session(&vcs_info, SessionDiffSource::Pristine);
@@ -1453,7 +1466,7 @@ impl App {
                 theme,
                 comment_type_configs,
                 output_to_stdout,
-                diff_files,
+                diff,
                 session,
                 DiffSource::WorkingTree,
                 InputMode::Normal,
@@ -1485,8 +1498,6 @@ impl App {
             detect_vcs(options.git_backend_preference, options.diff_whitespace_mode)
         })?;
         let vcs_info = vcs.info().clone();
-        let highlighter =
-            crate::profile::time("startup.syntax_highlighter", || theme.syntax_highlighter());
         // Determine the diff source, files, and session based on input.
         // Four paths:
         //   1. -r + -w: combined commit range and uncommitted changes
@@ -1506,11 +1517,10 @@ impl App {
 
             if options.working_tree {
                 // Combined: commit range + staged/unstaged changes
-                let diff_files = Self::get_working_tree_with_commits_diff_with_ignore(
+                let diff = Self::get_working_tree_with_commits_diff_with_ignore(
                     vcs.as_ref(),
                     &vcs_info.root_path,
                     &commit_ids,
-                    highlighter,
                     options.path_filter,
                 )?;
                 let session = Self::load_or_create_staged_unstaged_and_commits_session(
@@ -1529,7 +1539,6 @@ impl App {
                 let change_status = Self::get_change_status_with_ignore(
                     vcs.as_ref(),
                     &vcs_info.root_path,
-                    highlighter,
                     options.path_filter,
                 )?;
                 let mut all_commits = Vec::new();
@@ -1547,7 +1556,7 @@ impl App {
                     theme,
                     comment_type_configs.clone(),
                     output_to_stdout,
-                    diff_files,
+                    diff,
                     session,
                     DiffSource::StagedUnstagedAndCommits(commit_ids),
                     InputMode::Normal,
@@ -1579,11 +1588,10 @@ impl App {
             }
 
             // Resolve the revisions to commits and diff as a commit range
-            let diff_files = Self::get_commit_range_diff_with_ignore(
+            let diff = Self::get_commit_range_diff_with_ignore(
                 vcs.as_ref(),
                 &vcs_info.root_path,
                 &revision_range,
-                highlighter,
                 options.path_filter,
             )?;
             let session = Self::load_or_create_commit_range_session(&vcs_info, &commit_ids);
@@ -1602,7 +1610,7 @@ impl App {
                 theme,
                 comment_type_configs.clone(),
                 output_to_stdout,
-                diff_files,
+                diff,
                 session,
                 DiffSource::CommitRange(commit_ids),
                 InputMode::Normal,
@@ -1632,10 +1640,9 @@ impl App {
             Ok(app)
         } else if options.working_tree {
             // Skip commit selector, go straight to working tree diff
-            let diff_files = Self::get_working_tree_diff_with_ignore(
+            let diff = Self::get_working_tree_diff_with_ignore(
                 vcs.as_ref(),
                 &vcs_info.root_path,
-                highlighter,
                 options.path_filter,
             )?;
             let session =
@@ -1647,7 +1654,7 @@ impl App {
                 theme,
                 comment_type_configs,
                 output_to_stdout,
-                diff_files,
+                diff,
                 session,
                 DiffSource::StagedAndUnstaged,
                 InputMode::Normal,
@@ -1661,7 +1668,6 @@ impl App {
             let change_status = Self::get_change_status_with_ignore(
                 vcs.as_ref(),
                 &vcs_info.root_path,
-                highlighter,
                 options.path_filter,
             )?;
             let has_staged_changes = change_status.staged;
@@ -1717,7 +1723,7 @@ impl App {
                 theme,
                 comment_type_configs,
                 output_to_stdout,
-                Vec::new(),
+                (Vec::new(), Vec::new()),
                 session,
                 diff_source,
                 InputMode::CommitSelect,
@@ -1744,7 +1750,7 @@ impl App {
         theme: Theme,
         comment_type_configs: Option<Vec<CommentTypeConfig>>,
         output_to_stdout: bool,
-        diff_files: Vec<DiffFile>,
+        diff: DiffWithJobs,
         mut session: ReviewSession,
         diff_source: DiffSource,
         input_mode: InputMode,
@@ -1757,7 +1763,7 @@ impl App {
         // hunk keys alive until the selected diff is loaded.
         let preserve_hunks = matches!(diff_source, DiffSource::PullRequest(_))
             && session.commit_selection_range.is_some();
-        Self::register_diff_files(&mut session, &diff_files, preserve_hunks);
+        Self::register_diff_files(&mut session, &diff.0, preserve_hunks);
 
         let has_more_commit = commit_list.len() >= VISIBLE_COMMIT_COUNT;
         let visible_commit_count = if commit_list.is_empty() {
@@ -1787,9 +1793,11 @@ impl App {
             next_review_watch_at: Instant::now()
                 + Duration::from_millis(DEFAULT_REVIEW_WATCH_INTERVAL_MS),
             ephemeral_session_paths: HashSet::new(),
-            diff_files,
+            diff_files: Vec::new(),
             diff_source,
             pending_editor_target: None,
+            highlight_session: None,
+            pending_highlight_jobs: Vec::new(),
             input_mode,
             focused_panel: FocusedPanel::Diff,
             diff_view_mode: DiffViewMode::Unified,
@@ -1892,6 +1900,7 @@ impl App {
             export_legend: true,
         };
         // Auto-hide file list when path filter matches exactly one file
+        app.install_diff(diff);
         if app.path_filter.is_some() && app.diff_files.len() == 1 {
             app.show_file_list = false;
             app.focused_panel = FocusedPanel::Diff;
@@ -2555,7 +2564,7 @@ impl App {
             persisted.commit_selection_range,
             opened.commits.len(),
         );
-        Self::register_diff_files(&mut persisted, &opened.diff_files, preserve_hunks);
+        Self::register_diff_files(&mut persisted, &opened.diff.0, preserve_hunks);
         persisted.pr_session_key = Some(key);
         persisted.diff_source = SessionDiffSource::PullRequest;
         persisted.updated_at = chrono::Utc::now();
@@ -2655,12 +2664,10 @@ impl App {
         });
 
         let backend = create_forge_backend(&target_repo, local_checkout_for_target.clone());
-        let highlighter = theme.syntax_highlighter();
         let mut opened = open_pull_request(
             backend.as_ref(),
             parsed,
             local_checkout_for_target.as_deref(),
-            highlighter,
         )?;
 
         Self::load_or_apply_pr_session(&mut opened);
@@ -2686,7 +2693,7 @@ impl App {
             theme,
             comment_type_configs,
             output_to_stdout,
-            opened.diff_files,
+            opened.diff,
             opened.session,
             diff_source,
             InputMode::Normal,
@@ -2724,7 +2731,7 @@ impl App {
     ) -> Result<()> {
         let crate::forge::pr_open::OpenedPullRequest {
             details,
-            diff_files,
+            diff,
             session,
             key,
             commits,
@@ -2746,7 +2753,7 @@ impl App {
         };
         self.vcs = Box::new(PrNoopVcs::new(self.vcs_info.clone()));
         self.session = session;
-        self.diff_files = diff_files;
+        self.install_diff(diff);
         self.reset_persisted_session_tracking();
         self.diff_source = DiffSource::PullRequest(Box::new(pr_source));
         self.forge_backend = Some(backend);
@@ -3135,10 +3142,9 @@ impl App {
     ) -> Result<()> {
         use crate::vcs::diff_parser::{DiffFormat, parse_unified_diff};
 
-        let highlighter = self.theme.syntax_highlighter();
-        let parsed = match parse_unified_diff(patch, DiffFormat::GitStyle, highlighter) {
-            Ok(files) => files,
-            Err(TuicrError::NoChanges) => Vec::new(),
+        let parsed = match parse_unified_diff(patch, DiffFormat::GitStyle) {
+            Ok(diff) => diff,
+            Err(TuicrError::NoChanges) => (Vec::new(), Vec::new()),
             Err(e) => return Err(e),
         };
 
@@ -3146,12 +3152,12 @@ impl App {
             .forge_backend
             .as_deref()
             .and_then(|b| b.local_checkout_path());
-        let files = match local_checkout.as_deref() {
+        let diff = match local_checkout.as_deref() {
             Some(root) => crate::tuicrignore::filter_diff_files(root, parsed),
             None => parsed,
         };
 
-        self.diff_files = files;
+        self.install_diff(diff);
         self.clear_expanded_gaps();
         // Range diffs can hide hunks that are still reviewed in the broader
         // PR session, so registration must not prune them.
@@ -3261,14 +3267,7 @@ impl App {
             .forge_backend
             .as_deref()
             .and_then(|backend| backend.local_checkout_path());
-        let highlighter = self.theme.syntax_highlighter();
-        let mut opened = prepare_open_pr(
-            details,
-            &patch,
-            commits,
-            local_checkout.as_deref(),
-            highlighter,
-        )?;
+        let mut opened = prepare_open_pr(details, &patch, commits, local_checkout.as_deref())?;
 
         let head_changed = opened.details.head_sha != request.head_sha;
         if head_changed {
@@ -3280,7 +3279,7 @@ impl App {
             self.spawn_pr_threads_fetch(&details_for_threads, local_checkout);
             self.set_message("Reloaded PR at new head — switched to fresh session".to_string());
         } else {
-            self.diff_files = opened.diff_files;
+            self.install_diff(opened.diff);
             self.clear_expanded_gaps();
             for file in &self.diff_files {
                 self.session.add_diff_file(file);
@@ -3338,13 +3337,7 @@ impl App {
             current.key.number,
             current.key.number.to_string(),
         );
-        let highlighter = self.theme.syntax_highlighter();
-        let mut opened = open_pull_request(
-            backend.as_ref(),
-            target,
-            local_checkout.as_deref(),
-            highlighter,
-        )?;
+        let mut opened = open_pull_request(backend.as_ref(), target, local_checkout.as_deref())?;
 
         let head_changed = opened.details.head_sha != current.key.head_sha;
         if head_changed {
@@ -3359,7 +3352,7 @@ impl App {
         } else {
             // Same head: re-parse the diff to pick up any side-channel
             // changes (rare), but keep the session intact.
-            self.diff_files = opened.diff_files;
+            self.install_diff(opened.diff);
             self.clear_expanded_gaps();
             for file in &self.diff_files {
                 self.session.add_diff_file(file);
@@ -3484,136 +3477,163 @@ impl App {
             .saturating_sub(self.special_commit_count())
     }
 
-    fn filter_ignored_diff_files(repo_root: &Path, diff_files: Vec<DiffFile>) -> Vec<DiffFile> {
-        crate::tuicrignore::filter_diff_files(repo_root, diff_files)
+    fn filter_ignored_diff(repo_root: &Path, diff: DiffWithJobs) -> DiffWithJobs {
+        crate::tuicrignore::filter_diff_files(repo_root, diff)
     }
 
-    fn filter_by_path(diff_files: Vec<DiffFile>, path: &str) -> Vec<DiffFile> {
-        let path = path.trim_end_matches('/');
-        diff_files
-            .into_iter()
-            .filter(|f| {
-                let display = f.display_path().to_string_lossy();
-                display == path || display.starts_with(&format!("{path}/"))
-            })
-            .collect()
+    fn filter_by_path(diff: DiffWithJobs, path: &str) -> DiffWithJobs {
+        let path = path.trim_end_matches('/').to_string();
+        crate::vcs::filter_diff_with_jobs(diff, |f| {
+            let display = f.display_path().to_string_lossy();
+            display == path || display.starts_with(&format!("{path}/"))
+        })
     }
 
-    fn require_non_empty_diff_files(diff_files: Vec<DiffFile>) -> Result<Vec<DiffFile>> {
-        if diff_files.is_empty() {
+    fn finalize_diff(
+        diff: DiffWithJobs,
+        repo_root: &Path,
+        path_filter: Option<&str>,
+    ) -> Result<DiffWithJobs> {
+        let diff = Self::filter_ignored_diff(repo_root, diff);
+        let diff = match path_filter {
+            Some(path) => Self::filter_by_path(diff, path),
+            None => diff,
+        };
+        if diff.0.is_empty() {
             return Err(TuicrError::NoChanges);
         }
-        Ok(diff_files)
+        Ok(diff)
+    }
+
+    /// Replace the current diff in place. Cancels any prior highlight session
+    /// and stages the new jobs; the worker is spawned on the first
+    /// `drain_highlight_updates` call so any `diff_files` mutations queued for
+    /// after this call settle before updates start flowing.
+    fn install_diff(&mut self, diff: DiffWithJobs) {
+        if let Some(session) = self.highlight_session.take() {
+            session.cancel();
+        }
+        let (files, jobs) = diff;
+        self.diff_files = files;
+        self.pending_highlight_jobs = jobs;
+    }
+
+    fn start_pending_highlight_session(&mut self) {
+        if self.highlight_session.is_some() || self.pending_highlight_jobs.is_empty() {
+            return;
+        }
+        let jobs = std::mem::take(&mut self.pending_highlight_jobs);
+        let highlighter_arc = Arc::clone(self.theme.syntax_highlighter_arc());
+        self.highlight_session =
+            HighlightSession::start_resolved(jobs, &self.diff_files, highlighter_arc);
+    }
+
+    /// Drain pending highlight results and patch them into `diff_files`.
+    /// Spawns the worker lazily on first call after `install_diff`, so all
+    /// synchronous `diff_files` reorderings have completed before any update
+    /// is produced.
+    pub fn drain_highlight_updates(&mut self) {
+        self.start_pending_highlight_session();
+        let Some(session) = self.highlight_session.as_ref() else {
+            return;
+        };
+        loop {
+            match session.try_recv() {
+                Ok(update) => streaming::apply_update(
+                    &mut self.diff_files,
+                    self.theme.syntax_highlighter(),
+                    update,
+                ),
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    self.highlight_session = None;
+                    break;
+                }
+            }
+        }
+    }
+
+    /// True while the background highlight worker still has pending results,
+    /// or while jobs are staged awaiting their first drain. Used by the main
+    /// loop to shorten its event-poll timeout so streamed results land on
+    /// screen with low latency.
+    pub fn highlight_streaming(&self) -> bool {
+        self.highlight_session.is_some() || !self.pending_highlight_jobs.is_empty()
     }
 
     fn get_working_tree_diff_with_ignore(
         vcs: &dyn VcsBackend,
         repo_root: &Path,
-        highlighter: &SyntaxHighlighter,
         path_filter: Option<&str>,
-    ) -> Result<Vec<DiffFile>> {
-        let diff_files = crate::profile::time_with(
+    ) -> Result<DiffWithJobs> {
+        let diff = crate::profile::time_with(
             "diff.load_working_tree",
-            || vcs.get_working_tree_diff(highlighter),
+            || vcs.get_working_tree_diff(),
             profile_diff_result,
         )?;
-        let diff_files = Self::filter_ignored_diff_files(repo_root, diff_files);
-        let diff_files = if let Some(path) = path_filter {
-            Self::filter_by_path(diff_files, path)
-        } else {
-            diff_files
-        };
-        Self::require_non_empty_diff_files(diff_files)
+        Self::finalize_diff(diff, repo_root, path_filter)
     }
 
     fn get_staged_diff_with_ignore(
         vcs: &dyn VcsBackend,
         repo_root: &Path,
-        highlighter: &SyntaxHighlighter,
         path_filter: Option<&str>,
-    ) -> Result<Vec<DiffFile>> {
-        let diff_files = crate::profile::time_with(
+    ) -> Result<DiffWithJobs> {
+        let diff = crate::profile::time_with(
             "diff.load_staged",
-            || vcs.get_staged_diff(highlighter),
+            || vcs.get_staged_diff(),
             profile_diff_result,
         )?;
-        let diff_files = Self::filter_ignored_diff_files(repo_root, diff_files);
-        let diff_files = if let Some(path) = path_filter {
-            Self::filter_by_path(diff_files, path)
-        } else {
-            diff_files
-        };
-        Self::require_non_empty_diff_files(diff_files)
+        Self::finalize_diff(diff, repo_root, path_filter)
     }
 
     fn get_unstaged_diff_with_ignore(
         vcs: &dyn VcsBackend,
         repo_root: &Path,
-        highlighter: &SyntaxHighlighter,
         path_filter: Option<&str>,
-    ) -> Result<Vec<DiffFile>> {
-        let diff_files = match crate::profile::time_with(
+    ) -> Result<DiffWithJobs> {
+        let diff = match crate::profile::time_with(
             "diff.load_unstaged",
-            || vcs.get_unstaged_diff(highlighter),
+            || vcs.get_unstaged_diff(),
             profile_diff_result,
         ) {
-            Ok(diff_files) => diff_files,
+            Ok(d) => d,
             Err(TuicrError::UnsupportedOperation(_)) => crate::profile::time_with(
                 "diff.load_unstaged_fallback_working_tree",
-                || vcs.get_working_tree_diff(highlighter),
+                || vcs.get_working_tree_diff(),
                 profile_diff_result,
             )?,
             Err(e) => return Err(e),
         };
-        let diff_files = Self::filter_ignored_diff_files(repo_root, diff_files);
-        let diff_files = if let Some(path) = path_filter {
-            Self::filter_by_path(diff_files, path)
-        } else {
-            diff_files
-        };
-        Self::require_non_empty_diff_files(diff_files)
+        Self::finalize_diff(diff, repo_root, path_filter)
     }
 
     fn get_commit_range_diff_with_ignore(
         vcs: &dyn VcsBackend,
         repo_root: &Path,
         revision_range: &ResolvedRevisionRange<'_>,
-        highlighter: &SyntaxHighlighter,
         path_filter: Option<&str>,
-    ) -> Result<Vec<DiffFile>> {
-        let diff_files = crate::profile::time_with(
+    ) -> Result<DiffWithJobs> {
+        let diff = crate::profile::time_with(
             "diff.load_commit_range",
-            || vcs.get_commit_range_diff(revision_range, highlighter),
+            || vcs.get_commit_range_diff(revision_range),
             profile_diff_result,
         )?;
-        let diff_files = Self::filter_ignored_diff_files(repo_root, diff_files);
-        let diff_files = if let Some(path) = path_filter {
-            Self::filter_by_path(diff_files, path)
-        } else {
-            diff_files
-        };
-        Self::require_non_empty_diff_files(diff_files)
+        Self::finalize_diff(diff, repo_root, path_filter)
     }
 
     fn get_working_tree_with_commits_diff_with_ignore(
         vcs: &dyn VcsBackend,
         repo_root: &Path,
         commit_ids: &[String],
-        highlighter: &SyntaxHighlighter,
         path_filter: Option<&str>,
-    ) -> Result<Vec<DiffFile>> {
-        let diff_files = crate::profile::time_with(
+    ) -> Result<DiffWithJobs> {
+        let diff = crate::profile::time_with(
             "diff.load_working_tree_with_commits",
-            || vcs.get_working_tree_with_commits_diff(commit_ids, highlighter),
+            || vcs.get_working_tree_with_commits_diff(commit_ids),
             profile_diff_result,
         )?;
-        let diff_files = Self::filter_ignored_diff_files(repo_root, diff_files);
-        let diff_files = if let Some(path) = path_filter {
-            Self::filter_by_path(diff_files, path)
-        } else {
-            diff_files
-        };
-        Self::require_non_empty_diff_files(diff_files)
+        Self::finalize_diff(diff, repo_root, path_filter)
     }
 
     /// Resolve the staged/unstaged status the commit selector renders.
@@ -3626,7 +3646,6 @@ impl App {
     fn get_change_status_with_ignore(
         vcs: &dyn VcsBackend,
         repo_root: &Path,
-        highlighter: &SyntaxHighlighter,
         path_filter: Option<&str>,
     ) -> Result<VcsChangeStatus> {
         if path_filter.is_none() {
@@ -3635,13 +3654,7 @@ impl App {
                     if !crate::tuicrignore::has_ignore_rules(repo_root) {
                         return Ok(status);
                     }
-                    return Self::verify_status_against_ignore(
-                        vcs,
-                        repo_root,
-                        highlighter,
-                        path_filter,
-                        status,
-                    );
+                    return Self::verify_status_against_ignore(vcs, repo_root, path_filter, status);
                 }
                 Err(TuicrError::UnsupportedOperation(_)) => {}
                 Err(e) => return Err(e),
@@ -3651,7 +3664,6 @@ impl App {
         Self::verify_status_against_ignore(
             vcs,
             repo_root,
-            highlighter,
             path_filter,
             VcsChangeStatus {
                 staged: true,
@@ -3666,29 +3678,16 @@ impl App {
     fn verify_status_against_ignore(
         vcs: &dyn VcsBackend,
         repo_root: &Path,
-        highlighter: &SyntaxHighlighter,
         path_filter: Option<&str>,
         assumed_status: VcsChangeStatus,
     ) -> Result<VcsChangeStatus> {
         let staged = if assumed_status.staged {
-            Self::side_has_visible_changes(
-                vcs,
-                repo_root,
-                highlighter,
-                path_filter,
-                ChangeKind::Staged,
-            )?
+            Self::side_has_visible_changes(vcs, repo_root, path_filter, ChangeKind::Staged)?
         } else {
             false
         };
         let unstaged = if assumed_status.unstaged {
-            Self::side_has_visible_changes(
-                vcs,
-                repo_root,
-                highlighter,
-                path_filter,
-                ChangeKind::Unstaged,
-            )?
+            Self::side_has_visible_changes(vcs, repo_root, path_filter, ChangeKind::Unstaged)?
         } else {
             false
         };
@@ -3698,7 +3697,6 @@ impl App {
     fn side_has_visible_changes(
         vcs: &dyn VcsBackend,
         repo_root: &Path,
-        highlighter: &SyntaxHighlighter,
         path_filter: Option<&str>,
         kind: ChangeKind,
     ) -> Result<bool> {
@@ -3713,14 +3711,11 @@ impl App {
                 // anything survives. This still happens for jj/hg today.
                 let diff_result = match kind {
                     ChangeKind::Staged => {
-                        Self::get_staged_diff_with_ignore(vcs, repo_root, highlighter, path_filter)
+                        Self::get_staged_diff_with_ignore(vcs, repo_root, path_filter)
                     }
-                    ChangeKind::Unstaged => Self::get_unstaged_diff_with_ignore(
-                        vcs,
-                        repo_root,
-                        highlighter,
-                        path_filter,
-                    ),
+                    ChangeKind::Unstaged => {
+                        Self::get_unstaged_diff_with_ignore(vcs, repo_root, path_filter)
+                    }
                 };
                 match diff_result {
                     Ok(_) => Ok(true),
@@ -3759,14 +3754,12 @@ impl App {
     }
 
     fn load_staged_and_unstaged_selection(&mut self) -> Result<()> {
-        let highlighter = self.theme.syntax_highlighter();
-        let diff_files = match Self::get_working_tree_diff_with_ignore(
+        let diff = match Self::get_working_tree_diff_with_ignore(
             self.vcs.as_ref(),
             &self.vcs_info.root_path,
-            highlighter,
             self.path_filter.as_deref(),
         ) {
-            Ok(diff_files) => diff_files,
+            Ok(diff) => diff,
             Err(TuicrError::NoChanges) => {
                 self.set_message("No staged or unstaged changes");
                 return Ok(());
@@ -3776,12 +3769,12 @@ impl App {
 
         self.session =
             Self::load_or_create_session(&self.vcs_info, SessionDiffSource::StagedAndUnstaged);
-        for file in &diff_files {
+        for file in &diff.0 {
             self.session.add_diff_file(file);
         }
         self.reset_persisted_session_tracking();
 
-        self.diff_files = diff_files;
+        self.install_diff(diff);
         self.diff_source = DiffSource::StagedAndUnstaged;
         self.input_mode = InputMode::Normal;
         self.diff_state = DiffState::default();
@@ -3795,14 +3788,12 @@ impl App {
     }
 
     fn load_staged_selection(&mut self) -> Result<()> {
-        let highlighter = self.theme.syntax_highlighter();
-        let diff_files = match Self::get_staged_diff_with_ignore(
+        let diff = match Self::get_staged_diff_with_ignore(
             self.vcs.as_ref(),
             &self.vcs_info.root_path,
-            highlighter,
             self.path_filter.as_deref(),
         ) {
-            Ok(diff_files) => diff_files,
+            Ok(diff) => diff,
             Err(TuicrError::NoChanges) => {
                 self.set_message("No staged changes");
                 return Ok(());
@@ -3811,12 +3802,12 @@ impl App {
         };
 
         self.session = Self::load_or_create_session(&self.vcs_info, SessionDiffSource::Staged);
-        for file in &diff_files {
+        for file in &diff.0 {
             self.session.add_diff_file(file);
         }
         self.reset_persisted_session_tracking();
 
-        self.diff_files = diff_files;
+        self.install_diff(diff);
         self.diff_source = DiffSource::Staged;
         self.input_mode = InputMode::Normal;
         self.diff_state = DiffState::default();
@@ -3830,14 +3821,12 @@ impl App {
     }
 
     fn load_unstaged_selection(&mut self) -> Result<()> {
-        let highlighter = self.theme.syntax_highlighter();
-        let diff_files = match Self::get_unstaged_diff_with_ignore(
+        let diff = match Self::get_unstaged_diff_with_ignore(
             self.vcs.as_ref(),
             &self.vcs_info.root_path,
-            highlighter,
             self.path_filter.as_deref(),
         ) {
-            Ok(diff_files) => diff_files,
+            Ok(diff) => diff,
             Err(TuicrError::NoChanges) => {
                 self.set_message("No unstaged changes");
                 return Ok(());
@@ -3846,12 +3835,12 @@ impl App {
         };
 
         self.session = Self::load_or_create_session(&self.vcs_info, SessionDiffSource::Unstaged);
-        for file in &diff_files {
+        for file in &diff.0 {
             self.session.add_diff_file(file);
         }
         self.reset_persisted_session_tracking();
 
-        self.diff_files = diff_files;
+        self.install_diff(diff);
         self.diff_source = DiffSource::Unstaged;
         self.input_mode = InputMode::Normal;
         self.diff_state = DiffState::default();
@@ -3881,13 +3870,11 @@ impl App {
             prev_cursor_line.saturating_sub(start)
         };
 
-        let highlighter = self.theme.syntax_highlighter();
-        let diff_files = match &self.diff_source {
+        let diff = match &self.diff_source {
             DiffSource::CommitRange(commit_ids) => Self::get_commit_range_diff_with_ignore(
                 self.vcs.as_ref(),
                 &self.vcs_info.root_path,
                 &ResolvedRevisionRange::from_commit_ids(commit_ids, RevisionDiffTarget::CommitList),
-                highlighter,
                 self.path_filter.as_deref(),
             )?,
             DiffSource::StagedUnstagedAndCommits(commit_ids) => {
@@ -3896,27 +3883,23 @@ impl App {
                     self.vcs.as_ref(),
                     &self.vcs_info.root_path,
                     &ids,
-                    highlighter,
                     self.path_filter.as_deref(),
                 )?
             }
             DiffSource::Staged => Self::get_staged_diff_with_ignore(
                 self.vcs.as_ref(),
                 &self.vcs_info.root_path,
-                highlighter,
                 self.path_filter.as_deref(),
             )?,
             DiffSource::Unstaged => Self::get_unstaged_diff_with_ignore(
                 self.vcs.as_ref(),
                 &self.vcs_info.root_path,
-                highlighter,
                 self.path_filter.as_deref(),
             )?,
             DiffSource::StagedAndUnstaged | DiffSource::WorkingTree => {
                 Self::get_working_tree_diff_with_ignore(
                     self.vcs.as_ref(),
                     &self.vcs_info.root_path,
-                    highlighter,
                     self.path_filter.as_deref(),
                 )?
             }
@@ -3932,13 +3915,13 @@ impl App {
         };
 
         let mut invalidated = 0;
-        for file in &diff_files {
+        for file in &diff.0 {
             if self.session.add_diff_file(file) {
                 invalidated += 1;
             }
         }
 
-        self.diff_files = diff_files;
+        self.install_diff(diff);
         self.clear_expanded_gaps();
 
         self.sort_files_by_directory(false);
@@ -7483,11 +7466,9 @@ impl App {
             self.saved_inline_selection = self.commit_selection_range;
         }
 
-        let highlighter = self.theme.syntax_highlighter();
         let change_status = Self::get_change_status_with_ignore(
             self.vcs.as_ref(),
             &self.vcs_info.root_path,
-            highlighter,
             self.path_filter.as_deref(),
         )?;
         let has_staged_changes = change_status.staged;
@@ -7556,22 +7537,17 @@ impl App {
             self.diff_source,
             DiffSource::CommitRange(_) | DiffSource::StagedUnstagedAndCommits(_)
         ) {
-            let highlighter = self.theme.syntax_highlighter();
             match Self::get_working_tree_diff_with_ignore(
                 self.vcs.as_ref(),
                 &self.vcs_info.root_path,
-                highlighter,
                 self.path_filter.as_deref(),
             ) {
-                Ok(diff_files) => {
-                    self.diff_files = diff_files;
-                    self.diff_source = DiffSource::StagedAndUnstaged;
-
-                    // Update session for new files
-                    for file in &self.diff_files {
+                Ok(diff) => {
+                    for file in &diff.0 {
                         self.session.add_diff_file(file);
                     }
-
+                    self.install_diff(diff);
+                    self.diff_source = DiffSource::StagedAndUnstaged;
                     self.sort_files_by_directory(true);
                     self.expand_all_dirs();
                 }
@@ -7856,14 +7832,8 @@ impl App {
         use crate::forge::pr_open::prepare_open_pr;
 
         let local_checkout = Some(self.vcs_info.root_path.clone());
-        let highlighter = self.theme.syntax_highlighter();
-        let mut opened = prepare_open_pr(
-            details.clone(),
-            &patch,
-            commits,
-            local_checkout.as_deref(),
-            highlighter,
-        )?;
+        let mut opened =
+            prepare_open_pr(details.clone(), &patch, commits, local_checkout.as_deref())?;
         Self::load_or_apply_pr_session(&mut opened);
         let backend = create_forge_backend(&request.repository, local_checkout.clone());
         self.enter_pr_diff_mode(backend, opened)?;
@@ -8074,13 +8044,7 @@ impl App {
             summary.number,
             summary.number.to_string(),
         );
-        let highlighter = self.theme.syntax_highlighter();
-        let mut opened = open_pull_request(
-            backend.as_ref(),
-            target,
-            local_checkout.as_deref(),
-            highlighter,
-        )?;
+        let mut opened = open_pull_request(backend.as_ref(), target, local_checkout.as_deref())?;
         Self::load_or_apply_pr_session(&mut opened);
         // Sync thread + summary fetch — tests assert on
         // `app.forge_review_threads`/`forge_review_summaries` immediately
@@ -8459,10 +8423,11 @@ impl App {
         };
 
         // Collect selected entries in order from oldest to newest (end..start).
+        // Cloned eagerly so the immutable borrow of `self.commit_list` is
+        // released before any `&mut self` calls (install_diff, set_message).
         let selected_commits: Vec<CommitInfo> = (start..=end)
             .rev()
-            .filter_map(|i| self.commit_list.get(i))
-            .cloned()
+            .filter_map(|i| self.commit_list.get(i).cloned())
             .collect();
 
         if selected_commits.is_empty() {
@@ -8495,16 +8460,14 @@ impl App {
         }
 
         // Get the diff for the selected commits
-        let highlighter = self.theme.syntax_highlighter();
-        let diff_files = Self::get_commit_range_diff_with_ignore(
+        let diff = Self::get_commit_range_diff_with_ignore(
             self.vcs.as_ref(),
             &self.vcs_info.root_path,
             &ResolvedRevisionRange::from_commit_ids(&selected_ids, RevisionDiffTarget::CommitList),
-            highlighter,
             self.path_filter.as_deref(),
         )?;
 
-        if diff_files.is_empty() {
+        if diff.0.is_empty() {
             self.set_message("No changes in selected commits");
             return Ok(());
         }
@@ -8540,13 +8503,12 @@ impl App {
         self.session = session;
 
         // Add files to session
-        for file in &diff_files {
+        for file in &diff.0 {
             self.session.add_diff_file(file);
         }
         self.reset_persisted_session_tracking();
 
-        // Update app state
-        self.diff_files = diff_files;
+        self.install_diff(diff);
         self.diff_source = DiffSource::CommitRange(selected_ids);
         self.input_mode = InputMode::Normal;
 
@@ -8555,7 +8517,7 @@ impl App {
         self.file_list_state = FileListState::default();
 
         // Set up inline commit selector for multi-commit reviews (newest-first display order)
-        self.review_commits = selected_commits.iter().rev().cloned().collect();
+        self.review_commits = selected_commits.into_iter().rev().collect();
         self.range_diff_files = Some(self.diff_files.clone());
         self.commit_list = self.review_commits.clone();
         self.commit_list_cursor = 0;
@@ -8588,9 +8550,9 @@ impl App {
         // Check if all commits selected -> use cached range_diff_files
         if start == 0
             && end == self.review_commits.len() - 1
-            && let Some(ref files) = self.range_diff_files
+            && let Some(files) = self.range_diff_files.clone()
         {
-            self.diff_files = files.clone();
+            self.install_diff((files, Vec::new()));
             let wrap = self.diff_state.wrap_lines;
             self.diff_state = DiffState::default();
             self.diff_state.wrap_lines = wrap;
@@ -8605,8 +8567,8 @@ impl App {
         }
 
         // Check cache for this subrange
-        if let Some(files) = self.commit_diff_cache.get(&(start, end)) {
-            self.diff_files = files.clone();
+        if let Some(files) = self.commit_diff_cache.get(&(start, end)).cloned() {
+            self.install_diff((files, Vec::new()));
             let wrap = self.diff_state.wrap_lines;
             self.diff_state = DiffState::default();
             self.diff_state.wrap_lines = wrap;
@@ -8638,50 +8600,46 @@ impl App {
             .map(|c| c.id.clone())
             .collect();
 
-        let highlighter = self.theme.syntax_highlighter();
-        let diff_files = if (has_staged || has_unstaged) && !selected_ids.is_empty() {
+        let empty: DiffWithJobs = (Vec::new(), Vec::new());
+        let diff = if (has_staged || has_unstaged) && !selected_ids.is_empty() {
             match Self::get_working_tree_with_commits_diff_with_ignore(
                 self.vcs.as_ref(),
                 &self.vcs_info.root_path,
                 &selected_ids,
-                highlighter,
                 self.path_filter.as_deref(),
             ) {
-                Ok(files) => files,
-                Err(TuicrError::NoChanges) => Vec::new(),
+                Ok(d) => d,
+                Err(TuicrError::NoChanges) => empty,
                 Err(e) => return Err(e),
             }
         } else if has_staged && has_unstaged {
             match Self::get_working_tree_diff_with_ignore(
                 self.vcs.as_ref(),
                 &self.vcs_info.root_path,
-                highlighter,
                 self.path_filter.as_deref(),
             ) {
-                Ok(files) => files,
-                Err(TuicrError::NoChanges) => Vec::new(),
+                Ok(d) => d,
+                Err(TuicrError::NoChanges) => empty,
                 Err(e) => return Err(e),
             }
         } else if has_staged {
             match Self::get_staged_diff_with_ignore(
                 self.vcs.as_ref(),
                 &self.vcs_info.root_path,
-                highlighter,
                 self.path_filter.as_deref(),
             ) {
-                Ok(files) => files,
-                Err(TuicrError::NoChanges) => Vec::new(),
+                Ok(d) => d,
+                Err(TuicrError::NoChanges) => empty,
                 Err(e) => return Err(e),
             }
         } else if has_unstaged {
             match Self::get_unstaged_diff_with_ignore(
                 self.vcs.as_ref(),
                 &self.vcs_info.root_path,
-                highlighter,
                 self.path_filter.as_deref(),
             ) {
-                Ok(files) => files,
-                Err(TuicrError::NoChanges) => Vec::new(),
+                Ok(d) => d,
+                Err(TuicrError::NoChanges) => empty,
                 Err(e) => return Err(e),
             }
         } else {
@@ -8692,17 +8650,15 @@ impl App {
                     &selected_ids,
                     RevisionDiffTarget::CommitList,
                 ),
-                highlighter,
                 self.path_filter.as_deref(),
             ) {
-                Ok(files) => files,
-                Err(TuicrError::NoChanges) => Vec::new(),
+                Ok(d) => d,
+                Err(TuicrError::NoChanges) => empty,
                 Err(e) => return Err(e),
             }
         };
-        self.commit_diff_cache
-            .insert((start, end), diff_files.clone());
-        self.diff_files = diff_files;
+        self.commit_diff_cache.insert((start, end), diff.0.clone());
+        self.install_diff(diff);
 
         // Reset navigation, rebuild file tree + annotations
         let wrap = self.diff_state.wrap_lines;
@@ -8724,15 +8680,13 @@ impl App {
         selected_ids: Vec<String>,
         selected_commits: Vec<CommitInfo>,
     ) -> Result<()> {
-        let highlighter = self.theme.syntax_highlighter();
-        let diff_files = match Self::get_working_tree_with_commits_diff_with_ignore(
+        let diff = match Self::get_working_tree_with_commits_diff_with_ignore(
             self.vcs.as_ref(),
             &self.vcs_info.root_path,
             &selected_ids,
-            highlighter,
             self.path_filter.as_deref(),
         ) {
-            Ok(diff_files) => diff_files,
+            Ok(d) => d,
             Err(TuicrError::NoChanges) => {
                 self.set_message("No changes in selected commits + staged/unstaged");
                 return Ok(());
@@ -8743,12 +8697,12 @@ impl App {
         self.session =
             Self::load_or_create_staged_unstaged_and_commits_session(&self.vcs_info, &selected_ids);
 
-        for file in &diff_files {
+        for file in &diff.0 {
             self.session.add_diff_file(file);
         }
         self.reset_persisted_session_tracking();
 
-        self.diff_files = diff_files;
+        self.install_diff(diff);
         self.diff_source = DiffSource::StagedUnstagedAndCommits(selected_ids);
         self.input_mode = InputMode::Normal;
         self.diff_state = DiffState::default();
@@ -10148,7 +10102,7 @@ mod commit_selection_tests {
             &self.info
         }
 
-        fn get_working_tree_diff(&self, _highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+        fn get_working_tree_diff(&self) -> Result<crate::vcs::DiffWithJobs> {
             Err(TuicrError::NoChanges)
         }
 
@@ -10195,7 +10149,7 @@ mod commit_selection_tests {
             Theme::dark(),
             None,
             false,
-            Vec::new(),
+            (Vec::new(), Vec::new()),
             session,
             DiffSource::WorkingTree,
             InputMode::CommitSelect,
@@ -10287,7 +10241,7 @@ mod target_selector_tests {
             &self.info
         }
 
-        fn get_working_tree_diff(&self, _highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+        fn get_working_tree_diff(&self) -> Result<DiffWithJobs> {
             Err(TuicrError::NoChanges)
         }
 
@@ -10356,7 +10310,7 @@ mod target_selector_tests {
             Theme::dark(),
             None,
             false,
-            Vec::new(),
+            (Vec::new(), Vec::new()),
             session,
             DiffSource::WorkingTree,
             InputMode::Normal,
@@ -11756,7 +11710,7 @@ mod scroll_behavior_tests {
             &self.info
         }
 
-        fn get_working_tree_diff(&self, _highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+        fn get_working_tree_diff(&self) -> Result<crate::vcs::DiffWithJobs> {
             Err(TuicrError::NoChanges)
         }
 
@@ -11837,7 +11791,7 @@ mod scroll_behavior_tests {
             Theme::dark(),
             None,
             false,
-            vec![file],
+            (vec![file], Vec::new()),
             session,
             DiffSource::WorkingTree,
             InputMode::Normal,
@@ -12396,23 +12350,23 @@ mod change_status_tests {
             &self.info
         }
 
-        fn get_working_tree_diff(&self, _highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+        fn get_working_tree_diff(&self) -> Result<DiffWithJobs> {
             Err(TuicrError::NoChanges)
         }
 
-        fn get_staged_diff(&self, _highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+        fn get_staged_diff(&self) -> Result<DiffWithJobs> {
             if self.staged_files.is_empty() {
                 Err(TuicrError::NoChanges)
             } else {
-                Ok(self.staged_files.clone())
+                Ok((self.staged_files.clone(), Vec::new()))
             }
         }
 
-        fn get_unstaged_diff(&self, _highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+        fn get_unstaged_diff(&self) -> Result<DiffWithJobs> {
             if self.unstaged_files.is_empty() {
                 Err(TuicrError::NoChanges)
             } else {
-                Ok(self.unstaged_files.clone())
+                Ok((self.unstaged_files.clone(), Vec::new()))
             }
         }
 
@@ -12480,13 +12434,8 @@ mod change_status_tests {
         vcs.staged_files = vec![diff_file("ignored/generated.rs")];
         vcs.unstaged_files = vec![diff_file("src/lib.rs")];
 
-        let status = App::get_change_status_with_ignore(
-            &vcs,
-            dir.path(),
-            &SyntaxHighlighter::default(),
-            None,
-        )
-        .expect("failed to get change status");
+        let status = App::get_change_status_with_ignore(&vcs, dir.path(), None)
+            .expect("failed to get change status");
 
         assert_eq!(
             status,
@@ -12506,13 +12455,8 @@ mod change_status_tests {
         let dir = tempdir().expect("failed to create temp dir");
         let vcs = mock_vcs(dir.path().to_path_buf());
 
-        let status = App::get_change_status_with_ignore(
-            &vcs,
-            dir.path(),
-            &SyntaxHighlighter::default(),
-            None,
-        )
-        .expect("failed to get change status");
+        let status = App::get_change_status_with_ignore(&vcs, dir.path(), None)
+            .expect("failed to get change status");
 
         assert_eq!(
             status,
@@ -12541,20 +12485,17 @@ mod change_status_tests {
             fn info(&self) -> &VcsInfo {
                 self.inner.info()
             }
-            fn get_working_tree_diff(
-                &self,
-                _highlighter: &SyntaxHighlighter,
-            ) -> Result<Vec<DiffFile>> {
+            fn get_working_tree_diff(&self) -> Result<DiffWithJobs> {
                 Err(TuicrError::UnsupportedOperation(
                     "should not be called".into(),
                 ))
             }
-            fn get_staged_diff(&self, _highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+            fn get_staged_diff(&self) -> Result<DiffWithJobs> {
                 Err(TuicrError::UnsupportedOperation(
                     "should not be called".into(),
                 ))
             }
-            fn get_unstaged_diff(&self, _highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+            fn get_unstaged_diff(&self) -> Result<DiffWithJobs> {
                 Err(TuicrError::UnsupportedOperation(
                     "should not be called".into(),
                 ))
@@ -12600,13 +12541,8 @@ mod change_status_tests {
             unstaged_paths: vec![PathBuf::from("src/lib.rs")],
         };
 
-        let status = App::get_change_status_with_ignore(
-            &vcs,
-            dir.path(),
-            &SyntaxHighlighter::default(),
-            None,
-        )
-        .expect("failed to get change status");
+        let status = App::get_change_status_with_ignore(&vcs, dir.path(), None)
+            .expect("failed to get change status");
 
         assert_eq!(
             status,
@@ -12637,7 +12573,7 @@ mod expand_gap_tests {
             &self.info
         }
 
-        fn get_working_tree_diff(&self, _highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+        fn get_working_tree_diff(&self) -> Result<crate::vcs::DiffWithJobs> {
             Err(TuicrError::NoChanges)
         }
 
@@ -12716,7 +12652,7 @@ mod expand_gap_tests {
             Theme::dark(),
             None,
             false,
-            files,
+            (files, Vec::new()),
             session,
             DiffSource::WorkingTree,
             InputMode::Normal,
@@ -13856,7 +13792,7 @@ mod submit_flow_tests {
         fn info(&self) -> &VcsInfo {
             &self.info
         }
-        fn get_working_tree_diff(&self, _h: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+        fn get_working_tree_diff(&self) -> Result<DiffWithJobs> {
             Err(TuicrError::NoChanges)
         }
         fn fetch_context_lines(
@@ -13953,7 +13889,7 @@ mod submit_flow_tests {
             Theme::dark(),
             None,
             false,
-            vec![diff_file],
+            (vec![diff_file], Vec::new()),
             session,
             DiffSource::PullRequest(Box::new(pr_source)),
             InputMode::Normal,
@@ -14268,7 +14204,7 @@ mod submit_flow_tests {
             Theme::dark(),
             None,
             false,
-            Vec::new(),
+            (Vec::new(), Vec::new()),
             session,
             DiffSource::WorkingTree,
             InputMode::Normal,
@@ -14940,11 +14876,8 @@ mod single_file_view_tests {
         fn info(&self) -> &VcsInfo {
             &self.0
         }
-        fn get_working_tree_diff(
-            &self,
-            _hl: &crate::syntax::SyntaxHighlighter,
-        ) -> crate::error::Result<Vec<DiffFile>> {
-            Ok(Vec::new())
+        fn get_working_tree_diff(&self) -> crate::error::Result<crate::vcs::DiffWithJobs> {
+            Ok((Vec::new(), Vec::new()))
         }
         fn fetch_context_lines(
             &self,
@@ -15023,7 +14956,7 @@ mod single_file_view_tests {
             crate::theme::Theme::dark(),
             None,
             false,
-            files,
+            (files, Vec::new()),
             session,
             DiffSource::WorkingTree,
             InputMode::Normal,

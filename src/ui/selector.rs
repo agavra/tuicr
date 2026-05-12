@@ -470,12 +470,11 @@ mod selector_render_snapshot_tests {
     use crate::error::TuicrError;
     use crate::forge::selector::PullRequestsTab;
     use crate::forge::traits::{ForgeRepository, PullRequestSummary};
-    use crate::model::{DiffFile, DiffLine, FileStatus, ReviewSession, SessionDiffSource};
-    use crate::syntax::SyntaxHighlighter;
+    use crate::model::{DiffLine, FileStatus, ReviewSession, SessionDiffSource};
     use crate::theme::Theme;
     use crate::ui::render;
     use crate::vcs::CommitInfo;
-    use crate::vcs::traits::{VcsBackend, VcsChangeStatus, VcsInfo, VcsType};
+    use crate::vcs::traits::{DiffWithJobs, VcsBackend, VcsChangeStatus, VcsInfo, VcsType};
     use chrono::{TimeZone, Utc};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -492,10 +491,7 @@ mod selector_render_snapshot_tests {
             &self.info
         }
 
-        fn get_working_tree_diff(
-            &self,
-            _highlighter: &SyntaxHighlighter,
-        ) -> TuicrResult<Vec<DiffFile>> {
+        fn get_working_tree_diff(&self) -> TuicrResult<DiffWithJobs> {
             Err(TuicrError::NoChanges)
         }
 
@@ -560,7 +556,7 @@ mod selector_render_snapshot_tests {
             Theme::dark(),
             None,
             false,
-            Vec::new(),
+            (Vec::new(), Vec::new()),
             session,
             DiffSource::WorkingTree,
             InputMode::CommitSelect,

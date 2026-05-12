@@ -540,10 +540,9 @@ mod pr_header_snapshot_tests {
     use crate::error::Result as TuicrResult;
     use crate::error::TuicrError;
     use crate::forge::traits::{ForgeRepository, PrSessionKey};
-    use crate::model::{DiffFile, DiffLine, FileStatus, ReviewSession, SessionDiffSource};
-    use crate::syntax::SyntaxHighlighter;
+    use crate::model::{DiffLine, FileStatus, ReviewSession, SessionDiffSource};
     use crate::theme::Theme;
-    use crate::vcs::traits::{VcsBackend, VcsInfo, VcsType};
+    use crate::vcs::traits::{DiffWithJobs, VcsBackend, VcsInfo, VcsType};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
@@ -556,10 +555,7 @@ mod pr_header_snapshot_tests {
         fn info(&self) -> &VcsInfo {
             &self.info
         }
-        fn get_working_tree_diff(
-            &self,
-            _highlighter: &SyntaxHighlighter,
-        ) -> TuicrResult<Vec<DiffFile>> {
+        fn get_working_tree_diff(&self) -> TuicrResult<DiffWithJobs> {
             Err(TuicrError::NoChanges)
         }
         fn fetch_context_lines(
@@ -622,7 +618,7 @@ mod pr_header_snapshot_tests {
             Theme::dark(),
             None,
             false,
-            Vec::new(),
+            (Vec::new(), Vec::new()),
             session,
             DiffSource::PullRequest(Box::new(pr)),
             InputMode::Normal,

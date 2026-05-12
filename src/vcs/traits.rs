@@ -4,7 +4,11 @@ use std::path::{Path, PathBuf};
 
 use crate::error::Result;
 use crate::model::{DiffFile, DiffLine, FileStatus};
-use crate::syntax::SyntaxHighlighter;
+use crate::syntax::HighlightJob;
+
+/// Result of a diff fetch: parsed files (with `highlighted_spans = None` on
+/// every line) plus the highlight work the streaming worker will run.
+pub type DiffWithJobs = (Vec<DiffFile>, Vec<HighlightJob>);
 
 /// Information about the VCS type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -174,18 +178,20 @@ pub trait VcsBackend: Send {
         false
     }
 
-    /// Get the working tree diff (staged + unstaged changes)
-    fn get_working_tree_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>>;
+    /// Get the working tree diff (staged + unstaged changes).
+    /// Returns the parsed diff plus highlight jobs the streaming worker
+    /// will run on a background thread.
+    fn get_working_tree_diff(&self) -> Result<DiffWithJobs>;
 
     /// Get the staged diff (index vs HEAD)
-    fn get_staged_diff(&self, _highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+    fn get_staged_diff(&self) -> Result<DiffWithJobs> {
         Err(crate::error::TuicrError::UnsupportedOperation(
             "Staged diff not supported for this VCS".into(),
         ))
     }
 
     /// Get the unstaged diff (working tree vs index)
-    fn get_unstaged_diff(&self, _highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+    fn get_unstaged_diff(&self) -> Result<DiffWithJobs> {
         Err(crate::error::TuicrError::UnsupportedOperation(
             "Unstaged diff not supported for this VCS".into(),
         ))
@@ -248,8 +254,7 @@ pub trait VcsBackend: Send {
     fn get_commit_range_diff(
         &self,
         _revision_range: &ResolvedRevisionRange<'_>,
-        _highlighter: &SyntaxHighlighter,
-    ) -> Result<Vec<DiffFile>> {
+    ) -> Result<DiffWithJobs> {
         Err(crate::error::TuicrError::UnsupportedOperation(
             "Commit range diff not supported for this VCS".into(),
         ))
@@ -264,11 +269,7 @@ pub trait VcsBackend: Send {
     /// Get a combined diff from the parent of the oldest commit through to the working tree.
     /// This shows both committed and working tree changes in a single diff.
     /// Returns error if not supported (default).
-    fn get_working_tree_with_commits_diff(
-        &self,
-        _commit_ids: &[String],
-        _highlighter: &SyntaxHighlighter,
-    ) -> Result<Vec<DiffFile>> {
+    fn get_working_tree_with_commits_diff(&self, _commit_ids: &[String]) -> Result<DiffWithJobs> {
         Err(crate::error::TuicrError::UnsupportedOperation(
             "Working tree + commits diff not supported for this VCS".into(),
         ))

@@ -5,9 +5,9 @@ use ignore::WalkBuilder;
 
 use crate::error::{Result, TuicrError};
 use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin};
-use crate::syntax::SyntaxHighlighter;
+use crate::syntax::{HighlightJob, HighlightJobKind, SyntaxHighlighter};
 
-use super::traits::{VcsBackend, VcsInfo, VcsType};
+use super::traits::{DiffWithJobs, VcsBackend, VcsInfo, VcsType};
 
 /// A backend for reviewing files outside of a VCS repository (`--file`)
 /// and for the whole-repo `--all-files` mode.
@@ -154,12 +154,15 @@ impl FileBackend {
         })
     }
 
+    /// Build the [`DiffFile`] entry for one path, plus the data needed for a
+    /// background highlight job. Returns `None` to skip the file entirely
+    /// (binary, unreadable, empty). The job kind is `None` for `is_too_large`
+    /// placeholders that have no hunk to highlight.
     fn build_diff_file_for_path(
         &self,
-        highlighter: &SyntaxHighlighter,
         abs_path: &Path,
         file_size: u64,
-    ) -> Option<DiffFile> {
+    ) -> Option<(DiffFile, Option<HighlightJobKind>)> {
         // Binary check first so a too-large binary is skipped (not surfaced
         // as a misleading is_too_large text placeholder), and so single-file
         // mode (which never went through `collect_text_files`) is also guarded.
@@ -176,16 +179,19 @@ impl FileBackend {
         if file_size > MAX_FILE_BYTES {
             let hunks: Vec<DiffHunk> = Vec::new();
             let content_hash = DiffFile::compute_content_hash(&hunks);
-            return Some(DiffFile {
-                old_path: None,
-                new_path: Some(rel_path),
-                status: FileStatus::Added,
-                hunks,
-                is_binary: false,
-                is_too_large: true,
-                is_commit_message: false,
-                content_hash,
-            });
+            return Some((
+                DiffFile {
+                    old_path: None,
+                    new_path: Some(rel_path),
+                    status: FileStatus::Added,
+                    hunks,
+                    is_binary: false,
+                    is_too_large: true,
+                    is_commit_message: false,
+                    content_hash,
+                },
+                None,
+            ));
         }
 
         let content = std::fs::read_to_string(abs_path).ok()?;
@@ -202,25 +208,14 @@ impl FileBackend {
         // Build line contents and origins for syntax highlighting
         let line_contents: Vec<String> = lines.iter().map(|l| super::tabify(l)).collect();
         let line_origins: Vec<LineOrigin> = vec![render_origin; line_contents.len()];
-
-        // Apply syntax highlighting
-        let highlight_sequences =
+        let sequences =
             SyntaxHighlighter::split_diff_lines_for_highlighting(&line_contents, &line_origins);
-        let new_highlighted_lines =
-            highlighter.highlight_file_lines(abs_path, &highlight_sequences.new_lines);
 
-        // Build DiffLines
+        // Build DiffLines without inline highlighting; the streaming worker
+        // will populate `highlighted_spans` once the diff is on screen.
         let mut diff_lines = Vec::with_capacity(lines.len());
         for (i, content) in line_contents.iter().enumerate() {
             let line_num = (i + 1) as u32;
-
-            let highlighted_spans = highlighter.highlighted_line_for_diff_with_background(
-                None,
-                new_highlighted_lines.as_deref(),
-                None,
-                highlight_sequences.new_line_indices[i],
-                render_origin,
-            );
 
             // Pristine context lines need both old_lineno and new_lineno
             // populated so the side-by-side and unified renderers walk the
@@ -235,7 +230,7 @@ impl FileBackend {
                 content: content.clone(),
                 old_lineno,
                 new_lineno: Some(line_num),
-                highlighted_spans,
+                highlighted_spans: None,
             });
         }
 
@@ -267,7 +262,7 @@ impl FileBackend {
 
         let hunks = vec![hunk];
         let content_hash = DiffFile::compute_content_hash(&hunks);
-        Some(DiffFile {
+        let file = DiffFile {
             old_path: None,
             new_path: Some(rel_path),
             status: file_status,
@@ -276,7 +271,18 @@ impl FileBackend {
             is_too_large: false,
             is_commit_message: false,
             content_hash,
-        })
+        };
+
+        let job_kind = HighlightJobKind::Hunk {
+            hunk_idx: 0,
+            old_lines: sequences.old_lines,
+            new_lines: sequences.new_lines,
+            old_line_indices: sequences.old_line_indices,
+            new_line_indices: sequences.new_line_indices,
+            line_origins,
+        };
+
+        Some((file, Some(job_kind)))
     }
 }
 
@@ -285,18 +291,29 @@ impl VcsBackend for FileBackend {
         &self.info
     }
 
-    fn get_working_tree_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
-        let diff_files: Vec<DiffFile> = self
-            .files
-            .iter()
-            .filter_map(|(p, size)| self.build_diff_file_for_path(highlighter, p, *size))
-            .collect();
+    fn get_working_tree_diff(&self) -> Result<DiffWithJobs> {
+        let mut diff_files: Vec<DiffFile> = Vec::with_capacity(self.files.len());
+        let mut jobs: Vec<HighlightJob> = Vec::with_capacity(self.files.len());
+
+        for (abs_path, size) in &self.files {
+            let Some((file, job_kind)) = self.build_diff_file_for_path(abs_path, *size) else {
+                continue;
+            };
+            if let Some(kind) = job_kind {
+                jobs.push(HighlightJob {
+                    file_idx: diff_files.len(),
+                    syntax_path: abs_path.clone(),
+                    kind,
+                });
+            }
+            diff_files.push(file);
+        }
 
         if diff_files.is_empty() {
             return Err(TuicrError::NoChanges);
         }
 
-        Ok(diff_files)
+        Ok((diff_files, jobs))
     }
 
     fn fetch_context_lines(
@@ -401,11 +418,6 @@ mod tests {
     use std::fs;
 
     use super::*;
-    use crate::syntax::SyntaxHighlighter;
-
-    fn highlighter() -> SyntaxHighlighter {
-        SyntaxHighlighter::default()
-    }
 
     #[test]
     fn single_file_mode_returns_one_diff_file() {
@@ -414,9 +426,11 @@ mod tests {
         fs::write(&path, "alpha\nbeta\n").unwrap();
 
         let backend = FileBackend::new(path.to_str().unwrap()).unwrap();
-        let diffs = backend.get_working_tree_diff(&highlighter()).unwrap();
+        let (diffs, jobs) = backend.get_working_tree_diff().unwrap();
 
         assert_eq!(diffs.len(), 1);
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].file_idx, 0);
         assert_eq!(
             diffs[0].new_path.as_deref().unwrap(),
             Path::new("hello.txt")
@@ -432,7 +446,7 @@ mod tests {
         fs::write(dir.path().join("ignored.txt"), "skip me\n").unwrap();
 
         let backend = FileBackend::new(dir.path().to_str().unwrap()).unwrap();
-        let diffs = backend.get_working_tree_diff(&highlighter()).unwrap();
+        let (diffs, _jobs) = backend.get_working_tree_diff().unwrap();
 
         let names: Vec<_> = diffs
             .iter()
@@ -459,7 +473,7 @@ mod tests {
         fs::write(sub.join("inner.txt"), "x\n").unwrap();
 
         let backend = FileBackend::new(dir.path().to_str().unwrap()).unwrap();
-        let diffs = backend.get_working_tree_diff(&highlighter()).unwrap();
+        let (diffs, _jobs) = backend.get_working_tree_diff().unwrap();
 
         assert_eq!(diffs.len(), 1);
         assert_eq!(
@@ -481,7 +495,7 @@ mod tests {
         .unwrap();
         let root = dir.path().canonicalize().unwrap();
         let backend = FileBackend::new_pristine(vec![path.clone()], root).unwrap();
-        let diffs = backend.get_working_tree_diff(&highlighter()).unwrap();
+        let (diffs, _jobs) = backend.get_working_tree_diff().unwrap();
 
         assert_eq!(diffs.len(), 1);
         let hunk = &diffs[0].hunks[0];
@@ -504,7 +518,7 @@ mod tests {
         fs::write(dir.path().join("a.txt"), "alpha\nbeta\n").unwrap();
 
         let backend = FileBackend::new(dir.path().to_str().unwrap()).unwrap();
-        let diffs = backend.get_working_tree_diff(&highlighter()).unwrap();
+        let (diffs, _jobs) = backend.get_working_tree_diff().unwrap();
 
         assert_eq!(diffs.len(), 1);
         let hunk = &diffs[0].hunks[0];
@@ -524,7 +538,7 @@ mod tests {
 
         let root = dir.path().canonicalize().unwrap();
         let backend = FileBackend::new_pristine(vec![text_path.clone(), bin_path], root).unwrap();
-        let diffs = backend.get_working_tree_diff(&highlighter()).unwrap();
+        let (diffs, _jobs) = backend.get_working_tree_diff().unwrap();
 
         assert_eq!(diffs.len(), 1);
         assert_eq!(diffs[0].new_path.as_deref().unwrap(), Path::new("text.txt"));

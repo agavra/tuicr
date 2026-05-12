@@ -3,17 +3,16 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{Result, TuicrError};
 use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin};
-use crate::syntax::{SyntaxHighlighter, needs_full_file_highlight};
+use crate::syntax::{HighlightJob, HighlightJobKind, SyntaxHighlighter, needs_full_file_highlight};
 use crate::vcs::traits::{
     ChangeKind, DiffWhitespaceMode, ResolvedRevisionRange, RevisionDiffTarget,
 };
-use crate::vcs::{enhance_with_full_file_highlight, tabify};
+use crate::vcs::{DiffWithJobs, append_container_full_file_jobs, tabify};
 
 pub fn get_working_tree_diff(
     repo: &Repository,
     whitespace_mode: DiffWhitespaceMode,
-    highlighter: &SyntaxHighlighter,
-) -> Result<Vec<DiffFile>> {
+) -> Result<DiffWithJobs> {
     // Unborn HEAD (fresh `git init` / `git clone` of an empty remote) has no
     // tree to compare against; diff against an empty baseline so freshly
     // staged/added files still surface in the working-tree review.
@@ -25,17 +24,17 @@ pub fn get_working_tree_diff(
     opts.recurse_untracked_dirs(true);
 
     let diff = repo.diff_tree_to_workdir_with_index(head.as_ref(), Some(&mut opts))?;
-    let mut files = parse_diff(&diff, highlighter)?;
-    enhance_with_full_file_highlight(
-        &mut files,
-        highlighter,
+    let (files, mut jobs) = parse_diff(&diff)?;
+    append_container_full_file_jobs(
+        &files,
+        &mut jobs,
         |path| {
             head.as_ref()
                 .and_then(|tree| read_path_from_tree(repo, tree, path))
         },
         |path| read_path_from_workdir(repo, path),
     );
-    Ok(files)
+    Ok((files, jobs))
 }
 
 /// Get the staged diff (index vs HEAD)
@@ -43,27 +42,25 @@ pub fn get_working_tree_diff(
 pub fn get_staged_diff(
     repo: &Repository,
     whitespace_mode: DiffWhitespaceMode,
-    highlighter: &SyntaxHighlighter,
-) -> Result<Vec<DiffFile>> {
+) -> Result<DiffWithJobs> {
     let head = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
     let index = repo.index()?;
     let mut opts = diff_options(whitespace_mode);
 
     let diff = repo.diff_tree_to_index(head.as_ref(), Some(&index), Some(&mut opts))?;
-    let mut files = parse_diff(&diff, highlighter)?;
-    enhance_with_full_file_highlight(
-        &mut files,
-        highlighter,
+    let (files, mut jobs) = parse_diff(&diff)?;
+    append_container_full_file_jobs(
+        &files,
+        &mut jobs,
         |path| {
             head.as_ref()
                 .and_then(|tree| read_path_from_tree(repo, tree, path))
         },
         |path| read_path_from_index(repo, &index, path),
     );
-    Ok(files)
+    Ok((files, jobs))
 }
 
-/// Get the unstaged diff (working tree vs index)
 /// List the changed paths for either the staged or unstaged diff, without
 /// materializing hunks or running the syntax highlighter. Lets callers verify
 /// `get_change_status` against ignore rules cheaply — full diff parsing only
@@ -103,11 +100,11 @@ pub fn list_changed_paths(repo: &Repository, kind: ChangeKind) -> Result<Vec<Pat
     Ok(paths)
 }
 
+/// Get the unstaged diff (working tree vs index)
 pub fn get_unstaged_diff(
     repo: &Repository,
     whitespace_mode: DiffWhitespaceMode,
-    highlighter: &SyntaxHighlighter,
-) -> Result<Vec<DiffFile>> {
+) -> Result<DiffWithJobs> {
     let index = repo.index()?;
     let mut opts = diff_options(whitespace_mode);
     opts.include_untracked(true);
@@ -115,14 +112,14 @@ pub fn get_unstaged_diff(
     opts.recurse_untracked_dirs(true);
 
     let diff = repo.diff_index_to_workdir(Some(&index), Some(&mut opts))?;
-    let mut files = parse_diff(&diff, highlighter)?;
-    enhance_with_full_file_highlight(
-        &mut files,
-        highlighter,
+    let (files, mut jobs) = parse_diff(&diff)?;
+    append_container_full_file_jobs(
+        &files,
+        &mut jobs,
         |path| read_path_from_index(repo, &index, path),
         |path| read_path_from_workdir(repo, path),
     );
-    Ok(files)
+    Ok((files, jobs))
 }
 
 /// Get the diff for a range of commits.
@@ -132,8 +129,7 @@ pub fn get_commit_range_diff(
     repo: &Repository,
     revision_range: &ResolvedRevisionRange<'_>,
     whitespace_mode: DiffWhitespaceMode,
-    highlighter: &SyntaxHighlighter,
-) -> Result<Vec<DiffFile>> {
+) -> Result<DiffWithJobs> {
     let (old_tree, new_tree) = match &revision_range.diff_target {
         RevisionDiffTarget::CommitList => {
             commit_list_range_trees(repo, &revision_range.commit_ids)?
@@ -148,7 +144,7 @@ pub fn get_commit_range_diff(
         }
     };
 
-    diff_commit_trees(repo, old_tree, new_tree, whitespace_mode, highlighter)
+    diff_commit_trees(repo, old_tree, new_tree, whitespace_mode)
 }
 
 fn commit_list_range_trees<'repo>(
@@ -186,15 +182,14 @@ fn diff_commit_trees(
     old_tree: Option<git2::Tree<'_>>,
     new_tree: git2::Tree<'_>,
     whitespace_mode: DiffWhitespaceMode,
-    highlighter: &SyntaxHighlighter,
-) -> Result<Vec<DiffFile>> {
+) -> Result<DiffWithJobs> {
     let mut opts = diff_options(whitespace_mode);
 
     let diff = repo.diff_tree_to_tree(old_tree.as_ref(), Some(&new_tree), Some(&mut opts))?;
-    let mut files = parse_diff(&diff, highlighter)?;
-    enhance_with_full_file_highlight(
-        &mut files,
-        highlighter,
+    let (files, mut jobs) = parse_diff(&diff)?;
+    append_container_full_file_jobs(
+        &files,
+        &mut jobs,
         |path| {
             old_tree
                 .as_ref()
@@ -202,7 +197,7 @@ fn diff_commit_trees(
         },
         |path| read_path_from_tree(repo, &new_tree, path),
     );
-    Ok(files)
+    Ok((files, jobs))
 }
 
 /// Get a combined diff from the parent of the oldest commit through to the working tree.
@@ -211,8 +206,7 @@ pub fn get_working_tree_with_commits_diff(
     repo: &Repository,
     commit_ids: &[String],
     whitespace_mode: DiffWhitespaceMode,
-    highlighter: &SyntaxHighlighter,
-) -> Result<Vec<DiffFile>> {
+) -> Result<DiffWithJobs> {
     if commit_ids.is_empty() {
         return Err(TuicrError::NoChanges);
     }
@@ -232,10 +226,10 @@ pub fn get_working_tree_with_commits_diff(
     opts.recurse_untracked_dirs(true);
 
     let diff = repo.diff_tree_to_workdir_with_index(old_tree.as_ref(), Some(&mut opts))?;
-    let mut files = parse_diff(&diff, highlighter)?;
-    enhance_with_full_file_highlight(
-        &mut files,
-        highlighter,
+    let (files, mut jobs) = parse_diff(&diff)?;
+    append_container_full_file_jobs(
+        &files,
+        &mut jobs,
         |path| {
             old_tree
                 .as_ref()
@@ -243,7 +237,7 @@ pub fn get_working_tree_with_commits_diff(
         },
         |path| read_path_from_workdir(repo, path),
     );
-    Ok(files)
+    Ok((files, jobs))
 }
 
 fn diff_options(whitespace_mode: DiffWhitespaceMode) -> DiffOptions {
@@ -268,11 +262,12 @@ fn read_path_from_index(repo: &Repository, index: &git2::Index, path: &Path) -> 
     Some(String::from_utf8_lossy(blob.content()).into_owned())
 }
 
-fn parse_diff(diff: &Diff, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+fn parse_diff(diff: &Diff) -> Result<DiffWithJobs> {
     let mut files: Vec<DiffFile> = Vec::new();
+    let mut jobs: Vec<HighlightJob> = Vec::new();
 
     // Untracked files larger than this are shown in the file list but their
-    // content is not parsed — they are likely logs, dumps, or build artefacts.
+    // content is not parsed - they are likely logs, dumps, or build artefacts.
     const MAX_UNTRACKED_FILE_SIZE: u64 = 10 * 1_024 * 1_024;
 
     for (delta_idx, delta) in diff.deltas().enumerate() {
@@ -292,10 +287,11 @@ fn parse_diff(diff: &Diff, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFi
             delta.status() == Delta::Untracked && delta.new_file().size() > MAX_UNTRACKED_FILE_SIZE;
 
         let syntax_path = new_path.as_ref().or(old_path.as_ref()).map(|p| p.as_path());
+        let file_idx = files.len();
         let hunks = if is_binary || is_too_large {
             Vec::new()
         } else {
-            parse_hunks(diff, delta_idx, highlighter, syntax_path)?
+            parse_hunks(diff, delta_idx, file_idx, syntax_path, &mut jobs)?
         };
 
         let content_hash = DiffFile::compute_content_hash(&hunks);
@@ -315,14 +311,15 @@ fn parse_diff(diff: &Diff, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFi
         return Err(TuicrError::NoChanges);
     }
 
-    Ok(files)
+    Ok((files, jobs))
 }
 
 fn parse_hunks(
     diff: &Diff,
     delta_idx: usize,
-    highlighter: &SyntaxHighlighter,
+    file_idx: usize,
     file_path: Option<&Path>,
+    jobs: &mut Vec<HighlightJob>,
 ) -> Result<Vec<DiffHunk>> {
     let mut hunks: Vec<DiffHunk> = Vec::new();
 
@@ -360,37 +357,38 @@ fn parse_hunks(
                 line_numbers.push((line.old_lineno(), line.new_lineno()));
             }
 
-            let sequences =
-                SyntaxHighlighter::split_diff_lines_for_highlighting(&line_contents, &line_origins);
-            // Container grammars skip per-hunk highlighting; the full-file
-            // post-pass overwrites these spans anyway.
-            let (old_highlighted, new_highlighted) = match file_path {
-                Some(path) if !needs_full_file_highlight(path) => (
-                    highlighter.highlight_file_lines(path, &sequences.old_lines),
-                    highlighter.highlight_file_lines(path, &sequences.new_lines),
-                ),
-                _ => (None, None),
-            };
-
             let mut lines: Vec<DiffLine> = Vec::with_capacity(line_contents.len());
-            for (idx, content) in line_contents.into_iter().enumerate() {
-                let origin = line_origins[idx];
+            for (idx, content) in line_contents.iter().enumerate() {
                 let (old_lineno, new_lineno) = line_numbers[idx];
-
-                let highlighted_spans = highlighter.highlighted_line_for_diff_with_background(
-                    old_highlighted.as_deref(),
-                    new_highlighted.as_deref(),
-                    sequences.old_line_indices[idx],
-                    sequences.new_line_indices[idx],
-                    origin,
-                );
-
                 lines.push(DiffLine {
-                    origin,
-                    content,
+                    origin: line_origins[idx],
+                    content: content.clone(),
                     old_lineno,
                     new_lineno,
-                    highlighted_spans,
+                    highlighted_spans: None,
+                });
+            }
+
+            // Container grammars skip per-hunk highlighting; the full-file
+            // post-pass will fill spans for the whole file in one shot.
+            if let Some(path) = file_path
+                && !needs_full_file_highlight(path)
+            {
+                let sequences = SyntaxHighlighter::split_diff_lines_for_highlighting(
+                    &line_contents,
+                    &line_origins,
+                );
+                jobs.push(HighlightJob {
+                    file_idx,
+                    syntax_path: path.to_path_buf(),
+                    kind: HighlightJobKind::Hunk {
+                        hunk_idx,
+                        old_lines: sequences.old_lines,
+                        new_lines: sequences.new_lines,
+                        old_line_indices: sequences.old_line_indices,
+                        new_line_indices: sequences.new_line_indices,
+                        line_origins,
+                    },
                 });
             }
 
@@ -440,9 +438,8 @@ mod tests {
         let diff = repo
             .diff_tree_to_tree(Some(&head), Some(&head), None)
             .unwrap();
-        let highlighter = SyntaxHighlighter::default();
 
-        let result = parse_diff(&diff, &highlighter);
+        let result = parse_diff(&diff);
 
         assert!(matches!(result, Err(TuicrError::NoChanges)));
     }
@@ -464,12 +461,8 @@ mod tests {
         )
         .expect("failed to update file");
 
-        let files = get_working_tree_diff(
-            &repo,
-            DiffWhitespaceMode::Normal,
-            &SyntaxHighlighter::default(),
-        )
-        .expect("failed to get diff");
+        let (files, _jobs) =
+            get_working_tree_diff(&repo, DiffWhitespaceMode::Normal).expect("failed to get diff");
 
         assert_eq!(files.len(), 1);
         let lines = &files[0].hunks[0].lines;
@@ -492,13 +485,16 @@ mod tests {
         let edited = "<template>\n  <div>{{ msg }}</div>\n</template>\n\n<script setup>\nimport { ref } from 'vue'\nconst msg = ref('hello')\nconst other = 1\n</script>\n";
         fs::write(temp_dir.path().join("App.vue"), edited).expect("failed to update file");
 
-        let files = get_working_tree_diff(
-            &repo,
-            DiffWhitespaceMode::Normal,
-            &SyntaxHighlighter::default(),
-        )
-        .expect("failed to get diff");
+        let (mut files, jobs) =
+            get_working_tree_diff(&repo, DiffWhitespaceMode::Normal).expect("failed to get diff");
         assert_eq!(files.len(), 1);
+
+        // Drive the streaming highlight pipeline synchronously so we can
+        // assert on the populated spans.
+        let highlighter = SyntaxHighlighter::default();
+        for update in crate::syntax::streaming::run_blocking(jobs, &highlighter) {
+            crate::syntax::streaming::apply_update(&mut files, &highlighter, update);
+        }
 
         let changed_lines: Vec<_> = files[0].hunks[0]
             .lines
@@ -530,13 +526,11 @@ mod tests {
 
         fs::write(temp_dir.path().join("file.txt"), "unstaged\n").expect("failed to update file");
 
-        let highlighter = SyntaxHighlighter::default();
-
-        let unstaged = get_unstaged_diff(&repo, DiffWhitespaceMode::Normal, &highlighter)
-            .expect("unstaged diff failed");
-        assert_eq!(unstaged.len(), 1);
+        let (unstaged_files, _) =
+            get_unstaged_diff(&repo, DiffWhitespaceMode::Normal).expect("unstaged diff failed");
+        assert_eq!(unstaged_files.len(), 1);
         assert!(matches!(
-            get_staged_diff(&repo, DiffWhitespaceMode::Normal, &highlighter),
+            get_staged_diff(&repo, DiffWhitespaceMode::Normal),
             Err(TuicrError::NoChanges)
         ));
 
@@ -546,11 +540,11 @@ mod tests {
             .expect("failed to add file to index");
         index.write().expect("failed to write index");
 
-        let staged = get_staged_diff(&repo, DiffWhitespaceMode::Normal, &highlighter)
-            .expect("staged diff failed");
-        assert_eq!(staged.len(), 1);
+        let (staged_files, _) =
+            get_staged_diff(&repo, DiffWhitespaceMode::Normal).expect("staged diff failed");
+        assert_eq!(staged_files.len(), 1);
         assert!(matches!(
-            get_unstaged_diff(&repo, DiffWhitespaceMode::Normal, &highlighter),
+            get_unstaged_diff(&repo, DiffWhitespaceMode::Normal),
             Err(TuicrError::NoChanges)
         ));
     }
@@ -567,12 +561,8 @@ mod tests {
         index.write().expect("write index");
 
         // when
-        let files = get_working_tree_diff(
-            &repo,
-            DiffWhitespaceMode::Normal,
-            &SyntaxHighlighter::default(),
-        )
-        .expect("unborn HEAD should produce a diff against an empty tree");
+        let (files, _jobs) = get_working_tree_diff(&repo, DiffWhitespaceMode::Normal)
+            .expect("unborn HEAD should produce a diff against an empty tree");
 
         // then the staged file shows up as an addition rather than crashing
         // with `reference 'refs/heads/main' not found`
@@ -590,24 +580,16 @@ mod tests {
         fs::write(temp_dir.path().join("file.txt"), " alpha \n beta\n")
             .expect("failed to update file");
 
-        let files = get_working_tree_diff(
-            &repo,
-            DiffWhitespaceMode::IgnoreAll,
-            &SyntaxHighlighter::default(),
-        )
-        .expect("whitespace-only edit may surface as a no-op diff file");
+        let (files, _) = get_working_tree_diff(&repo, DiffWhitespaceMode::IgnoreAll)
+            .expect("whitespace-only edit may surface as a no-op diff file");
         assert_eq!(files.len(), 1);
         assert!(files[0].hunks.is_empty());
 
         fs::write(temp_dir.path().join("file.txt"), " alpha \ngamma\n")
             .expect("failed to update file");
 
-        let files = get_working_tree_diff(
-            &repo,
-            DiffWhitespaceMode::IgnoreAll,
-            &SyntaxHighlighter::default(),
-        )
-        .expect("non-whitespace edit should still produce a diff");
+        let (files, _) = get_working_tree_diff(&repo, DiffWhitespaceMode::IgnoreAll)
+            .expect("non-whitespace edit should still produce a diff");
         assert_eq!(files.len(), 1);
     }
 
@@ -627,12 +609,8 @@ mod tests {
         permissions.set_mode(0o755);
         fs::set_permissions(path, permissions).expect("failed to update mode");
 
-        let files = get_working_tree_diff(
-            &repo,
-            DiffWhitespaceMode::IgnoreAll,
-            &SyntaxHighlighter::default(),
-        )
-        .expect("mode-only edit should still produce a diff");
+        let (files, _) = get_working_tree_diff(&repo, DiffWhitespaceMode::IgnoreAll)
+            .expect("mode-only edit should still produce a diff");
         assert_eq!(files.len(), 1);
         assert!(files[0].hunks.is_empty());
     }
