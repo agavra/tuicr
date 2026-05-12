@@ -1,82 +1,60 @@
 pub mod context;
 pub mod diff;
+mod libgit2;
 pub mod repository;
 pub mod staging;
 
-use git2::Repository;
 use std::path::Path;
 
-use crate::error::{Result, TuicrError};
+use crate::error::Result;
 use crate::model::{DiffFile, DiffLine, FileStatus};
 use crate::syntax::SyntaxHighlighter;
 
-use super::traits::{CommitInfo, VcsBackend, VcsInfo, VcsType};
+use super::traits::{CommitInfo, VcsBackend, VcsInfo};
+pub use libgit2::Libgit2Backend;
 
-// Re-export commonly used functions
-pub use context::{calculate_gap, fetch_context_lines};
-pub use diff::{
-    get_commit_range_diff, get_staged_diff, get_unstaged_diff, get_working_tree_diff,
-    get_working_tree_with_commits_diff,
-};
+// Re-exported for UI/app gap calculations.
+pub use context::calculate_gap;
 
-/// Git backend implementation using git2 library
-pub struct GitBackend {
-    repo: Repository,
-    info: VcsInfo,
+/// Top-level Git backend.
+///
+/// This wrapper keeps Git backend selection in one place. Today it delegates to
+/// the git2/libgit2 implementation; sparse-checkout support can add another
+/// variant without pushing backend-specific branches into every operation.
+pub enum GitBackend {
+    Libgit2(Libgit2Backend),
 }
 
 impl GitBackend {
-    /// Discover a git repository from the current directory
+    /// Discover a git repository from the current directory.
     pub fn discover() -> Result<Self> {
-        let cwd = std::env::current_dir().map_err(|_| TuicrError::NotARepository)?;
-        let repo = Repository::discover(&cwd).map_err(|_| TuicrError::NotARepository)?;
-
-        let root_path = repo
-            .workdir()
-            .ok_or(TuicrError::NotARepository)?
-            .to_path_buf();
-
-        let head_commit = repo
-            .head()
-            .ok()
-            .and_then(|h| h.peel_to_commit().ok())
-            .map(|c| c.id().to_string())
-            .unwrap_or_else(|| "HEAD".to_string());
-
-        let branch_name = repo.head().ok().and_then(|h| {
-            if h.is_branch() {
-                h.shorthand().map(|s| s.to_string())
-            } else {
-                None
-            }
-        });
-
-        let info = VcsInfo {
-            root_path,
-            head_commit,
-            branch_name,
-            vcs_type: VcsType::Git,
-        };
-
-        Ok(Self { repo, info })
+        Ok(Self::Libgit2(Libgit2Backend::discover()?))
     }
 }
 
 impl VcsBackend for GitBackend {
     fn info(&self) -> &VcsInfo {
-        &self.info
+        match self {
+            Self::Libgit2(backend) => backend.info(),
+        }
     }
 
     fn get_working_tree_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
-        get_working_tree_diff(&self.repo, highlighter)
+        match self {
+            Self::Libgit2(backend) => backend.get_working_tree_diff(highlighter),
+        }
     }
 
     fn get_staged_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
-        get_staged_diff(&self.repo, highlighter)
+        match self {
+            Self::Libgit2(backend) => backend.get_staged_diff(highlighter),
+        }
     }
 
     fn get_unstaged_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
-        get_unstaged_diff(&self.repo, highlighter)
+        match self {
+            Self::Libgit2(backend) => backend.get_unstaged_diff(highlighter),
+        }
     }
 
     fn fetch_context_lines(
@@ -86,27 +64,23 @@ impl VcsBackend for GitBackend {
         start_line: u32,
         end_line: u32,
     ) -> Result<Vec<DiffLine>> {
-        fetch_context_lines(&self.repo, file_path, file_status, start_line, end_line)
+        match self {
+            Self::Libgit2(backend) => {
+                backend.fetch_context_lines(file_path, file_status, start_line, end_line)
+            }
+        }
     }
 
     fn get_recent_commits(&self, offset: usize, limit: usize) -> Result<Vec<CommitInfo>> {
-        let git_commits = repository::get_recent_commits(&self.repo, offset, limit)?;
-        Ok(git_commits
-            .into_iter()
-            .map(|c| CommitInfo {
-                id: c.id,
-                short_id: c.short_id,
-                branch_name: c.branch_name,
-                summary: c.summary,
-                body: c.body,
-                author: c.author,
-                time: c.time,
-            })
-            .collect())
+        match self {
+            Self::Libgit2(backend) => backend.get_recent_commits(offset, limit),
+        }
     }
 
     fn resolve_revisions(&self, revisions: &str) -> Result<Vec<String>> {
-        repository::resolve_revisions(&self.repo, revisions)
+        match self {
+            Self::Libgit2(backend) => backend.resolve_revisions(revisions),
+        }
     }
 
     fn get_commit_range_diff(
@@ -114,23 +88,15 @@ impl VcsBackend for GitBackend {
         commit_ids: &[String],
         highlighter: &SyntaxHighlighter,
     ) -> Result<Vec<DiffFile>> {
-        get_commit_range_diff(&self.repo, commit_ids, highlighter)
+        match self {
+            Self::Libgit2(backend) => backend.get_commit_range_diff(commit_ids, highlighter),
+        }
     }
 
     fn get_commits_info(&self, ids: &[String]) -> Result<Vec<CommitInfo>> {
-        let git_commits = repository::get_commits_info(&self.repo, ids)?;
-        Ok(git_commits
-            .into_iter()
-            .map(|c| CommitInfo {
-                id: c.id,
-                short_id: c.short_id,
-                branch_name: c.branch_name,
-                summary: c.summary,
-                body: c.body,
-                author: c.author,
-                time: c.time,
-            })
-            .collect())
+        match self {
+            Self::Libgit2(backend) => backend.get_commits_info(ids),
+        }
     }
 
     fn get_working_tree_with_commits_diff(
@@ -138,10 +104,16 @@ impl VcsBackend for GitBackend {
         commit_ids: &[String],
         highlighter: &SyntaxHighlighter,
     ) -> Result<Vec<DiffFile>> {
-        get_working_tree_with_commits_diff(&self.repo, commit_ids, highlighter)
+        match self {
+            Self::Libgit2(backend) => {
+                backend.get_working_tree_with_commits_diff(commit_ids, highlighter)
+            }
+        }
     }
 
     fn stage_file(&self, path: &Path) -> Result<()> {
-        staging::stage_file(&self.repo, path)
+        match self {
+            Self::Libgit2(backend) => backend.stage_file(path),
+        }
     }
 }

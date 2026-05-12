@@ -1,0 +1,136 @@
+use git2::Repository;
+use std::path::Path;
+
+use crate::error::{Result, TuicrError};
+use crate::model::{DiffFile, DiffLine, FileStatus};
+use crate::syntax::SyntaxHighlighter;
+
+use super::{context, diff, repository, staging};
+use crate::vcs::traits::{CommitInfo, VcsBackend, VcsInfo, VcsType};
+
+/// Git backend implementation using the git2/libgit2 library.
+pub struct Libgit2Backend {
+    repo: Repository,
+    info: VcsInfo,
+}
+
+impl Libgit2Backend {
+    /// Discover a git repository from the current directory.
+    pub fn discover() -> Result<Self> {
+        let cwd = std::env::current_dir().map_err(|_| TuicrError::NotARepository)?;
+        let repo = Repository::discover(&cwd).map_err(|_| TuicrError::NotARepository)?;
+
+        let root_path = repo
+            .workdir()
+            .ok_or(TuicrError::NotARepository)?
+            .to_path_buf();
+
+        let head_commit = repo
+            .head()
+            .ok()
+            .and_then(|h| h.peel_to_commit().ok())
+            .map(|c| c.id().to_string())
+            .unwrap_or_else(|| "HEAD".to_string());
+
+        let branch_name = repo.head().ok().and_then(|h| {
+            if h.is_branch() {
+                h.shorthand().map(|s| s.to_string())
+            } else {
+                None
+            }
+        });
+
+        let info = VcsInfo {
+            root_path,
+            head_commit,
+            branch_name,
+            vcs_type: VcsType::Git,
+        };
+
+        Ok(Self { repo, info })
+    }
+}
+
+impl VcsBackend for Libgit2Backend {
+    fn info(&self) -> &VcsInfo {
+        &self.info
+    }
+
+    fn get_working_tree_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+        diff::get_working_tree_diff(&self.repo, highlighter)
+    }
+
+    fn get_staged_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+        diff::get_staged_diff(&self.repo, highlighter)
+    }
+
+    fn get_unstaged_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+        diff::get_unstaged_diff(&self.repo, highlighter)
+    }
+
+    fn fetch_context_lines(
+        &self,
+        file_path: &Path,
+        file_status: FileStatus,
+        start_line: u32,
+        end_line: u32,
+    ) -> Result<Vec<DiffLine>> {
+        context::fetch_context_lines(&self.repo, file_path, file_status, start_line, end_line)
+    }
+
+    fn get_recent_commits(&self, offset: usize, limit: usize) -> Result<Vec<CommitInfo>> {
+        let git_commits = repository::get_recent_commits(&self.repo, offset, limit)?;
+        Ok(git_commits
+            .into_iter()
+            .map(|c| CommitInfo {
+                id: c.id,
+                short_id: c.short_id,
+                branch_name: c.branch_name,
+                summary: c.summary,
+                body: c.body,
+                author: c.author,
+                time: c.time,
+            })
+            .collect())
+    }
+
+    fn resolve_revisions(&self, revisions: &str) -> Result<Vec<String>> {
+        repository::resolve_revisions(&self.repo, revisions)
+    }
+
+    fn get_commit_range_diff(
+        &self,
+        commit_ids: &[String],
+        highlighter: &SyntaxHighlighter,
+    ) -> Result<Vec<DiffFile>> {
+        diff::get_commit_range_diff(&self.repo, commit_ids, highlighter)
+    }
+
+    fn get_commits_info(&self, ids: &[String]) -> Result<Vec<CommitInfo>> {
+        let git_commits = repository::get_commits_info(&self.repo, ids)?;
+        Ok(git_commits
+            .into_iter()
+            .map(|c| CommitInfo {
+                id: c.id,
+                short_id: c.short_id,
+                branch_name: c.branch_name,
+                summary: c.summary,
+                body: c.body,
+                author: c.author,
+                time: c.time,
+            })
+            .collect())
+    }
+
+    fn get_working_tree_with_commits_diff(
+        &self,
+        commit_ids: &[String],
+        highlighter: &SyntaxHighlighter,
+    ) -> Result<Vec<DiffFile>> {
+        diff::get_working_tree_with_commits_diff(&self.repo, commit_ids, highlighter)
+    }
+
+    fn stage_file(&self, path: &Path) -> Result<()> {
+        staging::stage_file(&self.repo, path)
+    }
+}
