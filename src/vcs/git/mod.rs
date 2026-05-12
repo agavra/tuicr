@@ -41,10 +41,12 @@ pub struct GitCapabilities {
 
 impl GitCapabilities {
     fn detect(root_path: &Path) -> Self {
-        let sparse_index = git_config_bool(root_path, "index.sparse");
-        let sparse_checkout = git_config_bool(root_path, "core.sparseCheckout")
-            || run_git_command(root_path, &["sparse-checkout", "list"]).is_ok();
+        let (sparse_checkout, sparse_index) = git_sparse_config(root_path);
 
+        Self::from_config(sparse_checkout, sparse_index)
+    }
+
+    fn from_config(sparse_checkout: bool, sparse_index: bool) -> Self {
         let mode = if sparse_index {
             GitRepoMode::SparseIndex
         } else if sparse_checkout {
@@ -106,10 +108,42 @@ impl GitBackend {
     }
 }
 
-fn git_config_bool(workdir: &Path, key: &str) -> bool {
-    run_git_command(workdir, &["config", "--bool", "--get", key])
-        .ok()
-        .is_some_and(|value| matches!(value.trim(), "true" | "1" | "yes" | "on"))
+fn git_sparse_config(workdir: &Path) -> (bool, bool) {
+    let output = run_git_command(
+        workdir,
+        &[
+            "config",
+            "--bool",
+            "--get-regexp",
+            r"^(core\.sparsecheckout|index\.sparse)$",
+        ],
+    )
+    .unwrap_or_default();
+
+    parse_sparse_config(&output)
+}
+
+fn parse_sparse_config(output: &str) -> (bool, bool) {
+    let mut sparse_checkout = false;
+    let mut sparse_index = false;
+
+    for line in output.lines() {
+        let mut parts = line.split_whitespace();
+        let Some(key) = parts.next() else {
+            continue;
+        };
+        let enabled = parts
+            .next()
+            .is_some_and(|value| matches!(value, "true" | "1" | "yes" | "on"));
+
+        match key {
+            "core.sparsecheckout" => sparse_checkout = enabled,
+            "index.sparse" => sparse_index = enabled,
+            _ => {}
+        }
+    }
+
+    (sparse_checkout, sparse_index)
 }
 
 fn run_git_command(workdir: &Path, args: &[&str]) -> Result<String> {
@@ -247,6 +281,29 @@ mod tests {
 
         assert_eq!(capabilities.mode, GitRepoMode::Standard);
         assert!(!capabilities.requires_git_cli());
+    }
+
+    #[test]
+    fn derives_git_repo_mode_from_sparse_config() {
+        assert_eq!(
+            GitCapabilities::from_config(false, false).mode,
+            GitRepoMode::Standard
+        );
+        assert_eq!(
+            GitCapabilities::from_config(true, false).mode,
+            GitRepoMode::SparseCheckout
+        );
+        assert_eq!(
+            GitCapabilities::from_config(true, true).mode,
+            GitRepoMode::SparseIndex
+        );
+    }
+
+    #[test]
+    fn parses_sparse_config_from_single_git_config_read() {
+        let output = "core.sparsecheckout true\nindex.sparse true\n";
+
+        assert_eq!(parse_sparse_config(output), (true, true));
     }
 
     #[test]

@@ -1,14 +1,15 @@
 use git2::{Delta, Diff, DiffOptions, Repository};
+use std::collections::HashMap;
 use std::fs;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use crate::error::{Result, TuicrError};
-use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin};
+use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin, LineSide};
 use crate::syntax::{SyntaxHighlighter, needs_full_file_highlight};
 use crate::vcs::diff_parser::{self, DiffFormat};
-use crate::vcs::{enhance_with_full_file_highlight, tabify};
+use crate::vcs::{container_file_paths, enhance_with_full_file_highlight, tabify};
 
 use super::GitCapabilities;
 
@@ -296,11 +297,14 @@ fn get_cli_diff(
         return Err(TuicrError::NoChanges);
     }
 
+    let old_cache = git_source_content_cache(repo, old_source, &files, LineSide::Old);
+    let new_cache = git_source_content_cache(repo, new_source, &files, LineSide::New);
+
     enhance_with_full_file_highlight(
         &mut files,
         highlighter,
-        |path| read_path_from_git_source(repo, old_source, path),
-        |path| read_path_from_git_source(repo, new_source, path),
+        |path| read_path_from_git_source_cached(repo, old_source, old_cache.as_ref(), path),
+        |path| read_path_from_git_source_cached(repo, new_source, new_cache.as_ref(), path),
     );
     Ok(files)
 }
@@ -523,6 +527,124 @@ fn read_path_from_git_source(
     }
 }
 
+fn read_path_from_git_source_cached(
+    repo: &Repository,
+    source: GitContentSource<'_>,
+    cache: Option<&HashMap<PathBuf, String>>,
+    path: &Path,
+) -> Option<String> {
+    cache
+        .and_then(|contents| contents.get(path).cloned())
+        .or_else(|| read_path_from_git_source(repo, source, path))
+}
+
+fn git_source_content_cache(
+    repo: &Repository,
+    source: GitContentSource<'_>,
+    files: &[DiffFile],
+    side: LineSide,
+) -> Option<HashMap<PathBuf, String>> {
+    let paths = container_file_paths(files, side);
+    match source {
+        GitContentSource::Revision(rev) => {
+            let requests = paths
+                .into_iter()
+                .map(|path| {
+                    let spec = format!("{rev}:{}", path.to_string_lossy());
+                    (path, spec)
+                })
+                .collect();
+            read_git_objects(repo, requests).ok()
+        }
+        GitContentSource::Index => {
+            let requests = paths
+                .into_iter()
+                .map(|path| {
+                    let spec = format!(":0:{}", path.to_string_lossy());
+                    (path, spec)
+                })
+                .collect();
+            read_git_objects(repo, requests).ok()
+        }
+        GitContentSource::None | GitContentSource::Workdir => None,
+    }
+}
+
+fn read_git_objects(
+    repo: &Repository,
+    requests: Vec<(PathBuf, String)>,
+) -> Result<HashMap<PathBuf, String>> {
+    if requests.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let workdir = repo.workdir().ok_or(TuicrError::NotARepository)?;
+    let mut child = Command::new("git")
+        .current_dir(workdir)
+        .args(["cat-file", "--batch"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| TuicrError::VcsCommand(format!("Failed to run git: {}", e)))?;
+
+    {
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| TuicrError::VcsCommand("git cat-file stdin unavailable".into()))?;
+        for (_, spec) in &requests {
+            writeln!(stdin, "{spec}")?;
+        }
+    }
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| TuicrError::VcsCommand("git cat-file stdout unavailable".into()))?;
+    let mut reader = BufReader::new(stdout);
+    let mut contents = HashMap::new();
+
+    for (path, _) in requests {
+        let mut header = String::new();
+        if reader.read_line(&mut header)? == 0 {
+            break;
+        }
+
+        let header = header.trim_end();
+        if header.ends_with(" missing") {
+            continue;
+        }
+
+        let mut parts = header.split_whitespace();
+        let _oid = parts.next();
+        let kind = parts.next();
+        let size = parts
+            .next()
+            .and_then(|value| value.parse::<usize>().ok())
+            .ok_or_else(|| TuicrError::VcsCommand("invalid git cat-file header".into()))?;
+
+        let mut bytes = vec![0; size];
+        reader.read_exact(&mut bytes)?;
+        let mut trailing_newline = [0; 1];
+        reader.read_exact(&mut trailing_newline)?;
+
+        if kind == Some("blob") {
+            contents.insert(path, String::from_utf8_lossy(&bytes).into_owned());
+        }
+    }
+
+    let status = child.wait()?;
+    if !status.success() {
+        return Err(TuicrError::VcsCommand(format!(
+            "git cat-file failed with status {}",
+            status
+        )));
+    }
+
+    Ok(contents)
+}
+
 fn read_git_object(repo: &Repository, spec: &str) -> Option<String> {
     let output = run_git_command(repo, &["show", spec], false).ok()?;
     Some(output)
@@ -691,6 +813,7 @@ mod tests {
     use std::fs;
     use std::path::Path;
     use std::process::Command;
+    use std::time::Instant;
 
     fn create_initial_commit(repo: &Repository, file_name: &str, content: &str) {
         fs::write(repo.workdir().unwrap().join(file_name), content)
@@ -1200,6 +1323,95 @@ mod tests {
                 .iter()
                 .flat_map(|hunk| &hunk.lines)
                 .any(|line| line.content == "keep worktree")
+        );
+    }
+
+    #[test]
+    fn should_batch_read_revision_and_index_blobs() {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let repo = Repository::init(temp_dir.path()).expect("failed to init repo");
+
+        create_initial_commit(&repo, "file.txt", "old\n");
+        fs::write(temp_dir.path().join("file.txt"), "new\n").expect("failed to update file");
+        git(&repo, &["add", "file.txt"]);
+
+        let contents = read_git_objects(
+            &repo,
+            vec![
+                (PathBuf::from("old.txt"), "HEAD:file.txt".to_string()),
+                (PathBuf::from("index.txt"), ":0:file.txt".to_string()),
+            ],
+        )
+        .expect("failed to batch read git objects");
+
+        assert_eq!(contents.get(Path::new("old.txt")).unwrap(), "old\n");
+        assert_eq!(contents.get(Path::new("index.txt")).unwrap(), "new\n");
+    }
+
+    #[test]
+    #[ignore = "benchmark for sparse checkout real-path performance"]
+    fn bench_sparse_checkout_real_path_many_vue_files() {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let repo = Repository::init(temp_dir.path()).expect("failed to init repo");
+
+        git(&repo, &["config", "user.email", "test@example.com"]);
+        git(&repo, &["config", "user.name", "Test User"]);
+
+        for idx in 0..150 {
+            let path = temp_dir.path().join(format!("keep/app-{idx}.vue"));
+            fs::create_dir_all(path.parent().unwrap()).expect("failed to create keep dir");
+            fs::write(
+                path,
+                format!(
+                    "<template>\n  <div>{{{{ msg{idx} }}}}</div>\n</template>\n\n<script setup>\nconst msg{idx} = 'old'\n</script>\n"
+                ),
+            )
+            .expect("failed to write vue file");
+        }
+        for idx in 0..12_000 {
+            let path = temp_dir
+                .path()
+                .join(format!("hidden/dir{}/file-{idx}.txt", idx / 100));
+            fs::create_dir_all(path.parent().unwrap()).expect("failed to create hidden dir");
+            fs::write(path, format!("hidden {idx}\n")).expect("failed to write hidden file");
+        }
+
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "--quiet", "-m", "initial"]);
+        git(&repo, &["sparse-checkout", "init", "--cone"]);
+        git(&repo, &["sparse-checkout", "set", "keep"]);
+        git(&repo, &["sparse-checkout", "reapply", "--sparse-index"]);
+
+        for idx in 0..150 {
+            fs::write(
+                temp_dir.path().join(format!("keep/app-{idx}.vue")),
+                format!(
+                    "<template>\n  <div>{{{{ msg{idx} }}}}</div>\n</template>\n\n<script setup>\nconst msg{idx} = 'new'\n</script>\n"
+                ),
+            )
+            .expect("failed to update vue file");
+        }
+
+        let highlighter = SyntaxHighlighter::default();
+        let capabilities = sparse_index_capabilities();
+        let warmup = get_working_tree_diff(&repo, capabilities, &highlighter)
+            .expect("failed to warm up sparse diff");
+        assert_eq!(warmup.len(), 150);
+
+        let iterations = 5;
+        let started = Instant::now();
+        let mut files_seen = 0;
+        for _ in 0..iterations {
+            let files = get_working_tree_diff(&repo, capabilities, &highlighter)
+                .expect("failed to get sparse diff");
+            files_seen += files.len();
+        }
+        let elapsed = started.elapsed();
+        println!(
+            "bench_sparse_checkout_real_path_many_vue_files iterations={iterations} files_per_iteration={} total_ms={:.2} mean_ms={:.2}",
+            files_seen / iterations,
+            elapsed.as_secs_f64() * 1000.0,
+            elapsed.as_secs_f64() * 1000.0 / iterations as f64,
         );
     }
 }
