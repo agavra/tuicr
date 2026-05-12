@@ -82,16 +82,20 @@ impl GitBackend {
             .ok_or(TuicrError::NotARepository)?
             .to_path_buf();
 
-        let head_commit = run_git_command(&root_path, &["rev-parse", "--verify", "HEAD"])
+        let head_commit = repo
+            .head()
             .ok()
-            .map(|value| value.trim().to_string())
+            .and_then(|h| h.peel_to_commit().ok())
+            .map(|c| c.id().to_string())
             .unwrap_or_else(|| "HEAD".to_string());
 
-        let branch_name =
-            run_git_command(&root_path, &["symbolic-ref", "--quiet", "--short", "HEAD"])
-                .ok()
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty());
+        let branch_name = repo.head().ok().and_then(|h| {
+            if h.is_branch() {
+                h.shorthand().map(|s| s.to_string())
+            } else {
+                None
+            }
+        });
         let capabilities = GitCapabilities::detect(&root_path);
 
         let info = VcsInfo {
@@ -312,6 +316,11 @@ impl VcsBackend for GitBackend {
     }
 
     fn get_change_status(&self) -> Result<VcsChangeStatus> {
+        if !self.capabilities.requires_git_cli() {
+            return Err(TuicrError::UnsupportedOperation(
+                "Git change status probe only used for sparse checkouts".into(),
+            ));
+        }
         get_change_status(&self.repo, self.capabilities)
     }
 

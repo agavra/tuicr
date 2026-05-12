@@ -13,7 +13,7 @@ use super::GitCapabilities;
 /// For Deleted files: reads from HEAD blob
 pub fn fetch_context_lines(
     repo: &Repository,
-    _capabilities: GitCapabilities,
+    capabilities: GitCapabilities,
     file_path: &Path,
     file_status: FileStatus,
     start_line: u32,
@@ -26,7 +26,7 @@ pub fn fetch_context_lines(
     let content = match file_status {
         FileStatus::Deleted => {
             // Read from HEAD blob for deleted files
-            fetch_blob_content(repo, file_path)?
+            fetch_blob_content(repo, capabilities, file_path)?
         }
         _ => {
             // Read from working tree for all other statuses
@@ -56,7 +56,24 @@ pub fn fetch_context_lines(
 }
 
 /// Fetch content from a git blob (for deleted files)
-fn fetch_blob_content(repo: &Repository, file_path: &Path) -> Result<String> {
+fn fetch_blob_content(
+    repo: &Repository,
+    capabilities: GitCapabilities,
+    file_path: &Path,
+) -> Result<String> {
+    if capabilities.requires_git_cli() {
+        return fetch_blob_content_cli(repo, file_path);
+    }
+
+    let head = repo.head()?.peel_to_tree()?;
+    let entry = head.get_path(file_path)?;
+    let blob = repo.find_blob(entry.id())?;
+    let content = std::str::from_utf8(blob.content())
+        .map_err(|e| TuicrError::CorruptedSession(format!("Invalid UTF-8 in file: {e}")))?;
+    Ok(content.to_string())
+}
+
+fn fetch_blob_content_cli(repo: &Repository, file_path: &Path) -> Result<String> {
     let workdir = repo.workdir().ok_or(TuicrError::NotARepository)?;
     let spec = format!("HEAD:{}", file_path.to_string_lossy());
     let output = Command::new("git")
