@@ -49,10 +49,22 @@ pub struct CommitInfo {
     pub time: DateTime<Utc>,
 }
 
+/// Cheap repository change summary used by selection UIs before loading full diffs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct VcsChangeStatus {
+    pub staged: bool,
+    pub unstaged: bool,
+}
+
 /// Trait for VCS backend implementations
 pub trait VcsBackend: Send {
     /// Get repository information
     fn info(&self) -> &VcsInfo;
+
+    /// Non-fatal notices that should be shown after startup.
+    fn startup_warnings(&self) -> Vec<String> {
+        Vec::new()
+    }
 
     /// Get the working tree diff (staged + unstaged changes)
     fn get_working_tree_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>>;
@@ -68,6 +80,13 @@ pub trait VcsBackend: Send {
     fn get_unstaged_diff(&self, _highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
         Err(crate::error::TuicrError::UnsupportedOperation(
             "Unstaged diff not supported for this VCS".into(),
+        ))
+    }
+
+    /// Get a cheap staged/unstaged summary without parsing or highlighting diffs.
+    fn get_change_status(&self) -> Result<VcsChangeStatus> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Change status not supported for this VCS".into(),
         ))
     }
 

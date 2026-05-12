@@ -16,7 +16,7 @@ use crate::syntax::SyntaxHighlighter;
 use crate::theme::Theme;
 use crate::update::UpdateInfo;
 use crate::vcs::git::calculate_gap;
-use crate::vcs::{CommitInfo, FileBackend, VcsBackend, VcsInfo, detect_vcs};
+use crate::vcs::{CommitInfo, FileBackend, VcsBackend, VcsChangeStatus, VcsInfo, detect_vcs};
 
 const VISIBLE_COMMIT_COUNT: usize = 10;
 const COMMIT_PAGE_SIZE: usize = 10;
@@ -690,25 +690,17 @@ impl App {
                 .rev()
                 .collect();
                 // Prepend staged/unstaged entries only when the backend supports them
-                let has_staged = Self::get_staged_diff_with_ignore(
+                let (change_status, _) = Self::get_change_status_with_ignore(
                     vcs.as_ref(),
                     &vcs_info.root_path,
                     highlighter,
                     path_filter,
-                )
-                .is_ok();
-                let has_unstaged = Self::get_unstaged_diff_with_ignore(
-                    vcs.as_ref(),
-                    &vcs_info.root_path,
-                    highlighter,
-                    path_filter,
-                )
-                .is_ok();
+                )?;
                 let mut all_commits = Vec::new();
-                if has_staged {
+                if change_status.staged {
                     all_commits.push(Self::staged_commit_entry());
                 }
-                if has_unstaged {
+                if change_status.unstaged {
                     all_commits.push(Self::unstaged_commit_entry());
                 }
                 all_commits.extend(review_commits);
@@ -827,44 +819,30 @@ impl App {
 
             Ok(app)
         } else {
-            let has_staged_changes = match Self::get_staged_diff_with_ignore(
+            let (change_status, used_backend_status_probe) = Self::get_change_status_with_ignore(
                 vcs.as_ref(),
                 &vcs_info.root_path,
                 highlighter,
                 path_filter,
-            ) {
-                Ok(_) => true,
-                Err(TuicrError::NoChanges) => false,
-                Err(TuicrError::UnsupportedOperation(_)) => false,
-                Err(e) => return Err(e),
-            };
+            )?;
+            let has_staged_changes = change_status.staged;
+            let has_unstaged_changes = change_status.unstaged;
 
-            let has_unstaged_changes = match Self::get_unstaged_diff_with_ignore(
-                vcs.as_ref(),
-                &vcs_info.root_path,
-                highlighter,
-                path_filter,
-            ) {
-                Ok(_) => true,
-                Err(TuicrError::NoChanges) => false,
-                Err(TuicrError::UnsupportedOperation(_)) => false,
-                Err(e) => return Err(e),
-            };
-
-            let working_tree_diff = if has_staged_changes || has_unstaged_changes {
-                match Self::get_working_tree_diff_with_ignore(
-                    vcs.as_ref(),
-                    &vcs_info.root_path,
-                    highlighter,
-                    path_filter,
-                ) {
-                    Ok(diff_files) => Some(diff_files),
-                    Err(TuicrError::NoChanges) => None,
-                    Err(e) => return Err(e),
-                }
-            } else {
-                None
-            };
+            let working_tree_diff =
+                if (has_staged_changes || has_unstaged_changes) && !used_backend_status_probe {
+                    match Self::get_working_tree_diff_with_ignore(
+                        vcs.as_ref(),
+                        &vcs_info.root_path,
+                        highlighter,
+                        path_filter,
+                    ) {
+                        Ok(diff_files) => Some(diff_files),
+                        Err(TuicrError::NoChanges) => None,
+                        Err(e) => return Err(e),
+                    }
+                } else {
+                    None
+                };
 
             let commits = crate::profile::time_with(
                 "startup.recent_commits",
@@ -1524,6 +1502,36 @@ impl App {
             diff_files
         };
         Self::require_non_empty_diff_files(diff_files)
+    }
+
+    fn get_change_status_with_ignore(
+        vcs: &dyn VcsBackend,
+        repo_root: &Path,
+        highlighter: &SyntaxHighlighter,
+        path_filter: Option<&str>,
+    ) -> Result<(VcsChangeStatus, bool)> {
+        if path_filter.is_none() {
+            match vcs.get_change_status() {
+                Ok(status) => return Ok((status, true)),
+                Err(TuicrError::UnsupportedOperation(_)) => {}
+                Err(e) => return Err(e),
+            }
+        }
+
+        let staged =
+            match Self::get_staged_diff_with_ignore(vcs, repo_root, highlighter, path_filter) {
+                Ok(_) => true,
+                Err(TuicrError::NoChanges) | Err(TuicrError::UnsupportedOperation(_)) => false,
+                Err(e) => return Err(e),
+            };
+        let unstaged =
+            match Self::get_unstaged_diff_with_ignore(vcs, repo_root, highlighter, path_filter) {
+                Ok(_) => true,
+                Err(TuicrError::NoChanges) | Err(TuicrError::UnsupportedOperation(_)) => false,
+                Err(e) => return Err(e),
+            };
+
+        Ok((VcsChangeStatus { staged, unstaged }, false))
     }
 
     fn load_staged_and_unstaged_selection(&mut self) -> Result<()> {
@@ -3563,29 +3571,14 @@ impl App {
         }
 
         let highlighter = self.theme.syntax_highlighter();
-        let has_staged_changes = match Self::get_staged_diff_with_ignore(
+        let (change_status, _) = Self::get_change_status_with_ignore(
             self.vcs.as_ref(),
             &self.vcs_info.root_path,
             highlighter,
             self.path_filter.as_deref(),
-        ) {
-            Ok(_) => true,
-            Err(TuicrError::NoChanges) => false,
-            Err(TuicrError::UnsupportedOperation(_)) => false,
-            Err(e) => return Err(e),
-        };
-
-        let has_unstaged_changes = match Self::get_unstaged_diff_with_ignore(
-            self.vcs.as_ref(),
-            &self.vcs_info.root_path,
-            highlighter,
-            self.path_filter.as_deref(),
-        ) {
-            Ok(_) => true,
-            Err(TuicrError::NoChanges) => false,
-            Err(TuicrError::UnsupportedOperation(_)) => false,
-            Err(e) => return Err(e),
-        };
+        )?;
+        let has_staged_changes = change_status.staged;
+        let has_unstaged_changes = change_status.unstaged;
 
         let commits = self.vcs.get_recent_commits(0, VISIBLE_COMMIT_COUNT)?;
         if commits.is_empty() && !has_staged_changes && !has_unstaged_changes {

@@ -22,7 +22,7 @@ pub use file::FileBackend;
 pub use git::GitBackend;
 pub use hg::HgBackend;
 pub use jj::JjBackend;
-pub use traits::{CommitInfo, VcsBackend, VcsInfo};
+pub use traits::{CommitInfo, VcsBackend, VcsChangeStatus, VcsInfo};
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
