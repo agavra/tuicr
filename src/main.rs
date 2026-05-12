@@ -1,23 +1,3 @@
-mod app;
-mod config;
-mod error;
-mod forge;
-mod handler;
-mod hash;
-mod input;
-mod model;
-mod output;
-mod persistence;
-mod process;
-mod profile;
-mod syntax;
-mod text_edit;
-mod theme;
-mod tuicrignore;
-mod ui;
-mod update;
-mod vcs;
-
 use std::fs::File;
 use std::io::{self, Write};
 use std::sync::mpsc;
@@ -36,17 +16,18 @@ use crossterm::{
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
 
-use app::{App, AppStartupOptions, FocusedPanel, InputMode};
-use handler::{
+use tuicr::app::{App, AppStartupOptions, FocusedPanel, InputMode};
+use tuicr::handler::{
     handle_command_action, handle_comment_action, handle_commit_select_action,
     handle_commit_selector_action, handle_confirm_action, handle_diff_action,
     handle_file_list_action, handle_help_action, handle_mouse_event, handle_search_action,
     handle_submit_action_picker_action, handle_submit_confirm_action,
     handle_submit_resolver_action, handle_visual_action,
 };
-use input::{Action, map_key_to_action, map_target_filter_mode};
-use theme::{parse_cli_args, resolve_theme_with_config};
-use vcs::GitBackendPreference;
+use tuicr::input::{Action, map_key_to_action, map_target_filter_mode};
+use tuicr::theme::{parse_cli_args, resolve_theme_with_config};
+use tuicr::vcs::GitBackendPreference;
+use tuicr::{config, persistence, profile, ui, update};
 
 /// Timeout for the "press Ctrl+C again to exit" feature
 const CTRL_C_EXIT_TIMEOUT: Duration = Duration::from_secs(2);
@@ -54,6 +35,11 @@ const CTRL_C_EXIT_TIMEOUT: Duration = Duration::from_secs(2);
 const MIN_WIDTH_FOR_FILE_LIST: u16 = 100;
 
 fn main() -> anyhow::Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).is_some_and(|arg| arg == "mcp") {
+        return tuicr::mcp::run_stdio_blocking();
+    }
+
     profile::init_from_env();
 
     // Setup panic hook to restore terminal on panic
@@ -240,7 +226,7 @@ fn main() -> anyhow::Result<()> {
             app.focused_panel = FocusedPanel::Diff;
         }
         if cfg.diff_view.as_deref() == Some("side-by-side") {
-            app.diff_view_mode = app::DiffViewMode::SideBySide;
+            app.diff_view_mode = tuicr::app::DiffViewMode::SideBySide;
         }
         if cfg.wrap == Some(true) {
             app.set_diff_wrap(true);
@@ -377,7 +363,7 @@ fn main() -> anyhow::Result<()> {
                                 let _ = persistence::save_session(&app.session);
                                 app.dirty = false;
                                 if app.session.has_comments() {
-                                    handler::handle_export_and_quit(&mut app);
+                                    tuicr::handler::handle_export_and_quit(&mut app);
                                 } else {
                                     app.should_quit = true;
                                 }
@@ -421,21 +407,21 @@ fn main() -> anyhow::Result<()> {
                                 continue;
                             }
                             crossterm::event::KeyCode::Char('h') => {
-                                app.focused_panel = app::FocusedPanel::FileList;
+                                app.focused_panel = tuicr::app::FocusedPanel::FileList;
                                 continue;
                             }
                             crossterm::event::KeyCode::Char('l') => {
-                                app.focused_panel = app::FocusedPanel::Diff;
+                                app.focused_panel = tuicr::app::FocusedPanel::Diff;
                                 continue;
                             }
                             crossterm::event::KeyCode::Char('k') => {
                                 if app.has_inline_commit_selector() {
-                                    app.focused_panel = app::FocusedPanel::CommitSelector;
+                                    app.focused_panel = tuicr::app::FocusedPanel::CommitSelector;
                                 }
                                 continue;
                             }
                             crossterm::event::KeyCode::Char('j') => {
-                                app.focused_panel = app::FocusedPanel::Diff;
+                                app.focused_panel = tuicr::app::FocusedPanel::Diff;
                                 continue;
                             }
                             crossterm::event::KeyCode::Char('c') => {

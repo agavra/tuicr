@@ -13,6 +13,8 @@ tuicr is a Rust terminal UI application for code reviews. Here's the module stru
 ```
 src/
 ├── main.rs              # Entry point, event loop, action dispatch
+├── lib.rs               # Library module exports used by the TUI and MCP server
+├── mcp.rs               # Headless stdio MCP server for agentic code review
 ├── config/
 │   └── mod.rs           # User config loading (XDG on Unix, %APPDATA% on Windows)
 ├── app.rs               # Application state (App struct, InputMode, etc.)
@@ -86,6 +88,7 @@ src/
 
 Repository-managed agent integrations:
 - `skills/tuicr/` - Shared agent skill bundle for coding agents, for example Claude Code, Codex, and similar tools; launches tuicr in a tmux split pane
+- `tuicr mcp` - Headless stdio MCP server exposing model-readable review tools without an MCP App UI
 
 ### Key Types
 

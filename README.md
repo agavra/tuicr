@@ -127,6 +127,19 @@ tuicr --stdout > review.md
 tuicr --stdout | pbcopy
 ```
 
+## MCP server
+
+tuicr also exposes a lightweight MCP server for agentic code review. It uses
+stdio transport and the same diff loading, comment model, reviewed state, and
+Markdown export format as the TUI.
+
+```bash
+tuicr mcp
+```
+
+Available MCP tools include `open_review`, `get_review`, `get_file_diff`,
+`add_comment`, `set_file_reviewed`, `clear_review`, and `export_review`.
+
 ## Configuration
 
 Path: `~/.config/tuicr/config.toml` on Linux/macOS, `%APPDATA%\tuicr\config.toml` on Windows.
