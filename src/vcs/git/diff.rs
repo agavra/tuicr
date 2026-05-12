@@ -25,6 +25,7 @@ pub fn get_working_tree_diff(
     if capabilities.requires_git_cli() {
         return get_cli_diff(
             repo,
+            capabilities,
             &["diff", "--no-ext-diff", "--binary", "HEAD", "--"],
             true,
             GitContentSource::Revision("HEAD"),
@@ -66,6 +67,7 @@ pub fn get_staged_diff(
         };
         return get_cli_diff(
             repo,
+            capabilities,
             &["diff", "--no-ext-diff", "--binary", "--cached", "--"],
             false,
             old_source,
@@ -99,6 +101,7 @@ pub fn get_unstaged_diff(
     if capabilities.requires_git_cli() {
         return get_cli_diff(
             repo,
+            capabilities,
             &["diff", "--no-ext-diff", "--binary", "--"],
             true,
             GitContentSource::Index,
@@ -142,6 +145,7 @@ pub fn get_commit_range_diff(
         let newest_rev = commit_ids.last().unwrap();
         return get_cli_diff(
             repo,
+            capabilities,
             &[
                 "diff",
                 "--no-ext-diff",
@@ -202,6 +206,7 @@ pub fn get_working_tree_with_commits_diff(
         let base_rev = parent_rev_or_empty(repo, &commit_ids[0]);
         return get_cli_diff(
             repo,
+            capabilities,
             &["diff", "--no-ext-diff", "--binary", &base_rev, "--"],
             true,
             GitContentSource::Revision(&base_rev),
@@ -277,6 +282,7 @@ fn parent_rev_or_empty(repo: &Repository, commit_id: &str) -> String {
 
 fn get_cli_diff(
     repo: &Repository,
+    capabilities: GitCapabilities,
     args: &[&str],
     include_untracked: bool,
     old_source: GitContentSource<'_>,
@@ -296,7 +302,7 @@ fn get_cli_diff(
     if include_untracked {
         crate::profile::time_with(
             "vcs: git cli untracked diff",
-            || append_untracked_cli_diffs(repo, &mut files, highlighter),
+            || append_untracked_cli_diffs(repo, capabilities, &mut files, highlighter),
             |result| match result {
                 Ok(count) => format!("files={count}"),
                 Err(e) => format!("error={e}"),
@@ -386,6 +392,7 @@ fn run_git_diff_command(
 
 fn append_untracked_cli_diffs(
     repo: &Repository,
+    capabilities: GitCapabilities,
     files: &mut Vec<DiffFile>,
     highlighter: &SyntaxHighlighter,
 ) -> Result<usize> {
@@ -393,8 +400,16 @@ fn append_untracked_cli_diffs(
         return Ok(0);
     };
 
+    let pathspecs = crate::profile::time_with(
+        "vcs: git cli untracked pathspecs",
+        || sparse_checkout_untracked_pathspecs(repo, capabilities),
+        |result| match result {
+            Ok(pathspecs) => format!("pathspecs={}", pathspecs.len()),
+            Err(e) => format!("error={e}"),
+        },
+    )?;
     let previous_len = files.len();
-    for_each_untracked_path(repo, |path| {
+    for_each_untracked_path(repo, &pathspecs, |path| {
         let full_path = workdir.join(&path);
         let Some(file) = build_untracked_diff_file(&path, &full_path, highlighter) else {
             return Ok(());
@@ -403,6 +418,53 @@ fn append_untracked_cli_diffs(
         Ok(())
     })?;
     Ok(files.len().saturating_sub(previous_len))
+}
+
+fn sparse_checkout_untracked_pathspecs(
+    repo: &Repository,
+    capabilities: GitCapabilities,
+) -> Result<Vec<String>> {
+    if !capabilities.is_sparse_checkout() {
+        return Ok(Vec::new());
+    }
+
+    let workdir = repo.workdir().ok_or(TuicrError::NotARepository)?;
+    let output = Command::new("git")
+        .current_dir(workdir)
+        .args(["sparse-checkout", "list"])
+        .output()
+        .map_err(|e| TuicrError::VcsCommand(format!("Failed to run git: {}", e)))?;
+
+    if !output.status.success() {
+        return Ok(Vec::new());
+    }
+
+    let mut pathspecs = Vec::new();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let pattern = line.trim();
+        if pattern.is_empty() {
+            continue;
+        }
+
+        if !is_simple_sparse_path(pattern) {
+            return Ok(Vec::new());
+        }
+
+        let pathspec = pattern.trim_start_matches('/').trim_end_matches('/');
+        if !pathspec.is_empty() {
+            pathspecs.push(pathspec.to_string());
+        }
+    }
+
+    Ok(pathspecs)
+}
+
+fn is_simple_sparse_path(pattern: &str) -> bool {
+    !pattern.starts_with('!')
+        && !pattern.contains('*')
+        && !pattern.contains('?')
+        && !pattern.contains('[')
+        && !pattern.contains('\\')
 }
 
 fn build_untracked_diff_file(
@@ -485,14 +547,20 @@ fn diff_file_without_hunks(path: &Path, is_binary: bool, is_too_large: bool) -> 
     }
 }
 
-fn for_each_untracked_path<F>(repo: &Repository, mut visit: F) -> Result<()>
+fn for_each_untracked_path<F>(repo: &Repository, pathspecs: &[String], mut visit: F) -> Result<()>
 where
     F: FnMut(PathBuf) -> Result<()>,
 {
     let workdir = repo.workdir().ok_or(TuicrError::NotARepository)?;
+    let mut args = vec!["ls-files", "--others", "--exclude-standard", "-z"];
+    if !pathspecs.is_empty() {
+        args.push("--");
+        args.extend(pathspecs.iter().map(String::as_str));
+    }
+
     let mut child = Command::new("git")
         .current_dir(workdir)
-        .args(["ls-files", "--others", "--exclude-standard", "-z"])
+        .args(args)
         .stdout(Stdio::piped())
         .spawn()
         .map_err(|e| TuicrError::VcsCommand(format!("Failed to run git: {}", e)))?;
@@ -1129,6 +1197,9 @@ mod tests {
 
         fs::write(temp_dir.path().join("keep/new.txt"), "new sparse file\n")
             .expect("failed to write untracked file");
+        fs::create_dir_all(temp_dir.path().join("hidden")).expect("failed to create hidden dir");
+        fs::write(temp_dir.path().join("hidden/outside.txt"), "outside cone\n")
+            .expect("failed to write outside-cone untracked file");
 
         let files = get_working_tree_diff(
             &repo,
