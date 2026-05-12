@@ -24,24 +24,44 @@ pub fn parse_unified_diff(
     format: DiffFormat,
     highlighter: &SyntaxHighlighter,
 ) -> Result<Vec<DiffFile>> {
+    parse_unified_diff_lines(
+        diff_text.lines().map(|line| Ok(line.to_string())),
+        format,
+        highlighter,
+    )
+}
+
+/// Parse unified diff lines into DiffFile structures.
+///
+/// This entry point is used by Git's sparse-checkout fallback so large diffs
+/// can be parsed directly from command stdout instead of first buffering the
+/// whole patch into one String.
+pub fn parse_unified_diff_lines<I>(
+    diff_lines: I,
+    format: DiffFormat,
+    highlighter: &SyntaxHighlighter,
+) -> Result<Vec<DiffFile>>
+where
+    I: Iterator<Item = Result<String>>,
+{
     let mut files: Vec<DiffFile> = Vec::new();
-    let mut lines = diff_text.lines().peekable();
+    let mut lines = diff_lines.peekable();
 
     let header_prefix = match format {
         DiffFormat::Hg => "diff ",
         DiffFormat::GitStyle => "diff --git ",
     };
 
-    while let Some(line) = lines.next() {
+    while let Some(line) = next_line(&mut lines)? {
         if line.starts_with(header_prefix) {
-            let (mut old_path, mut new_path, status) = parse_file_header(&mut lines, format);
+            let (mut old_path, mut new_path, status) = parse_file_header(&mut lines, format)?;
 
             // For git-style diffs (jj, git patches), if parse_file_header didn't find
             // ---/+++ or rename/copy lines (e.g. empty new files, mode-only changes),
             // fall back to parsing paths from the "diff --git a/X b/X" header.
             if old_path.is_none()
                 && new_path.is_none()
-                && let Some((a, b)) = parse_diff_git_header(line)
+                && let Some((a, b)) = parse_diff_git_header(&line)
             {
                 match status {
                     FileStatus::Deleted => old_path = Some(a),
@@ -54,8 +74,8 @@ pub fn parse_unified_diff(
             }
 
             // Check if binary - hg uses "Binary file", jj/git use just "Binary"
-            if lines.peek().is_some_and(|l| l.contains("Binary")) {
-                lines.next(); // consume binary message
+            if peek_line(&mut lines)?.is_some_and(|l| l.contains("Binary")) {
+                next_line(&mut lines)?; // consume binary message
                 files.push(DiffFile {
                     old_path,
                     new_path,
@@ -73,17 +93,15 @@ pub fn parse_unified_diff(
             let mut hunks = Vec::new();
 
             // Parse hunks until next file or end
-            while lines.peek().is_some() {
-                if let Some(peek_line) = lines.peek() {
-                    if peek_line.starts_with("diff ") {
-                        break;
-                    } else if peek_line.starts_with("@@") {
-                        if let Some(hunk) = parse_hunk(&mut lines, file_path, highlighter) {
-                            hunks.push(hunk);
-                        }
-                    } else {
-                        lines.next(); // skip non-hunk, non-diff lines
+            while let Some(line) = peek_line(&mut lines)? {
+                if line.starts_with("diff ") {
+                    break;
+                } else if line.starts_with("@@") {
+                    if let Some(hunk) = parse_hunk(&mut lines, file_path, highlighter)? {
+                        hunks.push(hunk);
                     }
+                } else {
+                    next_line(&mut lines)?; // skip non-hunk, non-diff lines
                 }
             }
 
@@ -108,19 +126,42 @@ pub fn parse_unified_diff(
     Ok(files)
 }
 
-fn parse_file_header<'a, I>(
+fn next_line<I>(lines: &mut std::iter::Peekable<I>) -> Result<Option<String>>
+where
+    I: Iterator<Item = Result<String>>,
+{
+    lines.next().transpose()
+}
+
+fn peek_line<I>(lines: &mut std::iter::Peekable<I>) -> Result<Option<&str>>
+where
+    I: Iterator<Item = Result<String>>,
+{
+    let has_error = matches!(lines.peek(), Some(Err(_)));
+    if has_error && let Some(Err(err)) = lines.next() {
+        return Err(err);
+    }
+
+    Ok(lines.peek().map(|line| {
+        line.as_ref()
+            .expect("peeked line errors are consumed before borrowing")
+            .as_str()
+    }))
+}
+
+fn parse_file_header<I>(
     lines: &mut std::iter::Peekable<I>,
     format: DiffFormat,
-) -> (Option<PathBuf>, Option<PathBuf>, FileStatus)
+) -> Result<(Option<PathBuf>, Option<PathBuf>, FileStatus)>
 where
-    I: Iterator<Item = &'a str>,
+    I: Iterator<Item = Result<String>>,
 {
     let mut old_path: Option<PathBuf> = None;
     let mut new_path: Option<PathBuf> = None;
     let mut status = FileStatus::Modified;
 
     // Parse --- and +++ lines and metadata
-    while let Some(line) = lines.peek() {
+    while let Some(line) = peek_line(lines)?.map(str::to_string) {
         if line.starts_with("---") {
             let path_str = line.trim_start_matches("--- ").trim_start_matches("a/");
             if path_str != "/dev/null" {
@@ -132,7 +173,7 @@ where
                 };
                 old_path = Some(PathBuf::from(path));
             }
-            lines.next();
+            next_line(lines)?;
         } else if line.starts_with("+++") {
             let path_str = line.trim_start_matches("+++ ").trim_start_matches("b/");
             if path_str != "/dev/null" {
@@ -143,34 +184,34 @@ where
                 };
                 new_path = Some(PathBuf::from(path));
             }
-            lines.next();
+            next_line(lines)?;
             break; // Done with file header
         } else if line.starts_with("new file") {
             status = FileStatus::Added;
-            lines.next();
+            next_line(lines)?;
         } else if line.starts_with("deleted file") {
             status = FileStatus::Deleted;
-            lines.next();
+            next_line(lines)?;
         } else if let Some(path) = line.strip_prefix("rename from ") {
             status = FileStatus::Renamed;
             old_path = Some(PathBuf::from(path));
-            lines.next();
+            next_line(lines)?;
         } else if let Some(path) = line.strip_prefix("rename to ") {
             new_path = Some(PathBuf::from(path));
-            lines.next();
+            next_line(lines)?;
         } else if let Some(path) = line.strip_prefix("copy from ") {
             status = FileStatus::Copied;
             old_path = Some(PathBuf::from(path));
-            lines.next();
+            next_line(lines)?;
         } else if let Some(path) = line.strip_prefix("copy to ") {
             new_path = Some(PathBuf::from(path));
-            lines.next();
+            next_line(lines)?;
         } else if line.starts_with("@@") || line.starts_with("diff ") {
             break;
         } else if line.starts_with("Binary file") {
             // Hg format: "Binary file <path> has changed"
             // Git format: "Binary files a/<old> and b/<new> differ"
-            if let Some((old, new)) = parse_binary_file_line(line) {
+            if let Some((old, new)) = parse_binary_file_line(&line) {
                 if old_path.is_none() {
                     old_path = old;
                 }
@@ -180,7 +221,7 @@ where
             }
             break;
         } else {
-            lines.next(); // Skip other metadata lines (rename to, copy to, index, etc.)
+            next_line(lines)?; // Skip other metadata lines (rename to, copy to, index, etc.)
         }
     }
 
@@ -193,21 +234,25 @@ where
         }
     }
 
-    (old_path, new_path, status)
+    Ok((old_path, new_path, status))
 }
 
-fn parse_hunk<'a, I>(
+fn parse_hunk<I>(
     lines: &mut std::iter::Peekable<I>,
     file_path: Option<&PathBuf>,
     highlighter: &SyntaxHighlighter,
-) -> Option<DiffHunk>
+) -> Result<Option<DiffHunk>>
 where
-    I: Iterator<Item = &'a str>,
+    I: Iterator<Item = Result<String>>,
 {
-    let header_line = lines.next()?;
+    let Some(header_line) = next_line(lines)? else {
+        return Ok(None);
+    };
 
     // Parse @@ -old_start,old_count +new_start,new_count @@
-    let (old_start, old_count, new_start, new_count) = parse_hunk_header(header_line)?;
+    let Some((old_start, old_count, new_start, new_count)) = parse_hunk_header(&header_line) else {
+        return Ok(None);
+    };
 
     let mut line_contents: Vec<String> = Vec::new();
     let mut line_origins: Vec<LineOrigin> = Vec::new();
@@ -217,12 +262,12 @@ where
     let mut new_lineno = new_start;
 
     // Collect lines until next hunk or file
-    while let Some(line) = lines.peek() {
+    while let Some(line) = peek_line(lines)?.map(str::to_string) {
         if line.starts_with("@@") || line.starts_with("diff ") {
             break;
         }
 
-        let line = lines.next().unwrap();
+        next_line(lines)?;
 
         if line.starts_with('\\') {
             // "\ No newline at end of file" - skip
@@ -304,14 +349,14 @@ where
         });
     }
 
-    Some(DiffHunk {
+    Ok(Some(DiffHunk {
         header: header_line.to_string(),
         lines: diff_lines,
         old_start,
         old_count,
         new_start,
         new_count,
-    })
+    }))
 }
 
 fn parse_hunk_header(line: &str) -> Option<(u32, u32, u32, u32)> {
@@ -1052,5 +1097,27 @@ new mode 100755
         assert_eq!(files[0].new_path, Some(PathBuf::from("script.sh")));
         assert!(files[0].hunks.is_empty());
         let _path = files[0].display_path();
+    }
+
+    #[test]
+    fn should_parse_unified_diff_from_streamed_lines() {
+        let lines = [
+            "diff --git a/file.txt b/file.txt",
+            "--- a/file.txt",
+            "+++ b/file.txt",
+            "@@ -1 +1 @@",
+            "-old",
+            "+new",
+        ]
+        .into_iter()
+        .map(|line| Ok(line.to_string()));
+
+        let files =
+            parse_unified_diff_lines(lines, DiffFormat::GitStyle, &SyntaxHighlighter::default())
+                .unwrap();
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].new_path, Some(PathBuf::from("file.txt")));
+        assert_eq!(files[0].hunks[0].lines.len(), 2);
     }
 }

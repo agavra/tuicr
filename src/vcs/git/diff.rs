@@ -1,6 +1,6 @@
 use git2::{Delta, Diff, DiffOptions, Repository};
 use std::fs;
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -262,11 +262,10 @@ fn get_cli_diff(
     new_source: GitContentSource<'_>,
     highlighter: &SyntaxHighlighter,
 ) -> Result<Vec<DiffFile>> {
-    let diff_output = run_git_command(repo, args, false)?;
-    let mut files = if diff_output.trim().is_empty() {
-        Vec::new()
-    } else {
-        diff_parser::parse_unified_diff(&diff_output, DiffFormat::GitStyle, highlighter)?
+    let mut files = match run_git_diff_command(repo, args, highlighter) {
+        Ok(files) => files,
+        Err(TuicrError::NoChanges) => Vec::new(),
+        Err(err) => return Err(err),
     };
 
     if include_untracked {
@@ -284,6 +283,57 @@ fn get_cli_diff(
         |path| read_path_from_git_source(repo, new_source, path),
     );
     Ok(files)
+}
+
+fn run_git_diff_command(
+    repo: &Repository,
+    args: &[&str],
+    highlighter: &SyntaxHighlighter,
+) -> Result<Vec<DiffFile>> {
+    let workdir = repo.workdir().ok_or(TuicrError::NotARepository)?;
+    let mut child = Command::new("git")
+        .current_dir(workdir)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| TuicrError::VcsCommand(format!("Failed to run git: {}", e)))?;
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| TuicrError::VcsCommand("git diff stdout unavailable".into()))?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| TuicrError::VcsCommand("git diff stderr unavailable".into()))?;
+    let stderr_reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = stderr.read_to_end(&mut bytes);
+        bytes
+    });
+
+    let diff_lines = BufReader::new(stdout)
+        .lines()
+        .map(|line| line.map_err(TuicrError::from));
+    let parse_result =
+        diff_parser::parse_unified_diff_lines(diff_lines, DiffFormat::GitStyle, highlighter);
+
+    let status = child.wait()?;
+    let stderr = stderr_reader
+        .join()
+        .map_err(|_| TuicrError::VcsCommand("git diff stderr reader panicked".into()))?;
+
+    if !status.success() {
+        let stderr = String::from_utf8_lossy(&stderr);
+        return Err(TuicrError::VcsCommand(format!(
+            "git {} failed: {}",
+            args.join(" "),
+            stderr
+        )));
+    }
+
+    parse_result
 }
 
 fn append_untracked_cli_diffs(
