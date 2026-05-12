@@ -2,9 +2,9 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{Result, TuicrError};
 use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin};
-use crate::syntax::SyntaxHighlighter;
+use crate::syntax::{HighlightJob, HighlightJobKind, SyntaxHighlighter};
 
-use super::traits::{VcsBackend, VcsInfo, VcsType};
+use super::traits::{DiffWithJobs, VcsBackend, VcsInfo, VcsType};
 
 /// A backend for reviewing a single file without a VCS repository.
 ///
@@ -54,7 +54,7 @@ impl VcsBackend for FileBackend {
         &self.info
     }
 
-    fn get_working_tree_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+    fn get_working_tree_diff(&self) -> Result<DiffWithJobs> {
         let content = std::fs::read_to_string(&self.file_path)?;
         let lines: Vec<&str> = content.lines().collect();
 
@@ -62,41 +62,25 @@ impl VcsBackend for FileBackend {
             return Err(TuicrError::NoChanges);
         }
 
-        // Build line contents and origins for syntax highlighting
         let line_contents: Vec<String> = lines.iter().map(|l| super::tabify(l)).collect();
         let line_origins: Vec<LineOrigin> = vec![LineOrigin::Addition; line_contents.len()];
-
-        // Apply syntax highlighting
-        let highlight_sequences =
+        let sequences =
             SyntaxHighlighter::split_diff_lines_for_highlighting(&line_contents, &line_origins);
-        let new_highlighted_lines =
-            highlighter.highlight_file_lines(&self.file_path, &highlight_sequences.new_lines);
 
-        // Build DiffLines
-        let mut diff_lines = Vec::with_capacity(lines.len());
-        for (i, content) in line_contents.iter().enumerate() {
-            let line_num = (i + 1) as u32;
-
-            let highlighted_spans = highlighter.highlighted_line_for_diff_with_background(
-                None,
-                new_highlighted_lines.as_deref(),
-                None,
-                highlight_sequences.new_line_indices[i],
-                LineOrigin::Addition,
-            );
-
-            diff_lines.push(DiffLine {
+        let diff_lines: Vec<DiffLine> = line_contents
+            .iter()
+            .enumerate()
+            .map(|(i, content)| DiffLine {
                 origin: LineOrigin::Addition,
                 content: content.clone(),
                 old_lineno: None,
-                new_lineno: Some(line_num),
-                highlighted_spans,
-            });
-        }
+                new_lineno: Some((i + 1) as u32),
+                highlighted_spans: None,
+            })
+            .collect();
 
         let total_lines = lines.len() as u32;
 
-        // Relative path from root (just the filename)
         let rel_path = self
             .file_path
             .file_name()
@@ -125,7 +109,20 @@ impl VcsBackend for FileBackend {
             content_hash,
         };
 
-        Ok(vec![file])
+        let job = HighlightJob {
+            file_idx: 0,
+            syntax_path: self.file_path.clone(),
+            kind: HighlightJobKind::Hunk {
+                hunk_idx: 0,
+                old_lines: sequences.old_lines,
+                new_lines: sequences.new_lines,
+                old_line_indices: sequences.old_line_indices,
+                new_line_indices: sequences.new_line_indices,
+                line_origins,
+            },
+        };
+
+        Ok((vec![file], vec![job]))
     }
 
     fn fetch_context_lines(

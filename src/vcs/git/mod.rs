@@ -7,10 +7,9 @@ use git2::Repository;
 use std::path::Path;
 
 use crate::error::{Result, TuicrError};
-use crate::model::{DiffFile, DiffLine, FileStatus};
-use crate::syntax::SyntaxHighlighter;
+use crate::model::{DiffLine, FileStatus};
 
-use super::traits::{CommitInfo, VcsBackend, VcsInfo, VcsType};
+use super::traits::{CommitInfo, DiffWithJobs, VcsBackend, VcsInfo, VcsType};
 
 // Re-export commonly used functions
 pub use context::{calculate_gap, fetch_context_lines};
@@ -67,16 +66,16 @@ impl VcsBackend for GitBackend {
         &self.info
     }
 
-    fn get_working_tree_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
-        get_working_tree_diff(&self.repo, highlighter)
+    fn get_working_tree_diff(&self) -> Result<DiffWithJobs> {
+        get_working_tree_diff(&self.repo)
     }
 
-    fn get_staged_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
-        get_staged_diff(&self.repo, highlighter)
+    fn get_staged_diff(&self) -> Result<DiffWithJobs> {
+        get_staged_diff(&self.repo)
     }
 
-    fn get_unstaged_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
-        get_unstaged_diff(&self.repo, highlighter)
+    fn get_unstaged_diff(&self) -> Result<DiffWithJobs> {
+        get_unstaged_diff(&self.repo)
     }
 
     fn fetch_context_lines(
@@ -109,12 +108,8 @@ impl VcsBackend for GitBackend {
         repository::resolve_revisions(&self.repo, revisions)
     }
 
-    fn get_commit_range_diff(
-        &self,
-        commit_ids: &[String],
-        highlighter: &SyntaxHighlighter,
-    ) -> Result<Vec<DiffFile>> {
-        get_commit_range_diff(&self.repo, commit_ids, highlighter)
+    fn get_commit_range_diff(&self, commit_ids: &[String]) -> Result<DiffWithJobs> {
+        get_commit_range_diff(&self.repo, commit_ids)
     }
 
     fn get_commits_info(&self, ids: &[String]) -> Result<Vec<CommitInfo>> {
@@ -133,12 +128,8 @@ impl VcsBackend for GitBackend {
             .collect())
     }
 
-    fn get_working_tree_with_commits_diff(
-        &self,
-        commit_ids: &[String],
-        highlighter: &SyntaxHighlighter,
-    ) -> Result<Vec<DiffFile>> {
-        get_working_tree_with_commits_diff(&self.repo, commit_ids, highlighter)
+    fn get_working_tree_with_commits_diff(&self, commit_ids: &[String]) -> Result<DiffWithJobs> {
+        get_working_tree_with_commits_diff(&self.repo, commit_ids)
     }
 
     fn stage_file(&self, path: &Path) -> Result<()> {

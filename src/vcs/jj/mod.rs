@@ -7,11 +7,10 @@ use std::process::Command;
 use chrono::{DateTime, Utc};
 
 use crate::error::{Result, TuicrError};
-use crate::model::{DiffFile, DiffLine, FileStatus, LineOrigin};
-use crate::syntax::SyntaxHighlighter;
+use crate::model::{DiffLine, FileStatus, LineOrigin};
 use crate::vcs::diff_parser::{self, DiffFormat};
-use crate::vcs::traits::{CommitInfo, VcsBackend, VcsInfo, VcsType};
-use crate::vcs::{BATCH_BOUNDARY, apply_container_full_file_highlight, parse_batched_files};
+use crate::vcs::traits::{CommitInfo, DiffWithJobs, VcsBackend, VcsInfo, VcsType};
+use crate::vcs::{BATCH_BOUNDARY, append_container_full_file_jobs_from_rev, parse_batched_files};
 
 /// Parse a jj description into (summary, optional body).
 fn parse_description(desc: &str) -> (String, Option<String>) {
@@ -118,24 +117,24 @@ impl VcsBackend for JjBackend {
         &self.info
     }
 
-    fn get_working_tree_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+    fn get_working_tree_diff(&self) -> Result<DiffWithJobs> {
         let diff_output = run_jj_command(&self.info.root_path, &["diff", "--git"])?;
 
         if diff_output.trim().is_empty() {
             return Err(TuicrError::NoChanges);
         }
 
-        let mut files =
-            diff_parser::parse_unified_diff(&diff_output, DiffFormat::GitStyle, highlighter)?;
-        apply_container_full_file_highlight(
+        let (files, mut jobs) =
+            diff_parser::parse_unified_diff(&diff_output, DiffFormat::GitStyle)?;
+        append_container_full_file_jobs_from_rev(
             &self.info.root_path,
             "@-",
             None,
-            &mut files,
-            highlighter,
+            &files,
+            &mut jobs,
             jj_show_batch,
         )?;
-        Ok(files)
+        Ok((files, jobs))
     }
 
     fn fetch_context_lines(
@@ -273,11 +272,7 @@ impl VcsBackend for JjBackend {
         Ok(commits.into_iter().skip(offset).collect())
     }
 
-    fn get_commit_range_diff(
-        &self,
-        commit_ids: &[String],
-        highlighter: &SyntaxHighlighter,
-    ) -> Result<Vec<DiffFile>> {
+    fn get_commit_range_diff(&self, commit_ids: &[String]) -> Result<DiffWithJobs> {
         if commit_ids.is_empty() {
             return Err(TuicrError::NoChanges);
         }
@@ -298,17 +293,17 @@ impl VcsBackend for JjBackend {
             return Err(TuicrError::NoChanges);
         }
 
-        let mut files =
-            diff_parser::parse_unified_diff(&diff_output, DiffFormat::GitStyle, highlighter)?;
-        apply_container_full_file_highlight(
+        let (files, mut jobs) =
+            diff_parser::parse_unified_diff(&diff_output, DiffFormat::GitStyle)?;
+        append_container_full_file_jobs_from_rev(
             &self.info.root_path,
             &from_rev,
             Some(newest),
-            &mut files,
-            highlighter,
+            &files,
+            &mut jobs,
             jj_show_batch,
         )?;
-        Ok(files)
+        Ok((files, jobs))
     }
 
     fn get_commits_info(&self, ids: &[String]) -> Result<Vec<CommitInfo>> {
@@ -362,11 +357,7 @@ impl VcsBackend for JjBackend {
         Ok(ids.iter().filter_map(|id| by_id.remove(id)).collect())
     }
 
-    fn get_working_tree_with_commits_diff(
-        &self,
-        commit_ids: &[String],
-        highlighter: &SyntaxHighlighter,
-    ) -> Result<Vec<DiffFile>> {
+    fn get_working_tree_with_commits_diff(&self, commit_ids: &[String]) -> Result<DiffWithJobs> {
         if commit_ids.is_empty() {
             return Err(TuicrError::NoChanges);
         }
@@ -385,17 +376,17 @@ impl VcsBackend for JjBackend {
             return Err(TuicrError::NoChanges);
         }
 
-        let mut files =
-            diff_parser::parse_unified_diff(&diff_output, DiffFormat::GitStyle, highlighter)?;
-        apply_container_full_file_highlight(
+        let (files, mut jobs) =
+            diff_parser::parse_unified_diff(&diff_output, DiffFormat::GitStyle)?;
+        append_container_full_file_jobs_from_rev(
             &self.info.root_path,
             &from_rev,
             None,
-            &mut files,
-            highlighter,
+            &files,
+            &mut jobs,
             jj_show_batch,
         )?;
-        Ok(files)
+        Ok((files, jobs))
     }
 }
 
@@ -544,9 +535,7 @@ mod tests {
         assert_eq!(backend.info().root_path, expected_path);
         assert_eq!(backend.info().vcs_type, VcsType::Jujutsu);
 
-        let files = backend
-            .get_working_tree_diff(&SyntaxHighlighter::default())
-            .expect("Failed to get diff");
+        let (files, _jobs) = backend.get_working_tree_diff().expect("Failed to get diff");
 
         assert_eq!(files.len(), 1);
         assert_eq!(
@@ -706,8 +695,8 @@ mod tests {
             let newest = &named_commits[0]; // Third commit
 
             let commit_ids = vec![oldest.id.clone(), newest.id.clone()];
-            let diff = backend
-                .get_commit_range_diff(&commit_ids, &SyntaxHighlighter::default())
+            let (diff, _jobs) = backend
+                .get_commit_range_diff(&commit_ids)
                 .expect("Failed to get commit range diff");
 
             // Should have changes
@@ -760,9 +749,7 @@ mod tests {
         let backend =
             JjBackend::from_path(temp.path().to_path_buf()).expect("Failed to create jj backend");
 
-        let files = backend
-            .get_working_tree_diff(&SyntaxHighlighter::default())
-            .expect("Failed to get diff");
+        let (files, _jobs) = backend.get_working_tree_diff().expect("Failed to get diff");
 
         // jj should detect the rename
         // Note: jj may show this as delete + add if it doesn't detect the rename
@@ -811,9 +798,7 @@ mod tests {
         let backend =
             JjBackend::from_path(temp.path().to_path_buf()).expect("Failed to create jj backend");
 
-        let files = backend
-            .get_working_tree_diff(&SyntaxHighlighter::default())
-            .expect("Failed to get diff");
+        let (files, _jobs) = backend.get_working_tree_diff().expect("Failed to get diff");
 
         assert_eq!(files.len(), 1, "Expected one file");
 
@@ -846,9 +831,7 @@ mod tests {
         let backend =
             JjBackend::from_path(temp.path().to_path_buf()).expect("Failed to create jj backend");
 
-        let files = backend
-            .get_working_tree_diff(&SyntaxHighlighter::default())
-            .expect("Failed to get diff");
+        let (files, _jobs) = backend.get_working_tree_diff().expect("Failed to get diff");
 
         assert_eq!(files.len(), 1, "Expected one file");
 
@@ -939,10 +922,13 @@ mod tests {
 
         let backend =
             JjBackend::from_path(temp.path().to_path_buf()).expect("Failed to create jj backend");
-        let files = backend
-            .get_working_tree_diff(&SyntaxHighlighter::default())
-            .expect("Failed to get diff");
+        let (mut files, jobs) = backend.get_working_tree_diff().expect("Failed to get diff");
         assert_eq!(files.len(), 1);
+
+        let highlighter = crate::syntax::SyntaxHighlighter::default();
+        for update in crate::syntax::streaming::run_blocking(jobs, &highlighter) {
+            crate::syntax::streaming::apply_update(&mut files, &highlighter, update);
+        }
 
         let changed_lines: Vec<_> = files[0].hunks[0]
             .lines

@@ -5,11 +5,10 @@ use std::process::Command;
 use chrono::{TimeZone, Utc};
 
 use crate::error::{Result, TuicrError};
-use crate::model::{DiffFile, DiffLine, FileStatus, LineOrigin};
-use crate::syntax::SyntaxHighlighter;
+use crate::model::{DiffLine, FileStatus, LineOrigin};
 use crate::vcs::diff_parser::{self, DiffFormat};
-use crate::vcs::traits::{CommitInfo, VcsBackend, VcsInfo, VcsType};
-use crate::vcs::{BATCH_BOUNDARY, apply_container_full_file_highlight, parse_batched_files};
+use crate::vcs::traits::{CommitInfo, DiffWithJobs, VcsBackend, VcsInfo, VcsType};
+use crate::vcs::{BATCH_BOUNDARY, append_container_full_file_jobs_from_rev, parse_batched_files};
 
 /// Parse an hg description into (summary, optional body).
 fn parse_hg_description(desc: &str) -> (String, Option<String>) {
@@ -81,23 +80,23 @@ impl VcsBackend for HgBackend {
         &self.info
     }
 
-    fn get_working_tree_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+    fn get_working_tree_diff(&self) -> Result<DiffWithJobs> {
         let diff_output = run_hg_command(&self.info.root_path, &["diff"])?;
 
         if diff_output.trim().is_empty() {
             return Err(TuicrError::NoChanges);
         }
 
-        let mut files = diff_parser::parse_unified_diff(&diff_output, DiffFormat::Hg, highlighter)?;
-        apply_container_full_file_highlight(
+        let (files, mut jobs) = diff_parser::parse_unified_diff(&diff_output, DiffFormat::Hg)?;
+        append_container_full_file_jobs_from_rev(
             &self.info.root_path,
             ".",
             None,
-            &mut files,
-            highlighter,
+            &files,
+            &mut jobs,
             hg_cat_batch,
         )?;
-        Ok(files)
+        Ok((files, jobs))
     }
 
     fn fetch_context_lines(
@@ -228,11 +227,7 @@ impl VcsBackend for HgBackend {
         Ok(commits.into_iter().skip(offset).collect())
     }
 
-    fn get_commit_range_diff(
-        &self,
-        commit_ids: &[String],
-        highlighter: &SyntaxHighlighter,
-    ) -> Result<Vec<DiffFile>> {
+    fn get_commit_range_diff(&self, commit_ids: &[String]) -> Result<DiffWithJobs> {
         if commit_ids.is_empty() {
             return Err(TuicrError::NoChanges);
         }
@@ -285,16 +280,16 @@ impl VcsBackend for HgBackend {
             return Err(TuicrError::NoChanges);
         }
 
-        let mut files = diff_parser::parse_unified_diff(&diff_output, DiffFormat::Hg, highlighter)?;
-        apply_container_full_file_highlight(
+        let (files, mut jobs) = diff_parser::parse_unified_diff(&diff_output, DiffFormat::Hg)?;
+        append_container_full_file_jobs_from_rev(
             &self.info.root_path,
             &from_rev,
             Some(newest_short),
-            &mut files,
-            highlighter,
+            &files,
+            &mut jobs,
             hg_cat_batch,
         )?;
-        Ok(files)
+        Ok((files, jobs))
     }
 
     fn get_commits_info(&self, ids: &[String]) -> Result<Vec<CommitInfo>> {
@@ -358,11 +353,7 @@ impl VcsBackend for HgBackend {
         Ok(ids.iter().filter_map(|id| by_id.remove(id)).collect())
     }
 
-    fn get_working_tree_with_commits_diff(
-        &self,
-        commit_ids: &[String],
-        highlighter: &SyntaxHighlighter,
-    ) -> Result<Vec<DiffFile>> {
+    fn get_working_tree_with_commits_diff(&self, commit_ids: &[String]) -> Result<DiffWithJobs> {
         if commit_ids.is_empty() {
             return Err(TuicrError::NoChanges);
         }
@@ -398,16 +389,16 @@ impl VcsBackend for HgBackend {
             return Err(TuicrError::NoChanges);
         }
 
-        let mut files = diff_parser::parse_unified_diff(&diff_output, DiffFormat::Hg, highlighter)?;
-        apply_container_full_file_highlight(
+        let (files, mut jobs) = diff_parser::parse_unified_diff(&diff_output, DiffFormat::Hg)?;
+        append_container_full_file_jobs_from_rev(
             &self.info.root_path,
             &from_rev,
             None,
-            &mut files,
-            highlighter,
+            &files,
+            &mut jobs,
             hg_cat_batch,
         )?;
-        Ok(files)
+        Ok((files, jobs))
     }
 }
 
@@ -556,9 +547,7 @@ mod tests {
         assert_eq!(backend.info().root_path, expected_path);
         assert_eq!(backend.info().vcs_type, VcsType::Mercurial);
 
-        let files = backend
-            .get_working_tree_diff(&SyntaxHighlighter::default())
-            .expect("Failed to get diff");
+        let (files, _jobs) = backend.get_working_tree_diff().expect("Failed to get diff");
 
         assert_eq!(files.len(), 1);
         assert_eq!(
@@ -692,11 +681,11 @@ mod tests {
 
         // Get diff for the last two commits (Second and Third)
         let commit_ids = vec![commits[1].id.clone(), commits[0].id.clone()];
-        let diff_result = backend.get_commit_range_diff(&commit_ids, &SyntaxHighlighter::default());
+        let diff_result = backend.get_commit_range_diff(&commit_ids);
 
         // Note: Sapling (Meta's hg fork) may fail with "id_dag_snapshot()" error
         // in certain temporary directory configurations. Skip the test in that case.
-        let diff = match diff_result {
+        let (diff, _jobs) = match diff_result {
             Ok(d) => d,
             Err(TuicrError::VcsCommand(msg)) if msg.contains("id_dag_snapshot") => {
                 eprintln!("Skipping test: Sapling-specific issue with tempdir repos");
@@ -776,9 +765,7 @@ mod tests {
         let backend =
             HgBackend::from_path(temp.path().to_path_buf()).expect("Failed to create hg backend");
 
-        let files = backend
-            .get_working_tree_diff(&SyntaxHighlighter::default())
-            .expect("Failed to get diff");
+        let (files, _jobs) = backend.get_working_tree_diff().expect("Failed to get diff");
 
         // hg should show the rename
         assert!(!files.is_empty(), "Expected at least one file change");
@@ -849,9 +836,7 @@ mod tests {
         let backend =
             HgBackend::from_path(temp.path().to_path_buf()).expect("Failed to create hg backend");
 
-        let files = backend
-            .get_working_tree_diff(&SyntaxHighlighter::default())
-            .expect("Failed to get diff");
+        let (files, _jobs) = backend.get_working_tree_diff().expect("Failed to get diff");
 
         assert!(!files.is_empty(), "Expected at least one file change");
 
@@ -909,9 +894,7 @@ mod tests {
         let backend =
             HgBackend::from_path(temp.path().to_path_buf()).expect("Failed to create hg backend");
 
-        let files = backend
-            .get_working_tree_diff(&SyntaxHighlighter::default())
-            .expect("Failed to get diff");
+        let (files, _jobs) = backend.get_working_tree_diff().expect("Failed to get diff");
 
         assert_eq!(files.len(), 1, "Expected one file");
 
@@ -965,10 +948,13 @@ mod tests {
 
         let backend =
             HgBackend::from_path(temp.path().to_path_buf()).expect("Failed to create hg backend");
-        let files = backend
-            .get_working_tree_diff(&SyntaxHighlighter::default())
-            .expect("Failed to get diff");
+        let (mut files, jobs) = backend.get_working_tree_diff().expect("Failed to get diff");
         assert_eq!(files.len(), 1);
+
+        let highlighter = crate::syntax::SyntaxHighlighter::default();
+        for update in crate::syntax::streaming::run_blocking(jobs, &highlighter) {
+            crate::syntax::streaming::apply_update(&mut files, &highlighter, update);
+        }
 
         let changed_lines: Vec<_> = files[0].hunks[0]
             .lines
@@ -1017,9 +1003,7 @@ mod tests {
         let backend =
             HgBackend::from_path(temp.path().to_path_buf()).expect("Failed to create hg backend");
 
-        let files = backend
-            .get_working_tree_diff(&SyntaxHighlighter::default())
-            .expect("Failed to get diff");
+        let (files, _jobs) = backend.get_working_tree_diff().expect("Failed to get diff");
 
         assert_eq!(files.len(), 1, "Expected one file");
 

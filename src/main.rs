@@ -47,6 +47,13 @@ use theme::{parse_cli_args, resolve_theme_with_config};
 const CTRL_C_EXIT_TIMEOUT: Duration = Duration::from_secs(2);
 /// Hide the file list by default on narrow terminals.
 const MIN_WIDTH_FOR_FILE_LIST: u16 = 100;
+/// Idle event-poll cadence: long enough to keep CPU usage trivial while no
+/// input or background highlight results are pending.
+const IDLE_POLL_TIMEOUT: Duration = Duration::from_millis(100);
+/// Poll cadence while the highlight worker is still streaming results.
+/// ~30 ms keeps perceived latency between worker emit and on-screen update
+/// under one frame; CPU cost of the extra wakeups is negligible.
+const STREAMING_POLL_TIMEOUT: Duration = Duration::from_millis(30);
 
 fn main() -> anyhow::Result<()> {
     // Setup panic hook to restore terminal on panic
@@ -266,13 +273,25 @@ fn main() -> anyhow::Result<()> {
 
         app.clear_expired_message();
 
+        // Drain any streaming highlight results before rendering so newly
+        // arrived spans land on screen this frame.
+        app.drain_highlight_updates();
+
         // Render
         terminal.draw(|frame| {
             ui::render(frame, &mut app);
         })?;
 
+        // Shorter poll while highlight work is in flight keeps streaming
+        // latency under one frame; longer poll when idle to avoid wakeups.
+        let poll_timeout = if app.highlight_streaming() {
+            STREAMING_POLL_TIMEOUT
+        } else {
+            IDLE_POLL_TIMEOUT
+        };
+
         // Handle events
-        if event::poll(Duration::from_millis(100))? {
+        if event::poll(poll_timeout)? {
             let event = event::read()?;
             match event {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {

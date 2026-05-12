@@ -2,22 +2,19 @@ use std::path::Path;
 
 use ignore::gitignore::GitignoreBuilder;
 
-use crate::model::DiffFile;
+use crate::vcs::DiffWithJobs;
 
-/// Apply `.tuicrignore` rules from the repository root to a diff file set.
-pub fn filter_diff_files(repo_root: &Path, diff_files: Vec<DiffFile>) -> Vec<DiffFile> {
+/// Apply `.tuicrignore` rules from the repository root to a diff file set,
+/// re-indexing the accompanying highlight jobs.
+pub fn filter_diff_files(repo_root: &Path, diff: DiffWithJobs) -> DiffWithJobs {
     let Some(matcher) = load_matcher(repo_root) else {
-        return diff_files;
+        return diff;
     };
-
-    diff_files
-        .into_iter()
-        .filter(|file| {
-            !matcher
-                .matched_path_or_any_parents(file.display_path(), false)
-                .is_ignore()
-        })
-        .collect()
+    crate::vcs::filter_diff_with_jobs(diff, |file| {
+        !matcher
+            .matched_path_or_any_parents(file.display_path(), false)
+            .is_ignore()
+    })
 }
 
 fn load_matcher(repo_root: &Path) -> Option<ignore::gitignore::Gitignore> {
@@ -49,7 +46,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
-    use crate::model::FileStatus;
+    use crate::model::{DiffFile, FileStatus};
 
     fn make_diff_file(path: &str) -> DiffFile {
         DiffFile {
@@ -64,6 +61,10 @@ mod tests {
         }
     }
 
+    fn filter_just_files(repo_root: &Path, files: Vec<DiffFile>) -> Vec<DiffFile> {
+        filter_diff_files(repo_root, (files, Vec::new())).0
+    }
+
     #[test]
     fn keeps_all_files_when_tuicrignore_is_missing() {
         let dir = tempdir().expect("failed to create temp dir");
@@ -72,7 +73,7 @@ mod tests {
             make_diff_file("target/debug/app"),
         ];
 
-        let filtered = filter_diff_files(dir.path(), files);
+        let filtered = filter_just_files(dir.path(), files);
 
         assert_eq!(filtered.len(), 2);
     }
@@ -89,7 +90,7 @@ mod tests {
             make_diff_file("Cargo.lock"),
         ];
 
-        let filtered = filter_diff_files(dir.path(), files);
+        let filtered = filter_just_files(dir.path(), files);
         let kept_paths: Vec<String> = filtered
             .iter()
             .map(|f| f.display_path().display().to_string())
@@ -111,7 +112,7 @@ mod tests {
             make_diff_file("src/main.rs"),
         ];
 
-        let filtered = filter_diff_files(dir.path(), files);
+        let filtered = filter_just_files(dir.path(), files);
         let kept_paths: Vec<String> = filtered
             .iter()
             .map(|f| f.display_path().display().to_string())
@@ -132,7 +133,7 @@ mod tests {
             make_diff_file("build.log"),
         ];
 
-        let filtered = filter_diff_files(dir.path(), files);
+        let filtered = filter_just_files(dir.path(), files);
         let kept: Vec<String> = filtered
             .iter()
             .map(|f| f.display_path().display().to_string())
@@ -155,7 +156,7 @@ mod tests {
             make_diff_file("src/lib.rs"),
         ];
 
-        let filtered = filter_diff_files(dir.path(), files);
+        let filtered = filter_just_files(dir.path(), files);
         let kept: Vec<String> = filtered
             .iter()
             .map(|f| f.display_path().display().to_string())
@@ -176,7 +177,7 @@ mod tests {
             make_diff_file("dist/bundle.js"),
         ];
 
-        let filtered = filter_diff_files(dir.path(), files);
+        let filtered = filter_just_files(dir.path(), files);
         let kept: Vec<String> = filtered
             .iter()
             .map(|f| f.display_path().display().to_string())
@@ -203,7 +204,7 @@ mod tests {
         };
         let kept = make_diff_file("src/lib.rs");
 
-        let filtered = filter_diff_files(dir.path(), vec![deleted, kept]);
+        let filtered = filter_just_files(dir.path(), vec![deleted, kept]);
         let kept_paths: Vec<String> = filtered
             .iter()
             .map(|f| f.display_path().display().to_string())

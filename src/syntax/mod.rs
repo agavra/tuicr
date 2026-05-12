@@ -4,6 +4,9 @@ use two_face::theme::EmbeddedThemeName;
 
 use crate::model::diff_types::LineOrigin;
 
+pub(crate) mod streaming;
+pub(crate) use streaming::{HighlightJob, HighlightJobKind};
+
 /// A single line of highlighted spans (style + text pairs).
 pub(crate) type HighlightedSpans = Vec<(Style, String)>;
 
