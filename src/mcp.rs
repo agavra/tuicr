@@ -44,70 +44,70 @@ pub enum McpDiffSource {
     Unstaged,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct OpenReviewArgs {
-    repo_path: Option<PathBuf>,
-    diff_source: Option<McpDiffSource>,
-    revisions: Option<String>,
-    include_working_tree: Option<bool>,
-    path: Option<String>,
-    file: Option<String>,
+pub struct OpenReviewArgs {
+    pub repo_path: Option<PathBuf>,
+    pub diff_source: Option<McpDiffSource>,
+    pub revisions: Option<String>,
+    pub include_working_tree: Option<bool>,
+    pub path: Option<String>,
+    pub file: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct SessionIdArgs {
-    session_id: String,
+pub struct SessionIdArgs {
+    pub session_id: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct GetReviewArgs {
-    session_id: Option<String>,
-    repo_path: Option<PathBuf>,
-    diff_source: Option<McpDiffSource>,
-    revisions: Option<String>,
-    include_working_tree: Option<bool>,
-    path: Option<String>,
+pub struct GetReviewArgs {
+    pub session_id: Option<String>,
+    pub repo_path: Option<PathBuf>,
+    pub diff_source: Option<McpDiffSource>,
+    pub revisions: Option<String>,
+    pub include_working_tree: Option<bool>,
+    pub path: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct FileDiffArgs {
-    session_id: String,
-    path: PathBuf,
-    max_lines: Option<usize>,
+pub struct FileDiffArgs {
+    pub session_id: String,
+    pub path: PathBuf,
+    pub max_lines: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
-enum CommentScope {
+pub enum CommentScope {
     Review,
     File,
     Line,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct AddCommentArgs {
-    session_id: String,
-    scope: CommentScope,
-    path: Option<PathBuf>,
-    line: Option<u32>,
-    end_line: Option<u32>,
-    side: Option<LineSide>,
+pub struct AddCommentArgs {
+    pub session_id: String,
+    pub scope: CommentScope,
+    pub path: Option<PathBuf>,
+    pub line: Option<u32>,
+    pub end_line: Option<u32>,
+    pub side: Option<LineSide>,
     #[serde(rename = "type")]
-    comment_type: Option<String>,
-    body: String,
+    pub comment_type: Option<String>,
+    pub body: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct SetReviewedArgs {
-    session_id: String,
-    path: PathBuf,
-    reviewed: bool,
+pub struct SetReviewedArgs {
+    pub session_id: String,
+    pub path: PathBuf,
+    pub reviewed: bool,
 }
 
 #[derive(Clone)]
@@ -125,59 +125,69 @@ struct ReviewState {
     comment_types: Vec<CommentTypeDefinition>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct AgentReviewSession {
-    id: String,
-    repo_path: PathBuf,
-    branch_name: Option<String>,
-    base_commit: String,
-    diff_source: String,
-    created_at: String,
-    updated_at: String,
-    comment_types: Vec<AgentCommentType>,
-    review_comments: Vec<AgentReviewComment>,
-    files: Vec<AgentReviewFile>,
+pub struct AgentReviewSession {
+    pub id: String,
+    pub repo_path: PathBuf,
+    pub branch_name: Option<String>,
+    pub base_commit: String,
+    pub diff_source: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub comment_types: Vec<AgentCommentType>,
+    pub review_comments: Vec<AgentReviewComment>,
+    pub files: Vec<AgentReviewFile>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct AgentCommentType {
-    id: String,
-    label: String,
-    definition: Option<String>,
+pub struct AgentCommentType {
+    pub id: String,
+    pub label: String,
+    pub definition: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct AgentReviewFile {
-    path: PathBuf,
-    old_path: Option<PathBuf>,
-    new_path: Option<PathBuf>,
-    status: &'static str,
-    reviewed: bool,
-    is_binary: bool,
-    is_too_large: bool,
-    added_lines: usize,
-    removed_lines: usize,
-    hunk_count: usize,
-    file_comments: Vec<AgentReviewComment>,
-    line_comments: Vec<AgentReviewComment>,
+pub struct AgentReviewFile {
+    pub path: PathBuf,
+    pub old_path: Option<PathBuf>,
+    pub new_path: Option<PathBuf>,
+    pub status: &'static str,
+    pub reviewed: bool,
+    pub is_binary: bool,
+    pub is_too_large: bool,
+    pub added_lines: usize,
+    pub removed_lines: usize,
+    pub hunk_count: usize,
+    pub file_comments: Vec<AgentReviewComment>,
+    pub line_comments: Vec<AgentReviewComment>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct AgentReviewComment {
-    id: String,
+pub struct AgentReviewComment {
+    pub id: String,
     #[serde(rename = "type")]
-    comment_type: String,
-    body: String,
-    created_at: String,
-    scope: CommentScope,
-    path: Option<PathBuf>,
-    line: Option<u32>,
-    end_line: Option<u32>,
-    side: LineSide,
+    pub comment_type: String,
+    pub body: String,
+    pub created_at: String,
+    pub scope: CommentScope,
+    pub path: Option<PathBuf>,
+    pub line: Option<u32>,
+    pub end_line: Option<u32>,
+    pub side: LineSide,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileDiffView {
+    pub session: AgentReviewSession,
+    pub path: PathBuf,
+    pub diff: String,
+    pub truncated: bool,
+    pub max_lines: usize,
 }
 
 struct CwdGuard {
@@ -259,7 +269,7 @@ impl TuicrMcpServer {
         Ok(result)
     }
 
-    fn open_review(&self, args: OpenReviewArgs) -> Result<AgentReviewSession> {
+    pub fn open_review(&self, args: OpenReviewArgs) -> Result<AgentReviewSession> {
         let repo_path = args
             .repo_path
             .clone()
@@ -268,7 +278,7 @@ impl TuicrMcpServer {
         self.remember(state)
     }
 
-    fn get_review(&self, args: GetReviewArgs) -> Result<AgentReviewSession> {
+    pub fn get_review(&self, args: GetReviewArgs) -> Result<AgentReviewSession> {
         match (args.session_id, args.repo_path) {
             (Some(session_id), None) => {
                 self.with_state_read(&session_id, |state| Ok(state.payload()))
@@ -290,23 +300,23 @@ impl TuicrMcpServer {
         }
     }
 
-    fn get_file_diff(&self, args: FileDiffArgs) -> Result<Value> {
+    pub fn get_file_diff(&self, args: FileDiffArgs) -> Result<FileDiffView> {
         self.with_state_read(&args.session_id, |state| {
             let path = state.resolve_file_path(&args.path)?;
             let file = state.diff_file(&path)?;
             let max_lines = validate_max_lines(args.max_lines)?;
             let (diff, truncated) = render_file_diff(file, max_lines);
-            Ok(json!({
-                "session": state.payload(),
-                "path": path,
-                "diff": diff,
-                "truncated": truncated,
-                "maxLines": max_lines,
-            }))
+            Ok(FileDiffView {
+                session: state.payload(),
+                path,
+                diff,
+                truncated,
+                max_lines,
+            })
         })
     }
 
-    fn add_comment(&self, args: AddCommentArgs) -> Result<AgentReviewSession> {
+    pub fn add_comment(&self, args: AddCommentArgs) -> Result<AgentReviewSession> {
         if args.body.trim().is_empty() {
             return Err(TuicrError::Io(std::io::Error::other(
                 "Comment body is required",
@@ -368,7 +378,7 @@ impl TuicrMcpServer {
         })
     }
 
-    fn set_file_reviewed(&self, args: SetReviewedArgs) -> Result<AgentReviewSession> {
+    pub fn set_file_reviewed(&self, args: SetReviewedArgs) -> Result<AgentReviewSession> {
         self.with_state_mut(&args.session_id, |state| {
             let path = state.resolve_file_path(&args.path)?;
             let review = state.file_review_mut(&path)?;
@@ -378,7 +388,7 @@ impl TuicrMcpServer {
         })
     }
 
-    fn clear_review(&self, args: SessionIdArgs) -> Result<AgentReviewSession> {
+    pub fn clear_review(&self, args: SessionIdArgs) -> Result<AgentReviewSession> {
         self.with_state_mut(&args.session_id, |state| {
             state
                 .session
@@ -388,7 +398,7 @@ impl TuicrMcpServer {
         })
     }
 
-    fn export_review(&self, args: SessionIdArgs) -> Result<String> {
+    pub fn export_review(&self, args: SessionIdArgs) -> Result<String> {
         self.with_state_read(&args.session_id, |state| {
             generate_export_content(
                 &state.session,
@@ -448,12 +458,7 @@ impl ServerHandler for TuicrMcpServer {
                 "get_file_diff" => {
                     let args = parse_args(args)?;
                     Ok(tool_result_from(server.get_file_diff(args), |payload| {
-                        let diff = payload
-                            .get("diff")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default()
-                            .to_string();
-                        tool_result(vec![Content::text(diff)], payload)
+                        tool_result(vec![Content::text(payload.diff.clone())], json!(payload))
                     }))
                 }
                 "add_comment" => {
@@ -1346,13 +1351,8 @@ mod tests {
             })
             .expect("get file diff");
 
-        assert_eq!(payload["path"], "src/main.rs");
-        assert!(
-            payload["diff"]
-                .as_str()
-                .unwrap()
-                .contains("File: src/main.rs")
-        );
+        assert_eq!(payload.path, PathBuf::from("src/main.rs"));
+        assert!(payload.diff.contains("File: src/main.rs"));
     }
 
     #[test]

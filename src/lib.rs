@@ -11,6 +11,7 @@ pub mod output;
 pub mod persistence;
 pub mod process;
 pub mod profile;
+pub mod review_api;
 pub mod syntax;
 pub mod text_edit;
 pub mod theme;

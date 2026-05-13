@@ -15,6 +15,7 @@ src/
 ├── main.rs              # Entry point, event loop, action dispatch
 ├── lib.rs               # Library module exports used by the TUI and MCP server
 ├── mcp.rs               # Headless stdio MCP server for agentic code review
+├── review_api.rs        # Public review service API reused by MCP and external integrations
 ├── config/
 │   └── mod.rs           # User config loading (XDG on Unix, %APPDATA% on Windows)
 ├── app.rs               # Application state (App struct, InputMode, etc.)
@@ -89,6 +90,7 @@ src/
 Repository-managed agent integrations:
 - `skills/tuicr/` - Shared agent skill bundle for coding agents, for example Claude Code, Codex, and similar tools; launches tuicr in a tmux split pane
 - `tuicr mcp` - Headless stdio MCP server exposing model-readable review tools without an MCP App UI
+- `tuicr::review_api` - Narrow Rust API for external integrations that need the same review/session/comment/export semantics as `tuicr mcp`
 
 ### Key Types
 

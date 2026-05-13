@@ -140,6 +140,10 @@ tuicr mcp
 Available MCP tools include `open_review`, `get_review`, `get_file_diff`,
 `add_comment`, `set_file_reviewed`, `clear_review`, and `export_review`.
 
+Rust integrations can reuse the same review service through
+`tuicr::review_api::ReviewService`. The public review API exposes the request
+and response types used by `tuicr mcp` without exposing TUI render state.
+
 ## Configuration
 
 Path: `~/.config/tuicr/config.toml` on Linux/macOS, `%APPDATA%\tuicr\config.toml` on Windows.
