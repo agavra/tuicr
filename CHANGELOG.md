@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.13.0] - 2026-05-13
+
+### Bug Fixes
+
+- **syntax:** Full-file context for container-grammar diffs (vue, svelte, astro, mdx) (#273)
+
+### Features
+
+- **theme:** Add tokyo-night-storm theme (#272)
+- **theme:** Add ayu-mirage color scheme (#276)
+
+### Performance
+
+- **syntax:** Parallelize full-file highlighting across files (#280)
 ## [0.12.0] - 2026-05-08
 
 ### Bug Fixes
