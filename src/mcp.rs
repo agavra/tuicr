@@ -14,7 +14,7 @@ use rmcp::{ErrorData as McpError, RoleServer, ServerHandler, ServiceExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::app::{App, CommentTypeDefinition, DiffSource};
+use crate::app::{App, AppStartupOptions, CommentTypeDefinition, DiffSource};
 use crate::config::{self, CommentTypeConfig, ConfigLoadOutcome};
 use crate::error::{Result, TuicrError};
 use crate::model::review::FileReview;
@@ -26,7 +26,7 @@ use crate::output::generate_export_content;
 use crate::persistence::{load_latest_session_for_context, save_session};
 use crate::theme::resolve_theme_with_config;
 use crate::tuicrignore;
-use crate::vcs::{VcsInfo, detect_vcs};
+use crate::vcs::{GitBackendPreference, VcsInfo, detect_vcs};
 
 const SERVER_NAME: &str = "tuicr-mcp";
 const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -549,6 +549,12 @@ fn load_review_state(repo_path: &Path, args: OpenReviewArgs) -> Result<ReviewSta
         .config
         .as_ref()
         .and_then(|cfg| cfg.comment_types.clone());
+    let git_backend_preference = GitBackendPreference::from_config(
+        config_outcome
+            .config
+            .as_ref()
+            .and_then(|cfg| cfg.backend.as_deref()),
+    );
 
     if args.diff_source.unwrap_or_default() == McpDiffSource::WorkingTree
         || args.revisions.is_some()
@@ -557,10 +563,14 @@ fn load_review_state(repo_path: &Path, args: OpenReviewArgs) -> Result<ReviewSta
             theme,
             comment_types,
             false,
-            args.revisions.as_deref(),
-            args.revisions.is_none() || args.include_working_tree.unwrap_or(false),
-            args.path.as_deref(),
-            args.file.as_deref(),
+            AppStartupOptions {
+                revisions: args.revisions.as_deref(),
+                working_tree: args.revisions.is_none()
+                    || args.include_working_tree.unwrap_or(false),
+                path_filter: args.path.as_deref(),
+                file_path: args.file.as_deref(),
+                git_backend_preference,
+            },
         )?;
         return Ok(ReviewState {
             session: app.session,
@@ -570,7 +580,7 @@ fn load_review_state(repo_path: &Path, args: OpenReviewArgs) -> Result<ReviewSta
         });
     }
 
-    let vcs = detect_vcs()?;
+    let vcs = detect_vcs(git_backend_preference)?;
     let vcs_info = vcs.info().clone();
     let highlighter = theme.syntax_highlighter();
     let mut diff_files = match args.diff_source.unwrap_or_default() {
