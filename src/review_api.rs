@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 
 use crate::error::Result;
-use crate::mcp::TuicrMcpServer;
+use crate::mcp::ReviewServiceInner;
 pub use crate::mcp::{
     AddCommentArgs as AddCommentRequest, AgentCommentType as ReviewCommentTypeView,
     AgentReviewComment as ReviewCommentView, AgentReviewFile as ReviewFileView,
@@ -20,13 +20,20 @@ pub use crate::mcp::{
 
 #[derive(Clone)]
 pub struct ReviewService {
-    inner: TuicrMcpServer,
+    pub(crate) inner: ReviewServiceInner,
 }
 
 impl ReviewService {
     pub fn new(default_repo_path: impl Into<PathBuf>) -> Self {
         Self {
-            inner: TuicrMcpServer::new(default_repo_path.into()),
+            inner: ReviewServiceInner::new(default_repo_path.into()),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_ephemeral(default_repo_path: impl Into<PathBuf>) -> Self {
+        Self {
+            inner: ReviewServiceInner::new_ephemeral(default_repo_path.into()),
         }
     }
 

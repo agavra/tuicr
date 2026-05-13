@@ -24,6 +24,7 @@ use crate::model::{
 };
 use crate::output::generate_export_content;
 use crate::persistence::{load_latest_session_for_context, save_session};
+use crate::review_api::ReviewService;
 use crate::theme::resolve_theme_with_config;
 use crate::tuicrignore;
 use crate::vcs::{GitBackendPreference, VcsInfo, detect_vcs};
@@ -112,6 +113,11 @@ pub struct SetReviewedArgs {
 
 #[derive(Clone)]
 pub struct TuicrMcpServer {
+    service: ReviewService,
+}
+
+#[derive(Clone)]
+pub(crate) struct ReviewServiceInner {
     default_repo_path: PathBuf,
     sessions: Arc<Mutex<HashMap<String, ReviewState>>>,
     persist_sessions: bool,
@@ -210,6 +216,48 @@ impl Drop for CwdGuard {
 
 impl TuicrMcpServer {
     pub fn new(default_repo_path: PathBuf) -> Self {
+        Self::from_review_service(ReviewService::new(default_repo_path))
+    }
+
+    fn from_review_service(service: ReviewService) -> Self {
+        Self { service }
+    }
+
+    #[cfg(test)]
+    fn new_ephemeral(default_repo_path: PathBuf) -> Self {
+        Self {
+            service: ReviewService::new_ephemeral(default_repo_path),
+        }
+    }
+
+    #[cfg(test)]
+    fn get_review(&self, args: GetReviewArgs) -> Result<AgentReviewSession> {
+        self.service.get_review(args)
+    }
+
+    #[cfg(test)]
+    fn get_file_diff(&self, args: FileDiffArgs) -> Result<FileDiffView> {
+        self.service.get_file_diff(args)
+    }
+
+    #[cfg(test)]
+    fn add_comment(&self, args: AddCommentArgs) -> Result<AgentReviewSession> {
+        self.service.add_comment(args)
+    }
+
+    #[cfg(test)]
+    fn export_review(&self, args: SessionIdArgs) -> Result<String> {
+        self.service.export_review(args)
+    }
+
+    #[cfg(test)]
+    fn remember(&self, state: ReviewState) -> Result<AgentReviewSession> {
+        self.service.inner.remember(state)
+    }
+}
+
+impl ReviewServiceInner {
+    pub(crate) fn new(default_repo_path: PathBuf) -> Self {
         Self {
             default_repo_path,
             sessions: Arc::new(Mutex::new(HashMap::new())),
@@ -218,7 +266,7 @@ impl TuicrMcpServer {
     }
 
     #[cfg(test)]
-    fn new_ephemeral(default_repo_path: PathBuf) -> Self {
+    pub(crate) fn new_ephemeral(default_repo_path: PathBuf) -> Self {
         Self {
             default_repo_path,
             sessions: Arc::new(Mutex::new(HashMap::new())),
@@ -269,7 +317,7 @@ impl TuicrMcpServer {
         Ok(result)
     }
 
-    pub fn open_review(&self, args: OpenReviewArgs) -> Result<AgentReviewSession> {
+    pub(crate) fn open_review(&self, args: OpenReviewArgs) -> Result<AgentReviewSession> {
         let repo_path = args
             .repo_path
             .clone()
@@ -278,7 +326,7 @@ impl TuicrMcpServer {
         self.remember(state)
     }
 
-    pub fn get_review(&self, args: GetReviewArgs) -> Result<AgentReviewSession> {
+    pub(crate) fn get_review(&self, args: GetReviewArgs) -> Result<AgentReviewSession> {
         match (args.session_id, args.repo_path) {
             (Some(session_id), None) => {
                 self.with_state_read(&session_id, |state| Ok(state.payload()))
@@ -300,7 +348,7 @@ impl TuicrMcpServer {
         }
     }
 
-    pub fn get_file_diff(&self, args: FileDiffArgs) -> Result<FileDiffView> {
+    pub(crate) fn get_file_diff(&self, args: FileDiffArgs) -> Result<FileDiffView> {
         self.with_state_read(&args.session_id, |state| {
             let path = state.resolve_file_path(&args.path)?;
             let file = state.diff_file(&path)?;
@@ -316,7 +364,7 @@ impl TuicrMcpServer {
         })
     }
 
-    pub fn add_comment(&self, args: AddCommentArgs) -> Result<AgentReviewSession> {
+    pub(crate) fn add_comment(&self, args: AddCommentArgs) -> Result<AgentReviewSession> {
         if args.body.trim().is_empty() {
             return Err(TuicrError::Io(std::io::Error::other(
                 "Comment body is required",
@@ -378,7 +426,7 @@ impl TuicrMcpServer {
         })
     }
 
-    pub fn set_file_reviewed(&self, args: SetReviewedArgs) -> Result<AgentReviewSession> {
+    pub(crate) fn set_file_reviewed(&self, args: SetReviewedArgs) -> Result<AgentReviewSession> {
         self.with_state_mut(&args.session_id, |state| {
             let path = state.resolve_file_path(&args.path)?;
             let review = state.file_review_mut(&path)?;
@@ -388,7 +436,7 @@ impl TuicrMcpServer {
         })
     }
 
-    pub fn clear_review(&self, args: SessionIdArgs) -> Result<AgentReviewSession> {
+    pub(crate) fn clear_review(&self, args: SessionIdArgs) -> Result<AgentReviewSession> {
         self.with_state_mut(&args.session_id, |state| {
             state
                 .session
@@ -398,7 +446,7 @@ impl TuicrMcpServer {
         })
     }
 
-    pub fn export_review(&self, args: SessionIdArgs) -> Result<String> {
+    pub(crate) fn export_review(&self, args: SessionIdArgs) -> Result<String> {
         self.with_state_read(&args.session_id, |state| {
             generate_export_content(
                 &state.session,
@@ -445,49 +493,59 @@ impl ServerHandler for TuicrMcpServer {
             match name {
                 "open_review" => {
                     let args = parse_args(args)?;
-                    Ok(tool_result_from(server.open_review(args), |session| {
-                        session_result(session, "Opened tuicr review.")
-                    }))
+                    Ok(tool_result_from(
+                        server.service.open_review(args),
+                        |session| session_result(session, "Opened tuicr review."),
+                    ))
                 }
                 "get_review" => {
                     let args = parse_args(args)?;
-                    Ok(tool_result_from(server.get_review(args), |session| {
-                        session_result(session, "Loaded tuicr review.")
-                    }))
+                    Ok(tool_result_from(
+                        server.service.get_review(args),
+                        |session| session_result(session, "Loaded tuicr review."),
+                    ))
                 }
                 "get_file_diff" => {
                     let args = parse_args(args)?;
-                    Ok(tool_result_from(server.get_file_diff(args), |payload| {
-                        tool_result(vec![Content::text(payload.diff.clone())], json!(payload))
-                    }))
+                    Ok(tool_result_from(
+                        server.service.get_file_diff(args),
+                        |payload| {
+                            tool_result(vec![Content::text(payload.diff.clone())], json!(payload))
+                        },
+                    ))
                 }
                 "add_comment" => {
                     let args = parse_args(args)?;
-                    Ok(tool_result_from(server.add_comment(args), |session| {
-                        session_result(session, "Comment added.")
-                    }))
+                    Ok(tool_result_from(
+                        server.service.add_comment(args),
+                        |session| session_result(session, "Comment added."),
+                    ))
                 }
                 "set_file_reviewed" => {
                     let args = parse_args(args)?;
                     Ok(tool_result_from(
-                        server.set_file_reviewed(args),
+                        server.service.set_file_reviewed(args),
                         |session| session_result(session, "Review state updated."),
                     ))
                 }
                 "clear_review" => {
                     let args = parse_args(args)?;
-                    Ok(tool_result_from(server.clear_review(args), |session| {
-                        session_result(session, "Review cleared.")
-                    }))
+                    Ok(tool_result_from(
+                        server.service.clear_review(args),
+                        |session| session_result(session, "Review cleared."),
+                    ))
                 }
                 "export_review" => {
                     let args = parse_args(args)?;
-                    Ok(tool_result_from(server.export_review(args), |markdown| {
-                        tool_result(
-                            vec![Content::text(markdown.clone())],
-                            json!({ "markdown": markdown }),
-                        )
-                    }))
+                    Ok(tool_result_from(
+                        server.service.export_review(args),
+                        |markdown| {
+                            tool_result(
+                                vec![Content::text(markdown.clone())],
+                                json!({ "markdown": markdown }),
+                            )
+                        },
+                    ))
                 }
                 _ => Err(McpError::invalid_params(
                     format!("Unknown tuicr tool: {name}"),
@@ -505,7 +563,8 @@ pub fn run_stdio_blocking() -> anyhow::Result<()> {
         .enable_time()
         .build()?;
     runtime.block_on(async move {
-        let service = TuicrMcpServer::new(default_repo_path)
+        let review_service = ReviewService::new(default_repo_path);
+        let service = TuicrMcpServer::from_review_service(review_service)
             .serve(stdio())
             .await?;
         service.waiting().await?;
