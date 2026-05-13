@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use chrono::Utc;
@@ -17,6 +17,7 @@ use serde_json::{Value, json};
 use crate::app::{App, CommentTypeDefinition, DiffSource};
 use crate::config::{self, CommentTypeConfig, ConfigLoadOutcome};
 use crate::error::{Result, TuicrError};
+use crate::model::review::FileReview;
 use crate::model::{
     ClearScope, Comment, CommentType, DiffFile, DiffLine, FileStatus, LineOrigin, LineRange,
     LineSide, ReviewSession, SessionDiffSource,
@@ -29,6 +30,8 @@ use crate::vcs::{VcsInfo, detect_vcs};
 
 const SERVER_NAME: &str = "tuicr-mcp";
 const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
+const DEFAULT_MAX_DIFF_LINES: usize = 500;
+const MAX_DIFF_LINES: usize = 5_000;
 
 static CWD_LOCK: Mutex<()> = Mutex::new(());
 
@@ -132,8 +135,17 @@ struct AgentReviewSession {
     diff_source: String,
     created_at: String,
     updated_at: String,
+    comment_types: Vec<AgentCommentType>,
     review_comments: Vec<AgentReviewComment>,
     files: Vec<AgentReviewFile>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentCommentType {
+    id: String,
+    label: String,
+    definition: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -213,7 +225,22 @@ impl TuicrMcpServer {
         Ok(payload)
     }
 
-    fn with_state<R>(
+    fn with_state_read<R>(
+        &self,
+        session_id: &str,
+        f: impl FnOnce(&ReviewState) -> Result<R>,
+    ) -> Result<R> {
+        let sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| TuicrError::Io(std::io::Error::other("MCP session store poisoned")))?;
+        let state = sessions
+            .get(session_id)
+            .ok_or_else(|| TuicrError::Io(std::io::Error::other("Unknown review session")))?;
+        f(state)
+    }
+
+    fn with_state_mut<R>(
         &self,
         session_id: &str,
         f: impl FnOnce(&mut ReviewState) -> Result<R>,
@@ -243,7 +270,9 @@ impl TuicrMcpServer {
 
     fn get_review(&self, args: GetReviewArgs) -> Result<AgentReviewSession> {
         match (args.session_id, args.repo_path) {
-            (Some(session_id), None) => self.with_state(&session_id, |state| Ok(state.payload())),
+            (Some(session_id), None) => {
+                self.with_state_read(&session_id, |state| Ok(state.payload()))
+            }
             (None, Some(repo_path)) => self.open_review(OpenReviewArgs {
                 repo_path: Some(repo_path),
                 diff_source: args.diff_source,
@@ -262,23 +291,17 @@ impl TuicrMcpServer {
     }
 
     fn get_file_diff(&self, args: FileDiffArgs) -> Result<Value> {
-        self.with_state(&args.session_id, |state| {
-            let file = state
-                .diff_files
-                .iter()
-                .find(|file| file.display_path() == &args.path)
-                .ok_or_else(|| {
-                    TuicrError::Io(std::io::Error::other(format!(
-                        "Unknown review file: {}",
-                        args.path.display()
-                    )))
-                })?;
-            let (diff, truncated) = render_file_diff(file, args.max_lines.unwrap_or(500));
+        self.with_state_read(&args.session_id, |state| {
+            let path = state.resolve_file_path(&args.path)?;
+            let file = state.diff_file(&path)?;
+            let max_lines = validate_max_lines(args.max_lines)?;
+            let (diff, truncated) = render_file_diff(file, max_lines);
             Ok(json!({
                 "session": state.payload(),
-                "path": args.path,
+                "path": path,
                 "diff": diff,
                 "truncated": truncated,
+                "maxLines": max_lines,
             }))
         })
     }
@@ -289,7 +312,7 @@ impl TuicrMcpServer {
                 "Comment body is required",
             )));
         }
-        self.with_state(&args.session_id, |state| {
+        self.with_state_mut(&args.session_id, |state| {
             let comment_type = CommentType::from_id(args.comment_type.as_deref().unwrap_or("note"));
             match args.scope {
                 CommentScope::Review => {
@@ -300,15 +323,11 @@ impl TuicrMcpServer {
                     ));
                 }
                 CommentScope::File => {
-                    let path = args.path.ok_or_else(|| {
+                    let raw_path = args.path.ok_or_else(|| {
                         TuicrError::Io(std::io::Error::other("File comments require path"))
                     })?;
-                    let review = state.session.get_file_mut(&path).ok_or_else(|| {
-                        TuicrError::Io(std::io::Error::other(format!(
-                            "Unknown review file: {}",
-                            path.display()
-                        )))
-                    })?;
+                    let path = state.resolve_file_path(&raw_path)?;
+                    let review = state.file_review_mut(&path)?;
                     review.add_file_comment(Comment::new(
                         args.body.trim().to_string(),
                         comment_type,
@@ -316,19 +335,15 @@ impl TuicrMcpServer {
                     ));
                 }
                 CommentScope::Line => {
-                    let path = args.path.ok_or_else(|| {
+                    let raw_path = args.path.ok_or_else(|| {
                         TuicrError::Io(std::io::Error::other("Line comments require path"))
                     })?;
                     let line = args.line.ok_or_else(|| {
                         TuicrError::Io(std::io::Error::other("Line comments require line"))
                     })?;
                     let side = args.side.unwrap_or(LineSide::New);
-                    let review = state.session.get_file_mut(&path).ok_or_else(|| {
-                        TuicrError::Io(std::io::Error::other(format!(
-                            "Unknown review file: {}",
-                            path.display()
-                        )))
-                    })?;
+                    let path = state.resolve_file_path(&raw_path)?;
+                    let review = state.file_review_mut(&path)?;
                     if let Some(end_line) = args.end_line.filter(|end| *end != line) {
                         let range = LineRange::new(line, end_line);
                         review.add_line_comment(
@@ -354,13 +369,9 @@ impl TuicrMcpServer {
     }
 
     fn set_file_reviewed(&self, args: SetReviewedArgs) -> Result<AgentReviewSession> {
-        self.with_state(&args.session_id, |state| {
-            let review = state.session.get_file_mut(&args.path).ok_or_else(|| {
-                TuicrError::Io(std::io::Error::other(format!(
-                    "Unknown review file: {}",
-                    args.path.display()
-                )))
-            })?;
+        self.with_state_mut(&args.session_id, |state| {
+            let path = state.resolve_file_path(&args.path)?;
+            let review = state.file_review_mut(&path)?;
             review.reviewed = args.reviewed;
             state.session.updated_at = Utc::now();
             Ok(state.payload())
@@ -368,7 +379,7 @@ impl TuicrMcpServer {
     }
 
     fn clear_review(&self, args: SessionIdArgs) -> Result<AgentReviewSession> {
-        self.with_state(&args.session_id, |state| {
+        self.with_state_mut(&args.session_id, |state| {
             state
                 .session
                 .clear_comments(ClearScope::CommentsAndReviewed);
@@ -378,7 +389,7 @@ impl TuicrMcpServer {
     }
 
     fn export_review(&self, args: SessionIdArgs) -> Result<String> {
-        self.with_state(&args.session_id, |state| {
+        self.with_state_read(&args.session_id, |state| {
             generate_export_content(
                 &state.session,
                 &state.diff_source,
@@ -423,42 +434,55 @@ impl ServerHandler for TuicrMcpServer {
             let args = request.arguments.unwrap_or_default();
             match name {
                 "open_review" => {
-                    let session = server.open_review(parse_args(args)?).map_err(mcp_error)?;
-                    Ok(session_result(session, "Opened tuicr review."))
+                    let args = parse_args(args)?;
+                    Ok(tool_result_from(server.open_review(args), |session| {
+                        session_result(session, "Opened tuicr review.")
+                    }))
                 }
                 "get_review" => {
-                    let session = server.get_review(parse_args(args)?).map_err(mcp_error)?;
-                    Ok(session_result(session, "Loaded tuicr review."))
+                    let args = parse_args(args)?;
+                    Ok(tool_result_from(server.get_review(args), |session| {
+                        session_result(session, "Loaded tuicr review.")
+                    }))
                 }
                 "get_file_diff" => {
-                    let payload = server.get_file_diff(parse_args(args)?).map_err(mcp_error)?;
-                    let diff = payload
-                        .get("diff")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_string();
-                    Ok(tool_result(vec![Content::text(diff)], payload))
+                    let args = parse_args(args)?;
+                    Ok(tool_result_from(server.get_file_diff(args), |payload| {
+                        let diff = payload
+                            .get("diff")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string();
+                        tool_result(vec![Content::text(diff)], payload)
+                    }))
                 }
                 "add_comment" => {
-                    let session = server.add_comment(parse_args(args)?).map_err(mcp_error)?;
-                    Ok(session_result(session, "Comment added."))
+                    let args = parse_args(args)?;
+                    Ok(tool_result_from(server.add_comment(args), |session| {
+                        session_result(session, "Comment added.")
+                    }))
                 }
                 "set_file_reviewed" => {
-                    let session = server
-                        .set_file_reviewed(parse_args(args)?)
-                        .map_err(mcp_error)?;
-                    Ok(session_result(session, "Review state updated."))
+                    let args = parse_args(args)?;
+                    Ok(tool_result_from(
+                        server.set_file_reviewed(args),
+                        |session| session_result(session, "Review state updated."),
+                    ))
                 }
                 "clear_review" => {
-                    let session = server.clear_review(parse_args(args)?).map_err(mcp_error)?;
-                    Ok(session_result(session, "Review cleared."))
+                    let args = parse_args(args)?;
+                    Ok(tool_result_from(server.clear_review(args), |session| {
+                        session_result(session, "Review cleared.")
+                    }))
                 }
                 "export_review" => {
-                    let markdown = server.export_review(parse_args(args)?).map_err(mcp_error)?;
-                    Ok(tool_result(
-                        vec![Content::text(markdown.clone())],
-                        json!({ "markdown": markdown }),
-                    ))
+                    let args = parse_args(args)?;
+                    Ok(tool_result_from(server.export_review(args), |markdown| {
+                        tool_result(
+                            vec![Content::text(markdown.clone())],
+                            json!({ "markdown": markdown }),
+                        )
+                    }))
                 }
                 _ => Err(McpError::invalid_params(
                     format!("Unknown tuicr tool: {name}"),
@@ -487,10 +511,6 @@ pub fn run_stdio_blocking() -> anyhow::Result<()> {
 fn parse_args<T: for<'de> Deserialize<'de>>(args: JsonObject) -> std::result::Result<T, McpError> {
     serde_json::from_value(Value::Object(args))
         .map_err(|error| McpError::invalid_params(format!("Invalid tool arguments: {error}"), None))
-}
-
-fn mcp_error(error: TuicrError) -> McpError {
-    McpError::internal_error(error.to_string(), None)
 }
 
 fn load_review_state(repo_path: &Path, args: OpenReviewArgs) -> Result<ReviewState> {
@@ -649,6 +669,11 @@ impl ReviewState {
             diff_source: diff_source_label(&self.diff_source).to_string(),
             created_at: self.session.created_at.to_rfc3339(),
             updated_at: self.session.updated_at.to_rfc3339(),
+            comment_types: self
+                .comment_types
+                .iter()
+                .map(comment_type_payload)
+                .collect(),
             review_comments: self
                 .session
                 .review_comments
@@ -706,6 +731,52 @@ impl ReviewState {
             line_comments,
         }
     }
+
+    fn resolve_file_path(&self, path: &Path) -> Result<PathBuf> {
+        let normalized = normalize_review_path(path, &self.session.repo_path);
+        if self.session.files.contains_key(&normalized) {
+            return Ok(normalized);
+        }
+
+        if let Some(file) = self
+            .diff_files
+            .iter()
+            .find(|file| path_matches_file(&normalized, file))
+        {
+            return Ok(file.display_path().clone());
+        }
+
+        if let Some(file) = self
+            .diff_files
+            .iter()
+            .find(|file| path_matches_file(path, file))
+        {
+            return Ok(file.display_path().clone());
+        }
+
+        Err(unknown_file_error(path, &self.diff_files))
+    }
+
+    fn diff_file(&self, path: &Path) -> Result<&DiffFile> {
+        self.diff_files
+            .iter()
+            .find(|file| path_matches_file(path, file))
+            .ok_or_else(|| unknown_file_error(path, &self.diff_files))
+    }
+
+    fn file_review_mut(&mut self, path: &Path) -> Result<&mut FileReview> {
+        self.session
+            .get_file_mut(&path.to_path_buf())
+            .ok_or_else(|| unknown_file_error(path, &self.diff_files))
+    }
+}
+
+fn comment_type_payload(comment_type: &CommentTypeDefinition) -> AgentCommentType {
+    AgentCommentType {
+        id: comment_type.id.clone(),
+        label: comment_type.label.clone(),
+        definition: comment_type.definition.clone(),
+    }
 }
 
 fn comment_payload(
@@ -726,6 +797,63 @@ fn comment_payload(
         end_line: range.map(|range| range.end),
         side: comment.side.unwrap_or_default(),
     }
+}
+
+fn normalize_review_path(path: &Path, repo_path: &Path) -> PathBuf {
+    let stripped = path.strip_prefix(repo_path).unwrap_or(path);
+    let mut normalized = PathBuf::new();
+    for component in stripped.components() {
+        match component {
+            Component::CurDir => {}
+            Component::Normal(segment) => normalized.push(segment),
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::RootDir | Component::Prefix(_) => {}
+        }
+    }
+    normalized
+}
+
+fn path_matches_file(path: &Path, file: &DiffFile) -> bool {
+    file.display_path() == path
+        || file.new_path.as_deref() == Some(path)
+        || file.old_path.as_deref() == Some(path)
+}
+
+fn unknown_file_error(path: &Path, diff_files: &[DiffFile]) -> TuicrError {
+    let mut known: Vec<_> = diff_files
+        .iter()
+        .take(8)
+        .map(|file| file.display_path().display().to_string())
+        .collect();
+    if diff_files.len() > known.len() {
+        known.push(format!("...and {} more", diff_files.len() - known.len()));
+    }
+    let hint = if known.is_empty() {
+        "No files are loaded in this review.".to_string()
+    } else {
+        format!("Known files: {}", known.join(", "))
+    };
+    TuicrError::Io(std::io::Error::other(format!(
+        "Unknown review file: {}. {hint}",
+        path.display()
+    )))
+}
+
+fn validate_max_lines(max_lines: Option<usize>) -> Result<usize> {
+    let max_lines = max_lines.unwrap_or(DEFAULT_MAX_DIFF_LINES);
+    if max_lines == 0 {
+        return Err(TuicrError::Io(std::io::Error::other(
+            "maxLines must be at least 1",
+        )));
+    }
+    if max_lines > MAX_DIFF_LINES {
+        return Err(TuicrError::Io(std::io::Error::other(format!(
+            "maxLines must be at most {MAX_DIFF_LINES}"
+        ))));
+    }
+    Ok(max_lines)
 }
 
 fn file_status_label(status: FileStatus) -> &'static str {
@@ -821,6 +949,15 @@ fn session_summary(session: &AgentReviewSession) -> String {
         ),
         format!("Diff source: {}", session.diff_source),
         format!("Files: {}", session.files.len()),
+        format!(
+            "Comment types: {}",
+            session
+                .comment_types
+                .iter()
+                .map(|comment_type| comment_type.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
     ];
     if session.files.is_empty() {
         lines.push("Loaded files: none".to_string());
@@ -857,6 +994,23 @@ fn tool_result(content: Vec<Content>, structured_content: Value) -> CallToolResu
     result
 }
 
+fn tool_result_from<T>(
+    result: Result<T>,
+    success: impl FnOnce(T) -> CallToolResult,
+) -> CallToolResult {
+    match result {
+        Ok(value) => success(value),
+        Err(error) => tool_error(error),
+    }
+}
+
+fn tool_error(error: TuicrError) -> CallToolResult {
+    let message = error.to_string();
+    let mut result = CallToolResult::error(vec![Content::text(message.clone())]);
+    result.structured_content = Some(json!({ "error": message }));
+    result
+}
+
 fn tools() -> Vec<Tool> {
     vec![
         tool(
@@ -866,19 +1020,20 @@ fn tools() -> Vec<Tool> {
             json_schema(json!({
                 "type": "object",
                 "properties": {
-                    "repoPath": { "type": "string" },
-                    "diffSource": { "type": "string", "enum": ["working_tree", "staged", "unstaged"] },
-                    "revisions": { "type": "string" },
-                    "includeWorkingTree": { "type": "boolean" },
-                    "path": { "type": "string" },
-                    "file": { "type": "string" }
-                }
+                    "repoPath": { "type": "string", "description": "Local repository path. Defaults to the server process working directory." },
+                    "diffSource": { "type": "string", "enum": ["working_tree", "staged", "unstaged"], "description": "Local diff source. Ignored when revisions is provided except includeWorkingTree can add local changes." },
+                    "revisions": { "type": "string", "description": "Revision range or revset to review, using the active VCS syntax." },
+                    "includeWorkingTree": { "type": "boolean", "description": "When revisions is set, also include local working tree changes." },
+                    "path": { "type": "string", "description": "Optional repository-relative path filter." },
+                    "file": { "type": "string", "description": "Optional single file path for no-VCS annotation mode." }
+                },
+                "additionalProperties": false
             })),
         ),
         tool(
             "get_review",
             "Get tuicr review",
-            "Return an in-memory review session by sessionId, or open/refresh one by repoPath.",
+            "Return an in-memory review session by sessionId, or open/refresh one by repoPath. Provide exactly one of sessionId or repoPath.",
             json_schema(json!({
                 "type": "object",
                 "properties": {
@@ -888,7 +1043,12 @@ fn tools() -> Vec<Tool> {
                     "revisions": { "type": "string" },
                     "includeWorkingTree": { "type": "boolean" },
                     "path": { "type": "string" }
-                }
+                },
+                "oneOf": [
+                    { "required": ["sessionId"], "not": { "required": ["repoPath"] } },
+                    { "required": ["repoPath"], "not": { "required": ["sessionId"] } }
+                ],
+                "additionalProperties": false
             })),
         ),
         tool(
@@ -900,9 +1060,10 @@ fn tools() -> Vec<Tool> {
                 "required": ["sessionId", "path"],
                 "properties": {
                     "sessionId": { "type": "string" },
-                    "path": { "type": "string" },
-                    "maxLines": { "type": "integer", "minimum": 1, "maximum": 5000 }
-                }
+                    "path": { "type": "string", "description": "Repository-relative or absolute path for a file loaded in the review. Old paths for renames are accepted." },
+                    "maxLines": { "type": "integer", "minimum": 1, "maximum": MAX_DIFF_LINES, "description": "Maximum rendered diff lines to return. Defaults to 500." }
+                },
+                "additionalProperties": false
             })),
         ),
         tool(
@@ -919,9 +1080,10 @@ fn tools() -> Vec<Tool> {
                     "line": { "type": "integer", "minimum": 1 },
                     "endLine": { "type": "integer", "minimum": 1 },
                     "side": { "type": "string", "enum": ["old", "new"] },
-                    "type": { "type": "string" },
+                    "type": { "type": "string", "description": "Comment type id. Use one of session.commentTypes; defaults to note." },
                     "body": { "type": "string" }
-                }
+                },
+                "additionalProperties": false
             })),
         ),
         tool(
@@ -933,9 +1095,10 @@ fn tools() -> Vec<Tool> {
                 "required": ["sessionId", "path", "reviewed"],
                 "properties": {
                     "sessionId": { "type": "string" },
-                    "path": { "type": "string" },
+                    "path": { "type": "string", "description": "Repository-relative or absolute path for a file loaded in the review." },
                     "reviewed": { "type": "boolean" }
-                }
+                },
+                "additionalProperties": false
             })),
         ),
         tool(
@@ -945,7 +1108,8 @@ fn tools() -> Vec<Tool> {
             json_schema(json!({
                 "type": "object",
                 "required": ["sessionId"],
-                "properties": { "sessionId": { "type": "string" } }
+                "properties": { "sessionId": { "type": "string" } },
+                "additionalProperties": false
             })),
         ),
         tool(
@@ -955,7 +1119,8 @@ fn tools() -> Vec<Tool> {
             json_schema(json!({
                 "type": "object",
                 "required": ["sessionId"],
-                "properties": { "sessionId": { "type": "string" } }
+                "properties": { "sessionId": { "type": "string" } },
+                "additionalProperties": false
             })),
         ),
     ]
@@ -1075,6 +1240,29 @@ mod tests {
         }
     }
 
+    fn remembered_server_with_file(path: &str) -> (TuicrMcpServer, String) {
+        let dir = tempdir().expect("tempdir");
+        let server = TuicrMcpServer::new_ephemeral(dir.path().to_path_buf());
+        let mut session = ReviewSession::new(
+            dir.path().to_path_buf(),
+            "HEAD".to_string(),
+            Some("main".to_string()),
+            SessionDiffSource::StagedAndUnstaged,
+        );
+        let file = diff_file(path);
+        session.add_file(file.display_path().clone(), file.status, file.content_hash);
+        let session_id = session.id.clone();
+        server
+            .remember(ReviewState {
+                session,
+                diff_files: vec![file],
+                diff_source: DiffSource::StagedAndUnstaged,
+                comment_types: default_comment_types(),
+            })
+            .expect("remember");
+        (server, session_id)
+    }
+
     #[test]
     fn file_diff_renders_agent_readable_line_numbers() {
         let (rendered, truncated) = render_file_diff(&diff_file("src/main.rs"), 100);
@@ -1092,6 +1280,139 @@ mod tests {
         assert!(tool_list.iter().any(|tool| tool.name == "open_review"));
         assert!(tool_list.iter().all(|tool| tool.meta.is_none()));
         assert!(tool_list.iter().all(|tool| tool.name != "resource_link"));
+    }
+
+    #[test]
+    fn tool_errors_are_reported_as_tool_results() {
+        let result = tool_error(TuicrError::NoComments);
+
+        assert_eq!(result.is_error, Some(true));
+        assert!(
+            result.content[0]
+                .as_text()
+                .is_some_and(|text| text.text.contains("No comments"))
+        );
+        assert!(result.structured_content.is_some());
+    }
+
+    #[test]
+    fn session_payload_includes_comment_types() {
+        let (server, session_id) = remembered_server_with_file("src/main.rs");
+
+        let session = server
+            .get_review(GetReviewArgs {
+                session_id: Some(session_id),
+                repo_path: None,
+                diff_source: None,
+                revisions: None,
+                include_working_tree: None,
+                path: None,
+            })
+            .expect("get review");
+
+        assert!(session.comment_types.iter().any(|kind| kind.id == "note"));
+        assert!(session.comment_types.iter().any(|kind| kind.id == "issue"));
+        assert_eq!(session.files[0].added_lines, 1);
+        assert_eq!(session.files[0].removed_lines, 1);
+    }
+
+    #[test]
+    fn file_diff_accepts_absolute_path_under_repo() {
+        let dir = tempdir().expect("tempdir");
+        let server = TuicrMcpServer::new_ephemeral(dir.path().to_path_buf());
+        let mut session = ReviewSession::new(
+            dir.path().to_path_buf(),
+            "HEAD".to_string(),
+            Some("main".to_string()),
+            SessionDiffSource::StagedAndUnstaged,
+        );
+        let file = diff_file("src/main.rs");
+        session.add_file(file.display_path().clone(), file.status, file.content_hash);
+        let session_id = session.id.clone();
+        server
+            .remember(ReviewState {
+                session,
+                diff_files: vec![file],
+                diff_source: DiffSource::StagedAndUnstaged,
+                comment_types: default_comment_types(),
+            })
+            .expect("remember");
+
+        let payload = server
+            .get_file_diff(FileDiffArgs {
+                session_id,
+                path: dir.path().join("src/main.rs"),
+                max_lines: Some(100),
+            })
+            .expect("get file diff");
+
+        assert_eq!(payload["path"], "src/main.rs");
+        assert!(
+            payload["diff"]
+                .as_str()
+                .unwrap()
+                .contains("File: src/main.rs")
+        );
+    }
+
+    #[test]
+    fn max_lines_above_limit_is_rejected() {
+        let (server, session_id) = remembered_server_with_file("src/main.rs");
+
+        let error = server
+            .get_file_diff(FileDiffArgs {
+                session_id,
+                path: PathBuf::from("src/main.rs"),
+                max_lines: Some(MAX_DIFF_LINES + 1),
+            })
+            .expect_err("max lines should be rejected");
+
+        assert!(error.to_string().contains("maxLines must be at most"));
+    }
+
+    #[test]
+    fn file_comment_accepts_old_path_for_renamed_file() {
+        let dir = tempdir().expect("tempdir");
+        let server = TuicrMcpServer::new_ephemeral(dir.path().to_path_buf());
+        let mut session = ReviewSession::new(
+            dir.path().to_path_buf(),
+            "HEAD".to_string(),
+            Some("main".to_string()),
+            SessionDiffSource::StagedAndUnstaged,
+        );
+        let mut file = diff_file("src/new.rs");
+        file.status = FileStatus::Renamed;
+        file.old_path = Some(PathBuf::from("src/old.rs"));
+        file.new_path = Some(PathBuf::from("src/new.rs"));
+        session.add_file(file.display_path().clone(), file.status, file.content_hash);
+        let session_id = session.id.clone();
+        server
+            .remember(ReviewState {
+                session,
+                diff_files: vec![file],
+                diff_source: DiffSource::StagedAndUnstaged,
+                comment_types: default_comment_types(),
+            })
+            .expect("remember");
+
+        let session = server
+            .add_comment(AddCommentArgs {
+                session_id,
+                scope: CommentScope::File,
+                path: Some(PathBuf::from("src/old.rs")),
+                line: None,
+                end_line: None,
+                side: None,
+                comment_type: Some("suggestion".to_string()),
+                body: "Keep the rename comment attached to the reviewed file".to_string(),
+            })
+            .expect("add comment with old path");
+
+        assert_eq!(session.files[0].path, PathBuf::from("src/new.rs"));
+        assert_eq!(
+            session.files[0].file_comments[0].path,
+            Some(PathBuf::from("src/new.rs"))
+        );
     }
 
     #[test]
