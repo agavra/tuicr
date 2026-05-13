@@ -32,18 +32,13 @@ const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 static CWD_LOCK: Mutex<()> = Mutex::new(());
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum McpDiffSource {
+    #[default]
     WorkingTree,
     Staged,
     Unstaged,
-}
-
-impl Default for McpDiffSource {
-    fn default() -> Self {
-        Self::WorkingTree
-    }
 }
 
 #[derive(Debug, Default, Deserialize)]
