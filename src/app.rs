@@ -3781,6 +3781,34 @@ impl App {
         }
     }
 
+    /// Toggle the cursor commit's membership in the selection range, then
+    /// (only if the cursor commit was newly added to the selection) move the
+    /// cursor past the end of the range. Lets the user press Enter/Space
+    /// repeatedly to sweep a contiguous run of commits.
+    ///
+    /// Other toggle outcomes leave the cursor in place: edge presses
+    /// (deselect the cursor commit), middle presses (truncate the range
+    /// without unselecting the cursor commit), and clearing the last
+    /// selection. Those aren't "sweep" actions, so advancing would surprise.
+    pub fn toggle_commit_selection_and_advance(&mut self) {
+        let cursor = self.commit_list_cursor;
+        let was_selected = self.is_commit_selected(cursor);
+        self.toggle_commit_selection();
+        let now_selected = self.is_commit_selected(cursor);
+        if was_selected || !now_selected {
+            return;
+        }
+        if let Some((_, end)) = self.commit_selection_range {
+            while self.commit_list_cursor <= end {
+                let before = self.commit_list_cursor;
+                self.commit_select_down();
+                if self.commit_list_cursor == before {
+                    return;
+                }
+            }
+        }
+    }
+
     // Check if cursor is on the commit expand row
     pub fn is_on_expand_row(&self) -> bool {
         self.can_show_more_commits() && self.commit_list_cursor == self.visible_commit_count
@@ -3849,9 +3877,8 @@ impl App {
                         // At end edge - shrink from end
                         self.commit_selection_range = Some((start, end - 1));
                     } else {
-                        // In the middle - shrink towards cursor (exclude everything after cursor)
-                        // This makes the cursor the new end of the range
-                        self.commit_selection_range = Some((start, cursor));
+                        // In the middle - deselect cursor and everything after it
+                        self.commit_selection_range = Some((start, cursor - 1));
                     }
                 } else {
                     // Cursor is outside the range - extend to include it

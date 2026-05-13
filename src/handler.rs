@@ -577,7 +577,8 @@ pub fn handle_commit_select_action(app: &mut App, action: Action) {
                     app.set_error(format!("Failed to load commits: {e}"));
                 }
             } else {
-                app.toggle_commit_selection()
+                // Toggle + auto-advance so repeated Space sweeps a range.
+                app.toggle_commit_selection_and_advance();
             }
         }
         Action::ConfirmCommitSelect => {
@@ -608,9 +609,9 @@ pub fn handle_commit_selector_action(app: &mut App, action: Action) {
     match action {
         Action::CursorDown(_) => app.commit_select_down(),
         Action::CursorUp(_) => app.commit_select_up(),
-        // Space/Enter toggle selection
+        // Toggle + auto-advance so repeated presses sweep a contiguous run.
         Action::ToggleExpand | Action::ToggleCommitSelect | Action::SelectFile => {
-            app.toggle_commit_selection();
+            app.toggle_commit_selection_and_advance();
             if let Err(e) = app.reload_inline_selection() {
                 app.set_error(format!("Failed to load diff: {e}"));
             }
