@@ -224,6 +224,13 @@ mod tests {
         ) -> Result<String> {
             Ok(self.patch.clone())
         }
+        fn create_review(
+            &self,
+            _pr: &PullRequestDetails,
+            _request: crate::forge::traits::CreateReviewRequest<'_>,
+        ) -> Result<crate::forge::traits::GhCreateReviewResponse> {
+            unimplemented!()
+        }
     }
 
     const SIMPLE_PATCH: &str = r##"diff --git a/src/lib.rs b/src/lib.rs

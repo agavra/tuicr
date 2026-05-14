@@ -4,14 +4,19 @@ use std::path::{Path, PathBuf};
 use crate::error::{Result, TuicrError};
 use crate::forge::remote_comments::RemoteReviewThread;
 use crate::forge::traits::{
-    ForgeBackend, ForgeFileLinesRequest, ForgeRepository, PagedPullRequests, PullRequestCommit,
-    PullRequestDetails, PullRequestListQuery, PullRequestTarget,
+    ForgeBackend, ForgeFileLinesRequest, ForgeRepository, GhCreateReviewResponse,
+    PagedPullRequests, PullRequestCommit, PullRequestDetails, PullRequestListQuery,
+    PullRequestTarget,
 };
 use crate::model::{DiffLine, LineOrigin};
-use crate::process::{CommandOutputError, CommandOutputErrorKind, run_command_output};
+use crate::process::{
+    CommandOutputError, CommandOutputErrorKind, run_command_output, run_command_output_with_stdin,
+};
 
 use super::models::{GhPrCommit, GhPullRequestDetails, GhPullRequestSummary};
 use super::review_threads::{build_query, parse_graphql_page};
+use super::submit::build_review_payload;
+use crate::forge::traits::CreateReviewRequest;
 
 const DEFAULT_GITHUB_HOST: &str = "github.com";
 const PR_LIST_JSON_FIELDS: &str =
@@ -31,6 +36,13 @@ pub type GhCommandResult<T> = std::result::Result<T, GhCommandError>;
 
 pub trait GhCommandRunner {
     fn run(&self, args: &[String]) -> GhCommandResult<String>;
+
+    /// Variant for `gh` invocations that take their payload on stdin (e.g.
+    /// `gh api ... --input -`). The default panics; concrete runners that
+    /// might be reached by code needing stdin must override.
+    fn run_with_stdin(&self, _args: &[String], _stdin: &str) -> GhCommandResult<String> {
+        panic!("run_with_stdin not implemented for this GhCommandRunner");
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -40,6 +52,16 @@ impl GhCommandRunner for SystemGhRunner {
     fn run(&self, args: &[String]) -> GhCommandResult<String> {
         run_command_output("gh", None, args.iter().map(|arg| OsStr::new(arg.as_str())))
             .map_err(GhCommandError::from)
+    }
+
+    fn run_with_stdin(&self, args: &[String], stdin: &str) -> GhCommandResult<String> {
+        run_command_output_with_stdin(
+            "gh",
+            None,
+            args.iter().map(|arg| OsStr::new(arg.as_str())),
+            stdin,
+        )
+        .map_err(GhCommandError::from)
     }
 }
 
@@ -364,6 +386,44 @@ where
             request.end_line,
         ))
     }
+
+    fn create_review(
+        &self,
+        pr: &PullRequestDetails,
+        request: CreateReviewRequest<'_>,
+    ) -> Result<GhCreateReviewResponse> {
+        let payload = build_review_payload(
+            request.commit_id,
+            request.body,
+            request.event,
+            request.comments,
+        );
+        let payload_json = serde_json::to_string(&payload)?;
+
+        let endpoint = format!(
+            "repos/{}/{}/pulls/{}/reviews",
+            pr.repository.owner, pr.repository.name, pr.number,
+        );
+        let mut args = vec![
+            "api".to_string(),
+            endpoint,
+            "--method".to_string(),
+            "POST".to_string(),
+            "--input".to_string(),
+            "-".to_string(),
+        ];
+        if pr.repository.host != DEFAULT_GITHUB_HOST {
+            args.push("--hostname".to_string());
+            args.push(pr.repository.host.clone());
+        }
+
+        let output = self
+            .runner
+            .run_with_stdin(&args, &payload_json)
+            .map_err(|err| map_create_review_error(err, &pr.repository.host))?;
+
+        parse_create_review_response(&output)
+    }
 }
 
 impl<R> GitHubGhBackend<R>
@@ -628,6 +688,54 @@ fn looks_like_auth_failure(stderr: &str) -> bool {
         || lower.contains("requires authentication")
 }
 
+fn looks_like_permission_failure(stderr: &str) -> bool {
+    let lower = stderr.to_ascii_lowercase();
+    lower.contains("resource not accessible by integration")
+        || lower.contains("must have pull request write")
+        || lower.contains("http 403")
+        || lower.contains("status: 403")
+        || lower.contains("403 forbidden")
+}
+
+/// Error mapping specific to create-review. Permission failures get their
+/// own message per the spec; other failures fall through to the standard
+/// missing-gh / auth / generic mapping.
+fn map_create_review_error(error: GhCommandError, host: &str) -> TuicrError {
+    if let GhCommandError::Failed { stderr, .. } = &error
+        && looks_like_permission_failure(stderr)
+    {
+        return TuicrError::Forge(
+            "Cannot submit review: GitHub token lacks pull request write permission.".to_string(),
+        );
+    }
+    map_gh_error(error, host)
+}
+
+/// Parse the GitHub `pulls/<n>/reviews` response into our minimal shape.
+/// GitHub returns more fields; we only extract what the App needs.
+fn parse_create_review_response(output: &str) -> Result<GhCreateReviewResponse> {
+    let value: serde_json::Value = serde_json::from_str(output)?;
+    let id = value
+        .get("id")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| TuicrError::Forge("Create-review response missing `id`".to_string()))?;
+    let html_url = value
+        .get("html_url")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let state = value
+        .get("state")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    Ok(GhCreateReviewResponse {
+        id,
+        html_url,
+        state,
+    })
+}
+
 fn malformed_target<T>(input: &str) -> Result<T> {
     Err(TuicrError::Forge(format!(
         "Malformed GitHub pull request target: `{input}`"
@@ -716,6 +824,15 @@ index 1111111..2222222 100644
     #[derive(Default)]
     struct FakeGhRunner {
         calls: RefCell<Vec<Vec<String>>>,
+        /// Captured stdin payloads, paired in order with `calls` entries that
+        /// went through `run_with_stdin`. Empty for plain `run` invocations.
+        stdin_calls: RefCell<Vec<(Vec<String>, String)>>,
+        /// When set, `run_with_stdin` returns this error instead of a stub
+        /// success response. Lets tests exercise error mapping.
+        stdin_error: RefCell<Option<GhCommandError>>,
+        /// When set, `run_with_stdin` returns this body as the success output.
+        /// Defaults to `CREATE_REVIEW_RESPONSE_JSON` when None.
+        stdin_response: RefCell<Option<String>>,
     }
 
     impl GhCommandRunner for FakeGhRunner {
@@ -754,7 +871,28 @@ index 1111111..2222222 100644
                 }),
             }
         }
+
+        fn run_with_stdin(&self, args: &[String], stdin: &str) -> GhCommandResult<String> {
+            self.calls.borrow_mut().push(args.to_vec());
+            self.stdin_calls
+                .borrow_mut()
+                .push((args.to_vec(), stdin.to_string()));
+            if let Some(err) = self.stdin_error.borrow().clone() {
+                return Err(err);
+            }
+            Ok(self
+                .stdin_response
+                .borrow()
+                .clone()
+                .unwrap_or_else(|| CREATE_REVIEW_RESPONSE_JSON.to_string()))
+        }
     }
+
+    const CREATE_REVIEW_RESPONSE_JSON: &str = r##"{
+        "id": 123456,
+        "html_url": "https://github.com/agavra/tuicr/pull/125#pullrequestreview-123456",
+        "state": "COMMENTED"
+    }"##;
 
     const PR_COMMITS_JSON: &str = r##"[
         {
@@ -1135,5 +1273,264 @@ index 1111111..2222222 100644
         );
         assert!(err.to_string().contains("GitHub authentication failed"));
         assert!(err.to_string().contains("github.example.com"));
+    }
+
+    // create_review tests
+
+    use crate::forge::submit::{GhSide, InlineComment, SubmitEvent};
+    use crate::forge::traits::CreateReviewRequest;
+    use std::path::PathBuf;
+
+    fn inline(line: u32, body: &str) -> InlineComment {
+        InlineComment {
+            path: PathBuf::from("src/lib.rs"),
+            line,
+            side: GhSide::Right,
+            start_line: None,
+            start_side: None,
+            body: body.to_string(),
+            comment_id: format!("cid-{line}"),
+        }
+    }
+
+    #[test]
+    fn should_post_create_review_to_reviews_endpoint_with_stdin_payload() {
+        // given
+        let runner = FakeGhRunner::default();
+        let backend = GitHubGhBackend::with_runner(Some(repo()), runner);
+        let details = backend
+            .get_pull_request(parse_pull_request_target("125").unwrap())
+            .unwrap();
+        let comments = vec![inline(42, "**[ISSUE]** boom")];
+        let request = CreateReviewRequest {
+            event: SubmitEvent::Comment,
+            commit_id: "abcdef1234567890",
+            body: "review body",
+            comments: &comments,
+        };
+        // when
+        let response = backend.create_review(&details, request).unwrap();
+        // then
+        assert_eq!(response.id, 123456);
+        assert_eq!(response.state, "COMMENTED");
+        assert!(response.html_url.contains("pullrequestreview-123456"));
+
+        // and — the call hit the expected endpoint with stdin
+        let stdin_calls = backend.runner.stdin_calls.borrow();
+        assert_eq!(stdin_calls.len(), 1);
+        let (args, stdin) = &stdin_calls[0];
+        assert_eq!(args[0], "api");
+        assert_eq!(args[1], "repos/agavra/tuicr/pulls/125/reviews");
+        assert!(args.iter().any(|a| a == "--method"));
+        assert!(args.iter().any(|a| a == "POST"));
+        assert!(args.iter().any(|a| a == "--input"));
+        assert!(args.iter().any(|a| a == "-"));
+        // and — the stdin carries the JSON payload with the expected fields
+        let payload: serde_json::Value = serde_json::from_str(stdin).unwrap();
+        assert_eq!(payload["commit_id"], "abcdef1234567890");
+        assert_eq!(payload["body"], "review body");
+        assert_eq!(payload["event"], "COMMENT");
+        assert_eq!(payload["comments"][0]["line"], 42);
+        assert_eq!(payload["comments"][0]["side"], "RIGHT");
+        // and — comment_id stays out of the payload (it's internal state)
+        assert!(
+            payload["comments"][0].get("comment_id").is_none(),
+            "comment_id should not leak into the JSON payload"
+        );
+    }
+
+    #[test]
+    fn should_omit_event_field_for_draft_submission() {
+        // given
+        let runner = FakeGhRunner::default();
+        let backend = GitHubGhBackend::with_runner(Some(repo()), runner);
+        let details = backend
+            .get_pull_request(parse_pull_request_target("125").unwrap())
+            .unwrap();
+        // when — draft submission
+        let _ = backend
+            .create_review(
+                &details,
+                CreateReviewRequest {
+                    event: SubmitEvent::Draft,
+                    commit_id: "sha",
+                    body: "",
+                    comments: &[],
+                },
+            )
+            .unwrap();
+        // then — the payload omits `event`
+        let stdin_calls = backend.runner.stdin_calls.borrow();
+        let (_, stdin) = &stdin_calls[0];
+        let payload: serde_json::Value = serde_json::from_str(stdin).unwrap();
+        assert!(payload.get("event").is_none());
+    }
+
+    #[test]
+    fn should_send_hostname_argument_for_enterprise_host() {
+        // given — enterprise host
+        let runner = FakeGhRunner::default();
+        let enterprise = ForgeRepository::github("github.example.com", "agavra", "tuicr");
+        let backend = GitHubGhBackend::with_runner(Some(enterprise.clone()), runner);
+        let mut details = backend
+            .get_pull_request(parse_pull_request_target("125").unwrap())
+            .unwrap();
+        details.repository = enterprise;
+        // when
+        let _ = backend
+            .create_review(
+                &details,
+                CreateReviewRequest {
+                    event: SubmitEvent::Comment,
+                    commit_id: "sha",
+                    body: "",
+                    comments: &[],
+                },
+            )
+            .unwrap();
+        // then
+        let stdin_calls = backend.runner.stdin_calls.borrow();
+        let (args, _) = &stdin_calls[0];
+        assert!(args.iter().any(|a| a == "--hostname"));
+        assert!(args.iter().any(|a| a == "github.example.com"));
+    }
+
+    #[test]
+    fn should_map_permission_failure_to_pull_request_write_message() {
+        // given — a runner that fails with a 403-style stderr
+        let runner = FakeGhRunner::default();
+        *runner.stdin_error.borrow_mut() = Some(GhCommandError::Failed {
+            status: Some(1),
+            stderr: "HTTP 403: Resource not accessible by integration".to_string(),
+        });
+        let backend = GitHubGhBackend::with_runner(Some(repo()), runner);
+        let details = backend
+            .get_pull_request(parse_pull_request_target("125").unwrap())
+            .unwrap();
+        // when
+        let err = backend
+            .create_review(
+                &details,
+                CreateReviewRequest {
+                    event: SubmitEvent::Comment,
+                    commit_id: "sha",
+                    body: "",
+                    comments: &[],
+                },
+            )
+            .unwrap_err();
+        // then
+        let msg = err.to_string();
+        assert!(
+            msg.contains("pull request write permission"),
+            "got: {msg:?}"
+        );
+    }
+
+    #[test]
+    fn should_map_auth_failure_during_create_review() {
+        // given — a runner that fails with auth-failure stderr
+        let runner = FakeGhRunner::default();
+        *runner.stdin_error.borrow_mut() = Some(GhCommandError::Failed {
+            status: Some(4),
+            stderr: "Run `gh auth login` to authenticate".to_string(),
+        });
+        let backend = GitHubGhBackend::with_runner(Some(repo()), runner);
+        let details = backend
+            .get_pull_request(parse_pull_request_target("125").unwrap())
+            .unwrap();
+        // when
+        let err = backend
+            .create_review(
+                &details,
+                CreateReviewRequest {
+                    event: SubmitEvent::Comment,
+                    commit_id: "sha",
+                    body: "",
+                    comments: &[],
+                },
+            )
+            .unwrap_err();
+        // then
+        assert!(err.to_string().contains("GitHub authentication failed"));
+    }
+
+    #[test]
+    fn should_map_missing_gh_during_create_review() {
+        // given — gh is not installed
+        let runner = FakeGhRunner::default();
+        *runner.stdin_error.borrow_mut() = Some(GhCommandError::MissingGh);
+        let backend = GitHubGhBackend::with_runner(Some(repo()), runner);
+        let details = backend
+            .get_pull_request(parse_pull_request_target("125").unwrap())
+            .unwrap();
+        // when
+        let err = backend
+            .create_review(
+                &details,
+                CreateReviewRequest {
+                    event: SubmitEvent::Comment,
+                    commit_id: "sha",
+                    body: "",
+                    comments: &[],
+                },
+            )
+            .unwrap_err();
+        // then
+        assert!(err.to_string().contains("GitHub integration requires `gh`"));
+    }
+
+    #[test]
+    fn should_error_when_create_review_response_is_missing_id() {
+        // given — malformed response from gh
+        let runner = FakeGhRunner::default();
+        *runner.stdin_response.borrow_mut() =
+            Some(r#"{"html_url": "x", "state": "COMMENTED"}"#.to_string());
+        let backend = GitHubGhBackend::with_runner(Some(repo()), runner);
+        let details = backend
+            .get_pull_request(parse_pull_request_target("125").unwrap())
+            .unwrap();
+        // when
+        let err = backend
+            .create_review(
+                &details,
+                CreateReviewRequest {
+                    event: SubmitEvent::Comment,
+                    commit_id: "sha",
+                    body: "",
+                    comments: &[],
+                },
+            )
+            .unwrap_err();
+        // then
+        assert!(err.to_string().contains("Create-review response missing"));
+    }
+
+    #[test]
+    fn should_recognize_must_have_pull_request_write_as_permission_failure() {
+        // given
+        let runner = FakeGhRunner::default();
+        *runner.stdin_error.borrow_mut() = Some(GhCommandError::Failed {
+            status: Some(1),
+            stderr: "must have pull request write permission".to_string(),
+        });
+        let backend = GitHubGhBackend::with_runner(Some(repo()), runner);
+        let details = backend
+            .get_pull_request(parse_pull_request_target("125").unwrap())
+            .unwrap();
+        // when
+        let err = backend
+            .create_review(
+                &details,
+                CreateReviewRequest {
+                    event: SubmitEvent::Comment,
+                    commit_id: "sha",
+                    body: "",
+                    comments: &[],
+                },
+            )
+            .unwrap_err();
+        // then
+        assert!(err.to_string().contains("pull request write permission"));
     }
 }

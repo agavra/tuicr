@@ -87,6 +87,11 @@ pub struct InlineComment {
     pub start_line: Option<u32>,
     pub start_side: Option<GhSide>,
     pub body: String,
+    /// Source `Comment.id` this inline was derived from. PR 6 uses this on
+    /// success to locate the source `Comment` and flip its `lifecycle_state`.
+    /// This field is INTERNAL — the GitHub payload builder does not include
+    /// it in the JSON request body.
+    pub comment_id: String,
 }
 
 /// Why the mapper could not produce an inline comment for a given local
@@ -184,6 +189,7 @@ pub fn map_comment(comment: &Comment, file: &DiffFile, config: &ForgeConfig) -> 
                 start_line: None,
                 start_side: None,
                 body: build_inline_body(comment, true, config),
+                comment_id: comment.id.clone(),
             }),
             None => MappedComment::Unmappable {
                 comment: comment.clone(),
@@ -215,6 +221,7 @@ pub fn map_comment(comment: &Comment, file: &DiffFile, config: &ForgeConfig) -> 
             start_line: None,
             start_side: None,
             body: build_inline_body(comment, false, config),
+            comment_id: comment.id.clone(),
         }),
         None => MappedComment::Unmappable {
             comment: comment.clone(),
@@ -265,6 +272,7 @@ fn map_range(
             start_line: None,
             start_side: None,
             body: build_inline_body(comment, false, config),
+            comment_id: comment.id.clone(),
         });
     }
 
@@ -275,6 +283,7 @@ fn map_range(
         start_line: Some(range.start),
         start_side: Some(side.into()),
         body: build_inline_body(comment, false, config),
+        comment_id: comment.id.clone(),
     })
 }
 

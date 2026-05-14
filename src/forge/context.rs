@@ -164,6 +164,13 @@ mod tests {
         ) -> Result<String> {
             unimplemented!()
         }
+        fn create_review(
+            &self,
+            _pr: &PullRequestDetails,
+            _request: crate::forge::traits::CreateReviewRequest<'_>,
+        ) -> Result<crate::forge::traits::GhCreateReviewResponse> {
+            unimplemented!()
+        }
     }
 
     fn repo() -> ForgeRepository {

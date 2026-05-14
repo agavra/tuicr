@@ -344,6 +344,7 @@ mod tests {
             start_line: None,
             start_side: None,
             body: "x".to_string(),
+            comment_id: "test-comment-id".to_string(),
         }
     }
 

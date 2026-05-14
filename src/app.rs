@@ -638,6 +638,42 @@ pub enum PrRangeReloadEvent {
     },
 }
 
+/// Snapshot of the submit state needed to apply lifecycle writes after the
+/// background `gh api .../reviews` call returns. Captured at spawn time and
+/// stashed on `App::pr_submit_state` so the in-flight spinner has something
+/// to render and the result handler can stamp `remote_review_id` onto the
+/// source comments.
+#[derive(Debug, Clone)]
+pub struct SubmitInFlightState {
+    pub event: crate::forge::submit::SubmitEvent,
+    /// The mappable inline comments that were sent in the payload. Each
+    /// carries the source `Comment.id` so we can locate it post-success.
+    pub mappable: Vec<crate::forge::submit::InlineComment>,
+    /// Items the user resolved to "move to summary" — used only for the
+    /// success message counts. They embed in the body, not as inline
+    /// comments, so no lifecycle write applies.
+    pub moved_to_summary_count: usize,
+    /// Head SHA at preflight — used as `commit_id` in the GitHub payload and
+    /// to discard stale results if the user reloaded the PR mid-submit.
+    pub head_sha_snapshot: String,
+    /// Repository + PR identity. Lets the stale-result guard verify the
+    /// result still applies to the same PR session.
+    pub repository: crate::forge::traits::ForgeRepository,
+    pub pr_number: u64,
+    pub started_at: Instant,
+}
+
+/// Result delivered from the create-review background thread.
+#[derive(Debug)]
+pub enum PrSubmitEvent {
+    Done {
+        repository: crate::forge::traits::ForgeRepository,
+        pr_number: u64,
+        head_sha: String,
+        result: std::result::Result<crate::forge::traits::GhCreateReviewResponse, String>,
+    },
+}
+
 /// Result delivered from the remote-thread fetch background thread. The PR
 /// diff is rendered as soon as it parses; threads land asynchronously and
 /// trigger a repaint via `poll_pr_threads_events`.
@@ -777,6 +813,13 @@ pub struct App {
     /// In-flight `:submit*` state. `None` outside the resolver + confirmation
     /// modal flow; preflight populates it.
     pub submit_state: Option<SubmitState>,
+    /// In-flight `gh api .../reviews` call. `Some` while a background submit
+    /// is running; cleared by `poll_pr_submit_events` once the result lands.
+    /// Drives the status-bar spinner.
+    pub pr_submit_state: Option<SubmitInFlightState>,
+    /// Background-thread channel that delivers the create-review result.
+    /// `Receiver` is only present while a submit is in flight.
+    pub pr_submit_rx: Option<std::sync::mpsc::Receiver<PrSubmitEvent>>,
     /// Latest known PR head SHA from the remote. PR 5 leaves this as the
     /// open-time head so the stale-head warning never fires; PR 6 may refresh
     /// it via a pre-submit `gh pr view` to power the warning.
@@ -1363,6 +1406,8 @@ impl App {
             pr_threads_rx: None,
             forge_config: crate::config::ForgeConfig::default(),
             submit_state: None,
+            pr_submit_state: None,
+            pr_submit_rx: None,
             current_pr_head: None,
             should_quit: false,
             dirty: false,
@@ -5034,16 +5079,41 @@ impl App {
         }
     }
 
-    /// Confirm submit — PR 5 stubs the network call. Builds the payload so
-    /// any preflight contract violations surface here, then sets an info
-    /// message and clears the state. PR 6 will replace this with the
-    /// actual `gh api` call.
+    /// Confirm submit — PR 6 dispatches the async `gh api .../reviews` call.
+    /// Builds the body + payload on the main thread, saves the session, then
+    /// hands off to `spawn_pr_submit`. The modal disappears immediately; a
+    /// status-bar spinner takes over until the result lands in
+    /// `poll_pr_submit_events`.
     pub fn confirm_submit(&mut self) {
-        use crate::forge::github::submit::build_review_payload;
+        if let Err(e) = self.spawn_pr_submit() {
+            self.set_error(format!("Submit failed: {e}"));
+            self.submit_state = None;
+            self.input_mode = InputMode::Normal;
+        }
+    }
+
+    /// Kick off the create-review call asynchronously. Pre-submit-saves the
+    /// session, builds the JSON payload on the main thread, then runs the
+    /// network round-trip on a background thread. The result is applied
+    /// later in `poll_pr_submit_events`.
+    pub fn spawn_pr_submit(&mut self) -> Result<()> {
+        use crate::forge::github::gh::GitHubGhBackend;
         use crate::forge::submit::{MovedToSummaryItem, ResolverAction, build_review_body};
+        use crate::forge::traits::{CreateReviewRequest, PullRequestTarget};
+
+        // Snapshot identity from the PR diff source first so the borrow on
+        // `submit_state` below doesn't conflict.
+        let DiffSource::PullRequest(pr) = self.diff_source.clone() else {
+            return Err(TuicrError::UnsupportedOperation(
+                "Not in PR mode".to_string(),
+            ));
+        };
+        if self.pr_submit_state.is_some() {
+            return Ok(()); // already in flight; ignore
+        }
 
         let Some(state) = self.submit_state.take() else {
-            return;
+            return Ok(());
         };
 
         let summary_items: Vec<MovedToSummaryItem> = state
@@ -5066,12 +5136,208 @@ impl App {
             &summary_items,
             &self.forge_config,
         );
-        // Build payload so the JSON serialization path is exercised even in
-        // the stubbed flow; the result is discarded until PR 6.
-        let _payload = build_review_payload(&state.commit_id, &body, state.event, &state.mappable);
 
+        // Save the session BEFORE the network call — keeps the user's
+        // local-draft work durable if anything goes sideways below.
+        let _ = crate::persistence::save_session(&self.session);
+
+        let in_flight = SubmitInFlightState {
+            event: state.event,
+            mappable: state.mappable.clone(),
+            moved_to_summary_count: summary_items.len(),
+            head_sha_snapshot: state.commit_id.clone(),
+            repository: pr.key.repository.clone(),
+            pr_number: pr.key.number,
+            started_at: Instant::now(),
+        };
+        self.pr_submit_state = Some(in_flight.clone());
         self.input_mode = InputMode::Normal;
-        self.set_message("Submit ready — PR 6 will wire the network call");
+
+        let local_checkout = self
+            .forge_backend
+            .as_deref()
+            .and_then(|backend| backend.local_checkout_path());
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.pr_submit_rx = Some(rx);
+
+        let repository = in_flight.repository.clone();
+        let pr_number = in_flight.pr_number;
+        let head_sha = in_flight.head_sha_snapshot.clone();
+        let event = in_flight.event;
+        let mappable = in_flight.mappable.clone();
+        let commit_id = state.commit_id.clone();
+
+        std::thread::spawn(move || {
+            let backend =
+                GitHubGhBackend::new(Some(repository.clone())).with_local_checkout(local_checkout);
+            // Need PR details for repo/owner routing; refetch lightly via
+            // the same target the user opened with.
+            let target = PullRequestTarget::with_repository(
+                repository.clone(),
+                pr_number,
+                pr_number.to_string(),
+            );
+            let result = match backend.get_pull_request(target) {
+                Ok(details) => backend
+                    .create_review(
+                        &details,
+                        CreateReviewRequest {
+                            event,
+                            commit_id: &commit_id,
+                            body: &body,
+                            comments: &mappable,
+                        },
+                    )
+                    .map_err(|e| e.to_string()),
+                Err(e) => Err(e.to_string()),
+            };
+            let _ = tx.send(PrSubmitEvent::Done {
+                repository,
+                pr_number,
+                head_sha,
+                result,
+            });
+        });
+        Ok(())
+    }
+
+    /// Pump a pending create-review result. Applies lifecycle writes + the
+    /// success message, or surfaces a sticky error.
+    pub fn poll_pr_submit_events(&mut self) {
+        let Some(rx) = self.pr_submit_rx.as_ref() else {
+            return;
+        };
+        let event = match rx.try_recv() {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+        self.pr_submit_rx = None;
+        let in_flight = self.pr_submit_state.take();
+        let PrSubmitEvent::Done {
+            repository,
+            pr_number,
+            head_sha,
+            result,
+        } = event;
+
+        // Stale-result discard: if the user reloaded the PR mid-submit, the
+        // active head SHA may have moved. Drop the result rather than
+        // silently mutating the wrong session.
+        let Some(in_flight) = in_flight else {
+            return;
+        };
+        let stale = in_flight.repository != repository
+            || in_flight.pr_number != pr_number
+            || in_flight.head_sha_snapshot != head_sha;
+        if stale {
+            self.set_message("Discarded stale submit result (PR was reloaded)".to_string());
+            return;
+        }
+
+        self.finish_pr_submit(in_flight, result);
+    }
+
+    /// Apply the create-review result on the main thread. On success: flip
+    /// each included `Comment` to `Submitted` (or `PushedDraft` for the
+    /// draft event), stamp `remote_review_id`, save the session again, and
+    /// publish a success message. On failure: keep everything as
+    /// `LocalDraft` and set a sticky error.
+    pub fn finish_pr_submit(
+        &mut self,
+        in_flight: SubmitInFlightState,
+        result: std::result::Result<crate::forge::traits::GhCreateReviewResponse, String>,
+    ) {
+        use crate::forge::submit::SubmitEvent;
+
+        let response = match result {
+            Ok(r) => r,
+            Err(e) => {
+                self.set_error(format!("Submit failed: {e}"));
+                return;
+            }
+        };
+
+        self.apply_submit_success(&in_flight, &response);
+
+        // Post-submit save — captures the lifecycle transitions.
+        let _ = crate::persistence::save_session(&self.session);
+
+        let inline_count = in_flight.mappable.len();
+        let summary_count = in_flight.moved_to_summary_count;
+        let message = match in_flight.event {
+            SubmitEvent::Draft => {
+                let pr_url = match &self.diff_source {
+                    DiffSource::PullRequest(pr) => pr.url.clone(),
+                    _ => String::new(),
+                };
+                if pr_url.is_empty() {
+                    format!(
+                        "Pushed pending GitHub review #{}: {} inline, {} moved to summary",
+                        response.id, inline_count, summary_count,
+                    )
+                } else {
+                    format!(
+                        "Pushed pending GitHub review #{}: {} inline, {} moved to summary — Finish it in GitHub: {}",
+                        response.id, inline_count, summary_count, pr_url,
+                    )
+                }
+            }
+            _ => format!(
+                "Submitted GitHub review #{}: {} inline, {} moved to summary",
+                response.id, inline_count, summary_count,
+            ),
+        };
+        self.set_message(message);
+    }
+
+    /// Flip each included `Comment` from `LocalDraft` to `Submitted` (or
+    /// `PushedDraft` for `:submit draft`) and stamp `remote_review_id`.
+    /// Moved-to-summary items are NOT touched here — they embed in the
+    /// review body, not as inline comments, so GitHub doesn't assign them
+    /// individual IDs.
+    pub fn apply_submit_success(
+        &mut self,
+        in_flight: &SubmitInFlightState,
+        response: &crate::forge::traits::GhCreateReviewResponse,
+    ) {
+        use crate::forge::submit::SubmitEvent;
+        use crate::model::comment::CommentLifecycleState;
+
+        let new_state = match in_flight.event {
+            SubmitEvent::Draft => CommentLifecycleState::PushedDraft,
+            _ => CommentLifecycleState::Submitted,
+        };
+        let review_id = response.id.to_string();
+
+        // Build a set of source comment IDs we expect to lock. Looking each
+        // one up by walking `file_reviews` is O(N*M); for v1 PRs this is
+        // negligible and avoids restructuring the session indexes.
+        let target_ids: std::collections::HashSet<&str> = in_flight
+            .mappable
+            .iter()
+            .map(|c| c.comment_id.as_str())
+            .collect();
+        if target_ids.is_empty() {
+            return;
+        }
+
+        for review in self.session.files.values_mut() {
+            for comment in review.file_comments.iter_mut() {
+                if target_ids.contains(comment.id.as_str()) {
+                    comment.lifecycle_state = new_state;
+                    comment.remote_review_id = Some(review_id.clone());
+                }
+            }
+            for comments in review.line_comments.values_mut() {
+                for comment in comments.iter_mut() {
+                    if target_ids.contains(comment.id.as_str()) {
+                        comment.lifecycle_state = new_state;
+                        comment.remote_review_id = Some(review_id.clone());
+                    }
+                }
+            }
+        }
     }
 
     /// Open the review target selector on a specific tab.
@@ -7580,6 +7846,13 @@ mod target_selector_tests {
                 .clone()
                 .unwrap_or_else(|| self.patch.clone()))
         }
+        fn create_review(
+            &self,
+            _pr: &crate::forge::traits::PullRequestDetails,
+            _request: crate::forge::traits::CreateReviewRequest<'_>,
+        ) -> Result<crate::forge::traits::GhCreateReviewResponse> {
+            unimplemented!("FakeForgeBackend does not implement create_review")
+        }
     }
 
     fn sample_pr(number: u64, title: &str) -> PullRequestSummary {
@@ -8044,6 +8317,13 @@ mod target_selector_tests {
         ) -> Result<String> {
             unreachable!()
         }
+        fn create_review(
+            &self,
+            _pr: &crate::forge::traits::PullRequestDetails,
+            _request: crate::forge::traits::CreateReviewRequest<'_>,
+        ) -> Result<crate::forge::traits::GhCreateReviewResponse> {
+            unimplemented!()
+        }
     }
 
     #[test]
@@ -8357,6 +8637,13 @@ mod target_selector_tests {
             _end_sha: &str,
         ) -> Result<String> {
             unreachable!()
+        }
+        fn create_review(
+            &self,
+            _pr: &crate::forge::traits::PullRequestDetails,
+            _request: crate::forge::traits::CreateReviewRequest<'_>,
+        ) -> Result<crate::forge::traits::GhCreateReviewResponse> {
+            unimplemented!()
         }
     }
 
@@ -10140,7 +10427,8 @@ mod submit_flow_tests {
     }
 
     #[test]
-    fn should_stub_network_call_on_confirm_and_clear_state() {
+    fn should_dispatch_async_submit_on_confirm_and_clear_modal_state() {
+        // given a PR session with one mappable line comment
         let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
         add_line_comment(
             &mut app,
@@ -10151,11 +10439,313 @@ mod submit_flow_tests {
         app.start_submit(SubmitEvent::Comment);
         // when
         app.confirm_submit();
-        // then — PR 5 stub: state cleared, mode back to Normal, info msg set
+        // then — PR 6: confirmation modal disappears immediately; the
+        // background thread is running with state captured on
+        // pr_submit_state so the spinner has something to render.
         assert_eq!(app.input_mode, InputMode::Normal);
         assert!(app.submit_state.is_none());
+        assert!(
+            app.pr_submit_state.is_some(),
+            "spawn_pr_submit should populate pr_submit_state"
+        );
+        assert!(app.pr_submit_rx.is_some(), "rx must be present in-flight");
+    }
+
+    fn make_in_flight(
+        event: SubmitEvent,
+        comment_ids: &[&str],
+        head_sha: &str,
+        moved_to_summary_count: usize,
+    ) -> SubmitInFlightState {
+        let mappable = comment_ids
+            .iter()
+            .enumerate()
+            .map(|(i, id)| crate::forge::submit::InlineComment {
+                path: PathBuf::from("src/lib.rs"),
+                line: 11 + i as u32,
+                side: crate::forge::submit::GhSide::Right,
+                start_line: None,
+                start_side: None,
+                body: "x".to_string(),
+                comment_id: (*id).to_string(),
+            })
+            .collect();
+        SubmitInFlightState {
+            event,
+            mappable,
+            moved_to_summary_count,
+            head_sha_snapshot: head_sha.to_string(),
+            repository: ForgeRepository::github("github.com", "agavra", "tuicr"),
+            pr_number: 125,
+            started_at: Instant::now(),
+        }
+    }
+
+    fn make_response(
+        id: u64,
+        html_url: &str,
+        state: &str,
+    ) -> crate::forge::traits::GhCreateReviewResponse {
+        crate::forge::traits::GhCreateReviewResponse {
+            id,
+            html_url: html_url.to_string(),
+            state: state.to_string(),
+        }
+    }
+
+    #[test]
+    fn should_flip_comments_to_submitted_and_stamp_review_id_on_success() {
+        // given an app with one line comment that we'll claim got submitted
+        let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+        let mut comment = line_comment(LineSide::New, Some(11), None);
+        let comment_id = comment.id.clone();
+        comment.lifecycle_state = CommentLifecycleState::LocalDraft;
+        add_line_comment(&mut app, "src/lib.rs", 11, comment);
+        let in_flight = make_in_flight(
+            SubmitEvent::Comment,
+            &[comment_id.as_str()],
+            "abcdef0123",
+            0,
+        );
+        let response = make_response(987654, "https://example.com/r", "COMMENTED");
+        // when
+        app.apply_submit_success(&in_flight, &response);
+        // then — the comment lifecycle moved to Submitted and remote_review_id is set.
+        let review = app.session.files.get(&PathBuf::from("src/lib.rs")).unwrap();
+        let saved = &review.line_comments.get(&11).unwrap()[0];
+        assert_eq!(saved.lifecycle_state, CommentLifecycleState::Submitted);
+        assert_eq!(saved.remote_review_id.as_deref(), Some("987654"));
+    }
+
+    #[test]
+    fn should_flip_comments_to_pushed_draft_for_draft_submission() {
+        // given
+        let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+        let comment = line_comment(LineSide::New, Some(11), None);
+        let comment_id = comment.id.clone();
+        add_line_comment(&mut app, "src/lib.rs", 11, comment);
+        let in_flight = make_in_flight(SubmitEvent::Draft, &[comment_id.as_str()], "abcdef0123", 0);
+        let response = make_response(42, "https://example.com/r", "PENDING");
+        // when
+        app.apply_submit_success(&in_flight, &response);
+        // then
+        let review = app.session.files.get(&PathBuf::from("src/lib.rs")).unwrap();
+        let saved = &review.line_comments.get(&11).unwrap()[0];
+        assert_eq!(saved.lifecycle_state, CommentLifecycleState::PushedDraft);
+        assert_eq!(saved.remote_review_id.as_deref(), Some("42"));
+    }
+
+    #[test]
+    fn should_only_flip_comments_whose_ids_were_submitted() {
+        // given — one matching id and one stray local-draft that wasn't in the submit
+        let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+        let comment = line_comment(LineSide::New, Some(11), None);
+        let target_id = comment.id.clone();
+        add_line_comment(&mut app, "src/lib.rs", 11, comment);
+        let untouched = line_comment(LineSide::New, Some(11), None);
+        let untouched_id = untouched.id.clone();
+        add_line_comment(&mut app, "src/lib.rs", 11, untouched);
+        let in_flight =
+            make_in_flight(SubmitEvent::Comment, &[target_id.as_str()], "abcdef0123", 0);
+        let response = make_response(1, "u", "COMMENTED");
+        // when
+        app.apply_submit_success(&in_flight, &response);
+        // then — only the target id moved
+        let review = app.session.files.get(&PathBuf::from("src/lib.rs")).unwrap();
+        let comments = review.line_comments.get(&11).unwrap();
+        let target = comments.iter().find(|c| c.id == target_id).unwrap();
+        let other = comments.iter().find(|c| c.id == untouched_id).unwrap();
+        assert_eq!(target.lifecycle_state, CommentLifecycleState::Submitted);
+        assert_eq!(other.lifecycle_state, CommentLifecycleState::LocalDraft);
+        assert!(other.remote_review_id.is_none());
+    }
+
+    #[test]
+    fn should_emit_success_message_with_review_id_and_counts_for_published_submit() {
+        // given
+        let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+        let comment = line_comment(LineSide::New, Some(11), None);
+        let comment_id = comment.id.clone();
+        add_line_comment(&mut app, "src/lib.rs", 11, comment);
+        let in_flight = make_in_flight(
+            SubmitEvent::Comment,
+            &[comment_id.as_str()],
+            "abcdef0123",
+            2,
+        );
+        let response = make_response(123456, "https://example.com/r", "COMMENTED");
+        // when
+        app.finish_pr_submit(in_flight, Ok(response));
+        // then
         let msg = app.message.as_ref().expect("info message");
-        assert!(msg.content.contains("PR 6 will wire"));
+        assert_eq!(msg.message_type, MessageType::Info);
+        assert!(msg.content.contains("Submitted GitHub review #123456"));
+        assert!(msg.content.contains("1 inline"));
+        assert!(msg.content.contains("2 moved to summary"));
+    }
+
+    #[test]
+    fn should_emit_draft_message_with_pr_url_for_draft_submit() {
+        // given
+        let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+        let comment = line_comment(LineSide::New, Some(11), None);
+        let comment_id = comment.id.clone();
+        add_line_comment(&mut app, "src/lib.rs", 11, comment);
+        let in_flight = make_in_flight(SubmitEvent::Draft, &[comment_id.as_str()], "abcdef0123", 0);
+        let response = make_response(
+            999,
+            "https://github.com/agavra/tuicr/pull/125#pullrequestreview-999",
+            "PENDING",
+        );
+        // when
+        app.finish_pr_submit(in_flight, Ok(response));
+        // then
+        let msg = app.message.as_ref().expect("info message");
+        assert!(msg.content.contains("Pushed pending GitHub review #999"));
+        assert!(
+            msg.content
+                .contains("https://github.com/agavra/tuicr/pull/125"),
+            "draft message should include the PR URL — got: {}",
+            msg.content
+        );
+    }
+
+    #[test]
+    fn should_keep_comments_as_local_draft_on_submit_failure() {
+        // given a local-draft comment in the session
+        let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+        let comment = line_comment(LineSide::New, Some(11), None);
+        let comment_id = comment.id.clone();
+        add_line_comment(&mut app, "src/lib.rs", 11, comment);
+        let in_flight = make_in_flight(
+            SubmitEvent::Comment,
+            &[comment_id.as_str()],
+            "abcdef0123",
+            0,
+        );
+        // when — network failure
+        app.finish_pr_submit(
+            in_flight,
+            Err(
+                "Cannot submit review: GitHub token lacks pull request write permission."
+                    .to_string(),
+            ),
+        );
+        // then — the comment is still LocalDraft
+        let review = app.session.files.get(&PathBuf::from("src/lib.rs")).unwrap();
+        let saved = &review.line_comments.get(&11).unwrap()[0];
+        assert_eq!(saved.lifecycle_state, CommentLifecycleState::LocalDraft);
+        assert!(saved.remote_review_id.is_none());
+        // and — a sticky error message is set
+        let msg = app.message.as_ref().expect("error message");
+        assert_eq!(msg.message_type, MessageType::Error);
+        assert!(msg.content.contains("Submit failed"));
+        assert!(msg.content.contains("pull request write permission"));
+    }
+
+    #[test]
+    fn should_discard_stale_submit_result_when_head_sha_changed() {
+        // given a PR session pretending we already swapped heads after submit dispatched.
+        let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+        let comment = line_comment(LineSide::New, Some(11), None);
+        let comment_id = comment.id.clone();
+        add_line_comment(&mut app, "src/lib.rs", 11, comment);
+        // record that a submit was in flight for an *older* head.
+        let in_flight = make_in_flight(SubmitEvent::Comment, &[comment_id.as_str()], "OLD_HEAD", 0);
+        app.pr_submit_state = Some(in_flight);
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.pr_submit_rx = Some(rx);
+        // simulate the bg thread coming back for the OLD head, but with
+        // a fresh-head session note: poll path checks repository/pr_number/head_sha.
+        tx.send(PrSubmitEvent::Done {
+            repository: ForgeRepository::github("github.com", "agavra", "tuicr"),
+            pr_number: 125,
+            head_sha: "DIFFERENT_HEAD".to_string(),
+            result: Ok(make_response(42, "u", "COMMENTED")),
+        })
+        .unwrap();
+        drop(tx);
+        // when
+        app.poll_pr_submit_events();
+        // then — comment lifecycle untouched, info message about discarded result.
+        let review = app.session.files.get(&PathBuf::from("src/lib.rs")).unwrap();
+        let saved = &review.line_comments.get(&11).unwrap()[0];
+        assert_eq!(saved.lifecycle_state, CommentLifecycleState::LocalDraft);
+        let msg = app.message.as_ref().expect("info message");
+        assert!(
+            msg.content.contains("Discarded stale submit result"),
+            "got: {}",
+            msg.content
+        );
+    }
+
+    #[test]
+    fn should_apply_result_via_poll_when_head_sha_matches() {
+        // given a session with a local-draft comment ready to be locked
+        let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+        let comment = line_comment(LineSide::New, Some(11), None);
+        let comment_id = comment.id.clone();
+        add_line_comment(&mut app, "src/lib.rs", 11, comment);
+        let in_flight = make_in_flight(
+            SubmitEvent::Comment,
+            &[comment_id.as_str()],
+            "abcdef0123",
+            0,
+        );
+        app.pr_submit_state = Some(in_flight);
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.pr_submit_rx = Some(rx);
+        tx.send(PrSubmitEvent::Done {
+            repository: ForgeRepository::github("github.com", "agavra", "tuicr"),
+            pr_number: 125,
+            head_sha: "abcdef0123".to_string(),
+            result: Ok(make_response(123, "u", "COMMENTED")),
+        })
+        .unwrap();
+        drop(tx);
+        // when
+        app.poll_pr_submit_events();
+        // then — lifecycle moved and the spinner state is cleared.
+        assert!(app.pr_submit_state.is_none());
+        assert!(app.pr_submit_rx.is_none());
+        let review = app.session.files.get(&PathBuf::from("src/lib.rs")).unwrap();
+        let saved = &review.line_comments.get(&11).unwrap()[0];
+        assert_eq!(saved.lifecycle_state, CommentLifecycleState::Submitted);
+        assert_eq!(saved.remote_review_id.as_deref(), Some("123"));
+    }
+
+    #[test]
+    fn should_lock_file_level_comment_via_submit_success() {
+        // given — a file-level comment lives in `file_comments`, not `line_comments`
+        let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+        let comment = Comment::new("file-level".to_string(), CommentType::Note, None);
+        let comment_id = comment.id.clone();
+        {
+            let review = app
+                .session
+                .get_file_mut(&PathBuf::from("src/lib.rs"))
+                .unwrap();
+            review.file_comments.push(comment);
+        }
+        let in_flight = make_in_flight(
+            SubmitEvent::Comment,
+            &[comment_id.as_str()],
+            "abcdef0123",
+            0,
+        );
+        let response = make_response(7, "u", "COMMENTED");
+        // when
+        app.apply_submit_success(&in_flight, &response);
+        // then
+        let review = app.session.files.get(&PathBuf::from("src/lib.rs")).unwrap();
+        assert_eq!(
+            review.file_comments[0].lifecycle_state,
+            CommentLifecycleState::Submitted
+        );
+        assert_eq!(
+            review.file_comments[0].remote_review_id.as_deref(),
+            Some("7")
+        );
     }
 
     #[test]

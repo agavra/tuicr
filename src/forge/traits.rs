@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use crate::error::Result;
 use crate::forge::remote_comments::RemoteReviewThread;
+use crate::forge::submit::SubmitEvent;
 use crate::model::{DiffLine, FileStatus};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -256,6 +257,33 @@ impl ForgeFileLinesRequest {
     }
 }
 
+/// Response returned by `ForgeBackend::create_review` after a successful
+/// `POST .../pulls/<n>/reviews`. Carries enough state to drive lifecycle
+/// writes on the source comments and the success message in the status bar.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GhCreateReviewResponse {
+    /// GitHub's numeric review ID. Stored on each included `Comment` as
+    /// `remote_review_id` (stringified).
+    pub id: u64,
+    /// Web URL of the created review — used in the draft success message so
+    /// users can finish the pending review in GitHub.
+    pub html_url: String,
+    /// Review state as reported by GitHub (`PENDING`, `COMMENTED`,
+    /// `APPROVED`, `CHANGES_REQUESTED`). Kept for debugging/logging.
+    pub state: String,
+}
+
+/// Request to create a review against a PR. The payload is the forge-agnostic
+/// shape of the JSON body the backend will POST; downstream the GitHub
+/// backend reshapes it via `build_review_payload` and writes it on stdin.
+#[derive(Debug, Clone)]
+pub struct CreateReviewRequest<'a> {
+    pub event: SubmitEvent,
+    pub commit_id: &'a str,
+    pub body: &'a str,
+    pub comments: &'a [crate::forge::submit::InlineComment],
+}
+
 /// A single commit on a pull request, as returned by the forge.
 ///
 /// Fields mirror what the inline commit selector needs to render a row.
@@ -304,6 +332,16 @@ pub trait ForgeBackend {
     fn local_checkout_path(&self) -> Option<PathBuf> {
         None
     }
+
+    /// Create a review on the PR. The payload-building details (event field
+    /// mapping, comment serialization) are the backend's responsibility — the
+    /// caller only supplies the high-level inputs. Returns a minimal response
+    /// describing the created review (id, html_url, state).
+    fn create_review(
+        &self,
+        pr: &PullRequestDetails,
+        request: CreateReviewRequest<'_>,
+    ) -> Result<GhCreateReviewResponse>;
 }
 
 #[cfg(test)]

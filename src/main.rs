@@ -304,6 +304,7 @@ fn main() -> anyhow::Result<()> {
         app.poll_pr_reload_events();
         app.poll_pr_range_reload_events();
         app.poll_pr_threads_events();
+        app.poll_pr_submit_events();
 
         // Render
         terminal.draw(|frame| {

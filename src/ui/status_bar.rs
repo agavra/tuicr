@@ -299,7 +299,26 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     // time. After the reload lands, the success message takes the slot
     // back. A range re-fetch (toggling commit selection in PR mode) takes
     // the same slot but with its own label.
-    let (right_span, right_width) = if let Some(reload) = app.pr_reload_state.as_ref() {
+    let (right_span, right_width) = if let Some(submit) = app.pr_submit_state.as_ref() {
+        use crate::forge::submit::SubmitEvent;
+        let glyph = crate::ui::selector::pr_open_spinner_glyph(submit.started_at.elapsed());
+        let label = match submit.event {
+            SubmitEvent::Draft => "Pushing pending review…",
+            _ => "Submitting review…",
+        };
+        let content = format!(" {glyph} {label} ");
+        let width = content.len();
+        (
+            Span::styled(
+                content,
+                Style::default()
+                    .fg(theme.message_info_fg)
+                    .bg(theme.message_info_bg)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            width,
+        )
+    } else if let Some(reload) = app.pr_reload_state.as_ref() {
         let glyph = crate::ui::selector::pr_open_spinner_glyph(reload.started_at.elapsed());
         let content = format!(" {glyph} Reloading PR… ");
         let width = content.len();
