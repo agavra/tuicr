@@ -58,6 +58,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     if app.input_mode == InputMode::SubmitConfirm {
         submit_modals::render_submit_confirm(frame, app);
     }
+    if app.input_mode == InputMode::SubmitActionPicker {
+        submit_modals::render_submit_action_picker(frame, app);
+    }
 
     // Position terminal cursor for IME when in Comment mode
     // Always set a cursor position to prevent IME from showing at (0,0)

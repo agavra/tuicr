@@ -9,9 +9,51 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 
-use crate::app::App;
+use crate::app::{App, SUBMIT_PICKER_EVENTS};
 use crate::forge::submit::{ResolverAction, SubmitEvent, UnmappableItem};
 use crate::ui::styles;
+
+/// Render the bare-`:submit` action picker. Lists the available review
+/// events plus a Cancel row; the user picks one with j/k + Enter (or
+/// Esc to cancel).
+pub fn render_submit_action_picker(frame: &mut Frame, app: &App) {
+    let theme = &app.theme;
+    let area = centered_rect(40, 50, modal_anchor(app, frame.area()));
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Submit review to GitHub? ")
+        .title_alignment(Alignment::Center)
+        .borders(Borders::ALL)
+        .style(styles::popup_style(theme))
+        .border_style(styles::border_style(theme, true));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(""));
+    for (i, (label, _)) in SUBMIT_PICKER_EVENTS.iter().enumerate() {
+        let style = if i == app.submit_picker_cursor {
+            Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        let cursor = if i == app.submit_picker_cursor {
+            ">"
+        } else {
+            " "
+        };
+        lines.push(Line::from(Span::styled(format!("{cursor} {label}"), style)));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "Enter: submit   Esc: cancel",
+        Style::default().fg(theme.fg_secondary),
+    )));
+
+    let paragraph = Paragraph::new(lines).style(styles::popup_style(theme));
+    frame.render_widget(paragraph, inner);
+}
 
 /// Render the modal listing comments the mapper could not place inline,
 /// with per-row toggle between "Move to summary" / "Omit". Centered overlay
@@ -390,6 +432,41 @@ mod tests {
         terminal.backend().buffer().clone()
     }
 
+    fn draw_picker(app: &App) -> Buffer {
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render_submit_action_picker(frame, app))
+            .expect("draw");
+        terminal.backend().buffer().clone()
+    }
+
+    #[test]
+    fn picker_renders_all_events_and_cursor_marker() {
+        let mut app = make_pr_app();
+        app.submit_picker_cursor = 0;
+        let buffer = draw_picker(&app);
+        let text = buffer_text(&buffer);
+        assert!(text.contains("Submit review to GitHub?"));
+        assert!(text.contains("Comment"));
+        assert!(text.contains("Approve"));
+        assert!(text.contains("Request changes"));
+        assert!(text.contains("Draft"));
+        assert!(text.contains("Enter: submit"));
+        assert!(text.contains("Esc: cancel"));
+        assert!(text.contains("> Comment"));
+    }
+
+    #[test]
+    fn picker_cursor_moves_with_marker() {
+        let mut app = make_pr_app();
+        app.submit_picker_cursor = 2;
+        let buffer = draw_picker(&app);
+        let text = buffer_text(&buffer);
+        assert!(text.contains("> Request changes"));
+        assert!(!text.contains("> Comment"));
+    }
+
     #[test]
     fn resolver_renders_each_row_with_cursor_marker() {
         use crate::forge::submit::UnmappableReason;
@@ -414,6 +491,7 @@ mod tests {
             resolver_choices: vec![ResolverAction::MoveToSummary, ResolverAction::MoveToSummary],
             resolver_cursor: 0,
             commit_id: "abcdef0123".to_string(),
+            skip_confirm: false,
         });
         let buffer = draw_resolver(&app);
         let text = buffer_text(&buffer);
@@ -444,6 +522,7 @@ mod tests {
             resolver_choices: vec![ResolverAction::Omit],
             resolver_cursor: 0,
             commit_id: "abcdef0123".to_string(),
+            skip_confirm: false,
         });
         let buffer = draw_resolver(&app);
         let text = buffer_text(&buffer);
@@ -460,6 +539,7 @@ mod tests {
             resolver_choices: Vec::new(),
             resolver_cursor: 0,
             commit_id: "abcdef0123".to_string(),
+            skip_confirm: false,
         });
         let buffer = draw_confirm(&app);
         let text = buffer_text(&buffer);
@@ -484,6 +564,7 @@ mod tests {
             resolver_choices: Vec::new(),
             resolver_cursor: 0,
             commit_id: "abcdef0123".to_string(),
+            skip_confirm: false,
         });
         let buffer = draw_confirm(&app);
         let text = buffer_text(&buffer);
@@ -503,6 +584,7 @@ mod tests {
             resolver_choices: Vec::new(),
             resolver_cursor: 0,
             commit_id: "abcdef0123".to_string(),
+            skip_confirm: false,
         });
         let buffer = draw_confirm(&app);
         let text = buffer_text(&buffer);
@@ -537,6 +619,7 @@ mod tests {
             resolver_choices: vec![ResolverAction::MoveToSummary, ResolverAction::Omit],
             resolver_cursor: 0,
             commit_id: "abcdef0123".to_string(),
+            skip_confirm: false,
         });
         let buffer = draw_confirm(&app);
         let text = buffer_text(&buffer);

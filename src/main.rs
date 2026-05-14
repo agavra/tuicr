@@ -41,7 +41,8 @@ use handler::{
     handle_command_action, handle_comment_action, handle_commit_select_action,
     handle_commit_selector_action, handle_confirm_action, handle_diff_action,
     handle_file_list_action, handle_help_action, handle_mouse_event, handle_search_action,
-    handle_submit_confirm_action, handle_submit_resolver_action, handle_visual_action,
+    handle_submit_action_picker_action, handle_submit_confirm_action,
+    handle_submit_resolver_action, handle_visual_action,
 };
 use input::{Action, map_key_to_action, map_target_filter_mode};
 use theme::{parse_cli_args, resolve_theme_with_config};
@@ -519,6 +520,9 @@ fn main() -> anyhow::Result<()> {
                             handle_submit_resolver_action(&mut app, action)
                         }
                         InputMode::SubmitConfirm => handle_submit_confirm_action(&mut app, action),
+                        InputMode::SubmitActionPicker => {
+                            handle_submit_action_picker_action(&mut app, action)
+                        }
                         InputMode::Normal => match app.focused_panel {
                             FocusedPanel::FileList => handle_file_list_action(&mut app, action),
                             FocusedPanel::Diff => handle_diff_action(&mut app, action),

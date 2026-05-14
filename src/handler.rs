@@ -453,7 +453,12 @@ pub fn handle_command_action(app: &mut App, action: Action) {
                         return;
                     }
                 }
-                "submit" | "submit comment" => {
+                "submit" => {
+                    app.exit_command_mode();
+                    app.start_submit_action_picker();
+                    return;
+                }
+                "submit comment" => {
                     app.exit_command_mode();
                     app.start_submit(crate::forge::submit::SubmitEvent::Comment);
                     return;
@@ -992,6 +997,21 @@ pub fn handle_submit_resolver_action(app: &mut App, action: Action) {
         Action::SubmitResolverToggle => app.submit_resolver_toggle(),
         Action::SubmitResolverAdvance => app.submit_resolver_advance(),
         Action::ExitMode => app.cancel_submit(),
+        Action::Quit => app.should_quit = true,
+        _ => {}
+    }
+}
+
+/// Handle actions in the bare-`:submit` action picker. Up/down move the
+/// cursor through Comment/Approve/Request changes/Draft; Enter dispatches
+/// preflight with the picked event (skipping the confirmation modal); Esc
+/// cancels back to normal.
+pub fn handle_submit_action_picker_action(app: &mut App, action: Action) {
+    match action {
+        Action::SubmitPickerDown => app.submit_picker_cursor_down(),
+        Action::SubmitPickerUp => app.submit_picker_cursor_up(),
+        Action::SubmitPickerConfirm => app.submit_picker_confirm(),
+        Action::ExitMode => app.cancel_submit_action_picker(),
         Action::Quit => app.should_quit = true,
         _ => {}
     }

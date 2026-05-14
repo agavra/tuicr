@@ -514,7 +514,16 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  :submit       ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Submit a COMMENT review to GitHub (PR mode)"),
+            Span::raw(
+                "Pick a review event from a menu (Comment / Approve / Request changes / Draft)",
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :submit comment",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  Submit a COMMENT review (skips the picker, shows confirm modal)"),
         ]),
         Line::from(vec![
             Span::styled(

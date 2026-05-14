@@ -399,6 +399,11 @@ pub enum InputMode {
     SubmitResolver,
     /// Final confirmation modal before the network create-review call.
     SubmitConfirm,
+    /// Event picker opened by bare `:submit` — the user chooses
+    /// Comment/Approve/Request changes/Draft. Picking IS the confirmation;
+    /// no `SubmitConfirm` follows (resolver still runs if any comment is
+    /// unmappable).
+    SubmitActionPicker,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -509,7 +514,24 @@ pub struct SubmitState {
     pub resolver_cursor: usize,
     /// Originally-reviewed head SHA — used as `commit_id` in the payload.
     pub commit_id: String,
+    /// When `true`, the resolver advances directly to the network call
+    /// instead of routing through `SubmitConfirm`. Set by the action-picker
+    /// path; left `false` for explicit `:submit <event>` invocations.
+    pub skip_confirm: bool,
 }
+
+/// Event options shown in the bare-`:submit` action picker, in display
+/// order. Each row pairs the user-facing label with the `SubmitEvent` it
+/// dispatches.
+pub const SUBMIT_PICKER_EVENTS: &[(&str, crate::forge::submit::SubmitEvent)] = &[
+    ("Comment", crate::forge::submit::SubmitEvent::Comment),
+    ("Approve", crate::forge::submit::SubmitEvent::Approve),
+    (
+        "Request changes",
+        crate::forge::submit::SubmitEvent::RequestChanges,
+    ),
+    ("Draft", crate::forge::submit::SubmitEvent::Draft),
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusedPanel {
@@ -813,6 +835,9 @@ pub struct App {
     /// In-flight `:submit*` state. `None` outside the resolver + confirmation
     /// modal flow; preflight populates it.
     pub submit_state: Option<SubmitState>,
+    /// Cursor row inside the bare-`:submit` action picker modal. Only
+    /// meaningful while `input_mode == SubmitActionPicker`.
+    pub submit_picker_cursor: usize,
     /// In-flight `gh api .../reviews` call. `Some` while a background submit
     /// is running; cleared by `poll_pr_submit_events` once the result lands.
     /// Drives the status-bar spinner.
@@ -1406,6 +1431,7 @@ impl App {
             pr_threads_rx: None,
             forge_config: crate::config::ForgeConfig::default(),
             submit_state: None,
+            submit_picker_cursor: 0,
             pr_submit_state: None,
             pr_submit_rx: None,
             current_pr_head: None,
@@ -4941,6 +4967,19 @@ impl App {
     /// PR 5 does not call the network; `[y]` in the confirmation modal
     /// stubs a "PR 6 will wire the network call" info message.
     pub fn start_submit(&mut self, event: crate::forge::submit::SubmitEvent) {
+        self.start_submit_with(event, false);
+    }
+
+    /// Like `start_submit`, but when `skip_confirm` is `true` the flow
+    /// bypasses `SubmitConfirm`. The action-picker path uses this because
+    /// picking IS the confirmation; the resolver (if any unmappable
+    /// comments) still runs first, then dispatches the network call
+    /// directly. `:submit <event>` callers should pass `false`.
+    pub fn start_submit_with(
+        &mut self,
+        event: crate::forge::submit::SubmitEvent,
+        skip_confirm: bool,
+    ) {
         use crate::forge::submit::{
             CommentAnchor, InlineComment, ResolverAction, UnmappableItem, map_comment,
         };
@@ -5041,13 +5080,66 @@ impl App {
             resolver_choices,
             resolver_cursor: 0,
             commit_id,
+            skip_confirm,
         });
 
         if has_unmappable {
             self.input_mode = InputMode::SubmitResolver;
+        } else if skip_confirm {
+            self.input_mode = InputMode::Normal;
+            self.confirm_submit();
         } else {
             self.input_mode = InputMode::SubmitConfirm;
         }
+    }
+
+    /// Open the bare-`:submit` action picker. The user picks
+    /// Comment/Approve/Request changes/Draft (or cancels); the picked event
+    /// then runs through preflight with `skip_confirm = true` so no extra
+    /// confirmation modal follows.
+    pub fn start_submit_action_picker(&mut self) {
+        if !matches!(self.diff_source, DiffSource::PullRequest(_)) {
+            self.set_warning(":submit only applies in PR mode");
+            return;
+        }
+        self.submit_picker_cursor = 0;
+        self.input_mode = InputMode::SubmitActionPicker;
+    }
+
+    /// Move the action-picker cursor down by one row, wrapping at the end.
+    pub fn submit_picker_cursor_down(&mut self) {
+        let total = SUBMIT_PICKER_EVENTS.len();
+        if total > 0 {
+            self.submit_picker_cursor = (self.submit_picker_cursor + 1) % total;
+        }
+    }
+
+    /// Move the action-picker cursor up by one row, wrapping at the start.
+    pub fn submit_picker_cursor_up(&mut self) {
+        let total = SUBMIT_PICKER_EVENTS.len();
+        if total > 0 {
+            self.submit_picker_cursor = (self.submit_picker_cursor + total - 1) % total;
+        }
+    }
+
+    /// Confirm the action picker selection: dispatch into preflight with the
+    /// chosen event and `skip_confirm = true`.
+    pub fn submit_picker_confirm(&mut self) {
+        let Some(event) = SUBMIT_PICKER_EVENTS
+            .get(self.submit_picker_cursor)
+            .map(|(_, ev)| *ev)
+        else {
+            self.cancel_submit_action_picker();
+            return;
+        };
+        self.input_mode = InputMode::Normal;
+        self.start_submit_with(event, true);
+    }
+
+    /// Cancel the action picker without entering preflight.
+    pub fn cancel_submit_action_picker(&mut self) {
+        self.input_mode = InputMode::Normal;
+        self.submit_picker_cursor = 0;
     }
 
     pub fn cancel_submit(&mut self) {
@@ -5084,9 +5176,17 @@ impl App {
         }
     }
 
-    /// Advance from the resolver to the final confirmation modal.
+    /// Advance from the resolver. When `skip_confirm` is set (action-picker
+    /// path), dispatch the network call directly; otherwise route to
+    /// `SubmitConfirm` for the final confirmation modal.
     pub fn submit_resolver_advance(&mut self) {
-        if self.submit_state.is_some() {
+        let Some(state) = self.submit_state.as_ref() else {
+            return;
+        };
+        if state.skip_confirm {
+            self.input_mode = InputMode::Normal;
+            self.confirm_submit();
+        } else {
             self.input_mode = InputMode::SubmitConfirm;
         }
     }
@@ -10579,6 +10679,63 @@ mod submit_flow_tests {
         app.submit_resolver_advance();
         // then
         assert_eq!(app.input_mode, InputMode::SubmitConfirm);
+    }
+
+    #[test]
+    fn should_skip_confirm_modal_when_action_picker_dispatches_with_no_unmappable() {
+        // Bare `:submit` → action picker → pick Comment → directly dispatch
+        // the network call without SubmitConfirm. submit_state is cleared
+        // and pr_submit_state populated, same end state as the explicit
+        // `:submit comment` + [y] flow.
+        let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+        add_line_comment(
+            &mut app,
+            "src/lib.rs",
+            11,
+            line_comment(LineSide::New, Some(11), None),
+        );
+
+        app.start_submit_action_picker();
+        assert_eq!(app.input_mode, InputMode::SubmitActionPicker);
+        app.submit_picker_confirm();
+
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.submit_state.is_none());
+        assert!(app.pr_submit_state.is_some());
+    }
+
+    #[test]
+    fn should_route_picker_through_resolver_then_skip_confirm() {
+        // Bare `:submit` picker with one unmappable comment → resolver
+        // appears → `s` advances and dispatches the network call directly,
+        // bypassing SubmitConfirm. skip_confirm is the flag that makes
+        // submit_resolver_advance bypass the confirm modal.
+        let mut app = make_pr_app_with_single_modified_file("img.png");
+        app.diff_files[0].is_binary = true;
+        let pb = PathBuf::from("img.png");
+        let review = app.session.get_file_mut(&pb).expect("file in session");
+        review.file_comments.push(Comment::new(
+            "binary art".to_string(),
+            CommentType::Note,
+            None,
+        ));
+
+        app.start_submit_action_picker();
+        app.submit_picker_cursor = 0; // Comment
+        app.submit_picker_confirm();
+
+        // Picker dispatched → resolver visible because the comment is
+        // unmappable, but the underlying skip_confirm flag is set.
+        assert_eq!(app.input_mode, InputMode::SubmitResolver);
+        let state = app.submit_state.as_ref().expect("submit state");
+        assert!(state.skip_confirm);
+
+        // Advance from resolver → goes straight to network call, no
+        // SubmitConfirm.
+        app.submit_resolver_advance();
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.submit_state.is_none());
+        assert!(app.pr_submit_state.is_some());
     }
 
     #[test]

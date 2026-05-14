@@ -108,6 +108,14 @@ pub enum Action {
     /// active). Currently triggers the same path as `:e`.
     SubmitReloadPr,
 
+    // Submit action picker (bare `:submit`)
+    /// Move action-picker cursor down (`j` / Down).
+    SubmitPickerDown,
+    /// Move action-picker cursor up (`k` / Up).
+    SubmitPickerUp,
+    /// Confirm the picker selection (Enter).
+    SubmitPickerConfirm,
+
     ToggleExpand,
     ExpandAll,
     CollapseAll,
@@ -129,6 +137,7 @@ pub fn map_key_to_action(key: KeyEvent, mode: InputMode) -> Action {
         InputMode::VisualSelect => map_visual_mode(key),
         InputMode::SubmitResolver => map_submit_resolver_mode(key),
         InputMode::SubmitConfirm => map_submit_confirm_mode(key),
+        InputMode::SubmitActionPicker => map_submit_action_picker_mode(key),
     }
 }
 
@@ -329,6 +338,17 @@ fn map_submit_confirm_mode(key: KeyEvent) -> Action {
         (KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter, _) => Action::ConfirmYes,
         (KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc, _) => Action::ConfirmNo,
         (KeyCode::Char('r') | KeyCode::Char('R'), _) => Action::SubmitReloadPr,
+        _ => Action::None,
+    }
+}
+
+fn map_submit_action_picker_mode(key: KeyEvent) -> Action {
+    match (key.code, key.modifiers) {
+        (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => Action::SubmitPickerDown,
+        (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => Action::SubmitPickerUp,
+        (KeyCode::Enter, KeyModifiers::NONE) => Action::SubmitPickerConfirm,
+        (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
+        (KeyCode::Char('q'), KeyModifiers::NONE) => Action::Quit,
         _ => Action::None,
     }
 }
