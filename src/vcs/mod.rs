@@ -11,17 +11,19 @@
 //! are Git-backed and contain a `.git` directory. If jj detection fails, Git
 //! is tried next, then Mercurial.
 
-mod diff_parser;
+pub(crate) mod diff_parser;
 pub mod file;
 pub mod git;
 mod hg;
 mod jj;
+pub mod pr_noop;
 pub(crate) mod traits;
 
 pub use file::FileBackend;
 pub use git::{GitBackend, GitBackendPreference};
 pub use hg::HgBackend;
 pub use jj::JjBackend;
+pub use pr_noop::PrNoopVcs;
 pub use traits::{CommitInfo, VcsBackend, VcsChangeStatus, VcsInfo};
 
 use std::collections::HashMap;

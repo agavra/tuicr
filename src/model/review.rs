@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use super::comment::Comment;
 use super::diff_types::FileStatus;
+use crate::forge::traits::PrSessionKey;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClearScope {
@@ -60,6 +61,10 @@ pub enum SessionDiffSource {
     CommitRange,
     WorkingTreeAndCommits,
     StagedUnstagedAndCommits,
+    /// Remote pull request review. Per-PR identity lives in
+    /// `ReviewSession::pr_session_key`; this variant is a discriminator so
+    /// the persistence layer can route to PR-specific filename construction.
+    PullRequest,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -74,6 +79,10 @@ pub struct ReviewSession {
     pub diff_source: SessionDiffSource,
     #[serde(default)]
     pub commit_range: Option<Vec<String>>,
+    /// Identity for PR-mode sessions. `None` for local sessions. Default is
+    /// `None` so existing local session JSON deserializes unchanged.
+    #[serde(default)]
+    pub pr_session_key: Option<PrSessionKey>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     #[serde(default)]
@@ -98,6 +107,7 @@ impl ReviewSession {
             base_commit,
             diff_source,
             commit_range: None,
+            pr_session_key: None,
             created_at: now,
             updated_at: now,
             review_comments: Vec::new(),
@@ -342,6 +352,60 @@ mod tests {
 
         let file = session.files.get(&path).unwrap();
         assert_eq!(file.content_hash, Some(200));
+    }
+
+    /// Snapshot of a session JSON produced before PR 3 landed. New fields
+    /// must deserialize with defaults; this guards against accidental
+    /// breaking changes to the on-disk format.
+    const LEGACY_SESSION_JSON: &str = r##"{
+        "id": "abc-uuid",
+        "version": "1.2",
+        "repo_path": "/tmp/test-repo",
+        "branch_name": "main",
+        "base_commit": "deadbeef",
+        "diff_source": "working_tree",
+        "created_at": "2026-05-01T12:00:00Z",
+        "updated_at": "2026-05-01T12:00:00Z",
+        "review_comments": [],
+        "files": {},
+        "session_notes": null
+    }"##;
+
+    #[test]
+    fn should_deserialize_pre_pr3_session_without_breakage() {
+        // given a session JSON from before PR 3 landed
+        // when
+        let session: ReviewSession =
+            serde_json::from_str(LEGACY_SESSION_JSON).expect("legacy session should parse");
+        // then — new fields default to None / their default and identity is preserved
+        assert_eq!(session.id, "abc-uuid");
+        assert_eq!(session.base_commit, "deadbeef");
+        assert_eq!(session.diff_source, SessionDiffSource::WorkingTree);
+        assert!(session.pr_session_key.is_none());
+        assert!(session.commit_range.is_none());
+    }
+
+    #[test]
+    fn should_round_trip_pr_session_via_serde() {
+        // given
+        let mut session = ReviewSession::new(
+            PathBuf::from("forge:github.com/agavra/tuicr"),
+            "abcdef0123456789".to_string(),
+            Some("reviews".to_string()),
+            SessionDiffSource::PullRequest,
+        );
+        let key = PrSessionKey::new(
+            crate::forge::traits::ForgeRepository::github("github.com", "agavra", "tuicr"),
+            125,
+            "abcdef0123456789".to_string(),
+        );
+        session.pr_session_key = Some(key.clone());
+        // when
+        let json = serde_json::to_string(&session).unwrap();
+        let restored: ReviewSession = serde_json::from_str(&json).unwrap();
+        // then
+        assert_eq!(restored.pr_session_key, Some(key));
+        assert_eq!(restored.diff_source, SessionDiffSource::PullRequest);
     }
 
     #[test]

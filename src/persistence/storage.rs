@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use crate::error::{Result, TuicrError};
+use crate::forge::traits::PrSessionKey;
 use crate::hash::fnv1a_64;
 use crate::model::ReviewSession;
 use crate::model::review::SessionDiffSource;
@@ -21,6 +22,11 @@ struct SessionFilenameParts {
 }
 
 fn parse_session_filename(filename: &str) -> Option<SessionFilenameParts> {
+    // PR sessions use a different layout; never treat them as local session
+    // candidates here.
+    if filename.starts_with("pr_github_") {
+        return None;
+    }
     let stem = filename.strip_suffix(".json")?;
     let parts: Vec<&str> = stem.split('_').collect();
 
@@ -129,6 +135,21 @@ fn normalize_repo_path(repo_path: &Path) -> String {
 }
 
 fn session_filename(session: &ReviewSession) -> String {
+    // PR sessions key by forge identity + PR number + head SHA so multiple
+    // PR opens of the same repo land in distinct files, and reopening the
+    // same PR at the same head reuses the same session.
+    if let Some(key) = session.pr_session_key.as_ref() {
+        let host = sanitize_filename_component(&key.repository.host);
+        let owner = sanitize_filename_component(&key.repository.owner);
+        let repo = sanitize_filename_component(&key.repository.name);
+        let short = sanitize_filename_component(&key.short_head());
+        let id_fragment = session.id.split('-').next().unwrap_or(&session.id);
+        return format!(
+            "pr_github_{}_{}_{}_{}_{}_{}.json",
+            host, owner, repo, key.number, short, id_fragment,
+        );
+    }
+
     let repo_name = session
         .repo_path
         .file_name()
@@ -149,6 +170,7 @@ fn session_filename(session: &ReviewSession) -> String {
         SessionDiffSource::CommitRange => "commits",
         SessionDiffSource::WorkingTreeAndCommits => "worktree_and_commits",
         SessionDiffSource::StagedUnstagedAndCommits => "staged_unstaged_and_commits",
+        SessionDiffSource::PullRequest => "pr",
     };
 
     let timestamp = session.created_at.format("%Y%m%d_%H%M%S");
@@ -178,6 +200,48 @@ pub fn load_session(path: &PathBuf) -> Result<ReviewSession> {
     Ok(session)
 }
 
+/// Look up the most recent persisted session for a PR keyed by forge identity,
+/// PR number, and head SHA. Returns `None` when no matching session exists.
+///
+/// PR sessions key only by identity; we deliberately do not consult mtime or
+/// other filename fields because reopening the same PR at the same head must
+/// restore the exact session that was last persisted for it.
+pub fn load_pr_session(key: &PrSessionKey) -> Result<Option<(PathBuf, ReviewSession)>> {
+    let reviews_dir = get_reviews_dir()?;
+    let entries = match fs::read_dir(&reviews_dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(TuicrError::Io(e)),
+    };
+
+    let mut best: Option<(PathBuf, ReviewSession)> = None;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(filename) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if !filename.starts_with("pr_github_") || !filename.ends_with(".json") {
+            continue;
+        }
+        let Ok(session) = load_session(&path) else {
+            continue;
+        };
+        if session.pr_session_key.as_ref() == Some(key) {
+            // Keep the most recently updated entry when more than one exists
+            // (e.g. multiple draft saves in flight before cleanup).
+            let candidate_updated = session.updated_at;
+            let prefer_new = match best.as_ref() {
+                Some((_, current)) => candidate_updated > current.updated_at,
+                None => true,
+            };
+            if prefer_new {
+                best = Some((path, session));
+            }
+        }
+    }
+    Ok(best)
+}
+
 pub fn load_latest_session_for_context(
     repo_path: &Path,
     branch_name: Option<&str>,
@@ -195,6 +259,9 @@ pub fn load_latest_session_for_context(
         SessionDiffSource::CommitRange => "commits",
         SessionDiffSource::WorkingTreeAndCommits => "worktree_and_commits",
         SessionDiffSource::StagedUnstagedAndCommits => "staged_unstaged_and_commits",
+        // PR sessions are looked up via `load_pr_session`. If a caller asks
+        // for the local-session loader with this diff source, return nothing.
+        SessionDiffSource::PullRequest => return Ok(None),
     };
 
     let reviews_dir = get_reviews_dir()?;
@@ -918,5 +985,105 @@ mod tests {
             normalize_repo_path(&selected.repo_path),
             normalize_repo_path(&repo_a)
         );
+    }
+
+    fn pr_key(number: u64, head_sha: &str) -> PrSessionKey {
+        PrSessionKey::new(
+            crate::forge::traits::ForgeRepository::github("github.com", "agavra", "tuicr"),
+            number,
+            head_sha.to_string(),
+        )
+    }
+
+    fn pr_session(key: &PrSessionKey) -> ReviewSession {
+        let mut session = ReviewSession::new(
+            PathBuf::from(format!(
+                "forge:{}/{}/{}",
+                key.repository.host, key.repository.owner, key.repository.name
+            )),
+            key.head_sha.clone(),
+            Some("reviews".to_string()),
+            SessionDiffSource::PullRequest,
+        );
+        session.pr_session_key = Some(key.clone());
+        session
+    }
+
+    #[test]
+    fn should_generate_pr_session_filename_keyed_by_identity_and_head() {
+        // given a PR session
+        let key = pr_key(125, "abcdef0123456789");
+        let session = pr_session(&key);
+        // when
+        let filename = session_filename(&session);
+        // then
+        assert!(filename.starts_with("pr_github_github.com_agavra_tuicr_125_abcdef01_"));
+        assert!(filename.ends_with(".json"));
+    }
+
+    #[test]
+    fn should_round_trip_pr_session_via_storage() {
+        let _guard = with_test_reviews_dir();
+        // given
+        let key = pr_key(125, "abcdef0123456789");
+        let session = pr_session(&key);
+        // when
+        let path = save_session(&session).unwrap();
+        let (loaded_path, loaded) = load_pr_session(&key).unwrap().unwrap();
+        // then
+        assert_eq!(loaded_path, path);
+        assert_eq!(loaded.pr_session_key.as_ref(), Some(&key));
+        assert_eq!(loaded.diff_source, SessionDiffSource::PullRequest);
+        let _ = delete_session(&path);
+    }
+
+    #[test]
+    fn should_return_none_when_no_session_matches_head_sha() {
+        let _guard = with_test_reviews_dir();
+        // given a session at old head
+        let old_key = pr_key(125, "abcdef0123456789");
+        let _ = save_session(&pr_session(&old_key)).unwrap();
+        // when looking up a new head
+        let new_key = pr_key(125, "9999999999999999");
+        let loaded = load_pr_session(&new_key).unwrap();
+        // then
+        assert!(loaded.is_none());
+    }
+
+    #[test]
+    fn should_skip_pr_files_when_loading_local_session() {
+        let _guard = with_test_reviews_dir();
+        // given a saved PR session and no local sessions
+        let key = pr_key(125, "abcdef0123456789");
+        let _ = save_session(&pr_session(&key)).unwrap();
+        let repo_path = std::env::temp_dir().join(format!("tuicr-repo-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&repo_path).unwrap();
+        // when asking for a local working-tree session
+        let loaded = load_latest_session_for_context(
+            &repo_path,
+            Some("main"),
+            "head",
+            SessionDiffSource::WorkingTree,
+            None,
+        )
+        .unwrap();
+        // then PR sessions are not surfaced to the local loader
+        assert!(loaded.is_none());
+    }
+
+    #[test]
+    fn should_keep_pr_sessions_separate_per_pr_number() {
+        let _guard = with_test_reviews_dir();
+        // given two PR sessions for different numbers
+        let key_a = pr_key(125, "abcdef0123456789");
+        let key_b = pr_key(148, "abcdef0123456789");
+        let _ = save_session(&pr_session(&key_a)).unwrap();
+        let _ = save_session(&pr_session(&key_b)).unwrap();
+        // when
+        let loaded_a = load_pr_session(&key_a).unwrap().unwrap();
+        let loaded_b = load_pr_session(&key_b).unwrap().unwrap();
+        // then each load returns its matching PR
+        assert_eq!(loaded_a.1.pr_session_key.as_ref(), Some(&key_a));
+        assert_eq!(loaded_b.1.pr_session_key.as_ref(), Some(&key_b));
     }
 }

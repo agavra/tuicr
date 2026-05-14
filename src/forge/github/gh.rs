@@ -1,10 +1,12 @@
 use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
 
 use crate::error::{Result, TuicrError};
 use crate::forge::traits::{
-    ForgeBackend, ForgeRepository, PagedPullRequests, PullRequestDetails, PullRequestListQuery,
-    PullRequestTarget,
+    ForgeBackend, ForgeFileLinesRequest, ForgeRepository, PagedPullRequests, PullRequestDetails,
+    PullRequestListQuery, PullRequestTarget,
 };
+use crate::model::{DiffLine, LineOrigin};
 use crate::process::{CommandOutputError, CommandOutputErrorKind, run_command_output};
 
 use super::models::{GhPullRequestDetails, GhPullRequestSummary};
@@ -53,10 +55,37 @@ impl From<CommandOutputError> for GhCommandError {
     }
 }
 
+/// Read a git blob from a checkout at `repo_root` using `git show <sha>:<path>`.
+/// Returns `None` if the object is missing or the command fails for any reason.
+fn read_blob_with_repo(repo_root: &Path, sha: &str, path: &Path) -> Option<String> {
+    let spec = format!("{}:{}", sha, path.to_string_lossy());
+    let exists = run_command_output(
+        "git",
+        Some(repo_root),
+        ["cat-file", "-e", spec.as_str()]
+            .iter()
+            .map(|s| OsStr::new(*s)),
+    );
+    if exists.is_err() {
+        return None;
+    }
+    run_command_output(
+        "git",
+        Some(repo_root),
+        ["show", spec.as_str()].iter().map(|s| OsStr::new(*s)),
+    )
+    .ok()
+}
+
 #[derive(Debug, Clone)]
 pub struct GitHubGhBackend<R = SystemGhRunner> {
     default_repository: Option<ForgeRepository>,
     runner: R,
+    /// Optional path to a local checkout. When present, the backend may
+    /// satisfy `fetch_file_lines` from local git objects before falling back
+    /// to `gh api`. It is **never** used as the source of truth for PR
+    /// contents; the source of truth is always GitHub.
+    local_checkout: Option<PathBuf>,
 }
 
 impl GitHubGhBackend<SystemGhRunner> {
@@ -64,7 +93,13 @@ impl GitHubGhBackend<SystemGhRunner> {
         Self {
             default_repository,
             runner: SystemGhRunner,
+            local_checkout: None,
         }
+    }
+
+    pub fn with_local_checkout(mut self, checkout: Option<PathBuf>) -> Self {
+        self.local_checkout = checkout;
+        self
     }
 }
 
@@ -76,7 +111,16 @@ where
         Self {
             default_repository,
             runner,
+            local_checkout: None,
         }
+    }
+
+    pub fn set_local_checkout(&mut self, checkout: Option<PathBuf>) {
+        self.local_checkout = checkout;
+    }
+
+    pub fn local_checkout(&self) -> Option<&Path> {
+        self.local_checkout.as_deref()
     }
 
     fn resolve_repository(&self, target: &PullRequestTarget) -> Result<ForgeRepository> {
@@ -171,6 +215,86 @@ where
             &pr.repository.host,
         )
     }
+
+    fn local_checkout_path(&self) -> Option<PathBuf> {
+        self.local_checkout.clone()
+    }
+
+    fn fetch_file_lines(&self, request: ForgeFileLinesRequest) -> Result<Vec<DiffLine>> {
+        if request.start_line == 0 || request.start_line > request.end_line {
+            return Ok(Vec::new());
+        }
+
+        // Local optimization: read the blob from a configured checkout when
+        // we have it. The PR's exact SHAs may or may not be present locally;
+        // we silently fall back if they aren't.
+        let local_content = self
+            .local_checkout
+            .as_deref()
+            .and_then(|root| read_blob_with_repo(root, request.sha(), request.path.as_path()));
+
+        let content = if let Some(content) = local_content {
+            content
+        } else {
+            self.fetch_file_via_api(&request)?
+        };
+
+        Ok(slice_to_diff_lines(
+            &content,
+            request.start_line,
+            request.end_line,
+        ))
+    }
+}
+
+impl<R> GitHubGhBackend<R>
+where
+    R: GhCommandRunner,
+{
+    fn fetch_file_via_api(&self, request: &ForgeFileLinesRequest) -> Result<String> {
+        // `gh api repos/<owner>/<repo>/contents/<path>?ref=<sha>` returns a
+        // JSON object with base64-encoded `content` for text files. The
+        // `Accept: application/vnd.github.raw` header skips JSON wrapping
+        // and returns raw bytes, which we use here to keep parsing simple
+        // and binary-safe (callers already gate binary files out).
+        let path_str = request.path.to_string_lossy().replace('\\', "/");
+        let endpoint = format!(
+            "repos/{}/{}/contents/{}?ref={}",
+            request.repository.owner,
+            request.repository.name,
+            path_str,
+            request.sha(),
+        );
+        let mut args = vec![
+            "api".to_string(),
+            "-H".to_string(),
+            "Accept: application/vnd.github.raw".to_string(),
+        ];
+        if request.repository.host != "github.com" {
+            args.push("--hostname".to_string());
+            args.push(request.repository.host.clone());
+        }
+        args.push(endpoint);
+        self.run_gh(args, &request.repository.host)
+    }
+}
+
+fn slice_to_diff_lines(content: &str, start_line: u32, end_line: u32) -> Vec<DiffLine> {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut result = Vec::new();
+    for line_num in start_line..=end_line {
+        let idx = (line_num - 1) as usize;
+        if idx < lines.len() {
+            result.push(DiffLine {
+                origin: LineOrigin::Context,
+                content: lines[idx].to_string(),
+                old_lineno: Some(line_num),
+                new_lineno: Some(line_num),
+                highlighted_spans: None,
+            });
+        }
+    }
+    result
 }
 
 pub fn parse_pull_request_target(input: &str) -> Result<PullRequestTarget> {
@@ -358,6 +482,20 @@ fn malformed_target<T>(input: &str) -> Result<T> {
     Err(TuicrError::Forge(format!(
         "Malformed GitHub pull request target: `{input}`"
     )))
+}
+
+#[cfg(test)]
+pub(crate) mod tests_fixture {
+    pub const SIMPLE_PATCH: &str = r##"diff --git a/src/lib.rs b/src/lib.rs
+index 1111111..2222222 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,3 +1,3 @@
+ pub fn answer() -> u32 {
+-    41
++    42
+ }
+"##;
 }
 
 #[cfg(test)]

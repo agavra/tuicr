@@ -1,7 +1,9 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 use crate::error::Result;
+use crate::model::{DiffLine, FileStatus};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -134,10 +136,205 @@ impl PullRequestDetails {
     pub fn is_read_only(&self) -> bool {
         self.closed || self.merged_at.is_some()
     }
+
+    pub fn read_only_reason(&self) -> Option<&'static str> {
+        if self.merged_at.is_some() {
+            Some("merged")
+        } else if self.closed {
+            Some("closed")
+        } else {
+            None
+        }
+    }
+}
+
+/// Stable identity for a PR review session.
+///
+/// Sessions are keyed by forge kind + host + owner/repo + PR number + head
+/// SHA per the spec. Two opens of the same PR at the same head SHA must
+/// produce equal keys so persistence reattaches local comments and reviewed
+/// markers; a PR that advances to a new head opens a new session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrSessionKey {
+    pub repository: ForgeRepository,
+    pub number: u64,
+    pub head_sha: String,
+}
+
+impl PrSessionKey {
+    pub fn new(repository: ForgeRepository, number: u64, head_sha: impl Into<String>) -> Self {
+        Self {
+            repository,
+            number,
+            head_sha: head_sha.into(),
+        }
+    }
+
+    pub fn from_details(details: &PullRequestDetails) -> Self {
+        Self::new(
+            details.repository.clone(),
+            details.number,
+            details.head_sha.clone(),
+        )
+    }
+
+    /// Short, human-recognizable head SHA prefix used in filenames and UI.
+    pub fn short_head(&self) -> String {
+        self.head_sha
+            .chars()
+            .take(8.min(self.head_sha.len()))
+            .collect()
+    }
+}
+
+/// Which side of a pull request diff the caller wants to read from.
+///
+/// Maps to a concrete SHA + path: for added/modified/copied/renamed files
+/// the caller wants the head side; for deleted files the base side. Renames
+/// pick the old path on the base side and the new path on the head side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ForgeFileSide {
+    Base,
+    Head,
+}
+
+/// A single request to read file lines from a forge for context expansion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForgeFileLinesRequest {
+    pub repository: ForgeRepository,
+    /// Base SHA captured when the PR was opened.
+    pub base_sha: String,
+    /// Head SHA captured when the PR was opened.
+    pub head_sha: String,
+    /// File path relative to the repository root.
+    pub path: PathBuf,
+    /// File status, used to choose the appropriate side without forcing the
+    /// caller to also compute it. Renames use `Renamed`; `path` should already
+    /// reflect the chosen side.
+    pub status: FileStatus,
+    /// Which side to read from. The caller is responsible for picking the
+    /// right side per the spec mapping rules.
+    pub side: ForgeFileSide,
+    /// Inclusive 1-based line range. Caller is responsible for clamping.
+    pub start_line: u32,
+    pub end_line: u32,
+}
+
+impl ForgeFileLinesRequest {
+    /// Resolve the side and path for a given file based on its status.
+    /// Helper for callers that have a `DiffFile` and want to fetch context.
+    pub fn side_for_status(status: FileStatus) -> ForgeFileSide {
+        match status {
+            FileStatus::Deleted => ForgeFileSide::Base,
+            FileStatus::Added | FileStatus::Modified | FileStatus::Renamed | FileStatus::Copied => {
+                ForgeFileSide::Head
+            }
+        }
+    }
+
+    /// Pick the right path for a forge fetch given old/new paths and the
+    /// side. Renamed files use `old_path` on the base side, `new_path` on
+    /// the head side.
+    pub fn path_for_side(
+        side: ForgeFileSide,
+        old_path: Option<&PathBuf>,
+        new_path: Option<&PathBuf>,
+    ) -> Option<PathBuf> {
+        match side {
+            ForgeFileSide::Base => old_path.or(new_path).cloned(),
+            ForgeFileSide::Head => new_path.or(old_path).cloned(),
+        }
+    }
+
+    /// Return the SHA matching `side`.
+    pub fn sha(&self) -> &str {
+        match self.side {
+            ForgeFileSide::Base => &self.base_sha,
+            ForgeFileSide::Head => &self.head_sha,
+        }
+    }
 }
 
 pub trait ForgeBackend {
     fn list_pull_requests(&self, query: PullRequestListQuery) -> Result<PagedPullRequests>;
     fn get_pull_request(&self, target: PullRequestTarget) -> Result<PullRequestDetails>;
     fn get_pull_request_diff(&self, pr: &PullRequestDetails) -> Result<String>;
+    /// Fetch the requested file lines from the forge for context expansion.
+    /// Implementations may optimize by reading from a local checkout when
+    /// available; the trait does not require that path.
+    fn fetch_file_lines(&self, request: ForgeFileLinesRequest) -> Result<Vec<DiffLine>>;
+    /// Optional path to a local checkout the backend may consult as an
+    /// optimization. The default returns `None`; callers must never treat
+    /// this path as the source of truth for PR contents.
+    fn local_checkout_path(&self) -> Option<PathBuf> {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn should_round_trip_pr_session_key_via_serde() {
+        // given
+        let key = PrSessionKey::new(
+            ForgeRepository::github("github.com", "agavra", "tuicr"),
+            125,
+            "abcdef0123456789".to_string(),
+        );
+        // when
+        let serialized = serde_json::to_string(&key).unwrap();
+        let restored: PrSessionKey = serde_json::from_str(&serialized).unwrap();
+        // then
+        assert_eq!(key, restored);
+    }
+
+    #[test]
+    fn should_truncate_long_head_sha_for_short_head() {
+        // given
+        let key = PrSessionKey::new(
+            ForgeRepository::github("github.com", "a", "b"),
+            1,
+            "1234567890abcdef1234567890abcdef".to_string(),
+        );
+        // when/then
+        assert_eq!(key.short_head(), "12345678");
+    }
+
+    #[test]
+    fn should_handle_short_head_sha_gracefully() {
+        // given
+        let key = PrSessionKey::new(
+            ForgeRepository::github("github.com", "a", "b"),
+            1,
+            "abc".to_string(),
+        );
+        // when/then
+        assert_eq!(key.short_head(), "abc");
+    }
+
+    #[test]
+    fn should_pick_head_side_for_added_modified_renamed_copied() {
+        for status in [
+            FileStatus::Added,
+            FileStatus::Modified,
+            FileStatus::Renamed,
+            FileStatus::Copied,
+        ] {
+            assert_eq!(
+                ForgeFileLinesRequest::side_for_status(status),
+                ForgeFileSide::Head,
+                "{status:?} should pick head"
+            );
+        }
+    }
+
+    #[test]
+    fn should_pick_base_side_for_deleted_files() {
+        assert_eq!(
+            ForgeFileLinesRequest::side_for_status(FileStatus::Deleted),
+            ForgeFileSide::Base,
+        );
+    }
 }
