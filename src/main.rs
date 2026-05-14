@@ -8,6 +8,7 @@ mod input;
 mod model;
 mod output;
 mod persistence;
+mod process;
 mod profile;
 mod syntax;
 mod text_edit;

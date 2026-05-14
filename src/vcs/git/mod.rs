@@ -5,11 +5,12 @@ mod libgit2;
 pub mod repository;
 pub mod staging;
 
+use std::ffi::OsStr;
 use std::path::Path;
-use std::process::Command;
 
 use crate::error::{Result, TuicrError};
 use crate::model::{DiffFile, DiffLine, FileStatus};
+use crate::process::{CommandOutputError, CommandOutputErrorKind, run_command_output};
 use crate::syntax::SyntaxHighlighter;
 
 use super::traits::{CommitInfo, VcsBackend, VcsChangeStatus, VcsInfo};
@@ -121,19 +122,21 @@ impl GitBackend {
 }
 
 fn run_git_command(workdir: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new("git")
-        .current_dir(workdir)
-        .args(args)
-        .output()
-        .map_err(|e| TuicrError::VcsCommand(format!("Failed to run git: {e}")))?;
+    run_command_output(
+        "git",
+        Some(workdir),
+        args.iter().map(|arg| OsStr::new(*arg)),
+    )
+    .map_err(git_command_error)
+}
 
-    if !output.status.success() {
-        return Err(TuicrError::VcsCommand(
-            String::from_utf8_lossy(&output.stderr).trim().to_string(),
-        ));
+pub(super) fn git_command_error(error: CommandOutputError) -> TuicrError {
+    match error.kind {
+        CommandOutputErrorKind::Unsuccessful => TuicrError::VcsCommand(error.stderr),
+        CommandOutputErrorKind::NotFound | CommandOutputErrorKind::SpawnFailed => {
+            TuicrError::VcsCommand(format!("Failed to run git: {}", error.stderr))
+        }
     }
-
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 fn git_bool_config_enabled(value: &str) -> bool {

@@ -15,7 +15,10 @@ use crate::vcs::diff_parser::{self, DiffFormat};
 use crate::vcs::{CommitInfo, VcsBackend, VcsChangeStatus, VcsInfo};
 use crate::vcs::{container_file_paths, enhance_with_full_file_highlight, tabify};
 
-use super::{GitRepoMode, git_bool_config_enabled, git_fsmonitor_config_enabled, run_git_command};
+use super::{
+    GitRepoMode, git_bool_config_enabled, git_command_error, git_fsmonitor_config_enabled,
+    run_git_command,
+};
 
 // Untracked files larger than this are shown in the file list but their
 // content is not parsed: they are likely logs, dumps, or build artefacts.
@@ -989,19 +992,7 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    let output = Command::new("git")
-        .current_dir(workdir)
-        .args(args)
-        .output()
-        .map_err(|e| TuicrError::VcsCommand(format!("Failed to run git: {e}")))?;
-
-    if !output.status.success() {
-        return Err(TuicrError::VcsCommand(
-            String::from_utf8_lossy(&output.stderr).trim().to_string(),
-        ));
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    crate::process::run_command_output("git", Some(workdir), args).map_err(git_command_error)
 }
 
 #[cfg(test)]

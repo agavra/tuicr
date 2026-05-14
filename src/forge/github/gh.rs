@@ -1,11 +1,11 @@
 use std::ffi::OsStr;
-use std::process::Command;
 
 use crate::error::{Result, TuicrError};
 use crate::forge::traits::{
     ForgeBackend, ForgeRepository, PagedPullRequests, PullRequestDetails, PullRequestListQuery,
     PullRequestTarget,
 };
+use crate::process::{CommandOutputError, CommandOutputErrorKind, run_command_output};
 
 use super::models::{GhPullRequestDetails, GhPullRequestSummary};
 
@@ -34,27 +34,21 @@ pub struct SystemGhRunner;
 
 impl GhCommandRunner for SystemGhRunner {
     fn run(&self, args: &[String]) -> GhCommandResult<String> {
-        let output = Command::new("gh")
-            .args(args.iter().map(OsStr::new))
-            .output()
-            .map_err(|err| {
-                if err.kind() == std::io::ErrorKind::NotFound {
-                    GhCommandError::MissingGh
-                } else {
-                    GhCommandError::Failed {
-                        status: None,
-                        stderr: err.to_string(),
-                    }
-                }
-            })?;
+        run_command_output("gh", None, args.iter().map(|arg| OsStr::new(arg.as_str())))
+            .map_err(GhCommandError::from)
+    }
+}
 
-        if output.status.success() {
-            Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-        } else {
-            Err(GhCommandError::Failed {
-                status: output.status.code(),
-                stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
-            })
+impl From<CommandOutputError> for GhCommandError {
+    fn from(error: CommandOutputError) -> Self {
+        match error.kind {
+            CommandOutputErrorKind::NotFound => Self::MissingGh,
+            CommandOutputErrorKind::SpawnFailed | CommandOutputErrorKind::Unsuccessful => {
+                Self::Failed {
+                    status: error.status,
+                    stderr: error.stderr,
+                }
+            }
         }
     }
 }
