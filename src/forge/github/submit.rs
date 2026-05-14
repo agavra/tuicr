@@ -64,7 +64,7 @@ mod tests {
             side: GhSide::Right,
             start_line: None,
             start_side: None,
-            body: "**[ISSUE]** boom".to_string(),
+            body: "[ISSUE] boom".to_string(),
             comment_id: "test-comment-id".to_string(),
         }
     }
@@ -81,7 +81,7 @@ mod tests {
         assert_eq!(comments[0]["path"], "src/lib.rs");
         assert_eq!(comments[0]["line"], 42);
         assert_eq!(comments[0]["side"], "RIGHT");
-        assert_eq!(comments[0]["body"], "**[ISSUE]** boom");
+        assert_eq!(comments[0]["body"], "[ISSUE] boom");
     }
 
     #[test]

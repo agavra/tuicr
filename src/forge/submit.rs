@@ -140,18 +140,15 @@ pub enum MappedComment {
 }
 
 /// Compute the inline body for `comment` honoring the `[TYPE]` prefix toggle.
-/// File-level bodies are prefixed `**[TYPE] File-level:**` per the spec.
+/// File-level bodies are prefixed `[TYPE] File-level:`.
 fn build_inline_body(comment: &Comment, file_level: bool, config: &ForgeConfig) -> String {
     if !config.comment_type_prefix {
         return comment.content.clone();
     }
     let prefix = if file_level {
-        format!(
-            "**[{ty}] File-level:** ",
-            ty = comment.comment_type.as_str()
-        )
+        format!("[{ty}] File-level: ", ty = comment.comment_type.as_str())
     } else {
-        format!("**[{ty}]** ", ty = comment.comment_type.as_str())
+        format!("[{ty}] ", ty = comment.comment_type.as_str())
     };
     format!("{prefix}{body}", body = comment.content)
 }
@@ -407,7 +404,7 @@ pub fn build_review_body(
                 block.push_str("\n\n");
             }
             if config.comment_type_prefix {
-                block.push_str(&format!("**[{}]** ", c.comment_type.as_str()));
+                block.push_str(&format!("[{}] ", c.comment_type.as_str()));
             }
             block.push_str(&c.content);
         }
@@ -592,7 +589,7 @@ mod tests {
                 assert_eq!(inline.side, GhSide::Right);
                 assert_eq!(inline.start_line, None);
                 assert_eq!(inline.start_side, None);
-                assert!(inline.body.starts_with("**[ISSUE]** "));
+                assert!(inline.body.starts_with("[ISSUE] "));
             }
             other => panic!("expected Inline, got {other:?}"),
         }
@@ -725,7 +722,7 @@ mod tests {
             MappedComment::Inline(inline) => {
                 assert_eq!(inline.line, 10);
                 assert_eq!(inline.side, GhSide::Right);
-                assert!(inline.body.starts_with("**[NOTE] File-level:** "));
+                assert!(inline.body.starts_with("[NOTE] File-level: "));
             }
             other => panic!("expected Inline, got {other:?}"),
         }
@@ -787,7 +784,7 @@ mod tests {
         let mapped = map_comment(&comment, anchor_from(&comment), &typical_file(), &cfg);
         match mapped {
             MappedComment::Inline(inline) => {
-                assert!(!inline.body.contains("**[ISSUE]**"));
+                assert!(!inline.body.contains("[ISSUE]"));
                 assert_eq!(inline.body, "needs work");
             }
             other => panic!("expected Inline, got {other:?}"),
@@ -820,7 +817,7 @@ mod tests {
     fn should_render_review_level_comments_with_type_prefix() {
         let comments = vec![note("first"), note("second")];
         let body = build_review_body(&comments, &[], &default_config());
-        assert!(body.starts_with("**[NOTE]** first\n\n**[NOTE]** second"));
+        assert!(body.starts_with("[NOTE] first\n\n[NOTE] second"));
         assert!(body.ends_with(REVIEW_FOOTER));
     }
 
@@ -844,7 +841,7 @@ mod tests {
             file: PathBuf::from("a.rs"),
         }];
         let body = build_review_body(&review, &summary, &default_config());
-        let top = body.find("**[NOTE]** top").expect("review comment");
+        let top = body.find("[NOTE] top").expect("review comment");
         let middle = body.find("## Unplaced comments").expect("unplaced section");
         let bottom = body.find(REVIEW_FOOTER).expect("footer");
         assert!(top < middle && middle < bottom, "section ordering: {body}");

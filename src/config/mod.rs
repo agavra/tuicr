@@ -18,7 +18,7 @@ pub struct CommentTypeConfig {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct ForgeConfig {
-    /// Prepend `**[TYPE]** ` to inline review comment bodies on submit so the
+    /// Prepend `[TYPE] ` to inline review comment bodies on submit so the
     /// reader can see the comment classification at a glance. Defaults to
     /// `true`; set to `false` to send the raw comment body.
     pub comment_type_prefix: bool,

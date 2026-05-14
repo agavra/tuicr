@@ -1301,7 +1301,7 @@ index 1111111..2222222 100644
         let details = backend
             .get_pull_request(parse_pull_request_target("125").unwrap())
             .unwrap();
-        let comments = vec![inline(42, "**[ISSUE]** boom")];
+        let comments = vec![inline(42, "[ISSUE] boom")];
         let request = CreateReviewRequest {
             event: SubmitEvent::Comment,
             commit_id: "abcdef1234567890",
