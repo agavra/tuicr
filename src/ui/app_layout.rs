@@ -1,7 +1,7 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::Style,
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
 };
@@ -9,8 +9,9 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::{
     AnnotatedLine, App, DiffViewMode, ExpandDirection, FileTreeItem, FocusedPanel,
-    GAP_EXPAND_BATCH, GapId, InputMode, VisualSelection,
+    GAP_EXPAND_BATCH, GapId, InputMode, TargetTab, VisualSelection,
 };
+use crate::forge::selector::{PrTabStatus, PrTabView};
 use crate::model::{LineOrigin, LineRange, LineSide};
 use crate::theme::Theme;
 use crate::ui::{comment_panel, help_popup, status_bar, styles};
@@ -81,30 +82,67 @@ fn render_commit_select(frame: &mut Frame, app: &mut App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1), // Header
-            Constraint::Min(0),    // Commit list
+            Constraint::Length(1), // Tab strip
+            Constraint::Min(0),    // Active tab body
             Constraint::Length(1), // Footer hints
         ])
         .split(area);
 
     // Header
-    let header = Paragraph::new(" Select commits to review ")
+    let header = Paragraph::new(" Select a review target ")
         .style(styles::header_style(&app.theme))
         .block(Block::default().style(styles::panel_style(&app.theme)));
     frame.render_widget(header, chunks[0]);
 
-    // Commit list
+    render_target_tab_strip(frame, app, chunks[1]);
+
+    match app.target_tab {
+        TargetTab::Local => render_local_target_tab(frame, app, chunks[2]),
+        TargetTab::PullRequests => render_pull_requests_tab(frame, app, chunks[2]),
+    }
+
+    render_target_selector_footer(frame, app, chunks[3]);
+}
+
+fn render_target_tab_strip(frame: &mut Frame, app: &App, area: Rect) {
+    let theme = &app.theme;
+    let active = app.target_tab;
+    let active_style = Style::default()
+        .fg(theme.fg_primary)
+        .add_modifier(Modifier::BOLD | Modifier::REVERSED);
+    let inactive_style = Style::default().fg(theme.fg_secondary);
+
+    let local = if active == TargetTab::Local {
+        Span::styled(" Local ", active_style)
+    } else {
+        Span::styled(" Local ", inactive_style)
+    };
+    let prs = if active == TargetTab::PullRequests {
+        Span::styled(" Pull Requests ", active_style)
+    } else {
+        Span::styled(" Pull Requests ", inactive_style)
+    };
+    let sep = Span::styled("  ", Style::default());
+
+    let line = Line::from(vec![Span::raw(" "), local, sep, prs]);
+    let strip = Paragraph::new(line).style(styles::panel_style(theme));
+    frame.render_widget(strip, area);
+}
+
+fn render_local_target_tab(frame: &mut Frame, app: &mut App, area: Rect) {
     let block = Block::default()
         .title(" Recent Commits ")
         .borders(Borders::ALL)
         .style(styles::panel_style(&app.theme))
         .border_style(styles::border_style(&app.theme, true));
 
-    let inner = block.inner(chunks[1]);
-    frame.render_widget(block, chunks[1]);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
 
     // Update viewport height for scroll calculations
     app.commit_list_viewport_height = inner.height as usize;
     app.commit_list_inner_area = Some(inner);
+    app.pr_list_inner_area = None;
 
     // Get range info for visual indicators
     let range = app.commit_selection_range;
@@ -215,24 +253,301 @@ fn render_commit_select(frame: &mut Frame, app: &mut App) {
 
     let list = Paragraph::new(visible_items).style(styles::panel_style(&app.theme));
     frame.render_widget(list, inner);
+}
 
-    // Footer with mode, hints, and right-aligned message
+fn render_pull_requests_tab(frame: &mut Frame, app: &mut App, area: Rect) {
+    let title = match app.forge_repository.as_ref() {
+        Some(repo) => format!(" Pull Requests ({}) ", repo.display_name()),
+        None => " Pull Requests ".to_string(),
+    };
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .style(styles::panel_style(&app.theme))
+        .border_style(styles::border_style(&app.theme, true));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    app.commit_list_inner_area = None;
+    app.pr_list_inner_area = Some(inner);
+    app.pr_list_viewport_height = inner.height.saturating_sub(1) as usize;
+
+    // Reserve one row at the top for the status / filter banner.
+    let body_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .split(inner);
+    let banner_area = body_chunks[0];
+    let list_area = body_chunks[1];
+    app.pr_list_viewport_height = list_area.height as usize;
+
+    let view = app.pr_tab.view();
+    render_pr_banner(frame, app, banner_area, &view);
+    render_pr_list(frame, app, list_area, &view);
+}
+
+fn render_pr_banner(frame: &mut Frame, app: &App, area: Rect, view: &PrTabView<'_>) {
+    let theme = &app.theme;
+
+    if let Some(draft) = app.pr_filter_draft.as_ref() {
+        let prefix = Span::styled(" filter: ", Style::default().fg(theme.fg_secondary));
+        let value = Span::styled(format!("/{draft}"), Style::default().fg(theme.fg_primary));
+        let hint = Span::styled(
+            "   (Enter: apply  Esc: cancel)",
+            Style::default().fg(theme.fg_secondary),
+        );
+        let line = Line::from(vec![prefix, value, hint]);
+        let banner = Paragraph::new(line).style(styles::panel_style(theme));
+        frame.render_widget(banner, area);
+        return;
+    }
+
+    match &view.status {
+        PrTabStatus::Disabled(reason) => {
+            let line = Line::from(Span::styled(
+                format!(" {reason} — switch back with Shift-Tab "),
+                Style::default().fg(theme.fg_secondary),
+            ));
+            frame.render_widget(Paragraph::new(line).style(styles::panel_style(theme)), area);
+        }
+        PrTabStatus::Idle => {
+            let line = Line::from(Span::styled(
+                " Press Tab again or wait — loading…",
+                Style::default().fg(theme.fg_secondary),
+            ));
+            frame.render_widget(Paragraph::new(line).style(styles::panel_style(theme)), area);
+        }
+        PrTabStatus::Loading => {
+            render_pr_progress(frame, app, area, "Fetching pull requests from origin...");
+        }
+        PrTabStatus::LoadingMore => {
+            render_pr_progress(frame, app, area, "Loading more pull requests...");
+        }
+        PrTabStatus::Error(msg) => {
+            let line = Line::from(vec![
+                Span::styled(
+                    " error: ",
+                    Style::default()
+                        .fg(theme.message_error_fg)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled((*msg).to_string(), Style::default().fg(theme.fg_primary)),
+            ]);
+            frame.render_widget(Paragraph::new(line).style(styles::panel_style(theme)), area);
+        }
+        PrTabStatus::Ready => {
+            let mut spans: Vec<Span> = vec![Span::styled(
+                format!(" {} loaded", view.rows.len()),
+                Style::default().fg(theme.fg_secondary),
+            )];
+            if !view.filter.is_empty() {
+                spans.push(Span::styled(
+                    format!("   filter: /{}", view.filter),
+                    Style::default().fg(theme.fg_primary),
+                ));
+                spans.push(Span::styled(
+                    "   ('/' to edit, Esc to clear)",
+                    Style::default().fg(theme.fg_secondary),
+                ));
+            } else {
+                spans.push(Span::styled(
+                    "   '/' to filter",
+                    Style::default().fg(theme.fg_secondary),
+                ));
+            }
+            frame.render_widget(
+                Paragraph::new(Line::from(spans)).style(styles::panel_style(theme)),
+                area,
+            );
+        }
+    }
+}
+
+fn render_pr_progress(frame: &mut Frame, app: &App, area: Rect, label: &str) {
+    let theme = &app.theme;
+    let width = area.width.saturating_sub(label.len() as u16 + 5).max(4) as usize;
+    // Indeterminate bar: a windowed block of ~width/3 that travels using
+    // wall-clock seconds, so the bar visibly moves between frames without
+    // requiring per-frame state on App.
+    let block_width = (width / 3).max(2);
+    let travel = (width + block_width).max(1);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as usize)
+        .unwrap_or(0);
+    let position = (now / 80) % travel;
+    let mut bar = String::with_capacity(width);
+    for i in 0..width {
+        if position < block_width {
+            if i < position {
+                bar.push(' ');
+            } else if i < position + block_width && i < width {
+                bar.push('#');
+            } else {
+                bar.push(' ');
+            }
+        } else {
+            let start = position.saturating_sub(block_width);
+            if i >= start && i < position && i < width {
+                bar.push('#');
+            } else {
+                bar.push(' ');
+            }
+        }
+    }
+    let line = Line::from(vec![
+        Span::styled(
+            format!(" {label} "),
+            Style::default().fg(theme.fg_secondary),
+        ),
+        Span::styled(
+            format!("[{bar}]"),
+            Style::default().fg(theme.diff_hunk_header),
+        ),
+    ]);
+    frame.render_widget(Paragraph::new(line).style(styles::panel_style(theme)), area);
+}
+
+fn render_pr_list(frame: &mut Frame, app: &App, area: Rect, view: &PrTabView<'_>) {
+    let theme = &app.theme;
+    if area.height == 0 {
+        return;
+    }
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, row) in view.rows.iter().enumerate() {
+        let is_cursor = i == view.cursor;
+        let pointer = if is_cursor { "> " } else { "  " };
+        let pointer_style = if is_cursor {
+            styles::selected_style(theme)
+        } else {
+            Style::default().fg(theme.fg_secondary)
+        };
+        let number = format!("#{:<5}", row.summary.number);
+        let title = truncate_str(&row.summary.title, 60);
+        let author = row.summary.author.as_deref().unwrap_or("?");
+        let updated = row
+            .summary
+            .updated_at
+            .map(format_relative_time)
+            .unwrap_or_else(|| "—".to_string());
+        let draft = if row.summary.is_draft { " [draft]" } else { "" };
+
+        let line = Line::from(vec![
+            Span::styled(pointer, pointer_style),
+            Span::styled(number, styles::hash_style(theme)),
+            Span::styled(" ", Style::default()),
+            Span::styled(title, Style::default().fg(theme.fg_primary)),
+            Span::styled(
+                format!("   @{author}"),
+                Style::default().fg(theme.fg_secondary),
+            ),
+            Span::styled(
+                format!("   updated {updated}{draft}"),
+                Style::default().fg(theme.fg_secondary),
+            ),
+        ]);
+        lines.push(line);
+    }
+
+    if view.has_load_more {
+        let load_idx = view.rows.len();
+        let is_cursor = view.cursor == load_idx;
+        let style = if is_cursor {
+            styles::selected_style(theme)
+        } else {
+            Style::default().fg(theme.fg_secondary)
+        };
+        let pointer = if is_cursor { "> " } else { "  " };
+        lines.push(Line::from(vec![
+            Span::styled(pointer, style),
+            Span::styled("... load more pull requests", style),
+        ]));
+    }
+
+    if lines.is_empty() {
+        // Empty state placeholder under the banner.
+        if !matches!(view.status, PrTabStatus::Ready) {
+            return;
+        }
+        let msg = if view.filter.is_empty() {
+            " No open pull requests"
+        } else {
+            " No pull requests match the filter"
+        };
+        lines.push(Line::from(Span::styled(
+            msg,
+            Style::default().fg(theme.fg_secondary),
+        )));
+    }
+
+    let visible: Vec<Line> = lines
+        .into_iter()
+        .skip(view.scroll_offset)
+        .take(area.height as usize)
+        .collect();
+    let paragraph = Paragraph::new(visible).style(styles::panel_style(theme));
+    frame.render_widget(paragraph, area);
+}
+
+fn format_relative_time(time: chrono::DateTime<chrono::Utc>) -> String {
+    let now = chrono::Utc::now();
+    let delta = now.signed_duration_since(time);
+    if delta.num_seconds() < 0 {
+        return "just now".to_string();
+    }
+    let secs = delta.num_seconds();
+    if secs < 60 {
+        return "just now".to_string();
+    }
+    let mins = delta.num_minutes();
+    if mins < 60 {
+        return format!("{mins}m ago");
+    }
+    let hours = delta.num_hours();
+    if hours < 24 {
+        return format!("{hours}h ago");
+    }
+    let days = delta.num_days();
+    if days < 30 {
+        return format!("{days}d ago");
+    }
+    let months = days / 30;
+    if months < 12 {
+        return format!("{months}mo ago");
+    }
+    let years = days / 365;
+    format!("{years}y ago")
+}
+
+fn render_target_selector_footer(frame: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
     let mode_span = Span::styled(" SELECT ", styles::mode_style(theme));
 
-    let selected_count = match app.commit_selection_range {
-        Some((start, end)) => end - start + 1,
-        None => 0,
-    };
-    let selection_info = if selected_count > 0 {
-        format!(" ({selected_count} selected)")
-    } else {
-        String::new()
-    };
     let hints = if app.message.is_some() {
         String::new()
+    } else if app.pr_filter_editing() {
+        " Enter:apply  Esc:cancel ".to_string()
     } else {
-        format!(" j/k:navigate  Space:select range  Enter:confirm  q:quit{selection_info}")
+        match app.target_tab {
+            TargetTab::Local => {
+                let selected_count = match app.commit_selection_range {
+                    Some((start, end)) => end - start + 1,
+                    None => 0,
+                };
+                let selection_info = if selected_count > 0 {
+                    format!(" ({selected_count} selected)")
+                } else {
+                    String::new()
+                };
+                format!(
+                    " Tab:tabs  j/k:navigate  Space:select range  Enter:confirm  q:quit{selection_info}"
+                )
+            }
+            TargetTab::PullRequests => {
+                " Tab:tabs  j/k:navigate  Enter:open  /:filter  Esc/q:back ".to_string()
+            }
+        }
     };
     let hints_span = Span::styled(hints, Style::default().fg(theme.fg_secondary));
 
@@ -243,13 +558,13 @@ fn render_commit_select(frame: &mut Frame, app: &mut App) {
         left_spans,
         message_span,
         message_width,
-        chunks[2].width as usize,
+        area.width as usize,
     );
 
     let footer = Paragraph::new(Line::from(spans))
         .style(styles::status_bar_style(theme))
         .block(Block::default());
-    frame.render_widget(footer, chunks[2]);
+    frame.render_widget(footer, area);
 }
 
 fn truncate_str(s: &str, max_len: usize) -> String {

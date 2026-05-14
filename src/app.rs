@@ -7,6 +7,8 @@ use ratatui::style::Color;
 
 use crate::config::CommentTypeConfig;
 use crate::error::{Result, TuicrError};
+use crate::forge::selector::PullRequestsTab;
+use crate::forge::traits::ForgeRepository;
 use crate::model::{
     ClearScope, Comment, CommentType, DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin,
     LineRange, LineSide, ReviewSession, SessionDiffSource,
@@ -365,6 +367,25 @@ pub enum FocusedPanel {
     CommitSelector,
 }
 
+/// Active tab in the review target selector.
+///
+/// The selector internally still goes through `InputMode::CommitSelect`,
+/// but it shows two tabs to the user.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TargetTab {
+    Local,
+    PullRequests,
+}
+
+/// Background-thread events that the PR tab consumes through `pr_load_rx`.
+#[derive(Debug)]
+pub enum PrLoadEvent {
+    /// Result of the initial PR list fetch.
+    Initial(std::result::Result<(Vec<crate::forge::traits::PullRequestSummary>, bool), String>),
+    /// Result of a "load more" fetch.
+    LoadMore(std::result::Result<(Vec<crate::forge::traits::PullRequestSummary>, bool), String>),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiffViewMode {
     Unified,
@@ -435,6 +456,24 @@ pub struct App {
     pub visible_commit_count: usize,
     pub commit_page_size: usize,
     pub has_more_commit: bool,
+
+    // Review target selector tab state. The selector reuses InputMode::CommitSelect
+    // but is conceptually a "target" picker with Local and Pull Requests tabs.
+    pub target_tab: TargetTab,
+    /// GitHub forge repository detected from the local `origin` remote, if any.
+    pub forge_repository: Option<ForgeRepository>,
+    /// State machine for the Pull Requests tab.
+    pub pr_tab: PullRequestsTab,
+    /// Viewport height of the PR list (set during render).
+    pub pr_list_viewport_height: usize,
+    /// Inner content rect of the PR list panel (set during render).
+    pub pr_list_inner_area: Option<ratatui::layout::Rect>,
+    /// When `Some`, the user is editing the local PR filter. Captured keys
+    /// update this draft; pressing Enter commits it to the tab state.
+    pub pr_filter_draft: Option<String>,
+    /// Background-thread channel that delivers PR list fetch results.
+    /// `Receiver` is only present while a fetch is in flight.
+    pub pr_load_rx: Option<std::sync::mpsc::Receiver<PrLoadEvent>>,
 
     pub should_quit: bool,
     pub dirty: bool,
@@ -977,6 +1016,13 @@ impl App {
             visible_commit_count,
             commit_page_size: COMMIT_PAGE_SIZE,
             has_more_commit,
+            target_tab: TargetTab::Local,
+            forge_repository: None,
+            pr_tab: PullRequestsTab::new(None),
+            pr_list_viewport_height: 0,
+            pr_list_inner_area: None,
+            pr_filter_draft: None,
+            pr_load_rx: None,
             should_quit: false,
             dirty: false,
             quit_warned: false,
@@ -1018,7 +1064,17 @@ impl App {
         app.sort_files_by_directory(true);
         app.expand_all_dirs();
         app.rebuild_annotations();
+        app.detect_forge_repository();
         Ok(app)
+    }
+
+    /// Detect a GitHub forge repository from the local checkout, if any.
+    /// Lazily called during startup — running this synchronously is fine
+    /// because it only reads local config, never the network.
+    fn detect_forge_repository(&mut self) {
+        let repo = crate::forge::detect_github_repository(&self.vcs_info.root_path);
+        self.forge_repository = repo.clone();
+        self.pr_tab = PullRequestsTab::new(repo);
     }
 
     fn resolve_comment_types(
@@ -3623,7 +3679,12 @@ impl App {
         self.pending_confirm = None;
     }
 
-    pub fn enter_commit_select_mode(&mut self) -> Result<()> {
+    /// Open the review target selector on a specific tab.
+    ///
+    /// `Local` loads the recent-commits list (same as the historical commit
+    /// selector). `PullRequests` switches the tab; the actual fetch is
+    /// triggered lazily through `on_target_tab_entered`.
+    pub fn enter_target_selector(&mut self, initial_tab: TargetTab) -> Result<()> {
         // Save inline selection state if we have review commits
         if !self.review_commits.is_empty() {
             self.saved_inline_selection = self.commit_selection_range;
@@ -3640,7 +3701,11 @@ impl App {
         let has_unstaged_changes = change_status.unstaged;
 
         let commits = self.vcs.get_recent_commits(0, VISIBLE_COMMIT_COUNT)?;
-        if commits.is_empty() && !has_staged_changes && !has_unstaged_changes {
+        let no_local_targets = commits.is_empty() && !has_staged_changes && !has_unstaged_changes;
+        // Allow opening the selector on the Pull Requests tab even when there
+        // are no local commits or changes — the PR tab is the user's reason
+        // for being here.
+        if no_local_targets && initial_tab == TargetTab::Local {
             self.set_message("No commits or staged/unstaged changes found");
             return Ok(());
         }
@@ -3659,6 +3724,17 @@ impl App {
         self.commit_selection_range = None;
         self.visible_commit_count = self.commit_list.len();
         self.input_mode = InputMode::CommitSelect;
+
+        // Reset the PR tab to Idle each time the selector is opened so the
+        // fetch happens lazily on first visit.
+        self.pr_tab = PullRequestsTab::new(self.forge_repository.clone());
+        self.pr_filter_draft = None;
+        self.pr_load_rx = None;
+
+        self.target_tab = initial_tab;
+        if initial_tab == TargetTab::PullRequests {
+            self.on_target_tab_entered();
+        }
         Ok(())
     }
 
@@ -3714,6 +3790,182 @@ impl App {
         }
 
         Ok(())
+    }
+
+    /// Switch to the next/previous tab in the review target selector.
+    /// With only two tabs, forward and reverse are equivalent; the `_forward`
+    /// arg is kept so callers can pass the natural direction without a cast.
+    /// Triggers the lazy PR fetch the first time the PR tab is entered.
+    pub fn cycle_target_tab(&mut self, _forward: bool) {
+        let next = match self.target_tab {
+            TargetTab::Local => TargetTab::PullRequests,
+            TargetTab::PullRequests => TargetTab::Local,
+        };
+        self.target_tab = next;
+        if next == TargetTab::PullRequests {
+            self.on_target_tab_entered();
+        } else {
+            // Returning to Local: clear any half-typed PR filter draft.
+            self.pr_filter_draft = None;
+        }
+    }
+
+    /// Entry-point hook called when the PR tab becomes visible.
+    /// Triggers the first network call lazily.
+    fn on_target_tab_entered(&mut self) {
+        if let Some(repo) = self.pr_tab.start_initial_load() {
+            self.spawn_pr_initial_load(repo);
+        }
+    }
+
+    /// Spawn a background thread that fetches the initial PR list. The
+    /// resulting `PrLoadEvent::Initial` is delivered through `pr_load_rx`
+    /// and applied in the main loop via `poll_pr_load_events`.
+    fn spawn_pr_initial_load(&mut self, repository: ForgeRepository) {
+        use crate::forge::github::gh::GitHubGhBackend;
+        use crate::forge::selector::PR_PAGE_SIZE;
+        use crate::forge::traits::{ForgeBackend, PullRequestListQuery};
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.pr_load_rx = Some(rx);
+
+        std::thread::spawn(move || {
+            let backend = GitHubGhBackend::new(Some(repository.clone()));
+            let query = PullRequestListQuery::first_page(repository, PR_PAGE_SIZE);
+            let result = backend
+                .list_pull_requests(query)
+                .map(|page| (page.pull_requests, page.has_more))
+                .map_err(|err| err.to_string());
+            let _ = tx.send(PrLoadEvent::Initial(result));
+        });
+    }
+
+    /// Spawn a background thread that fetches the next page of PRs.
+    fn spawn_pr_load_more(&mut self, repository: ForgeRepository, already_loaded: usize) {
+        use crate::forge::github::gh::GitHubGhBackend;
+        use crate::forge::selector::PR_PAGE_SIZE;
+        use crate::forge::traits::{ForgeBackend, PullRequestListQuery};
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.pr_load_rx = Some(rx);
+
+        std::thread::spawn(move || {
+            let backend = GitHubGhBackend::new(Some(repository.clone()));
+            let query = PullRequestListQuery {
+                repository,
+                already_loaded,
+                page_size: PR_PAGE_SIZE,
+            };
+            let result = backend
+                .list_pull_requests(query)
+                .map(|page| (page.pull_requests, page.has_more))
+                .map_err(|err| err.to_string());
+            let _ = tx.send(PrLoadEvent::LoadMore(result));
+        });
+    }
+
+    /// Pump any pending PR fetch events into the tab state.
+    /// Called from the main loop each tick; non-blocking.
+    pub fn poll_pr_load_events(&mut self) {
+        let Some(rx) = self.pr_load_rx.as_ref() else {
+            return;
+        };
+        let mut events = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            events.push(event);
+        }
+        if events.is_empty() {
+            return;
+        }
+        // The channel is single-use per fetch; drop the receiver once a
+        // result has arrived so we don't keep checking it.
+        self.pr_load_rx = None;
+        for event in events {
+            match event {
+                PrLoadEvent::Initial(result) => self.pr_tab.apply_initial_load(result),
+                PrLoadEvent::LoadMore(result) => self.pr_tab.apply_load_more(result),
+            }
+        }
+        self.pr_tab.clamp_cursor();
+    }
+
+    pub fn pr_tab_cursor_up(&mut self) {
+        self.pr_tab.cursor_up();
+        self.pr_tab
+            .ensure_cursor_visible(self.pr_list_viewport_height);
+    }
+
+    pub fn pr_tab_cursor_down(&mut self) {
+        self.pr_tab.cursor_down();
+        self.pr_tab
+            .ensure_cursor_visible(self.pr_list_viewport_height);
+    }
+
+    /// Handle Enter on the PR tab. Returns true when the action was handled
+    /// (load more triggered, stub PR open message shown, etc).
+    pub fn pr_tab_select(&mut self) -> bool {
+        if self.pr_tab.cursor_on_load_more() {
+            if let Some((repo, already)) = self.pr_tab.start_load_more() {
+                self.spawn_pr_load_more(repo, already);
+            }
+            return true;
+        }
+        if let Some(pr) = self.pr_tab.cursor_pr() {
+            // PR diff mode lands in PR 3. For now, surface a clean info
+            // message and leave the selector intact.
+            let number = pr.number;
+            self.set_message(format!(
+                "Opening PR #{number} not yet implemented — coming in PR 3"
+            ));
+            return true;
+        }
+        false
+    }
+
+    pub fn begin_pr_filter(&mut self) {
+        if !self.pr_tab.is_loaded() {
+            return;
+        }
+        // Seed the draft from the current applied filter so the user can
+        // refine it. Starting from empty is also reasonable; preserving the
+        // current filter feels less surprising when re-opening.
+        let current = match &self.pr_tab {
+            PullRequestsTab::Loaded { filter, .. } => filter.clone(),
+            _ => String::new(),
+        };
+        self.pr_filter_draft = Some(current);
+    }
+
+    pub fn commit_pr_filter(&mut self) {
+        if let Some(draft) = self.pr_filter_draft.take() {
+            self.pr_tab.set_filter(draft);
+        }
+    }
+
+    pub fn cancel_pr_filter(&mut self) {
+        self.pr_filter_draft = None;
+    }
+
+    pub fn pr_filter_insert_char(&mut self, ch: char) {
+        if let Some(draft) = self.pr_filter_draft.as_mut() {
+            draft.push(ch);
+        }
+    }
+
+    pub fn pr_filter_delete_char(&mut self) {
+        if let Some(draft) = self.pr_filter_draft.as_mut() {
+            draft.pop();
+        }
+    }
+
+    pub fn pr_filter_clear(&mut self) {
+        if let Some(draft) = self.pr_filter_draft.as_mut() {
+            draft.clear();
+        }
+    }
+
+    pub fn pr_filter_editing(&self) -> bool {
+        self.pr_filter_draft.is_some()
     }
 
     pub fn toggle_diff_view_mode(&mut self) {
@@ -5279,6 +5531,299 @@ mod commit_selection_tests {
         let app = build_app(vec![normal_commit("abc123"), App::staged_commit_entry()]);
 
         assert_eq!(app.special_commit_count(), 0);
+    }
+}
+
+#[cfg(test)]
+mod target_selector_tests {
+    use super::*;
+    use crate::forge::selector::PullRequestsTab;
+    use crate::forge::traits::PullRequestSummary;
+    use crate::model::FileStatus;
+    use crate::vcs::traits::{VcsChangeStatus, VcsType};
+
+    struct DummyVcs {
+        info: VcsInfo,
+        commits: Vec<CommitInfo>,
+    }
+
+    impl VcsBackend for DummyVcs {
+        fn info(&self) -> &VcsInfo {
+            &self.info
+        }
+
+        fn get_working_tree_diff(&self, _highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+            Err(TuicrError::NoChanges)
+        }
+
+        fn fetch_context_lines(
+            &self,
+            _file_path: &Path,
+            _file_status: FileStatus,
+            _start_line: u32,
+            _end_line: u32,
+        ) -> Result<Vec<DiffLine>> {
+            Ok(Vec::new())
+        }
+
+        fn get_change_status(&self) -> Result<VcsChangeStatus> {
+            Ok(VcsChangeStatus {
+                staged: false,
+                unstaged: false,
+            })
+        }
+
+        fn get_recent_commits(&self, offset: usize, limit: usize) -> Result<Vec<CommitInfo>> {
+            Ok(self
+                .commits
+                .iter()
+                .skip(offset)
+                .take(limit)
+                .cloned()
+                .collect())
+        }
+    }
+
+    fn build_app() -> App {
+        build_app_with_commits(Vec::new())
+    }
+
+    fn build_app_with_commits(commits: Vec<CommitInfo>) -> App {
+        let vcs_info = VcsInfo {
+            root_path: PathBuf::from("/tmp"),
+            head_commit: "head".to_string(),
+            branch_name: Some("main".to_string()),
+            vcs_type: VcsType::Git,
+        };
+        let session = ReviewSession::new(
+            vcs_info.root_path.clone(),
+            vcs_info.head_commit.clone(),
+            vcs_info.branch_name.clone(),
+            SessionDiffSource::WorkingTree,
+        );
+
+        App::build(
+            Box::new(DummyVcs {
+                info: vcs_info.clone(),
+                commits,
+            }),
+            vcs_info,
+            Theme::dark(),
+            None,
+            false,
+            Vec::new(),
+            session,
+            DiffSource::WorkingTree,
+            InputMode::Normal,
+            Vec::new(),
+            None,
+        )
+        .expect("failed to build test app")
+    }
+
+    fn dummy_commit(id: &str) -> CommitInfo {
+        CommitInfo {
+            id: id.to_string(),
+            short_id: id.to_string(),
+            branch_name: None,
+            summary: format!("commit {id}"),
+            body: None,
+            author: "tester".to_string(),
+            time: Utc::now(),
+        }
+    }
+
+    fn sample_pr(number: u64, title: &str) -> PullRequestSummary {
+        PullRequestSummary {
+            repository: ForgeRepository::github("github.com", "agavra", "tuicr"),
+            number,
+            title: title.to_string(),
+            author: Some("alice".to_string()),
+            head_ref_name: "feat".to_string(),
+            base_ref_name: "main".to_string(),
+            updated_at: None,
+            url: format!("https://github.com/agavra/tuicr/pull/{number}"),
+            state: "OPEN".to_string(),
+            is_draft: false,
+        }
+    }
+
+    #[test]
+    fn should_default_to_local_tab_after_build() {
+        // given / when
+        let app = build_app();
+        // then
+        assert_eq!(app.target_tab, TargetTab::Local);
+        assert!(!app.pr_filter_editing());
+    }
+
+    #[test]
+    fn should_cycle_between_local_and_pull_requests_on_tab_keypress() {
+        // given
+        let mut app = build_app();
+        app.forge_repository = Some(ForgeRepository::github("github.com", "agavra", "tuicr"));
+        app.pr_tab = PullRequestsTab::new(app.forge_repository.clone());
+        // when
+        app.cycle_target_tab(true);
+        // then
+        assert_eq!(app.target_tab, TargetTab::PullRequests);
+        // when
+        app.cycle_target_tab(false);
+        // then
+        assert_eq!(app.target_tab, TargetTab::Local);
+    }
+
+    #[test]
+    fn should_transition_pr_tab_to_loading_on_first_visit() {
+        // given
+        let mut app = build_app();
+        app.forge_repository = Some(ForgeRepository::github("github.com", "agavra", "tuicr"));
+        app.pr_tab = PullRequestsTab::new(app.forge_repository.clone());
+        // when
+        app.cycle_target_tab(true);
+        // then — a background fetch is in flight
+        assert!(app.pr_tab.is_loading());
+        assert!(app.pr_load_rx.is_some());
+        // The spawned thread holds a backend that may fail without a real
+        // `gh` binary; cancel by dropping the receiver to avoid touching it.
+        app.pr_load_rx = None;
+    }
+
+    #[test]
+    fn should_keep_pr_tab_disabled_when_no_forge_remote() {
+        // given
+        let mut app = build_app();
+        // No forge_repository set up; default new app has None.
+        // when
+        app.cycle_target_tab(true);
+        // then
+        assert_eq!(app.target_tab, TargetTab::PullRequests);
+        assert!(matches!(app.pr_tab, PullRequestsTab::Disabled { .. }));
+        assert!(app.pr_load_rx.is_none());
+    }
+
+    #[test]
+    fn should_set_filter_after_typing_and_committing() {
+        // given
+        let mut app = build_app();
+        app.forge_repository = Some(ForgeRepository::github("github.com", "agavra", "tuicr"));
+        app.pr_tab = PullRequestsTab::new(app.forge_repository.clone());
+        app.pr_tab.start_initial_load();
+        app.pr_tab.apply_initial_load(Ok((
+            vec![sample_pr(125, "Forge"), sample_pr(148, "Review")],
+            false,
+        )));
+        app.target_tab = TargetTab::PullRequests;
+        // when
+        app.begin_pr_filter();
+        app.pr_filter_insert_char('f');
+        app.pr_filter_insert_char('o');
+        app.commit_pr_filter();
+        // then
+        assert!(!app.pr_filter_editing());
+        assert_eq!(app.pr_tab.view().rows.len(), 1);
+        assert_eq!(app.pr_tab.view().rows[0].summary.number, 125);
+    }
+
+    #[test]
+    fn should_discard_filter_draft_on_cancel() {
+        // given
+        let mut app = build_app();
+        app.forge_repository = Some(ForgeRepository::github("github.com", "agavra", "tuicr"));
+        app.pr_tab = PullRequestsTab::new(app.forge_repository.clone());
+        app.pr_tab.start_initial_load();
+        app.pr_tab
+            .apply_initial_load(Ok((vec![sample_pr(1, "alpha")], false)));
+        app.target_tab = TargetTab::PullRequests;
+        // when
+        app.begin_pr_filter();
+        app.pr_filter_insert_char('z');
+        app.cancel_pr_filter();
+        // then
+        assert!(!app.pr_filter_editing());
+        assert_eq!(app.pr_tab.view().filter, "");
+    }
+
+    #[test]
+    fn should_show_stub_message_when_opening_pr_on_pr_tab() {
+        // given
+        let mut app = build_app();
+        app.forge_repository = Some(ForgeRepository::github("github.com", "agavra", "tuicr"));
+        app.pr_tab = PullRequestsTab::new(app.forge_repository.clone());
+        app.pr_tab.start_initial_load();
+        app.pr_tab
+            .apply_initial_load(Ok((vec![sample_pr(42, "answer")], false)));
+        app.target_tab = TargetTab::PullRequests;
+        // when
+        let handled = app.pr_tab_select();
+        // then
+        assert!(handled);
+        let msg = app.message.as_ref().expect("expected info message");
+        assert!(msg.content.contains("#42"));
+        assert!(msg.content.contains("not yet implemented"));
+    }
+
+    #[test]
+    fn should_apply_initial_load_event_to_pr_tab() {
+        // given
+        let mut app = build_app();
+        app.forge_repository = Some(ForgeRepository::github("github.com", "agavra", "tuicr"));
+        app.pr_tab = PullRequestsTab::new(app.forge_repository.clone());
+        app.pr_tab.start_initial_load();
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.pr_load_rx = Some(rx);
+        tx.send(PrLoadEvent::Initial(Ok((
+            vec![sample_pr(7, "lucky")],
+            false,
+        ))))
+        .unwrap();
+        drop(tx);
+        // when
+        app.poll_pr_load_events();
+        // then
+        assert!(app.pr_load_rx.is_none());
+        assert_eq!(app.pr_tab.view().rows.len(), 1);
+        assert_eq!(app.pr_tab.view().rows[0].summary.number, 7);
+    }
+
+    #[test]
+    fn should_open_pr_selector_on_prs_command() {
+        // given
+        let mut app = build_app();
+        app.forge_repository = Some(ForgeRepository::github("github.com", "agavra", "tuicr"));
+        app.pr_tab = PullRequestsTab::new(app.forge_repository.clone());
+        app.command_buffer = "prs".to_string();
+        // when
+        crate::handler::handle_command_action(&mut app, crate::input::Action::SubmitInput);
+        // then
+        assert_eq!(app.target_tab, TargetTab::PullRequests);
+        assert_eq!(app.input_mode, InputMode::CommitSelect);
+        // Cancel the background fetch handle to avoid surprising real `gh` calls.
+        app.pr_load_rx = None;
+    }
+
+    #[test]
+    fn should_open_local_selector_on_targets_command() {
+        // given
+        let mut app = build_app_with_commits(vec![dummy_commit("abc")]);
+        app.command_buffer = "targets".to_string();
+        // when
+        crate::handler::handle_command_action(&mut app, crate::input::Action::SubmitInput);
+        // then
+        assert_eq!(app.target_tab, TargetTab::Local);
+        assert_eq!(app.input_mode, InputMode::CommitSelect);
+    }
+
+    #[test]
+    fn should_treat_commits_as_alias_for_local_target_selector() {
+        // given
+        let mut app = build_app_with_commits(vec![dummy_commit("abc")]);
+        app.command_buffer = "commits".to_string();
+        // when
+        crate::handler::handle_command_action(&mut app, crate::input::Action::SubmitInput);
+        // then
+        assert_eq!(app.target_tab, TargetTab::Local);
+        assert_eq!(app.input_mode, InputMode::CommitSelect);
     }
 }
 
