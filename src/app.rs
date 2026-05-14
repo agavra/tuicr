@@ -10570,6 +10570,27 @@ mod submit_flow_tests {
     }
 
     #[test]
+    fn should_allow_bare_approve_through_action_picker_with_no_comments() {
+        // Regression: bare `:submit` → picker → cursor on Approve → Enter
+        // should NOT warn "Nothing to submit". Approve is the one event
+        // meaningful with no comments. Picker uses skip_confirm = true, so
+        // the flow goes straight to network dispatch.
+        let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+        app.start_submit_action_picker();
+        // Walk cursor to the Approve row (index 1).
+        app.submit_picker_cursor_down();
+        assert_eq!(app.submit_picker_cursor, 1);
+        app.submit_picker_confirm();
+        // No warning was emitted; the network call was dispatched.
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.submit_state.is_none());
+        assert!(
+            app.pr_submit_state.is_some(),
+            "picker-confirm should dispatch when Approve is bare-allowed"
+        );
+    }
+
+    #[test]
     fn should_allow_bare_approve_without_any_comments() {
         // Approve is the one event meaningful with no comments (a plain
         // LGTM). Preflight should proceed; the user lands in the confirm
