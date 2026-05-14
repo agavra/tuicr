@@ -8,6 +8,7 @@
 # Environment variables:
 #   TUICR_VERSION       Version to install (default: latest)
 #   TUICR_INSTALL_DIR   Where to install the binary (default: $HOME/.local/bin)
+#   TUICR_INSTALL_YES   Skip the confirmation prompt (default: prompt if a tty is attached)
 
 set -e
 
@@ -99,6 +100,24 @@ VERSION="${VERSION#v}"
 
 ARCHIVE="${BIN}-${VERSION}-${TARGET}.${EXT}"
 URL="https://github.com/${REPO}/releases/download/v${VERSION}/${ARCHIVE}"
+
+# Show install plan and confirm
+info ""
+info "About to install:"
+info "  Package:  $BIN $VERSION"
+info "  Target:   $TARGET"
+info "  Source:   $URL"
+info "  Dest:     $INSTALL_DIR/$BIN"
+info ""
+
+if [ -z "$TUICR_INSTALL_YES" ] && [ -r /dev/tty ]; then
+    printf "Continue? [Y/n] "
+    read -r answer </dev/tty
+    case "$answer" in
+        ""|y|Y|yes|YES|Yes) ;;
+        *) err "aborted by user" ;;
+    esac
+fi
 
 info "Downloading ${ARCHIVE}..."
 
