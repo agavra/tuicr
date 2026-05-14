@@ -5066,7 +5066,12 @@ impl App {
             }
         }
 
-        if total_local_drafts == 0 && self.session.review_comments.is_empty() {
+        // Approve is the one event that's meaningful with no comments — a
+        // bare "LGTM" approval. Every other event needs at least one local
+        // draft comment or a review-level comment, otherwise there's
+        // nothing to submit.
+        let bare_allowed = matches!(event, crate::forge::submit::SubmitEvent::Approve);
+        if !bare_allowed && total_local_drafts == 0 && self.session.review_comments.is_empty() {
             self.set_warning("Nothing to submit — no local-draft comments");
             return;
         }
@@ -10562,6 +10567,20 @@ mod submit_flow_tests {
         // then
         assert_eq!(app.input_mode, InputMode::Normal);
         assert!(app.submit_state.is_none());
+    }
+
+    #[test]
+    fn should_allow_bare_approve_without_any_comments() {
+        // Approve is the one event meaningful with no comments (a plain
+        // LGTM). Preflight should proceed; the user lands in the confirm
+        // modal with zero mappable + zero unmappable.
+        let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+        app.start_submit(SubmitEvent::Approve);
+        assert_eq!(app.input_mode, InputMode::SubmitConfirm);
+        let state = app.submit_state.as_ref().expect("submit state");
+        assert!(state.mappable.is_empty());
+        assert!(state.unmappable.is_empty());
+        assert_eq!(state.event, SubmitEvent::Approve);
     }
 
     #[test]
