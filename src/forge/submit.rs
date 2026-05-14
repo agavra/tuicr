@@ -156,11 +156,31 @@ fn build_inline_body(comment: &Comment, file_level: bool, config: &ForgeConfig) 
     format!("{prefix}{body}", body = comment.content)
 }
 
+/// Where a local comment is anchored. The caller knows this from how it
+/// walked the session (`file_comments` vs `line_comments[key]`); supplying
+/// it explicitly avoids inferring file-level-ness from missing fields on
+/// `Comment` (which is wrong: `line_comments` entries don't carry their
+/// line on the `Comment` — the HashMap key holds it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommentAnchor {
+    /// File-level comment — no line anchor. Falls back to first valid line.
+    FileLevel,
+    /// Single-line comment anchored at `line` on `side`.
+    Line { line: u32, side: LineSide },
+    /// Multi-line range. Range info comes from `comment.line_range`.
+    Range,
+}
+
 /// Map a single local `Comment` to either an inline GitHub comment or an
 /// `Unmappable` outcome. `file` must be the diff file that produced this
 /// comment (lookup is the caller's responsibility — it owns the current
 /// `diff_files` / `range_diff_files` slice).
-pub fn map_comment(comment: &Comment, file: &DiffFile, config: &ForgeConfig) -> MappedComment {
+pub fn map_comment(
+    comment: &Comment,
+    anchor: CommentAnchor,
+    file: &DiffFile,
+    config: &ForgeConfig,
+) -> MappedComment {
     let path = file.display_path().clone();
 
     if file.is_binary {
@@ -178,10 +198,8 @@ pub fn map_comment(comment: &Comment, file: &DiffFile, config: &ForgeConfig) -> 
         };
     }
 
-    // File-level: no line_context, no line_range, no side.
-    let is_file_level = comment.line_context.is_none() && comment.line_range.is_none();
-    if is_file_level {
-        return match file.first_valid_line(LineSide::New) {
+    match anchor {
+        CommentAnchor::FileLevel => match file.first_valid_line(LineSide::New) {
             Some(line) => MappedComment::Inline(InlineComment {
                 path,
                 line,
@@ -196,39 +214,50 @@ pub fn map_comment(comment: &Comment, file: &DiffFile, config: &ForgeConfig) -> 
                 file: path,
                 reason: UnmappableReason::FileLevelNoAnchor,
             },
-        };
-    }
-
-    // Multi-line range. The range carries its own `side`; mixed-side ranges
-    // are not representable on GitHub today.
-    if let Some(range) = comment.line_range {
-        return map_range(comment, file, config, range);
-    }
-
-    // Single-line: anchor by line_context. The comment carries `side`; if
-    // missing (very old data) default to New per `LineSide::default`.
-    let side = comment.side.unwrap_or_default();
-    let line = match (side, comment.line_context.as_ref()) {
-        (LineSide::Old, Some(ctx)) => ctx.old_line,
-        (LineSide::New, Some(ctx)) => ctx.new_line,
-        _ => None,
-    };
-    match line {
-        Some(l) => MappedComment::Inline(InlineComment {
-            path,
-            line: l,
-            side: side.into(),
-            start_line: None,
-            start_side: None,
-            body: build_inline_body(comment, false, config),
-            comment_id: comment.id.clone(),
-        }),
-        None => MappedComment::Unmappable {
-            comment: comment.clone(),
-            file: path,
-            reason: UnmappableReason::LineNotInDiff,
         },
+        CommentAnchor::Range => match comment.line_range {
+            Some(range) => map_range(comment, file, config, range),
+            None => MappedComment::Unmappable {
+                comment: comment.clone(),
+                file: path,
+                reason: UnmappableReason::MixedSideRange,
+            },
+        },
+        CommentAnchor::Line { line, side } => {
+            if !line_present_on_side(file, line, side) {
+                return MappedComment::Unmappable {
+                    comment: comment.clone(),
+                    file: path,
+                    reason: UnmappableReason::LineNotInDiff,
+                };
+            }
+            MappedComment::Inline(InlineComment {
+                path,
+                line,
+                side: side.into(),
+                start_line: None,
+                start_side: None,
+                body: build_inline_body(comment, false, config),
+                comment_id: comment.id.clone(),
+            })
+        }
     }
+}
+
+/// True when `line` appears on `side` somewhere in the file's hunks.
+fn line_present_on_side(file: &DiffFile, line: u32, side: LineSide) -> bool {
+    for hunk in &file.hunks {
+        for dl in &hunk.lines {
+            let candidate = match side {
+                LineSide::Old => dl.old_lineno,
+                LineSide::New => dl.new_lineno,
+            };
+            if candidate == Some(line) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Map a multi-line range comment, validating that the range sits on a
@@ -491,6 +520,25 @@ mod tests {
         Comment::new("module is messy".to_string(), CommentType::Note, None)
     }
 
+    /// Infer the `CommentAnchor` from a test fixture's `Comment` shape.
+    /// Production callers (`App::start_submit`) build the anchor from the
+    /// `line_comments` HashMap key, but tests construct the comment with
+    /// `line_context` already populated, so we can reflect it.
+    fn anchor_from(comment: &Comment) -> CommentAnchor {
+        if comment.line_range.is_some() {
+            return CommentAnchor::Range;
+        }
+        let side = comment.side.unwrap_or_default();
+        let line = comment.line_context.as_ref().and_then(|ctx| match side {
+            LineSide::New => ctx.new_line,
+            LineSide::Old => ctx.old_line,
+        });
+        match line {
+            Some(l) => CommentAnchor::Line { line: l, side },
+            None => CommentAnchor::FileLevel,
+        }
+    }
+
     // first_valid_line on DiffFile
 
     #[test]
@@ -532,7 +580,12 @@ mod tests {
     #[test]
     fn should_map_single_addition_line_to_right_side() {
         let comment = comment_with_line(LineSide::New, Some(11), None);
-        let mapped = map_comment(&comment, &typical_file(), &default_config());
+        let mapped = map_comment(
+            &comment,
+            anchor_from(&comment),
+            &typical_file(),
+            &default_config(),
+        );
         match mapped {
             MappedComment::Inline(inline) => {
                 assert_eq!(inline.line, 11);
@@ -548,7 +601,12 @@ mod tests {
     #[test]
     fn should_map_single_context_line_to_right_side() {
         let comment = comment_with_line(LineSide::New, Some(10), Some(10));
-        let mapped = map_comment(&comment, &typical_file(), &default_config());
+        let mapped = map_comment(
+            &comment,
+            anchor_from(&comment),
+            &typical_file(),
+            &default_config(),
+        );
         assert!(matches!(
             mapped,
             MappedComment::Inline(InlineComment {
@@ -562,7 +620,12 @@ mod tests {
     #[test]
     fn should_map_single_deletion_line_to_left_side() {
         let comment = comment_with_line(LineSide::Old, None, Some(11));
-        let mapped = map_comment(&comment, &typical_file(), &default_config());
+        let mapped = map_comment(
+            &comment,
+            anchor_from(&comment),
+            &typical_file(),
+            &default_config(),
+        );
         match mapped {
             MappedComment::Inline(inline) => {
                 assert_eq!(inline.line, 11);
@@ -582,7 +645,7 @@ mod tests {
             line(LineOrigin::Addition, Some(12), None),
         ])]);
         let comment = comment_range(LineSide::New, LineRange::new(10, 12));
-        let mapped = map_comment(&comment, &file, &default_config());
+        let mapped = map_comment(&comment, anchor_from(&comment), &file, &default_config());
         match mapped {
             MappedComment::Inline(inline) => {
                 assert_eq!(inline.line, 12);
@@ -602,7 +665,7 @@ mod tests {
             line(LineOrigin::Deletion, None, Some(22)),
         ])]);
         let comment = comment_range(LineSide::Old, LineRange::new(20, 22));
-        let mapped = map_comment(&comment, &file, &default_config());
+        let mapped = map_comment(&comment, anchor_from(&comment), &file, &default_config());
         match mapped {
             MappedComment::Inline(inline) => {
                 assert_eq!(inline.line, 22);
@@ -618,7 +681,7 @@ mod tests {
     fn should_flatten_single_line_range_to_inline_without_start_fields() {
         let file = file_with_hunks(vec![hunk(vec![line(LineOrigin::Addition, Some(15), None)])]);
         let comment = comment_range(LineSide::New, LineRange::single(15));
-        let mapped = map_comment(&comment, &file, &default_config());
+        let mapped = map_comment(&comment, anchor_from(&comment), &file, &default_config());
         match mapped {
             MappedComment::Inline(inline) => {
                 assert_eq!(inline.line, 15);
@@ -638,7 +701,7 @@ mod tests {
             line(LineOrigin::Deletion, None, Some(22)),
         ])]);
         let comment = comment_range(LineSide::New, LineRange::new(20, 22));
-        let mapped = map_comment(&comment, &file, &default_config());
+        let mapped = map_comment(&comment, anchor_from(&comment), &file, &default_config());
         match mapped {
             MappedComment::Unmappable { reason, .. } => {
                 assert_eq!(reason, UnmappableReason::MixedSideRange);
@@ -652,7 +715,12 @@ mod tests {
     #[test]
     fn should_anchor_file_level_to_first_valid_new_line() {
         let comment = comment_file_level();
-        let mapped = map_comment(&comment, &typical_file(), &default_config());
+        let mapped = map_comment(
+            &comment,
+            anchor_from(&comment),
+            &typical_file(),
+            &default_config(),
+        );
         match mapped {
             MappedComment::Inline(inline) => {
                 assert_eq!(inline.line, 10);
@@ -668,7 +736,7 @@ mod tests {
         // Pure deletion file: nothing on the New side.
         let file = file_with_hunks(vec![hunk(vec![line(LineOrigin::Deletion, None, Some(5))])]);
         let comment = comment_file_level();
-        let mapped = map_comment(&comment, &file, &default_config());
+        let mapped = map_comment(&comment, anchor_from(&comment), &file, &default_config());
         match mapped {
             MappedComment::Unmappable { reason, .. } => {
                 assert_eq!(reason, UnmappableReason::FileLevelNoAnchor);
@@ -682,7 +750,7 @@ mod tests {
         let mut file = typical_file();
         file.is_binary = true;
         let comment = comment_with_line(LineSide::New, Some(11), None);
-        let mapped = map_comment(&comment, &file, &default_config());
+        let mapped = map_comment(&comment, anchor_from(&comment), &file, &default_config());
         assert!(matches!(
             mapped,
             MappedComment::Unmappable {
@@ -697,7 +765,7 @@ mod tests {
         let mut file = typical_file();
         file.is_too_large = true;
         let comment = comment_file_level();
-        let mapped = map_comment(&comment, &file, &default_config());
+        let mapped = map_comment(&comment, anchor_from(&comment), &file, &default_config());
         assert!(matches!(
             mapped,
             MappedComment::Unmappable {
@@ -716,7 +784,7 @@ mod tests {
             comment_type_prefix: false,
             review_footer: true,
         };
-        let mapped = map_comment(&comment, &typical_file(), &cfg);
+        let mapped = map_comment(&comment, anchor_from(&comment), &typical_file(), &cfg);
         match mapped {
             MappedComment::Inline(inline) => {
                 assert!(!inline.body.contains("**[ISSUE]**"));

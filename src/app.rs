@@ -4941,7 +4941,9 @@ impl App {
     /// PR 5 does not call the network; `[y]` in the confirmation modal
     /// stubs a "PR 6 will wire the network call" info message.
     pub fn start_submit(&mut self, event: crate::forge::submit::SubmitEvent) {
-        use crate::forge::submit::{InlineComment, ResolverAction, UnmappableItem, map_comment};
+        use crate::forge::submit::{
+            CommentAnchor, InlineComment, ResolverAction, UnmappableItem, map_comment,
+        };
 
         let DiffSource::PullRequest(pr) = &self.diff_source else {
             self.set_warning(":submit only applies in PR mode");
@@ -4979,7 +4981,7 @@ impl App {
                 }
                 total_local_drafts += 1;
                 bucket_mapping(
-                    map_comment(comment, file, &self.forge_config),
+                    map_comment(comment, CommentAnchor::FileLevel, file, &self.forge_config),
                     &mut mappable,
                     &mut unmappable,
                 );
@@ -4992,8 +4994,16 @@ impl App {
                         continue;
                     }
                     total_local_drafts += 1;
+                    let anchor = if comment.line_range.is_some() {
+                        CommentAnchor::Range
+                    } else {
+                        CommentAnchor::Line {
+                            line: *key,
+                            side: comment.side.unwrap_or_default(),
+                        }
+                    };
                     bucket_mapping(
-                        map_comment(comment, file, &self.forge_config),
+                        map_comment(comment, anchor, file, &self.forge_config),
                         &mut mappable,
                         &mut unmappable,
                     );
@@ -10236,6 +10246,39 @@ mod submit_flow_tests {
         let pb = PathBuf::from(path);
         let review = app.session.get_file_mut(&pb).expect("file in session");
         review.line_comments.entry(line).or_default().push(comment);
+    }
+
+    #[test]
+    fn should_anchor_line_comments_via_hashmap_key_when_line_context_missing() {
+        // Regression: in production, comments are created via Comment::new
+        // which does NOT populate line_context — the line lives only in the
+        // line_comments HashMap key. Before the CommentAnchor refactor, the
+        // mapper treated these as file-level and posted everything with
+        // position 1 plus the "File-level:" body prefix.
+        use crate::forge::submit::GhSide;
+
+        let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+        let bare = Comment::new(
+            "real line comment".to_string(),
+            CommentType::Issue,
+            Some(LineSide::New),
+        );
+        assert!(bare.line_context.is_none(), "fixture contract");
+        add_line_comment(&mut app, "src/lib.rs", 11, bare);
+
+        app.start_submit(SubmitEvent::Comment);
+
+        assert_eq!(app.input_mode, InputMode::SubmitConfirm);
+        let state = app.submit_state.as_ref().expect("submit state");
+        assert_eq!(state.mappable.len(), 1);
+        let inline = &state.mappable[0];
+        assert_eq!(inline.line, 11);
+        assert_eq!(inline.side, GhSide::Right);
+        assert!(
+            !inline.body.contains("File-level:"),
+            "regression: body should not be prefixed File-level (got: {})",
+            inline.body
+        );
     }
 
     #[test]
