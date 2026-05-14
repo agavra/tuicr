@@ -124,7 +124,7 @@ impl UnmappableReason {
 }
 
 /// Outcome of mapping one local `Comment` against the displayed diff.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MappedComment {
     Inline(InlineComment),
     Unmappable {
@@ -312,7 +312,7 @@ fn range_endpoints_present(file: &DiffFile, range: LineRange, side: LineSide) ->
 }
 
 /// Output of preflight — drives the resolver and confirmation modal.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreflightResult {
     pub event: SubmitEvent,
     pub mappable: Vec<InlineComment>,
@@ -325,7 +325,7 @@ pub struct PreflightResult {
 
 /// A bundled view of an unmappable comment together with the file path and
 /// reason, for the resolver UI.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnmappableItem {
     pub comment: Comment,
     pub file: PathBuf,
@@ -344,7 +344,7 @@ pub enum ResolverAction {
 }
 
 /// A single line in the "Unplaced comments" section of the review body.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MovedToSummaryItem {
     pub comment: Comment,
     pub file: PathBuf,

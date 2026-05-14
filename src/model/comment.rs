@@ -124,14 +124,14 @@ impl<'de> Deserialize<'de> for CommentType {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LineContext {
     pub new_line: Option<u32>,
     pub old_line: Option<u32>,
     pub content: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Comment {
     pub id: String,
     pub content: String,
