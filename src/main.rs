@@ -296,6 +296,7 @@ fn main() -> anyhow::Result<()> {
         app.clear_expired_message();
         app.poll_pr_load_events();
         app.poll_pr_open_events();
+        app.poll_pr_reload_events();
         app.poll_pr_threads_events();
 
         // Render

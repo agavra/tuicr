@@ -273,7 +273,26 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             Span::raw("")
         };
 
-        vec![mode_span, hints_span, dirty_indicator, remote_loading]
+        // Spinner banner while `:e` is mid-flight: the network half of
+        // the reload runs on a background thread so the user can keep
+        // scrolling, but we want a visible cue that it's working.
+        let reload_spinner = if let Some(reload) = app.pr_reload_state.as_ref() {
+            let glyph = crate::ui::selector::pr_open_spinner_glyph(reload.started_at.elapsed());
+            Span::styled(
+                format!(" {glyph} Reloading PR… "),
+                Style::default().fg(theme.fg_dim),
+            )
+        } else {
+            Span::raw("")
+        };
+
+        vec![
+            mode_span,
+            hints_span,
+            dirty_indicator,
+            remote_loading,
+            reload_spinner,
+        ]
     };
 
     // Build message span and create right-aligned layout

@@ -363,21 +363,11 @@ pub fn handle_command_action(app: &mut App, action: Action) {
                 },
                 "e" | "reload" => {
                     if matches!(app.diff_source, app::DiffSource::PullRequest(_)) {
-                        match app.reload_pull_request() {
-                            Ok(true) => {
-                                app.set_message(
-                                    "Reloaded PR at new head — switched to fresh session"
-                                        .to_string(),
-                                );
-                            }
-                            Ok(false) => {
-                                // Same head: still re-fetch remote threads
-                                // since reviewers may have posted new
-                                // discussions while the user was in tuicr.
-                                app.refetch_pr_threads();
-                                app.set_message("PR is already at the latest head");
-                            }
-                            Err(e) => app.set_error(format!("Reload failed: {e}")),
+                        // Async: shows a spinner in the status bar; result
+                        // is applied in `poll_pr_reload_events` and the
+                        // cursor is restored to the captured anchor.
+                        if let Err(e) = app.spawn_pr_reload() {
+                            app.set_error(format!("Reload failed: {e}"));
                         }
                     } else {
                         match app.reload_diff_files() {

@@ -505,6 +505,38 @@ pub enum PrOpenEvent {
     },
 }
 
+/// A semantic anchor for the cursor — what we captured before kicking
+/// off `:e`, and what we try to re-locate after the new diff lands.
+/// Identifies the cursor's last-known position in terms of file path
+/// and line numbers rather than the volatile annotation index.
+#[derive(Debug, Clone)]
+pub struct PrCursorAnchor {
+    pub path: std::path::PathBuf,
+    pub new_lineno: Option<u32>,
+    pub old_lineno: Option<u32>,
+}
+
+/// In-flight `:e` reload of the current PR. Drives the status-bar
+/// spinner and carries the cursor anchor we want to restore after the
+/// reload lands.
+#[derive(Debug, Clone)]
+pub struct PrReloadRequest {
+    pub repository: crate::forge::traits::ForgeRepository,
+    pub pr_number: u64,
+    pub head_sha: String,
+    pub started_at: Instant,
+    pub anchor: Option<PrCursorAnchor>,
+}
+
+/// Result delivered from the PR-reload background thread.
+#[derive(Debug)]
+pub enum PrReloadEvent {
+    Done {
+        request: PrReloadRequest,
+        result: std::result::Result<(crate::forge::traits::PullRequestDetails, String), String>,
+    },
+}
+
 /// Result delivered from the remote-thread fetch background thread. The PR
 /// diff is rendered as soon as it parses; threads land asynchronously and
 /// trigger a repaint via `poll_pr_threads_events`.
@@ -614,6 +646,11 @@ pub struct App {
     /// Background-thread channel that delivers the result of a PR open.
     /// `Receiver` is only present while an open is in flight.
     pub pr_open_rx: Option<std::sync::mpsc::Receiver<PrOpenEvent>>,
+    /// In-flight `:e` reload. Drives the status-bar spinner and stores
+    /// the cursor anchor we want to restore after the new diff lands.
+    pub pr_reload_state: Option<PrReloadRequest>,
+    /// Background-thread channel that delivers the result of a PR reload.
+    pub pr_reload_rx: Option<std::sync::mpsc::Receiver<PrReloadEvent>>,
     /// Forge backend instance live while in PR diff mode. Used by the
     /// context provider for gap expansion against base/head SHAs and (in a
     /// future PR) for remote comment fetch/submit.
@@ -1196,6 +1233,8 @@ impl App {
             pr_load_rx: None,
             pr_open_state: None,
             pr_open_rx: None,
+            pr_reload_state: None,
+            pr_reload_rx: None,
             forge_backend: None,
             forge_review_threads: Vec::new(),
             forge_review_threads_loading: false,
@@ -1688,6 +1727,235 @@ impl App {
     /// Reload the PR's head from the forge. If the head SHA changed, this
     /// switches sessions so old-head draft comments stay with the old
     /// session and the new session starts clean.
+    /// Capture the cursor's current file + line numbers so we can try to
+    /// land back here after `:e` rebuilds the diff. Returns `None` when
+    /// the cursor isn't on a diff line (e.g., it's on a header / comment
+    /// / hunk header / expander).
+    fn capture_pr_cursor_anchor(&self) -> Option<PrCursorAnchor> {
+        let annotation = self.line_annotations.get(self.diff_state.cursor_line)?;
+        let (file_idx, old_lineno, new_lineno) = match annotation {
+            AnnotatedLine::DiffLine {
+                file_idx,
+                old_lineno,
+                new_lineno,
+                ..
+            } => (*file_idx, *old_lineno, *new_lineno),
+            AnnotatedLine::SideBySideLine {
+                file_idx,
+                old_lineno,
+                new_lineno,
+                ..
+            } => (*file_idx, *old_lineno, *new_lineno),
+            AnnotatedLine::ExpandedContext { gap_id, .. } => {
+                // Approximate: drop back to the file index from the gap.
+                let file_idx = gap_id.file_idx;
+                (file_idx, None, None)
+            }
+            _ => {
+                let file_idx = annotation_file_idx(annotation)?;
+                (file_idx, None, None)
+            }
+        };
+        let path = self.diff_files.get(file_idx)?.display_path().clone();
+        Some(PrCursorAnchor {
+            path,
+            new_lineno,
+            old_lineno,
+        })
+    }
+
+    /// Move the cursor to a sensible spot after a reload that may have
+    /// shifted file ordering / hunk boundaries. Best-effort: match the
+    /// exact `(path, new_lineno)` if it still exists, else the same
+    /// `(path, old_lineno)` on the LEFT side, else the file's first
+    /// annotation, else stay at line 0.
+    fn restore_pr_cursor_to_anchor(&mut self, anchor: &PrCursorAnchor) {
+        let mut best: Option<usize> = None;
+        let mut file_first: Option<usize> = None;
+        for (idx, ann) in self.line_annotations.iter().enumerate() {
+            let file_idx = match ann {
+                AnnotatedLine::DiffLine { file_idx, .. }
+                | AnnotatedLine::SideBySideLine { file_idx, .. }
+                | AnnotatedLine::HunkHeader { file_idx, .. }
+                | AnnotatedLine::FileHeader { file_idx, .. } => *file_idx,
+                _ => continue,
+            };
+            let Some(file) = self.diff_files.get(file_idx) else {
+                continue;
+            };
+            if file.display_path() != &anchor.path {
+                continue;
+            }
+            file_first.get_or_insert(idx);
+            let (line_new, line_old) = match ann {
+                AnnotatedLine::DiffLine {
+                    old_lineno,
+                    new_lineno,
+                    ..
+                }
+                | AnnotatedLine::SideBySideLine {
+                    old_lineno,
+                    new_lineno,
+                    ..
+                } => (*new_lineno, *old_lineno),
+                _ => (None, None),
+            };
+            if anchor.new_lineno.is_some() && line_new == anchor.new_lineno {
+                best = Some(idx);
+                break;
+            }
+            if anchor.old_lineno.is_some() && line_old == anchor.old_lineno {
+                best = Some(idx);
+                // Don't break — a later RIGHT-side match may still be better.
+            }
+        }
+        let target = best.or(file_first).unwrap_or(0);
+        self.diff_state.cursor_line = target;
+        // Anchor the current_file_idx to whatever annotation we landed on
+        // so the file list highlight stays in sync.
+        if let Some(ann) = self.line_annotations.get(target)
+            && let Some(file_idx) = annotation_file_idx(ann)
+        {
+            self.diff_state.current_file_idx = file_idx;
+        }
+    }
+
+    /// Kick off `:e` asynchronously. Captures the cursor anchor, sets
+    /// the reload state for the spinner, and spawns the network fetch
+    /// on a background thread. Returns immediately. The result is
+    /// applied later in `poll_pr_reload_events`.
+    pub fn spawn_pr_reload(&mut self) -> Result<()> {
+        use crate::forge::github::gh::GitHubGhBackend;
+        use crate::forge::pr_open::fetch_pr_data;
+        use crate::forge::traits::PullRequestTarget;
+
+        let DiffSource::PullRequest(current) = self.diff_source.clone() else {
+            return Err(TuicrError::UnsupportedOperation(
+                "Not in PR mode".to_string(),
+            ));
+        };
+        if self.pr_reload_state.is_some() {
+            return Ok(()); // already in flight; the existing spinner is enough
+        }
+
+        let anchor = self.capture_pr_cursor_anchor();
+        let request = PrReloadRequest {
+            repository: current.key.repository.clone(),
+            pr_number: current.key.number,
+            head_sha: current.key.head_sha.clone(),
+            started_at: Instant::now(),
+            anchor,
+        };
+        self.pr_reload_state = Some(request.clone());
+
+        let local_checkout = self
+            .forge_backend
+            .as_deref()
+            .and_then(|backend| backend.local_checkout_path());
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.pr_reload_rx = Some(rx);
+
+        let repository = current.key.repository.clone();
+        let pr_number = current.key.number;
+        std::thread::spawn(move || {
+            let backend =
+                GitHubGhBackend::new(Some(repository.clone())).with_local_checkout(local_checkout);
+            let target =
+                PullRequestTarget::with_repository(repository, pr_number, pr_number.to_string());
+            let outcome = fetch_pr_data(&backend, target).map_err(|e| e.to_string());
+            let _ = tx.send(PrReloadEvent::Done {
+                request,
+                result: outcome,
+            });
+        });
+        Ok(())
+    }
+
+    /// Pump a pending reload result. Parses + applies on the main thread,
+    /// then restores the cursor to the remembered anchor.
+    pub fn poll_pr_reload_events(&mut self) {
+        let Some(rx) = self.pr_reload_rx.as_ref() else {
+            return;
+        };
+        let event = match rx.try_recv() {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+        self.pr_reload_rx = None;
+        let in_flight = self.pr_reload_state.clone();
+        self.pr_reload_state = None;
+        let PrReloadEvent::Done { request, result } = event;
+        if !in_flight
+            .as_ref()
+            .is_some_and(|s| s.pr_number == request.pr_number && s.repository == request.repository)
+        {
+            return;
+        }
+        match result {
+            Ok((details, patch)) => {
+                if let Err(e) = self.finish_pr_reload(details, patch, &request) {
+                    self.set_error(format!("Reload failed: {e}"));
+                }
+            }
+            Err(e) => {
+                self.set_error(format!("Reload failed: {e}"));
+            }
+        }
+    }
+
+    fn finish_pr_reload(
+        &mut self,
+        details: crate::forge::traits::PullRequestDetails,
+        patch: String,
+        request: &PrReloadRequest,
+    ) -> Result<()> {
+        use crate::forge::github::gh::GitHubGhBackend;
+        use crate::forge::pr_open::prepare_open_pr;
+
+        let local_checkout = self
+            .forge_backend
+            .as_deref()
+            .and_then(|backend| backend.local_checkout_path());
+        let highlighter = self.theme.syntax_highlighter();
+        let mut opened = prepare_open_pr(details, &patch, local_checkout.as_deref(), highlighter)?;
+
+        let head_changed = opened.details.head_sha != request.head_sha;
+        if head_changed {
+            let _ = crate::persistence::save_session(&self.session);
+            let details_for_threads = opened.details.clone();
+            Self::load_or_apply_pr_session(&mut opened);
+            let backend = Box::new(
+                GitHubGhBackend::new(Some(request.repository.clone()))
+                    .with_local_checkout(local_checkout.clone()),
+            );
+            self.enter_pr_diff_mode(backend, opened)?;
+            self.spawn_pr_threads_fetch(&details_for_threads, local_checkout);
+            self.set_message("Reloaded PR at new head — switched to fresh session".to_string());
+        } else {
+            self.diff_files = opened.diff_files;
+            self.clear_expanded_gaps();
+            for file in &self.diff_files {
+                let path = file.display_path().clone();
+                self.session.add_file(path, file.status, file.content_hash);
+            }
+            self.sort_files_by_directory(true);
+            self.expand_all_dirs();
+            self.rebuild_annotations();
+            self.refetch_pr_threads();
+            self.set_message("Reloaded PR (no new commits)".to_string());
+        }
+
+        if let Some(anchor) = &request.anchor {
+            self.restore_pr_cursor_to_anchor(anchor);
+        }
+        Ok(())
+    }
+
+    /// Synchronous reload. Production code uses `spawn_pr_reload` for the
+    /// async path; kept as a seam for tests that need to drive a reload
+    /// in one call without an mpsc round-trip.
+    #[allow(dead_code)]
     pub fn reload_pull_request(&mut self) -> Result<bool> {
         use crate::forge::github::gh::GitHubGhBackend;
 
@@ -1708,6 +1976,7 @@ impl App {
 
     /// Inner reload path. Takes the forge backend as a parameter so tests
     /// can inject a fake without going through `gh`.
+    #[allow(dead_code)]
     pub fn reload_pull_request_with_backend(
         &mut self,
         backend: Box<dyn ForgeBackend>,
