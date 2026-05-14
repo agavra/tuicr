@@ -2,7 +2,7 @@ use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Position;
 
 use crate::app::{
-    self, App, ExpandDirection, FileTreeItem, FocusedPanel, GapCursorHit, InputMode,
+    self, App, ExpandDirection, FileTreeItem, FocusedPanel, GapCursorHit, InputMode, TargetTab,
     VisualSelection,
 };
 use crate::input::Action;
@@ -426,9 +426,16 @@ pub fn handle_command_action(app: &mut App, action: Action) {
                 }
                 "diff" => app.toggle_diff_view_mode(),
                 "stage" => app.stage_reviewed_files(),
-                "commits" => {
-                    if let Err(e) = app.enter_commit_select_mode() {
+                "commits" | "targets" => {
+                    if let Err(e) = app.enter_target_selector(TargetTab::Local) {
                         app.set_error(format!("Failed to load commits: {e}"));
+                    } else {
+                        return;
+                    }
+                }
+                "prs" => {
+                    if let Err(e) = app.enter_target_selector(TargetTab::PullRequests) {
+                        app.set_error(format!("Failed to open PR selector: {e}"));
                     } else {
                         return;
                     }
@@ -565,8 +572,40 @@ pub fn handle_confirm_action(app: &mut App, action: Action) {
     }
 }
 
-/// Handle actions in CommitSelect mode
+/// Handle actions in CommitSelect mode.
+///
+/// CommitSelect actually drives the review target selector, which has two
+/// tabs (Local and Pull Requests). Tab-shared actions (switch tab, quit) are
+/// handled first; per-tab dispatch follows.
 pub fn handle_commit_select_action(app: &mut App, action: Action) {
+    // Filter-editing sub-state on the PR tab. Routed before tab dispatch
+    // because typed characters must go to the filter buffer rather than
+    // to local-commit movement.
+    if app.pr_filter_editing() {
+        handle_pr_filter_action(app, action);
+        return;
+    }
+
+    match action {
+        Action::TargetSelectorTabNext => app.cycle_target_tab(true),
+        Action::TargetSelectorTabPrev => app.cycle_target_tab(false),
+        Action::Quit => app.should_quit = true,
+        Action::ExitMode => {
+            if app.commit_selection_range.is_none() {
+                return;
+            }
+            if let Err(e) = app.exit_commit_select_mode() {
+                app.set_error(format!("Failed to reload changes: {e}"));
+            }
+        }
+        other => match app.target_tab {
+            TargetTab::Local => handle_local_target_action(app, other),
+            TargetTab::PullRequests => handle_pr_target_action(app, other),
+        },
+    }
+}
+
+fn handle_local_target_action(app: &mut App, action: Action) {
     match action {
         Action::CommitSelectUp => app.commit_select_up(),
         Action::CommitSelectDown => app.commit_select_down(),
@@ -591,14 +630,38 @@ pub fn handle_commit_select_action(app: &mut App, action: Action) {
                 app.set_error(format!("Failed to load commits: {e}"));
             }
         }
-        Action::ExitMode => {
-            if app.commit_selection_range.is_none() {
-                return;
-            }
-            if let Err(e) = app.exit_commit_select_mode() {
-                app.set_error(format!("Failed to reload changes: {e}"));
-            }
+        _ => {}
+    }
+}
+
+fn handle_pr_target_action(app: &mut App, action: Action) {
+    match action {
+        Action::CommitSelectUp => app.pr_tab_cursor_up(),
+        Action::CommitSelectDown => app.pr_tab_cursor_down(),
+        Action::ConfirmCommitSelect => {
+            app.pr_tab_select();
         }
+        Action::ToggleCommitSelect => {
+            // Space is a no-op on the PR tab (spec).
+        }
+        Action::BeginTargetFilter => {
+            app.begin_pr_filter();
+        }
+        _ => {}
+    }
+}
+
+fn handle_pr_filter_action(app: &mut App, action: Action) {
+    match action {
+        Action::InsertChar(c) => app.pr_filter_insert_char(c),
+        Action::DeleteChar => app.pr_filter_delete_char(),
+        Action::DeleteWord => {
+            // Soft word-delete: collapses to clear-line for the v1 cut.
+            app.pr_filter_clear();
+        }
+        Action::ClearLine => app.pr_filter_clear(),
+        Action::SubmitInput => app.commit_pr_filter(),
+        Action::ExitMode => app.cancel_pr_filter(),
         Action::Quit => app.should_quit = true,
         _ => {}
     }

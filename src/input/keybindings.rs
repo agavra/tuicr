@@ -87,6 +87,14 @@ pub enum Action {
     /// Cycle inline commit selector to previous individual commit (`(`)
     CycleCommitPrev,
 
+    // Review target selector
+    /// Switch to the next selector tab (Tab key).
+    TargetSelectorTabNext,
+    /// Switch to the previous selector tab (Shift-Tab).
+    TargetSelectorTabPrev,
+    /// Begin editing the local filter inside the PR tab (`/`).
+    BeginTargetFilter,
+
     ToggleExpand,
     ExpandAll,
     CollapseAll,
@@ -290,13 +298,32 @@ fn map_confirm_mode(key: KeyEvent) -> Action {
 }
 
 fn map_commit_select_mode(key: KeyEvent) -> Action {
-    match key.code {
-        KeyCode::Char('j') | KeyCode::Down => Action::CommitSelectDown,
-        KeyCode::Char('k') | KeyCode::Up => Action::CommitSelectUp,
-        KeyCode::Char(' ') => Action::ToggleCommitSelect,
-        KeyCode::Enter => Action::ConfirmCommitSelect,
-        KeyCode::Esc => Action::ExitMode,
-        KeyCode::Char('q') => Action::Quit,
+    match (key.code, key.modifiers) {
+        (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => Action::CommitSelectDown,
+        (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => Action::CommitSelectUp,
+        (KeyCode::Char(' '), KeyModifiers::NONE) => Action::ToggleCommitSelect,
+        (KeyCode::Enter, KeyModifiers::NONE) => Action::ConfirmCommitSelect,
+        (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
+        (KeyCode::Char('q'), KeyModifiers::NONE) => Action::Quit,
+        (KeyCode::Tab, KeyModifiers::NONE) => Action::TargetSelectorTabNext,
+        (KeyCode::BackTab, _) => Action::TargetSelectorTabPrev,
+        (KeyCode::Char('/'), _) => Action::BeginTargetFilter,
+        _ => Action::None,
+    }
+}
+
+/// Key map used while the user is editing the PR-tab local filter.
+/// This is a sub-state of `InputMode::CommitSelect`; the dispatcher in
+/// `main.rs` routes here when `App::pr_filter_editing()` is true.
+pub fn map_target_filter_mode(key: KeyEvent) -> Action {
+    match (key.code, key.modifiers) {
+        (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
+        (KeyCode::Enter, KeyModifiers::NONE) => Action::SubmitInput,
+        (KeyCode::Backspace, KeyModifiers::NONE) => Action::DeleteChar,
+        (KeyCode::Char('u'), KeyModifiers::CONTROL) => Action::ClearLine,
+        (KeyCode::Char('w'), KeyModifiers::CONTROL) => Action::DeleteWord,
+        (KeyCode::Backspace, mods) if mods.contains(KeyModifiers::ALT) => Action::DeleteWord,
+        (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => Action::InsertChar(c),
         _ => Action::None,
     }
 }
@@ -414,6 +441,54 @@ mod tests {
         assert_eq!(map_comment_mode(alt_backspace), Action::DeleteWord);
         assert_eq!(map_command_mode(alt_backspace), Action::DeleteWord);
         assert_eq!(map_search_mode(alt_backspace), Action::DeleteWord);
+    }
+
+    #[test]
+    fn should_map_tab_to_target_selector_tab_next_in_commit_select_mode() {
+        // given / when
+        let action = map_commit_select_mode(key(KeyCode::Tab));
+        // then
+        assert_eq!(action, Action::TargetSelectorTabNext);
+    }
+
+    #[test]
+    fn should_map_back_tab_to_target_selector_tab_prev_in_commit_select_mode() {
+        // given / when
+        let action = map_commit_select_mode(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+        // then
+        assert_eq!(action, Action::TargetSelectorTabPrev);
+    }
+
+    #[test]
+    fn should_map_slash_to_begin_target_filter_in_commit_select_mode() {
+        // given / when
+        let action = map_commit_select_mode(key(KeyCode::Char('/')));
+        // then
+        assert_eq!(action, Action::BeginTargetFilter);
+    }
+
+    #[test]
+    fn should_route_typed_chars_to_insert_in_target_filter_mode() {
+        // given / when
+        let action = map_target_filter_mode(key(KeyCode::Char('a')));
+        // then
+        assert_eq!(action, Action::InsertChar('a'));
+    }
+
+    #[test]
+    fn should_map_enter_to_submit_in_target_filter_mode() {
+        // given / when
+        let action = map_target_filter_mode(key(KeyCode::Enter));
+        // then
+        assert_eq!(action, Action::SubmitInput);
+    }
+
+    #[test]
+    fn should_map_esc_to_exit_in_target_filter_mode() {
+        // given / when
+        let action = map_target_filter_mode(key(KeyCode::Esc));
+        // then
+        assert_eq!(action, Action::ExitMode);
     }
 
     #[test]

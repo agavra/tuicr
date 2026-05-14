@@ -179,6 +179,54 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(""),
         Line::from(Span::styled(
+            "Review Target Selector",
+            Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                "  Tab/S-Tab ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Switch Local / Pull Requests tab"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  j/k       ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Move row"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  Space     ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Toggle local commit selection (no-op on PR tab)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  Enter     ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Open selected target or load more"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  /         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Local filter for current tab"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  Esc/q     ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Quit / return"),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
             "File Tree",
             Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
         )),
@@ -419,10 +467,24 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  :targets  ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Open the review target selector"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  :commits  ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Select commits or staged/unstaged changes"),
+            Span::raw("Open the selector on Local (commits, staged/unstaged)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :prs      ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Open the selector on Pull Requests"),
         ]),
         Line::from(vec![
             Span::styled(

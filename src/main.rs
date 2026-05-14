@@ -43,7 +43,7 @@ use handler::{
     handle_file_list_action, handle_help_action, handle_mouse_event, handle_search_action,
     handle_visual_action,
 };
-use input::{Action, map_key_to_action};
+use input::{Action, map_key_to_action, map_target_filter_mode};
 use theme::{parse_cli_args, resolve_theme_with_config};
 use vcs::GitBackendPreference;
 
@@ -287,6 +287,7 @@ fn main() -> anyhow::Result<()> {
         }
 
         app.clear_expired_message();
+        app.poll_pr_load_events();
 
         // Render
         terminal.draw(|frame| {
@@ -420,7 +421,16 @@ fn main() -> anyhow::Result<()> {
                         // Otherwise fall through to normal handling
                     }
 
-                    let action = map_key_to_action(key, app.input_mode);
+                    // Editing the PR-tab filter is a sub-state of CommitSelect;
+                    // route through the filter-specific key map so typed
+                    // characters update the filter buffer rather than driving
+                    // commit-list navigation.
+                    let action =
+                        if app.input_mode == InputMode::CommitSelect && app.pr_filter_editing() {
+                            map_target_filter_mode(key)
+                        } else {
+                            map_key_to_action(key, app.input_mode)
+                        };
 
                     // Handle pending command setters (these work in any mode)
                     match action {
