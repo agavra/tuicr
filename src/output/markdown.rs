@@ -7,6 +7,9 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 
 use crate::app::{CommentTypeDefinition, DiffSource};
 use crate::error::{Result, TuicrError};
+use crate::forge::remote_comments::{
+    PrCommentsVisibility, RemoteReviewThread, filter_threads, group_threads_by_path,
+};
 use crate::model::{CommentType, LineRange, LineSide, ReviewSession};
 
 /// (file_path, line_range, side, comment_type, content)
@@ -19,8 +22,14 @@ pub fn generate_export_content(
     diff_source: &DiffSource,
     comment_types: &[CommentTypeDefinition],
     show_legend: bool,
+    remote_threads: &[RemoteReviewThread],
 ) -> Result<String> {
-    if !session.has_comments() {
+    // In PR mode it's still useful to export PR identity + remote
+    // discussions even if the user has no local drafts. Outside PR mode
+    // we keep the existing behavior of erroring when nothing is to say.
+    let has_remote = matches!(diff_source, DiffSource::PullRequest(_))
+        && !filter_threads(remote_threads, PrCommentsVisibility::Unresolved).is_empty();
+    if !session.has_comments() && !has_remote {
         return Err(TuicrError::NoComments);
     }
     Ok(generate_markdown(
@@ -28,6 +37,7 @@ pub fn generate_export_content(
         diff_source,
         comment_types,
         show_legend,
+        remote_threads,
     ))
 }
 
@@ -36,8 +46,15 @@ pub fn export_to_clipboard(
     diff_source: &DiffSource,
     comment_types: &[CommentTypeDefinition],
     show_legend: bool,
+    remote_threads: &[RemoteReviewThread],
 ) -> Result<String> {
-    let content = generate_export_content(session, diff_source, comment_types, show_legend)?;
+    let content = generate_export_content(
+        session,
+        diff_source,
+        comment_types,
+        show_legend,
+        remote_threads,
+    )?;
     let via_terminal = copy_text_to_clipboard(&content)?;
     Ok(if via_terminal {
         "Review copied to clipboard (via terminal)".to_string()
@@ -154,6 +171,7 @@ fn generate_markdown(
     diff_source: &DiffSource,
     comment_types: &[CommentTypeDefinition],
     show_legend: bool,
+    remote_threads: &[RemoteReviewThread],
 ) -> String {
     let mut md = String::new();
 
@@ -314,6 +332,12 @@ fn generate_markdown(
     }
 
     // Output numbered list
+    let mut local_section_written = false;
+    if !all_comments.is_empty() {
+        let _ = writeln!(md, "## Local tuicr Comments");
+        let _ = writeln!(md);
+        local_section_written = true;
+    }
     for (i, (file, line_range, side, comment_type, content)) in all_comments.iter().enumerate() {
         let location = match (line_range, side) {
             // Range on deleted side (old lines)
@@ -341,6 +365,50 @@ fn generate_markdown(
             location,
             content
         );
+    }
+
+    // PR-mode-only: include unresolved remote discussions grouped by file.
+    if matches!(diff_source, DiffSource::PullRequest(_)) {
+        let unresolved: Vec<&RemoteReviewThread> =
+            filter_threads(remote_threads, PrCommentsVisibility::Unresolved);
+        if !unresolved.is_empty() {
+            if local_section_written {
+                let _ = writeln!(md);
+            }
+            let _ = writeln!(md, "## Existing GitHub Comments");
+            let _ = writeln!(md);
+
+            // Group threads by file to make the export easy to scan.
+            let owned_unresolved: Vec<RemoteReviewThread> =
+                unresolved.iter().map(|t| (*t).clone()).collect();
+            let groups = group_threads_by_path(&owned_unresolved);
+            let mut thread_n = 1;
+            for (path, threads) in groups {
+                let _ = writeln!(md, "### `{path}`");
+                let _ = writeln!(md);
+                for thread in threads {
+                    if let Some(root) = thread.root() {
+                        let author = root.author.as_deref().unwrap_or("unknown");
+                        let line_marker = root.line.map(|l| format!(":{l}")).unwrap_or_default();
+                        let _ = writeln!(
+                            md,
+                            "{thread_n}. `{path}{line_marker}` @{author} - {body}",
+                            body = root.body
+                        );
+                        if !root.url.is_empty() {
+                            let _ = writeln!(md, "   <{}>", root.url);
+                        }
+                        for reply in thread.replies() {
+                            let reply_author = reply.author.as_deref().unwrap_or("unknown");
+                            let _ =
+                                writeln!(md, "   - @{reply_author} - {body}", body = reply.body);
+                        }
+                        thread_n += 1;
+                    }
+                }
+                let _ = writeln!(md);
+            }
+        }
     }
 
     md
@@ -451,7 +519,7 @@ mod tests {
         let diff_source = DiffSource::WorkingTree;
 
         // when
-        let markdown = generate_markdown(&session, &diff_source, &comment_types(), true);
+        let markdown = generate_markdown(&session, &diff_source, &comment_types(), true, &[]);
 
         // then
         assert!(markdown.contains("I reviewed your code and have the following comments"));
@@ -492,7 +560,8 @@ mod tests {
             color: None,
         }];
 
-        let markdown = generate_markdown(&session, &DiffSource::WorkingTree, &custom_types, true);
+        let markdown =
+            generate_markdown(&session, &DiffSource::WorkingTree, &custom_types, true, &[]);
 
         assert!(markdown.contains("Comment types: QUESTION (ask for clarification)"));
         assert!(markdown.contains("**[QUESTION]**"));
@@ -505,7 +574,7 @@ mod tests {
         let diff_source = DiffSource::WorkingTree;
 
         // when
-        let markdown = generate_markdown(&session, &diff_source, &comment_types(), true);
+        let markdown = generate_markdown(&session, &diff_source, &comment_types(), true, &[]);
 
         // then
         // Should have 2 numbered comments
@@ -522,8 +591,13 @@ mod tests {
             None,
         ));
 
-        let markdown =
-            generate_markdown(&session, &DiffSource::WorkingTree, &comment_types(), true);
+        let markdown = generate_markdown(
+            &session,
+            &DiffSource::WorkingTree,
+            &comment_types(),
+            true,
+            &[],
+        );
 
         assert!(markdown
             .contains("`Review Comment (scope: working tree changes)` - Please split this into smaller commits"));
@@ -543,6 +617,7 @@ mod tests {
             &DiffSource::CommitRange(vec!["abc1234567890".to_string()]),
             &comment_types(),
             true,
+            &[],
         );
 
         assert!(markdown.contains(
@@ -562,7 +637,7 @@ mod tests {
         let diff_source = DiffSource::WorkingTree;
 
         // when
-        let result = export_to_clipboard(&session, &diff_source, &comment_types(), true);
+        let result = export_to_clipboard(&session, &diff_source, &comment_types(), true, &[]);
 
         // then
         assert!(result.is_err());
@@ -576,7 +651,7 @@ mod tests {
         let diff_source = DiffSource::WorkingTree;
 
         // when
-        let result = generate_export_content(&session, &diff_source, &comment_types(), true);
+        let result = generate_export_content(&session, &diff_source, &comment_types(), true, &[]);
 
         // then
         assert!(result.is_ok());
@@ -598,7 +673,7 @@ mod tests {
         let diff_source = DiffSource::WorkingTree;
 
         // when
-        let result = generate_export_content(&session, &diff_source, &comment_types(), true);
+        let result = generate_export_content(&session, &diff_source, &comment_types(), true, &[]);
 
         // then
         assert!(result.is_err());
@@ -615,7 +690,7 @@ mod tests {
         ]);
 
         // when
-        let markdown = generate_markdown(&session, &diff_source, &comment_types(), true);
+        let markdown = generate_markdown(&session, &diff_source, &comment_types(), true, &[]);
 
         // then
         assert!(markdown.contains("Reviewing commits: abc1234, def4567"));
@@ -628,7 +703,7 @@ mod tests {
         let diff_source = DiffSource::CommitRange(vec!["abc1234567890".to_string()]);
 
         // when
-        let markdown = generate_markdown(&session, &diff_source, &comment_types(), true);
+        let markdown = generate_markdown(&session, &diff_source, &comment_types(), true, &[]);
 
         // then
         assert!(markdown.contains("Reviewing commit: abc1234"));
@@ -689,7 +764,7 @@ mod tests {
         // given - simulate what would be copied during export
         let session = create_test_session();
         let diff_source = DiffSource::WorkingTree;
-        let markdown = generate_markdown(&session, &diff_source, &comment_types(), true);
+        let markdown = generate_markdown(&session, &diff_source, &comment_types(), true, &[]);
         let mut buffer: Vec<u8> = Vec::new();
 
         // when
@@ -731,7 +806,7 @@ mod tests {
         let diff_source = DiffSource::WorkingTree;
 
         // when
-        let markdown = generate_markdown(&session, &diff_source, &comment_types(), true);
+        let markdown = generate_markdown(&session, &diff_source, &comment_types(), true, &[]);
 
         // then
         assert!(markdown.contains("`src/main.rs:42`"));
@@ -764,7 +839,7 @@ mod tests {
         let diff_source = DiffSource::WorkingTree;
 
         // when
-        let markdown = generate_markdown(&session, &diff_source, &comment_types(), true);
+        let markdown = generate_markdown(&session, &diff_source, &comment_types(), true, &[]);
 
         // then
         assert!(markdown.contains("`src/main.rs:10-15`"));
@@ -797,7 +872,7 @@ mod tests {
         let diff_source = DiffSource::WorkingTree;
 
         // when
-        let markdown = generate_markdown(&session, &diff_source, &comment_types(), true);
+        let markdown = generate_markdown(&session, &diff_source, &comment_types(), true, &[]);
 
         // then
         assert!(markdown.contains("`src/main.rs:~20-~25`"));
@@ -829,7 +904,7 @@ mod tests {
         let diff_source = DiffSource::WorkingTree;
 
         // when
-        let markdown = generate_markdown(&session, &diff_source, &comment_types(), true);
+        let markdown = generate_markdown(&session, &diff_source, &comment_types(), true, &[]);
 
         // then
         assert!(markdown.contains("`src/main.rs:~30`"));
@@ -861,7 +936,7 @@ mod tests {
         let diff_source = DiffSource::WorkingTree;
 
         // when
-        let markdown = generate_markdown(&session, &diff_source, &comment_types(), true);
+        let markdown = generate_markdown(&session, &diff_source, &comment_types(), true, &[]);
 
         // then
         assert!(markdown.contains("`src/main.rs:50`"));
@@ -872,7 +947,7 @@ mod tests {
         let session = create_test_session();
         let diff_source = DiffSource::WorkingTree;
 
-        let markdown = generate_markdown(&session, &diff_source, &comment_types(), false);
+        let markdown = generate_markdown(&session, &diff_source, &comment_types(), false, &[]);
 
         assert!(!markdown.contains("Comment types:"));
         assert!(markdown.contains("[SUGGESTION]"));
@@ -896,13 +971,173 @@ mod tests {
             ));
         }
 
-        let markdown =
-            generate_markdown(&session, &DiffSource::WorkingTree, &comment_types(), true);
+        let markdown = generate_markdown(
+            &session,
+            &DiffSource::WorkingTree,
+            &comment_types(),
+            true,
+            &[],
+        );
 
         assert!(markdown.contains("Comment types: PRAISE (positive feedback)"));
         assert!(!markdown.contains("NOTE"));
         assert!(!markdown.contains("SUGGESTION"));
         assert!(!markdown.contains("ISSUE"));
+    }
+
+    fn sample_pr_diff_source() -> DiffSource {
+        use crate::app::PullRequestDiffSource;
+        use crate::forge::traits::{ForgeRepository, PrSessionKey};
+        DiffSource::PullRequest(Box::new(PullRequestDiffSource {
+            key: PrSessionKey::new(
+                ForgeRepository::github("github.com", "agavra", "tuicr"),
+                125,
+                "abc1234deadbeef".to_string(),
+            ),
+            base_sha: "1234567890".to_string(),
+            title: "Support reviews".to_string(),
+            url: "https://github.com/agavra/tuicr/pull/125".to_string(),
+            head_ref_name: "reviews".to_string(),
+            base_ref_name: "main".to_string(),
+            state: "OPEN".to_string(),
+            closed: false,
+            merged: false,
+        }))
+    }
+
+    fn sample_remote_thread(
+        id: &str,
+        author: &str,
+        body: &str,
+        line: u32,
+        resolved: bool,
+    ) -> RemoteReviewThread {
+        use crate::forge::remote_comments::{RemoteCommentSide, RemoteReviewComment};
+        RemoteReviewThread {
+            id: id.to_string(),
+            path: "src/lib.rs".to_string(),
+            line: Some(line),
+            side: RemoteCommentSide::Right,
+            is_resolved: resolved,
+            is_outdated: false,
+            comments: vec![RemoteReviewComment {
+                id: format!("{id}-root"),
+                author: Some(author.to_string()),
+                body: body.to_string(),
+                created_at: None,
+                path: "src/lib.rs".to_string(),
+                line: Some(line),
+                side: RemoteCommentSide::Right,
+                in_reply_to: None,
+                url: format!("https://github.com/agavra/tuicr/pull/125#discussion_{id}"),
+            }],
+        }
+    }
+
+    #[test]
+    fn should_include_unresolved_remote_threads_grouped_by_file_in_pr_export() {
+        // given a PR session with one local draft + one unresolved remote
+        // thread + one resolved (must be omitted)
+        let mut session = ReviewSession::new(
+            PathBuf::from("forge:github.com/agavra/tuicr"),
+            "abc1234deadbeef".to_string(),
+            Some("reviews".to_string()),
+            SessionDiffSource::PullRequest,
+        );
+        session.add_file(PathBuf::from("src/lib.rs"), FileStatus::Modified, 0);
+        if let Some(review) = session.get_file_mut(&PathBuf::from("src/lib.rs")) {
+            review.add_line_comment(
+                10,
+                Comment::new(
+                    "Local draft".to_string(),
+                    CommentType::Issue,
+                    Some(LineSide::New),
+                ),
+            );
+        }
+        let threads = vec![
+            sample_remote_thread("a", "alice", "Can this be simpler?", 42, false),
+            sample_remote_thread("b", "bob", "Old resolved", 99, true),
+        ];
+
+        // when
+        let markdown = generate_markdown(
+            &session,
+            &sample_pr_diff_source(),
+            &comment_types(),
+            true,
+            &threads,
+        );
+
+        // then
+        assert!(markdown.contains("Reviewing pull request agavra/tuicr#125"));
+        assert!(markdown.contains("## Local tuicr Comments"));
+        assert!(markdown.contains("[ISSUE]"));
+        assert!(markdown.contains("## Existing GitHub Comments"));
+        assert!(markdown.contains("### `src/lib.rs`"));
+        assert!(markdown.contains("@alice - Can this be simpler?"));
+        // Resolved thread is omitted from export per spec.
+        assert!(
+            !markdown.contains("Old resolved"),
+            "resolved thread leaked into export:\n{markdown}"
+        );
+    }
+
+    #[test]
+    fn should_export_pr_remote_threads_even_when_no_local_drafts() {
+        // given a PR session with no local comments but one unresolved remote thread
+        let session = ReviewSession::new(
+            PathBuf::from("forge:github.com/agavra/tuicr"),
+            "abc1234deadbeef".to_string(),
+            Some("reviews".to_string()),
+            SessionDiffSource::PullRequest,
+        );
+        let threads = vec![sample_remote_thread("a", "alice", "important", 5, false)];
+
+        // when
+        let result = generate_export_content(
+            &session,
+            &sample_pr_diff_source(),
+            &comment_types(),
+            true,
+            &threads,
+        );
+
+        // then — export succeeds even with no local comments
+        let content = result.unwrap();
+        assert!(content.contains("## Existing GitHub Comments"));
+        assert!(content.contains("@alice - important"));
+    }
+
+    #[test]
+    fn should_not_include_remote_comments_outside_pr_mode_in_export() {
+        // given — local working-tree mode + non-empty threads (should be ignored)
+        let mut session = ReviewSession::new(
+            PathBuf::from("/tmp"),
+            "abc".to_string(),
+            Some("main".to_string()),
+            SessionDiffSource::WorkingTree,
+        );
+        session.add_file(PathBuf::from("src/lib.rs"), FileStatus::Modified, 0);
+        if let Some(r) = session.get_file_mut(&PathBuf::from("src/lib.rs")) {
+            r.add_line_comment(
+                3,
+                Comment::new("Local".to_string(), CommentType::Note, Some(LineSide::New)),
+            );
+        }
+        let threads = vec![sample_remote_thread("a", "alice", "ignored", 5, false)];
+
+        // when
+        let markdown = generate_markdown(
+            &session,
+            &DiffSource::WorkingTree,
+            &comment_types(),
+            true,
+            &threads,
+        );
+
+        // then — the section is omitted in non-PR modes
+        assert!(!markdown.contains("Existing GitHub Comments"));
     }
 
     #[test]
@@ -937,7 +1172,8 @@ mod tests {
             },
         ];
 
-        let markdown = generate_markdown(&session, &DiffSource::WorkingTree, &custom_types, true);
+        let markdown =
+            generate_markdown(&session, &DiffSource::WorkingTree, &custom_types, true, &[]);
 
         assert!(markdown.contains("Comment types: QUESTION (ask for clarification)"));
         assert!(!markdown.contains("ISSUE"));
