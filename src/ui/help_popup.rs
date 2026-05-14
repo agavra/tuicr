@@ -227,6 +227,33 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(""),
         Line::from(Span::styled(
+            "Submit Action Picker (PR mode)",
+            Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                "  j/k       ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Navigate review events"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  Enter     ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Submit the selected event"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  Esc       ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Cancel"),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
             "File Tree",
             Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
         )),
@@ -332,7 +359,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  j/k       ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Extend selection up/down"),
+            Span::raw("Extend selection down/up"),
         ]),
         Line::from(vec![
             Span::styled(

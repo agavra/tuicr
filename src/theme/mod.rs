@@ -1714,7 +1714,7 @@ fn print_help() -> ! {
     let appearance_values = AppearanceArg::valid_values_display();
     let config_path = config_path_hint();
     println!(
-        "tuicr - Review AI-generated diffs like a GitHub pull request
+        "tuicr - A code review TUI with vim keybindings. Export to GitHub or clipboard.
 
 Usage: {name} [OPTIONS]
 

@@ -38,6 +38,24 @@ src/
 │   └── jj/              # Jujutsu backend (always compiled)
 │       └── mod.rs       # JjBackend: uses jj CLI, parses with diff_parser::GitStyle
 │
+├── forge/               # Remote forge integration (GitHub PR review, experimental)
+│   ├── mod.rs           # detect_github_repository() — parse origin URL to ForgeRepository
+│   ├── traits.rs        # ForgeBackend trait, ForgeRepository, PullRequestTarget,
+│   │                    # PullRequestDetails, PrSessionKey, CreateReviewRequest,
+│   │                    # GhCreateReviewResponse, ForgeFileLinesRequest
+│   ├── pr_open.rs       # Async pr-open flow: build session from details + diff
+│   ├── selector.rs      # Review target selector state (Local | Pull Requests tabs)
+│   ├── context.rs       # Remote context expansion via ForgeBackend::fetch_file_lines
+│   ├── remote_comments.rs # RemoteReviewThread shape + visibility filter
+│   ├── submit.rs        # Submit pipeline: preflight mapping, resolver actions,
+│   │                    # InlineComment payload, build_review_body, SubmitEvent
+│   └── github/          # GitHub backend (only forge in v1, via `gh` CLI)
+│       ├── mod.rs       # GitHubGhBackend: ForgeBackend impl
+│       ├── gh.rs        # GhCommandRunner: spawn `gh`, parse output, error mapping
+│       ├── models.rs    # JSON parsing for `gh` REST + GraphQL responses
+│       ├── review_threads.rs # GraphQL query for existing review threads
+│       └── submit.rs    # build_review_payload, create_review wiring
+│
 ├── model/
 │   ├── mod.rs
 │   ├── comment.rs       # Comment, CommentType (Note/Suggestion/Issue/Praise)
@@ -129,15 +147,90 @@ Repository-managed agent integrations:
 - `chrono`: Timestamps
 - `thiserror` + `anyhow`: Error handling
 
+## Forge integration
+
+PR review (`tuicr pr <target>`) is the only feature in `src/forge/`. The trait shape is forge-agnostic so other forges can plug in later; v1 only ships a GitHub backend that shells out to `gh`.
+
+### ForgeBackend trait
+
+`src/forge/traits.rs`. Required methods:
+
+- `list_pull_requests` — paged list for the selector's Pull Requests tab.
+- `get_pull_request` — details for a `PullRequestTarget` (resolves to `PullRequestDetails`).
+- `get_pull_request_diff` — the cumulative PR diff as a unified-diff string.
+- `list_pull_request_commits` — commits on the PR for the inline subset selector.
+- `get_pull_request_commit_range_diff` — cumulative diff for a contiguous subrange (`start_sha` is the parent of the first selected commit; `end_sha` is the last).
+- `list_review_threads` — existing GitHub comments + resolved/outdated state.
+- `fetch_file_lines` — remote context expansion in the diff view.
+- `create_review` — POST a review with inline comments via `CreateReviewRequest`.
+
+### Async pattern
+
+Network calls run on a background thread. Parsing + state mutation run on the main thread. The pattern across `spawn_pr_open` / `spawn_pr_reload` / `spawn_pr_submit`:
+
+1. Snapshot the request inputs on the main thread (no `&App` lives across the spawn).
+2. Spawn a thread that returns only `Send` data — typically `Result<(PullRequestDetails, String, Vec<PullRequestCommit>)>` or similar tuples.
+3. The thread sends the result on an `mpsc` channel; `poll_*_events()` drains the channel each tick.
+4. The main-thread `finish_*` function parses the diff and builds the `ReviewSession`. `SyntaxHighlighter` is not trivially `Send`, so parsing has to happen on the main thread.
+
+In-flight requests carry an identity tuple (repo, PR#, head SHA). A late result is discarded if the user has since opened a different PR.
+
+### Session key + lifecycle
+
+`PrSessionKey { repository, number, head_sha }` identifies a PR review session. Same PR + same head = same session = drafts reattach. New commit on the PR = new key = new session.
+
+Each `Comment` carries a `lifecycle` field:
+
+- `local_draft` — local-only, editable
+- `pushed_draft` — submitted with event=Draft (still a GitHub pending review)
+- `submitted` — submitted with Comment/Approve/RequestChanges, locked from further edits
+
+Submit failure leaves comments at `local_draft`. Success transitions to `submitted` or `pushed_draft` atomically per the response.
+
+### Submit pipeline (`src/forge/submit.rs`)
+
+1. **Preflight** maps each local comment to a GitHub-style inline anchor (path + line + side) by walking the displayed diff hunks.
+2. Unmappable comments go to the **resolver modal**: each one is either moved to the review summary or omitted.
+3. The **confirmation modal** shows counts and warns if the PR head advanced since load.
+4. The payload posts via `gh api --input -` (stdin, not CLI args, because CLI arg length limits would bite on multi-comment payloads).
+
+### Hard-won gotchas
+
+These are non-obvious things the implementation chain hit. Worth preserving for future maintainers.
+
+1. **`gh pr diff` must NOT use `--patch`.** That flag returns per-commit mbox patches and produces duplicate file entries. Plain `gh pr diff` returns the cumulative diff. Regression test: `should_not_pass_patch_flag_to_gh_pr_diff`.
+
+2. **GraphQL thread anchors live on `PullRequestReviewThread`, not the comment.** `path`, `line`, `originalLine`, `diffSide` are thread fields. Putting them on `PullRequestReviewComment` returns a schema error.
+
+3. **Network on the background thread, parsing on the main thread.** `SyntaxHighlighter` is not `Send`. Background threads return Send-safe data; the main thread parses and builds the session. Used by `spawn_pr_open` / `spawn_pr_reload` / `spawn_pr_submit`.
+
+4. **`apply_initial_load(Err(...))` is a no-op when the tab is already `Loaded`.** It only transitions `Loading → Error`. For transient errors during reload or submit, use `App::set_error()` (the message bar) instead.
+
+5. **Anchor restore must scroll.** Setting `diff_state.cursor_line` without calling `move_cursor_to_annotation` leaves the viewport at the top.
+
+6. **`Comment` line anchor lives in the `HashMap` key, not on `Comment.line_context`.** Production code creates comments via `Comment::new` without populating `line_context`. The submit mapper takes an explicit `CommentAnchor` parameter — never infer "file-level" from `line_context.is_none()`.
+
+7. **`gh api --input -` over CLI args.** The only practical way to send a multi-comment payload. See `GhCommandRunner::run_with_stdin`.
+
+8. **`gh api` writes the response body to STDOUT on non-2xx**, while STDERR only carries the short status line. The error formatter combines both so the user sees the actual GitHub error.
+
+9. **Stale-result discard for submit needs (repo, PR#, head SHA).** A different PR opened mid-submit could otherwise consume the result and apply lifecycle writes to the wrong comments.
+
+10. **TestBackend modal sizing.** A 60%×40% modal on 120×24 is 72×9 (7 content rows after borders). The submit confirmation modal needs 70% height to fit. The submit-action picker needs 50% height to fit the footer line.
+
+11. **Subset-mode `commit_id`.** When a strict subset of PR commits is selected, the payload's `commit_id` must be `pr_commits[start_idx].oid` (the newest selected commit). Using the cumulative PR head returns a misleading 422: `commitOID is not part of the pull request` — even though the SHA *is* in the PR.
+
+12. **`cd` into the worktree before running `cargo`.** `cargo` resolves `Cargo.toml` from `pwd`. Running gates from the wrong worktree silently exercises the wrong tree.
+
 ### Keeping Docs Updated
 
 When adding user-facing features, update the relevant documentation:
 
 | Document | Update when adding/changing... |
 |----------|-------------------------------|
-| `README.md` | Keybindings, commands (`:*`), CLI flags, features list, installation methods, agent integration setup |
+| `README.md` | Keybindings, commands (`:*`), CLI flags, features list, installation methods, agent integration setup, forge limitations |
 | `src/ui/help_popup.rs` | Keybindings or commands (update the `help_text` vector) |
-| `AGENTS.md` | Module structure, repo-managed agent integrations, key types, data flow, dependencies |
+| `AGENTS.md` | Module structure, repo-managed agent integrations, key types, data flow, dependencies, forge invariants and gotchas |
 
 ---
 
