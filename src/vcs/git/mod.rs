@@ -203,16 +203,37 @@ impl VcsBackend for GitBackend {
         &self,
         file_path: &Path,
         file_status: FileStatus,
+        ref_commit: Option<&str>,
         start_line: u32,
         end_line: u32,
     ) -> Result<Vec<DiffLine>> {
         match self {
-            Self::Libgit2(backend) => {
-                backend.fetch_context_lines(file_path, file_status, start_line, end_line)
-            }
-            Self::Cli(backend) => {
-                backend.fetch_context_lines(file_path, file_status, start_line, end_line)
-            }
+            Self::Libgit2(backend) => backend.fetch_context_lines(
+                file_path,
+                file_status,
+                ref_commit,
+                start_line,
+                end_line,
+            ),
+            Self::Cli(backend) => backend.fetch_context_lines(
+                file_path,
+                file_status,
+                ref_commit,
+                start_line,
+                end_line,
+            ),
+        }
+    }
+
+    fn file_line_count(
+        &self,
+        file_path: &Path,
+        file_status: FileStatus,
+        ref_commit: Option<&str>,
+    ) -> Result<u32> {
+        match self {
+            Self::Libgit2(backend) => backend.file_line_count(file_path, file_status, ref_commit),
+            Self::Cli(backend) => backend.file_line_count(file_path, file_status, ref_commit),
         }
     }
 

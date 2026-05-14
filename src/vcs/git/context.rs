@@ -6,12 +6,13 @@ use crate::model::{DiffLine, FileStatus, LineOrigin};
 
 /// Fetch context lines from a file for gap expansion.
 ///
-/// For Added/Modified files: reads from working tree
-/// For Deleted files: reads from HEAD blob
+/// When `ref_commit` is `Some`, reads from that commit's tree.
+/// Otherwise: working tree for non-deleted, HEAD blob for deleted.
 pub fn fetch_context_lines(
     repo: &Repository,
     file_path: &Path,
     file_status: FileStatus,
+    ref_commit: Option<&str>,
     start_line: u32,
     end_line: u32,
 ) -> Result<Vec<DiffLine>> {
@@ -19,18 +20,7 @@ pub fn fetch_context_lines(
         return Ok(Vec::new());
     }
 
-    let content = match file_status {
-        FileStatus::Deleted => {
-            // Read from HEAD blob for deleted files
-            fetch_blob_content(repo, file_path)?
-        }
-        _ => {
-            // Read from working tree for all other statuses
-            let workdir = repo.workdir().ok_or(TuicrError::NotARepository)?;
-            let full_path = workdir.join(file_path);
-            std::fs::read_to_string(&full_path)?
-        }
-    };
+    let content = read_file_content(repo, file_path, file_status, ref_commit)?;
 
     let lines: Vec<&str> = content.lines().collect();
     let mut result = Vec::new();
@@ -51,10 +41,52 @@ pub fn fetch_context_lines(
     Ok(result)
 }
 
-/// Fetch content from a git blob (for deleted files)
+/// Get the total number of lines in a file.
+pub fn file_line_count(
+    repo: &Repository,
+    file_path: &Path,
+    file_status: FileStatus,
+    ref_commit: Option<&str>,
+) -> Result<u32> {
+    let content = read_file_content(repo, file_path, file_status, ref_commit)?;
+    Ok(content.lines().count() as u32)
+}
+
+fn read_file_content(
+    repo: &Repository,
+    file_path: &Path,
+    file_status: FileStatus,
+    ref_commit: Option<&str>,
+) -> Result<String> {
+    if let Some(commit) = ref_commit {
+        fetch_commit_blob_content(repo, commit, file_path)
+    } else if file_status == FileStatus::Deleted {
+        fetch_blob_content(repo, file_path)
+    } else {
+        let workdir = repo.workdir().ok_or(TuicrError::NotARepository)?;
+        Ok(std::fs::read_to_string(workdir.join(file_path))?)
+    }
+}
+
+/// Fetch content from HEAD blob (for deleted files without a ref_commit).
 fn fetch_blob_content(repo: &Repository, file_path: &Path) -> Result<String> {
     let head = repo.head()?.peel_to_tree()?;
     let entry = head.get_path(file_path)?;
+    let blob = repo.find_blob(entry.id())?;
+    let content = std::str::from_utf8(blob.content())
+        .map_err(|e| TuicrError::CorruptedSession(format!("Invalid UTF-8 in file: {e}")))?;
+    Ok(content.to_string())
+}
+
+/// Fetch content from an arbitrary commit's tree.
+fn fetch_commit_blob_content(
+    repo: &Repository,
+    commit_spec: &str,
+    file_path: &Path,
+) -> Result<String> {
+    let obj = repo.revparse_single(commit_spec)?;
+    let tree = obj.peel_to_tree()?;
+    let entry = tree.get_path(file_path)?;
     let blob = repo.find_blob(entry.id())?;
     let content = std::str::from_utf8(blob.content())
         .map_err(|e| TuicrError::CorruptedSession(format!("Invalid UTF-8 in file: {e}")))?;

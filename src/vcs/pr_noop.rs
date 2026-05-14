@@ -42,6 +42,7 @@ impl VcsBackend for PrNoopVcs {
         &self,
         _file_path: &Path,
         _file_status: FileStatus,
+        _ref_commit: Option<&str>,
         _start_line: u32,
         _end_line: u32,
     ) -> Result<Vec<DiffLine>> {
@@ -49,6 +50,17 @@ impl VcsBackend for PrNoopVcs {
         // If anything reaches this backend, it's a routing bug — return an
         // empty result rather than panicking so the UI degrades gracefully.
         Ok(Vec::new())
+    }
+
+    fn file_line_count(
+        &self,
+        _file_path: &Path,
+        _file_status: FileStatus,
+        _ref_commit: Option<&str>,
+    ) -> Result<u32> {
+        Err(TuicrError::UnsupportedOperation(
+            "PR mode does not read from the local working tree".to_string(),
+        ))
     }
 }
 
@@ -73,7 +85,7 @@ mod tests {
         let vcs = PrNoopVcs::new(info());
         // when
         let lines = vcs
-            .fetch_context_lines(&PathBuf::from("x"), FileStatus::Modified, 1, 5)
+            .fetch_context_lines(&PathBuf::from("x"), FileStatus::Modified, None, 1, 5)
             .unwrap();
         // then
         assert!(lines.is_empty());

@@ -317,6 +317,7 @@ mod tests {
             &self,
             _p: &Path,
             _s: FileStatus,
+            _ref_commit: Option<&str>,
             _start: u32,
             _end: u32,
         ) -> TuicrResult<Vec<DiffLine>> {
@@ -327,6 +328,14 @@ mod tests {
                 staged: false,
                 unstaged: false,
             })
+        }
+        fn file_line_count(
+            &self,
+            _p: &Path,
+            _s: FileStatus,
+            _ref_commit: Option<&str>,
+        ) -> TuicrResult<u32> {
+            Ok(0)
         }
     }
 

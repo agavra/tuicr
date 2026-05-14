@@ -38,6 +38,7 @@ pub trait ContextProvider {
 /// the head side, old on the base side) and forwards to the backend.
 pub struct VcsContextProvider<'a> {
     pub vcs: &'a dyn VcsBackend,
+    pub ref_commit: Option<String>,
 }
 
 impl ContextProvider for VcsContextProvider<'_> {
@@ -56,8 +57,13 @@ impl ContextProvider for VcsContextProvider<'_> {
             Some(p) => p.as_path(),
             None => return Ok(Vec::new()),
         };
-        self.vcs
-            .fetch_context_lines(path, file_status, start_line, end_line)
+        self.vcs.fetch_context_lines(
+            path,
+            file_status,
+            self.ref_commit.as_deref(),
+            start_line,
+            end_line,
+        )
     }
 }
 

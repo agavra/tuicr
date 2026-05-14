@@ -128,6 +128,26 @@ impl GitCliBackend {
         );
         Ok(files)
     }
+
+    fn read_file_content(
+        &self,
+        file_path: &Path,
+        file_status: FileStatus,
+        ref_commit: Option<&str>,
+    ) -> Result<String> {
+        let path_str = file_path.to_string_lossy();
+        if let Some(commit) = ref_commit {
+            read_git_object(&self.root_path, &format!("{commit}:{path_str}")).ok_or_else(|| {
+                TuicrError::VcsCommand(format!("failed to read {path_str} at {commit}"))
+            })
+        } else if file_status == FileStatus::Deleted {
+            read_git_object(&self.root_path, &format!("HEAD:{path_str}")).ok_or_else(|| {
+                TuicrError::VcsCommand("failed to read deleted file from HEAD".into())
+            })
+        } else {
+            Ok(fs::read_to_string(self.root_path.join(file_path))?)
+        }
+    }
 }
 
 impl VcsBackend for GitCliBackend {
@@ -217,6 +237,7 @@ impl VcsBackend for GitCliBackend {
         &self,
         file_path: &Path,
         file_status: FileStatus,
+        ref_commit: Option<&str>,
         start_line: u32,
         end_line: u32,
     ) -> Result<Vec<DiffLine>> {
@@ -224,16 +245,7 @@ impl VcsBackend for GitCliBackend {
             return Ok(Vec::new());
         }
 
-        let content = match file_status {
-            FileStatus::Deleted => read_git_object(
-                &self.root_path,
-                &format!("HEAD:{}", file_path.to_string_lossy()),
-            )
-            .ok_or_else(|| {
-                TuicrError::VcsCommand("failed to read deleted file from HEAD".into())
-            })?,
-            _ => fs::read_to_string(self.root_path.join(file_path))?,
-        };
+        let content = self.read_file_content(file_path, file_status, ref_commit)?;
 
         let lines: Vec<&str> = content.lines().collect();
         let mut result = Vec::new();
@@ -250,6 +262,16 @@ impl VcsBackend for GitCliBackend {
             }
         }
         Ok(result)
+    }
+
+    fn file_line_count(
+        &self,
+        file_path: &Path,
+        file_status: FileStatus,
+        ref_commit: Option<&str>,
+    ) -> Result<u32> {
+        let content = self.read_file_content(file_path, file_status, ref_commit)?;
+        Ok(content.lines().count() as u32)
     }
 
     fn get_recent_commits(&self, offset: usize, limit: usize) -> Result<Vec<CommitInfo>> {

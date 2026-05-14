@@ -99,14 +99,26 @@ pub trait VcsBackend: Send {
     }
 
     /// Fetch context lines for gap expansion.
-    /// For deleted files, reads from VCS; otherwise from working tree.
+    /// When `ref_commit` is `Some`, reads from that commit; otherwise reads
+    /// from the working tree (or VCS HEAD for deleted files).
     fn fetch_context_lines(
         &self,
         file_path: &Path,
         file_status: FileStatus,
+        ref_commit: Option<&str>,
         start_line: u32,
         end_line: u32,
     ) -> Result<Vec<DiffLine>>;
+
+    /// Get the total number of lines in a file.
+    /// When `ref_commit` is `Some`, reads from that commit; otherwise reads
+    /// from the working tree (or VCS HEAD for deleted files).
+    fn file_line_count(
+        &self,
+        file_path: &Path,
+        file_status: FileStatus,
+        ref_commit: Option<&str>,
+    ) -> Result<u32>;
 
     /// Get recent commits for commit selection UI.
     /// Returns empty vec if not supported (default).

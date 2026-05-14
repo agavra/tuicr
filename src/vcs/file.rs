@@ -303,6 +303,7 @@ impl VcsBackend for FileBackend {
         &self,
         file_path: &Path,
         _file_status: FileStatus,
+        _ref_commit: Option<&str>,
         start_line: u32,
         end_line: u32,
     ) -> Result<Vec<DiffLine>> {
@@ -345,6 +346,17 @@ impl VcsBackend for FileBackend {
         }
 
         Ok(result)
+    }
+
+    fn file_line_count(
+        &self,
+        file_path: &Path,
+        _file_status: FileStatus,
+        _ref_commit: Option<&str>,
+    ) -> Result<u32> {
+        let abs_path = self.info.root_path.join(file_path);
+        let content = std::fs::read_to_string(&abs_path)?;
+        Ok(content.lines().count() as u32)
     }
 }
 

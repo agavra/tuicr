@@ -7,8 +7,10 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, ExpandDirection, FocusedPanel, GAP_EXPAND_BATCH, GapId, InputMode};
-use crate::model::{LineOrigin, LineRange, LineSide};
+use crate::app::{
+    App, DiffSource, ExpandDirection, FocusedPanel, GAP_EXPAND_BATCH, GapId, InputMode,
+};
+use crate::model::{FileStatus, LineOrigin, LineRange, LineSide};
 use crate::theme::Theme;
 use crate::ui::comment_panel;
 use crate::ui::diff_view::{
@@ -486,6 +488,84 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
             }
         }
 
+        // End-of-file gap (after all hunks, not for deleted files)
+        if file.status != FileStatus::Deleted
+            && matches!(
+                app.diff_source,
+                DiffSource::WorkingTree
+                    | DiffSource::Unstaged
+                    | DiffSource::StagedAndUnstaged
+                    | DiffSource::StagedUnstagedAndCommits(_)
+                    | DiffSource::CommitRange(_)
+            )
+            && let Some(last_hunk) = file.hunks.last()
+        {
+            let eof_start = last_hunk.new_start + last_hunk.new_count;
+            if let Some(&total) = app.file_line_count_cache.get(&file_idx)
+                && eof_start <= total
+            {
+                let gap = (total - eof_start + 1) as usize;
+                let eof_gap_id = GapId {
+                    file_idx,
+                    hunk_idx: file.hunks.len(),
+                };
+                let top_lines = app.expanded_top.get(&eof_gap_id);
+                let bot_lines = app.expanded_bottom.get(&eof_gap_id);
+                let top_len = top_lines.map_or(0, |v| v.len());
+                let bot_len = bot_lines.map_or(0, |v| v.len());
+                let remaining = gap.saturating_sub(top_len + bot_len);
+
+                // Render top expanded lines (↓ direction)
+                if let Some(top) = top_lines {
+                    for expanded_line in top {
+                        render_sbs_expanded_context_line(
+                            &mut lines,
+                            &mut line_idx,
+                            ctx.current_line_idx,
+                            expanded_line,
+                            ctx.content_width,
+                            &app.theme,
+                        );
+                    }
+                }
+
+                // Expander / hidden lines
+                if remaining > 0 {
+                    render_expander_line(
+                        &mut lines,
+                        &mut line_idx,
+                        ctx.current_line_idx,
+                        ExpandDirection::Down,
+                        remaining,
+                        &app.theme,
+                    );
+                    if remaining > GAP_EXPAND_BATCH {
+                        render_hidden_lines(
+                            &mut lines,
+                            &mut line_idx,
+                            ctx.current_line_idx,
+                            remaining,
+                            &app.theme,
+                        );
+                    }
+                }
+
+                // Render bottom expanded lines
+                if let Some(bot) = bot_lines {
+                    for expanded_line in bot {
+                        render_sbs_expanded_context_line(
+                            &mut lines,
+                            &mut line_idx,
+                            ctx.current_line_idx,
+                            expanded_line,
+                            ctx.content_width,
+                            &app.theme,
+                        );
+                    }
+                }
+            }
+        }
+
         // Spacing between files
         let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
         lines.push(Line::from(Span::styled(
@@ -665,20 +745,24 @@ fn render_sbs_expanded_context_line(
     theme: &Theme,
 ) {
     let indicator = cursor_indicator(*line_idx, current_line_idx);
-    let line_num = expanded_line
+    let old_line_num = expanded_line
+        .old_lineno
+        .map(|n| format!("{n:>4} "))
+        .unwrap_or_else(|| "     ".to_string());
+    let new_line_num = expanded_line
         .new_lineno
         .map(|n| format!("{n:>4} "))
         .unwrap_or_else(|| "     ".to_string());
     let line_spans = vec![
         Span::styled(indicator, styles::current_line_indicator_style(theme)),
-        Span::styled(line_num.clone(), styles::expanded_context_style(theme)),
+        Span::styled(old_line_num, styles::expanded_context_style(theme)),
         Span::styled(" ", styles::expanded_context_style(theme)),
         Span::styled(
             truncate_or_pad(&expanded_line.content, content_width),
             styles::expanded_context_style(theme),
         ),
         Span::styled(" │ ", styles::dim_style(theme)),
-        Span::styled(line_num, styles::expanded_context_style(theme)),
+        Span::styled(new_line_num, styles::expanded_context_style(theme)),
         Span::styled(" ", styles::expanded_context_style(theme)),
         Span::styled(
             truncate_or_pad(&expanded_line.content, content_width),
@@ -768,9 +852,12 @@ fn render_context_line_side_by_side(
     mut line_idx: usize,
     lines: &mut Vec<Line>,
 ) -> (usize, Option<SideBySideCursorInfo>) {
-    let line_num = diff_line
+    let old_line_num = diff_line
         .old_lineno
-        .or(diff_line.new_lineno)
+        .map(|n| format!("{n:>4}"))
+        .unwrap_or_else(|| "    ".to_string());
+    let new_line_num = diff_line
+        .new_lineno
         .map(|n| format!("{n:>4}"))
         .unwrap_or_else(|| "    ".to_string());
 
@@ -778,7 +865,7 @@ fn render_context_line_side_by_side(
 
     let mut spans = vec![
         Span::styled(indicator, styles::current_line_indicator_style(ctx.theme)),
-        Span::styled(format!("{line_num} "), styles::dim_style(ctx.theme)),
+        Span::styled(format!("{old_line_num} "), styles::dim_style(ctx.theme)),
         Span::styled(" ".to_string(), styles::diff_context_style(ctx.theme)),
     ];
 
@@ -798,7 +885,7 @@ fn render_context_line_side_by_side(
     // Separator
     spans.push(Span::styled(" │ ", styles::dim_style(ctx.theme)));
     spans.push(Span::styled(
-        format!("{line_num} "),
+        format!("{new_line_num} "),
         styles::dim_style(ctx.theme),
     ));
     spans.push(Span::styled(
@@ -1339,6 +1426,7 @@ mod remote_comments_side_by_side_snapshot_tests {
             &self,
             _file_path: &Path,
             _file_status: FileStatus,
+            _ref_commit: Option<&str>,
             _start_line: u32,
             _end_line: u32,
         ) -> TuicrResult<Vec<DiffLine>> {
@@ -1349,6 +1437,14 @@ mod remote_comments_side_by_side_snapshot_tests {
                 staged: false,
                 unstaged: false,
             })
+        }
+        fn file_line_count(
+            &self,
+            _file_path: &Path,
+            _file_status: FileStatus,
+            _ref_commit: Option<&str>,
+        ) -> TuicrResult<u32> {
+            Ok(0)
         }
     }
 

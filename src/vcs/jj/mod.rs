@@ -142,6 +142,7 @@ impl VcsBackend for JjBackend {
         &self,
         file_path: &Path,
         file_status: FileStatus,
+        ref_commit: Option<&str>,
         start_line: u32,
         end_line: u32,
     ) -> Result<Vec<DiffLine>> {
@@ -149,19 +150,19 @@ impl VcsBackend for JjBackend {
             return Ok(Vec::new());
         }
 
-        let content = match file_status {
-            FileStatus::Deleted => {
-                // Read from jj show (parent revision)
-                run_jj_command(
-                    &self.info.root_path,
-                    &["file", "show", "-r", "@-", &file_path.to_string_lossy()],
-                )?
-            }
-            _ => {
-                // Read from working tree
-                let full_path = self.info.root_path.join(file_path);
-                std::fs::read_to_string(&full_path)?
-            }
+        let path_str = file_path.to_string_lossy();
+        let content = if let Some(commit) = ref_commit {
+            run_jj_command(
+                &self.info.root_path,
+                &["file", "show", "-r", commit, &path_str],
+            )?
+        } else if file_status == FileStatus::Deleted {
+            run_jj_command(
+                &self.info.root_path,
+                &["file", "show", "-r", "@-", &path_str],
+            )?
+        } else {
+            std::fs::read_to_string(self.info.root_path.join(file_path))?
         };
 
         let lines: Vec<&str> = content.lines().collect();
@@ -181,6 +182,29 @@ impl VcsBackend for JjBackend {
         }
 
         Ok(result)
+    }
+
+    fn file_line_count(
+        &self,
+        file_path: &Path,
+        file_status: FileStatus,
+        ref_commit: Option<&str>,
+    ) -> Result<u32> {
+        let path_str = file_path.to_string_lossy();
+        let content = if let Some(commit) = ref_commit {
+            run_jj_command(
+                &self.info.root_path,
+                &["file", "show", "-r", commit, &path_str],
+            )?
+        } else if file_status == FileStatus::Deleted {
+            run_jj_command(
+                &self.info.root_path,
+                &["file", "show", "-r", "@-", &path_str],
+            )?
+        } else {
+            std::fs::read_to_string(self.info.root_path.join(file_path))?
+        };
+        Ok(content.lines().count() as u32)
     }
 
     fn resolve_revisions(&self, revisions: &str) -> Result<Vec<String>> {
@@ -573,7 +597,7 @@ mod tests {
 
         // Fetch context lines from working tree (modified file)
         let lines = backend
-            .fetch_context_lines(Path::new("hello.txt"), FileStatus::Modified, 1, 2)
+            .fetch_context_lines(Path::new("hello.txt"), FileStatus::Modified, None, 1, 2)
             .expect("Failed to fetch context lines");
 
         assert_eq!(lines.len(), 2);

@@ -487,6 +487,7 @@ mod selector_render_snapshot_tests {
             &self,
             _file_path: &Path,
             _file_status: FileStatus,
+            _ref_commit: Option<&str>,
             _start_line: u32,
             _end_line: u32,
         ) -> TuicrResult<Vec<DiffLine>> {
@@ -498,6 +499,15 @@ mod selector_render_snapshot_tests {
                 staged: false,
                 unstaged: false,
             })
+        }
+
+        fn file_line_count(
+            &self,
+            _file_path: &Path,
+            _file_status: FileStatus,
+            _ref_commit: Option<&str>,
+        ) -> TuicrResult<u32> {
+            Ok(0)
         }
     }
 

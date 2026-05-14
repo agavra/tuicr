@@ -108,10 +108,27 @@ impl VcsBackend for Libgit2Backend {
         &self,
         file_path: &Path,
         file_status: FileStatus,
+        ref_commit: Option<&str>,
         start_line: u32,
         end_line: u32,
     ) -> Result<Vec<DiffLine>> {
-        context::fetch_context_lines(&self.repo, file_path, file_status, start_line, end_line)
+        context::fetch_context_lines(
+            &self.repo,
+            file_path,
+            file_status,
+            ref_commit,
+            start_line,
+            end_line,
+        )
+    }
+
+    fn file_line_count(
+        &self,
+        file_path: &Path,
+        file_status: FileStatus,
+        ref_commit: Option<&str>,
+    ) -> Result<u32> {
+        context::file_line_count(&self.repo, file_path, file_status, ref_commit)
     }
 
     fn get_recent_commits(&self, offset: usize, limit: usize) -> Result<Vec<CommitInfo>> {

@@ -51,11 +51,18 @@ fn char_slice(s: &str, lo_char: usize, hi_char: Option<usize>) -> &str {
     &s[lo_byte..hi_byte]
 }
 
-fn gap_annotation_line_count(is_top_of_file: bool, remaining: usize) -> usize {
+fn gap_annotation_line_count(
+    is_top_of_file: bool,
+    is_end_of_file: bool,
+    remaining: usize,
+) -> usize {
     if remaining == 0 {
         0
     } else if is_top_of_file {
         // ↑ expander, plus a HiddenLines line when remaining > batch
+        if remaining > GAP_EXPAND_BATCH { 2 } else { 1 }
+    } else if is_end_of_file {
+        // ↓ expander, plus a HiddenLines line when remaining > batch
         if remaining > GAP_EXPAND_BATCH { 2 } else { 1 }
     } else {
         // Between hunks: ↓ + HiddenLines + ↑ when >= batch, else single ↕
@@ -896,6 +903,8 @@ pub struct App {
     pub expanded_top: HashMap<GapId, Vec<DiffLine>>,
     /// Stores lines expanded upward from the lower boundary of each gap (in ascending line order)
     pub expanded_bottom: HashMap<GapId, Vec<DiffLine>>,
+    /// Cached file line counts (keyed by file_idx) to avoid repeated disk reads
+    pub file_line_count_cache: HashMap<usize, u32>,
     /// Cached annotations describing what each rendered line represents
     pub line_annotations: Vec<AnnotatedLine>,
     /// Output to stdout instead of clipboard when exporting
@@ -1539,6 +1548,7 @@ impl App {
             expanded_dirs: HashSet::new(),
             expanded_top: HashMap::new(),
             expanded_bottom: HashMap::new(),
+            file_line_count_cache: HashMap::new(),
             line_annotations: Vec::new(),
             output_to_stdout,
             pending_stdout_output: None,
@@ -1564,6 +1574,7 @@ impl App {
         }
         app.sort_files_by_directory(true);
         app.expand_all_dirs();
+        app.populate_file_line_count_cache();
         app.rebuild_annotations();
         app.detect_forge_repository();
         Ok(app)
@@ -3105,6 +3116,7 @@ impl App {
         self.clear_expanded_gaps();
 
         self.sort_files_by_directory(false);
+        self.populate_file_line_count_cache();
         self.expand_all_dirs();
 
         if self.diff_files.is_empty() {
@@ -3642,16 +3654,29 @@ impl App {
 
     fn gap_size(&self, gap_id: &GapId) -> Option<u32> {
         let file = self.diff_files.get(gap_id.file_idx)?;
-        let hunk = file.hunks.get(gap_id.hunk_idx)?;
-        let prev_hunk = if gap_id.hunk_idx > 0 {
-            file.hunks.get(gap_id.hunk_idx - 1)
+
+        if gap_id.hunk_idx == file.hunks.len() {
+            // End-of-file gap
+            let last_hunk = file.hunks.last()?;
+            let start = last_hunk.new_start + last_hunk.new_count;
+            let end = *self.file_line_count_cache.get(&gap_id.file_idx)?;
+            if start > end {
+                Some(0)
+            } else {
+                Some(end - start + 1)
+            }
         } else {
-            None
-        };
-        Some(calculate_gap(
-            prev_hunk.map(|h| (&h.new_start, &h.new_count)),
-            hunk.new_start,
-        ))
+            let hunk = file.hunks.get(gap_id.hunk_idx)?;
+            let prev_hunk = if gap_id.hunk_idx > 0 {
+                file.hunks.get(gap_id.hunk_idx - 1)
+            } else {
+                None
+            };
+            Some(calculate_gap(
+                prev_hunk.map(|h| (&h.new_start, &h.new_count)),
+                hunk.new_start,
+            ))
+        }
     }
 
     pub fn center_cursor(&mut self) {
@@ -3822,6 +3847,29 @@ impl App {
                 return Some(GapId { file_idx, hunk_idx });
             }
         }
+
+        // Check the EOF gap (after the last hunk).
+        if let Some(last) = file.hunks.last()
+            && let Some(&total) = self.file_line_count_cache.get(&file_idx)
+        {
+            let (start, end) = match side {
+                LineSide::New => (last.new_start + last.new_count, total),
+                LineSide::Old => {
+                    let delta = (last.new_start + last.new_count) as i64
+                        - (last.old_start + last.old_count) as i64;
+                    let new_start = last.new_start + last.new_count;
+                    let old_start = (new_start as i64 - delta) as u32;
+                    let old_end = (total as i64 - delta) as u32;
+                    (old_start, old_end)
+                }
+            };
+            if start <= end && target_lineno >= start && target_lineno <= end {
+                return Some(GapId {
+                    file_idx,
+                    hunk_idx: file.hunks.len(),
+                });
+            }
+        }
         None
     }
 
@@ -3843,9 +3891,26 @@ impl App {
         let Some(file) = self.diff_files.get(gap_id.file_idx) else {
             return (ExpandDirection::Both, None);
         };
-        let Some(hunk) = file.hunks.get(gap_id.hunk_idx) else {
-            return (ExpandDirection::Both, None);
-        };
+        // EOF gap: no next hunk, only expand downward from the last hunk.
+        let is_eof_gap = gap_id.hunk_idx == file.hunks.len();
+        if is_eof_gap {
+            let Some(last) = file.hunks.last() else {
+                return (ExpandDirection::Both, None);
+            };
+            let gap_start_new = last.new_start + last.new_count;
+            let offset_new_minus_old =
+                (last.new_start + last.new_count) as i64 - (last.old_start + last.old_count) as i64;
+            let target_new = match side {
+                LineSide::New => target_lineno as i64,
+                LineSide::Old => target_lineno as i64 + offset_new_minus_old,
+            };
+            let top_len = self.expanded_top.get(gap_id).map_or(0, |v| v.len()) as i64;
+            let inner_start = gap_start_new as i64 + top_len;
+            let limit = (target_new - inner_start + 1).max(0) as usize;
+            return (ExpandDirection::Down, Some(limit));
+        }
+
+        let hunk = &file.hunks[gap_id.hunk_idx];
         let prev_hunk = if gap_id.hunk_idx > 0 {
             Some(&file.hunks[gap_id.hunk_idx - 1])
         } else {
@@ -4421,7 +4486,7 @@ impl App {
                     let bot_len = self.expanded_bottom.get(&gap_id).map_or(0, |v| v.len());
                     let remaining = (gap as usize).saturating_sub(top_len + bot_len);
                     content_lines += top_len + bot_len;
-                    content_lines += gap_annotation_line_count(hunk_idx == 0, remaining);
+                    content_lines += gap_annotation_line_count(hunk_idx == 0, false, remaining);
                 }
 
                 // Hunk header + diff lines
@@ -4558,6 +4623,27 @@ impl App {
                             }
                         }
                     }
+                }
+            }
+
+            // End-of-file gap (not for deleted files)
+            if file.status != FileStatus::Deleted
+                && let Some(last_hunk) = file.hunks.last()
+            {
+                let eof_start = last_hunk.new_start + last_hunk.new_count;
+                if let Some(&total) = self.file_line_count_cache.get(&file_idx)
+                    && eof_start <= total
+                {
+                    let gap = (total - eof_start + 1) as usize;
+                    let eof_gap_id = GapId {
+                        file_idx,
+                        hunk_idx: file.hunks.len(),
+                    };
+                    let top_len = self.expanded_top.get(&eof_gap_id).map_or(0, |v| v.len());
+                    let bot_len = self.expanded_bottom.get(&eof_gap_id).map_or(0, |v| v.len());
+                    let remaining = gap.saturating_sub(top_len + bot_len);
+                    content_lines += top_len + bot_len;
+                    content_lines += gap_annotation_line_count(false, true, remaining);
                 }
             }
         }
@@ -6957,6 +7043,8 @@ impl App {
         use std::collections::BTreeMap;
         use std::path::Path;
 
+        self.file_line_count_cache.clear();
+
         let current_path = if !reset_position {
             self.current_file_path().cloned()
         } else {
@@ -7042,23 +7130,36 @@ impl App {
     /// Get the line boundaries (start_line, end_line) of a gap.
     fn gap_boundaries(&self, gap_id: &GapId) -> Option<(u32, u32)> {
         let file = self.diff_files.get(gap_id.file_idx)?;
-        let hunk = file.hunks.get(gap_id.hunk_idx)?;
-        let prev_hunk = if gap_id.hunk_idx > 0 {
-            file.hunks.get(gap_id.hunk_idx - 1)
+
+        if gap_id.hunk_idx == file.hunks.len() {
+            // End-of-file gap: starts after last hunk, ends at file end
+            let last_hunk = file.hunks.last()?;
+            let start = last_hunk.new_start + last_hunk.new_count;
+            let end = *self.file_line_count_cache.get(&gap_id.file_idx)?;
+            if start > end {
+                None
+            } else {
+                Some((start, end))
+            }
         } else {
-            None
-        };
-        let (start, end) = match prev_hunk {
-            None => (1, hunk.new_start.saturating_sub(1)),
-            Some(prev) => (
-                prev.new_start + prev.new_count,
-                hunk.new_start.saturating_sub(1),
-            ),
-        };
-        if start > end {
-            None
-        } else {
-            Some((start, end))
+            let hunk = file.hunks.get(gap_id.hunk_idx)?;
+            let prev_hunk = if gap_id.hunk_idx > 0 {
+                file.hunks.get(gap_id.hunk_idx - 1)
+            } else {
+                None
+            };
+            let (start, end) = match prev_hunk {
+                None => (1, hunk.new_start.saturating_sub(1)),
+                Some(prev) => (
+                    prev.new_start + prev.new_count,
+                    hunk.new_start.saturating_sub(1),
+                ),
+            };
+            if start > end {
+                None
+            } else {
+                Some((start, end))
+            }
         }
     }
 
@@ -7081,6 +7182,9 @@ impl App {
         direction: ExpandDirection,
         limit: Option<usize>,
     ) -> Result<()> {
+        // Ensure file line count is cached for EOF gaps
+        self.ensure_file_line_count_cached(gap_id.file_idx);
+
         let (gap_start, gap_end) = self
             .gap_boundaries(&gap_id)
             .ok_or_else(|| TuicrError::CorruptedSession(format!("Invalid gap: {:?}", gap_id)))?;
@@ -7101,14 +7205,35 @@ impl App {
             return Ok(()); // Fully expanded
         }
 
+        // Compute the delta between new-side and old-side line numbers for this
+        // gap. Expanded context is fetched in new-side coordinates; the old-side
+        // number is `new_lineno - delta`.
+        let delta = {
+            let file = &self.diff_files[gap_id.file_idx];
+            if gap_id.hunk_idx == 0 {
+                0i64
+            } else {
+                let prev = &file.hunks[gap_id.hunk_idx - 1];
+                let old_end = prev.old_start as i64 + prev.old_count as i64;
+                let new_end = prev.new_start as i64 + prev.new_count as i64;
+                new_end - old_end
+            }
+        };
+
         let fetch = |start: u32, end: u32| -> Result<Vec<DiffLine>> {
-            self.context_provider().fetch_context_lines(
+            let mut lines = self.context_provider().fetch_context_lines(
                 old_path.as_ref(),
                 new_path.as_ref(),
                 file_status,
                 start,
                 end,
-            )
+            )?;
+            for line in &mut lines {
+                if let Some(n) = line.new_lineno {
+                    line.old_lineno = Some((n as i64 - delta) as u32);
+                }
+            }
+            Ok(lines)
         };
 
         match direction {
@@ -7148,6 +7273,25 @@ impl App {
     /// Resolve the right `ContextProvider` for the current diff source.
     /// In PR mode (with a forge backend present), expansion goes through the
     /// forge; otherwise it goes through the local VCS backend.
+    fn ref_commit(&self) -> Option<&str> {
+        match &self.diff_source {
+            DiffSource::CommitRange(commits) => {
+                // When the inline commit selector narrows to a subrange,
+                // review_commits is newest-first so index `start` is the
+                // newest selected commit — that's the snapshot to read from.
+                if let Some((start, _)) = self.commit_selection_range {
+                    self.review_commits
+                        .get(start)
+                        .map(|c| c.id.as_str())
+                        .or_else(|| commits.last().map(|s| s.as_str()))
+                } else {
+                    commits.last().map(|s| s.as_str())
+                }
+            }
+            _ => None,
+        }
+    }
+
     fn context_provider(&self) -> Box<dyn ContextProvider + '_> {
         if let (DiffSource::PullRequest(pr), Some(backend)) =
             (&self.diff_source, self.forge_backend.as_ref())
@@ -7161,6 +7305,7 @@ impl App {
         } else {
             Box::new(VcsContextProvider {
                 vcs: self.vcs.as_ref(),
+                ref_commit: self.ref_commit().map(|s| s.to_string()),
             })
         }
     }
@@ -7176,6 +7321,50 @@ impl App {
     pub fn clear_expanded_gaps(&mut self) {
         self.expanded_top.clear();
         self.expanded_bottom.clear();
+        self.file_line_count_cache.clear();
+    }
+
+    fn eof_gap_enabled(&self) -> bool {
+        matches!(
+            self.diff_source,
+            DiffSource::WorkingTree
+                | DiffSource::Unstaged
+                | DiffSource::StagedAndUnstaged
+                | DiffSource::StagedUnstagedAndCommits(_)
+                | DiffSource::CommitRange(_)
+        )
+    }
+
+    /// Ensure the file line count cache is populated for a given file.
+    fn ensure_file_line_count_cached(&mut self, file_idx: usize) {
+        if !self.eof_gap_enabled() || self.file_line_count_cache.contains_key(&file_idx) {
+            return;
+        }
+        if let Some(file) = self.diff_files.get(file_idx) {
+            let path = file.display_path().clone();
+            let status = file.status;
+            let ref_commit = self.ref_commit().map(|s| s.to_string());
+            if let Ok(count) = self
+                .vcs
+                .file_line_count(&path, status, ref_commit.as_deref())
+            {
+                self.file_line_count_cache.insert(file_idx, count);
+            }
+        }
+    }
+
+    /// Populate the file line count cache for all eligible files.
+    /// Only enabled for diff sources where the worktree/index is the correct snapshot.
+    fn populate_file_line_count_cache(&mut self) {
+        self.file_line_count_cache.clear();
+        if self.eof_gap_enabled() {
+            for file_idx in 0..self.diff_files.len() {
+                let file = &self.diff_files[file_idx];
+                if !file.hunks.is_empty() && file.status != FileStatus::Deleted {
+                    self.ensure_file_line_count_cached(file_idx);
+                }
+            }
+        }
     }
 
     /// Rebuild the line annotations cache. Call this when:
@@ -7184,6 +7373,10 @@ impl App {
     /// - Comments are added/removed
     /// - Diff view mode changes
     pub fn rebuild_annotations(&mut self) {
+        if self.file_line_count_cache.is_empty() {
+            self.populate_file_line_count_cache();
+        }
+
         self.line_annotations.clear();
 
         // Pre-index remote threads by (path, line, side) for quick lookup
@@ -7348,6 +7541,60 @@ impl App {
                                 &self.forge_review_threads,
                                 &remote_index,
                             );
+                        }
+                    }
+                }
+
+                // End-of-file gap (after all hunks, not for deleted files)
+                if file.status != FileStatus::Deleted
+                    && let Some(last_hunk) = file.hunks.last()
+                {
+                    let eof_start = last_hunk.new_start + last_hunk.new_count;
+                    if let Some(&total) = self.file_line_count_cache.get(&file_idx)
+                        && eof_start <= total
+                    {
+                        let gap = (total - eof_start + 1) as usize;
+                        let eof_gap_id = GapId {
+                            file_idx,
+                            hunk_idx: file.hunks.len(),
+                        };
+
+                        let top_len = self.expanded_top.get(&eof_gap_id).map_or(0, |v| v.len());
+                        let bot_len = self.expanded_bottom.get(&eof_gap_id).map_or(0, |v| v.len());
+                        let remaining = gap.saturating_sub(top_len + bot_len);
+
+                        let mut ctx_idx = 0;
+
+                        // Top expanded lines (↓ direction)
+                        for _ in 0..top_len {
+                            self.line_annotations.push(AnnotatedLine::ExpandedContext {
+                                gap_id: eof_gap_id.clone(),
+                                line_idx: ctx_idx,
+                            });
+                            ctx_idx += 1;
+                        }
+
+                        // Expanders / hidden lines
+                        if remaining > 0 {
+                            self.line_annotations.push(AnnotatedLine::Expander {
+                                gap_id: eof_gap_id.clone(),
+                                direction: ExpandDirection::Down,
+                            });
+                            if remaining > GAP_EXPAND_BATCH {
+                                self.line_annotations.push(AnnotatedLine::HiddenLines {
+                                    gap_id: eof_gap_id.clone(),
+                                    count: remaining,
+                                });
+                            }
+                        }
+
+                        // Bottom expanded lines (↑ direction)
+                        for _ in 0..bot_len {
+                            self.line_annotations.push(AnnotatedLine::ExpandedContext {
+                                gap_id: eof_gap_id.clone(),
+                                line_idx: ctx_idx,
+                            });
+                            ctx_idx += 1;
                         }
                     }
                 }
@@ -8005,10 +8252,20 @@ mod commit_selection_tests {
             &self,
             _file_path: &Path,
             _file_status: FileStatus,
+            _ref_commit: Option<&str>,
             _start_line: u32,
             _end_line: u32,
         ) -> Result<Vec<DiffLine>> {
             Ok(Vec::new())
+        }
+
+        fn file_line_count(
+            &self,
+            _file_path: &Path,
+            _file_status: FileStatus,
+            _ref_commit: Option<&str>,
+        ) -> Result<u32> {
+            Ok(0)
         }
     }
 
@@ -8133,6 +8390,7 @@ mod target_selector_tests {
             &self,
             _file_path: &Path,
             _file_status: FileStatus,
+            _ref_commit: Option<&str>,
             _start_line: u32,
             _end_line: u32,
         ) -> Result<Vec<DiffLine>> {
@@ -8154,6 +8412,15 @@ mod target_selector_tests {
                 .take(limit)
                 .cloned()
                 .collect())
+        }
+
+        fn file_line_count(
+            &self,
+            _file_path: &Path,
+            _file_status: FileStatus,
+            _ref_commit: Option<&str>,
+        ) -> Result<u32> {
+            Ok(0)
         }
     }
 
@@ -9328,10 +9595,20 @@ mod scroll_behavior_tests {
             &self,
             _file_path: &Path,
             _file_status: FileStatus,
+            _ref_commit: Option<&str>,
             _start_line: u32,
             _end_line: u32,
         ) -> Result<Vec<DiffLine>> {
             Ok(Vec::new())
+        }
+
+        fn file_line_count(
+            &self,
+            _file_path: &Path,
+            _file_status: FileStatus,
+            _ref_commit: Option<&str>,
+        ) -> Result<u32> {
+            Ok(0)
         }
     }
 
@@ -9977,10 +10254,20 @@ mod change_status_tests {
             &self,
             _file_path: &Path,
             _file_status: FileStatus,
+            _ref_commit: Option<&str>,
             _start_line: u32,
             _end_line: u32,
         ) -> Result<Vec<DiffLine>> {
             Ok(Vec::new())
+        }
+
+        fn file_line_count(
+            &self,
+            _file_path: &Path,
+            _file_status: FileStatus,
+            _ref_commit: Option<&str>,
+        ) -> Result<u32> {
+            Ok(0)
         }
     }
 
@@ -10090,6 +10377,7 @@ mod expand_gap_tests {
             &self,
             _file_path: &Path,
             _file_status: FileStatus,
+            _ref_commit: Option<&str>,
             start_line: u32,
             end_line: u32,
         ) -> Result<Vec<DiffLine>> {
@@ -10104,6 +10392,15 @@ mod expand_gap_tests {
                 });
             }
             Ok(result)
+        }
+
+        fn file_line_count(
+            &self,
+            _file_path: &Path,
+            _file_status: FileStatus,
+            _ref_commit: Option<&str>,
+        ) -> Result<u32> {
+            Ok(self.total_lines)
         }
     }
 
@@ -10696,6 +10993,194 @@ mod expand_gap_tests {
             "remaining hidden lines need an `↑` expander"
         );
     }
+
+    #[test]
+    fn should_show_end_of_file_expander() {
+        // given: file with hunk at lines 1-5 and total 100 lines (95 lines after hunk)
+        let file = make_file_with_hunks("test.rs", vec![make_hunk(1, 5)]);
+        let app = build_app_with_files(vec![file], 100);
+        let eof_gap_id = GapId {
+            file_idx: 0,
+            hunk_idx: 1, // hunks.len() == 1
+        };
+
+        // then: should have ↓ expander for end-of-file gap
+        let expander_count = app
+            .line_annotations
+            .iter()
+            .filter(|a| matches!(a, AnnotatedLine::Expander { gap_id: g, direction: ExpandDirection::Down } if *g == eof_gap_id))
+            .count();
+        assert_eq!(expander_count, 1, "should show ↓ expander at end of file");
+
+        // and: should have HiddenLines (95 lines > 20)
+        let hidden_count = app
+            .line_annotations
+            .iter()
+            .filter(|a| matches!(a, AnnotatedLine::HiddenLines { gap_id: g, count } if *g == eof_gap_id && *count == 95))
+            .count();
+        assert_eq!(hidden_count, 1, "should show hidden lines count");
+
+        // and: total_lines() must match line_annotations.len()
+        assert_eq!(
+            app.total_lines(),
+            app.line_annotations.len(),
+            "file_render_height sum must match annotation count"
+        );
+    }
+
+    #[test]
+    fn should_expand_down_at_end_of_file() {
+        // given: file with hunk at lines 1-5, total 100 lines
+        let file = make_file_with_hunks("test.rs", vec![make_hunk(1, 5)]);
+        let mut app = build_app_with_files(vec![file], 100);
+        let eof_gap_id = GapId {
+            file_idx: 0,
+            hunk_idx: 1,
+        };
+
+        // when: expand Down 20 lines
+        app.expand_gap(eof_gap_id.clone(), ExpandDirection::Down, Some(20))
+            .unwrap();
+
+        // then: 20 lines expanded from start of EOF gap (lines 6-25)
+        let content = app.expanded_top.get(&eof_gap_id).unwrap();
+        assert_eq!(content.len(), 20);
+        assert_eq!(content[0].new_lineno, Some(6));
+        assert_eq!(content[19].new_lineno, Some(25));
+    }
+
+    #[test]
+    fn should_not_show_eof_gap_when_hunk_ends_at_file_end() {
+        // given: file with hunk at lines 1-100 and total 100 lines (no gap)
+        let file = make_file_with_hunks("test.rs", vec![make_hunk(1, 100)]);
+        let app = build_app_with_files(vec![file], 100);
+        let eof_gap_id = GapId {
+            file_idx: 0,
+            hunk_idx: 1,
+        };
+
+        // then: no expander for end-of-file
+        let expander_count = app
+            .line_annotations
+            .iter()
+            .filter(|a| matches!(a, AnnotatedLine::Expander { gap_id: g, .. } if *g == eof_gap_id))
+            .count();
+        assert_eq!(
+            expander_count, 0,
+            "no EOF expander when hunk covers entire file"
+        );
+    }
+
+    #[test]
+    fn should_handle_subsequent_eof_expansions() {
+        // given: file with hunk at lines 1-5, total 50 lines, already expanded 20
+        let file = make_file_with_hunks("test.rs", vec![make_hunk(1, 5)]);
+        let mut app = build_app_with_files(vec![file], 50);
+        let eof_gap_id = GapId {
+            file_idx: 0,
+            hunk_idx: 1,
+        };
+        app.expand_gap(eof_gap_id.clone(), ExpandDirection::Down, Some(20))
+            .unwrap();
+
+        // when: expand Down 20 more
+        app.expand_gap(eof_gap_id.clone(), ExpandDirection::Down, Some(20))
+            .unwrap();
+
+        // then: 40 lines total (lines 6-45)
+        let content = app.expanded_top.get(&eof_gap_id).unwrap();
+        assert_eq!(content.len(), 40);
+        assert_eq!(content[0].new_lineno, Some(6));
+        assert_eq!(content[39].new_lineno, Some(45));
+    }
+
+    #[test]
+    fn should_show_small_eof_gap_expander_without_hidden_lines() {
+        // given: file with hunk at lines 1-90 and total 100 lines (10-line gap)
+        let file = make_file_with_hunks("test.rs", vec![make_hunk(1, 90)]);
+        let app = build_app_with_files(vec![file], 100);
+        let eof_gap_id = GapId {
+            file_idx: 0,
+            hunk_idx: 1,
+        };
+
+        // then: should have ↓ expander
+        let expander_count = app
+            .line_annotations
+            .iter()
+            .filter(|a| matches!(a, AnnotatedLine::Expander { gap_id: g, direction: ExpandDirection::Down } if *g == eof_gap_id))
+            .count();
+        assert_eq!(expander_count, 1);
+
+        // and: should NOT have HiddenLines (10 <= 20)
+        let hidden_count = app
+            .line_annotations
+            .iter()
+            .filter(
+                |a| matches!(a, AnnotatedLine::HiddenLines { gap_id: g, .. } if *g == eof_gap_id),
+            )
+            .count();
+        assert_eq!(
+            hidden_count, 0,
+            "small EOF gap should not show hidden lines"
+        );
+    }
+
+    #[test]
+    fn total_lines_must_match_annotations_with_eof_gaps() {
+        // Multiple files, each with EOF gaps of different sizes
+        let files = vec![
+            make_file_with_hunks("a.rs", vec![make_hunk(10, 5)]), // gap before (9) + gap after
+            make_file_with_hunks("b.rs", vec![make_hunk(1, 5), make_hunk(30, 5)]), // between gap + EOF gap
+            make_file_with_hunks("c.rs", vec![make_hunk(1, 100)]), // no EOF gap (hunk covers all)
+        ];
+        let app = build_app_with_files(files, 100);
+
+        assert_eq!(
+            app.total_lines(),
+            app.line_annotations.len(),
+            "total_lines() must equal line_annotations.len()\n\
+             total_lines={}, annotations={}",
+            app.total_lines(),
+            app.line_annotations.len()
+        );
+    }
+
+    #[test]
+    fn should_not_show_eof_gap_for_deleted_files() {
+        // given: a deleted file with hunks (old-side content)
+        let hunks = vec![make_hunk(1, 5)];
+        let content_hash = DiffFile::compute_content_hash(&hunks);
+        let file = DiffFile {
+            old_path: Some(PathBuf::from("deleted.rs")),
+            new_path: None,
+            status: FileStatus::Deleted,
+            hunks,
+            is_binary: false,
+            is_too_large: false,
+            is_commit_message: false,
+            content_hash,
+        };
+        let app = build_app_with_files(vec![file], 100);
+        let eof_gap_id = GapId {
+            file_idx: 0,
+            hunk_idx: 1,
+        };
+
+        // then: no EOF expander for deleted files
+        let expander_count = app
+            .line_annotations
+            .iter()
+            .filter(|a| matches!(a, AnnotatedLine::Expander { gap_id: g, .. } if *g == eof_gap_id))
+            .count();
+        assert_eq!(
+            expander_count, 0,
+            "deleted files should not have EOF expander"
+        );
+
+        // and: total_lines must match annotations
+        assert_eq!(app.total_lines(), app.line_annotations.len());
+    }
 }
 
 #[cfg(test)]
@@ -10778,6 +11263,7 @@ mod submit_flow_tests {
             &self,
             _p: &Path,
             _s: FileStatus,
+            _ref_commit: Option<&str>,
             _start: u32,
             _end: u32,
         ) -> Result<Vec<DiffLine>> {
@@ -10788,6 +11274,14 @@ mod submit_flow_tests {
                 staged: false,
                 unstaged: false,
             })
+        }
+        fn file_line_count(
+            &self,
+            _p: &Path,
+            _s: FileStatus,
+            _ref_commit: Option<&str>,
+        ) -> Result<u32> {
+            Ok(0)
         }
     }
 

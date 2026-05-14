@@ -7,9 +7,11 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, ExpandDirection, FocusedPanel, GAP_EXPAND_BATCH, GapId, InputMode};
+use crate::app::{
+    App, DiffSource, ExpandDirection, FocusedPanel, GAP_EXPAND_BATCH, GapId, InputMode,
+};
 use crate::forge::remote_comments::PrCommentsVisibility;
-use crate::model::{LineOrigin, LineRange, LineSide};
+use crate::model::{FileStatus, LineOrigin, LineRange, LineSide};
 use crate::theme::Theme;
 use crate::ui::comment_panel;
 use crate::ui::diff_view::{
@@ -814,6 +816,82 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
             }
         }
 
+        // End-of-file gap (after all hunks, not for deleted files)
+        if file.status != FileStatus::Deleted
+            && matches!(
+                app.diff_source,
+                DiffSource::WorkingTree
+                    | DiffSource::Unstaged
+                    | DiffSource::StagedAndUnstaged
+                    | DiffSource::StagedUnstagedAndCommits(_)
+                    | DiffSource::CommitRange(_)
+            )
+            && let Some(last_hunk) = file.hunks.last()
+        {
+            let eof_start = last_hunk.new_start + last_hunk.new_count;
+            if let Some(&total) = app.file_line_count_cache.get(&file_idx)
+                && eof_start <= total
+            {
+                let gap = (total - eof_start + 1) as usize;
+                let eof_gap_id = GapId {
+                    file_idx,
+                    hunk_idx: file.hunks.len(),
+                };
+                let top_lines = app.expanded_top.get(&eof_gap_id);
+                let bot_lines = app.expanded_bottom.get(&eof_gap_id);
+                let top_len = top_lines.map_or(0, |v| v.len());
+                let bot_len = bot_lines.map_or(0, |v| v.len());
+                let remaining = gap.saturating_sub(top_len + bot_len);
+
+                // Render top expanded lines (↓ direction)
+                if let Some(top) = top_lines {
+                    for expanded_line in top {
+                        render_expanded_context_line(
+                            &mut lines,
+                            &mut line_idx,
+                            current_line_idx,
+                            expanded_line,
+                            &app.theme,
+                        );
+                    }
+                }
+
+                // Expander / hidden lines
+                if remaining > 0 {
+                    render_expander_line(
+                        &mut lines,
+                        &mut line_idx,
+                        current_line_idx,
+                        ExpandDirection::Down,
+                        remaining,
+                        &app.theme,
+                    );
+                    if remaining > GAP_EXPAND_BATCH {
+                        render_hidden_lines(
+                            &mut lines,
+                            &mut line_idx,
+                            current_line_idx,
+                            remaining,
+                            &app.theme,
+                        );
+                    }
+                }
+
+                // Render bottom expanded lines
+                if let Some(bot) = bot_lines {
+                    for expanded_line in bot {
+                        render_expanded_context_line(
+                            &mut lines,
+                            &mut line_idx,
+                            current_line_idx,
+                            expanded_line,
+                            &app.theme,
+                        );
+                    }
+                }
+            }
+        }
+
         // Spacing between files
         let indicator = cursor_indicator(line_idx, current_line_idx);
         lines.push(Line::from(Span::styled(
@@ -1138,6 +1216,7 @@ mod remote_comments_snapshot_tests {
             &self,
             _file_path: &Path,
             _file_status: FileStatus,
+            _ref_commit: Option<&str>,
             _start_line: u32,
             _end_line: u32,
         ) -> TuicrResult<Vec<DiffLine>> {
@@ -1148,6 +1227,14 @@ mod remote_comments_snapshot_tests {
                 staged: false,
                 unstaged: false,
             })
+        }
+        fn file_line_count(
+            &self,
+            _file_path: &Path,
+            _file_status: FileStatus,
+            _ref_commit: Option<&str>,
+        ) -> TuicrResult<u32> {
+            Ok(0)
         }
     }
 
