@@ -2,6 +2,7 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Result, TuicrError};
+use crate::forge::remote_comments::RemoteReviewThread;
 use crate::forge::traits::{
     ForgeBackend, ForgeFileLinesRequest, ForgeRepository, PagedPullRequests, PullRequestDetails,
     PullRequestListQuery, PullRequestTarget,
@@ -10,6 +11,7 @@ use crate::model::{DiffLine, LineOrigin};
 use crate::process::{CommandOutputError, CommandOutputErrorKind, run_command_output};
 
 use super::models::{GhPullRequestDetails, GhPullRequestSummary};
+use super::review_threads::{build_query, parse_graphql_page};
 
 const DEFAULT_GITHUB_HOST: &str = "github.com";
 const PR_LIST_JSON_FIELDS: &str =
@@ -220,6 +222,30 @@ where
         self.local_checkout.clone()
     }
 
+    fn list_review_threads(&self, pr: &PullRequestDetails) -> Result<Vec<RemoteReviewThread>> {
+        let mut all: Vec<RemoteReviewThread> = Vec::new();
+        let mut cursor: Option<String> = None;
+        // Bound the pagination loop so a buggy/cyclic server can't hang us.
+        // 100 threads * 100 pages = 10k threads; well beyond realistic PRs.
+        for _ in 0..100 {
+            let args = self.build_review_threads_args(pr, cursor.as_deref());
+            let output = self.run_gh(args, &pr.repository.host)?;
+            let parsed = parse_graphql_page(&output)?;
+            all.extend(parsed.threads);
+            let Some(page_info) = parsed.page_info else {
+                break;
+            };
+            if !page_info.has_next_page {
+                break;
+            }
+            let Some(end_cursor) = page_info.end_cursor else {
+                break;
+            };
+            cursor = Some(end_cursor);
+        }
+        Ok(all)
+    }
+
     fn fetch_file_lines(&self, request: ForgeFileLinesRequest) -> Result<Vec<DiffLine>> {
         if request.start_line == 0 || request.start_line > request.end_line {
             return Ok(Vec::new());
@@ -251,6 +277,37 @@ impl<R> GitHubGhBackend<R>
 where
     R: GhCommandRunner,
 {
+    fn build_review_threads_args(
+        &self,
+        pr: &PullRequestDetails,
+        cursor: Option<&str>,
+    ) -> Vec<String> {
+        let query = build_query(cursor);
+        let mut args = vec![
+            "api".to_string(),
+            "graphql".to_string(),
+            "-f".to_string(),
+            format!("query={query}"),
+            "-F".to_string(),
+            format!("owner={}", pr.repository.owner),
+            "-F".to_string(),
+            format!("name={}", pr.repository.name),
+            "-F".to_string(),
+            format!("number={}", pr.number),
+        ];
+        if let Some(c) = cursor {
+            args.push("-F".to_string());
+            args.push(format!("after={c}"));
+        }
+        // Enterprise host routing — `gh api graphql --hostname` picks the
+        // correct endpoint when the repo lives on a non-default host.
+        if pr.repository.host != "github.com" {
+            args.push("--hostname".to_string());
+            args.push(pr.repository.host.clone());
+        }
+        args
+    }
+
     fn fetch_file_via_api(&self, request: &ForgeFileLinesRequest) -> Result<String> {
         // `gh api repos/<owner>/<repo>/contents/<path>?ref=<sha>` returns a
         // JSON object with base64-encoded `content` for text files. The
@@ -571,10 +628,21 @@ index 1111111..2222222 100644
     impl GhCommandRunner for FakeGhRunner {
         fn run(&self, args: &[String]) -> GhCommandResult<String> {
             self.calls.borrow_mut().push(args.to_vec());
-            match args.get(1).map(String::as_str) {
-                Some("list") => Ok(PR_LIST_JSON.to_string()),
-                Some("view") => Ok(PR_VIEW_JSON.to_string()),
-                Some("diff") => Ok(PR_PATCH.to_string()),
+            match args.first().map(String::as_str) {
+                // gh pr list/view/diff — second arg is the subcommand.
+                Some("pr") => match args.get(1).map(String::as_str) {
+                    Some("list") => Ok(PR_LIST_JSON.to_string()),
+                    Some("view") => Ok(PR_VIEW_JSON.to_string()),
+                    Some("diff") => Ok(PR_PATCH.to_string()),
+                    _ => Err(GhCommandError::Failed {
+                        status: Some(1),
+                        stderr: "unexpected pr command".to_string(),
+                    }),
+                },
+                // gh api graphql for review threads.
+                Some("api") if args.get(1).map(String::as_str) == Some("graphql") => {
+                    Ok(REVIEW_THREADS_JSON.to_string())
+                }
                 _ => Err(GhCommandError::Failed {
                     status: Some(1),
                     stderr: "unexpected command".to_string(),
@@ -582,6 +650,38 @@ index 1111111..2222222 100644
             }
         }
     }
+
+    const REVIEW_THREADS_JSON: &str = r##"{
+        "data": {
+            "repository": {
+                "pullRequest": {
+                    "reviewThreads": {
+                        "pageInfo": { "hasNextPage": false, "endCursor": null },
+                        "nodes": [
+                            {
+                                "id": "PRRT_1",
+                                "isResolved": false,
+                                "isOutdated": false,
+                                "comments": {
+                                    "nodes": [
+                                        {
+                                            "id": "PRRC_1",
+                                            "body": "remote one",
+                                            "author": { "login": "alice" },
+                                            "path": "src/lib.rs",
+                                            "line": 42,
+                                            "side": "RIGHT",
+                                            "url": "https://example.com/1"
+                                        }
+                                    ]
+                                }
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+    }"##;
 
     fn repo() -> ForgeRepository {
         ForgeRepository::github("github.com", "agavra", "tuicr")
@@ -772,6 +872,33 @@ index 1111111..2222222 100644
         let patch = backend.get_pull_request_diff(&details).unwrap();
 
         assert_eq!(patch, PR_PATCH);
+    }
+
+    #[test]
+    fn should_list_review_threads_via_graphql_api_call() {
+        // given
+        let runner = FakeGhRunner::default();
+        let backend = GitHubGhBackend::with_runner(Some(repo()), runner);
+        let details = backend
+            .get_pull_request(parse_pull_request_target("125").unwrap())
+            .unwrap();
+        // when
+        let threads = backend.list_review_threads(&details).unwrap();
+        // then
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0].id, "PRRT_1");
+        assert_eq!(threads[0].path, "src/lib.rs");
+        // and — the API call was placed against `gh api graphql` with the
+        // owner/name/number parameters.
+        let calls = backend.runner.calls.borrow();
+        let graphql_call = calls
+            .iter()
+            .find(|args| args.first().map(String::as_str) == Some("api"))
+            .expect("expected a gh api call");
+        assert_eq!(graphql_call[1], "graphql");
+        assert!(graphql_call.iter().any(|a| a == "owner=agavra"));
+        assert!(graphql_call.iter().any(|a| a == "name=tuicr"));
+        assert!(graphql_call.iter().any(|a| a == "number=125"));
     }
 
     #[test]

@@ -144,6 +144,12 @@ mod tests {
             self.seen.borrow_mut().push(request);
             Ok(self.response.clone())
         }
+        fn list_review_threads(
+            &self,
+            _pr: &PullRequestDetails,
+        ) -> Result<Vec<crate::forge::remote_comments::RemoteReviewThread>> {
+            Ok(Vec::new())
+        }
     }
 
     fn repo() -> ForgeRepository {

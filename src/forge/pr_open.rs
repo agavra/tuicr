@@ -185,6 +185,12 @@ mod tests {
         fn fetch_file_lines(&self, _req: ForgeFileLinesRequest) -> Result<Vec<DiffLine>> {
             unimplemented!()
         }
+        fn list_review_threads(
+            &self,
+            _pr: &PullRequestDetails,
+        ) -> Result<Vec<crate::forge::remote_comments::RemoteReviewThread>> {
+            Ok(Vec::new())
+        }
     }
 
     const SIMPLE_PATCH: &str = r##"diff --git a/src/lib.rs b/src/lib.rs

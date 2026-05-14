@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use crate::error::Result;
+use crate::forge::remote_comments::RemoteReviewThread;
 use crate::model::{DiffLine, FileStatus};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -263,6 +264,10 @@ pub trait ForgeBackend {
     /// Implementations may optimize by reading from a local checkout when
     /// available; the trait does not require that path.
     fn fetch_file_lines(&self, request: ForgeFileLinesRequest) -> Result<Vec<DiffLine>>;
+    /// Fetch existing review discussions for a PR, including their resolved
+    /// and outdated state. Implementations should return all threads in
+    /// posted order; filtering by visibility happens in the App.
+    fn list_review_threads(&self, pr: &PullRequestDetails) -> Result<Vec<RemoteReviewThread>>;
     /// Optional path to a local checkout the backend may consult as an
     /// optimization. The default returns `None`; callers must never treat
     /// this path as the source of truth for PR contents.

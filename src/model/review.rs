@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use super::comment::Comment;
 use super::diff_types::FileStatus;
+use crate::forge::remote_comments::PrCommentsVisibility;
 use crate::forge::traits::PrSessionKey;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,6 +84,12 @@ pub struct ReviewSession {
     /// `None` so existing local session JSON deserializes unchanged.
     #[serde(default)]
     pub pr_session_key: Option<PrSessionKey>,
+    /// Per-session visibility setting for existing remote forge comments.
+    /// Only meaningful in PR mode. Defaults to `Unresolved` so a fresh PR
+    /// session — or a session saved before this field existed — shows
+    /// unresolved threads.
+    #[serde(default)]
+    pub remote_comments_visibility: PrCommentsVisibility,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     #[serde(default)]
@@ -108,6 +115,7 @@ impl ReviewSession {
             diff_source,
             commit_range: None,
             pr_session_key: None,
+            remote_comments_visibility: PrCommentsVisibility::default(),
             created_at: now,
             updated_at: now,
             review_comments: Vec::new(),
@@ -383,6 +391,32 @@ mod tests {
         assert_eq!(session.diff_source, SessionDiffSource::WorkingTree);
         assert!(session.pr_session_key.is_none());
         assert!(session.commit_range.is_none());
+        // Per spec: an older session without remote_comments_visibility
+        // defaults to `Unresolved` on read so PR-mode behavior stays sane.
+        assert_eq!(
+            session.remote_comments_visibility,
+            PrCommentsVisibility::Unresolved
+        );
+    }
+
+    #[test]
+    fn should_round_trip_remote_comments_visibility_on_session() {
+        // given
+        let mut session = ReviewSession::new(
+            PathBuf::from("forge:github.com/agavra/tuicr"),
+            "abcdef0123456789".to_string(),
+            Some("reviews".to_string()),
+            SessionDiffSource::PullRequest,
+        );
+        session.remote_comments_visibility = PrCommentsVisibility::All;
+        // when
+        let json = serde_json::to_string(&session).unwrap();
+        let restored: ReviewSession = serde_json::from_str(&json).unwrap();
+        // then
+        assert_eq!(
+            restored.remote_comments_visibility,
+            PrCommentsVisibility::All
+        );
     }
 
     #[test]

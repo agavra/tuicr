@@ -8,6 +8,7 @@
 pub mod context;
 pub mod github;
 pub mod pr_open;
+pub mod remote_comments;
 pub mod selector;
 pub mod traits;
 
