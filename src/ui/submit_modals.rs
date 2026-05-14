@@ -21,7 +21,7 @@ pub fn render_submit_resolver(frame: &mut Frame, app: &App) {
     let Some(state) = app.submit_state.as_ref() else {
         return;
     };
-    let area = centered_rect(70, 50, frame.area());
+    let area = centered_rect(70, 50, modal_anchor(app, frame.area()));
 
     frame.render_widget(Clear, area);
 
@@ -84,7 +84,7 @@ pub fn render_submit_confirm(frame: &mut Frame, app: &App) {
     let Some(state) = app.submit_state.as_ref() else {
         return;
     };
-    let area = centered_rect(60, 70, frame.area());
+    let area = centered_rect(60, 70, modal_anchor(app, frame.area()));
 
     frame.render_widget(Clear, area);
 
@@ -223,6 +223,13 @@ fn prompt_spans(stale: bool, event: SubmitEvent) -> Vec<Span<'static>> {
         spans.push(Span::raw("reload"));
     }
     spans
+}
+
+/// The submit modals should center over the diff pane when one is visible
+/// (file list off to the side would otherwise tug the visual centre left).
+/// Falls back to the full frame when no diff area is laid out yet.
+fn modal_anchor(app: &App, fallback: Rect) -> Rect {
+    app.diff_area.unwrap_or(fallback)
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
