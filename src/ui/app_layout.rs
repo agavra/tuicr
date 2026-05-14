@@ -110,21 +110,33 @@ fn render_target_tab_strip(frame: &mut Frame, app: &App, area: Rect) {
     let active_style = Style::default()
         .fg(theme.fg_primary)
         .add_modifier(Modifier::BOLD | Modifier::REVERSED);
-    let inactive_style = Style::default().fg(theme.fg_secondary);
+    let bracket_style = Style::default().fg(theme.fg_secondary);
+    let inactive_label_style = Style::default().fg(theme.fg_primary);
 
-    let local = if active == TargetTab::Local {
-        Span::styled(" Local ", active_style)
-    } else {
-        Span::styled(" Local ", inactive_style)
-    };
-    let prs = if active == TargetTab::PullRequests {
-        Span::styled(" Pull Requests ", active_style)
-    } else {
-        Span::styled(" Pull Requests ", inactive_style)
-    };
-    let sep = Span::styled("  ", Style::default());
+    let mut spans: Vec<Span> = Vec::with_capacity(8);
+    spans.push(Span::raw(" "));
 
-    let line = Line::from(vec![Span::raw(" "), local, sep, prs]);
+    let local_active = active == TargetTab::Local;
+    spans.push(Span::styled("[", bracket_style));
+    if local_active {
+        spans.push(Span::styled(" Local ", active_style));
+    } else {
+        spans.push(Span::styled(" Local ", inactive_label_style));
+    }
+    spans.push(Span::styled("]", bracket_style));
+
+    spans.push(Span::raw("  "));
+
+    let prs_active = active == TargetTab::PullRequests;
+    spans.push(Span::styled("[", bracket_style));
+    if prs_active {
+        spans.push(Span::styled(" Pull Requests ", active_style));
+    } else {
+        spans.push(Span::styled(" Pull Requests ", inactive_label_style));
+    }
+    spans.push(Span::styled("]", bracket_style));
+
+    let line = Line::from(spans);
     let strip = Paragraph::new(line).style(styles::panel_style(theme));
     frame.render_widget(strip, area);
 }
