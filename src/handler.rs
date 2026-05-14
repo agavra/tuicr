@@ -606,6 +606,13 @@ pub fn handle_commit_select_action(app: &mut App, action: Action) {
         Action::TargetSelectorTabPrev => app.cycle_target_tab(false),
         Action::Quit => app.should_quit = true,
         Action::ExitMode => {
+            // Esc during an in-flight PR open aborts the load and stays
+            // in the selector. Takes precedence over the
+            // commit-selection-range exit so the user isn't stuck staring
+            // at a spinner.
+            if app.cancel_pr_open() {
+                return;
+            }
             if app.commit_selection_range.is_none() {
                 return;
             }

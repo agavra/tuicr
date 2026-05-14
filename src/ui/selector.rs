@@ -363,11 +363,32 @@ fn render_pr_list(frame: &mut Frame, app: &App, area: Rect, view: &PrTabView<'_>
         return;
     }
 
+    // Pre-compute the spinner glyph once per draw so it animates without
+    // per-row recalculation. Held outside the loop because Rust's borrow
+    // rules around `app` are simpler that way.
+    let spinner = app
+        .pr_open_state
+        .as_ref()
+        .map(|s| pr_open_spinner_glyph(s.started_at.elapsed()));
+
     let mut lines: Vec<Line> = Vec::new();
     for (i, row) in view.rows.iter().enumerate() {
         let is_cursor = i == view.cursor;
-        let pointer = if is_cursor { "> " } else { "  " };
-        let pointer_style = if is_cursor {
+        let is_loading = matches!(
+            (spinner, app.pr_open_state.as_ref()),
+            (Some(_), Some(s)) if s.matches(&row.summary.repository, row.summary.number)
+        );
+        // Spinner glyph replaces the cursor pointer (per design A): the
+        // row's leading character means "this is the active thing" in
+        // both the navigation and loading states.
+        let pointer_str = if is_loading {
+            format!("{} ", spinner.unwrap_or("⠋"))
+        } else if is_cursor {
+            "> ".to_string()
+        } else {
+            "  ".to_string()
+        };
+        let pointer_style = if is_loading || is_cursor {
             styles::selected_style(theme)
         } else {
             Style::default().fg(theme.fg_secondary)
@@ -383,7 +404,7 @@ fn render_pr_list(frame: &mut Frame, app: &App, area: Rect, view: &PrTabView<'_>
         let draft = if row.summary.is_draft { " [draft]" } else { "" };
 
         let line = Line::from(vec![
-            Span::styled(pointer, pointer_style),
+            Span::styled(pointer_str, pointer_style),
             Span::styled(number, styles::hash_style(theme)),
             Span::styled(" ", Style::default()),
             Span::styled(title, Style::default().fg(theme.fg_primary)),
@@ -437,6 +458,15 @@ fn render_pr_list(frame: &mut Frame, app: &App, area: Rect, view: &PrTabView<'_>
         .collect();
     let paragraph = Paragraph::new(visible).style(styles::panel_style(theme));
     frame.render_widget(paragraph, area);
+}
+
+/// Braille spinner frames advanced every ~100ms based on elapsed time.
+/// Stable across redraws because the start instant lives on `App`.
+pub(crate) fn pr_open_spinner_glyph(elapsed: std::time::Duration) -> &'static str {
+    const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    const FRAME_MS: u128 = 100;
+    let idx = (elapsed.as_millis() / FRAME_MS) as usize % FRAMES.len();
+    FRAMES[idx]
 }
 
 fn format_relative_time(time: chrono::DateTime<chrono::Utc>) -> String {
@@ -892,5 +922,115 @@ mod selector_render_snapshot_tests {
             body.contains("Fetching pull requests"),
             "expected loading banner, got:\n{body}"
         );
+    }
+
+    #[test]
+    fn should_render_spinner_glyph_in_place_of_cursor_for_loading_pr_row() {
+        // given — two PRs loaded, an open in-flight for #148
+        use crate::app::PrOpenRequest;
+        use std::time::Instant;
+        let mut app = make_app(vec![commit(0)]);
+        app.forge_repository = Some(repo());
+        let mut tab = PullRequestsTab::new(Some(repo()));
+        tab.start_initial_load();
+        tab.apply_initial_load(Ok((
+            vec![
+                pr(148, "Add forge-backed PR review", "alice"),
+                pr(125, "Support fetching/pushing reviews", "ypares"),
+            ],
+            false,
+        )));
+        app.pr_tab = tab;
+        app.target_tab = crate::app::TargetTab::PullRequests;
+        app.pr_open_state = Some(PrOpenRequest {
+            repository: repo(),
+            pr_number: 148,
+            started_at: Instant::now(),
+        });
+        // when
+        let buffer = draw(&mut app);
+        // then — the loading row leads with one of the braille spinner glyphs
+        let frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+        let lines: Vec<String> = (3..buffer.area.height)
+            .map(|y| row_text(&buffer, y))
+            .collect();
+        let loading_row = lines
+            .iter()
+            .find(|l| l.contains("#148"))
+            .expect("#148 row missing");
+        let non_loading_row = lines
+            .iter()
+            .find(|l| l.contains("#125"))
+            .expect("#125 row missing");
+        assert!(
+            frames
+                .iter()
+                .any(|g| loading_row.starts_with(&format!(" {g}")) || loading_row.contains(g)),
+            "loading row should contain a spinner glyph: {loading_row:?}"
+        );
+        // The non-loading row should not have any spinner glyph at the front.
+        assert!(
+            !frames.iter().any(|g| non_loading_row.contains(g)),
+            "non-loading row should not contain a spinner glyph: {non_loading_row:?}"
+        );
+    }
+
+    #[test]
+    fn should_keep_cursor_pointer_on_other_rows_during_loading() {
+        // given — loading #148, cursor on #125
+        use crate::app::PrOpenRequest;
+        use std::time::Instant;
+        let mut app = make_app(vec![commit(0)]);
+        app.forge_repository = Some(repo());
+        let mut tab = PullRequestsTab::new(Some(repo()));
+        tab.start_initial_load();
+        tab.apply_initial_load(Ok((
+            vec![
+                pr(148, "Add forge-backed PR review", "alice"),
+                pr(125, "Support fetching/pushing reviews", "ypares"),
+            ],
+            false,
+        )));
+        if let PullRequestsTab::Loaded { cursor, .. } = &mut tab {
+            *cursor = 1; // cursor on #125
+        }
+        app.pr_tab = tab;
+        app.target_tab = crate::app::TargetTab::PullRequests;
+        app.pr_open_state = Some(PrOpenRequest {
+            repository: repo(),
+            pr_number: 148,
+            started_at: Instant::now(),
+        });
+        // when
+        let buffer = draw(&mut app);
+        // then — #125 row keeps the `> ` cursor pointer (after the panel border)
+        let lines: Vec<String> = (3..buffer.area.height)
+            .map(|y| row_text(&buffer, y))
+            .collect();
+        let cursor_row = lines
+            .iter()
+            .find(|l| l.contains("#125"))
+            .expect("#125 row missing");
+        assert!(
+            cursor_row.contains("> #125"),
+            "cursor row should contain `> #125`: {cursor_row:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod pr_open_spinner_tests {
+    use super::pr_open_spinner_glyph;
+    use std::time::Duration;
+
+    #[test]
+    fn should_advance_braille_frame_every_100ms() {
+        // given / when / then
+        assert_eq!(pr_open_spinner_glyph(Duration::from_millis(0)), "⠋");
+        assert_eq!(pr_open_spinner_glyph(Duration::from_millis(99)), "⠋");
+        assert_eq!(pr_open_spinner_glyph(Duration::from_millis(100)), "⠙");
+        assert_eq!(pr_open_spinner_glyph(Duration::from_millis(900)), "⠏");
+        // Wraps after the 10th frame.
+        assert_eq!(pr_open_spinner_glyph(Duration::from_millis(1000)), "⠋");
     }
 }

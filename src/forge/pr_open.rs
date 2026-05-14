@@ -41,13 +41,32 @@ pub fn open_pull_request(
     local_checkout: Option<&Path>,
     highlighter: &SyntaxHighlighter,
 ) -> Result<OpenedPullRequest> {
+    let (details, patch) = fetch_pr_data(backend, target)?;
+    prepare_open_pr(details, &patch, local_checkout, highlighter)
+}
+
+/// Network-only half of the PR open path: fetch PR metadata and the raw
+/// patch text. Safe to run on a background thread because it does no
+/// syntax parsing and holds nothing that isn't `Send`.
+pub fn fetch_pr_data(
+    backend: &dyn ForgeBackend,
+    target: PullRequestTarget,
+) -> Result<(PullRequestDetails, String)> {
     let details = backend.get_pull_request(target)?;
     let patch = backend.get_pull_request_diff(&details)?;
+    Ok((details, patch))
+}
 
-    // Parse the patch through the existing Git-style diff parser. An empty
-    // PR (no file changes) returns NoChanges — surface that with a clearer
-    // message so the CLI doesn't print "No staged or unstaged changes".
-    let parsed = match parse_unified_diff(&patch, DiffFormat::GitStyle, highlighter) {
+/// CPU-only half of the PR open path: parse the patch, apply
+/// `.tuicrignore`, and build the session. Runs on the main thread because
+/// `SyntaxHighlighter` is not trivially `Send`-cloneable.
+pub fn prepare_open_pr(
+    details: PullRequestDetails,
+    patch: &str,
+    local_checkout: Option<&Path>,
+    highlighter: &SyntaxHighlighter,
+) -> Result<OpenedPullRequest> {
+    let parsed = match parse_unified_diff(patch, DiffFormat::GitStyle, highlighter) {
         Ok(files) => files,
         Err(TuicrError::NoChanges) => {
             return Err(TuicrError::Forge(format!(

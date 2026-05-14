@@ -444,6 +444,37 @@ pub enum PrLoadEvent {
     LoadMore(std::result::Result<(Vec<crate::forge::traits::PullRequestSummary>, bool), String>),
 }
 
+/// In-flight PR open. Stored on `App::pr_open_state` so the selector
+/// renderer can paint a spinner glyph on the matching row and the
+/// handler can gate further input until the load resolves.
+#[derive(Debug, Clone)]
+pub struct PrOpenRequest {
+    pub repository: crate::forge::traits::ForgeRepository,
+    pub pr_number: u64,
+    /// Wall-clock origin for the spinner animation. Derived in the App
+    /// (not the renderer) so the spinner phase is stable across redraws.
+    pub started_at: Instant,
+}
+
+impl PrOpenRequest {
+    /// True when this in-flight open is for the given PR row.
+    pub fn matches(&self, repo: &crate::forge::traits::ForgeRepository, number: u64) -> bool {
+        self.pr_number == number && &self.repository == repo
+    }
+}
+
+/// Result delivered from the PR-open background thread.
+#[derive(Debug)]
+pub enum PrOpenEvent {
+    Done {
+        request: PrOpenRequest,
+        /// Network-only outcome. Parsing + session build runs on the main
+        /// thread after this lands so `SyntaxHighlighter` does not need to
+        /// cross thread boundaries.
+        result: std::result::Result<(crate::forge::traits::PullRequestDetails, String), String>,
+    },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiffViewMode {
     Unified,
@@ -532,6 +563,12 @@ pub struct App {
     /// Background-thread channel that delivers PR list fetch results.
     /// `Receiver` is only present while a fetch is in flight.
     pub pr_load_rx: Option<std::sync::mpsc::Receiver<PrLoadEvent>>,
+    /// In-flight PR open. Drives the inline row spinner and gates further
+    /// Enter presses while the network calls run on a background thread.
+    pub pr_open_state: Option<PrOpenRequest>,
+    /// Background-thread channel that delivers the result of a PR open.
+    /// `Receiver` is only present while an open is in flight.
+    pub pr_open_rx: Option<std::sync::mpsc::Receiver<PrOpenEvent>>,
     /// Forge backend instance live while in PR diff mode. Used by the
     /// context provider for gap expansion against base/head SHAs and (in a
     /// future PR) for remote comment fetch/submit.
@@ -1099,6 +1136,8 @@ impl App {
             pr_list_inner_area: None,
             pr_filter_draft: None,
             pr_load_rx: None,
+            pr_open_state: None,
+            pr_open_rx: None,
             forge_backend: None,
             should_quit: false,
             dirty: false,
@@ -4236,8 +4275,14 @@ impl App {
     }
 
     /// Handle Enter on the PR tab. Returns true when the action was handled
-    /// (load more triggered, PR opened, error surfaced, etc).
+    /// (load more triggered, PR open kicked off, error surfaced, etc).
     pub fn pr_tab_select(&mut self) -> bool {
+        // Block re-entry while a previous open is still resolving — the
+        // spinner glyph on the row already tells the user something is in
+        // flight.
+        if self.pr_open_state.is_some() {
+            return true;
+        }
         if self.pr_tab.cursor_on_load_more() {
             if let Some((repo, already)) = self.pr_tab.start_load_more() {
                 self.spawn_pr_load_more(repo, already);
@@ -4249,41 +4294,137 @@ impl App {
         let Some(summary) = self.pr_tab.cursor_pr().cloned() else {
             return false;
         };
-        match self.open_pr_from_selector(&summary) {
-            Ok(()) => {
-                self.set_message(format!(
-                    "Opened PR {}#{}",
-                    summary.repository.display_name(),
-                    summary.number,
-                ));
-            }
-            Err(e) => {
-                // Errors surface inline in the selector (which the user
-                // can still navigate). The selector state machine moves to
-                // an Error variant; UI renders the message in the PR tab.
-                self.pr_tab
-                    .apply_initial_load(Err(format!("Failed to open PR: {e}")));
-            }
-        }
+        self.spawn_pr_open(&summary);
         true
     }
 
-    fn open_pr_from_selector(
-        &mut self,
-        summary: &crate::forge::traits::PullRequestSummary,
-    ) -> Result<()> {
+    /// Kick off the background fetch for a PR open. The main thread keeps
+    /// rendering and pumping events; the resulting `PrOpenEvent::Done` is
+    /// drained in `poll_pr_open_events` where parsing happens and PR mode
+    /// is entered.
+    fn spawn_pr_open(&mut self, summary: &crate::forge::traits::PullRequestSummary) {
         use crate::forge::github::gh::GitHubGhBackend;
+        use crate::forge::pr_open::fetch_pr_data;
+        use crate::forge::traits::PullRequestTarget;
 
         let local_checkout = Some(self.vcs_info.root_path.clone());
-        let target_repo = summary.repository.clone();
-        let backend = GitHubGhBackend::new(Some(target_repo.clone()))
-            .with_local_checkout(local_checkout.clone());
-        self.open_pr_with_backend(summary, Box::new(backend), local_checkout)
+        let request = PrOpenRequest {
+            repository: summary.repository.clone(),
+            pr_number: summary.number,
+            started_at: Instant::now(),
+        };
+        self.pr_open_state = Some(request.clone());
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.pr_open_rx = Some(rx);
+
+        let summary_repo = summary.repository.clone();
+        let pr_number = summary.number;
+        let thread_local_checkout = local_checkout.clone();
+        std::thread::spawn(move || {
+            let backend = GitHubGhBackend::new(Some(summary_repo.clone()))
+                .with_local_checkout(thread_local_checkout);
+            let target =
+                PullRequestTarget::with_repository(summary_repo, pr_number, pr_number.to_string());
+            let outcome = fetch_pr_data(&backend, target).map_err(|e| e.to_string());
+            let _ = tx.send(PrOpenEvent::Done {
+                request,
+                result: outcome,
+            });
+        });
     }
 
-    /// Open a PR using the provided forge backend. Exists as a seam for
-    /// tests; production paths go through `open_pr_from_selector` or
-    /// `new_from_pr_target` which construct the real backend.
+    /// Drain any pending PR-open result and apply it. On success, parses
+    /// the diff and enters PR diff mode; on failure, routes the error
+    /// into the selector banner. Either way, clears `pr_open_state` and
+    /// the receiver so the spinner stops animating.
+    pub fn poll_pr_open_events(&mut self) {
+        let Some(rx) = self.pr_open_rx.as_ref() else {
+            return;
+        };
+        let event = match rx.try_recv() {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+        self.pr_open_rx = None;
+        let in_flight = self.pr_open_state.clone();
+        self.pr_open_state = None;
+        match event {
+            PrOpenEvent::Done { request, result } => {
+                // If the user cancelled (cleared pr_open_state) but the
+                // background thread sent a result before being torn down,
+                // ignore the result rather than entering PR mode.
+                if !in_flight
+                    .as_ref()
+                    .map(|s| s.matches(&request.repository, request.pr_number))
+                    .unwrap_or(false)
+                {
+                    return;
+                }
+                match result {
+                    Ok((details, patch)) => {
+                        if let Err(e) = self.finish_pr_open(details, patch, &request) {
+                            self.set_error(format!(
+                                "Failed to open PR #{}: {}",
+                                request.pr_number, e
+                            ));
+                        }
+                    }
+                    Err(e) => {
+                        self.set_error(format!("Failed to open PR #{}: {}", request.pr_number, e));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Main-thread half of the PR open: parse the patch, build the
+    /// session, and enter PR diff mode. Mirrors what the previous synchronous
+    /// `open_pr_with_backend` did, but the network fetch has already
+    /// happened on the background thread.
+    fn finish_pr_open(
+        &mut self,
+        details: crate::forge::traits::PullRequestDetails,
+        patch: String,
+        request: &PrOpenRequest,
+    ) -> Result<()> {
+        use crate::forge::github::gh::GitHubGhBackend;
+        use crate::forge::pr_open::prepare_open_pr;
+
+        let local_checkout = Some(self.vcs_info.root_path.clone());
+        let highlighter = self.theme.syntax_highlighter();
+        let mut opened = prepare_open_pr(details, &patch, local_checkout.as_deref(), highlighter)?;
+        Self::load_or_apply_pr_session(&mut opened);
+        let backend = Box::new(
+            GitHubGhBackend::new(Some(request.repository.clone()))
+                .with_local_checkout(local_checkout),
+        );
+        self.enter_pr_diff_mode(backend, opened)?;
+        self.set_message(format!(
+            "Opened PR {}#{}",
+            request.repository.display_name(),
+            request.pr_number,
+        ));
+        Ok(())
+    }
+
+    /// Abort an in-flight PR open. Drops the receiver so the eventual
+    /// thread send becomes a no-op; clears the spinner state.
+    pub fn cancel_pr_open(&mut self) -> bool {
+        if self.pr_open_state.is_none() {
+            return false;
+        }
+        self.pr_open_state = None;
+        self.pr_open_rx = None;
+        self.set_message("PR open cancelled".to_string());
+        true
+    }
+
+    /// Open a PR using the provided forge backend, synchronously. Exists
+    /// as a seam for tests that want to drive the open without spinning
+    /// up a background thread + mpsc round-trip. Production paths go
+    /// through `spawn_pr_open` (selector) or `new_from_pr_target` (CLI).
+    #[allow(dead_code)]
     pub fn open_pr_with_backend(
         &mut self,
         summary: &crate::forge::traits::PullRequestSummary,
@@ -6479,6 +6620,179 @@ mod target_selector_tests {
         // then
         assert_eq!(app.target_tab, TargetTab::Local);
         assert_eq!(app.input_mode, InputMode::CommitSelect);
+    }
+
+    // -- async PR open spinner tests -----------------------------------------
+
+    fn loaded_pr_tab(pr_list: Vec<PullRequestSummary>) -> PullRequestsTab {
+        let mut tab = PullRequestsTab::new(Some(ForgeRepository::github(
+            "github.com",
+            "agavra",
+            "tuicr",
+        )));
+        tab.start_initial_load();
+        tab.apply_initial_load(Ok((pr_list, false)));
+        tab
+    }
+
+    #[test]
+    fn should_set_pr_open_state_and_spawn_when_pressing_enter_on_a_pr_row() {
+        // given a loaded PR tab and no in-flight open
+        let mut app = build_app();
+        app.forge_repository = Some(ForgeRepository::github("github.com", "agavra", "tuicr"));
+        app.pr_tab = loaded_pr_tab(vec![sample_pr(42, "boom")]);
+        app.target_tab = TargetTab::PullRequests;
+        // when
+        let handled = app.pr_tab_select();
+        // then
+        assert!(handled);
+        assert!(app.pr_open_state.is_some());
+        let state = app.pr_open_state.as_ref().unwrap();
+        assert_eq!(state.pr_number, 42);
+        // Drop the receiver so the spawned thread's tx send is a no-op
+        // when it completes (the real `gh` call would block; this test
+        // does not wait for it).
+        app.pr_open_rx = None;
+        app.pr_open_state = None;
+    }
+
+    #[test]
+    fn should_be_a_noop_when_pressing_enter_during_an_in_flight_open() {
+        // given an in-flight open marker
+        let mut app = build_app();
+        app.forge_repository = Some(ForgeRepository::github("github.com", "agavra", "tuicr"));
+        app.pr_tab = loaded_pr_tab(vec![sample_pr(7, "ctx"), sample_pr(8, "next")]);
+        app.target_tab = TargetTab::PullRequests;
+        app.pr_open_state = Some(crate::app::PrOpenRequest {
+            repository: ForgeRepository::github("github.com", "agavra", "tuicr"),
+            pr_number: 7,
+            started_at: std::time::Instant::now(),
+        });
+        // (no pr_open_rx is fine — the function never touches it on this path)
+        // when — Enter on a different row
+        if let crate::forge::selector::PullRequestsTab::Loaded { cursor, .. } = &mut app.pr_tab {
+            *cursor = 1;
+        }
+        let handled = app.pr_tab_select();
+        // then — handled but state unchanged (no new spawn for #8)
+        assert!(handled);
+        let state = app.pr_open_state.as_ref().unwrap();
+        assert_eq!(state.pr_number, 7);
+    }
+
+    #[test]
+    fn should_clear_pr_open_state_on_cancel() {
+        // given
+        let mut app = build_app();
+        app.pr_open_state = Some(crate::app::PrOpenRequest {
+            repository: ForgeRepository::github("github.com", "agavra", "tuicr"),
+            pr_number: 11,
+            started_at: std::time::Instant::now(),
+        });
+        // when
+        let cancelled = app.cancel_pr_open();
+        // then
+        assert!(cancelled);
+        assert!(app.pr_open_state.is_none());
+        assert!(app.pr_open_rx.is_none());
+    }
+
+    #[test]
+    fn should_return_false_when_cancelling_with_no_in_flight_open() {
+        // given
+        let mut app = build_app();
+        // when
+        let cancelled = app.cancel_pr_open();
+        // then
+        assert!(!cancelled);
+    }
+
+    #[test]
+    fn should_surface_pr_open_error_to_message_bar_when_done_event_carries_error() {
+        // given an app waiting on a synthetic open
+        let mut app = build_app();
+        app.forge_repository = Some(ForgeRepository::github("github.com", "agavra", "tuicr"));
+        app.pr_tab = loaded_pr_tab(vec![sample_pr(42, "boom")]);
+        app.target_tab = TargetTab::PullRequests;
+        let request = crate::app::PrOpenRequest {
+            repository: ForgeRepository::github("github.com", "agavra", "tuicr"),
+            pr_number: 42,
+            started_at: std::time::Instant::now(),
+        };
+        app.pr_open_state = Some(request.clone());
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.pr_open_rx = Some(rx);
+        tx.send(crate::app::PrOpenEvent::Done {
+            request,
+            result: Err("auth failed".to_string()),
+        })
+        .unwrap();
+        // when
+        app.poll_pr_open_events();
+        // then — open state cleared, error surfaced to message bar, PR
+        // list is intact so the user can retry / pick a different PR
+        assert!(app.pr_open_state.is_none());
+        assert!(app.pr_open_rx.is_none());
+        assert!(matches!(app.pr_tab, PullRequestsTab::Loaded { .. }));
+        let msg = app
+            .message
+            .as_ref()
+            .expect("expected an error message on the bar");
+        assert!(matches!(msg.message_type, MessageType::Error));
+        assert!(msg.content.contains("auth failed"), "got {msg:?}");
+    }
+
+    #[test]
+    fn should_ignore_stale_done_event_after_cancel() {
+        // given an open was cancelled but the thread's send arrived anyway
+        let mut app = build_app();
+        app.forge_repository = Some(ForgeRepository::github("github.com", "agavra", "tuicr"));
+        app.pr_tab = loaded_pr_tab(vec![sample_pr(42, "boom")]);
+        app.target_tab = TargetTab::PullRequests;
+        let stale_request = crate::app::PrOpenRequest {
+            repository: ForgeRepository::github("github.com", "agavra", "tuicr"),
+            pr_number: 42,
+            started_at: std::time::Instant::now(),
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.pr_open_rx = Some(rx);
+        // pr_open_state is None — the user already cancelled.
+        tx.send(crate::app::PrOpenEvent::Done {
+            request: stale_request,
+            result: Err("would-have-failed".to_string()),
+        })
+        .unwrap();
+        // when
+        app.poll_pr_open_events();
+        // then — the stale error does not produce a user-visible message
+        assert!(matches!(app.pr_tab, PullRequestsTab::Loaded { .. }));
+        assert!(
+            app.message.is_none()
+                || !app
+                    .message
+                    .as_ref()
+                    .unwrap()
+                    .content
+                    .contains("would-have-failed")
+        );
+    }
+
+    #[test]
+    fn should_cancel_in_flight_open_when_pressing_esc_in_selector() {
+        // given
+        let mut app = build_app();
+        app.forge_repository = Some(ForgeRepository::github("github.com", "agavra", "tuicr"));
+        app.pr_tab = loaded_pr_tab(vec![sample_pr(99, "x")]);
+        app.target_tab = TargetTab::PullRequests;
+        app.pr_open_state = Some(crate::app::PrOpenRequest {
+            repository: ForgeRepository::github("github.com", "agavra", "tuicr"),
+            pr_number: 99,
+            started_at: std::time::Instant::now(),
+        });
+        // when
+        crate::handler::handle_commit_select_action(&mut app, crate::input::Action::ExitMode);
+        // then
+        assert!(app.pr_open_state.is_none());
     }
 }
 
