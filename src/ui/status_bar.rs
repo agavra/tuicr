@@ -273,37 +273,33 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             Span::raw("")
         };
 
-        // Spinner banner while `:e` is mid-flight: the network half of
-        // the reload runs on a background thread so the user can keep
-        // scrolling, but we want a visible cue that it's working.
-        // Styled like an info message (fg + bg + bold) so it's not
-        // mistaken for static muted footer hints.
-        let reload_spinner = if let Some(reload) = app.pr_reload_state.as_ref() {
-            let glyph = crate::ui::selector::pr_open_spinner_glyph(reload.started_at.elapsed());
+        vec![mode_span, hints_span, dirty_indicator, remote_loading]
+    };
+
+    // Right-aligned slot: while `:e` is in flight we put the spinner
+    // there instead of any pending message, mirroring how messages are
+    // placed. The user sees one prominent right-aligned indicator at a
+    // time. After the reload lands, the success message takes the slot
+    // back.
+    let (right_span, right_width) = if let Some(reload) = app.pr_reload_state.as_ref() {
+        let glyph = crate::ui::selector::pr_open_spinner_glyph(reload.started_at.elapsed());
+        let content = format!(" {glyph} Reloading PR… ");
+        let width = content.len();
+        (
             Span::styled(
-                format!(" {glyph} Reloading PR… "),
+                content,
                 Style::default()
                     .fg(theme.message_info_fg)
                     .bg(theme.message_info_bg)
                     .add_modifier(Modifier::BOLD),
-            )
-        } else {
-            Span::raw("")
-        };
-
-        vec![
-            mode_span,
-            hints_span,
-            dirty_indicator,
-            remote_loading,
-            reload_spinner,
-        ]
+            ),
+            width,
+        )
+    } else {
+        build_message_span(app.message.as_ref(), theme)
     };
-
-    // Build message span and create right-aligned layout
-    let (message_span, message_width) = build_message_span(app.message.as_ref(), theme);
     let total_width = area.width as usize;
-    let spans = build_right_aligned_spans(left_spans, message_span, message_width, total_width);
+    let spans = build_right_aligned_spans(left_spans, right_span, right_width, total_width);
 
     let line = Line::from(spans);
 
