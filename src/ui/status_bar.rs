@@ -113,6 +113,19 @@ pub fn render_header(frame: &mut Frame, app: &App, area: Rect) {
             if let Some(state) = pr.read_only_reason() {
                 info.push_str(&format!("[{state} — read only] "));
             }
+            // Surface a strict-subset selection so the user can see at a
+            // glance that the diff is scoped to a narrower commit range
+            // than the full PR. Single-commit PRs (no selector) and
+            // full-range selection get no label.
+            let total = app.pr_commits.len();
+            if total > 1
+                && let Some((start, end)) = app.commit_selection_range
+            {
+                let selected = end - start + 1;
+                if selected < total {
+                    info.push_str(&format!("[{selected} of {total} commits] "));
+                }
+            }
             info
         }
     };
@@ -280,10 +293,25 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     // there instead of any pending message, mirroring how messages are
     // placed. The user sees one prominent right-aligned indicator at a
     // time. After the reload lands, the success message takes the slot
-    // back.
+    // back. A range re-fetch (toggling commit selection in PR mode) takes
+    // the same slot but with its own label.
     let (right_span, right_width) = if let Some(reload) = app.pr_reload_state.as_ref() {
         let glyph = crate::ui::selector::pr_open_spinner_glyph(reload.started_at.elapsed());
         let content = format!(" {glyph} Reloading PR… ");
+        let width = content.len();
+        (
+            Span::styled(
+                content,
+                Style::default()
+                    .fg(theme.message_info_fg)
+                    .bg(theme.message_info_bg)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            width,
+        )
+    } else if let Some(range) = app.pr_range_reload_state.as_ref() {
+        let glyph = crate::ui::selector::pr_open_spinner_glyph(range.started_at.elapsed());
+        let content = format!(" {glyph} Loading range diff… ");
         let width = content.len();
         (
             Span::styled(
@@ -512,5 +540,62 @@ mod pr_header_snapshot_tests {
         // then
         let line = row_text(&buffer, 0);
         assert!(!line.contains("read only"), "got: {line:?}");
+    }
+
+    fn fake_pr_commit(oid: &str, summary: &str) -> crate::forge::traits::PullRequestCommit {
+        crate::forge::traits::PullRequestCommit {
+            oid: oid.to_string(),
+            short_oid: oid[..7.min(oid.len())].to_string(),
+            summary: summary.to_string(),
+            author: "Alice".to_string(),
+            timestamp: None,
+        }
+    }
+
+    #[test]
+    fn should_render_n_of_m_commits_when_subset_selected() {
+        // given a 3-commit PR with the middle commit selected
+        let mut app = build_pr_app(pr_source(false, false));
+        app.pr_commits = vec![
+            fake_pr_commit("aaaaaaa1", "third"),
+            fake_pr_commit("bbbbbbb2", "second"),
+            fake_pr_commit("ccccccc3", "first"),
+        ];
+        app.commit_selection_range = Some((1, 1));
+        // when
+        let buffer = draw_header(&app);
+        // then
+        let line = row_text(&buffer, 0);
+        assert!(line.contains("1 of 3 commits"), "got: {line:?}");
+    }
+
+    #[test]
+    fn should_omit_commits_label_when_full_range_selected() {
+        // given a 3-commit PR with all commits selected
+        let mut app = build_pr_app(pr_source(false, false));
+        app.pr_commits = vec![
+            fake_pr_commit("a", "third"),
+            fake_pr_commit("b", "second"),
+            fake_pr_commit("c", "first"),
+        ];
+        app.commit_selection_range = Some((0, 2));
+        // when
+        let buffer = draw_header(&app);
+        // then
+        let line = row_text(&buffer, 0);
+        assert!(!line.contains("commits]"), "got: {line:?}");
+    }
+
+    #[test]
+    fn should_omit_commits_label_for_single_commit_pr() {
+        // given a single-commit PR — the selector is hidden, no label.
+        let mut app = build_pr_app(pr_source(false, false));
+        app.pr_commits = vec![fake_pr_commit("a", "only commit")];
+        app.commit_selection_range = Some((0, 0));
+        // when
+        let buffer = draw_header(&app);
+        // then
+        let line = row_text(&buffer, 0);
+        assert!(!line.contains("of"), "got: {line:?}");
     }
 }

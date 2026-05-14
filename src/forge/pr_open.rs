@@ -15,7 +15,9 @@
 use std::path::{Path, PathBuf};
 
 use crate::error::{Result, TuicrError};
-use crate::forge::traits::{ForgeBackend, PrSessionKey, PullRequestDetails, PullRequestTarget};
+use crate::forge::traits::{
+    ForgeBackend, PrSessionKey, PullRequestCommit, PullRequestDetails, PullRequestTarget,
+};
 use crate::model::{DiffFile, FileStatus, ReviewSession, SessionDiffSource};
 use crate::syntax::SyntaxHighlighter;
 use crate::tuicrignore;
@@ -28,6 +30,10 @@ pub struct OpenedPullRequest {
     pub diff_files: Vec<DiffFile>,
     pub session: ReviewSession,
     pub key: PrSessionKey,
+    /// PR commits in newest-first display order. Empty when the forge
+    /// returned no commits (or the backend failed and we degraded
+    /// gracefully — the cumulative diff stays usable).
+    pub commits: Vec<PullRequestCommit>,
 }
 
 /// Open a PR target through a forge backend and prepare review state.
@@ -41,20 +47,27 @@ pub fn open_pull_request(
     local_checkout: Option<&Path>,
     highlighter: &SyntaxHighlighter,
 ) -> Result<OpenedPullRequest> {
-    let (details, patch) = fetch_pr_data(backend, target)?;
-    prepare_open_pr(details, &patch, local_checkout, highlighter)
+    let (details, patch, commits) = fetch_pr_data(backend, target)?;
+    prepare_open_pr(details, &patch, commits, local_checkout, highlighter)
 }
 
-/// Network-only half of the PR open path: fetch PR metadata and the raw
-/// patch text. Safe to run on a background thread because it does no
-/// syntax parsing and holds nothing that isn't `Send`.
+/// Network-only half of the PR open path: fetch PR metadata, the raw
+/// patch text, and the commit list. Safe to run on a background thread
+/// because it does no syntax parsing and holds nothing that isn't `Send`.
+///
+/// The commit list is best-effort: if the forge fails on that endpoint
+/// only, we still return the diff so PR review proceeds without the
+/// inline selector. The first two calls remain required.
 pub fn fetch_pr_data(
     backend: &dyn ForgeBackend,
     target: PullRequestTarget,
-) -> Result<(PullRequestDetails, String)> {
+) -> Result<(PullRequestDetails, String, Vec<PullRequestCommit>)> {
     let details = backend.get_pull_request(target)?;
     let patch = backend.get_pull_request_diff(&details)?;
-    Ok((details, patch))
+    let commits = backend
+        .list_pull_request_commits(&details)
+        .unwrap_or_default();
+    Ok((details, patch, commits))
 }
 
 /// CPU-only half of the PR open path: parse the patch, apply
@@ -63,6 +76,7 @@ pub fn fetch_pr_data(
 pub fn prepare_open_pr(
     details: PullRequestDetails,
     patch: &str,
+    commits: Vec<PullRequestCommit>,
     local_checkout: Option<&Path>,
     highlighter: &SyntaxHighlighter,
 ) -> Result<OpenedPullRequest> {
@@ -84,12 +98,17 @@ pub fn prepare_open_pr(
 
     let key = PrSessionKey::from_details(&details);
     let session = build_session(&details, &key, &diff_files);
+    // Forge returns commits oldest-first; the inline selector renders
+    // newest-first so reverse here once.
+    let mut commits = commits;
+    commits.reverse();
 
     Ok(OpenedPullRequest {
         details,
         diff_files,
         session,
         key,
+        commits,
     })
 }
 
@@ -190,6 +209,20 @@ mod tests {
             _pr: &PullRequestDetails,
         ) -> Result<Vec<crate::forge::remote_comments::RemoteReviewThread>> {
             Ok(Vec::new())
+        }
+        fn list_pull_request_commits(
+            &self,
+            _pr: &PullRequestDetails,
+        ) -> Result<Vec<crate::forge::traits::PullRequestCommit>> {
+            Ok(Vec::new())
+        }
+        fn get_pull_request_commit_range_diff(
+            &self,
+            _pr: &PullRequestDetails,
+            _start_sha: &str,
+            _end_sha: &str,
+        ) -> Result<String> {
+            Ok(self.patch.clone())
         }
     }
 

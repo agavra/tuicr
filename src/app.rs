@@ -304,6 +304,23 @@ pub fn annotation_side_default(annotation: &AnnotatedLine) -> LineSide {
     }
 }
 
+/// Map a forge-side `PullRequestCommit` into the VCS-shaped `CommitInfo`
+/// the inline commit selector renders against. We keep two arrays — the
+/// forge truth in `App::pr_commits` and the rendered form in
+/// `App::review_commits` — so the selector renderer stays agnostic of
+/// whether the source is local or remote.
+pub fn pr_commit_to_commit_info(commit: &crate::forge::traits::PullRequestCommit) -> CommitInfo {
+    CommitInfo {
+        id: commit.oid.clone(),
+        short_id: commit.short_oid.clone(),
+        branch_name: None,
+        summary: commit.summary.clone(),
+        body: None,
+        author: commit.author.clone(),
+        time: commit.timestamp.unwrap_or_else(chrono::Utc::now),
+    }
+}
+
 pub fn annotation_file_idx(annotation: &AnnotatedLine) -> Option<usize> {
     match annotation {
         AnnotatedLine::FileHeader { file_idx }
@@ -501,7 +518,14 @@ pub enum PrOpenEvent {
         /// Network-only outcome. Parsing + session build runs on the main
         /// thread after this lands so `SyntaxHighlighter` does not need to
         /// cross thread boundaries.
-        result: std::result::Result<(crate::forge::traits::PullRequestDetails, String), String>,
+        result: std::result::Result<
+            (
+                crate::forge::traits::PullRequestDetails,
+                String,
+                Vec<crate::forge::traits::PullRequestCommit>,
+            ),
+            String,
+        >,
     },
 }
 
@@ -533,7 +557,38 @@ pub struct PrReloadRequest {
 pub enum PrReloadEvent {
     Done {
         request: PrReloadRequest,
-        result: std::result::Result<(crate::forge::traits::PullRequestDetails, String), String>,
+        result: std::result::Result<
+            (
+                crate::forge::traits::PullRequestDetails,
+                String,
+                Vec<crate::forge::traits::PullRequestCommit>,
+            ),
+            String,
+        >,
+    },
+}
+
+/// In-flight commit-range re-fetch (PR mode). Drives a status-bar spinner
+/// and carries the cursor anchor we want to restore once the range diff
+/// lands.
+#[derive(Debug, Clone)]
+pub struct PrRangeReloadRequest {
+    pub repository: crate::forge::traits::ForgeRepository,
+    pub pr_number: u64,
+    pub head_sha: String,
+    pub start_sha: String,
+    pub end_sha: String,
+    pub range: (usize, usize),
+    pub started_at: Instant,
+    pub anchor: Option<PrCursorAnchor>,
+}
+
+/// Result delivered from the PR range re-fetch background thread.
+#[derive(Debug)]
+pub enum PrRangeReloadEvent {
+    Done {
+        request: PrRangeReloadRequest,
+        result: std::result::Result<String, String>,
     },
 }
 
@@ -719,6 +774,15 @@ pub struct App {
     // Inline commit selector state (shown at top of diff view for multi-commit reviews)
     /// CommitInfo for commits in the current review (display order: newest first)
     pub review_commits: Vec<CommitInfo>,
+    /// Forge-side commit list for the active PR (display order: newest first).
+    /// Empty outside PR mode. Used as the source of truth for resolving a
+    /// `commit_selection_range` back to (start_sha, end_sha) when toggling.
+    pub pr_commits: Vec<crate::forge::traits::PullRequestCommit>,
+    /// In-flight range re-fetch driven by toggling commits in the inline
+    /// selector while in PR mode. Drives a spinner in the status bar.
+    pub pr_range_reload_state: Option<PrRangeReloadRequest>,
+    /// Background-thread channel for the active range re-fetch.
+    pub pr_range_reload_rx: Option<std::sync::mpsc::Receiver<PrRangeReloadEvent>>,
     /// Whether the inline commit selector panel is visible
     pub show_commit_selector: bool,
     /// Cached individual/subrange diffs keyed by (start_idx, end_idx) into review_commits
@@ -1265,6 +1329,9 @@ impl App {
             update_info: None,
             pending_count: None,
             review_commits: Vec::new(),
+            pr_commits: Vec::new(),
+            pr_range_reload_state: None,
+            pr_range_reload_rx: None,
             show_commit_selector: false,
             commit_diff_cache: HashMap::new(),
             range_diff_files: None,
@@ -1669,6 +1736,7 @@ impl App {
             diff_files,
             session,
             key,
+            commits,
         } = opened;
 
         // Save the current session before transitioning so local-mode work
@@ -1702,10 +1770,40 @@ impl App {
         self.commit_list.clear();
         self.commit_selection_range = None;
         self.review_commits.clear();
+        self.pr_commits.clear();
         self.show_commit_selector = false;
         self.range_diff_files = None;
         self.saved_inline_selection = None;
         self.diff_state = DiffState::default();
+
+        // PR mode populates the inline selector with the PR's commits when
+        // there are at least two. Single-commit PRs hide the selector to
+        // match the local-mode UX. We mirror `commit_list` and
+        // `review_commits` into shared App state so the existing
+        // inline_commit_selector renderer Just Works.
+        if commits.len() > 1 {
+            self.pr_commits = commits.clone();
+            let mapped: Vec<CommitInfo> = commits.iter().map(pr_commit_to_commit_info).collect();
+            self.range_diff_files = Some(self.diff_files.clone());
+            self.commit_list = mapped.clone();
+            self.commit_list_cursor = 0;
+            self.commit_list_scroll_offset = 0;
+            self.visible_commit_count = mapped.len();
+            self.has_more_commit = false;
+            self.show_commit_selector = true;
+            let mut range = (0, mapped.len() - 1);
+            // Restore any persisted range scoped to this head SHA. If the
+            // restored range exceeds the current commit count (e.g., the PR
+            // was rebased), fall back to "all".
+            if let Some(persisted) = self.session.commit_selection_range
+                && persisted.1 < mapped.len()
+                && persisted.0 <= persisted.1
+            {
+                range = persisted;
+            }
+            self.commit_selection_range = Some(range);
+            self.review_commits = mapped;
+        }
 
         // Ensure session has all files registered after the swap.
         for file in &self.diff_files {
@@ -1719,6 +1817,16 @@ impl App {
 
         if let Some(reason) = read_only_reason {
             self.set_warning(format!("This PR is {reason} — review is read-only"));
+        }
+
+        // If the restored selection is a strict subset, fire an initial
+        // range re-fetch so the diff matches the persisted scope.
+        if matches!(&self.diff_source, DiffSource::PullRequest(_))
+            && let Some(range) = self.commit_selection_range
+            && !self.pr_commits.is_empty()
+            && (range.0 > 0 || range.1 + 1 < self.pr_commits.len())
+        {
+            self.spawn_pr_range_reload();
         }
 
         Ok(())
@@ -1817,6 +1925,255 @@ impl App {
         self.move_cursor_to_annotation(target);
     }
 
+    /// Persist the active inline selection on the session (PR mode only).
+    /// `None` is written when the range covers all commits so re-open
+    /// doesn't trigger an unnecessary subset re-fetch.
+    pub fn persist_pr_commit_selection_range(&mut self) {
+        if !matches!(self.diff_source, DiffSource::PullRequest(_)) {
+            return;
+        }
+        let total = self.pr_commits.len();
+        let value = match self.commit_selection_range {
+            Some((s, e)) if total > 0 && (s > 0 || e + 1 < total) => Some((s, e)),
+            _ => None,
+        };
+        self.session.commit_selection_range = value;
+        self.session.updated_at = chrono::Utc::now();
+        let _ = crate::persistence::save_session(&self.session);
+    }
+
+    /// Resolve the active inline selection (PR mode) to (start_sha,
+    /// end_sha). `start_sha` is the parent of the *oldest* selected
+    /// commit; `end_sha` is the *newest*. Because `pr_commits` is stored
+    /// newest-first, the oldest selected commit is at `range.1` and the
+    /// newest at `range.0`.
+    ///
+    /// Returns `None` outside PR mode, when the selection is empty, or
+    /// when the resolved parent isn't available — in that case the
+    /// caller falls back to the cached cumulative PR diff.
+    pub fn pr_range_sha_pair(&self) -> Option<(String, String)> {
+        let DiffSource::PullRequest(ref pr) = self.diff_source else {
+            return None;
+        };
+        let (start_idx, end_idx) = self.commit_selection_range?;
+        if self.pr_commits.is_empty() || start_idx > end_idx || end_idx >= self.pr_commits.len() {
+            return None;
+        }
+        // Newest-first: `end_idx` is the oldest, `start_idx` is the newest.
+        let newest = self.pr_commits.get(start_idx)?;
+        // Parent of the oldest selected commit. If the oldest selected commit
+        // is the PR's first commit (oldest commit overall, at the bottom of
+        // the list), its parent is the PR's base SHA.
+        let parent_sha = if end_idx + 1 < self.pr_commits.len() {
+            self.pr_commits[end_idx + 1].oid.clone()
+        } else {
+            pr.base_sha.clone()
+        };
+        Some((parent_sha, newest.oid.clone()))
+    }
+
+    /// Reload the PR diff for the currently selected inline commit
+    /// subrange. Uses the cached cumulative diff when the selection
+    /// covers all commits; spawns a background `compare` fetch otherwise.
+    pub fn reload_pr_inline_selection(&mut self) {
+        // No-op outside PR mode.
+        if !matches!(self.diff_source, DiffSource::PullRequest(_)) {
+            return;
+        }
+        let Some(range) = self.commit_selection_range else {
+            return;
+        };
+        let total = self.pr_commits.len();
+        if total == 0 {
+            return;
+        }
+
+        // Full-range selection: restore the cached cumulative diff
+        // without hitting the network.
+        if range.0 == 0 && range.1 + 1 == total {
+            self.apply_cached_full_pr_diff();
+            return;
+        }
+
+        // Strict subset → range re-fetch on a background thread.
+        self.spawn_pr_range_reload();
+    }
+
+    /// Restore the cached cumulative PR diff into the diff view. Used when
+    /// the user toggles the selector back to "all commits".
+    fn apply_cached_full_pr_diff(&mut self) {
+        let Some(files) = self.range_diff_files.clone() else {
+            return;
+        };
+        let anchor = self.capture_pr_cursor_anchor();
+        self.diff_files = files;
+        self.clear_expanded_gaps();
+        for file in &self.diff_files {
+            let path = file.display_path().clone();
+            self.session.add_file(path, file.status, file.content_hash);
+        }
+        self.sort_files_by_directory(true);
+        self.expand_all_dirs();
+        self.rebuild_annotations();
+        if let Some(anchor) = anchor {
+            self.restore_pr_cursor_to_anchor(&anchor);
+        }
+    }
+
+    /// Kick off a background fetch of `compare/<start>...<end>` and apply
+    /// it on the main thread. Cancels any in-flight range reload (a fresh
+    /// toggle invalidates the previous request).
+    pub fn spawn_pr_range_reload(&mut self) {
+        let DiffSource::PullRequest(current) = self.diff_source.clone() else {
+            return;
+        };
+        let Some((start_sha, end_sha)) = self.pr_range_sha_pair() else {
+            return;
+        };
+        let Some(range) = self.commit_selection_range else {
+            return;
+        };
+
+        let anchor = self.capture_pr_cursor_anchor();
+        let request = PrRangeReloadRequest {
+            repository: current.key.repository.clone(),
+            pr_number: current.key.number,
+            head_sha: current.key.head_sha.clone(),
+            start_sha: start_sha.clone(),
+            end_sha: end_sha.clone(),
+            range,
+            started_at: Instant::now(),
+            anchor,
+        };
+        // A fresh toggle supersedes any in-flight fetch.
+        self.pr_range_reload_state = Some(request.clone());
+
+        let local_checkout = self
+            .forge_backend
+            .as_deref()
+            .and_then(|backend| backend.local_checkout_path());
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.pr_range_reload_rx = Some(rx);
+
+        let repository = current.key.repository.clone();
+        let pr_number = current.key.number;
+        let head_sha = current.key.head_sha.clone();
+        let base_sha = current.base_sha.clone();
+        std::thread::spawn(move || {
+            use crate::forge::github::gh::GitHubGhBackend;
+
+            let backend =
+                GitHubGhBackend::new(Some(repository.clone())).with_local_checkout(local_checkout);
+            let details = crate::forge::traits::PullRequestDetails {
+                repository,
+                number: pr_number,
+                title: String::new(),
+                url: String::new(),
+                state: "OPEN".to_string(),
+                is_draft: false,
+                author: None,
+                head_ref_name: String::new(),
+                base_ref_name: String::new(),
+                head_sha,
+                base_sha,
+                body: String::new(),
+                updated_at: None,
+                closed: false,
+                merged_at: None,
+            };
+            let outcome = backend
+                .get_pull_request_commit_range_diff(&details, &start_sha, &end_sha)
+                .map_err(|e| e.to_string());
+            let _ = tx.send(PrRangeReloadEvent::Done {
+                request,
+                result: outcome,
+            });
+        });
+    }
+
+    /// Pump any pending range-reload result, parse on the main thread, and
+    /// apply. Stale results (the user toggled again, or left PR mode) are
+    /// silently dropped.
+    pub fn poll_pr_range_reload_events(&mut self) {
+        let Some(rx) = self.pr_range_reload_rx.as_ref() else {
+            return;
+        };
+        let event = match rx.try_recv() {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+        self.pr_range_reload_rx = None;
+
+        let PrRangeReloadEvent::Done { request, result } = event;
+        let in_flight = self.pr_range_reload_state.clone();
+        // Only apply if this result still matches the active in-flight
+        // request — toggling again, switching PRs, or reloading the head
+        // before this lands invalidates it.
+        let still_active = in_flight.as_ref().is_some_and(|s| {
+            s.start_sha == request.start_sha
+                && s.end_sha == request.end_sha
+                && s.repository == request.repository
+                && s.pr_number == request.pr_number
+                && s.head_sha == request.head_sha
+                && s.range == request.range
+        });
+        if !still_active {
+            return;
+        }
+        self.pr_range_reload_state = None;
+
+        match result {
+            Ok(patch) => {
+                if let Err(e) = self.finish_pr_range_reload(&request, &patch) {
+                    self.set_error(format!("Range diff failed: {e}"));
+                }
+            }
+            Err(e) => {
+                self.set_error(format!("Range diff failed: {e}"));
+            }
+        }
+    }
+
+    fn finish_pr_range_reload(
+        &mut self,
+        request: &PrRangeReloadRequest,
+        patch: &str,
+    ) -> Result<()> {
+        use crate::vcs::diff_parser::{DiffFormat, parse_unified_diff};
+
+        let highlighter = self.theme.syntax_highlighter();
+        let parsed = match parse_unified_diff(patch, DiffFormat::GitStyle, highlighter) {
+            Ok(files) => files,
+            Err(TuicrError::NoChanges) => Vec::new(),
+            Err(e) => return Err(e),
+        };
+
+        let local_checkout = self
+            .forge_backend
+            .as_deref()
+            .and_then(|b| b.local_checkout_path());
+        let files = match local_checkout.as_deref() {
+            Some(root) => crate::tuicrignore::filter_diff_files(root, parsed),
+            None => parsed,
+        };
+
+        self.diff_files = files;
+        self.clear_expanded_gaps();
+        for file in &self.diff_files {
+            let path = file.display_path().clone();
+            self.session.add_file(path, file.status, file.content_hash);
+        }
+        self.sort_files_by_directory(true);
+        self.expand_all_dirs();
+        self.rebuild_annotations();
+
+        if let Some(anchor) = &request.anchor {
+            self.restore_pr_cursor_to_anchor(anchor);
+        }
+        Ok(())
+    }
+
     /// Kick off `:e` asynchronously. Captures the cursor anchor, sets
     /// the reload state for the spinner, and spawns the network fetch
     /// on a background thread. Returns immediately. The result is
@@ -1890,8 +2247,8 @@ impl App {
             return;
         }
         match result {
-            Ok((details, patch)) => {
-                if let Err(e) = self.finish_pr_reload(details, patch, &request) {
+            Ok((details, patch, commits)) => {
+                if let Err(e) = self.finish_pr_reload(details, patch, commits, &request) {
                     self.set_error(format!("Reload failed: {e}"));
                 }
             }
@@ -1905,6 +2262,7 @@ impl App {
         &mut self,
         details: crate::forge::traits::PullRequestDetails,
         patch: String,
+        commits: Vec<crate::forge::traits::PullRequestCommit>,
         request: &PrReloadRequest,
     ) -> Result<()> {
         use crate::forge::github::gh::GitHubGhBackend;
@@ -1915,7 +2273,13 @@ impl App {
             .as_deref()
             .and_then(|backend| backend.local_checkout_path());
         let highlighter = self.theme.syntax_highlighter();
-        let mut opened = prepare_open_pr(details, &patch, local_checkout.as_deref(), highlighter)?;
+        let mut opened = prepare_open_pr(
+            details,
+            &patch,
+            commits,
+            local_checkout.as_deref(),
+            highlighter,
+        )?;
 
         let head_changed = opened.details.head_sha != request.head_sha;
         if head_changed {
@@ -4723,8 +5087,8 @@ impl App {
                     return;
                 }
                 match result {
-                    Ok((details, patch)) => {
-                        if let Err(e) = self.finish_pr_open(details, patch, &request) {
+                    Ok((details, patch, commits)) => {
+                        if let Err(e) = self.finish_pr_open(details, patch, commits, &request) {
                             self.set_error(format!(
                                 "Failed to open PR #{}: {}",
                                 request.pr_number, e
@@ -4747,6 +5111,7 @@ impl App {
         &mut self,
         details: crate::forge::traits::PullRequestDetails,
         patch: String,
+        commits: Vec<crate::forge::traits::PullRequestCommit>,
         request: &PrOpenRequest,
     ) -> Result<()> {
         use crate::forge::github::gh::GitHubGhBackend;
@@ -4757,6 +5122,7 @@ impl App {
         let mut opened = prepare_open_pr(
             details.clone(),
             &patch,
+            commits,
             local_checkout.as_deref(),
             highlighter,
         )?;
@@ -6851,6 +7217,8 @@ mod target_selector_tests {
     struct FakeForgeBackend {
         details: crate::forge::traits::PullRequestDetails,
         patch: String,
+        commits: Vec<crate::forge::traits::PullRequestCommit>,
+        range_patch: Option<String>,
     }
 
     impl FakeForgeBackend {
@@ -6858,7 +7226,12 @@ mod target_selector_tests {
             details: crate::forge::traits::PullRequestDetails,
             patch: String,
         ) -> Self {
-            Self { details, patch }
+            Self {
+                details,
+                patch,
+                commits: Vec::new(),
+                range_patch: None,
+            }
         }
     }
 
@@ -6892,6 +7265,23 @@ mod target_selector_tests {
             _pr: &crate::forge::traits::PullRequestDetails,
         ) -> Result<Vec<crate::forge::remote_comments::RemoteReviewThread>> {
             Ok(Vec::new())
+        }
+        fn list_pull_request_commits(
+            &self,
+            _pr: &crate::forge::traits::PullRequestDetails,
+        ) -> Result<Vec<crate::forge::traits::PullRequestCommit>> {
+            Ok(self.commits.clone())
+        }
+        fn get_pull_request_commit_range_diff(
+            &self,
+            _pr: &crate::forge::traits::PullRequestDetails,
+            _start_sha: &str,
+            _end_sha: &str,
+        ) -> Result<String> {
+            Ok(self
+                .range_patch
+                .clone()
+                .unwrap_or_else(|| self.patch.clone()))
         }
     }
 
@@ -7039,6 +7429,131 @@ mod target_selector_tests {
         assert_eq!(app.diff_files.len(), 1);
         // and the forge backend is wired for context expansion / submit
         assert!(app.forge_backend.is_some());
+    }
+
+    fn sample_pr_commit(oid: &str, summary: &str) -> crate::forge::traits::PullRequestCommit {
+        crate::forge::traits::PullRequestCommit {
+            oid: oid.to_string(),
+            short_oid: oid.chars().take(7).collect(),
+            summary: summary.to_string(),
+            author: "Alice".to_string(),
+            timestamp: None,
+        }
+    }
+
+    #[test]
+    fn should_populate_inline_selector_when_pr_has_multiple_commits() {
+        // given a PR open path where the forge returns 3 commits
+        let mut app = build_app();
+        app.forge_repository = Some(ForgeRepository::github("github.com", "agavra", "tuicr"));
+        app.pr_tab = PullRequestsTab::new(app.forge_repository.clone());
+        app.pr_tab.start_initial_load();
+        let summary = sample_pr(42, "multi-commit");
+        app.pr_tab
+            .apply_initial_load(Ok((vec![summary.clone()], false)));
+        let mut backend = FakeForgeBackend::open_pr_details(
+            test_pr_details(42, "multi-commit"),
+            crate::forge::github::gh::tests_fixture::SIMPLE_PATCH.to_string(),
+        );
+        // Forge returns oldest-first; pr_open reverses to newest-first.
+        backend.commits = vec![
+            sample_pr_commit("aaaaaaa1111", "first"),
+            sample_pr_commit("bbbbbbb2222", "second"),
+            sample_pr_commit("ccccccc3333", "third"),
+        ];
+        // when
+        app.open_pr_with_backend(&summary, Box::new(backend), None)
+            .unwrap();
+        // then — selector is visible and pr_commits is in newest-first order.
+        assert!(app.show_commit_selector, "selector should be visible");
+        assert_eq!(app.pr_commits.len(), 3);
+        assert_eq!(app.pr_commits[0].summary, "third");
+        assert_eq!(app.review_commits.len(), 3);
+        // and — default selection covers all commits.
+        assert_eq!(app.commit_selection_range, Some((0, 2)));
+    }
+
+    #[test]
+    fn should_hide_inline_selector_for_single_commit_pr() {
+        // given a PR with exactly one commit
+        let mut app = build_app();
+        app.forge_repository = Some(ForgeRepository::github("github.com", "agavra", "tuicr"));
+        app.pr_tab = PullRequestsTab::new(app.forge_repository.clone());
+        app.pr_tab.start_initial_load();
+        let summary = sample_pr(42, "solo");
+        app.pr_tab
+            .apply_initial_load(Ok((vec![summary.clone()], false)));
+        let mut backend = FakeForgeBackend::open_pr_details(
+            test_pr_details(42, "solo"),
+            crate::forge::github::gh::tests_fixture::SIMPLE_PATCH.to_string(),
+        );
+        backend.commits = vec![sample_pr_commit("aaaaaaa1111", "only")];
+        // when
+        app.open_pr_with_backend(&summary, Box::new(backend), None)
+            .unwrap();
+        // then
+        assert!(!app.show_commit_selector);
+        assert!(app.commit_list.is_empty());
+        assert_eq!(app.commit_selection_range, None);
+    }
+
+    #[test]
+    fn should_resolve_pr_range_to_parent_sha_and_head_sha() {
+        // given a multi-commit PR open with the middle commit selected
+        let mut app = build_app();
+        app.forge_repository = Some(ForgeRepository::github("github.com", "agavra", "tuicr"));
+        app.pr_tab = PullRequestsTab::new(app.forge_repository.clone());
+        app.pr_tab.start_initial_load();
+        let summary = sample_pr(42, "ranges");
+        app.pr_tab
+            .apply_initial_load(Ok((vec![summary.clone()], false)));
+        let mut backend = FakeForgeBackend::open_pr_details(
+            test_pr_details(42, "ranges"),
+            crate::forge::github::gh::tests_fixture::SIMPLE_PATCH.to_string(),
+        );
+        backend.commits = vec![
+            sample_pr_commit("first11", "first"),
+            sample_pr_commit("middle2", "middle"),
+            sample_pr_commit("last333", "last"),
+        ];
+        app.open_pr_with_backend(&summary, Box::new(backend), None)
+            .unwrap();
+        // After open: pr_commits = [last, middle, first] (newest-first).
+        // Select only the middle commit (index 1).
+        app.commit_selection_range = Some((1, 1));
+        // when
+        let pair = app.pr_range_sha_pair();
+        // then — start = parent (first), end = newest selected (middle).
+        assert_eq!(pair, Some(("first11".to_string(), "middle2".to_string())));
+    }
+
+    #[test]
+    fn should_resolve_pr_range_to_pr_base_when_oldest_commit_selected() {
+        // given a multi-commit PR with only the oldest commit selected
+        let mut app = build_app();
+        app.forge_repository = Some(ForgeRepository::github("github.com", "agavra", "tuicr"));
+        app.pr_tab = PullRequestsTab::new(app.forge_repository.clone());
+        app.pr_tab.start_initial_load();
+        let summary = sample_pr(42, "base");
+        app.pr_tab
+            .apply_initial_load(Ok((vec![summary.clone()], false)));
+        let mut backend = FakeForgeBackend::open_pr_details(
+            test_pr_details(42, "base"),
+            crate::forge::github::gh::tests_fixture::SIMPLE_PATCH.to_string(),
+        );
+        backend.commits = vec![
+            sample_pr_commit("aaa", "first"),
+            sample_pr_commit("bbb", "second"),
+        ];
+        app.open_pr_with_backend(&summary, Box::new(backend), None)
+            .unwrap();
+        // pr_commits = [second, first]. Select only the oldest (index 1).
+        app.commit_selection_range = Some((1, 1));
+        // when
+        let pair = app.pr_range_sha_pair();
+        // then — start falls back to the PR's base_sha.
+        let expected_base = test_pr_details(42, "base").base_sha;
+        assert_eq!(pair, Some((expected_base, "aaa".to_string())));
     }
 
     #[test]
@@ -7217,6 +7732,20 @@ mod target_selector_tests {
             _pr: &crate::forge::traits::PullRequestDetails,
         ) -> Result<Vec<crate::forge::remote_comments::RemoteReviewThread>> {
             Ok(Vec::new())
+        }
+        fn list_pull_request_commits(
+            &self,
+            _pr: &crate::forge::traits::PullRequestDetails,
+        ) -> Result<Vec<crate::forge::traits::PullRequestCommit>> {
+            Ok(Vec::new())
+        }
+        fn get_pull_request_commit_range_diff(
+            &self,
+            _pr: &crate::forge::traits::PullRequestDetails,
+            _start_sha: &str,
+            _end_sha: &str,
+        ) -> Result<String> {
+            unreachable!()
         }
     }
 
@@ -7517,6 +8046,20 @@ mod target_selector_tests {
         ) -> Result<Vec<RemoteReviewThread>> {
             self.calls.set(self.calls.get() + 1);
             Ok(self.threads.clone())
+        }
+        fn list_pull_request_commits(
+            &self,
+            _pr: &crate::forge::traits::PullRequestDetails,
+        ) -> Result<Vec<crate::forge::traits::PullRequestCommit>> {
+            Ok(Vec::new())
+        }
+        fn get_pull_request_commit_range_diff(
+            &self,
+            _pr: &crate::forge::traits::PullRequestDetails,
+            _start_sha: &str,
+            _end_sha: &str,
+        ) -> Result<String> {
+            unreachable!()
         }
     }
 

@@ -90,6 +90,12 @@ pub struct ReviewSession {
     /// unresolved threads.
     #[serde(default)]
     pub remote_comments_visibility: PrCommentsVisibility,
+    /// Persisted inline commit selector range for PR sessions. Indices
+    /// reference the per-head-SHA `pr_commits` list captured at open
+    /// time. `None` means "all commits" (or no selector). Older sessions
+    /// without this field deserialize as `None`.
+    #[serde(default)]
+    pub commit_selection_range: Option<(usize, usize)>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     #[serde(default)]
@@ -116,6 +122,7 @@ impl ReviewSession {
             commit_range: None,
             pr_session_key: None,
             remote_comments_visibility: PrCommentsVisibility::default(),
+            commit_selection_range: None,
             created_at: now,
             updated_at: now,
             review_comments: Vec::new(),
@@ -417,6 +424,33 @@ mod tests {
             restored.remote_comments_visibility,
             PrCommentsVisibility::All
         );
+    }
+
+    #[test]
+    fn should_round_trip_commit_selection_range_on_pr_session() {
+        // given a PR session with a strict-subset commit range selection
+        let mut session = ReviewSession::new(
+            PathBuf::from("forge:github.com/agavra/tuicr"),
+            "abcdef0123456789".to_string(),
+            Some("reviews".to_string()),
+            SessionDiffSource::PullRequest,
+        );
+        session.commit_selection_range = Some((1, 3));
+        // when
+        let json = serde_json::to_string(&session).unwrap();
+        let restored: ReviewSession = serde_json::from_str(&json).unwrap();
+        // then
+        assert_eq!(restored.commit_selection_range, Some((1, 3)));
+    }
+
+    #[test]
+    fn should_default_commit_selection_range_to_none_for_legacy_session() {
+        // given a session JSON saved before commit_selection_range existed
+        // when
+        let session: ReviewSession =
+            serde_json::from_str(LEGACY_SESSION_JSON).expect("legacy session should parse");
+        // then
+        assert_eq!(session.commit_selection_range, None);
     }
 
     #[test]

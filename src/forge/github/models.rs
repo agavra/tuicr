@@ -2,7 +2,9 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
 use crate::error::{Result, TuicrError};
-use crate::forge::traits::{ForgeRepository, PullRequestDetails, PullRequestSummary};
+use crate::forge::traits::{
+    ForgeRepository, PullRequestCommit, PullRequestDetails, PullRequestSummary,
+};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -104,6 +106,54 @@ impl GhPullRequestDetails {
 pub struct GhAuthor {
     #[serde(default)]
     pub login: Option<String>,
+}
+
+/// Response shape for `gh api repos/<owner>/<repo>/pulls/<num>/commits`.
+/// We only consume a small subset of fields; the rest are ignored.
+#[derive(Debug, Deserialize)]
+pub struct GhPrCommit {
+    pub sha: String,
+    #[serde(default)]
+    pub commit: GhCommitDetails,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct GhCommitDetails {
+    #[serde(default)]
+    pub message: String,
+    #[serde(default)]
+    pub author: Option<GhCommitAuthor>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GhCommitAuthor {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub date: Option<DateTime<Utc>>,
+}
+
+impl GhPrCommit {
+    pub fn into_pull_request_commit(self) -> PullRequestCommit {
+        let summary = self.commit.message.lines().next().unwrap_or("").to_string();
+        let (author, timestamp) = match self.commit.author {
+            Some(a) => (
+                a.name.or(a.email).unwrap_or_else(|| "unknown".to_string()),
+                a.date,
+            ),
+            None => ("unknown".to_string(), None),
+        };
+        let short_oid = self.sha.chars().take(7).collect();
+        PullRequestCommit {
+            oid: self.sha,
+            short_oid,
+            summary,
+            author,
+            timestamp,
+        }
+    }
 }
 
 fn require_field(value: &str, field: &str) -> Result<()> {

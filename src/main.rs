@@ -297,6 +297,7 @@ fn main() -> anyhow::Result<()> {
         app.poll_pr_load_events();
         app.poll_pr_open_events();
         app.poll_pr_reload_events();
+        app.poll_pr_range_reload_events();
         app.poll_pr_threads_events();
 
         // Render

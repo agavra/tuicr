@@ -256,6 +256,20 @@ impl ForgeFileLinesRequest {
     }
 }
 
+/// A single commit on a pull request, as returned by the forge.
+///
+/// Fields mirror what the inline commit selector needs to render a row.
+/// Backends populate `oid`, `summary`, and `author`; `timestamp` is best-
+/// effort (None when the forge does not expose a parseable value).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PullRequestCommit {
+    pub oid: String,
+    pub short_oid: String,
+    pub summary: String,
+    pub author: String,
+    pub timestamp: Option<DateTime<Utc>>,
+}
+
 pub trait ForgeBackend {
     fn list_pull_requests(&self, query: PullRequestListQuery) -> Result<PagedPullRequests>;
     fn get_pull_request(&self, target: PullRequestTarget) -> Result<PullRequestDetails>;
@@ -268,6 +282,22 @@ pub trait ForgeBackend {
     /// and outdated state. Implementations should return all threads in
     /// posted order; filtering by visibility happens in the App.
     fn list_review_threads(&self, pr: &PullRequestDetails) -> Result<Vec<RemoteReviewThread>>;
+    /// List the commits that make up a pull request, in chronological order
+    /// (oldest first; the App reverses to newest-first display order). The
+    /// list scopes the inline commit selector so users can narrow a PR's
+    /// cumulative diff down to a contiguous subrange.
+    fn list_pull_request_commits(&self, pr: &PullRequestDetails) -> Result<Vec<PullRequestCommit>>;
+    /// Fetch the cumulative diff between two commit SHAs that both belong to
+    /// `pr`. `start_sha` is the *parent* of the first commit in the
+    /// subrange; `end_sha` is the last commit. Implementations may use a
+    /// local checkout when both SHAs are present locally, but the source of
+    /// truth is the forge.
+    fn get_pull_request_commit_range_diff(
+        &self,
+        pr: &PullRequestDetails,
+        start_sha: &str,
+        end_sha: &str,
+    ) -> Result<String>;
     /// Optional path to a local checkout the backend may consult as an
     /// optimization. The default returns `None`; callers must never treat
     /// this path as the source of truth for PR contents.

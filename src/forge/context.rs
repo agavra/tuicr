@@ -150,6 +150,20 @@ mod tests {
         ) -> Result<Vec<crate::forge::remote_comments::RemoteReviewThread>> {
             Ok(Vec::new())
         }
+        fn list_pull_request_commits(
+            &self,
+            _pr: &PullRequestDetails,
+        ) -> Result<Vec<crate::forge::traits::PullRequestCommit>> {
+            Ok(Vec::new())
+        }
+        fn get_pull_request_commit_range_diff(
+            &self,
+            _pr: &PullRequestDetails,
+            _start_sha: &str,
+            _end_sha: &str,
+        ) -> Result<String> {
+            unimplemented!()
+        }
     }
 
     fn repo() -> ForgeRepository {

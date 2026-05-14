@@ -4,13 +4,13 @@ use std::path::{Path, PathBuf};
 use crate::error::{Result, TuicrError};
 use crate::forge::remote_comments::RemoteReviewThread;
 use crate::forge::traits::{
-    ForgeBackend, ForgeFileLinesRequest, ForgeRepository, PagedPullRequests, PullRequestDetails,
-    PullRequestListQuery, PullRequestTarget,
+    ForgeBackend, ForgeFileLinesRequest, ForgeRepository, PagedPullRequests, PullRequestCommit,
+    PullRequestDetails, PullRequestListQuery, PullRequestTarget,
 };
 use crate::model::{DiffLine, LineOrigin};
 use crate::process::{CommandOutputError, CommandOutputErrorKind, run_command_output};
 
-use super::models::{GhPullRequestDetails, GhPullRequestSummary};
+use super::models::{GhPrCommit, GhPullRequestDetails, GhPullRequestSummary};
 use super::review_threads::{build_query, parse_graphql_page};
 
 const DEFAULT_GITHUB_HOST: &str = "github.com";
@@ -75,6 +75,30 @@ fn read_blob_with_repo(repo_root: &Path, sha: &str, path: &Path) -> Option<Strin
         "git",
         Some(repo_root),
         ["show", spec.as_str()].iter().map(|s| OsStr::new(*s)),
+    )
+    .ok()
+}
+
+/// Return `Some(diff)` when both `start_sha` and `end_sha` are present in
+/// the local checkout at `repo_root`, by running `git diff <start>..<end>`.
+/// Returns `None` when the checkout is missing either SHA or the command
+/// fails — callers fall back to the forge in that case.
+fn local_range_diff(repo_root: &Path, start_sha: &str, end_sha: &str) -> Option<String> {
+    for sha in [start_sha, end_sha] {
+        let exists = run_command_output(
+            "git",
+            Some(repo_root),
+            ["cat-file", "-e", sha].iter().map(|s| OsStr::new(*s)),
+        );
+        if exists.is_err() {
+            return None;
+        }
+    }
+    let range = format!("{start_sha}..{end_sha}");
+    run_command_output(
+        "git",
+        Some(repo_root),
+        ["diff", range.as_str()].iter().map(|s| OsStr::new(*s)),
     )
     .ok()
 }
@@ -226,6 +250,69 @@ where
 
     fn local_checkout_path(&self) -> Option<PathBuf> {
         self.local_checkout.clone()
+    }
+
+    fn list_pull_request_commits(&self, pr: &PullRequestDetails) -> Result<Vec<PullRequestCommit>> {
+        // GitHub paginates `pulls/<num>/commits` at 250 commits per page (max
+        // per_page=100; PRs are capped at 250 commits via the API). Paginate
+        // explicitly so multi-page PRs work; bound the loop defensively.
+        let mut commits: Vec<PullRequestCommit> = Vec::new();
+        for page in 1..=10 {
+            let endpoint = format!(
+                "repos/{}/{}/pulls/{}/commits?per_page=100&page={}",
+                pr.repository.owner, pr.repository.name, pr.number, page,
+            );
+            let mut args = vec!["api".to_string()];
+            if pr.repository.host != DEFAULT_GITHUB_HOST {
+                args.push("--hostname".to_string());
+                args.push(pr.repository.host.clone());
+            }
+            args.push(endpoint);
+            let output = self.run_gh(args, &pr.repository.host)?;
+            let rows: Vec<GhPrCommit> = serde_json::from_str(&output)?;
+            let received = rows.len();
+            commits.extend(rows.into_iter().map(GhPrCommit::into_pull_request_commit));
+            if received < 100 {
+                break;
+            }
+        }
+        Ok(commits)
+    }
+
+    fn get_pull_request_commit_range_diff(
+        &self,
+        pr: &PullRequestDetails,
+        start_sha: &str,
+        end_sha: &str,
+    ) -> Result<String> {
+        // Fast path: when both SHAs live in the local checkout, `git diff`
+        // gives us the cumulative diff in O(local-IO) without round-tripping
+        // through GitHub. The PR diff text is the source of truth, but the
+        // forge produces equivalent output for the same two SHAs, so this
+        // is a safe optimization.
+        if let Some(root) = self.local_checkout.as_deref()
+            && let Some(diff) = local_range_diff(root, start_sha, end_sha)
+        {
+            return Ok(diff);
+        }
+
+        // Fall back to GitHub's compare API. `Accept: application/vnd.github.diff`
+        // returns plain unified diff text instead of the JSON wrapper.
+        let endpoint = format!(
+            "repos/{}/{}/compare/{}...{}",
+            pr.repository.owner, pr.repository.name, start_sha, end_sha,
+        );
+        let mut args = vec![
+            "api".to_string(),
+            "-H".to_string(),
+            "Accept: application/vnd.github.diff".to_string(),
+        ];
+        if pr.repository.host != DEFAULT_GITHUB_HOST {
+            args.push("--hostname".to_string());
+            args.push(pr.repository.host.clone());
+        }
+        args.push(endpoint);
+        self.run_gh(args, &pr.repository.host)
     }
 
     fn list_review_threads(&self, pr: &PullRequestDetails) -> Result<Vec<RemoteReviewThread>> {
@@ -649,6 +736,18 @@ index 1111111..2222222 100644
                 Some("api") if args.get(1).map(String::as_str) == Some("graphql") => {
                     Ok(REVIEW_THREADS_JSON.to_string())
                 }
+                // gh api repos/.../pulls/<n>/commits (commit list).
+                Some("api")
+                    if args
+                        .iter()
+                        .any(|a| a.contains("/pulls/") && a.contains("/commits")) =>
+                {
+                    Ok(PR_COMMITS_JSON.to_string())
+                }
+                // gh api repos/.../compare/<base>...<head> (range diff).
+                Some("api") if args.iter().any(|a| a.contains("/compare/")) => {
+                    Ok(COMPARE_DIFF.to_string())
+                }
                 _ => Err(GhCommandError::Failed {
                     status: Some(1),
                     stderr: "unexpected command".to_string(),
@@ -656,6 +755,34 @@ index 1111111..2222222 100644
             }
         }
     }
+
+    const PR_COMMITS_JSON: &str = r##"[
+        {
+            "sha": "aaaaaaa1111111111111111111111111111aaaa",
+            "commit": {
+                "message": "First commit\n\nbody text",
+                "author": { "name": "Alice", "email": "a@x", "date": "2026-05-10T10:00:00Z" }
+            }
+        },
+        {
+            "sha": "bbbbbbb2222222222222222222222222222bbbb",
+            "commit": {
+                "message": "Second commit",
+                "author": { "name": "Bob", "email": "b@x", "date": "2026-05-11T10:00:00Z" }
+            }
+        }
+    ]"##;
+
+    const COMPARE_DIFF: &str = r##"diff --git a/src/lib.rs b/src/lib.rs
+index 1111111..2222222 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,3 +1,3 @@
+ pub fn answer() -> u32 {
+-    41
++    42
+ }
+"##;
 
     const REVIEW_THREADS_JSON: &str = r##"{
         "data": {
@@ -933,6 +1060,62 @@ index 1111111..2222222 100644
         assert!(graphql_call.iter().any(|a| a == "owner=agavra"));
         assert!(graphql_call.iter().any(|a| a == "name=tuicr"));
         assert!(graphql_call.iter().any(|a| a == "number=125"));
+    }
+
+    #[test]
+    fn should_list_pull_request_commits_via_api_pagination_endpoint() {
+        // given
+        let runner = FakeGhRunner::default();
+        let backend = GitHubGhBackend::with_runner(Some(repo()), runner);
+        let details = backend
+            .get_pull_request(parse_pull_request_target("125").unwrap())
+            .unwrap();
+        // when
+        let commits = backend.list_pull_request_commits(&details).unwrap();
+        // then — both commits parse with summary, short sha, and author.
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].oid, "aaaaaaa1111111111111111111111111111aaaa");
+        assert_eq!(commits[0].short_oid, "aaaaaaa");
+        assert_eq!(commits[0].summary, "First commit");
+        assert_eq!(commits[0].author, "Alice");
+        assert!(commits[0].timestamp.is_some());
+        assert_eq!(commits[1].summary, "Second commit");
+        // and — the call targeted the pulls/<n>/commits endpoint.
+        let calls = backend.runner.calls.borrow();
+        let commits_call = calls
+            .iter()
+            .find(|args| {
+                args.iter()
+                    .any(|a| a.contains("/pulls/125/commits") && a.contains("per_page=100"))
+            })
+            .expect("expected a pulls commits api call");
+        assert_eq!(commits_call[0], "api");
+    }
+
+    #[test]
+    fn should_request_compare_endpoint_for_range_diff_when_no_local_checkout() {
+        // given
+        let runner = FakeGhRunner::default();
+        let backend = GitHubGhBackend::with_runner(Some(repo()), runner);
+        let details = backend
+            .get_pull_request(parse_pull_request_target("125").unwrap())
+            .unwrap();
+        // when
+        let diff = backend
+            .get_pull_request_commit_range_diff(&details, "baseaaa", "headbbb")
+            .unwrap();
+        // then
+        assert!(diff.contains("diff --git a/src/lib.rs"));
+        // and — the call hit the compare endpoint with the Accept diff header.
+        let calls = backend.runner.calls.borrow();
+        let compare_call = calls
+            .iter()
+            .find(|args| {
+                args.iter()
+                    .any(|a| a.contains("/compare/baseaaa...headbbb"))
+            })
+            .expect("expected a compare api call");
+        assert!(compare_call.contains(&"Accept: application/vnd.github.diff".to_string()));
     }
 
     #[test]

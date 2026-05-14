@@ -717,7 +717,13 @@ pub fn handle_commit_selector_action(app: &mut App, action: Action) {
         // Toggle + auto-advance so repeated presses sweep a contiguous run.
         Action::ToggleExpand | Action::ToggleCommitSelect | Action::SelectFile => {
             app.toggle_commit_selection_and_advance();
-            if let Err(e) = app.reload_inline_selection() {
+            if matches!(app.diff_source, crate::app::DiffSource::PullRequest(_)) {
+                // PR mode reloads via the forge `compare` API on a
+                // background thread; persist the new range so it survives
+                // a restart.
+                app.persist_pr_commit_selection_range();
+                app.reload_pr_inline_selection();
+            } else if let Err(e) = app.reload_inline_selection() {
                 app.set_error(format!("Failed to load diff: {e}"));
             }
         }
