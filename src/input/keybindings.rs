@@ -95,6 +95,19 @@ pub enum Action {
     /// Begin editing the local filter inside the PR tab (`/`).
     BeginTargetFilter,
 
+    // Submit resolver
+    /// Move resolver cursor down (`j` / Down).
+    SubmitResolverDown,
+    /// Move resolver cursor up (`k` / Up).
+    SubmitResolverUp,
+    /// Toggle the action for the row under the resolver cursor (Enter).
+    SubmitResolverToggle,
+    /// Advance from resolver to final confirmation (`s`).
+    SubmitResolverAdvance,
+    /// Reload the PR in submit confirm (`r`, only when stale-head warning is
+    /// active). Currently triggers the same path as `:e`.
+    SubmitReloadPr,
+
     ToggleExpand,
     ExpandAll,
     CollapseAll,
@@ -114,6 +127,8 @@ pub fn map_key_to_action(key: KeyEvent, mode: InputMode) -> Action {
         InputMode::Confirm => map_confirm_mode(key),
         InputMode::CommitSelect => map_commit_select_mode(key),
         InputMode::VisualSelect => map_visual_mode(key),
+        InputMode::SubmitResolver => map_submit_resolver_mode(key),
+        InputMode::SubmitConfirm => map_submit_confirm_mode(key),
     }
 }
 
@@ -293,6 +308,27 @@ fn map_confirm_mode(key: KeyEvent) -> Action {
     match key.code {
         KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => Action::ConfirmYes,
         KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => Action::ConfirmNo,
+        _ => Action::None,
+    }
+}
+
+fn map_submit_resolver_mode(key: KeyEvent) -> Action {
+    match (key.code, key.modifiers) {
+        (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => Action::SubmitResolverDown,
+        (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => Action::SubmitResolverUp,
+        (KeyCode::Enter, KeyModifiers::NONE) => Action::SubmitResolverToggle,
+        (KeyCode::Char(' '), KeyModifiers::NONE) => Action::SubmitResolverToggle,
+        (KeyCode::Char('s'), KeyModifiers::NONE) => Action::SubmitResolverAdvance,
+        (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
+        _ => Action::None,
+    }
+}
+
+fn map_submit_confirm_mode(key: KeyEvent) -> Action {
+    match (key.code, key.modifiers) {
+        (KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter, _) => Action::ConfirmYes,
+        (KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc, _) => Action::ConfirmNo,
+        (KeyCode::Char('r') | KeyCode::Char('R'), _) => Action::SubmitReloadPr,
         _ => Action::None,
     }
 }

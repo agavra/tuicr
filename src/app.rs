@@ -393,6 +393,12 @@ pub enum InputMode {
     Confirm,
     CommitSelect,
     VisualSelect,
+    /// Modal listing comments that cannot be mapped to GitHub inline review
+    /// comments. The user toggles between "move to summary" / "omit" for
+    /// each row, then `s` advances to `SubmitConfirm`.
+    SubmitResolver,
+    /// Final confirmation modal before the network create-review call.
+    SubmitConfirm,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -463,6 +469,46 @@ impl PullRequestDiffSource {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfirmAction {
     CopyAndQuit,
+}
+
+/// Push a `MappedComment` onto the appropriate bucket. Free function so the
+/// preflight walk doesn't need to keep `self` borrowed mutably.
+fn bucket_mapping(
+    mapped: crate::forge::submit::MappedComment,
+    mappable: &mut Vec<crate::forge::submit::InlineComment>,
+    unmappable: &mut Vec<crate::forge::submit::UnmappableItem>,
+) {
+    use crate::forge::submit::{MappedComment, UnmappableItem};
+    match mapped {
+        MappedComment::Inline(inline) => mappable.push(inline),
+        MappedComment::Unmappable {
+            comment,
+            file,
+            reason,
+        } => unmappable.push(UnmappableItem {
+            comment,
+            file,
+            reason,
+        }),
+    }
+}
+
+/// In-flight `:submit*` state, populated by preflight and consumed by the
+/// resolver + confirmation modals. Lives on `App::submit_state` so the same
+/// preflight output can flow from resolver to confirmation without recomputing.
+#[derive(Debug, Clone)]
+pub struct SubmitState {
+    pub event: crate::forge::submit::SubmitEvent,
+    /// Comments that mapped cleanly to inline GitHub review comments.
+    pub mappable: Vec<crate::forge::submit::InlineComment>,
+    /// Comments that did not map, paired with the resolver action the user
+    /// has chosen for each (defaults to `MoveToSummary` per spec).
+    pub unmappable: Vec<crate::forge::submit::UnmappableItem>,
+    pub resolver_choices: Vec<crate::forge::submit::ResolverAction>,
+    /// Cursor row inside the resolver modal.
+    pub resolver_cursor: usize,
+    /// Originally-reviewed head SHA — used as `commit_id` in the payload.
+    pub commit_id: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -723,6 +769,18 @@ pub struct App {
     /// Background-thread channel that delivers remote-thread fetch results.
     /// `Receiver` is only present while a fetch is in flight.
     pub pr_threads_rx: Option<std::sync::mpsc::Receiver<PrThreadsEvent>>,
+
+    /// `[forge]` section settings resolved at startup. Drives the body/footer
+    /// formatting on submit. Defaults to `ForgeConfig::default()` when the
+    /// section is missing.
+    pub forge_config: crate::config::ForgeConfig,
+    /// In-flight `:submit*` state. `None` outside the resolver + confirmation
+    /// modal flow; preflight populates it.
+    pub submit_state: Option<SubmitState>,
+    /// Latest known PR head SHA from the remote. PR 5 leaves this as the
+    /// open-time head so the stale-head warning never fires; PR 6 may refresh
+    /// it via a pre-submit `gh pr view` to power the warning.
+    pub current_pr_head: Option<String>,
 
     pub should_quit: bool,
     pub dirty: bool,
@@ -1303,6 +1361,9 @@ impl App {
             forge_review_threads: Vec::new(),
             forge_review_threads_loading: false,
             pr_threads_rx: None,
+            forge_config: crate::config::ForgeConfig::default(),
+            submit_state: None,
+            current_pr_head: None,
             should_quit: false,
             dirty: false,
             quit_warned: false,
@@ -1712,6 +1773,7 @@ impl App {
         // Wire the forge backend so context expansion routes through it.
         app.forge_backend = Some(Box::new(backend));
         app.forge_repository = Some(target_repo);
+        app.current_pr_head = Some(details_for_threads.head_sha.clone());
         if let DiffSource::PullRequest(pr) = &app.diff_source.clone()
             && pr.is_read_only()
         {
@@ -1764,6 +1826,9 @@ impl App {
         self.forge_review_threads = Vec::new();
         self.forge_review_threads_loading = false;
         self.pr_threads_rx = None;
+        // Latest known remote head — equal to the session head at open time;
+        // refreshed by future `gh pr view` calls in PR 6.
+        self.current_pr_head = Some(details.head_sha.clone());
         self.input_mode = InputMode::Normal;
         self.focused_panel = FocusedPanel::Diff;
         self.clear_expanded_gaps();
@@ -4240,6 +4305,52 @@ impl App {
         }
     }
 
+    /// True when the cursor sits on a local comment whose lifecycle state
+    /// has been pushed/submitted to the forge. Such comments are locked from
+    /// edit/delete in tuicr to prevent the local state from drifting from
+    /// what GitHub now stores.
+    pub fn cursor_on_locked_comment(&self) -> bool {
+        let Some(location) = self.find_comment_at_cursor() else {
+            return false;
+        };
+        match location {
+            CommentLocation::Review { index } => self
+                .session
+                .review_comments
+                .get(index)
+                .is_some_and(|c| c.is_locked()),
+            CommentLocation::File { path, index } => self
+                .session
+                .files
+                .get(&path)
+                .and_then(|review| review.file_comments.get(index))
+                .is_some_and(|c| c.is_locked()),
+            CommentLocation::Line {
+                path,
+                line,
+                side,
+                index,
+            } => self
+                .session
+                .files
+                .get(&path)
+                .and_then(|review| review.line_comments.get(&line))
+                .and_then(|comments| {
+                    let mut side_idx = 0;
+                    for c in comments {
+                        if c.side.unwrap_or(LineSide::New) == side {
+                            if side_idx == index {
+                                return Some(c);
+                            }
+                            side_idx += 1;
+                        }
+                    }
+                    None
+                })
+                .is_some_and(|c| c.is_locked()),
+        }
+    }
+
     /// Find the comment at the current cursor position
     /// True when the cursor is on a row that belongs to a fetched-from-GitHub
     /// review thread. Remote threads are read-only in v1; surfaced as a
@@ -4775,6 +4886,192 @@ impl App {
     pub fn exit_confirm_mode(&mut self) {
         self.input_mode = InputMode::Normal;
         self.pending_confirm = None;
+    }
+
+    /// Drive `:submit*` preflight: walk every local-draft comment in the
+    /// current PR session, map each one against the displayed diff, bucket
+    /// the results, and transition into the resolver (when there are
+    /// unmappable comments) or the final-confirmation modal.
+    ///
+    /// PR 5 does not call the network; `[y]` in the confirmation modal
+    /// stubs a "PR 6 will wire the network call" info message.
+    pub fn start_submit(&mut self, event: crate::forge::submit::SubmitEvent) {
+        use crate::forge::submit::{InlineComment, ResolverAction, UnmappableItem, map_comment};
+
+        let DiffSource::PullRequest(pr) = &self.diff_source else {
+            self.set_warning(":submit only applies in PR mode");
+            return;
+        };
+        if pr.is_read_only() {
+            let reason = pr.read_only_reason().unwrap_or("read only");
+            self.set_warning(format!("Cannot submit: PR is {reason}"));
+            return;
+        }
+        let commit_id = pr.key.head_sha.clone();
+
+        // Source of truth for the diff: when the inline commit selector is
+        // showing a strict subset, `range_diff_files` carries the merged
+        // subset diff; otherwise `diff_files` is canonical.
+        let files: Vec<&DiffFile> = match self.range_diff_files.as_ref() {
+            Some(range) => range.iter().collect(),
+            None => self.diff_files.iter().collect(),
+        };
+
+        let mut mappable: Vec<InlineComment> = Vec::new();
+        let mut unmappable: Vec<UnmappableItem> = Vec::new();
+        let mut total_local_drafts = 0_usize;
+
+        // Walk file-level and line comments in display order. Review-level
+        // comments (session.review_comments) are NOT inline-mapped; they
+        // appear in the body via `build_review_body`.
+        for file in &files {
+            let Some(review) = self.session.files.get(file.display_path()) else {
+                continue;
+            };
+            for comment in &review.file_comments {
+                if comment.is_locked() {
+                    continue;
+                }
+                total_local_drafts += 1;
+                bucket_mapping(
+                    map_comment(comment, file, &self.forge_config),
+                    &mut mappable,
+                    &mut unmappable,
+                );
+            }
+            let mut keys: Vec<&u32> = review.line_comments.keys().collect();
+            keys.sort();
+            for key in keys {
+                for comment in &review.line_comments[key] {
+                    if comment.is_locked() {
+                        continue;
+                    }
+                    total_local_drafts += 1;
+                    bucket_mapping(
+                        map_comment(comment, file, &self.forge_config),
+                        &mut mappable,
+                        &mut unmappable,
+                    );
+                }
+            }
+        }
+
+        if total_local_drafts == 0 && self.session.review_comments.is_empty() {
+            self.set_warning("Nothing to submit — no local-draft comments");
+            return;
+        }
+
+        let resolver_choices = vec![ResolverAction::default(); unmappable.len()];
+        let has_unmappable = !unmappable.is_empty();
+        self.submit_state = Some(SubmitState {
+            event,
+            mappable,
+            unmappable,
+            resolver_choices,
+            resolver_cursor: 0,
+            commit_id,
+        });
+
+        if has_unmappable {
+            self.input_mode = InputMode::SubmitResolver;
+        } else {
+            self.input_mode = InputMode::SubmitConfirm;
+        }
+    }
+
+    pub fn cancel_submit(&mut self) {
+        self.submit_state = None;
+        self.input_mode = InputMode::Normal;
+    }
+
+    /// Move the resolver cursor down by one row, clamped to the last row.
+    pub fn submit_resolver_cursor_down(&mut self) {
+        if let Some(state) = self.submit_state.as_mut()
+            && state.resolver_cursor + 1 < state.unmappable.len()
+        {
+            state.resolver_cursor += 1;
+        }
+    }
+
+    pub fn submit_resolver_cursor_up(&mut self) {
+        if let Some(state) = self.submit_state.as_mut()
+            && state.resolver_cursor > 0
+        {
+            state.resolver_cursor -= 1;
+        }
+    }
+
+    pub fn submit_resolver_toggle(&mut self) {
+        use crate::forge::submit::ResolverAction;
+        if let Some(state) = self.submit_state.as_mut()
+            && let Some(choice) = state.resolver_choices.get_mut(state.resolver_cursor)
+        {
+            *choice = match choice {
+                ResolverAction::MoveToSummary => ResolverAction::Omit,
+                ResolverAction::Omit => ResolverAction::MoveToSummary,
+            };
+        }
+    }
+
+    /// Advance from the resolver to the final confirmation modal.
+    pub fn submit_resolver_advance(&mut self) {
+        if self.submit_state.is_some() {
+            self.input_mode = InputMode::SubmitConfirm;
+        }
+    }
+
+    /// True iff the original review head and the latest known PR head
+    /// disagree. PR 5 cannot trigger this (the open-time head equals
+    /// `current_pr_head`), but the field is exposed so the renderer can
+    /// fold the warning in once PR 6 refreshes the remote head.
+    pub fn submit_head_is_stale(&self) -> bool {
+        let Some(state) = self.submit_state.as_ref() else {
+            return false;
+        };
+        match self.current_pr_head.as_deref() {
+            Some(latest) => latest != state.commit_id,
+            None => false,
+        }
+    }
+
+    /// Confirm submit — PR 5 stubs the network call. Builds the payload so
+    /// any preflight contract violations surface here, then sets an info
+    /// message and clears the state. PR 6 will replace this with the
+    /// actual `gh api` call.
+    pub fn confirm_submit(&mut self) {
+        use crate::forge::github::submit::build_review_payload;
+        use crate::forge::submit::{MovedToSummaryItem, ResolverAction, build_review_body};
+
+        let Some(state) = self.submit_state.take() else {
+            return;
+        };
+
+        let summary_items: Vec<MovedToSummaryItem> = state
+            .unmappable
+            .iter()
+            .zip(state.resolver_choices.iter())
+            .filter_map(|(item, action)| {
+                if *action == ResolverAction::MoveToSummary {
+                    Some(MovedToSummaryItem {
+                        comment: item.comment.clone(),
+                        file: item.file.clone(),
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let body = build_review_body(
+            &self.session.review_comments,
+            &summary_items,
+            &self.forge_config,
+        );
+        // Build payload so the JSON serialization path is exercised even in
+        // the stubbed flow; the result is discarded until PR 6.
+        let _payload = build_review_payload(&state.commit_id, &body, state.event, &state.mappable);
+
+        self.input_mode = InputMode::Normal;
+        self.set_message("Submit ready — PR 6 will wire the network call");
     }
 
     /// Open the review target selector on a specific tab.
@@ -9515,5 +9812,402 @@ mod visual_selection_tests {
         let (start, end) = sel.ordered();
         assert_eq!(start, p(7, 5));
         assert_eq!(end, p(7, 20));
+    }
+}
+
+#[cfg(test)]
+mod submit_flow_tests {
+    //! Tests for the `:submit*` preflight / resolver / confirmation
+    //! orchestration. Driven through the App methods rather than the key
+    //! handlers so we exercise the state machine directly.
+    use super::*;
+    use crate::forge::submit::{ResolverAction, SubmitEvent, UnmappableReason};
+    use crate::forge::traits::{ForgeRepository, PrSessionKey};
+    use crate::model::comment::{Comment, CommentLifecycleState, CommentType, LineContext};
+    use crate::model::diff_types::{DiffHunk, DiffLine, FileStatus, LineOrigin};
+    use crate::vcs::traits::{VcsChangeStatus, VcsType};
+
+    struct DummyVcs {
+        info: VcsInfo,
+    }
+
+    impl VcsBackend for DummyVcs {
+        fn info(&self) -> &VcsInfo {
+            &self.info
+        }
+        fn get_working_tree_diff(&self, _h: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+            Err(TuicrError::NoChanges)
+        }
+        fn fetch_context_lines(
+            &self,
+            _p: &Path,
+            _s: FileStatus,
+            _start: u32,
+            _end: u32,
+        ) -> Result<Vec<DiffLine>> {
+            Ok(Vec::new())
+        }
+        fn get_change_status(&self) -> Result<VcsChangeStatus> {
+            Ok(VcsChangeStatus {
+                staged: false,
+                unstaged: false,
+            })
+        }
+    }
+
+    fn make_pr_app_with_single_modified_file(file_path: &str) -> App {
+        let vcs_info = VcsInfo {
+            root_path: PathBuf::from("/tmp/repo"),
+            head_commit: "abcdef0123".to_string(),
+            branch_name: Some("feat".to_string()),
+            vcs_type: VcsType::File,
+        };
+        let session = ReviewSession::new(
+            vcs_info.root_path.clone(),
+            vcs_info.head_commit.clone(),
+            vcs_info.branch_name.clone(),
+            SessionDiffSource::PullRequest,
+        );
+        let diff_file = DiffFile {
+            old_path: Some(PathBuf::from(file_path)),
+            new_path: Some(PathBuf::from(file_path)),
+            status: FileStatus::Modified,
+            hunks: vec![DiffHunk {
+                header: "@@".to_string(),
+                old_start: 1,
+                old_count: 0,
+                new_start: 1,
+                new_count: 0,
+                lines: vec![
+                    DiffLine {
+                        origin: LineOrigin::Context,
+                        content: "a".to_string(),
+                        old_lineno: Some(10),
+                        new_lineno: Some(10),
+                        highlighted_spans: None,
+                    },
+                    DiffLine {
+                        origin: LineOrigin::Addition,
+                        content: "b".to_string(),
+                        old_lineno: None,
+                        new_lineno: Some(11),
+                        highlighted_spans: None,
+                    },
+                ],
+            }],
+            is_binary: false,
+            is_too_large: false,
+            is_commit_message: false,
+            content_hash: 0,
+        };
+        let pr_source = PullRequestDiffSource {
+            key: PrSessionKey::new(
+                ForgeRepository::github("github.com", "agavra", "tuicr"),
+                125,
+                "abcdef0123".to_string(),
+            ),
+            base_sha: "0000".to_string(),
+            title: "test pr".to_string(),
+            url: "https://github.com/agavra/tuicr/pull/125".to_string(),
+            head_ref_name: "feat".to_string(),
+            base_ref_name: "main".to_string(),
+            state: "OPEN".to_string(),
+            closed: false,
+            merged: false,
+        };
+        let mut app = App::build(
+            Box::new(DummyVcs {
+                info: vcs_info.clone(),
+            }),
+            vcs_info,
+            Theme::dark(),
+            None,
+            false,
+            vec![diff_file],
+            session,
+            DiffSource::PullRequest(Box::new(pr_source)),
+            InputMode::Normal,
+            Vec::new(),
+            None,
+        )
+        .expect("build app");
+        app.current_pr_head = Some("abcdef0123".to_string());
+        app
+    }
+
+    fn line_comment(side: LineSide, new: Option<u32>, old: Option<u32>) -> Comment {
+        let mut c = Comment::new("body".to_string(), CommentType::Issue, Some(side));
+        c.line_context = Some(LineContext {
+            new_line: new,
+            old_line: old,
+            content: String::new(),
+        });
+        c
+    }
+
+    fn add_line_comment(app: &mut App, path: &str, line: u32, comment: Comment) {
+        let pb = PathBuf::from(path);
+        let review = app.session.get_file_mut(&pb).expect("file in session");
+        review.line_comments.entry(line).or_default().push(comment);
+    }
+
+    #[test]
+    fn should_open_confirm_directly_when_all_comments_map() {
+        // given a PR session with one mappable line comment
+        let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+        add_line_comment(
+            &mut app,
+            "src/lib.rs",
+            11,
+            line_comment(LineSide::New, Some(11), None),
+        );
+        // when
+        app.start_submit(SubmitEvent::Comment);
+        // then — went straight to confirmation, no resolver
+        assert_eq!(app.input_mode, InputMode::SubmitConfirm);
+        let state = app.submit_state.as_ref().expect("submit state");
+        assert_eq!(state.mappable.len(), 1);
+        assert!(state.unmappable.is_empty());
+        assert_eq!(state.commit_id, "abcdef0123");
+        assert_eq!(state.event, SubmitEvent::Comment);
+    }
+
+    #[test]
+    fn should_open_resolver_when_any_comment_is_unmappable() {
+        // given a PR session with one mappable + one file-level on a
+        // binary file (unmappable).
+        let mut app = make_pr_app_with_single_modified_file("img.png");
+        // mark file binary in diff_files
+        app.diff_files[0].is_binary = true;
+        // file-level comment in session
+        let pb = PathBuf::from("img.png");
+        let review = app.session.get_file_mut(&pb).expect("file in session");
+        review
+            .file_comments
+            .push(Comment::new("oof".to_string(), CommentType::Note, None));
+        // when
+        app.start_submit(SubmitEvent::Comment);
+        // then — resolver entered with one unmappable
+        assert_eq!(app.input_mode, InputMode::SubmitResolver);
+        let state = app.submit_state.as_ref().expect("submit state");
+        assert_eq!(state.unmappable.len(), 1);
+        assert_eq!(state.unmappable[0].reason, UnmappableReason::BinaryFile);
+        assert_eq!(state.resolver_choices.len(), 1);
+        // Default action is MoveToSummary per spec
+        assert_eq!(state.resolver_choices[0], ResolverAction::MoveToSummary);
+    }
+
+    #[test]
+    fn should_skip_locked_comments_during_preflight() {
+        // given a single locked comment
+        let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+        let mut c = line_comment(LineSide::New, Some(11), None);
+        c.lifecycle_state = CommentLifecycleState::Submitted;
+        add_line_comment(&mut app, "src/lib.rs", 11, c);
+        // when
+        app.start_submit(SubmitEvent::Comment);
+        // then — preflight aborted with the "nothing to submit" warning
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.submit_state.is_none());
+    }
+
+    #[test]
+    fn should_warn_when_no_local_drafts_exist() {
+        // given a PR session with zero comments
+        let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+        // when
+        app.start_submit(SubmitEvent::Comment);
+        // then
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.submit_state.is_none());
+    }
+
+    #[test]
+    fn should_warn_when_submitting_without_pr_mode() {
+        // given an app NOT in PR mode
+        let vcs_info = VcsInfo {
+            root_path: PathBuf::from("/tmp"),
+            head_commit: "head".to_string(),
+            branch_name: Some("main".to_string()),
+            vcs_type: VcsType::Git,
+        };
+        let session = ReviewSession::new(
+            vcs_info.root_path.clone(),
+            vcs_info.head_commit.clone(),
+            vcs_info.branch_name.clone(),
+            SessionDiffSource::WorkingTree,
+        );
+        let mut app = App::build(
+            Box::new(DummyVcs {
+                info: vcs_info.clone(),
+            }),
+            vcs_info,
+            Theme::dark(),
+            None,
+            false,
+            Vec::new(),
+            session,
+            DiffSource::WorkingTree,
+            InputMode::Normal,
+            Vec::new(),
+            None,
+        )
+        .expect("build app");
+        // when
+        app.start_submit(SubmitEvent::Comment);
+        // then
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.submit_state.is_none());
+    }
+
+    #[test]
+    fn should_warn_when_pr_is_closed_or_merged() {
+        // given a closed PR
+        let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+        if let DiffSource::PullRequest(pr) = &mut app.diff_source {
+            pr.closed = true;
+        }
+        add_line_comment(
+            &mut app,
+            "src/lib.rs",
+            11,
+            line_comment(LineSide::New, Some(11), None),
+        );
+        // when
+        app.start_submit(SubmitEvent::Comment);
+        // then
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.submit_state.is_none());
+    }
+
+    #[test]
+    fn should_cancel_submit_clears_state_and_returns_to_normal() {
+        let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+        add_line_comment(
+            &mut app,
+            "src/lib.rs",
+            11,
+            line_comment(LineSide::New, Some(11), None),
+        );
+        app.start_submit(SubmitEvent::Comment);
+        // when
+        app.cancel_submit();
+        // then
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.submit_state.is_none());
+    }
+
+    #[test]
+    fn should_toggle_resolver_action_between_move_and_omit() {
+        let mut app = make_pr_app_with_single_modified_file("img.png");
+        app.diff_files[0].is_binary = true;
+        let pb = PathBuf::from("img.png");
+        let review = app.session.get_file_mut(&pb).expect("file in session");
+        review
+            .file_comments
+            .push(Comment::new("a".to_string(), CommentType::Note, None));
+        review
+            .file_comments
+            .push(Comment::new("b".to_string(), CommentType::Note, None));
+        app.start_submit(SubmitEvent::Comment);
+        // when — toggle row 0
+        app.submit_resolver_toggle();
+        // then
+        let state = app.submit_state.as_ref().unwrap();
+        assert_eq!(state.resolver_choices[0], ResolverAction::Omit);
+        assert_eq!(state.resolver_choices[1], ResolverAction::MoveToSummary);
+        // when toggle again
+        app.submit_resolver_toggle();
+        let state = app.submit_state.as_ref().unwrap();
+        assert_eq!(state.resolver_choices[0], ResolverAction::MoveToSummary);
+    }
+
+    #[test]
+    fn should_advance_from_resolver_to_confirm() {
+        let mut app = make_pr_app_with_single_modified_file("img.png");
+        app.diff_files[0].is_binary = true;
+        let pb = PathBuf::from("img.png");
+        let review = app.session.get_file_mut(&pb).expect("file in session");
+        review
+            .file_comments
+            .push(Comment::new("a".to_string(), CommentType::Note, None));
+        app.start_submit(SubmitEvent::Comment);
+        assert_eq!(app.input_mode, InputMode::SubmitResolver);
+        // when
+        app.submit_resolver_advance();
+        // then
+        assert_eq!(app.input_mode, InputMode::SubmitConfirm);
+    }
+
+    #[test]
+    fn should_stub_network_call_on_confirm_and_clear_state() {
+        let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+        add_line_comment(
+            &mut app,
+            "src/lib.rs",
+            11,
+            line_comment(LineSide::New, Some(11), None),
+        );
+        app.start_submit(SubmitEvent::Comment);
+        // when
+        app.confirm_submit();
+        // then — PR 5 stub: state cleared, mode back to Normal, info msg set
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.submit_state.is_none());
+        let msg = app.message.as_ref().expect("info message");
+        assert!(msg.content.contains("PR 6 will wire"));
+    }
+
+    #[test]
+    fn should_report_stale_head_when_current_differs_from_session_head() {
+        let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+        add_line_comment(
+            &mut app,
+            "src/lib.rs",
+            11,
+            line_comment(LineSide::New, Some(11), None),
+        );
+        // simulate a refresh having spotted a newer remote head
+        app.current_pr_head = Some("ffff5678".to_string());
+        app.start_submit(SubmitEvent::Comment);
+        assert!(app.submit_head_is_stale());
+    }
+
+    #[test]
+    fn should_report_head_not_stale_when_current_matches_session_head() {
+        let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+        add_line_comment(
+            &mut app,
+            "src/lib.rs",
+            11,
+            line_comment(LineSide::New, Some(11), None),
+        );
+        app.start_submit(SubmitEvent::Comment);
+        assert!(!app.submit_head_is_stale());
+    }
+
+    #[test]
+    fn should_detect_locked_comment_under_cursor_for_dd_path() {
+        // given an app with a locked line comment registered against the
+        // diff. We just verify the App helper sees the lock — exercising
+        // the handler keypath itself is covered in integration tests.
+        let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+        let mut c = line_comment(LineSide::New, Some(11), None);
+        c.lifecycle_state = CommentLifecycleState::PushedDraft;
+        add_line_comment(&mut app, "src/lib.rs", 11, c);
+        // No cursor positioning here — `cursor_on_locked_comment` resolves
+        // through `find_comment_at_cursor` which depends on annotations.
+        // The annotation indices use 0..N; with a single line comment on
+        // line 11 there's exactly one LineComment annotation. We point the
+        // cursor at it via diff_state.
+        app.rebuild_annotations();
+        // Find the LineComment annotation index.
+        let idx = app
+            .line_annotations
+            .iter()
+            .position(|a| matches!(a, AnnotatedLine::LineComment { .. }))
+            .expect("expected a LineComment annotation");
+        app.diff_state.cursor_line = idx;
+        assert!(app.cursor_on_locked_comment());
     }
 }

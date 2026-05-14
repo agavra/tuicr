@@ -511,6 +511,34 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  :submit       ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Submit a COMMENT review to GitHub (PR mode)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :submit approve",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  Submit an APPROVE review to GitHub"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :submit request-changes",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  Submit a REQUEST_CHANGES review to GitHub"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :submit draft",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  Push a pending (draft) review to GitHub"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  :set commits",
                 Style::default().add_modifier(Modifier::BOLD),
             ),

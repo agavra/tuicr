@@ -453,6 +453,26 @@ pub fn handle_command_action(app: &mut App, action: Action) {
                         return;
                     }
                 }
+                "submit" | "submit comment" => {
+                    app.exit_command_mode();
+                    app.start_submit(crate::forge::submit::SubmitEvent::Comment);
+                    return;
+                }
+                "submit approve" => {
+                    app.exit_command_mode();
+                    app.start_submit(crate::forge::submit::SubmitEvent::Approve);
+                    return;
+                }
+                "submit request-changes" => {
+                    app.exit_command_mode();
+                    app.start_submit(crate::forge::submit::SubmitEvent::RequestChanges);
+                    return;
+                }
+                "submit draft" => {
+                    app.exit_command_mode();
+                    app.start_submit(crate::forge::submit::SubmitEvent::Draft);
+                    return;
+                }
                 "comments unresolved" | "comments all" | "comments hide" => {
                     use crate::forge::remote_comments::PrCommentsVisibility;
                     if !matches!(app.diff_source, app::DiffSource::PullRequest(_)) {
@@ -923,6 +943,9 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
             }
         }
         Action::AddFileComment => app.enter_comment_mode(true, None),
+        Action::EditComment if app.cursor_on_locked_comment() => {
+            app.set_message("Comment already pushed to GitHub — read only in tuicr");
+        }
         Action::EditComment if !app.enter_edit_mode() => {
             if app.cursor_on_remote_thread() {
                 app.set_message("GitHub comment — read only in tuicr");
@@ -956,6 +979,40 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
                 app.set_error(format!("Failed to load diff: {e}"));
             }
         }
+        _ => {}
+    }
+}
+
+/// Handle actions in the submit resolver modal: pick what to do with each
+/// comment that did not map to an inline GitHub review comment.
+pub fn handle_submit_resolver_action(app: &mut App, action: Action) {
+    match action {
+        Action::SubmitResolverDown => app.submit_resolver_cursor_down(),
+        Action::SubmitResolverUp => app.submit_resolver_cursor_up(),
+        Action::SubmitResolverToggle => app.submit_resolver_toggle(),
+        Action::SubmitResolverAdvance => app.submit_resolver_advance(),
+        Action::ExitMode => app.cancel_submit(),
+        Action::Quit => app.should_quit = true,
+        _ => {}
+    }
+}
+
+/// Handle actions in the final submit confirmation modal.
+pub fn handle_submit_confirm_action(app: &mut App, action: Action) {
+    match action {
+        Action::ConfirmYes => app.confirm_submit(),
+        Action::ConfirmNo => app.cancel_submit(),
+        // Only meaningful when the stale-head warning is visible.
+        Action::SubmitReloadPr
+            if app.submit_head_is_stale()
+                && matches!(app.diff_source, app::DiffSource::PullRequest(_)) =>
+        {
+            app.cancel_submit();
+            if let Err(e) = app.spawn_pr_reload() {
+                app.set_error(format!("Reload failed: {e}"));
+            }
+        }
+        Action::Quit => app.should_quit = true,
         _ => {}
     }
 }

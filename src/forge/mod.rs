@@ -10,6 +10,7 @@ pub mod github;
 pub mod pr_open;
 pub mod remote_comments;
 pub mod selector;
+pub mod submit;
 pub mod traits;
 
 use std::path::Path;

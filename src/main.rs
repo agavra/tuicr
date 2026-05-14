@@ -41,7 +41,7 @@ use handler::{
     handle_command_action, handle_comment_action, handle_commit_select_action,
     handle_commit_selector_action, handle_confirm_action, handle_diff_action,
     handle_file_list_action, handle_help_action, handle_mouse_event, handle_search_action,
-    handle_visual_action,
+    handle_submit_confirm_action, handle_submit_resolver_action, handle_visual_action,
 };
 use input::{Action, map_key_to_action, map_target_filter_mode};
 use theme::{parse_cli_args, resolve_theme_with_config};
@@ -181,6 +181,11 @@ fn main() -> anyhow::Result<()> {
         Ok(mut app) => {
             app.supports_keyboard_enhancement = keyboard_enhancement_supported;
             startup_warnings.extend(app.vcs.startup_warnings());
+            if let Some(cfg) = config_outcome.config.as_ref()
+                && let Some(forge_cfg) = cfg.forge.clone()
+            {
+                app.forge_config = forge_cfg;
+            }
             app
         }
         Err(e) => {
@@ -389,7 +394,11 @@ fn main() -> anyhow::Result<()> {
                     if pending_d {
                         pending_d = false;
                         if key.code == crossterm::event::KeyCode::Char('d') {
-                            if !app.delete_comment_at_cursor() {
+                            if app.cursor_on_locked_comment() {
+                                app.set_message(
+                                    "Comment already pushed to GitHub — read only in tuicr",
+                                );
+                            } else if !app.delete_comment_at_cursor() {
                                 if app.cursor_on_remote_thread() {
                                     app.set_message("GitHub comment — read only in tuicr");
                                 } else {
@@ -505,6 +514,10 @@ fn main() -> anyhow::Result<()> {
                         InputMode::Confirm => handle_confirm_action(&mut app, action),
                         InputMode::CommitSelect => handle_commit_select_action(&mut app, action),
                         InputMode::VisualSelect => handle_visual_action(&mut app, action),
+                        InputMode::SubmitResolver => {
+                            handle_submit_resolver_action(&mut app, action)
+                        }
+                        InputMode::SubmitConfirm => handle_submit_confirm_action(&mut app, action),
                         InputMode::Normal => match app.focused_panel {
                             FocusedPanel::FileList => handle_file_list_action(&mut app, action),
                             FocusedPanel::Diff => handle_diff_action(&mut app, action),

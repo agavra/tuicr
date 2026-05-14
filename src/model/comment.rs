@@ -47,6 +47,28 @@ impl LineRange {
     }
 }
 
+/// Lifecycle state of a local comment relative to the remote forge.
+///
+/// `LocalDraft` is editable in tuicr. `PushedDraft` and `Submitted` are locked:
+/// they have been written to GitHub and edits/deletions in tuicr would diverge
+/// from the remote. PR 5 introduces the field and the lock check; PR 6 wires
+/// the transitions on successful submit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CommentLifecycleState {
+    #[default]
+    LocalDraft,
+    PushedDraft,
+    Submitted,
+}
+
+impl CommentLifecycleState {
+    /// True for any state that has already been written to the remote forge.
+    pub fn is_locked(self) -> bool {
+        !matches!(self, CommentLifecycleState::LocalDraft)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub enum CommentType {
     #[default]
@@ -124,6 +146,18 @@ pub struct Comment {
     /// None for file-level comments or single-line comments (backward compatibility)
     #[serde(default)]
     pub line_range: Option<LineRange>,
+    /// Where this comment sits in its remote forge lifecycle. Old session
+    /// JSON predates this field and rehydrates as `LocalDraft`.
+    #[serde(default)]
+    pub lifecycle_state: CommentLifecycleState,
+    /// Remote review ID this comment belongs to once submitted/pushed.
+    /// `None` while still `LocalDraft`.
+    #[serde(default)]
+    pub remote_review_id: Option<String>,
+    /// Remote review-comment ID once GitHub assigns one. Only meaningful for
+    /// inline comments; review-level / summary comments don't get one.
+    #[serde(default)]
+    pub remote_comment_id: Option<String>,
 }
 
 impl Comment {
@@ -136,6 +170,9 @@ impl Comment {
             line_context: None,
             side,
             line_range: None,
+            lifecycle_state: CommentLifecycleState::default(),
+            remote_review_id: None,
+            remote_comment_id: None,
         }
     }
 
@@ -154,7 +191,16 @@ impl Comment {
             line_context: None,
             side,
             line_range: Some(line_range),
+            lifecycle_state: CommentLifecycleState::default(),
+            remote_review_id: None,
+            remote_comment_id: None,
         }
+    }
+
+    /// True if this comment has been pushed/submitted to the forge and is
+    /// therefore locked from local edits/deletions.
+    pub fn is_locked(&self) -> bool {
+        self.lifecycle_state.is_locked()
     }
 }
 
@@ -347,6 +393,67 @@ mod tests {
             let range = comment.line_range.unwrap();
             assert_eq!(range.start, 10);
             assert_eq!(range.end, 15);
+        }
+
+        #[test]
+        fn should_default_lifecycle_state_to_local_draft_for_new_comment() {
+            // given/when
+            let comment = Comment::new("hi".to_string(), CommentType::Note, None);
+            // then
+            assert_eq!(comment.lifecycle_state, CommentLifecycleState::LocalDraft);
+            assert!(!comment.is_locked());
+            assert!(comment.remote_review_id.is_none());
+            assert!(comment.remote_comment_id.is_none());
+        }
+
+        #[test]
+        fn should_report_pushed_and_submitted_comments_as_locked() {
+            // given
+            let mut pushed = Comment::new("p".to_string(), CommentType::Note, None);
+            pushed.lifecycle_state = CommentLifecycleState::PushedDraft;
+            let mut submitted = Comment::new("s".to_string(), CommentType::Note, None);
+            submitted.lifecycle_state = CommentLifecycleState::Submitted;
+            // then
+            assert!(pushed.is_locked());
+            assert!(submitted.is_locked());
+        }
+
+        #[test]
+        fn should_roundtrip_lifecycle_fields_via_serde() {
+            // given
+            let mut original = Comment::new("body".to_string(), CommentType::Issue, None);
+            original.lifecycle_state = CommentLifecycleState::Submitted;
+            original.remote_review_id = Some("R_kgDOEx".to_string());
+            original.remote_comment_id = Some("RC_kgDOEx".to_string());
+            // when
+            let json = serde_json::to_string(&original).unwrap();
+            let restored: Comment = serde_json::from_str(&json).unwrap();
+            // then
+            assert_eq!(restored.lifecycle_state, CommentLifecycleState::Submitted);
+            assert_eq!(restored.remote_review_id.as_deref(), Some("R_kgDOEx"));
+            assert_eq!(restored.remote_comment_id.as_deref(), Some("RC_kgDOEx"));
+        }
+
+        #[test]
+        fn should_default_lifecycle_fields_for_pre_pr5_comment_json() {
+            // given — JSON saved before PR 5 introduced lifecycle fields.
+            let json = r#"{
+                "id": "legacy",
+                "content": "pre-pr5",
+                "comment_type": "note",
+                "created_at": "2024-01-01T00:00:00Z",
+                "line_context": null
+            }"#;
+            // when
+            let comment: Comment =
+                serde_json::from_str(json).expect("pre-PR-5 comment JSON should parse");
+            // then
+            assert_eq!(comment.lifecycle_state, CommentLifecycleState::LocalDraft);
+            assert!(comment.remote_review_id.is_none());
+            assert!(comment.remote_comment_id.is_none());
+            // and the rest of the comment survived
+            assert_eq!(comment.id, "legacy");
+            assert_eq!(comment.content, "pre-pr5");
         }
     }
 }

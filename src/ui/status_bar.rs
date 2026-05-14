@@ -244,6 +244,8 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                     " VISUAL ".to_string()
                 }
             }
+            InputMode::SubmitResolver => " RESOLVE ".to_string(),
+            InputMode::SubmitConfirm => " SUBMIT ".to_string(),
         };
 
         let mode_span = Span::styled(mode_str, styles::mode_style(theme));
@@ -264,6 +266,8 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                     " j/k:navigate  Space:select  Enter:confirm  Esc:back  q:quit "
                 }
                 InputMode::VisualSelect => " j/k:extend  c/Enter:comment  y:yank  Esc/V:cancel ",
+                InputMode::SubmitResolver => " j/k:move  Enter:toggle  s:submit  Esc:cancel ",
+                InputMode::SubmitConfirm => " y:submit  n:cancel  Esc:cancel ",
             }
         };
         let hints_span = Span::styled(hints, Style::default().fg(theme.fg_secondary));

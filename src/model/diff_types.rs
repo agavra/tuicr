@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use crate::hash::Fnv1aHasher;
+use crate::model::comment::LineSide;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -95,6 +96,41 @@ impl DiffFile {
             .as_ref()
             .or(self.old_path.as_ref())
             .expect("DiffFile must have at least one path")
+    }
+
+    /// First line number in display order that carries a value on `side`.
+    ///
+    /// On `LineSide::New`, returns the first context or addition line; on
+    /// `LineSide::Old`, the first deletion line. Used by the submission
+    /// mapper to anchor file-level comments per the spec (a file-level
+    /// comment posts on the first valid visible line on the right side, or
+    /// the first deleted line for pure-deletion files).
+    ///
+    /// Returns `None` for binary, too-large, or empty-hunk files, and for
+    /// the requested side when the file has no lines on that side (e.g. a
+    /// pure addition has no Old-side anchor).
+    pub fn first_valid_line(&self, side: LineSide) -> Option<u32> {
+        if self.is_binary || self.is_too_large {
+            return None;
+        }
+        for hunk in &self.hunks {
+            for line in &hunk.lines {
+                let candidate = match side {
+                    LineSide::New => match line.origin {
+                        LineOrigin::Context | LineOrigin::Addition => line.new_lineno,
+                        LineOrigin::Deletion => None,
+                    },
+                    LineSide::Old => match line.origin {
+                        LineOrigin::Deletion => line.old_lineno,
+                        _ => None,
+                    },
+                };
+                if let Some(n) = candidate {
+                    return Some(n);
+                }
+            }
+        }
+        None
     }
 
     /// Returns `(additions, deletions)` for this file.

@@ -15,6 +15,27 @@ pub struct CommentTypeConfig {
     pub color: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct ForgeConfig {
+    /// Prepend `**[TYPE]** ` to inline review comment bodies on submit so the
+    /// reader can see the comment classification at a glance. Defaults to
+    /// `true`; set to `false` to send the raw comment body.
+    pub comment_type_prefix: bool,
+    /// Append the `<sub>Reviewed with tuicr…</sub>` footer to the GitHub
+    /// review body on submit. Defaults to `true`.
+    pub review_footer: bool,
+}
+
+impl Default for ForgeConfig {
+    fn default() -> Self {
+        Self {
+            comment_type_prefix: true,
+            review_footer: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct AppConfig {
@@ -32,6 +53,9 @@ pub struct AppConfig {
     pub mouse: Option<bool>,
     pub transparent_background: Option<bool>,
     pub scroll_offset: Option<usize>,
+    /// `[forge]` section settings. Always present; `None` means "no override"
+    /// and downstream code should treat it as `ForgeConfig::default()`.
+    pub forge: Option<ForgeConfig>,
 }
 
 /// Known top-level config keys. Used to warn about typos.
@@ -50,7 +74,10 @@ const KNOWN_KEYS: &[&str] = &[
     "mouse",
     "transparent_background",
     "scroll_offset",
+    "forge",
 ];
+
+const FORGE_KNOWN_KEYS: &[&str] = &["comment_type_prefix", "review_footer"];
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ConfigLoadOutcome {
@@ -215,6 +242,9 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         mouse: read_bool(table, "mouse", &mut warnings),
         transparent_background: read_bool(table, "transparent_background", &mut warnings),
         scroll_offset: read_usize(table, "scroll_offset", &mut warnings),
+        forge: table
+            .get("forge")
+            .and_then(|v| parse_forge(v, &mut warnings)),
     };
 
     for key in table.keys() {
@@ -227,6 +257,53 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         config: Some(config),
         warnings,
     })
+}
+
+/// Parse the `[forge]` section, returning `Some` with overridden values when
+/// any of the recognized keys are set and `None` when the section is empty (so
+/// downstream consumers can fall back to `ForgeConfig::default()`).
+fn parse_forge(value: &Value, warnings: &mut Vec<String>) -> Option<ForgeConfig> {
+    let Some(table) = value.as_table() else {
+        warnings.push("Warning: Config key 'forge' must be a table; ignoring value".to_string());
+        return None;
+    };
+
+    for key in table.keys() {
+        if !FORGE_KNOWN_KEYS.contains(&key.as_str()) {
+            warnings.push(format!(
+                "Warning: Unknown config key 'forge.{key}', ignoring"
+            ));
+        }
+    }
+
+    let defaults = ForgeConfig::default();
+    let mut cfg = defaults.clone();
+    let mut any_override = false;
+
+    if let Some(v) = read_forge_bool(table, "comment_type_prefix", warnings) {
+        cfg.comment_type_prefix = v;
+        any_override = true;
+    }
+    if let Some(v) = read_forge_bool(table, "review_footer", warnings) {
+        cfg.review_footer = v;
+        any_override = true;
+    }
+
+    if any_override { Some(cfg) } else { None }
+}
+
+/// Like `read_bool`, but emits a `forge.<key>` qualified warning so the user
+/// can locate the misconfigured field.
+fn read_forge_bool(table: &toml::Table, key: &str, warnings: &mut Vec<String>) -> Option<bool> {
+    let val = table.get(key)?;
+    if let Some(b) = val.as_bool() {
+        Some(b)
+    } else {
+        warnings.push(format!(
+            "Warning: Config key 'forge.{key}' must be a boolean; ignoring value"
+        ));
+        None
+    }
 }
 
 fn parse_comment_types(
@@ -782,6 +859,119 @@ mod tests {
         assert_eq!(comment_types.len(), 1);
         assert_eq!(comment_types[0].id, "note");
         assert_eq!(outcome.warnings.len(), 3);
+    }
+
+    // forge
+
+    #[test]
+    fn should_default_forge_to_none_when_section_missing() {
+        let outcome = parse_config("");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.forge.clone()),
+            None
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_parse_forge_section_overriding_defaults() {
+        let outcome = parse_config(
+            r#"[forge]
+comment_type_prefix = false
+review_footer = false
+"#,
+        );
+        let forge = outcome
+            .config
+            .as_ref()
+            .and_then(|cfg| cfg.forge.clone())
+            .expect("forge section should parse");
+        assert!(!forge.comment_type_prefix);
+        assert!(!forge.review_footer);
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_default_forge_to_none_when_section_is_empty_table() {
+        // An empty `[forge]` block does not override anything; downstream
+        // consumers fall back to defaults.
+        let outcome = parse_config("[forge]\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.forge.clone()),
+            None
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_warn_on_unknown_forge_keys() {
+        let outcome = parse_config(
+            r#"[forge]
+review_footer = true
+foo = "bar"
+"#,
+        );
+        let forge = outcome
+            .config
+            .as_ref()
+            .and_then(|cfg| cfg.forge.clone())
+            .expect("forge section should parse");
+        assert!(forge.review_footer);
+        assert!(forge.comment_type_prefix);
+        assert_eq!(outcome.warnings.len(), 1);
+        assert_eq!(
+            outcome.warnings[0],
+            "Warning: Unknown config key 'forge.foo', ignoring"
+        );
+    }
+
+    #[test]
+    fn should_warn_and_ignore_forge_value_with_wrong_type() {
+        let outcome = parse_config(
+            r#"[forge]
+comment_type_prefix = "yes"
+"#,
+        );
+        // Wrong-type fields fall back to defaults; with no other overrides
+        // the section is `None`.
+        assert!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.forge.clone())
+                .is_none()
+        );
+        assert_eq!(outcome.warnings.len(), 1);
+        assert!(
+            outcome.warnings[0].contains("forge.comment_type_prefix"),
+            "warning should be qualified, got {:?}",
+            outcome.warnings[0]
+        );
+    }
+
+    #[test]
+    fn should_warn_when_forge_is_not_a_table() {
+        let outcome = parse_config("forge = true\n");
+        assert!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.forge.clone())
+                .is_none()
+        );
+        assert_eq!(
+            outcome.warnings,
+            vec!["Warning: Config key 'forge' must be a table; ignoring value".to_string()]
+        );
+    }
+
+    #[test]
+    fn forge_defaults_are_both_true() {
+        // Guard against silent changes to public defaults — both knobs ship
+        // enabled per the spec.
+        let cfg = ForgeConfig::default();
+        assert!(cfg.comment_type_prefix);
+        assert!(cfg.review_footer);
     }
 
     #[test]
