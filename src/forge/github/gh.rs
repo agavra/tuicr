@@ -203,6 +203,13 @@ where
     }
 
     fn get_pull_request_diff(&self, pr: &PullRequestDetails) -> Result<String> {
+        // We want the *cumulative* diff between base and head for the PR.
+        // `gh pr diff --patch` returns mbox-style `git format-patch` output
+        // — one patch per commit — so a 7-commit PR yields 7 separate
+        // `diff --git` blocks per file, which our parser dutifully turns
+        // into duplicate `DiffFile`s. Plain `gh pr diff` (no `--patch`)
+        // returns the single cumulative diff. Hard-won lesson; see the
+        // duplicate-files-in-list bug.
         self.run_gh(
             vec![
                 "pr".to_string(),
@@ -210,7 +217,6 @@ where
                 pr.number.to_string(),
                 "--repo".to_string(),
                 gh_repo_arg(&pr.repository),
-                "--patch".to_string(),
                 "--color".to_string(),
                 "never".to_string(),
             ],
@@ -872,6 +878,34 @@ index 1111111..2222222 100644
         let patch = backend.get_pull_request_diff(&details).unwrap();
 
         assert_eq!(patch, PR_PATCH);
+    }
+
+    #[test]
+    fn should_not_pass_patch_flag_to_gh_pr_diff() {
+        // Regression: `gh pr diff --patch` returns mbox-style per-commit
+        // patches concatenated, which the diff parser turns into duplicate
+        // DiffFile entries (one per commit-touching-the-same-file). We
+        // want the cumulative diff. Lock the argv so this can't silently
+        // regress.
+        let runner = FakeGhRunner::default();
+        let backend = GitHubGhBackend::with_runner(Some(repo()), runner);
+        let details = backend
+            .get_pull_request(parse_pull_request_target("125").unwrap())
+            .unwrap();
+        let _ = backend.get_pull_request_diff(&details).unwrap();
+
+        let calls = backend.runner.calls.borrow();
+        let diff_call = calls
+            .iter()
+            .find(|args| {
+                args.first().map(String::as_str) == Some("pr")
+                    && args.get(1).map(String::as_str) == Some("diff")
+            })
+            .expect("expected a `gh pr diff` call");
+        assert!(
+            !diff_call.iter().any(|a| a == "--patch"),
+            "`gh pr diff` must NOT pass --patch (mbox output duplicates files); got {diff_call:?}"
+        );
     }
 
     #[test]
