@@ -952,8 +952,12 @@ impl App {
     }
 
     /// Shared constructor: all `App::new` paths converge here.
+    ///
+    /// `pub(crate)` so render-snapshot tests in `ui::app_layout` can drive
+    /// the full app through `render` without going through `App::new`'s
+    /// filesystem/VCS requirements.
     #[allow(clippy::too_many_arguments)]
-    fn build(
+    pub(crate) fn build(
         vcs: Box<dyn VcsBackend>,
         vcs_info: VcsInfo,
         theme: Theme,

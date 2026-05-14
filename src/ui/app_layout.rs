@@ -3510,6 +3510,385 @@ fn apply_horizontal_scroll(line: Line, scroll_x: usize) -> Line {
 }
 
 #[cfg(test)]
+mod selector_render_snapshot_tests {
+    //! Render-snapshot tests for the review-target selector. We drive the
+    //! real `render` against ratatui's `TestBackend` and assert on the
+    //! resulting character grid (plus a few style checks for the active
+    //! tab highlight). These tests caught a regression where the inactive
+    //! tab rendered as bare dim text with no bracket / cue, making the
+    //! Pull Requests tab functionally invisible.
+    use super::*;
+    use crate::app::DiffSource;
+    use crate::error::Result as TuicrResult;
+    use crate::error::TuicrError;
+    use crate::forge::selector::PullRequestsTab;
+    use crate::forge::traits::{ForgeRepository, PullRequestSummary};
+    use crate::model::{DiffFile, DiffLine, FileStatus, ReviewSession, SessionDiffSource};
+    use crate::syntax::SyntaxHighlighter;
+    use crate::theme::Theme;
+    use crate::vcs::CommitInfo;
+    use crate::vcs::traits::{VcsBackend, VcsChangeStatus, VcsInfo, VcsType};
+    use chrono::{TimeZone, Utc};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+    use ratatui::style::Modifier;
+    use std::path::{Path, PathBuf};
+
+    struct SnapshotVcs {
+        info: VcsInfo,
+    }
+
+    impl VcsBackend for SnapshotVcs {
+        fn info(&self) -> &VcsInfo {
+            &self.info
+        }
+
+        fn get_working_tree_diff(
+            &self,
+            _highlighter: &SyntaxHighlighter,
+        ) -> TuicrResult<Vec<DiffFile>> {
+            Err(TuicrError::NoChanges)
+        }
+
+        fn fetch_context_lines(
+            &self,
+            _file_path: &Path,
+            _file_status: FileStatus,
+            _start_line: u32,
+            _end_line: u32,
+        ) -> TuicrResult<Vec<DiffLine>> {
+            Ok(Vec::new())
+        }
+
+        fn get_change_status(&self) -> TuicrResult<VcsChangeStatus> {
+            Ok(VcsChangeStatus {
+                staged: false,
+                unstaged: false,
+            })
+        }
+    }
+
+    fn commit(i: usize) -> CommitInfo {
+        CommitInfo {
+            id: format!("abc{i}"),
+            short_id: format!("abc{i}"),
+            branch_name: None,
+            summary: format!("commit {i}"),
+            body: None,
+            author: "tester".to_string(),
+            time: Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
+        }
+    }
+
+    fn make_app(commits: Vec<CommitInfo>) -> App {
+        let vcs_info = VcsInfo {
+            root_path: PathBuf::from("/tmp"),
+            head_commit: "head".to_string(),
+            branch_name: Some("main".to_string()),
+            vcs_type: VcsType::Git,
+        };
+        let session = ReviewSession::new(
+            vcs_info.root_path.clone(),
+            vcs_info.head_commit.clone(),
+            vcs_info.branch_name.clone(),
+            SessionDiffSource::WorkingTree,
+        );
+        App::build(
+            Box::new(SnapshotVcs {
+                info: vcs_info.clone(),
+            }),
+            vcs_info,
+            Theme::dark(),
+            None,
+            false,
+            Vec::new(),
+            session,
+            DiffSource::WorkingTree,
+            InputMode::CommitSelect,
+            commits,
+            None,
+        )
+        .expect("build app")
+    }
+
+    fn repo() -> ForgeRepository {
+        ForgeRepository::github("github.com", "agavra", "tuicr")
+    }
+
+    fn pr(number: u64, title: &str, author: &str) -> PullRequestSummary {
+        PullRequestSummary {
+            repository: repo(),
+            number,
+            title: title.to_string(),
+            author: Some(author.to_string()),
+            head_ref_name: format!("feat/{number}"),
+            base_ref_name: "main".to_string(),
+            updated_at: Some(Utc.with_ymd_and_hms(2026, 5, 1, 0, 0, 0).unwrap()),
+            url: format!("https://github.com/agavra/tuicr/pull/{number}"),
+            state: "OPEN".to_string(),
+            is_draft: false,
+        }
+    }
+
+    fn draw(app: &mut App) -> Buffer {
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render(frame, app))
+            .expect("draw frame");
+        terminal.backend().buffer().clone()
+    }
+
+    fn row_text(buffer: &Buffer, y: u16) -> String {
+        (0..buffer.area.width)
+            .map(|x| buffer[(x, y)].symbol().to_string())
+            .collect()
+    }
+
+    /// True when at least one cell in [x_start, x_end) on row `y` carries the
+    /// REVERSED modifier — our visual marker for the active tab.
+    fn any_reversed_in_range(buffer: &Buffer, y: u16, x_start: u16, x_end: u16) -> bool {
+        (x_start..x_end.min(buffer.area.width)).any(|x| {
+            buffer[(x, y)]
+                .style()
+                .add_modifier
+                .contains(Modifier::REVERSED)
+        })
+    }
+
+    /// Locate the inclusive x-range of a substring on row `y`. Panics if
+    /// the substring is not present, with a helpful dump.
+    fn locate(buffer: &Buffer, y: u16, needle: &str) -> (u16, u16) {
+        let line = row_text(buffer, y);
+        let byte_idx = line
+            .find(needle)
+            .unwrap_or_else(|| panic!("expected to find {needle:?} on row {y}, got {line:?}"));
+        // Symbols are ASCII in our render so byte index == column index.
+        let start = byte_idx as u16;
+        let end = start + needle.len() as u16;
+        (start, end)
+    }
+
+    #[test]
+    fn should_render_both_tabs_with_brackets_when_local_active_and_no_forge() {
+        // given — plain app with no GitHub remote
+        let mut app = make_app(vec![commit(0), commit(1)]);
+        // when
+        let buffer = draw(&mut app);
+        // then — tab strip has both bracketed labels
+        let strip = row_text(&buffer, 1);
+        assert!(
+            strip.contains("[ Local ]") && strip.contains("[ Pull Requests ]"),
+            "tab strip missing brackets: {strip:?}"
+        );
+        // and — the active "Local" label is REVERSED, inactive PR label is not
+        let (lo, hi) = locate(&buffer, 1, "Local");
+        assert!(
+            any_reversed_in_range(&buffer, 1, lo, hi),
+            "active Local label should be REVERSED"
+        );
+        let (lo, hi) = locate(&buffer, 1, "Pull Requests");
+        assert!(
+            !any_reversed_in_range(&buffer, 1, lo, hi),
+            "inactive Pull Requests label should NOT be REVERSED"
+        );
+    }
+
+    #[test]
+    fn should_show_disabled_banner_when_pr_tab_active_without_forge() {
+        // given
+        let mut app = make_app(vec![commit(0)]);
+        app.target_tab = crate::app::TargetTab::PullRequests;
+        // when
+        let buffer = draw(&mut app);
+        // then — banner spells out the reason
+        let body = (3..buffer.area.height)
+            .map(|y| row_text(&buffer, y))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            body.contains("No GitHub remote on this repo"),
+            "expected disabled banner, got body:\n{body}"
+        );
+    }
+
+    #[test]
+    fn should_highlight_pr_tab_label_when_pr_tab_active() {
+        // given — forge repo configured, PR tab active in Idle state
+        let mut app = make_app(vec![commit(0)]);
+        app.forge_repository = Some(repo());
+        app.pr_tab = PullRequestsTab::new(Some(repo()));
+        app.target_tab = crate::app::TargetTab::PullRequests;
+        // when
+        let buffer = draw(&mut app);
+        // then — Pull Requests is the highlighted (REVERSED) label
+        let (lo, hi) = locate(&buffer, 1, "Pull Requests");
+        assert!(
+            any_reversed_in_range(&buffer, 1, lo, hi),
+            "active Pull Requests label should be REVERSED"
+        );
+        let (lo, hi) = locate(&buffer, 1, "Local");
+        assert!(
+            !any_reversed_in_range(&buffer, 1, lo, hi),
+            "inactive Local label should NOT be REVERSED"
+        );
+    }
+
+    #[test]
+    fn should_render_loaded_pr_rows_with_number_title_author() {
+        // given — three loaded PRs, second with no author
+        let mut app = make_app(vec![commit(0)]);
+        app.forge_repository = Some(repo());
+        let mut tab = PullRequestsTab::new(Some(repo()));
+        tab.start_initial_load();
+        tab.apply_initial_load(Ok((
+            vec![
+                pr(148, "Add forge-backed PR review", "alice"),
+                pr(125, "Support fetching/pushing reviews", "ypares"),
+            ],
+            false,
+        )));
+        app.pr_tab = tab;
+        app.target_tab = crate::app::TargetTab::PullRequests;
+        // when
+        let buffer = draw(&mut app);
+        // then — both rows are present in the rendered body
+        let body = (3..buffer.area.height)
+            .map(|y| row_text(&buffer, y))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for needle in [
+            "#148",
+            "Add forge-backed PR review",
+            "alice",
+            "#125",
+            "Support fetching/pushing reviews",
+            "ypares",
+        ] {
+            assert!(body.contains(needle), "missing {needle:?} in:\n{body}");
+        }
+    }
+
+    #[test]
+    fn should_show_load_more_row_when_has_more_and_no_filter() {
+        // given
+        let mut app = make_app(vec![commit(0)]);
+        app.forge_repository = Some(repo());
+        let mut tab = PullRequestsTab::new(Some(repo()));
+        tab.start_initial_load();
+        tab.apply_initial_load(Ok((vec![pr(1, "alpha", "a")], true)));
+        app.pr_tab = tab;
+        app.target_tab = crate::app::TargetTab::PullRequests;
+        // when
+        let buffer = draw(&mut app);
+        // then
+        let body = (3..buffer.area.height)
+            .map(|y| row_text(&buffer, y))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            body.contains("load more pull requests"),
+            "expected load-more row, body:\n{body}"
+        );
+    }
+
+    #[test]
+    fn should_hide_load_more_row_when_filter_active() {
+        // given — has_more is true but a filter is set
+        let mut app = make_app(vec![commit(0)]);
+        app.forge_repository = Some(repo());
+        let mut tab = PullRequestsTab::new(Some(repo()));
+        tab.start_initial_load();
+        tab.apply_initial_load(Ok((vec![pr(1, "alpha", "a")], true)));
+        tab.set_filter("alpha".to_string());
+        app.pr_tab = tab;
+        app.target_tab = crate::app::TargetTab::PullRequests;
+        // when
+        let buffer = draw(&mut app);
+        // then
+        let body = (3..buffer.area.height)
+            .map(|y| row_text(&buffer, y))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !body.contains("load more pull requests"),
+            "load-more row should be hidden while filter is active:\n{body}"
+        );
+    }
+
+    #[test]
+    fn should_render_filter_draft_banner_when_editing_filter() {
+        // given
+        let mut app = make_app(vec![commit(0)]);
+        app.forge_repository = Some(repo());
+        let mut tab = PullRequestsTab::new(Some(repo()));
+        tab.start_initial_load();
+        tab.apply_initial_load(Ok((vec![pr(1, "alpha", "a")], false)));
+        app.pr_tab = tab;
+        app.target_tab = crate::app::TargetTab::PullRequests;
+        app.pr_filter_draft = Some("alp".to_string());
+        // when
+        let buffer = draw(&mut app);
+        // then — the banner shows the in-progress filter expression
+        let body = (3..buffer.area.height)
+            .map(|y| row_text(&buffer, y))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            body.contains("/alp") && body.contains("filter"),
+            "expected filter draft banner, got:\n{body}"
+        );
+    }
+
+    #[test]
+    fn should_render_error_banner_when_pr_load_failed() {
+        // given
+        let mut app = make_app(vec![commit(0)]);
+        app.forge_repository = Some(repo());
+        let mut tab = PullRequestsTab::new(Some(repo()));
+        tab.start_initial_load();
+        tab.apply_initial_load(Err("network down".to_string()));
+        app.pr_tab = tab;
+        app.target_tab = crate::app::TargetTab::PullRequests;
+        // when
+        let buffer = draw(&mut app);
+        // then
+        let body = (3..buffer.area.height)
+            .map(|y| row_text(&buffer, y))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            body.contains("error") && body.contains("network down"),
+            "expected error banner, got:\n{body}"
+        );
+    }
+
+    #[test]
+    fn should_render_loading_banner_when_pr_load_in_flight() {
+        // given
+        let mut app = make_app(vec![commit(0)]);
+        app.forge_repository = Some(repo());
+        let mut tab = PullRequestsTab::new(Some(repo()));
+        tab.start_initial_load();
+        // (stays in Loading until apply_initial_load)
+        app.pr_tab = tab;
+        app.target_tab = crate::app::TargetTab::PullRequests;
+        // when
+        let buffer = draw(&mut app);
+        // then
+        let body = (3..buffer.area.height)
+            .map(|y| row_text(&buffer, y))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            body.contains("Fetching pull requests"),
+            "expected loading banner, got:\n{body}"
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
