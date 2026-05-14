@@ -52,8 +52,24 @@ where
         Err(CommandOutputError {
             kind: CommandOutputErrorKind::Unsuccessful,
             status: output.status.code(),
-            stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            stderr: combine_streams_for_error(&output.stdout, &output.stderr),
         })
+    }
+}
+
+/// Build the `stderr` field of a failed-command error from the child's
+/// stdout + stderr. `gh api` puts the JSON response body on stdout even on
+/// non-2xx, while stderr only carries a short status line — surfacing both
+/// (with a separator when both are populated) lets the caller relay the
+/// real API error.
+fn combine_streams_for_error(stdout: &[u8], stderr: &[u8]) -> String {
+    let stderr = String::from_utf8_lossy(stderr);
+    let stdout = String::from_utf8_lossy(stdout);
+    match (stderr.trim(), stdout.trim()) {
+        (e, s) if !e.is_empty() && !s.is_empty() => format!("{e}\n{s}"),
+        (e, "") => e.to_string(),
+        ("", s) => s.to_string(),
+        _ => String::new(),
     }
 }
 
@@ -120,7 +136,7 @@ where
         Err(CommandOutputError {
             kind: CommandOutputErrorKind::Unsuccessful,
             status: output.status.code(),
-            stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            stderr: combine_streams_for_error(&output.stdout, &output.stderr),
         })
     }
 }
