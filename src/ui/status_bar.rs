@@ -276,11 +276,16 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         // Spinner banner while `:e` is mid-flight: the network half of
         // the reload runs on a background thread so the user can keep
         // scrolling, but we want a visible cue that it's working.
+        // Styled like an info message (fg + bg + bold) so it's not
+        // mistaken for static muted footer hints.
         let reload_spinner = if let Some(reload) = app.pr_reload_state.as_ref() {
             let glyph = crate::ui::selector::pr_open_spinner_glyph(reload.started_at.elapsed());
             Span::styled(
                 format!(" {glyph} Reloading PR… "),
-                Style::default().fg(theme.fg_dim),
+                Style::default()
+                    .fg(theme.message_info_fg)
+                    .bg(theme.message_info_bg)
+                    .add_modifier(Modifier::BOLD),
             )
         } else {
             Span::raw("")
