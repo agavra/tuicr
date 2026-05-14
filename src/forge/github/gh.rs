@@ -697,16 +697,41 @@ fn looks_like_permission_failure(stderr: &str) -> bool {
         || lower.contains("403 forbidden")
 }
 
+fn looks_like_pending_review_conflict(stderr: &str) -> bool {
+    let lower = stderr.to_ascii_lowercase();
+    lower.contains("only have one pending review per pull request")
+}
+
+fn looks_like_unknown_commit(stderr: &str) -> bool {
+    let lower = stderr.to_ascii_lowercase();
+    lower.contains("commitoid is not part of the pull request")
+        || lower.contains("commit_id is not part of the pull request")
+}
+
 /// Error mapping specific to create-review. Permission failures get their
-/// own message per the spec; other failures fall through to the standard
-/// missing-gh / auth / generic mapping.
+/// own message per the spec; pending-review conflicts and unknown-commit
+/// 422s get actionable messages too. Other failures fall through to the
+/// standard missing-gh / auth / generic mapping.
 fn map_create_review_error(error: GhCommandError, host: &str) -> TuicrError {
-    if let GhCommandError::Failed { stderr, .. } = &error
-        && looks_like_permission_failure(stderr)
-    {
-        return TuicrError::Forge(
-            "Cannot submit review: GitHub token lacks pull request write permission.".to_string(),
-        );
+    if let GhCommandError::Failed { stderr, .. } = &error {
+        if looks_like_permission_failure(stderr) {
+            return TuicrError::Forge(
+                "Cannot submit review: GitHub token lacks pull request write permission."
+                    .to_string(),
+            );
+        }
+        if looks_like_pending_review_conflict(stderr) {
+            return TuicrError::Forge(
+                "You already have a pending review on this PR. Finish or discard it on GitHub, then try again."
+                    .to_string(),
+            );
+        }
+        if looks_like_unknown_commit(stderr) {
+            return TuicrError::Forge(
+                "GitHub rejected the review: the selected commit is not part of this PR (it may have been removed by a force-push). Reload with :e and try again."
+                    .to_string(),
+            );
+        }
     }
     map_gh_error(error, host)
 }
@@ -1532,5 +1557,75 @@ index 1111111..2222222 100644
             .unwrap_err();
         // then
         assert!(err.to_string().contains("pull request write permission"));
+    }
+
+    #[test]
+    fn should_map_pending_review_conflict_to_finish_or_discard_message() {
+        // 422 from GitHub when a pending review already exists for this user
+        // on this PR. We surface a clear actionable message.
+        let runner = FakeGhRunner::default();
+        *runner.stdin_error.borrow_mut() = Some(GhCommandError::Failed {
+            status: Some(22),
+            stderr: "gh: Unprocessable Entity (HTTP 422)\n\
+                {\"message\":\"Unprocessable Entity\",\"errors\":\
+                [\"User can only have one pending review per pull request\"]}"
+                .to_string(),
+        });
+        let backend = GitHubGhBackend::with_runner(Some(repo()), runner);
+        let details = backend
+            .get_pull_request(parse_pull_request_target("125").unwrap())
+            .unwrap();
+        let err = backend
+            .create_review(
+                &details,
+                CreateReviewRequest {
+                    event: SubmitEvent::Comment,
+                    commit_id: "sha",
+                    body: "",
+                    comments: &[],
+                },
+            )
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("pending review on this PR"),
+            "expected pending-review hint, got: {msg:?}"
+        );
+        assert!(msg.contains("Finish or discard"), "got: {msg:?}");
+    }
+
+    #[test]
+    fn should_map_unknown_commit_to_force_push_hint() {
+        // 422 from GitHub when commit_id isn't part of the PR (e.g., the PR
+        // was force-pushed since the session loaded).
+        let runner = FakeGhRunner::default();
+        *runner.stdin_error.borrow_mut() = Some(GhCommandError::Failed {
+            status: Some(22),
+            stderr: "gh: Unprocessable Entity (HTTP 422)\n\
+                {\"message\":\"Unprocessable Entity\",\"errors\":\
+                [\"The commitOID is not part of the pull request\"]}"
+                .to_string(),
+        });
+        let backend = GitHubGhBackend::with_runner(Some(repo()), runner);
+        let details = backend
+            .get_pull_request(parse_pull_request_target("125").unwrap())
+            .unwrap();
+        let err = backend
+            .create_review(
+                &details,
+                CreateReviewRequest {
+                    event: SubmitEvent::Comment,
+                    commit_id: "sha",
+                    body: "",
+                    comments: &[],
+                },
+            )
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("not part of this PR"),
+            "expected unknown-commit hint, got: {msg:?}"
+        );
+        assert!(msg.contains(":e"), "got: {msg:?}");
     }
 }
