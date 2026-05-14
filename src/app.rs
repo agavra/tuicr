@@ -4954,7 +4954,23 @@ impl App {
             self.set_warning(format!("Cannot submit: PR is {reason}"));
             return;
         }
-        let commit_id = pr.key.head_sha.clone();
+        // When the inline commit selector shows a strict subset, comments
+        // anchor to the displayed (subset) diff, so `commit_id` must be the
+        // SHA the diff was computed against — otherwise GitHub rejects with
+        // 422 because the line/position isn't present in the diff against
+        // the cumulative PR head. `pr_commits` is stored newest-first, so
+        // the head of a (start_idx..=end_idx) range is `pr_commits[start_idx]`.
+        let commit_id = match self.commit_selection_range {
+            Some((start_idx, end_idx))
+                if !self.pr_commits.is_empty()
+                    && start_idx <= end_idx
+                    && end_idx < self.pr_commits.len()
+                    && !(start_idx == 0 && end_idx + 1 == self.pr_commits.len()) =>
+            {
+                self.pr_commits[start_idx].oid.clone()
+            }
+            _ => pr.key.head_sha.clone(),
+        };
 
         // Source of truth for the diff: when the inline commit selector is
         // showing a strict subset, `range_diff_files` carries the merged
@@ -10246,6 +10262,102 @@ mod submit_flow_tests {
         let pb = PathBuf::from(path);
         let review = app.session.get_file_mut(&pb).expect("file in session");
         review.line_comments.entry(line).or_default().push(comment);
+    }
+
+    #[test]
+    fn should_use_subset_head_sha_as_commit_id_when_inline_selector_is_strict_subset() {
+        // Regression for HTTP 422 when reviewing a subset of commits: the
+        // payload's `commit_id` must match the SHA the displayed diff was
+        // computed against — using the cumulative PR head causes GitHub to
+        // reject inline comments whose lines aren't in that diff.
+        use crate::forge::traits::PullRequestCommit;
+
+        let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+        // Newest-first: [C3, C2, C1]. PR head SHA is C3 ("abcdef0123").
+        app.pr_commits = vec![
+            PullRequestCommit {
+                oid: "abcdef0123".to_string(),
+                short_oid: "abcdef0".to_string(),
+                summary: "C3".to_string(),
+                author: "me".to_string(),
+                timestamp: None,
+            },
+            PullRequestCommit {
+                oid: "deadbeef02".to_string(),
+                short_oid: "deadbee".to_string(),
+                summary: "C2".to_string(),
+                author: "me".to_string(),
+                timestamp: None,
+            },
+            PullRequestCommit {
+                oid: "facecafe01".to_string(),
+                short_oid: "facecaf".to_string(),
+                summary: "C1".to_string(),
+                author: "me".to_string(),
+                timestamp: None,
+            },
+        ];
+        // Strict subset: only middle commit C2 selected (start=1, end=1).
+        app.commit_selection_range = Some((1, 1));
+        add_line_comment(
+            &mut app,
+            "src/lib.rs",
+            11,
+            Comment::new(
+                "comment on C2".to_string(),
+                CommentType::Issue,
+                Some(LineSide::New),
+            ),
+        );
+
+        app.start_submit(SubmitEvent::Comment);
+
+        let state = app.submit_state.as_ref().expect("submit state");
+        assert_eq!(
+            state.commit_id, "deadbeef02",
+            "subset → commit_id should be the newest selected commit (start_idx), not the PR head",
+        );
+    }
+
+    #[test]
+    fn should_use_pr_head_sha_as_commit_id_when_full_commit_range_selected() {
+        // Counterpart to the subset regression: full-range selection should
+        // continue to use the cumulative PR head SHA.
+        use crate::forge::traits::PullRequestCommit;
+
+        let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+        app.pr_commits = vec![
+            PullRequestCommit {
+                oid: "abcdef0123".to_string(),
+                short_oid: "abcdef0".to_string(),
+                summary: "C2".to_string(),
+                author: "me".to_string(),
+                timestamp: None,
+            },
+            PullRequestCommit {
+                oid: "facecafe01".to_string(),
+                short_oid: "facecaf".to_string(),
+                summary: "C1".to_string(),
+                author: "me".to_string(),
+                timestamp: None,
+            },
+        ];
+        app.commit_selection_range = Some((0, 1));
+        add_line_comment(
+            &mut app,
+            "src/lib.rs",
+            11,
+            Comment::new(
+                "comment".to_string(),
+                CommentType::Issue,
+                Some(LineSide::New),
+            ),
+        );
+
+        app.start_submit(SubmitEvent::Comment);
+
+        let state = app.submit_state.as_ref().expect("submit state");
+        assert_eq!(state.commit_id, "abcdef0123");
     }
 
     #[test]
