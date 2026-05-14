@@ -53,8 +53,19 @@ pub fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     let vcs_type = &app.vcs_info.vcs_type;
     let branch = app.vcs_info.branch_name.as_deref().unwrap_or("detached");
 
-    let title = " tuicr - Code Review ".to_string();
-    let vcs_info = format!("[{vcs_type}:{branch}] ");
+    let in_pr_mode = matches!(app.diff_source, DiffSource::PullRequest(_));
+
+    let title = if in_pr_mode {
+        " tuicr - PR Review ".to_string()
+    } else {
+        " tuicr - Code Review ".to_string()
+    };
+    let vcs_info = if in_pr_mode {
+        // PR mode header is anchored on the PR identity, not the local VCS.
+        String::new()
+    } else {
+        format!("[{vcs_type}:{branch}] ")
+    };
 
     // Show diff source info
     let source_info = match &app.diff_source {
@@ -87,6 +98,22 @@ pub fn render_header(frame: &mut Frame, app: &App, area: Rect) {
             } else {
                 format!("[staged + unstaged + {} commits] ", commits.len())
             }
+        }
+        DiffSource::PullRequest(pr) => {
+            let slug = pr.key.repository.display_name();
+            let trimmed_title = if pr.title.len() > 60 {
+                format!("{}…", &pr.title[..59])
+            } else {
+                pr.title.clone()
+            };
+            let mut info = format!(
+                "[PR mode · {slug}#{number} · {trimmed_title}] ",
+                number = pr.key.number,
+            );
+            if let Some(state) = pr.read_only_reason() {
+                info.push_str(&format!("[{state} — read only] "));
+            }
+            info
         }
     };
 
@@ -294,5 +321,164 @@ mod tests {
         let (span, _) = build_message_span(Some(&test_message(MessageType::Error)), &theme);
         assert_eq!(span.style.fg, Some(theme.message_error_fg));
         assert_eq!(span.style.bg, Some(theme.message_error_bg));
+    }
+}
+
+#[cfg(test)]
+mod pr_header_snapshot_tests {
+    //! Render-snapshot coverage for the status bar header in PR mode.
+    //! Drives the full `render_header` against ratatui's `TestBackend`
+    //! and asserts on the produced character grid.
+
+    use crate::app::{App, DiffSource, InputMode, PullRequestDiffSource};
+    use crate::error::Result as TuicrResult;
+    use crate::error::TuicrError;
+    use crate::forge::traits::{ForgeRepository, PrSessionKey};
+    use crate::model::{DiffFile, DiffLine, FileStatus, ReviewSession, SessionDiffSource};
+    use crate::syntax::SyntaxHighlighter;
+    use crate::theme::Theme;
+    use crate::vcs::traits::{VcsBackend, VcsInfo, VcsType};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+    use std::path::{Path, PathBuf};
+
+    struct NoopVcs {
+        info: VcsInfo,
+    }
+    impl VcsBackend for NoopVcs {
+        fn info(&self) -> &VcsInfo {
+            &self.info
+        }
+        fn get_working_tree_diff(
+            &self,
+            _highlighter: &SyntaxHighlighter,
+        ) -> TuicrResult<Vec<DiffFile>> {
+            Err(TuicrError::NoChanges)
+        }
+        fn fetch_context_lines(
+            &self,
+            _file_path: &Path,
+            _file_status: FileStatus,
+            _start_line: u32,
+            _end_line: u32,
+        ) -> TuicrResult<Vec<DiffLine>> {
+            Ok(Vec::new())
+        }
+    }
+
+    fn pr_source(closed: bool, merged: bool) -> PullRequestDiffSource {
+        PullRequestDiffSource {
+            key: PrSessionKey::new(
+                ForgeRepository::github("github.com", "agavra", "tuicr"),
+                125,
+                "abcdef0123456789".to_string(),
+            ),
+            base_sha: "1234567890abcdef".to_string(),
+            title: "Add forge-backed PR review".to_string(),
+            url: "https://github.com/agavra/tuicr/pull/125".to_string(),
+            head_ref_name: "reviews".to_string(),
+            base_ref_name: "main".to_string(),
+            state: if closed { "CLOSED" } else { "OPEN" }.to_string(),
+            closed,
+            merged,
+        }
+    }
+
+    fn build_pr_app(pr: PullRequestDiffSource) -> App {
+        let vcs_info = VcsInfo {
+            root_path: PathBuf::from("forge:github.com/agavra/tuicr"),
+            head_commit: pr.key.head_sha.clone(),
+            branch_name: Some(pr.head_ref_name.clone()),
+            vcs_type: VcsType::File,
+        };
+        let mut session = ReviewSession::new(
+            vcs_info.root_path.clone(),
+            pr.key.head_sha.clone(),
+            Some(pr.head_ref_name.clone()),
+            SessionDiffSource::PullRequest,
+        );
+        session.pr_session_key = Some(pr.key.clone());
+        App::build(
+            Box::new(NoopVcs {
+                info: vcs_info.clone(),
+            }),
+            vcs_info,
+            Theme::dark(),
+            None,
+            false,
+            Vec::new(),
+            session,
+            DiffSource::PullRequest(Box::new(pr)),
+            InputMode::Normal,
+            Vec::new(),
+            None,
+        )
+        .expect("build pr app")
+    }
+
+    fn draw_header(app: &App) -> Buffer {
+        let backend = TestBackend::new(140, 3);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                super::render_header(frame, app, area);
+            })
+            .expect("draw frame");
+        terminal.backend().buffer().clone()
+    }
+
+    fn row_text(buffer: &Buffer, y: u16) -> String {
+        (0..buffer.area.width)
+            .map(|x| buffer[(x, y)].symbol().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn should_render_pr_mode_header_with_slug_number_and_title() {
+        // given a PR-mode app for agavra/tuicr#125
+        let app = build_pr_app(pr_source(false, false));
+        // when
+        let buffer = draw_header(&app);
+        // then
+        let line = row_text(&buffer, 0);
+        assert!(line.contains("tuicr - PR Review"), "got: {line:?}");
+        assert!(line.contains("PR mode"), "got: {line:?}");
+        assert!(line.contains("agavra/tuicr#125"), "got: {line:?}");
+        assert!(line.contains("Add forge-backed PR review"), "got: {line:?}");
+    }
+
+    #[test]
+    fn should_render_read_only_badge_for_closed_pr() {
+        // given a closed PR
+        let app = build_pr_app(pr_source(true, false));
+        // when
+        let buffer = draw_header(&app);
+        // then
+        let line = row_text(&buffer, 0);
+        assert!(line.contains("closed — read only"), "got: {line:?}");
+    }
+
+    #[test]
+    fn should_render_read_only_badge_for_merged_pr() {
+        // given a merged PR
+        let app = build_pr_app(pr_source(false, true));
+        // when
+        let buffer = draw_header(&app);
+        // then
+        let line = row_text(&buffer, 0);
+        assert!(line.contains("merged — read only"), "got: {line:?}");
+    }
+
+    #[test]
+    fn should_omit_read_only_badge_for_open_pr() {
+        // given
+        let app = build_pr_app(pr_source(false, false));
+        // when
+        let buffer = draw_header(&app);
+        // then
+        let line = row_text(&buffer, 0);
+        assert!(!line.contains("read only"), "got: {line:?}");
     }
 }

@@ -359,18 +359,33 @@ pub fn handle_command_action(app: &mut App, action: Action) {
                     }
                     Err(e) => app.set_error(format!("Save failed: {e}")),
                 },
-                "e" | "reload" => match app.reload_diff_files() {
-                    Ok((count, invalidated)) => {
-                        if invalidated > 0 {
-                            app.set_message(format!(
-                                "Reloaded {count} files, {invalidated} changed since last review"
-                            ));
-                        } else {
-                            app.set_message(format!("Reloaded {count} files"));
+                "e" | "reload" => {
+                    if matches!(app.diff_source, app::DiffSource::PullRequest(_)) {
+                        match app.reload_pull_request() {
+                            Ok(true) => {
+                                app.set_message(
+                                    "Reloaded PR at new head — switched to fresh session"
+                                        .to_string(),
+                                );
+                            }
+                            Ok(false) => app.set_message("PR is already at the latest head"),
+                            Err(e) => app.set_error(format!("Reload failed: {e}")),
+                        }
+                    } else {
+                        match app.reload_diff_files() {
+                            Ok((count, invalidated)) => {
+                                if invalidated > 0 {
+                                    app.set_message(format!(
+                                        "Reloaded {count} files, {invalidated} changed since last review"
+                                    ));
+                                } else {
+                                    app.set_message(format!("Reloaded {count} files"));
+                                }
+                            }
+                            Err(e) => app.set_error(format!("Reload failed: {e}")),
                         }
                     }
-                    Err(e) => app.set_error(format!("Reload failed: {e}")),
-                },
+                }
                 "clip" | "export" => handle_export(app),
                 "clear" => app.clear_comments(ClearScope::CommentsAndReviewed),
                 "clearc" => app.clear_comments(ClearScope::CommentsOnly),

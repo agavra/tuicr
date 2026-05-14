@@ -428,7 +428,9 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  :e        ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Reload diff files"),
+            Span::raw(
+                "Reload diff files (in PR mode: refetch PR; switches session if head SHA advanced)",
+            ),
         ]),
         Line::from(vec![
             Span::styled(

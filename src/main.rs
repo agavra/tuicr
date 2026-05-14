@@ -174,6 +174,7 @@ fn main() -> anyhow::Result<()> {
                 path_filter: cli_args.path_filter.as_deref(),
                 file_path: cli_args.file_path.as_deref(),
                 git_backend_preference,
+                pr_target: cli_args.pr_target.as_deref(),
             },
         )
     }) {

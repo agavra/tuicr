@@ -1369,6 +1369,8 @@ pub struct CliArgs {
     pub path_filter: Option<String>,
     /// Open a single file for annotation (no VCS required)
     pub file_path: Option<String>,
+    /// Direct pull request target from `tuicr pr <target>`.
+    pub pr_target: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1753,6 +1755,22 @@ pub fn parse_cli_args() -> CliArgs {
 
 fn parse_cli_args_from(args: &[String]) -> Result<CliArgs, String> {
     let mut cli_args = CliArgs::default();
+
+    // Subcommand form: `tuicr pr <target>`. We special-case it before the
+    // flag loop because `pr` is a positional token, not a flag. Only the
+    // first positional position counts; subsequent arguments after the
+    // target are treated as ordinary flags (theme, appearance, etc).
+    if args.len() >= 2 && args[1] == "pr" {
+        let target = args.get(2).ok_or_else(|| {
+            "tuicr pr requires a target: <number>, <owner/repo#N>, or a PR URL".to_string()
+        })?;
+        if target.starts_with('-') {
+            return Err(
+                "tuicr pr requires a target: <number>, <owner/repo#N>, or a PR URL".to_string(),
+            );
+        }
+        cli_args.pr_target = Some(target.clone());
+    }
 
     for i in 0..args.len() {
         // Handle --version / -V
@@ -2285,5 +2303,68 @@ mod tests {
             .expect("parse should succeed");
         assert_eq!(parsed.path_filter, Some("src/".to_string()));
         assert_eq!(parsed.revisions, Some("HEAD~3..".to_string()));
+    }
+
+    #[test]
+    fn should_parse_pr_target_as_bare_number() {
+        // given/when
+        let parsed = parse_for_test(&["tuicr", "pr", "125"]).expect("parse should succeed");
+        // then
+        assert_eq!(parsed.pr_target, Some("125".to_string()));
+    }
+
+    #[test]
+    fn should_parse_pr_target_as_owner_repo_hash() {
+        // given/when
+        let parsed =
+            parse_for_test(&["tuicr", "pr", "agavra/tuicr#125"]).expect("parse should succeed");
+        // then
+        assert_eq!(parsed.pr_target, Some("agavra/tuicr#125".to_string()));
+    }
+
+    #[test]
+    fn should_parse_pr_target_as_full_url() {
+        // given/when
+        let parsed = parse_for_test(&["tuicr", "pr", "https://github.com/agavra/tuicr/pull/125"])
+            .expect("parse should succeed");
+        // then
+        assert_eq!(
+            parsed.pr_target,
+            Some("https://github.com/agavra/tuicr/pull/125".to_string()),
+        );
+    }
+
+    #[test]
+    fn should_error_when_pr_target_is_missing() {
+        // given/when
+        let err = parse_for_test(&["tuicr", "pr"]).expect_err("parse should fail");
+        // then
+        assert!(err.contains("tuicr pr requires a target"));
+    }
+
+    #[test]
+    fn should_error_when_pr_target_looks_like_flag() {
+        // given/when
+        let err = parse_for_test(&["tuicr", "pr", "--theme"]).expect_err("parse should fail");
+        // then
+        assert!(err.contains("tuicr pr requires a target"));
+    }
+
+    #[test]
+    fn should_combine_pr_target_with_theme_flag() {
+        // given/when — flag arguments still apply after the PR target.
+        let parsed = parse_for_test(&["tuicr", "pr", "125", "--theme", "dark"])
+            .expect("parse should succeed");
+        // then
+        assert_eq!(parsed.pr_target, Some("125".to_string()));
+        assert_eq!(parsed.theme, Some(ThemeArg::Dark));
+    }
+
+    #[test]
+    fn should_leave_pr_target_none_when_no_pr_subcommand() {
+        // given/when
+        let parsed = parse_for_test(&["tuicr"]).expect("parse should succeed");
+        // then
+        assert_eq!(parsed.pr_target, None);
     }
 }

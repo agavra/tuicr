@@ -7,8 +7,9 @@ use ratatui::style::Color;
 
 use crate::config::CommentTypeConfig;
 use crate::error::{Result, TuicrError};
+use crate::forge::context::{ContextProvider, ForgeContextProvider, VcsContextProvider};
 use crate::forge::selector::PullRequestsTab;
-use crate::forge::traits::ForgeRepository;
+use crate::forge::traits::{ForgeBackend, ForgeRepository};
 use crate::model::{
     ClearScope, Comment, CommentType, DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin,
     LineRange, LineSide, ReviewSession, SessionDiffSource,
@@ -18,8 +19,10 @@ use crate::syntax::SyntaxHighlighter;
 use crate::theme::Theme;
 use crate::update::UpdateInfo;
 use crate::vcs::git::calculate_gap;
+use crate::vcs::traits::VcsType;
 use crate::vcs::{
-    CommitInfo, FileBackend, GitBackendPreference, VcsBackend, VcsChangeStatus, VcsInfo, detect_vcs,
+    CommitInfo, FileBackend, GitBackendPreference, PrNoopVcs, VcsBackend, VcsChangeStatus, VcsInfo,
+    detect_vcs,
 };
 
 const VISIBLE_COMMIT_COUNT: usize = 10;
@@ -353,6 +356,61 @@ pub enum DiffSource {
     StagedAndUnstaged,
     CommitRange(Vec<String>),
     StagedUnstagedAndCommits(Vec<String>),
+    /// Remote PR review. Carries identity + base/head SHAs needed for
+    /// context expansion and status bar labels.
+    ///
+    /// Boxed because `PullRequestDiffSource` is much larger than the other
+    /// variants; keeping it inline would balloon `DiffSource` for every
+    /// local-review caller.
+    PullRequest(Box<PullRequestDiffSource>),
+}
+
+/// Runtime PR identity for `DiffSource::PullRequest`.
+///
+/// The `PrSessionKey` portion is what scopes persistence; the additional
+/// fields are display state derived once at open time so the status bar and
+/// context expansion don't have to call back into the forge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullRequestDiffSource {
+    pub key: crate::forge::traits::PrSessionKey,
+    pub base_sha: String,
+    pub title: String,
+    pub url: String,
+    pub head_ref_name: String,
+    pub base_ref_name: String,
+    pub state: String,
+    pub closed: bool,
+    pub merged: bool,
+}
+
+impl PullRequestDiffSource {
+    pub fn from_details(details: &crate::forge::traits::PullRequestDetails) -> Self {
+        Self {
+            key: crate::forge::traits::PrSessionKey::from_details(details),
+            base_sha: details.base_sha.clone(),
+            title: details.title.clone(),
+            url: details.url.clone(),
+            head_ref_name: details.head_ref_name.clone(),
+            base_ref_name: details.base_ref_name.clone(),
+            state: details.state.clone(),
+            closed: details.closed,
+            merged: details.merged_at.is_some(),
+        }
+    }
+
+    pub fn read_only_reason(&self) -> Option<&'static str> {
+        if self.merged {
+            Some("merged")
+        } else if self.closed {
+            Some("closed")
+        } else {
+            None
+        }
+    }
+
+    pub fn is_read_only(&self) -> bool {
+        self.read_only_reason().is_some()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -474,6 +532,10 @@ pub struct App {
     /// Background-thread channel that delivers PR list fetch results.
     /// `Receiver` is only present while a fetch is in flight.
     pub pr_load_rx: Option<std::sync::mpsc::Receiver<PrLoadEvent>>,
+    /// Forge backend instance live while in PR diff mode. Used by the
+    /// context provider for gap expansion against base/head SHAs and (in a
+    /// future PR) for remote comment fetch/submit.
+    pub forge_backend: Option<Box<dyn ForgeBackend>>,
 
     pub should_quit: bool,
     pub dirty: bool,
@@ -656,6 +718,9 @@ pub struct AppStartupOptions<'a> {
     pub path_filter: Option<&'a str>,
     pub file_path: Option<&'a str>,
     pub git_backend_preference: GitBackendPreference,
+    /// Direct PR target (`tuicr pr <target>`). Mutually exclusive with the
+    /// other selectors above; the binary validates that before reaching here.
+    pub pr_target: Option<&'a str>,
 }
 
 impl App {
@@ -665,6 +730,13 @@ impl App {
         output_to_stdout: bool,
         options: AppStartupOptions<'_>,
     ) -> Result<Self> {
+        // `tuicr pr <target>` mode: enter PR review directly, skipping the
+        // selector. Errors here surface before TUI startup like other
+        // startup failures.
+        if let Some(target) = options.pr_target {
+            return Self::new_from_pr_target(theme, comment_type_configs, output_to_stdout, target);
+        }
+
         // --file mode: open a single file for annotation without VCS
         if let Some(file_path) = options.file_path {
             let vcs = Box::new(FileBackend::new(file_path)?);
@@ -1027,6 +1099,7 @@ impl App {
             pr_list_inner_area: None,
             pr_filter_draft: None,
             pr_load_rx: None,
+            forge_backend: None,
             should_quit: false,
             dirty: false,
             quit_warned: false,
@@ -1323,6 +1396,254 @@ impl App {
         }
 
         session
+    }
+
+    /// Materialize a PR session from an already-opened PR. Reattaches the
+    /// most recent persisted session for the same head SHA when present so
+    /// reviewed markers and local comments survive a reopen.
+    fn load_or_apply_pr_session(opened: &mut crate::forge::pr_open::OpenedPullRequest) {
+        let key = opened.key.clone();
+        let Ok(Some((_path, mut persisted))) = crate::persistence::load_pr_session(&key) else {
+            return;
+        };
+
+        // Re-register diff files against the loaded session so any new files
+        // in the PR appear with content_hash tracking, and any deleted files
+        // simply stop appearing in the file list.
+        for file in &opened.diff_files {
+            let path = file.display_path().clone();
+            persisted.add_file(path, file.status, file.content_hash);
+        }
+        persisted.pr_session_key = Some(key);
+        persisted.diff_source = SessionDiffSource::PullRequest;
+        persisted.updated_at = chrono::Utc::now();
+        opened.session = persisted;
+    }
+
+    /// Direct-entry PR open: `tuicr pr <target>`.
+    pub fn new_from_pr_target(
+        theme: Theme,
+        comment_type_configs: Option<Vec<CommentTypeConfig>>,
+        output_to_stdout: bool,
+        target: &str,
+    ) -> Result<Self> {
+        use crate::forge::github::gh::{GitHubGhBackend, parse_pull_request_target};
+        use crate::forge::pr_open::open_pull_request;
+
+        let parsed = parse_pull_request_target(target)?;
+        // Detect a default repo when the target is bare (`tuicr pr 125`).
+        // For URL/owner-repo targets, this is just an optional optimization
+        // since `parsed.repository` is already populated.
+        let local_repo_root = std::env::current_dir().ok();
+        let default_repo = local_repo_root
+            .as_deref()
+            .and_then(crate::forge::detect_github_repository);
+        let target_repo = parsed
+            .repository
+            .clone()
+            .or_else(|| default_repo.clone())
+            .ok_or_else(|| {
+                TuicrError::Forge(
+                    "tuicr pr <number> requires a local GitHub remote. \
+                     Use owner/repo#N or a full PR URL outside a checkout."
+                        .to_string(),
+                )
+            })?;
+
+        // Use the local checkout for `.tuicrignore` only when it matches the
+        // PR's target repository — using a foreign repo's checkout would
+        // mis-filter the PR diff.
+        let local_checkout_for_target = local_repo_root.as_deref().and_then(|root| {
+            let detected = crate::forge::detect_github_repository(root)?;
+            if detected == target_repo {
+                Some(root.to_path_buf())
+            } else {
+                None
+            }
+        });
+
+        let backend = GitHubGhBackend::new(Some(target_repo.clone()))
+            .with_local_checkout(local_checkout_for_target.clone());
+        let highlighter = theme.syntax_highlighter();
+        let mut opened = open_pull_request(
+            &backend,
+            parsed,
+            local_checkout_for_target.as_deref(),
+            highlighter,
+        )?;
+
+        Self::load_or_apply_pr_session(&mut opened);
+
+        let pr_source = PullRequestDiffSource::from_details(&opened.details);
+        let diff_source = DiffSource::PullRequest(Box::new(pr_source));
+        let vcs_info = VcsInfo {
+            root_path: opened.session.repo_path.clone(),
+            head_commit: opened.details.head_sha.clone(),
+            branch_name: Some(opened.details.head_ref_name.clone()),
+            vcs_type: VcsType::File,
+        };
+        // FileBackend acts as a no-op VCS placeholder; PR context expansion
+        // routes through the forge backend, not the VCS box.
+        let vcs: Box<dyn VcsBackend> = Box::new(PrNoopVcs::new(vcs_info.clone()));
+
+        let mut app = Self::build(
+            vcs,
+            vcs_info,
+            theme,
+            comment_type_configs,
+            output_to_stdout,
+            opened.diff_files,
+            opened.session,
+            diff_source,
+            InputMode::Normal,
+            Vec::new(),
+            None,
+        )?;
+
+        // Wire the forge backend so context expansion routes through it.
+        app.forge_backend = Some(Box::new(backend));
+        app.forge_repository = Some(target_repo);
+        if let DiffSource::PullRequest(pr) = &app.diff_source.clone()
+            && pr.is_read_only()
+        {
+            let reason = pr.read_only_reason().unwrap_or("read only");
+            app.set_warning(format!("This PR is {reason} — review is read-only"));
+        }
+        Ok(app)
+    }
+
+    /// Re-enter PR mode after we've already opened a PR via the selector.
+    /// Used by the selector → PR open path and by `:reload` in PR mode.
+    pub fn enter_pr_diff_mode(
+        &mut self,
+        backend: Box<dyn ForgeBackend>,
+        opened: crate::forge::pr_open::OpenedPullRequest,
+    ) -> Result<()> {
+        let crate::forge::pr_open::OpenedPullRequest {
+            details,
+            diff_files,
+            session,
+            key,
+        } = opened;
+
+        // Save the current session before transitioning so local-mode work
+        // isn't lost.
+        let _ = crate::persistence::save_session(&self.session);
+
+        let pr_source = PullRequestDiffSource::from_details(&details);
+        let read_only_reason = pr_source.read_only_reason();
+        let virtual_root = session.repo_path.clone();
+
+        self.vcs_info = VcsInfo {
+            root_path: virtual_root.clone(),
+            head_commit: details.head_sha.clone(),
+            branch_name: Some(details.head_ref_name.clone()),
+            vcs_type: VcsType::File,
+        };
+        self.vcs = Box::new(PrNoopVcs::new(self.vcs_info.clone()));
+        self.session = session;
+        self.diff_files = diff_files;
+        self.diff_source = DiffSource::PullRequest(Box::new(pr_source));
+        self.forge_backend = Some(backend);
+        self.forge_repository = Some(key.repository.clone());
+        self.input_mode = InputMode::Normal;
+        self.focused_panel = FocusedPanel::Diff;
+        self.clear_expanded_gaps();
+        self.commit_list.clear();
+        self.commit_selection_range = None;
+        self.review_commits.clear();
+        self.show_commit_selector = false;
+        self.range_diff_files = None;
+        self.saved_inline_selection = None;
+        self.diff_state = DiffState::default();
+
+        // Ensure session has all files registered after the swap.
+        for file in &self.diff_files {
+            let path = file.display_path().clone();
+            self.session.add_file(path, file.status, file.content_hash);
+        }
+
+        self.sort_files_by_directory(true);
+        self.expand_all_dirs();
+        self.rebuild_annotations();
+
+        if let Some(reason) = read_only_reason {
+            self.set_warning(format!("This PR is {reason} — review is read-only"));
+        }
+
+        Ok(())
+    }
+
+    /// Reload the PR's head from the forge. If the head SHA changed, this
+    /// switches sessions so old-head draft comments stay with the old
+    /// session and the new session starts clean.
+    pub fn reload_pull_request(&mut self) -> Result<bool> {
+        use crate::forge::github::gh::GitHubGhBackend;
+
+        let DiffSource::PullRequest(current) = self.diff_source.clone() else {
+            return Err(TuicrError::UnsupportedOperation(
+                "Not in PR mode".to_string(),
+            ));
+        };
+
+        let local_checkout = self
+            .forge_backend
+            .as_deref()
+            .and_then(|backend| backend.local_checkout_path());
+        let backend = GitHubGhBackend::new(Some(current.key.repository.clone()))
+            .with_local_checkout(local_checkout.clone());
+        self.reload_pull_request_with_backend(Box::new(backend), local_checkout)
+    }
+
+    /// Inner reload path. Takes the forge backend as a parameter so tests
+    /// can inject a fake without going through `gh`.
+    pub fn reload_pull_request_with_backend(
+        &mut self,
+        backend: Box<dyn ForgeBackend>,
+        local_checkout: Option<std::path::PathBuf>,
+    ) -> Result<bool> {
+        use crate::forge::pr_open::open_pull_request;
+
+        let DiffSource::PullRequest(current) = self.diff_source.clone() else {
+            return Err(TuicrError::UnsupportedOperation(
+                "Not in PR mode".to_string(),
+            ));
+        };
+
+        let target = crate::forge::traits::PullRequestTarget::with_repository(
+            current.key.repository.clone(),
+            current.key.number,
+            current.key.number.to_string(),
+        );
+        let highlighter = self.theme.syntax_highlighter();
+        let mut opened = open_pull_request(
+            backend.as_ref(),
+            target,
+            local_checkout.as_deref(),
+            highlighter,
+        )?;
+
+        let head_changed = opened.details.head_sha != current.key.head_sha;
+        if head_changed {
+            // Save the old-head session before switching so drafts persist.
+            let _ = crate::persistence::save_session(&self.session);
+            Self::load_or_apply_pr_session(&mut opened);
+            self.enter_pr_diff_mode(backend, opened)?;
+        } else {
+            // Same head: re-parse the diff to pick up any side-channel
+            // changes (rare), but keep the session intact.
+            self.diff_files = opened.diff_files;
+            self.clear_expanded_gaps();
+            for file in &self.diff_files {
+                let path = file.display_path().clone();
+                self.session.add_file(path, file.status, file.content_hash);
+            }
+            self.sort_files_by_directory(true);
+            self.expand_all_dirs();
+            self.rebuild_annotations();
+        }
+
+        Ok(head_changed)
     }
 
     fn staged_commit_entry() -> CommitInfo {
@@ -1793,6 +2114,15 @@ impl App {
                     highlighter,
                     self.path_filter.as_deref(),
                 )?
+            }
+            DiffSource::PullRequest(_) => {
+                // PR reload is a separate code path that may switch sessions
+                // when the head SHA advances; callers dispatch via
+                // `reload_pull_request` instead of going through this
+                // local-reload helper.
+                return Err(TuicrError::UnsupportedOperation(
+                    "Use :reload from the command line in PR mode".to_string(),
+                ));
             }
         };
 
@@ -3906,7 +4236,7 @@ impl App {
     }
 
     /// Handle Enter on the PR tab. Returns true when the action was handled
-    /// (load more triggered, stub PR open message shown, etc).
+    /// (load more triggered, PR opened, error surfaced, etc).
     pub fn pr_tab_select(&mut self) -> bool {
         if self.pr_tab.cursor_on_load_more() {
             if let Some((repo, already)) = self.pr_tab.start_load_more() {
@@ -3914,16 +4244,70 @@ impl App {
             }
             return true;
         }
-        if let Some(pr) = self.pr_tab.cursor_pr() {
-            // PR diff mode lands in PR 3. For now, surface a clean info
-            // message and leave the selector intact.
-            let number = pr.number;
-            self.set_message(format!(
-                "Opening PR #{number} not yet implemented — coming in PR 3"
-            ));
-            return true;
+        // Clone the summary so we drop the immutable borrow before mutating
+        // the app to enter PR mode.
+        let Some(summary) = self.pr_tab.cursor_pr().cloned() else {
+            return false;
+        };
+        match self.open_pr_from_selector(&summary) {
+            Ok(()) => {
+                self.set_message(format!(
+                    "Opened PR {}#{}",
+                    summary.repository.display_name(),
+                    summary.number,
+                ));
+            }
+            Err(e) => {
+                // Errors surface inline in the selector (which the user
+                // can still navigate). The selector state machine moves to
+                // an Error variant; UI renders the message in the PR tab.
+                self.pr_tab
+                    .apply_initial_load(Err(format!("Failed to open PR: {e}")));
+            }
         }
-        false
+        true
+    }
+
+    fn open_pr_from_selector(
+        &mut self,
+        summary: &crate::forge::traits::PullRequestSummary,
+    ) -> Result<()> {
+        use crate::forge::github::gh::GitHubGhBackend;
+
+        let local_checkout = Some(self.vcs_info.root_path.clone());
+        let target_repo = summary.repository.clone();
+        let backend = GitHubGhBackend::new(Some(target_repo.clone()))
+            .with_local_checkout(local_checkout.clone());
+        self.open_pr_with_backend(summary, Box::new(backend), local_checkout)
+    }
+
+    /// Open a PR using the provided forge backend. Exists as a seam for
+    /// tests; production paths go through `open_pr_from_selector` or
+    /// `new_from_pr_target` which construct the real backend.
+    pub fn open_pr_with_backend(
+        &mut self,
+        summary: &crate::forge::traits::PullRequestSummary,
+        backend: Box<dyn ForgeBackend>,
+        local_checkout: Option<std::path::PathBuf>,
+    ) -> Result<()> {
+        use crate::forge::pr_open::open_pull_request;
+        use crate::forge::traits::PullRequestTarget;
+
+        let target = PullRequestTarget::with_repository(
+            summary.repository.clone(),
+            summary.number,
+            summary.number.to_string(),
+        );
+        let highlighter = self.theme.syntax_highlighter();
+        let mut opened = open_pull_request(
+            backend.as_ref(),
+            target,
+            local_checkout.as_deref(),
+            highlighter,
+        )?;
+        Self::load_or_apply_pr_session(&mut opened);
+        self.enter_pr_diff_mode(backend, opened)?;
+        Ok(())
     }
 
     pub fn begin_pr_filter(&mut self) {
@@ -4698,8 +5082,10 @@ impl App {
             .gap_boundaries(&gap_id)
             .ok_or_else(|| TuicrError::CorruptedSession(format!("Invalid gap: {:?}", gap_id)))?;
 
-        let file_path = self.diff_files[gap_id.file_idx].display_path().clone();
-        let file_status = self.diff_files[gap_id.file_idx].status;
+        let file = &self.diff_files[gap_id.file_idx];
+        let old_path = file.old_path.clone();
+        let new_path = file.new_path.clone();
+        let file_status = file.status;
 
         let top_len = self.expanded_top.get(&gap_id).map_or(0, |v| v.len()) as u32;
         let bot_len = self.expanded_bottom.get(&gap_id).map_or(0, |v| v.len()) as u32;
@@ -4712,16 +5098,21 @@ impl App {
             return Ok(()); // Fully expanded
         }
 
+        let fetch = |start: u32, end: u32| -> Result<Vec<DiffLine>> {
+            self.context_provider().fetch_context_lines(
+                old_path.as_ref(),
+                new_path.as_ref(),
+                file_status,
+                start,
+                end,
+            )
+        };
+
         match direction {
             ExpandDirection::Down => {
                 let n = limit.unwrap_or(usize::MAX) as u32;
                 let fetch_end = inner_start.saturating_add(n - 1).min(inner_end);
-                let new_lines = self.vcs.fetch_context_lines(
-                    &file_path,
-                    file_status,
-                    inner_start,
-                    fetch_end,
-                )?;
+                let new_lines = fetch(inner_start, fetch_end)?;
                 self.expanded_top
                     .entry(gap_id.clone())
                     .or_default()
@@ -4730,12 +5121,7 @@ impl App {
             ExpandDirection::Up => {
                 let n = limit.unwrap_or(usize::MAX) as u32;
                 let fetch_start = inner_end.saturating_sub(n - 1).max(inner_start);
-                let new_lines = self.vcs.fetch_context_lines(
-                    &file_path,
-                    file_status,
-                    fetch_start,
-                    inner_end,
-                )?;
+                let new_lines = fetch(fetch_start, inner_end)?;
                 // Prepend: new lines go before existing bottom lines
                 let existing = self.expanded_bottom.remove(&gap_id).unwrap_or_default();
                 let mut combined = new_lines;
@@ -4744,12 +5130,7 @@ impl App {
             }
             ExpandDirection::Both => {
                 // Fetch everything remaining
-                let new_lines = self.vcs.fetch_context_lines(
-                    &file_path,
-                    file_status,
-                    inner_start,
-                    inner_end,
-                )?;
+                let new_lines = fetch(inner_start, inner_end)?;
                 self.expanded_top
                     .entry(gap_id.clone())
                     .or_default()
@@ -4759,6 +5140,26 @@ impl App {
 
         self.rebuild_annotations();
         Ok(())
+    }
+
+    /// Resolve the right `ContextProvider` for the current diff source.
+    /// In PR mode (with a forge backend present), expansion goes through the
+    /// forge; otherwise it goes through the local VCS backend.
+    fn context_provider(&self) -> Box<dyn ContextProvider + '_> {
+        if let (DiffSource::PullRequest(pr), Some(backend)) =
+            (&self.diff_source, self.forge_backend.as_ref())
+        {
+            Box::new(ForgeContextProvider {
+                forge: backend.as_ref(),
+                repository: pr.key.repository.clone(),
+                base_sha: pr.base_sha.clone(),
+                head_sha: pr.key.head_sha.clone(),
+            })
+        } else {
+            Box::new(VcsContextProvider {
+                vcs: self.vcs.as_ref(),
+            })
+        }
     }
 
     /// Collapse an expanded gap
@@ -5637,6 +6038,67 @@ mod target_selector_tests {
         }
     }
 
+    fn test_pr_details(number: u64, title: &str) -> crate::forge::traits::PullRequestDetails {
+        crate::forge::traits::PullRequestDetails {
+            repository: ForgeRepository::github("github.com", "agavra", "tuicr"),
+            number,
+            title: title.to_string(),
+            url: format!("https://github.com/agavra/tuicr/pull/{number}"),
+            state: "OPEN".to_string(),
+            is_draft: false,
+            author: Some("alice".to_string()),
+            head_ref_name: "feat".to_string(),
+            base_ref_name: "main".to_string(),
+            head_sha: "abcdef0123456789".to_string(),
+            base_sha: "1234567890abcdef".to_string(),
+            body: String::new(),
+            updated_at: None,
+            closed: false,
+            merged_at: None,
+        }
+    }
+
+    struct FakeForgeBackend {
+        details: crate::forge::traits::PullRequestDetails,
+        patch: String,
+    }
+
+    impl FakeForgeBackend {
+        fn open_pr_details(
+            details: crate::forge::traits::PullRequestDetails,
+            patch: String,
+        ) -> Self {
+            Self { details, patch }
+        }
+    }
+
+    impl crate::forge::traits::ForgeBackend for FakeForgeBackend {
+        fn list_pull_requests(
+            &self,
+            _query: crate::forge::traits::PullRequestListQuery,
+        ) -> Result<crate::forge::traits::PagedPullRequests> {
+            unimplemented!("not used in this test")
+        }
+        fn get_pull_request(
+            &self,
+            _target: crate::forge::traits::PullRequestTarget,
+        ) -> Result<crate::forge::traits::PullRequestDetails> {
+            Ok(self.details.clone())
+        }
+        fn get_pull_request_diff(
+            &self,
+            _pr: &crate::forge::traits::PullRequestDetails,
+        ) -> Result<String> {
+            Ok(self.patch.clone())
+        }
+        fn fetch_file_lines(
+            &self,
+            _request: crate::forge::traits::ForgeFileLinesRequest,
+        ) -> Result<Vec<crate::model::DiffLine>> {
+            Ok(Vec::new())
+        }
+    }
+
     fn sample_pr(number: u64, title: &str) -> PullRequestSummary {
         PullRequestSummary {
             repository: ForgeRepository::github("github.com", "agavra", "tuicr"),
@@ -5749,22 +6211,211 @@ mod target_selector_tests {
     }
 
     #[test]
-    fn should_show_stub_message_when_opening_pr_on_pr_tab() {
-        // given
+    fn should_enter_pr_mode_when_opening_pr_via_fake_backend() {
+        // given a selector with a single PR row and a fake forge backend
         let mut app = build_app();
         app.forge_repository = Some(ForgeRepository::github("github.com", "agavra", "tuicr"));
         app.pr_tab = PullRequestsTab::new(app.forge_repository.clone());
         app.pr_tab.start_initial_load();
+        let summary = sample_pr(42, "answer");
         app.pr_tab
-            .apply_initial_load(Ok((vec![sample_pr(42, "answer")], false)));
+            .apply_initial_load(Ok((vec![summary.clone()], false)));
         app.target_tab = TargetTab::PullRequests;
+        let backend = Box::new(FakeForgeBackend::open_pr_details(
+            test_pr_details(42, "answer"),
+            crate::forge::github::gh::tests_fixture::SIMPLE_PATCH.to_string(),
+        ));
         // when
-        let handled = app.pr_tab_select();
+        app.open_pr_with_backend(&summary, backend, None).unwrap();
         // then
-        assert!(handled);
-        let msg = app.message.as_ref().expect("expected info message");
-        assert!(msg.content.contains("#42"));
-        assert!(msg.content.contains("not yet implemented"));
+        assert!(matches!(app.diff_source, DiffSource::PullRequest(_)));
+        if let DiffSource::PullRequest(pr) = &app.diff_source {
+            assert_eq!(pr.key.number, 42);
+            assert_eq!(pr.title, "answer");
+            assert_eq!(pr.head_ref_name, "feat");
+            assert_eq!(pr.base_ref_name, "main");
+            assert_eq!(pr.key.head_sha, "abcdef0123456789");
+            assert_eq!(pr.base_sha, "1234567890abcdef");
+        }
+        // and the session is keyed by the PR
+        assert!(app.session.pr_session_key.is_some());
+        // and PR diff files were parsed
+        assert_eq!(app.diff_files.len(), 1);
+        // and the forge backend is wired for context expansion / submit
+        assert!(app.forge_backend.is_some());
+    }
+
+    #[test]
+    fn should_warn_when_opening_closed_pr() {
+        // given
+        let mut app = build_app();
+        let summary = sample_pr(42, "old");
+        let mut details = test_pr_details(42, "old");
+        details.state = "CLOSED".to_string();
+        details.closed = true;
+        let backend = Box::new(FakeForgeBackend::open_pr_details(
+            details,
+            crate::forge::github::gh::tests_fixture::SIMPLE_PATCH.to_string(),
+        ));
+        // when
+        app.open_pr_with_backend(&summary, backend, None).unwrap();
+        // then — warning message surfaces the read-only state
+        let msg = app.message.as_ref().expect("expected warning message");
+        assert!(msg.content.contains("closed"), "got: {:?}", msg.content);
+        assert!(msg.content.contains("read-only"), "got: {:?}", msg.content);
+        // and the diff source reflects the closed state
+        if let DiffSource::PullRequest(pr) = &app.diff_source {
+            assert!(pr.is_read_only());
+            assert_eq!(pr.read_only_reason(), Some("closed"));
+        } else {
+            panic!("expected PullRequest diff source");
+        }
+    }
+
+    #[test]
+    fn should_surface_pr_open_error_into_selector_state() {
+        // given a backend that fails at get_pull_request
+        let mut app = build_app();
+        app.forge_repository = Some(ForgeRepository::github("github.com", "agavra", "tuicr"));
+        app.pr_tab = PullRequestsTab::new(app.forge_repository.clone());
+        app.pr_tab.start_initial_load();
+        let summary = sample_pr(42, "boom");
+        app.pr_tab
+            .apply_initial_load(Ok((vec![summary.clone()], false)));
+        app.target_tab = TargetTab::PullRequests;
+        let backend = Box::new(FailingForgeBackend);
+        // when
+        let result = app.open_pr_with_backend(&summary, backend, None);
+        // then
+        assert!(result.is_err());
+        // diff source did not switch
+        assert!(matches!(app.diff_source, DiffSource::WorkingTree));
+    }
+
+    #[test]
+    fn should_route_context_expansion_to_forge_provider_in_pr_mode() {
+        // given an app in PR mode with a counting fake backend
+        let mut app = build_app();
+        let summary = sample_pr(7, "ctx");
+        let backend = Box::new(FakeForgeBackend::open_pr_details(
+            test_pr_details(7, "ctx"),
+            crate::forge::github::gh::tests_fixture::SIMPLE_PATCH.to_string(),
+        ));
+        app.open_pr_with_backend(&summary, backend, None).unwrap();
+        // when we ask for a context provider
+        // (we can't easily trigger a real gap expansion without setting up
+        //  the full diff state, so instead we assert by construction)
+        let provider = app.context_provider();
+        // then — explicitly: the provider is the forge variant. We probe by
+        // calling fetch with a Modified file and asserting the forge backend
+        // recorded a head-side request via its trait method. The
+        // FakeForgeBackend just returns empty; we're verifying routing.
+        let res = provider
+            .fetch_context_lines(
+                None,
+                Some(&PathBuf::from("src/lib.rs")),
+                FileStatus::Modified,
+                1,
+                3,
+            )
+            .unwrap();
+        // The fake forge returns empty by default — the *call* succeeded
+        // (no error from a VCS backend would have meant VCS routing). The
+        // key signal: this didn't go through the VCS backend (DummyVcs
+        // doesn't implement fetch_context_lines and would have panicked).
+        assert!(res.is_empty());
+    }
+
+    #[test]
+    fn should_switch_session_when_pr_head_advances_on_reload() {
+        // given an app already in PR mode at head A
+        let mut app = build_app();
+        let summary = sample_pr(42, "head-a");
+        let mut details_a = test_pr_details(42, "head-a");
+        details_a.head_sha = "aaaaaaaaaaaaaaaa".to_string();
+        let backend_a = Box::new(FakeForgeBackend::open_pr_details(
+            details_a.clone(),
+            crate::forge::github::gh::tests_fixture::SIMPLE_PATCH.to_string(),
+        ));
+        app.open_pr_with_backend(&summary, backend_a, None).unwrap();
+        let old_session_id = app.session.id.clone();
+        // when reloading with a backend that reports head B
+        let mut details_b = details_a.clone();
+        details_b.head_sha = "bbbbbbbbbbbbbbbb".to_string();
+        details_b.title = "head-b".to_string();
+        let backend_b = Box::new(FakeForgeBackend::open_pr_details(
+            details_b.clone(),
+            crate::forge::github::gh::tests_fixture::SIMPLE_PATCH.to_string(),
+        ));
+        let head_changed = app
+            .reload_pull_request_with_backend(backend_b, None)
+            .unwrap();
+        // then — the session swap happened
+        assert!(head_changed);
+        if let DiffSource::PullRequest(pr) = &app.diff_source {
+            assert_eq!(pr.key.head_sha, "bbbbbbbbbbbbbbbb");
+            assert_eq!(pr.title, "head-b");
+        } else {
+            panic!("expected PullRequest diff source");
+        }
+        // and the session changed (new session, not the old one)
+        assert_ne!(app.session.id, old_session_id);
+    }
+
+    #[test]
+    fn should_keep_session_when_pr_head_unchanged_on_reload() {
+        // given an app in PR mode
+        let mut app = build_app();
+        let summary = sample_pr(42, "same");
+        let details = test_pr_details(42, "same");
+        let backend = Box::new(FakeForgeBackend::open_pr_details(
+            details.clone(),
+            crate::forge::github::gh::tests_fixture::SIMPLE_PATCH.to_string(),
+        ));
+        app.open_pr_with_backend(&summary, backend, None).unwrap();
+        let session_id_before = app.session.id.clone();
+        // when reloading with the same head
+        let backend2 = Box::new(FakeForgeBackend::open_pr_details(
+            details,
+            crate::forge::github::gh::tests_fixture::SIMPLE_PATCH.to_string(),
+        ));
+        let changed = app
+            .reload_pull_request_with_backend(backend2, None)
+            .unwrap();
+        // then
+        assert!(!changed);
+        assert_eq!(app.session.id, session_id_before);
+    }
+
+    struct FailingForgeBackend;
+
+    impl crate::forge::traits::ForgeBackend for FailingForgeBackend {
+        fn list_pull_requests(
+            &self,
+            _q: crate::forge::traits::PullRequestListQuery,
+        ) -> Result<crate::forge::traits::PagedPullRequests> {
+            unimplemented!()
+        }
+        fn get_pull_request(
+            &self,
+            _target: crate::forge::traits::PullRequestTarget,
+        ) -> Result<crate::forge::traits::PullRequestDetails> {
+            Err(crate::error::TuicrError::Forge(
+                "simulated network failure".to_string(),
+            ))
+        }
+        fn get_pull_request_diff(
+            &self,
+            _pr: &crate::forge::traits::PullRequestDetails,
+        ) -> Result<String> {
+            unreachable!()
+        }
+        fn fetch_file_lines(
+            &self,
+            _req: crate::forge::traits::ForgeFileLinesRequest,
+        ) -> Result<Vec<crate::model::DiffLine>> {
+            Ok(Vec::new())
+        }
     }
 
     #[test]

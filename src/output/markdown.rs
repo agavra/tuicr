@@ -139,6 +139,11 @@ fn review_scope_label(diff_source: &DiffSource) -> String {
         DiffSource::StagedUnstagedAndCommits(_) => {
             "selected commit range + staged/unstaged changes".to_string()
         }
+        DiffSource::PullRequest(pr) => format!(
+            "pull request {}#{}",
+            pr.key.repository.display_name(),
+            pr.key.number
+        ),
     };
 
     format!("Review Comment (scope: {scope})")
@@ -194,6 +199,19 @@ fn generate_markdown(
                 "Reviewing staged + unstaged + commits: {}",
                 short_ids.join(", ")
             );
+            let _ = writeln!(md);
+        }
+        DiffSource::PullRequest(pr) => {
+            let short = pr.key.short_head();
+            let _ = writeln!(
+                md,
+                "Reviewing pull request {}#{}: {}",
+                pr.key.repository.display_name(),
+                pr.key.number,
+                pr.title
+            );
+            let _ = writeln!(md, "URL: {}", pr.url);
+            let _ = writeln!(md, "Head: {short}");
             let _ = writeln!(md);
         }
     }
