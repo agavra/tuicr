@@ -1810,14 +1810,11 @@ impl App {
             }
         }
         let target = best.or(file_first).unwrap_or(0);
-        self.diff_state.cursor_line = target;
-        // Anchor the current_file_idx to whatever annotation we landed on
-        // so the file list highlight stays in sync.
-        if let Some(ann) = self.line_annotations.get(target)
-            && let Some(file_idx) = annotation_file_idx(ann)
-        {
-            self.diff_state.current_file_idx = file_idx;
-        }
+        // `move_cursor_to_annotation` updates cursor_line AND adjusts
+        // `scroll_offset` so the cursor stays in the viewport. Without
+        // it the viewport snaps back to the top of the diff after the
+        // reload.
+        self.move_cursor_to_annotation(target);
     }
 
     /// Kick off `:e` asynchronously. Captures the cursor anchor, sets
