@@ -33,6 +33,7 @@ pub fn render_submit_resolver(frame: &mut Frame, app: &App) {
 
     let block = Block::default()
         .title(title)
+        .title_alignment(Alignment::Center)
         .borders(Borders::ALL)
         .style(styles::popup_style(theme))
         .border_style(styles::border_style(theme, true));
@@ -94,6 +95,7 @@ pub fn render_submit_confirm(frame: &mut Frame, app: &App) {
 
     let block = Block::default()
         .title(title)
+        .title_alignment(Alignment::Center)
         .borders(Borders::ALL)
         .style(styles::popup_style(theme))
         .border_style(styles::border_style(theme, true));
@@ -165,7 +167,6 @@ pub fn render_submit_confirm(frame: &mut Frame, app: &App) {
 
     let paragraph = Paragraph::new(lines)
         .style(styles::popup_style(theme))
-        .alignment(Alignment::Center)
         .wrap(Wrap { trim: false });
     frame.render_widget(paragraph, inner);
 }
