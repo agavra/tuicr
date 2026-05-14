@@ -1109,27 +1109,15 @@ fn add_remote_threads_to_line(
         if !matches_side {
             continue;
         }
-        for (idx, comment) in thread.comments.iter().enumerate() {
-            let is_reply = idx > 0;
-            let comment_lines = comment_panel::format_remote_comment_lines(
-                ctx.theme,
-                comment.author.as_deref(),
-                &comment.body,
-                comment.line.map(LineRange::single),
-                is_reply,
-                muted,
-                thread.is_resolved,
-                thread.is_outdated,
+        let thread_lines = comment_panel::format_remote_thread_lines(ctx.theme, thread, muted);
+        for mut comment_line in thread_lines {
+            let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
+            comment_line.spans.insert(
+                0,
+                Span::styled(indicator, styles::current_line_indicator_style(ctx.theme)),
             );
-            for mut comment_line in comment_lines {
-                let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
-                comment_line.spans.insert(
-                    0,
-                    Span::styled(indicator, styles::current_line_indicator_style(ctx.theme)),
-                );
-                lines.push(comment_line);
-                line_idx += 1;
-            }
+            lines.push(comment_line);
+            line_idx += 1;
         }
     }
     line_idx
@@ -1371,9 +1359,6 @@ mod remote_comments_side_by_side_snapshot_tests {
                 author: Some("alice".to_string()),
                 body: "sbs hello".to_string(),
                 created_at: None,
-                path: "src/lib.rs".to_string(),
-                line: Some(2),
-                side: RemoteCommentSide::Right,
                 in_reply_to: None,
                 url: "https://example.com".to_string(),
             }],

@@ -662,15 +662,15 @@ index 1111111..2222222 100644
                                 "id": "PRRT_1",
                                 "isResolved": false,
                                 "isOutdated": false,
+                                "path": "src/lib.rs",
+                                "line": 42,
+                                "diffSide": "RIGHT",
                                 "comments": {
                                     "nodes": [
                                         {
                                             "id": "PRRC_1",
                                             "body": "remote one",
                                             "author": { "login": "alice" },
-                                            "path": "src/lib.rs",
-                                            "line": 42,
-                                            "side": "RIGHT",
                                             "url": "https://example.com/1"
                                         }
                                     ]

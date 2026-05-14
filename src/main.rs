@@ -388,7 +388,11 @@ fn main() -> anyhow::Result<()> {
                         pending_d = false;
                         if key.code == crossterm::event::KeyCode::Char('d') {
                             if !app.delete_comment_at_cursor() {
-                                app.set_message("No comment at cursor");
+                                if app.cursor_on_remote_thread() {
+                                    app.set_message("GitHub comment — read only in tuicr");
+                                } else {
+                                    app.set_message("No comment at cursor");
+                                }
                             }
                             continue;
                         }

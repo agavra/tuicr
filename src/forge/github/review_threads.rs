@@ -8,6 +8,12 @@
 //!
 //! Payload shape (only the fields we read are documented here):
 //!
+//! In GitHub's GraphQL schema, anchor fields (`path`, `line`, `originalLine`,
+//! `diffSide`) live on `PullRequestReviewThread`, NOT on each comment node.
+//! An earlier version of this code put them on the comment nodes; GraphQL
+//! rejected the query with "Field 'side' doesn't exist on type
+//! 'PullRequestReviewComment'". Hence this shape:
+//!
 //! ```json
 //! {
 //!   "data": {
@@ -20,6 +26,10 @@
 //!               "id": "PRRT_kw...",
 //!               "isResolved": false,
 //!               "isOutdated": false,
+//!               "path": "src/lib.rs",
+//!               "line": 42,
+//!               "originalLine": 42,
+//!               "diffSide": "RIGHT",
 //!               "comments": {
 //!                 "nodes": [
 //!                   {
@@ -27,10 +37,6 @@
 //!                     "body": "Can this be simplified?",
 //!                     "author": { "login": "alice" },
 //!                     "createdAt": "2026-05-12T18:30:00Z",
-//!                     "path": "src/lib.rs",
-//!                     "line": 42,
-//!                     "originalLine": 42,
-//!                     "side": "RIGHT",
 //!                     "url": "https://github.com/agavra/tuicr/pull/125#discussion_r1"
 //!                   }
 //!                 ]
@@ -67,14 +73,6 @@ struct GhReviewComment {
     #[serde(default)]
     created_at: Option<DateTime<Utc>>,
     #[serde(default)]
-    path: Option<String>,
-    #[serde(default)]
-    line: Option<u32>,
-    #[serde(default)]
-    original_line: Option<u32>,
-    #[serde(default)]
-    side: Option<String>,
-    #[serde(default)]
     url: Option<String>,
     #[serde(default)]
     reply_to: Option<GhReplyRef>,
@@ -99,6 +97,14 @@ struct GhReviewThread {
     is_resolved: bool,
     #[serde(default)]
     is_outdated: bool,
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    line: Option<u32>,
+    #[serde(default)]
+    original_line: Option<u32>,
+    #[serde(default)]
+    diff_side: Option<String>,
     #[serde(default)]
     comments: Option<GhCommentsConn>,
 }
@@ -191,17 +197,21 @@ fn convert_thread(raw: GhReviewThread) -> RemoteReviewThread {
         .map(convert_comment)
         .collect();
 
-    // Thread anchor: prefer the root comment's effective position. If the
-    // thread is outdated, GitHub returns line=null but originalLine is set,
-    // which we surface as `is_outdated` rather than synthesizing a line.
-    let root = comments.first();
-    let path = root.map(|c| c.path.clone()).unwrap_or_default();
-    let line = root.and_then(|c| c.line);
-    let side = root.map(|c| c.side).unwrap_or(RemoteCommentSide::Right);
+    let side = raw
+        .diff_side
+        .as_deref()
+        .map(RemoteCommentSide::parse)
+        .unwrap_or(RemoteCommentSide::Right);
+
+    // If `line` is null on an outdated thread, fall back to `originalLine`
+    // so we still know roughly where the thread was anchored. The
+    // `is_outdated` flag drives muted styling + suppression from the
+    // default `:comments unresolved` view.
+    let line = raw.line.or(raw.original_line);
 
     RemoteReviewThread {
         id: raw.id,
-        path,
+        path: raw.path.unwrap_or_default(),
         line,
         side,
         is_resolved: raw.is_resolved,
@@ -211,21 +221,11 @@ fn convert_thread(raw: GhReviewThread) -> RemoteReviewThread {
 }
 
 fn convert_comment(raw: GhReviewComment) -> RemoteReviewComment {
-    let side = raw
-        .side
-        .as_deref()
-        .map(RemoteCommentSide::parse)
-        .unwrap_or(RemoteCommentSide::Right);
     RemoteReviewComment {
         id: raw.id,
         author: raw.author.and_then(|a| a.login),
         body: raw.body,
         created_at: raw.created_at,
-        path: raw.path.unwrap_or_default(),
-        // If `line` is null on an outdated comment, fall back to
-        // `originalLine` so we still know roughly where it was anchored.
-        line: raw.line.or(raw.original_line),
-        side,
         in_reply_to: raw.reply_to.map(|r| r.id),
         url: raw.url.unwrap_or_default(),
     }
@@ -247,16 +247,16 @@ pub(crate) fn build_query(after_cursor: Option<&str>) -> String {
           id
           isResolved
           isOutdated
+          path
+          line
+          originalLine
+          diffSide
           comments(first: 100) {{
             nodes {{
               id
               body
               author {{ login }}
               createdAt
-              path
-              line
-              originalLine
-              side
               url
               replyTo {{ id }}
             }}
@@ -290,6 +290,10 @@ mod tests {
                                 "id": "PRRT_1",
                                 "isResolved": false,
                                 "isOutdated": false,
+                                "path": "src/lib.rs",
+                                "line": 42,
+                                "originalLine": 42,
+                                "diffSide": "RIGHT",
                                 "comments": {
                                     "nodes": [
                                         {
@@ -297,10 +301,6 @@ mod tests {
                                             "body": "Can this be simplified?",
                                             "author": { "login": "alice" },
                                             "createdAt": "2026-05-12T18:30:00Z",
-                                            "path": "src/lib.rs",
-                                            "line": 42,
-                                            "originalLine": 42,
-                                            "side": "RIGHT",
                                             "url": "https://github.com/agavra/tuicr/pull/125#discussion_r1"
                                         }
                                     ]
@@ -324,24 +324,21 @@ mod tests {
                                 "id": "PRRT_1",
                                 "isResolved": false,
                                 "isOutdated": false,
+                                "path": "src/lib.rs",
+                                "line": 42,
+                                "diffSide": "RIGHT",
                                 "comments": {
                                     "nodes": [
                                         {
                                             "id": "PRRC_1",
                                             "body": "Root",
                                             "author": { "login": "alice" },
-                                            "path": "src/lib.rs",
-                                            "line": 42,
-                                            "side": "RIGHT",
                                             "url": "https://example.com/1"
                                         },
                                         {
                                             "id": "PRRC_2",
                                             "body": "Reply 1",
                                             "author": { "login": "bob" },
-                                            "path": "src/lib.rs",
-                                            "line": 42,
-                                            "side": "RIGHT",
                                             "url": "https://example.com/2",
                                             "replyTo": { "id": "PRRC_1" }
                                         },
@@ -349,9 +346,6 @@ mod tests {
                                             "id": "PRRC_3",
                                             "body": "Reply 2",
                                             "author": { "login": "alice" },
-                                            "path": "src/lib.rs",
-                                            "line": 42,
-                                            "side": "RIGHT",
                                             "url": "https://example.com/3",
                                             "replyTo": { "id": "PRRC_1" }
                                         }
@@ -375,15 +369,15 @@ mod tests {
                                 "id": "PRRT_resolved",
                                 "isResolved": true,
                                 "isOutdated": false,
+                                "path": "src/lib.rs",
+                                "line": 7,
+                                "diffSide": "RIGHT",
                                 "comments": {
                                     "nodes": [
                                         {
                                             "id": "PRRC_old",
                                             "body": "Old resolved comment.",
                                             "author": { "login": "bob" },
-                                            "path": "src/lib.rs",
-                                            "line": 7,
-                                            "side": "RIGHT",
                                             "url": "https://example.com/r"
                                         }
                                     ]
@@ -406,16 +400,16 @@ mod tests {
                                 "id": "PRRT_outdated",
                                 "isResolved": false,
                                 "isOutdated": true,
+                                "path": "src/lib.rs",
+                                "line": null,
+                                "originalLine": 19,
+                                "diffSide": "LEFT",
                                 "comments": {
                                     "nodes": [
                                         {
                                             "id": "PRRC_old",
                                             "body": "Comment on a line that has moved.",
                                             "author": { "login": "alice" },
-                                            "path": "src/lib.rs",
-                                            "line": null,
-                                            "originalLine": 19,
-                                            "side": "LEFT",
                                             "url": "https://example.com/o"
                                         }
                                     ]
@@ -438,15 +432,15 @@ mod tests {
                                 "id": "PRRT_a",
                                 "isResolved": false,
                                 "isOutdated": false,
+                                "path": "src/lib.rs",
+                                "line": 10,
+                                "diffSide": "RIGHT",
                                 "comments": {
                                     "nodes": [
                                         {
                                             "id": "PRRC_a",
                                             "body": "Comment in lib",
                                             "author": { "login": "alice" },
-                                            "path": "src/lib.rs",
-                                            "line": 10,
-                                            "side": "RIGHT",
                                             "url": "https://example.com/a"
                                         }
                                     ]
@@ -456,15 +450,15 @@ mod tests {
                                 "id": "PRRT_b",
                                 "isResolved": false,
                                 "isOutdated": false,
+                                "path": "src/main.rs",
+                                "line": 5,
+                                "diffSide": "RIGHT",
                                 "comments": {
                                     "nodes": [
                                         {
                                             "id": "PRRC_b",
                                             "body": "Comment in main",
                                             "author": { "login": "bob" },
-                                            "path": "src/main.rs",
-                                            "line": 5,
-                                            "side": "RIGHT",
                                             "url": "https://example.com/b"
                                         }
                                     ]

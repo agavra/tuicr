@@ -3611,6 +3611,17 @@ impl App {
     }
 
     /// Find the comment at the current cursor position
+    /// True when the cursor is on a row that belongs to a fetched-from-GitHub
+    /// review thread. Remote threads are read-only in v1; surfaced as a
+    /// distinct condition so the handler can produce a clearer message than
+    /// the generic "no comment at cursor".
+    pub fn cursor_on_remote_thread(&self) -> bool {
+        matches!(
+            self.line_annotations.get(self.diff_state.cursor_line),
+            Some(AnnotatedLine::RemoteThreadLine { .. })
+        )
+    }
+
     fn find_comment_at_cursor(&self) -> Option<CommentLocation> {
         let target = self.diff_state.cursor_line;
         match self.line_annotations.get(target) {
@@ -7256,9 +7267,6 @@ mod target_selector_tests {
                 author: Some("alice".to_string()),
                 body: body.to_string(),
                 created_at: None,
-                path: "src/lib.rs".to_string(),
-                line: Some(line),
-                side: RemoteCommentSide::Right,
                 in_reply_to: None,
                 url: "https://example.com/c".to_string(),
             }],

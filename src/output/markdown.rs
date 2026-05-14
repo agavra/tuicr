@@ -389,7 +389,7 @@ fn generate_markdown(
                 for thread in threads {
                     if let Some(root) = thread.root() {
                         let author = root.author.as_deref().unwrap_or("unknown");
-                        let line_marker = root.line.map(|l| format!(":{l}")).unwrap_or_default();
+                        let line_marker = thread.line.map(|l| format!(":{l}")).unwrap_or_default();
                         let _ = writeln!(
                             md,
                             "{thread_n}. `{path}{line_marker}` @{author} - {body}",
@@ -1025,9 +1025,6 @@ mod tests {
                 author: Some(author.to_string()),
                 body: body.to_string(),
                 created_at: None,
-                path: "src/lib.rs".to_string(),
-                line: Some(line),
-                side: RemoteCommentSide::Right,
                 in_reply_to: None,
                 url: format!("https://github.com/agavra/tuicr/pull/125#discussion_{id}"),
             }],

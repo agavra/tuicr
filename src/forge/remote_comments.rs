@@ -28,6 +28,10 @@ impl RemoteCommentSide {
 }
 
 /// A single remote review comment, fetched from a forge.
+///
+/// Anchor fields (`path`, `line`, `side`) live on the parent
+/// `RemoteReviewThread`, not on each comment, mirroring GitHub's GraphQL
+/// schema where `PullRequestReviewComment` does not carry these directly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteReviewComment {
     /// Forge-assigned comment node ID (opaque string).
@@ -37,12 +41,6 @@ pub struct RemoteReviewComment {
     /// Markdown body as written on the forge.
     pub body: String,
     pub created_at: Option<DateTime<Utc>>,
-    /// File path the comment anchors to.
-    pub path: String,
-    /// 1-based line on the chosen side, or `None` if the forge reports this
-    /// comment as outdated (line no longer maps to the current diff).
-    pub line: Option<u32>,
-    pub side: RemoteCommentSide,
     /// For reply comments, the ID of the parent comment.
     pub in_reply_to: Option<String>,
     /// Permalink to the comment on the forge.
@@ -147,20 +145,19 @@ pub fn filter_threads(
 /// Used by `App::rebuild_annotations` to push the matching number of
 /// annotations so cursor/hit-test math stays in sync with rendering.
 ///
-/// Layout (must match `ui::comment_panel::format_remote_comment_lines`):
-/// - Root comment: 1 header + N body lines + 1 footer (so `2 + body_lines`).
-/// - Each reply: 1 header + N body lines (no extra footer; the root's
-///   footer closes the thread visually). So `1 + body_lines`.
+/// Layout (must match `ui::comment_panel::format_remote_thread_lines`):
+/// - 1 header line for the root comment (`╭─ [github @author] L42 ──`)
+/// - 1 separator line per reply (`├─ ↳ @author ──`)
+/// - 1 body line per `\n`-split line in each comment's body
+/// - 1 footer line at the end of the thread (`╰────`)
 pub fn thread_display_lines(thread: &RemoteReviewThread) -> usize {
     let mut total = 0;
-    for (idx, comment) in thread.comments.iter().enumerate() {
-        let body_lines = comment.body.split('\n').count();
-        if idx == 0 {
-            total += 2 + body_lines;
-        } else {
-            total += 1 + body_lines;
-        }
+    for comment in &thread.comments {
+        // header (root) or separator (reply) + body lines
+        total += 1 + comment.body.split('\n').count();
     }
+    // single closing rule for the whole thread
+    total += 1;
     total
 }
 
@@ -203,9 +200,6 @@ mod tests {
                 author: Some("alice".to_string()),
                 body: "Root body".to_string(),
                 created_at: None,
-                path: path.to_string(),
-                line,
-                side: RemoteCommentSide::Right,
                 in_reply_to: None,
                 url: format!("https://example.com/{id}"),
             }],

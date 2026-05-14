@@ -928,7 +928,11 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
         }
         Action::AddFileComment => app.enter_comment_mode(true, None),
         Action::EditComment if !app.enter_edit_mode() => {
-            app.set_message("No comment at cursor");
+            if app.cursor_on_remote_thread() {
+                app.set_message("GitHub comment — read only in tuicr");
+            } else {
+                app.set_message("No comment at cursor");
+            }
         }
         Action::ExportToClipboard => handle_export(app),
         Action::SearchNext => {

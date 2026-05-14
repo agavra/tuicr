@@ -988,32 +988,20 @@ fn render_remote_threads_for_anchor(
             continue;
         }
 
-        // Render each comment in the thread: root first (with header
-        // border), replies indented underneath.
-        for (idx, comment) in thread.comments.iter().enumerate() {
-            let is_reply = idx > 0;
-            let comment_lines = comment_panel::format_remote_comment_lines(
-                &app.theme,
-                comment.author.as_deref(),
-                &comment.body,
-                comment.line.map(crate::model::LineRange::single),
-                is_reply,
-                muted,
-                thread.is_resolved,
-                thread.is_outdated,
+        // Render the entire thread as one fused box so it reads as a
+        // single discussion unit.
+        let thread_lines = comment_panel::format_remote_thread_lines(&app.theme, thread, muted);
+        for mut comment_line in thread_lines {
+            let indicator = cursor_indicator(*line_idx, current_line_idx);
+            comment_line.spans.insert(
+                0,
+                ratatui::text::Span::styled(
+                    indicator,
+                    styles::current_line_indicator_style(&app.theme),
+                ),
             );
-            for mut comment_line in comment_lines {
-                let indicator = cursor_indicator(*line_idx, current_line_idx);
-                comment_line.spans.insert(
-                    0,
-                    ratatui::text::Span::styled(
-                        indicator,
-                        styles::current_line_indicator_style(&app.theme),
-                    ),
-                );
-                lines.push(comment_line);
-                *line_idx += 1;
-            }
+            lines.push(comment_line);
+            *line_idx += 1;
         }
     }
 }
@@ -1164,9 +1152,6 @@ mod remote_comments_snapshot_tests {
                 author: Some(author.to_string()),
                 body: body.to_string(),
                 created_at: None,
-                path: "src/lib.rs".to_string(),
-                line: Some(line),
-                side: RemoteCommentSide::Right,
                 in_reply_to: None,
                 url: "https://example.com/x".to_string(),
             }],

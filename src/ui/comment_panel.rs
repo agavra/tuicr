@@ -159,29 +159,22 @@ pub fn format_comment_input_lines(
     (result, cursor_info)
 }
 
-/// Format a remote (read-only) forge review comment for inline display.
+/// Format an entire remote (read-only) forge review thread as one fused
+/// box so it reads as a single discussion unit. Root comment opens the
+/// box; replies appear as `├─ ↳ @author ──` separator headers within the
+/// same box; the bottom rule appears once at the end.
 ///
-/// Visually distinct from local drafts: a `[github @author]` badge prefix
-/// replaces the `[ISSUE]` style local prefix, and resolved/outdated
-/// comments render with muted styling. Replies render with a `↳` glyph so
-/// the thread structure is visible without claiming extra lines.
-#[allow(clippy::too_many_arguments)]
-pub fn format_remote_comment_lines(
+/// Visually distinct from local drafts: the `[github @author]` badge on
+/// the root header, and a muted palette throughout for resolved/outdated
+/// threads.
+pub fn format_remote_thread_lines(
     theme: &Theme,
-    author: Option<&str>,
-    body: &str,
-    line_range: Option<LineRange>,
-    is_reply: bool,
+    thread: &crate::forge::remote_comments::RemoteReviewThread,
     muted: bool,
-    resolved: bool,
-    outdated: bool,
 ) -> Vec<Line<'static>> {
     let (badge_fg, border_fg, body_fg) = if muted {
-        // fg_dim everywhere for resolved/outdated.
         (theme.fg_dim, theme.fg_dim, theme.fg_dim)
     } else {
-        // Non-muted remote uses the dim color for the body so it doesn't
-        // compete with local drafts, but the badge keeps the forge accent.
         (
             theme.diff_hunk_header,
             theme.diff_hunk_header,
@@ -190,57 +183,59 @@ pub fn format_remote_comment_lines(
     };
 
     let badge_style = Style::default().fg(badge_fg).add_modifier(Modifier::BOLD);
+    let reply_badge_style = Style::default().fg(badge_fg);
     let border_style = Style::default().fg(border_fg);
     let body_style = Style::default().fg(body_fg);
 
-    let author = author.unwrap_or("unknown");
-    let mut badge_text = format!("[github @{author}");
-    if resolved {
-        badge_text.push_str(" resolved");
-    } else if outdated {
-        badge_text.push_str(" outdated");
-    }
-    badge_text.push_str("] ");
-
-    let line_info = match line_range {
+    let line_info = match thread.line.map(LineRange::single) {
         Some(range) if range.is_single() => format!("L{} ", range.start),
         Some(range) => format!("L{}-L{} ", range.start, range.end),
         None => String::new(),
     };
 
-    // Replies hang under the root with a `↳` glyph and indented border so
-    // the thread is one visual block.
-    let (top_prefix, side_prefix, bot_prefix) = if is_reply {
-        ("     ┃   ↳ ", "     ┃     ", "     ┃     ")
-    } else {
-        ("     ╭─ ", "     │ ", "     ╰")
-    };
-
     let mut result = Vec::new();
-    result.push(Line::from(vec![
-        Span::styled(top_prefix.to_string(), border_style),
-        Span::styled(badge_text, badge_style),
-        Span::styled(line_info, styles::dim_style(theme)),
-        Span::styled("─".repeat(20), border_style),
-    ]));
+    let mut iter = thread.comments.iter().peekable();
+    let mut is_first = true;
+    while let Some(comment) = iter.next() {
+        let author = comment.author.as_deref().unwrap_or("unknown");
+        if is_first {
+            let mut badge_text = format!("[github @{author}");
+            if thread.is_resolved {
+                badge_text.push_str(" resolved");
+            } else if thread.is_outdated {
+                badge_text.push_str(" outdated");
+            }
+            badge_text.push_str("] ");
+            result.push(Line::from(vec![
+                Span::styled("     ╭─ ".to_string(), border_style),
+                Span::styled(badge_text, badge_style),
+                Span::styled(line_info.clone(), styles::dim_style(theme)),
+                Span::styled("─".repeat(20), border_style),
+            ]));
+        } else {
+            result.push(Line::from(vec![
+                Span::styled("     ├─ ".to_string(), border_style),
+                Span::styled(format!("↳ @{author} "), reply_badge_style),
+                Span::styled("─".repeat(28), border_style),
+            ]));
+        }
 
-    for line in body.split('\n') {
-        result.push(Line::from(vec![
-            Span::styled(side_prefix.to_string(), border_style),
-            Span::styled(line.to_string(), body_style),
-        ]));
+        for line in comment.body.split('\n') {
+            result.push(Line::from(vec![
+                Span::styled("     │ ".to_string(), border_style),
+                Span::styled(line.to_string(), body_style),
+            ]));
+        }
+
+        is_first = false;
+        let _ = iter.peek();
     }
 
-    // Replies use a vertical line as the "bottom" too — they hang from
-    // the root and continue the thread visual.
-    if is_reply {
-        // No bottom rule for replies; the root's bottom carries it.
-    } else {
-        result.push(Line::from(vec![Span::styled(
-            bot_prefix.to_string() + &"─".repeat(38),
-            border_style,
-        )]));
-    }
+    result.push(Line::from(vec![Span::styled(
+        "     ╰".to_string() + &"─".repeat(38),
+        border_style,
+    )]));
+
     result
 }
 
