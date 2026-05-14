@@ -29,6 +29,9 @@ pub enum TuicrError {
     #[error("VCS command failed: {0}")]
     VcsCommand(String),
 
+    #[error("{0}")]
+    Forge(String),
+
     #[error("Unsupported operation: {0}")]
     UnsupportedOperation(String),
 }

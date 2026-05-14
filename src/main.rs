@@ -1,6 +1,7 @@
 mod app;
 mod config;
 mod error;
+mod forge;
 mod handler;
 mod hash;
 mod input;
