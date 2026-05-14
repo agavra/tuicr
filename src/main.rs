@@ -185,9 +185,15 @@ fn main() -> anyhow::Result<()> {
         }
         Err(e) => {
             eprintln!("Error: {e}");
-            eprintln!(
-                "\nMake sure you're in a git, jujutsu, or mercurial repository with commits or staged/unstaged changes."
-            );
+            // The "you need to be in a git repo" hint is only meaningful
+            // when the failure was the absence of a repo. For other
+            // startup errors — `tuicr pr <bad-url>`, forge auth issues,
+            // missing PR, `--file <missing-path>` — the hint is wrong.
+            if matches!(e, crate::error::TuicrError::NotARepository) {
+                eprintln!(
+                    "\nMake sure you're in a git, jujutsu, or mercurial repository with commits or staged/unstaged changes."
+                );
+            }
             std::process::exit(1);
         }
     };
