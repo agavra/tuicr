@@ -490,6 +490,27 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  :comments unresolved",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  Show unresolved remote comments (PR mode, default)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :comments all",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  Show all remote comments incl. resolved/outdated"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :comments hide",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  Hide remote comments in PR mode"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  :set commits",
                 Style::default().add_modifier(Modifier::BOLD),
             ),

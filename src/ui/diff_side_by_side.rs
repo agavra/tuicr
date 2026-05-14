@@ -811,6 +811,16 @@ fn render_context_line_side_by_side(
         );
         line_idx = new_line_idx;
         cursor_info_out = cursor_info;
+        if let Some(file) = ctx.app.diff_files.get(file_idx) {
+            line_idx = add_remote_threads_to_line(
+                new_ln,
+                LineSide::New,
+                ctx,
+                file.display_path(),
+                line_idx,
+                lines,
+            );
+        }
     }
 
     (line_idx, cursor_info_out)
@@ -892,6 +902,16 @@ fn render_deletion_addition_pair_side_by_side(
                 if cursor_info.is_some() {
                     cursor_info_out = cursor_info;
                 }
+                if let Some(file) = ctx.app.diff_files.get(file_idx) {
+                    line_idx = add_remote_threads_to_line(
+                        old_ln,
+                        LineSide::Old,
+                        ctx,
+                        file.display_path(),
+                        line_idx,
+                        lines,
+                    );
+                }
             }
         }
 
@@ -911,6 +931,16 @@ fn render_deletion_addition_pair_side_by_side(
                 line_idx = new_line_idx;
                 if cursor_info.is_some() {
                     cursor_info_out = cursor_info;
+                }
+                if let Some(file) = ctx.app.diff_files.get(file_idx) {
+                    line_idx = add_remote_threads_to_line(
+                        new_ln,
+                        LineSide::New,
+                        ctx,
+                        file.display_path(),
+                        line_idx,
+                        lines,
+                    );
                 }
             }
         }
@@ -956,6 +986,16 @@ fn render_standalone_addition_side_by_side(
         );
         line_idx = new_line_idx;
         cursor_info_out = cursor_info;
+        if let Some(file) = ctx.app.diff_files.get(file_idx) {
+            line_idx = add_remote_threads_to_line(
+                new_ln,
+                LineSide::New,
+                ctx,
+                file.display_path(),
+                line_idx,
+                lines,
+            );
+        }
     }
 
     (line_idx, cursor_info_out)
@@ -1032,6 +1072,69 @@ fn add_empty_column_spans(spans: &mut Vec<Span>, content_width: usize) {
 
 /// Add comments for a specific line.
 /// Returns (new_line_idx, optional cursor info for inline comment input)
+/// Render remote review threads anchored at this `(file, line, side)`
+/// position into the side-by-side rendering. Mirrors the unified-view
+/// helper but uses the side-by-side cursor indicator path.
+fn add_remote_threads_to_line(
+    line_num: u32,
+    side: LineSide,
+    ctx: &SideBySideContext,
+    file_path: &std::path::Path,
+    mut line_idx: usize,
+    lines: &mut Vec<Line>,
+) -> usize {
+    use crate::forge::remote_comments::{PrCommentsVisibility, RemoteCommentSide};
+    let visibility = ctx.app.session.remote_comments_visibility;
+    if matches!(visibility, PrCommentsVisibility::Hide) {
+        return line_idx;
+    }
+    let target_path = file_path.to_string_lossy();
+    for thread in &ctx.app.forge_review_threads {
+        let Some(muted) = visibility.render_decision(thread) else {
+            continue;
+        };
+        if thread.path != *target_path {
+            continue;
+        }
+        let Some(thread_line) = thread.line else {
+            continue;
+        };
+        if thread_line != line_num {
+            continue;
+        }
+        let matches_side = matches!(
+            (thread.side, side),
+            (RemoteCommentSide::Right, LineSide::New) | (RemoteCommentSide::Left, LineSide::Old)
+        );
+        if !matches_side {
+            continue;
+        }
+        for (idx, comment) in thread.comments.iter().enumerate() {
+            let is_reply = idx > 0;
+            let comment_lines = comment_panel::format_remote_comment_lines(
+                ctx.theme,
+                comment.author.as_deref(),
+                &comment.body,
+                comment.line.map(LineRange::single),
+                is_reply,
+                muted,
+                thread.is_resolved,
+                thread.is_outdated,
+            );
+            for mut comment_line in comment_lines {
+                let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
+                comment_line.spans.insert(
+                    0,
+                    Span::styled(indicator, styles::current_line_indicator_style(ctx.theme)),
+                );
+                lines.push(comment_line);
+                line_idx += 1;
+            }
+        }
+    }
+    line_idx
+}
+
 fn add_comments_to_line(
     line_num: u32,
     line_comments: &std::collections::HashMap<u32, Vec<crate::model::Comment>>,
@@ -1155,4 +1258,222 @@ fn add_comments_to_line(
     }
 
     (line_idx, cursor_info_out)
+}
+
+#[cfg(test)]
+mod remote_comments_side_by_side_snapshot_tests {
+    //! Render-snapshot tests for inline remote review threads in the
+    //! side-by-side diff view. Confirms the badge appears at least once
+    //! when a thread is active and is hidden under `:comments hide`.
+    use crate::app::{App, DiffSource, DiffViewMode, InputMode, PullRequestDiffSource};
+    use crate::error::Result as TuicrResult;
+    use crate::error::TuicrError;
+    use crate::forge::remote_comments::{
+        PrCommentsVisibility, RemoteCommentSide, RemoteReviewComment, RemoteReviewThread,
+    };
+    use crate::forge::traits::{ForgeRepository, PrSessionKey};
+    use crate::model::{
+        DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin, ReviewSession, SessionDiffSource,
+    };
+    use crate::syntax::SyntaxHighlighter;
+    use crate::theme::Theme;
+    use crate::ui::render;
+    use crate::vcs::traits::{VcsBackend, VcsChangeStatus, VcsInfo, VcsType};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+    use std::path::{Path, PathBuf};
+
+    struct SnapshotVcs {
+        info: VcsInfo,
+    }
+
+    impl VcsBackend for SnapshotVcs {
+        fn info(&self) -> &VcsInfo {
+            &self.info
+        }
+        fn get_working_tree_diff(
+            &self,
+            _highlighter: &SyntaxHighlighter,
+        ) -> TuicrResult<Vec<DiffFile>> {
+            Err(TuicrError::NoChanges)
+        }
+        fn fetch_context_lines(
+            &self,
+            _file_path: &Path,
+            _file_status: FileStatus,
+            _start_line: u32,
+            _end_line: u32,
+        ) -> TuicrResult<Vec<DiffLine>> {
+            Ok(Vec::new())
+        }
+        fn get_change_status(&self) -> TuicrResult<VcsChangeStatus> {
+            Ok(VcsChangeStatus {
+                staged: false,
+                unstaged: false,
+            })
+        }
+    }
+
+    fn repo() -> ForgeRepository {
+        ForgeRepository::github("github.com", "agavra", "tuicr")
+    }
+
+    fn sample_diff_file() -> DiffFile {
+        let lines = vec![
+            DiffLine {
+                origin: LineOrigin::Context,
+                content: "first".to_string(),
+                old_lineno: Some(1),
+                new_lineno: Some(1),
+                highlighted_spans: None,
+            },
+            DiffLine {
+                origin: LineOrigin::Addition,
+                content: "second".to_string(),
+                old_lineno: None,
+                new_lineno: Some(2),
+                highlighted_spans: None,
+            },
+        ];
+        let hunk = DiffHunk {
+            header: "@@ -1,1 +1,2 @@".to_string(),
+            lines,
+            old_start: 1,
+            old_count: 1,
+            new_start: 1,
+            new_count: 2,
+        };
+        let hunks = vec![hunk];
+        let content_hash = DiffFile::compute_content_hash(&hunks);
+        DiffFile {
+            old_path: Some(PathBuf::from("src/lib.rs")),
+            new_path: Some(PathBuf::from("src/lib.rs")),
+            status: FileStatus::Modified,
+            hunks,
+            is_binary: false,
+            is_too_large: false,
+            is_commit_message: false,
+            content_hash,
+        }
+    }
+
+    fn thread() -> RemoteReviewThread {
+        RemoteReviewThread {
+            id: "T".to_string(),
+            path: "src/lib.rs".to_string(),
+            line: Some(2),
+            side: RemoteCommentSide::Right,
+            is_resolved: false,
+            is_outdated: false,
+            comments: vec![RemoteReviewComment {
+                id: "C".to_string(),
+                author: Some("alice".to_string()),
+                body: "sbs hello".to_string(),
+                created_at: None,
+                path: "src/lib.rs".to_string(),
+                line: Some(2),
+                side: RemoteCommentSide::Right,
+                in_reply_to: None,
+                url: "https://example.com".to_string(),
+            }],
+        }
+    }
+
+    fn make_pr_app() -> App {
+        let pr = PullRequestDiffSource {
+            key: PrSessionKey::new(repo(), 125, "headsha".to_string()),
+            base_sha: "basesha".to_string(),
+            title: "test pr".to_string(),
+            url: "https://example.com".to_string(),
+            head_ref_name: "feat".to_string(),
+            base_ref_name: "main".to_string(),
+            state: "OPEN".to_string(),
+            closed: false,
+            merged: false,
+        };
+        let vcs_info = VcsInfo {
+            root_path: PathBuf::from("forge:github.com/agavra/tuicr"),
+            head_commit: "headsha".to_string(),
+            branch_name: Some("feat".to_string()),
+            vcs_type: VcsType::File,
+        };
+        let mut session = ReviewSession::new(
+            vcs_info.root_path.clone(),
+            "headsha".to_string(),
+            Some("feat".to_string()),
+            SessionDiffSource::PullRequest,
+        );
+        session.pr_session_key = Some(pr.key.clone());
+        let mut app = App::build(
+            Box::new(SnapshotVcs {
+                info: vcs_info.clone(),
+            }),
+            vcs_info,
+            Theme::dark(),
+            None,
+            false,
+            vec![sample_diff_file()],
+            session,
+            DiffSource::PullRequest(Box::new(pr)),
+            InputMode::Normal,
+            Vec::new(),
+            None,
+        )
+        .expect("build app");
+        app.diff_view_mode = DiffViewMode::SideBySide;
+        app
+    }
+
+    fn draw(app: &mut App) -> Buffer {
+        let backend = TestBackend::new(160, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render(frame, app))
+            .expect("draw frame");
+        terminal.backend().buffer().clone()
+    }
+
+    fn body_text(buffer: &Buffer) -> String {
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn should_render_remote_comment_inline_in_side_by_side_diff() {
+        // given
+        let mut app = make_pr_app();
+        app.forge_review_threads = vec![thread()];
+        app.rebuild_annotations();
+        // when
+        let buffer = draw(&mut app);
+        // then
+        let body = body_text(&buffer);
+        assert!(
+            body.contains("[github @alice]"),
+            "expected badge in side-by-side render:\n{body}"
+        );
+    }
+
+    #[test]
+    fn should_hide_remote_comments_under_comments_hide_in_side_by_side() {
+        // given
+        let mut app = make_pr_app();
+        app.forge_review_threads = vec![thread()];
+        app.set_remote_comments_visibility(PrCommentsVisibility::Hide);
+        // when
+        let buffer = draw(&mut app);
+        // then
+        let body = body_text(&buffer);
+        assert!(
+            !body.contains("[github @alice"),
+            "remote comment leaked under Hide:\n{body}"
+        );
+    }
 }

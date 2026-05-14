@@ -238,10 +238,39 @@ pub enum AnnotatedLine {
         side: LineSide,
         comment_idx: usize,
     },
+    /// A read-only line of a rendered remote review thread. Cursor cannot
+    /// edit or reply to these in v1; the annotation is informational so
+    /// hit-testing and scroll math stay correct.
+    RemoteThreadLine { thread_idx: usize },
     /// Binary or empty file indicator
     BinaryOrEmpty { file_idx: usize },
     /// Spacing between files
     Spacing,
+}
+
+/// Per-file index of remote threads keyed by `(line, side)` so the
+/// renderer / annotation builder can place threads inline at the right
+/// anchor without scanning all threads on every diff line.
+#[derive(Debug, Default, Clone)]
+pub struct RemoteThreadIndex {
+    /// Outer key = file path (display form). Inner key =
+    /// `(line, side)` where `side` is the *local* `LineSide` mapping.
+    pub by_file:
+        std::collections::HashMap<String, std::collections::HashMap<(u32, LineSide), Vec<usize>>>,
+}
+
+impl RemoteThreadIndex {
+    #[allow(dead_code)]
+    pub fn threads_at(
+        &self,
+        path: &std::path::Path,
+        line: u32,
+        side: LineSide,
+    ) -> Option<&Vec<usize>> {
+        self.by_file
+            .get(path.to_string_lossy().as_ref())
+            .and_then(|m| m.get(&(line, side)))
+    }
 }
 
 /// Result of searching for a source line number in annotations.
@@ -289,6 +318,7 @@ pub fn annotation_file_idx(annotation: &AnnotatedLine) -> Option<usize> {
         | AnnotatedLine::Expander { .. }
         | AnnotatedLine::HiddenLines { .. }
         | AnnotatedLine::ExpandedContext { .. }
+        | AnnotatedLine::RemoteThreadLine { .. }
         | AnnotatedLine::Spacing => None,
     }
 }
@@ -475,6 +505,21 @@ pub enum PrOpenEvent {
     },
 }
 
+/// Result delivered from the remote-thread fetch background thread. The PR
+/// diff is rendered as soon as it parses; threads land asynchronously and
+/// trigger a repaint via `poll_pr_threads_events`.
+#[derive(Debug)]
+pub enum PrThreadsEvent {
+    Done {
+        /// Forge identity for the request; used to discard stale results if
+        /// the user has since opened a different PR.
+        repository: crate::forge::traits::ForgeRepository,
+        pr_number: u64,
+        head_sha: String,
+        result: std::result::Result<Vec<crate::forge::remote_comments::RemoteReviewThread>, String>,
+    },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiffViewMode {
     Unified,
@@ -573,6 +618,19 @@ pub struct App {
     /// context provider for gap expansion against base/head SHAs and (in a
     /// future PR) for remote comment fetch/submit.
     pub forge_backend: Option<Box<dyn ForgeBackend>>,
+    /// Remote review threads fetched from the forge for the active PR.
+    /// Populated asynchronously after the diff renders (see
+    /// `poll_pr_threads_events`). Empty in non-PR modes and during the
+    /// loading window.
+    pub forge_review_threads: Vec<crate::forge::remote_comments::RemoteReviewThread>,
+    /// True while a background remote-thread fetch is in flight for the
+    /// currently open PR. Drives the footer "Loading remote comments…"
+    /// hint and skips re-fetch if `:e` is hit again before the first
+    /// fetch lands.
+    pub forge_review_threads_loading: bool,
+    /// Background-thread channel that delivers remote-thread fetch results.
+    /// `Receiver` is only present while a fetch is in flight.
+    pub pr_threads_rx: Option<std::sync::mpsc::Receiver<PrThreadsEvent>>,
 
     pub should_quit: bool,
     pub dirty: bool,
@@ -1139,6 +1197,9 @@ impl App {
             pr_open_state: None,
             pr_open_rx: None,
             forge_backend: None,
+            forge_review_threads: Vec::new(),
+            forge_review_threads_loading: false,
+            pr_threads_rx: None,
             should_quit: false,
             dirty: false,
             quit_warned: false,
@@ -1525,6 +1586,9 @@ impl App {
         // routes through the forge backend, not the VCS box.
         let vcs: Box<dyn VcsBackend> = Box::new(PrNoopVcs::new(vcs_info.clone()));
 
+        // Snapshot the PR details before consuming `opened` so we can kick
+        // off the remote-thread fetch after `Self::build` returns.
+        let details_for_threads = opened.details.clone();
         let mut app = Self::build(
             vcs,
             vcs_info,
@@ -1548,6 +1612,9 @@ impl App {
             let reason = pr.read_only_reason().unwrap_or("read only");
             app.set_warning(format!("This PR is {reason} — review is read-only"));
         }
+        // Spawn thread-fetch on startup; the main event loop will drain
+        // the receiver via `poll_pr_threads_events` once it begins.
+        app.spawn_pr_threads_fetch(&details_for_threads, local_checkout_for_target);
         Ok(app)
     }
 
@@ -1585,6 +1652,11 @@ impl App {
         self.diff_source = DiffSource::PullRequest(Box::new(pr_source));
         self.forge_backend = Some(backend);
         self.forge_repository = Some(key.repository.clone());
+        // Reset remote-comment state on every PR mode entry; the new PR's
+        // threads will be fetched separately by spawn_pr_threads_fetch.
+        self.forge_review_threads = Vec::new();
+        self.forge_review_threads_loading = false;
+        self.pr_threads_rx = None;
         self.input_mode = InputMode::Normal;
         self.focused_panel = FocusedPanel::Diff;
         self.clear_expanded_gaps();
@@ -1666,8 +1738,12 @@ impl App {
         if head_changed {
             // Save the old-head session before switching so drafts persist.
             let _ = crate::persistence::save_session(&self.session);
+            let details_for_threads = opened.details.clone();
             Self::load_or_apply_pr_session(&mut opened);
             self.enter_pr_diff_mode(backend, opened)?;
+            // Fetch threads against the new head; old-head threads stay
+            // tied to the old session and are dropped here.
+            self.spawn_pr_threads_fetch(&details_for_threads, local_checkout.clone());
         } else {
             // Same head: re-parse the diff to pick up any side-channel
             // changes (rare), but keep the session intact.
@@ -2699,6 +2775,14 @@ impl App {
                     .map(|l| l.content.as_str())
                     .unwrap_or("");
                 Some(format!("{} {}", del_content, add_content))
+            }
+            AnnotatedLine::RemoteThreadLine { thread_idx } => {
+                let thread = self.forge_review_threads.get(*thread_idx)?;
+                // Search matches any text in the thread (including replies).
+                let mut bodies: Vec<String> =
+                    thread.comments.iter().map(|c| c.body.clone()).collect();
+                bodies.insert(0, format!("github {}", thread.path));
+                Some(bodies.join(" "))
             }
             AnnotatedLine::Spacing => None,
         }
@@ -4393,19 +4477,131 @@ impl App {
 
         let local_checkout = Some(self.vcs_info.root_path.clone());
         let highlighter = self.theme.syntax_highlighter();
-        let mut opened = prepare_open_pr(details, &patch, local_checkout.as_deref(), highlighter)?;
+        let mut opened = prepare_open_pr(
+            details.clone(),
+            &patch,
+            local_checkout.as_deref(),
+            highlighter,
+        )?;
         Self::load_or_apply_pr_session(&mut opened);
         let backend = Box::new(
             GitHubGhBackend::new(Some(request.repository.clone()))
-                .with_local_checkout(local_checkout),
+                .with_local_checkout(local_checkout.clone()),
         );
         self.enter_pr_diff_mode(backend, opened)?;
+        // Kick the remote-thread fetch off on a fresh background thread.
+        // The diff view is already up; threads fade in once they land.
+        self.spawn_pr_threads_fetch(&details, local_checkout);
         self.set_message(format!(
             "Opened PR {}#{}",
             request.repository.display_name(),
             request.pr_number,
         ));
         Ok(())
+    }
+
+    /// Kick off a background fetch of remote review threads for `details`.
+    /// Replaces any in-flight fetch — we don't try to merge results across
+    /// concurrent fetches because the head SHA scopes everything.
+    fn spawn_pr_threads_fetch(
+        &mut self,
+        details: &crate::forge::traits::PullRequestDetails,
+        local_checkout: Option<std::path::PathBuf>,
+    ) {
+        use crate::forge::github::gh::GitHubGhBackend;
+        use crate::forge::traits::ForgeBackend;
+
+        self.forge_review_threads.clear();
+        self.forge_review_threads_loading = true;
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.pr_threads_rx = Some(rx);
+
+        let details_clone = details.clone();
+        let repository = details.repository.clone();
+        let pr_number = details.number;
+        let head_sha = details.head_sha.clone();
+
+        std::thread::spawn(move || {
+            let backend =
+                GitHubGhBackend::new(Some(repository.clone())).with_local_checkout(local_checkout);
+            let result = backend
+                .list_review_threads(&details_clone)
+                .map_err(|e| e.to_string());
+            let _ = tx.send(PrThreadsEvent::Done {
+                repository,
+                pr_number,
+                head_sha,
+                result,
+            });
+        });
+    }
+
+    /// Drain any pending remote-thread fetch result and apply it. Stale
+    /// results (a result that arrived after the user switched to a
+    /// different PR) are discarded.
+    pub fn poll_pr_threads_events(&mut self) {
+        let Some(rx) = self.pr_threads_rx.as_ref() else {
+            return;
+        };
+        let event = match rx.try_recv() {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+        self.pr_threads_rx = None;
+        self.forge_review_threads_loading = false;
+
+        match event {
+            PrThreadsEvent::Done {
+                repository,
+                pr_number,
+                head_sha,
+                result,
+            } => {
+                // Validate against the currently open PR. If the user has
+                // opened a different PR (or left PR mode) while the fetch
+                // was in flight, drop the result silently.
+                let current = match &self.diff_source {
+                    DiffSource::PullRequest(pr) => Some((
+                        pr.key.repository.clone(),
+                        pr.key.number,
+                        pr.key.head_sha.clone(),
+                    )),
+                    _ => None,
+                };
+                let still_relevant = current
+                    .as_ref()
+                    .map(|(r, n, sha)| *r == repository && *n == pr_number && *sha == head_sha)
+                    .unwrap_or(false);
+                if !still_relevant {
+                    return;
+                }
+                match result {
+                    Ok(threads) => {
+                        self.forge_review_threads = threads;
+                        self.rebuild_annotations();
+                    }
+                    Err(e) => {
+                        self.forge_review_threads = Vec::new();
+                        self.set_warning(format!("Failed to load remote comments: {e}"));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Update the per-session remote comments visibility and repaint.
+    /// Returns `true` if the visibility actually changed.
+    pub fn set_remote_comments_visibility(
+        &mut self,
+        visibility: crate::forge::remote_comments::PrCommentsVisibility,
+    ) -> bool {
+        if self.session.remote_comments_visibility == visibility {
+            return false;
+        }
+        self.session.remote_comments_visibility = visibility;
+        self.rebuild_annotations();
+        true
     }
 
     /// Abort an in-flight PR open. Drops the receiver so the eventual
@@ -4420,10 +4616,46 @@ impl App {
         true
     }
 
+    /// Re-fetch remote review threads for the currently open PR. Called
+    /// from `:e` so users can pull the latest discussions without
+    /// reopening the PR. No-op outside PR mode.
+    pub fn refetch_pr_threads(&mut self) {
+        let local_checkout = self
+            .forge_backend
+            .as_deref()
+            .and_then(|b| b.local_checkout_path());
+        let details = match &self.diff_source {
+            DiffSource::PullRequest(pr) => crate::forge::traits::PullRequestDetails {
+                repository: pr.key.repository.clone(),
+                number: pr.key.number,
+                title: pr.title.clone(),
+                url: pr.url.clone(),
+                state: pr.state.clone(),
+                is_draft: false,
+                author: None,
+                head_ref_name: pr.head_ref_name.clone(),
+                base_ref_name: pr.base_ref_name.clone(),
+                head_sha: pr.key.head_sha.clone(),
+                base_sha: pr.base_sha.clone(),
+                body: String::new(),
+                updated_at: None,
+                closed: pr.closed,
+                merged_at: None,
+            },
+            _ => return,
+        };
+        self.spawn_pr_threads_fetch(&details, local_checkout);
+    }
+
     /// Open a PR using the provided forge backend, synchronously. Exists
     /// as a seam for tests that want to drive the open without spinning
     /// up a background thread + mpsc round-trip. Production paths go
     /// through `spawn_pr_open` (selector) or `new_from_pr_target` (CLI).
+    ///
+    /// Synchronously fetches `list_review_threads` from the same backend
+    /// and applies it before returning. This is the convenient seam for
+    /// integration tests; the production async path uses
+    /// `spawn_pr_threads_fetch` instead.
     #[allow(dead_code)]
     pub fn open_pr_with_backend(
         &mut self,
@@ -4447,7 +4679,14 @@ impl App {
             highlighter,
         )?;
         Self::load_or_apply_pr_session(&mut opened);
+        // Sync thread fetch — tests assert on `app.forge_review_threads`
+        // immediately after this returns.
+        let threads = backend
+            .list_review_threads(&opened.details)
+            .unwrap_or_default();
         self.enter_pr_diff_mode(backend, opened)?;
+        self.forge_review_threads = threads;
+        self.rebuild_annotations();
         Ok(())
     }
 
@@ -5324,6 +5563,12 @@ impl App {
     pub fn rebuild_annotations(&mut self) {
         self.line_annotations.clear();
 
+        // Pre-index remote threads by (path, line, side) for quick lookup
+        // during the file/hunk walk. Threads whose visibility is
+        // suppressed don't appear in this map at all, so no annotations
+        // are emitted for them.
+        let remote_index = self.build_remote_thread_index();
+
         self.line_annotations
             .push(AnnotatedLine::ReviewCommentsHeader);
         for (comment_idx, comment) in self.session.review_comments.iter().enumerate() {
@@ -5464,6 +5709,9 @@ impl App {
                                 hunk_idx,
                                 &hunk.lines,
                                 &line_comments,
+                                path,
+                                &self.forge_review_threads,
+                                &remote_index,
                             );
                         }
                         DiffViewMode::SideBySide => {
@@ -5473,6 +5721,9 @@ impl App {
                                 hunk_idx,
                                 &hunk.lines,
                                 &line_comments,
+                                path,
+                                &self.forge_review_threads,
+                                &remote_index,
                             );
                         }
                     }
@@ -5519,13 +5770,74 @@ impl App {
         }
     }
 
+    /// Per-file map of `(line, side)` -> indices into `forge_review_threads`.
+    /// Sides use the `RemoteCommentSide` mapping: `Right` -> `LineSide::New`,
+    /// `Left` -> `LineSide::Old`.
+    fn build_remote_thread_index(&self) -> RemoteThreadIndex {
+        use crate::forge::remote_comments::RemoteCommentSide;
+        let mut by_file: std::collections::HashMap<
+            String,
+            std::collections::HashMap<(u32, LineSide), Vec<usize>>,
+        > = std::collections::HashMap::new();
+        let visibility = self.session.remote_comments_visibility;
+
+        for (thread_idx, thread) in self.forge_review_threads.iter().enumerate() {
+            if visibility.render_decision(thread).is_none() {
+                continue;
+            }
+            let Some(line) = thread.line else { continue };
+            let side = match thread.side {
+                RemoteCommentSide::Right => LineSide::New,
+                RemoteCommentSide::Left => LineSide::Old,
+            };
+            by_file
+                .entry(thread.path.clone())
+                .or_default()
+                .entry((line, side))
+                .or_default()
+                .push(thread_idx);
+        }
+
+        RemoteThreadIndex { by_file }
+    }
+
+    fn push_remote_threads(
+        annotations: &mut Vec<AnnotatedLine>,
+        threads: &[crate::forge::remote_comments::RemoteReviewThread],
+        index: &RemoteThreadIndex,
+        path: &std::path::Path,
+        line: u32,
+        side: LineSide,
+    ) {
+        let Some(file_index) = index.by_file.get(path.to_string_lossy().as_ref()) else {
+            return;
+        };
+        let Some(thread_indices) = file_index.get(&(line, side)) else {
+            return;
+        };
+        for thread_idx in thread_indices {
+            if let Some(thread) = threads.get(*thread_idx) {
+                let n = crate::forge::remote_comments::thread_display_lines(thread);
+                for _ in 0..n {
+                    annotations.push(AnnotatedLine::RemoteThreadLine {
+                        thread_idx: *thread_idx,
+                    });
+                }
+            }
+        }
+    }
+
     /// Build annotations for unified diff mode (one annotation per diff line)
+    #[allow(clippy::too_many_arguments)]
     fn build_unified_diff_annotations(
         annotations: &mut Vec<AnnotatedLine>,
         file_idx: usize,
         hunk_idx: usize,
         lines: &[crate::model::DiffLine],
         line_comments: &std::collections::HashMap<u32, Vec<crate::model::Comment>>,
+        path: &std::path::Path,
+        remote_threads: &[crate::forge::remote_comments::RemoteReviewThread],
+        remote_index: &RemoteThreadIndex,
     ) {
         for (line_idx, diff_line) in lines.iter().enumerate() {
             annotations.push(AnnotatedLine::DiffLine {
@@ -5545,6 +5857,14 @@ impl App {
                     line_comments,
                     LineSide::Old,
                 );
+                Self::push_remote_threads(
+                    annotations,
+                    remote_threads,
+                    remote_index,
+                    path,
+                    old_ln,
+                    LineSide::Old,
+                );
             }
 
             // Line comments on new side (added/context lines)
@@ -5556,17 +5876,29 @@ impl App {
                     line_comments,
                     LineSide::New,
                 );
+                Self::push_remote_threads(
+                    annotations,
+                    remote_threads,
+                    remote_index,
+                    path,
+                    new_ln,
+                    LineSide::New,
+                );
             }
         }
     }
 
     /// Build annotations for side-by-side diff mode, pairing deletions and additions into aligned rows.
+    #[allow(clippy::too_many_arguments)]
     fn build_side_by_side_annotations(
         annotations: &mut Vec<AnnotatedLine>,
         file_idx: usize,
         hunk_idx: usize,
         lines: &[crate::model::DiffLine],
         line_comments: &std::collections::HashMap<u32, Vec<crate::model::Comment>>,
+        path: &std::path::Path,
+        remote_threads: &[crate::forge::remote_comments::RemoteReviewThread],
+        remote_index: &RemoteThreadIndex,
     ) {
         let mut i = 0;
         while i < lines.len() {
@@ -5590,6 +5922,16 @@ impl App {
                         line_comments,
                         LineSide::New,
                     );
+                    if let Some(new_ln) = diff_line.new_lineno {
+                        Self::push_remote_threads(
+                            annotations,
+                            remote_threads,
+                            remote_index,
+                            path,
+                            new_ln,
+                            LineSide::New,
+                        );
+                    }
 
                     i += 1
                 }
@@ -5644,6 +5986,16 @@ impl App {
                             line_comments,
                             LineSide::Old,
                         );
+                        if let Some(old_ln) = old_lineno {
+                            Self::push_remote_threads(
+                                annotations,
+                                remote_threads,
+                                remote_index,
+                                path,
+                                old_ln,
+                                LineSide::Old,
+                            );
+                        }
                         Self::push_comments(
                             annotations,
                             file_idx,
@@ -5651,6 +6003,16 @@ impl App {
                             line_comments,
                             LineSide::New,
                         );
+                        if let Some(new_ln) = new_lineno {
+                            Self::push_remote_threads(
+                                annotations,
+                                remote_threads,
+                                remote_index,
+                                path,
+                                new_ln,
+                                LineSide::New,
+                            );
+                        }
                     }
 
                     i = add_end;
@@ -5672,6 +6034,16 @@ impl App {
                         line_comments,
                         LineSide::New,
                     );
+                    if let Some(new_ln) = diff_line.new_lineno {
+                        Self::push_remote_threads(
+                            annotations,
+                            remote_threads,
+                            remote_index,
+                            path,
+                            new_ln,
+                            LineSide::New,
+                        );
+                    }
 
                     i += 1;
                 }
@@ -6238,6 +6610,12 @@ mod target_selector_tests {
         ) -> Result<Vec<crate::model::DiffLine>> {
             Ok(Vec::new())
         }
+        fn list_review_threads(
+            &self,
+            _pr: &crate::forge::traits::PullRequestDetails,
+        ) -> Result<Vec<crate::forge::remote_comments::RemoteReviewThread>> {
+            Ok(Vec::new())
+        }
     }
 
     fn sample_pr(number: u64, title: &str) -> PullRequestSummary {
@@ -6557,6 +6935,12 @@ mod target_selector_tests {
         ) -> Result<Vec<crate::model::DiffLine>> {
             Ok(Vec::new())
         }
+        fn list_review_threads(
+            &self,
+            _pr: &crate::forge::traits::PullRequestDetails,
+        ) -> Result<Vec<crate::forge::remote_comments::RemoteReviewThread>> {
+            Ok(Vec::new())
+        }
     }
 
     #[test]
@@ -6793,6 +7177,254 @@ mod target_selector_tests {
         crate::handler::handle_commit_select_action(&mut app, crate::input::Action::ExitMode);
         // then
         assert!(app.pr_open_state.is_none());
+    }
+
+    // -----------------------------------------------------------------
+    // Remote review threads (PR 4)
+    // -----------------------------------------------------------------
+
+    use crate::forge::remote_comments::{
+        PrCommentsVisibility, RemoteCommentSide, RemoteReviewComment, RemoteReviewThread,
+    };
+
+    struct ThreadAwareForgeBackend {
+        details: crate::forge::traits::PullRequestDetails,
+        patch: String,
+        threads: Vec<RemoteReviewThread>,
+        calls: std::cell::Cell<u32>,
+    }
+
+    impl ThreadAwareForgeBackend {
+        fn new(
+            details: crate::forge::traits::PullRequestDetails,
+            patch: String,
+            threads: Vec<RemoteReviewThread>,
+        ) -> Self {
+            Self {
+                details,
+                patch,
+                threads,
+                calls: std::cell::Cell::new(0),
+            }
+        }
+    }
+
+    impl crate::forge::traits::ForgeBackend for ThreadAwareForgeBackend {
+        fn list_pull_requests(
+            &self,
+            _q: crate::forge::traits::PullRequestListQuery,
+        ) -> Result<crate::forge::traits::PagedPullRequests> {
+            unimplemented!()
+        }
+        fn get_pull_request(
+            &self,
+            _t: crate::forge::traits::PullRequestTarget,
+        ) -> Result<crate::forge::traits::PullRequestDetails> {
+            Ok(self.details.clone())
+        }
+        fn get_pull_request_diff(
+            &self,
+            _p: &crate::forge::traits::PullRequestDetails,
+        ) -> Result<String> {
+            Ok(self.patch.clone())
+        }
+        fn fetch_file_lines(
+            &self,
+            _r: crate::forge::traits::ForgeFileLinesRequest,
+        ) -> Result<Vec<crate::model::DiffLine>> {
+            Ok(Vec::new())
+        }
+        fn list_review_threads(
+            &self,
+            _pr: &crate::forge::traits::PullRequestDetails,
+        ) -> Result<Vec<RemoteReviewThread>> {
+            self.calls.set(self.calls.get() + 1);
+            Ok(self.threads.clone())
+        }
+    }
+
+    fn sample_thread(line: u32, body: &str, resolved: bool, outdated: bool) -> RemoteReviewThread {
+        RemoteReviewThread {
+            id: "T".to_string(),
+            path: "src/lib.rs".to_string(),
+            line: Some(line),
+            side: RemoteCommentSide::Right,
+            is_resolved: resolved,
+            is_outdated: outdated,
+            comments: vec![RemoteReviewComment {
+                id: "C".to_string(),
+                author: Some("alice".to_string()),
+                body: body.to_string(),
+                created_at: None,
+                path: "src/lib.rs".to_string(),
+                line: Some(line),
+                side: RemoteCommentSide::Right,
+                in_reply_to: None,
+                url: "https://example.com/c".to_string(),
+            }],
+        }
+    }
+
+    #[test]
+    fn should_populate_remote_threads_when_opening_pr_through_test_seam() {
+        // given
+        let mut app = build_app();
+        let summary = sample_pr(42, "answer");
+        let backend = Box::new(ThreadAwareForgeBackend::new(
+            test_pr_details(42, "answer"),
+            crate::forge::github::gh::tests_fixture::SIMPLE_PATCH.to_string(),
+            vec![sample_thread(2, "remote body", false, false)],
+        ));
+        // when
+        app.open_pr_with_backend(&summary, backend, None).unwrap();
+        // then
+        assert_eq!(app.forge_review_threads.len(), 1);
+        assert_eq!(app.forge_review_threads[0].comments[0].body, "remote body");
+        // default visibility is Unresolved on a fresh PR session
+        assert_eq!(
+            app.session.remote_comments_visibility,
+            PrCommentsVisibility::Unresolved
+        );
+    }
+
+    #[test]
+    fn should_clear_remote_threads_without_refetch_when_setting_visibility_hide() {
+        // given a PR open with one fetched thread
+        let mut app = build_app();
+        let summary = sample_pr(42, "answer");
+        let backend = Box::new(ThreadAwareForgeBackend::new(
+            test_pr_details(42, "answer"),
+            crate::forge::github::gh::tests_fixture::SIMPLE_PATCH.to_string(),
+            vec![sample_thread(2, "remote", false, false)],
+        ));
+        app.open_pr_with_backend(&summary, backend, None).unwrap();
+        assert_eq!(app.forge_review_threads.len(), 1);
+        // when — switch to hide
+        let changed = app.set_remote_comments_visibility(PrCommentsVisibility::Hide);
+        // then
+        assert!(changed);
+        assert_eq!(
+            app.session.remote_comments_visibility,
+            PrCommentsVisibility::Hide
+        );
+        // We don't drop the cache on visibility change — only filtering changes.
+        // Switching back to Unresolved should restore the rendered comments
+        // without making a new network call.
+        assert_eq!(app.forge_review_threads.len(), 1);
+    }
+
+    #[test]
+    fn should_route_comments_unresolved_command_through_command_handler() {
+        use crate::handler::handle_command_action;
+        use crate::input::Action;
+        // given
+        let mut app = build_app();
+        let summary = sample_pr(42, "answer");
+        let backend = Box::new(ThreadAwareForgeBackend::new(
+            test_pr_details(42, "answer"),
+            crate::forge::github::gh::tests_fixture::SIMPLE_PATCH.to_string(),
+            vec![sample_thread(2, "remote", false, false)],
+        ));
+        app.open_pr_with_backend(&summary, backend, None).unwrap();
+        // when — enter command mode then submit `:comments all`
+        app.input_mode = crate::app::InputMode::Command;
+        app.command_buffer = "comments all".to_string();
+        handle_command_action(&mut app, Action::SubmitInput);
+        // then
+        assert_eq!(
+            app.session.remote_comments_visibility,
+            PrCommentsVisibility::All
+        );
+    }
+
+    #[test]
+    fn should_warn_when_comments_command_used_outside_pr_mode() {
+        use crate::handler::handle_command_action;
+        use crate::input::Action;
+        // given — plain local working-tree session
+        let mut app = build_app();
+        app.input_mode = crate::app::InputMode::Command;
+        app.command_buffer = "comments all".to_string();
+        // when
+        handle_command_action(&mut app, Action::SubmitInput);
+        // then — visibility unchanged, a warning surfaced on the message bar
+        assert_eq!(
+            app.session.remote_comments_visibility,
+            PrCommentsVisibility::Unresolved
+        );
+        let msg = app
+            .message
+            .as_ref()
+            .expect("expected warning on message bar");
+        assert!(matches!(msg.message_type, MessageType::Warning));
+        assert!(
+            msg.content.contains("PR mode"),
+            "got message: {}",
+            msg.content
+        );
+    }
+
+    #[test]
+    fn should_apply_remote_threads_event_when_relevant() {
+        // given a PR session is open at head=`headsha`
+        let mut app = build_app();
+        let summary = sample_pr(42, "answer");
+        let backend = Box::new(ThreadAwareForgeBackend::new(
+            test_pr_details(42, "answer"),
+            crate::forge::github::gh::tests_fixture::SIMPLE_PATCH.to_string(),
+            // open with empty threads — we'll deliver via the channel
+            Vec::new(),
+        ));
+        app.open_pr_with_backend(&summary, backend, None).unwrap();
+        // simulate a background fetch that finished after open
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.pr_threads_rx = Some(rx);
+        app.forge_review_threads_loading = true;
+        let pr_key = match &app.diff_source {
+            DiffSource::PullRequest(pr) => pr.key.clone(),
+            _ => panic!("expected PR mode"),
+        };
+        tx.send(crate::app::PrThreadsEvent::Done {
+            repository: pr_key.repository.clone(),
+            pr_number: pr_key.number,
+            head_sha: pr_key.head_sha.clone(),
+            result: Ok(vec![sample_thread(2, "delayed", false, false)]),
+        })
+        .unwrap();
+        // when
+        app.poll_pr_threads_events();
+        // then
+        assert!(!app.forge_review_threads_loading);
+        assert_eq!(app.forge_review_threads.len(), 1);
+        assert_eq!(app.forge_review_threads[0].comments[0].body, "delayed");
+    }
+
+    #[test]
+    fn should_discard_stale_remote_threads_event_after_switching_pr() {
+        // given a PR open, then user switches to a different PR while a
+        // fetch is in flight
+        let mut app = build_app();
+        let summary = sample_pr(42, "answer");
+        let backend = Box::new(ThreadAwareForgeBackend::new(
+            test_pr_details(42, "answer"),
+            crate::forge::github::gh::tests_fixture::SIMPLE_PATCH.to_string(),
+            Vec::new(),
+        ));
+        app.open_pr_with_backend(&summary, backend, None).unwrap();
+        // simulate a stale event from a different PR head
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.pr_threads_rx = Some(rx);
+        tx.send(crate::app::PrThreadsEvent::Done {
+            repository: ForgeRepository::github("github.com", "agavra", "tuicr"),
+            pr_number: 999,                         // wrong number
+            head_sha: "definitely-not-this".into(), // wrong head
+            result: Ok(vec![sample_thread(2, "stale", false, false)]),
+        })
+        .unwrap();
+        // when
+        app.poll_pr_threads_events();
+        // then — stale result was dropped
+        assert!(app.forge_review_threads.is_empty());
     }
 }
 

@@ -8,6 +8,7 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, ExpandDirection, FocusedPanel, GAP_EXPAND_BATCH, GapId, InputMode};
+use crate::forge::remote_comments::PrCommentsVisibility;
 use crate::model::{LineOrigin, LineRange, LineSide};
 use crate::theme::Theme;
 use crate::ui::comment_panel;
@@ -591,6 +592,17 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                             }
                         }
 
+                        // Render remote review threads anchored at this old-side line.
+                        render_remote_threads_for_anchor(
+                            &mut lines,
+                            &mut line_idx,
+                            current_line_idx,
+                            app,
+                            path,
+                            old_ln,
+                            LineSide::Old,
+                        );
+
                         // Render inline input for new line comment (old side)
                         if is_line_comment_mode && app.editing_comment_id.is_none() {
                             let line_range = app
@@ -718,6 +730,17 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                 }
                             }
                         }
+
+                        // Render remote review threads anchored at this new-side line.
+                        render_remote_threads_for_anchor(
+                            &mut lines,
+                            &mut line_idx,
+                            current_line_idx,
+                            app,
+                            path,
+                            new_ln,
+                            LineSide::New,
+                        );
 
                         // Render inline input for new line comment (new side)
                         if is_line_comment_mode && app.editing_comment_id.is_none() {
@@ -917,6 +940,84 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
     }
 }
 
+/// Render remote review threads anchored at `(path, line, side)` into the
+/// growing line buffer. No-op when `:comments hide` is active or when no
+/// threads anchor here. Resolved/outdated threads use muted styling per
+/// the spec; visible-but-resolved threads only render under `:comments all`.
+fn render_remote_threads_for_anchor(
+    lines: &mut Vec<ratatui::text::Line<'static>>,
+    line_idx: &mut usize,
+    current_line_idx: usize,
+    app: &App,
+    file_path: &std::path::Path,
+    line: u32,
+    side: LineSide,
+) {
+    let visibility = app.session.remote_comments_visibility;
+    if matches!(visibility, PrCommentsVisibility::Hide) {
+        return;
+    }
+    if app.forge_review_threads.is_empty() {
+        return;
+    }
+    let target_path = file_path.to_string_lossy();
+    for thread in &app.forge_review_threads {
+        let Some(muted) = visibility.render_decision(thread) else {
+            continue;
+        };
+        if thread.path != *target_path {
+            continue;
+        }
+        let Some(thread_line) = thread.line else {
+            continue;
+        };
+        if thread_line != line {
+            continue;
+        }
+        let matches_side = matches!(
+            (thread.side, side),
+            (
+                crate::forge::remote_comments::RemoteCommentSide::Right,
+                LineSide::New
+            ) | (
+                crate::forge::remote_comments::RemoteCommentSide::Left,
+                LineSide::Old
+            )
+        );
+        if !matches_side {
+            continue;
+        }
+
+        // Render each comment in the thread: root first (with header
+        // border), replies indented underneath.
+        for (idx, comment) in thread.comments.iter().enumerate() {
+            let is_reply = idx > 0;
+            let comment_lines = comment_panel::format_remote_comment_lines(
+                &app.theme,
+                comment.author.as_deref(),
+                &comment.body,
+                comment.line.map(crate::model::LineRange::single),
+                is_reply,
+                muted,
+                thread.is_resolved,
+                thread.is_outdated,
+            );
+            for mut comment_line in comment_lines {
+                let indicator = cursor_indicator(*line_idx, current_line_idx);
+                comment_line.spans.insert(
+                    0,
+                    ratatui::text::Span::styled(
+                        indicator,
+                        styles::current_line_indicator_style(&app.theme),
+                    ),
+                );
+                lines.push(comment_line);
+                *line_idx += 1;
+            }
+        }
+    }
+}
+
 /// Render a single expanded context line (shared by unified + side-by-side via unified path)
 fn render_expanded_context_line(
     lines: &mut Vec<Line<'_>>,
@@ -941,4 +1042,285 @@ fn render_expanded_context_line(
     ];
     lines.push(Line::from(line_spans));
     *line_idx += 1;
+}
+
+#[cfg(test)]
+mod remote_comments_snapshot_tests {
+    //! Render-snapshot tests for inline remote review threads in the
+    //! unified diff. We drive `ui::render` against `TestBackend` and check
+    //! for the `[github @author]` badge text on the expected row.
+    use crate::app::{App, DiffSource, InputMode, PullRequestDiffSource};
+    use crate::error::Result as TuicrResult;
+    use crate::error::TuicrError;
+    use crate::forge::remote_comments::{
+        PrCommentsVisibility, RemoteCommentSide, RemoteReviewComment, RemoteReviewThread,
+    };
+    use crate::forge::traits::{ForgeRepository, PrSessionKey};
+    use crate::model::{
+        DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin, ReviewSession, SessionDiffSource,
+    };
+    use crate::syntax::SyntaxHighlighter;
+    use crate::theme::Theme;
+    use crate::ui::render;
+    use crate::vcs::traits::{VcsBackend, VcsChangeStatus, VcsInfo, VcsType};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+    use std::path::{Path, PathBuf};
+
+    struct SnapshotVcs {
+        info: VcsInfo,
+    }
+
+    impl VcsBackend for SnapshotVcs {
+        fn info(&self) -> &VcsInfo {
+            &self.info
+        }
+        fn get_working_tree_diff(
+            &self,
+            _highlighter: &SyntaxHighlighter,
+        ) -> TuicrResult<Vec<DiffFile>> {
+            Err(TuicrError::NoChanges)
+        }
+        fn fetch_context_lines(
+            &self,
+            _file_path: &Path,
+            _file_status: FileStatus,
+            _start_line: u32,
+            _end_line: u32,
+        ) -> TuicrResult<Vec<DiffLine>> {
+            Ok(Vec::new())
+        }
+        fn get_change_status(&self) -> TuicrResult<VcsChangeStatus> {
+            Ok(VcsChangeStatus {
+                staged: false,
+                unstaged: false,
+            })
+        }
+    }
+
+    fn repo() -> ForgeRepository {
+        ForgeRepository::github("github.com", "agavra", "tuicr")
+    }
+
+    fn sample_diff_file() -> DiffFile {
+        // Two-line file with one context line and one addition so we have
+        // a stable `line=2` anchor for the test thread.
+        let lines = vec![
+            DiffLine {
+                origin: LineOrigin::Context,
+                content: "first".to_string(),
+                old_lineno: Some(1),
+                new_lineno: Some(1),
+                highlighted_spans: None,
+            },
+            DiffLine {
+                origin: LineOrigin::Addition,
+                content: "second".to_string(),
+                old_lineno: None,
+                new_lineno: Some(2),
+                highlighted_spans: None,
+            },
+        ];
+        let hunk = DiffHunk {
+            header: "@@ -1,1 +1,2 @@".to_string(),
+            lines,
+            old_start: 1,
+            old_count: 1,
+            new_start: 1,
+            new_count: 2,
+        };
+        let hunks = vec![hunk];
+        let content_hash = DiffFile::compute_content_hash(&hunks);
+        DiffFile {
+            old_path: Some(PathBuf::from("src/lib.rs")),
+            new_path: Some(PathBuf::from("src/lib.rs")),
+            status: FileStatus::Modified,
+            hunks,
+            is_binary: false,
+            is_too_large: false,
+            is_commit_message: false,
+            content_hash,
+        }
+    }
+
+    fn thread(
+        id: &str,
+        author: &str,
+        body: &str,
+        line: u32,
+        resolved: bool,
+        outdated: bool,
+    ) -> RemoteReviewThread {
+        RemoteReviewThread {
+            id: id.to_string(),
+            path: "src/lib.rs".to_string(),
+            line: Some(line),
+            side: RemoteCommentSide::Right,
+            is_resolved: resolved,
+            is_outdated: outdated,
+            comments: vec![RemoteReviewComment {
+                id: format!("{id}-root"),
+                author: Some(author.to_string()),
+                body: body.to_string(),
+                created_at: None,
+                path: "src/lib.rs".to_string(),
+                line: Some(line),
+                side: RemoteCommentSide::Right,
+                in_reply_to: None,
+                url: "https://example.com/x".to_string(),
+            }],
+        }
+    }
+
+    fn make_pr_app() -> App {
+        let pr = PullRequestDiffSource {
+            key: PrSessionKey::new(repo(), 125, "headsha".to_string()),
+            base_sha: "basesha".to_string(),
+            title: "test pr".to_string(),
+            url: "https://example.com".to_string(),
+            head_ref_name: "feat".to_string(),
+            base_ref_name: "main".to_string(),
+            state: "OPEN".to_string(),
+            closed: false,
+            merged: false,
+        };
+        let vcs_info = VcsInfo {
+            root_path: PathBuf::from("forge:github.com/agavra/tuicr"),
+            head_commit: "headsha".to_string(),
+            branch_name: Some("feat".to_string()),
+            vcs_type: VcsType::File,
+        };
+        let mut session = ReviewSession::new(
+            vcs_info.root_path.clone(),
+            "headsha".to_string(),
+            Some("feat".to_string()),
+            SessionDiffSource::PullRequest,
+        );
+        session.pr_session_key = Some(pr.key.clone());
+        App::build(
+            Box::new(SnapshotVcs {
+                info: vcs_info.clone(),
+            }),
+            vcs_info,
+            Theme::dark(),
+            None,
+            false,
+            vec![sample_diff_file()],
+            session,
+            DiffSource::PullRequest(Box::new(pr)),
+            InputMode::Normal,
+            Vec::new(),
+            None,
+        )
+        .expect("build app")
+    }
+
+    fn draw(app: &mut App) -> Buffer {
+        let backend = TestBackend::new(140, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render(frame, app))
+            .expect("draw frame");
+        terminal.backend().buffer().clone()
+    }
+
+    fn body_text(buffer: &Buffer) -> String {
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn should_render_unresolved_remote_comment_inline_in_unified_diff() {
+        // given a PR app with one unresolved remote thread anchored on
+        // the addition line
+        let mut app = make_pr_app();
+        app.forge_review_threads = vec![thread("t1", "alice", "looks good?", 2, false, false)];
+        app.rebuild_annotations();
+        // when
+        let buffer = draw(&mut app);
+        // then — the badge appears somewhere in the rendered frame
+        let body = body_text(&buffer);
+        assert!(
+            body.contains("[github @alice]"),
+            "expected [github @alice] badge in:\n{body}"
+        );
+        assert!(
+            body.contains("looks good?"),
+            "expected remote comment body in:\n{body}"
+        );
+    }
+
+    #[test]
+    fn should_render_resolved_remote_comment_only_under_comments_all() {
+        // given a PR app with one resolved remote thread
+        let mut app = make_pr_app();
+        app.forge_review_threads = vec![thread(
+            "t1", "alice", "old note", 2, /* resolved */ true, false,
+        )];
+        // default Unresolved visibility — should not render
+        app.rebuild_annotations();
+        let before = body_text(&draw(&mut app));
+        assert!(
+            !before.contains("[github @alice"),
+            "resolved thread leaked under Unresolved:\n{before}"
+        );
+
+        // when — flip to All
+        assert!(app.set_remote_comments_visibility(PrCommentsVisibility::All));
+        // then — the resolved badge appears with the "resolved" marker
+        let after = body_text(&draw(&mut app));
+        assert!(
+            after.contains("[github @alice resolved]"),
+            "expected resolved badge in:\n{after}"
+        );
+    }
+
+    #[test]
+    fn should_hide_all_remote_comments_when_comments_hide() {
+        // given
+        let mut app = make_pr_app();
+        app.forge_review_threads = vec![thread("t1", "alice", "blocker", 2, false, false)];
+        app.rebuild_annotations();
+        // sanity: visible by default
+        let before = body_text(&draw(&mut app));
+        assert!(before.contains("[github @alice]"));
+
+        // when
+        assert!(app.set_remote_comments_visibility(PrCommentsVisibility::Hide));
+        // then
+        let after = body_text(&draw(&mut app));
+        assert!(
+            !after.contains("[github @alice"),
+            "comment leaked under Hide:\n{after}"
+        );
+    }
+
+    #[test]
+    fn should_render_outdated_marker_for_outdated_thread_under_all() {
+        // given
+        let mut app = make_pr_app();
+        app.forge_review_threads = vec![thread(
+            "t1",
+            "bob",
+            "stale anchor",
+            2,
+            false,
+            /* outdated */ true,
+        )];
+        // when — switch to all so the outdated thread is visible
+        app.set_remote_comments_visibility(PrCommentsVisibility::All);
+        let body = body_text(&draw(&mut app));
+        // then
+        assert!(
+            body.contains("[github @bob outdated]"),
+            "expected outdated badge in:\n{body}"
+        );
+    }
 }

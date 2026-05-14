@@ -261,7 +261,19 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             Span::raw("")
         };
 
-        vec![mode_span, hints_span, dirty_indicator]
+        // Inline hint while remote review threads are still loading in PR
+        // mode. The diff is already visible; this just tells the user that
+        // existing GitHub discussions are still on the way.
+        let remote_loading = if app.forge_review_threads_loading {
+            Span::styled(
+                " Loading remote comments… ",
+                Style::default().fg(theme.fg_dim),
+            )
+        } else {
+            Span::raw("")
+        };
+
+        vec![mode_span, hints_span, dirty_indicator, remote_loading]
     };
 
     // Build message span and create right-aligned layout
