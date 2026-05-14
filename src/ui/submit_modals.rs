@@ -3,7 +3,7 @@
 
 use ratatui::{
     Frame,
-    layout::{Constraint, Flex, Layout, Rect},
+    layout::{Alignment, Constraint, Flex, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
@@ -165,6 +165,7 @@ pub fn render_submit_confirm(frame: &mut Frame, app: &App) {
 
     let paragraph = Paragraph::new(lines)
         .style(styles::popup_style(theme))
+        .alignment(Alignment::Center)
         .wrap(Wrap { trim: false });
     frame.render_widget(paragraph, inner);
 }
