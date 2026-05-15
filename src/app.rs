@@ -3625,14 +3625,15 @@ impl App {
 
         // If the line isn't already annotated, see whether it falls inside a
         // collapsed (or partially collapsed) gap between hunks. If so, expand
-        // downward from the previous hunk just far enough to reveal the
-        // target, and re-search. Lines past the target stay collapsed behind
-        // an `↑` expander.
+        // *toward* the target from whichever side the cursor is on: cursor
+        // above the gap expands `Down` from the previous hunk, cursor at or
+        // below the gap expands `Up` from the next hunk. Either way the
+        // unreached half of the gap stays collapsed behind an expander.
         if !matches!(result, FindSourceLineResult::Exact(_))
             && let Some(gap_id) = self.find_gap_containing_lineno(current_file, target_lineno, side)
         {
-            let limit = self.expand_down_limit_to_reach(&gap_id, target_lineno, side);
-            if let Err(e) = self.expand_gap(gap_id, ExpandDirection::Down, limit) {
+            let (direction, limit) = self.expand_plan_to_reach(&gap_id, target_lineno, side);
+            if let Err(e) = self.expand_gap(gap_id, direction, limit) {
                 self.set_error(format!("Expand failed: {e}"));
                 return;
             }
@@ -3753,24 +3754,27 @@ impl App {
         None
     }
 
-    /// Number of new-side lines to expand `Down` so that `target_lineno`
-    /// (interpreted on `side`) becomes the last revealed context line.
+    /// Choose an `ExpandDirection` and line-count limit so that expanding
+    /// `gap_id` reveals exactly the lines between the cursor and
+    /// `target_lineno` (on `side`). Cursor above the gap → `Down` from the
+    /// previous hunk; cursor at-or-below the gap → `Up` from the next hunk.
     ///
     /// `expand_gap` operates in new-side coordinates, so an old-side target
-    /// is translated to new-side using the fixed offset that holds across an
+    /// is translated to new-side using the offset that holds across an
     /// unchanged-context gap: `new - old = hunk.new_start - hunk.old_start`
     /// where `hunk` is the hunk immediately *after* the gap.
-    ///
-    /// Returns `None` (meaning "expand the entire remaining gap") only if
-    /// the gap is malformed; in normal cases this returns the exact count.
-    fn expand_down_limit_to_reach(
+    fn expand_plan_to_reach(
         &self,
         gap_id: &GapId,
         target_lineno: u32,
         side: LineSide,
-    ) -> Option<usize> {
-        let file = self.diff_files.get(gap_id.file_idx)?;
-        let hunk = file.hunks.get(gap_id.hunk_idx)?;
+    ) -> (ExpandDirection, Option<usize>) {
+        let Some(file) = self.diff_files.get(gap_id.file_idx) else {
+            return (ExpandDirection::Both, None);
+        };
+        let Some(hunk) = file.hunks.get(gap_id.hunk_idx) else {
+            return (ExpandDirection::Both, None);
+        };
         let prev_hunk = if gap_id.hunk_idx > 0 {
             Some(&file.hunks[gap_id.hunk_idx - 1])
         } else {
@@ -3780,16 +3784,43 @@ impl App {
             None => 1,
             Some(p) => p.new_start + p.new_count,
         };
+        let gap_end_new = hunk.new_start.saturating_sub(1);
         // offset := new - old, constant across the unchanged context gap
         let offset_new_minus_old = hunk.new_start as i64 - hunk.old_start as i64;
         let target_new = match side {
             LineSide::New => target_lineno as i64,
             LineSide::Old => target_lineno as i64 + offset_new_minus_old,
         };
-        let top_len = self.expanded_top.get(gap_id).map_or(0, |v| v.len()) as i64;
-        let inner_start = gap_start_new as i64 + top_len;
-        let limit = (target_new - inner_start + 1).max(0) as usize;
-        Some(limit)
+
+        let cursor_below_gap = self
+            .find_hunk_header_annotation_idx(gap_id)
+            .is_some_and(|h| self.diff_state.cursor_line >= h);
+
+        if cursor_below_gap {
+            let bot_len = self.expanded_bottom.get(gap_id).map_or(0, |v| v.len()) as i64;
+            let inner_end = gap_end_new as i64 - bot_len;
+            let limit = (inner_end - target_new + 1).max(0) as usize;
+            (ExpandDirection::Up, Some(limit))
+        } else {
+            let top_len = self.expanded_top.get(gap_id).map_or(0, |v| v.len()) as i64;
+            let inner_start = gap_start_new as i64 + top_len;
+            let limit = (target_new - inner_start + 1).max(0) as usize;
+            (ExpandDirection::Down, Some(limit))
+        }
+    }
+
+    fn find_hunk_header_annotation_idx(&self, gap_id: &GapId) -> Option<usize> {
+        self.line_annotations
+            .iter()
+            .enumerate()
+            .find_map(|(idx, a)| match a {
+                AnnotatedLine::HunkHeader { file_idx, hunk_idx }
+                    if *file_idx == gap_id.file_idx && *hunk_idx == gap_id.hunk_idx =>
+                {
+                    Some(idx)
+                }
+                _ => None,
+            })
     }
 
     pub fn file_list_down(&mut self, n: usize) {
@@ -10459,6 +10490,56 @@ mod expand_gap_tests {
         app.go_to_source_line(30, LineSide::Old);
 
         assert_eq!(cursor_old_lineno(&app), Some(30));
+    }
+
+    #[test]
+    fn should_expand_up_when_cursor_is_below_the_gap() {
+        // Two hunks: hunk0 at lines 1-5, hunk1 at lines 50-54. Gap between
+        // them spans new lines 6..=49. Move the cursor onto hunk1, then
+        // jump to line 30 — expansion should come from the bottom of the
+        // gap (Up) since the cursor sits below it.
+        let file = make_file_with_hunks("test.rs", vec![make_hunk(1, 5), make_hunk(50, 5)]);
+        let mut app = build_app_with_files(vec![file], 100);
+        let gap_id = GapId {
+            file_idx: 0,
+            hunk_idx: 1,
+        };
+
+        let hunk1_header_idx = app
+            .line_annotations
+            .iter()
+            .enumerate()
+            .find_map(|(i, a)| match a {
+                AnnotatedLine::HunkHeader { hunk_idx: 1, .. } => Some(i),
+                _ => None,
+            })
+            .expect("hunk 1 header should exist");
+        app.diff_state.cursor_line = hunk1_header_idx + 1;
+
+        app.go_to_source_line(30, LineSide::New);
+
+        assert_eq!(cursor_new_lineno(&app), Some(30));
+        assert!(
+            !app.expanded_top.contains_key(&gap_id),
+            "no top expansion when cursor is below the gap"
+        );
+        // Gap covers new lines 6..=49 (44 lines). Up expansion to reach
+        // line 30 reveals lines 30..=49 = 20 lines.
+        let bot_len = app.expanded_bottom.get(&gap_id).map_or(0, |v| v.len());
+        assert_eq!(bot_len, 20);
+        let has_down_expander = app.line_annotations.iter().any(|a| {
+            matches!(
+                a,
+                AnnotatedLine::Expander {
+                    gap_id: g,
+                    direction: ExpandDirection::Down,
+                } if *g == gap_id
+            )
+        });
+        assert!(
+            has_down_expander,
+            "remaining hidden lines need a `↓` expander above the cursor"
+        );
     }
 
     #[test]
