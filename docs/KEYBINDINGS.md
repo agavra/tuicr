@@ -14,6 +14,7 @@ Full reference. Press `?` inside tuicr for an in-app version of this list.
 | `Ctrl-f` / `Ctrl-b` | Full page down / up |
 | `g` / `G` | Go to first / last file |
 | `{N}G` | Go to source line N in current file |
+| `{N}{motion}` | Vim-style count prefix — repeats `j` / `k` / `h` / `l` / `{` / `}` / `[` / `]` `N` times |
 | `{` / `}` | Jump to previous / next file |
 | `[` / `]` | Jump to previous / next hunk |
 | `/` | Search within diff |

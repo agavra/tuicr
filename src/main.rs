@@ -458,7 +458,7 @@ fn main() -> anyhow::Result<()> {
                     // route through the filter-specific key map so typed
                     // characters update the filter buffer rather than driving
                     // commit-list navigation.
-                    let action =
+                    let mut action =
                         if app.input_mode == InputMode::CommitSelect && app.pr_filter_editing() {
                             map_target_filter_mode(key)
                         } else {
@@ -490,7 +490,10 @@ fn main() -> anyhow::Result<()> {
                         _ => {}
                     }
 
-                    // Handle digit accumulation for {N}G jump-to-line (Normal mode only)
+                    // Vim-style {count}{motion} (Normal mode only): digits accumulate
+                    // into `pending_count`, then a following motion either scales its
+                    // inner count parameter or is dispatched repeatedly. `{count}G`
+                    // jumps to source line `count` (already existing behaviour).
                     if app.input_mode == InputMode::Normal {
                         match action {
                             Action::Digit(d) => {
@@ -501,43 +504,45 @@ fn main() -> anyhow::Result<()> {
                                 continue;
                             }
                             Action::GoToBottom if app.pending_count.is_some() => {
-                                // Clamp to 1 since source lines are 1-indexed; 0G behaves like 1G
                                 let count = app.pending_count.unwrap().max(1);
                                 app.pending_count = None;
-                                // Safe cast: count is clamped to 999_999 which fits in u32
                                 app.go_to_source_line(count as u32, crate::model::LineSide::New);
                                 continue;
                             }
                             _ => {
-                                app.pending_count = None;
+                                if let Some(count) = app.pending_count.take() {
+                                    let count = count.max(1);
+                                    match &mut action {
+                                        Action::CursorDown(n)
+                                        | Action::CursorUp(n)
+                                        | Action::ScrollLeft(n)
+                                        | Action::ScrollRight(n)
+                                        | Action::ScrollViewDown(n)
+                                        | Action::ScrollViewUp(n) => {
+                                            *n = n.saturating_mul(count);
+                                        }
+                                        Action::NextFile
+                                        | Action::PrevFile
+                                        | Action::NextHunk
+                                        | Action::PrevHunk => {
+                                            // Dispatch `count - 1` extra times; the
+                                            // last one runs through normal dispatch
+                                            // below.
+                                            for _ in 1..count {
+                                                dispatch_action(&mut app, action.clone());
+                                            }
+                                        }
+                                        _ => {
+                                            // Count silently discarded for non-motion
+                                            // actions (mode changes, edits, etc.).
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
 
-                    // Dispatch by input mode
-                    match app.input_mode {
-                        InputMode::Help => handle_help_action(&mut app, action),
-                        InputMode::Command => handle_command_action(&mut app, action),
-                        InputMode::Search => handle_search_action(&mut app, action),
-                        InputMode::Comment => handle_comment_action(&mut app, action),
-                        InputMode::Confirm => handle_confirm_action(&mut app, action),
-                        InputMode::CommitSelect => handle_commit_select_action(&mut app, action),
-                        InputMode::VisualSelect => handle_visual_action(&mut app, action),
-                        InputMode::SubmitResolver => {
-                            handle_submit_resolver_action(&mut app, action)
-                        }
-                        InputMode::SubmitConfirm => handle_submit_confirm_action(&mut app, action),
-                        InputMode::SubmitActionPicker => {
-                            handle_submit_action_picker_action(&mut app, action)
-                        }
-                        InputMode::Normal => match app.focused_panel {
-                            FocusedPanel::FileList => handle_file_list_action(&mut app, action),
-                            FocusedPanel::Diff => handle_diff_action(&mut app, action),
-                            FocusedPanel::CommitSelector => {
-                                handle_commit_selector_action(&mut app, action)
-                            }
-                        },
-                    }
+                    dispatch_action(&mut app, action);
                 }
                 Event::Mouse(mouse_event) => handle_mouse_event(&mut app, mouse_event),
                 Event::Paste(text) => {
@@ -578,4 +583,24 @@ fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn dispatch_action(app: &mut App, action: Action) {
+    match app.input_mode {
+        InputMode::Help => handle_help_action(app, action),
+        InputMode::Command => handle_command_action(app, action),
+        InputMode::Search => handle_search_action(app, action),
+        InputMode::Comment => handle_comment_action(app, action),
+        InputMode::Confirm => handle_confirm_action(app, action),
+        InputMode::CommitSelect => handle_commit_select_action(app, action),
+        InputMode::VisualSelect => handle_visual_action(app, action),
+        InputMode::SubmitResolver => handle_submit_resolver_action(app, action),
+        InputMode::SubmitConfirm => handle_submit_confirm_action(app, action),
+        InputMode::SubmitActionPicker => handle_submit_action_picker_action(app, action),
+        InputMode::Normal => match app.focused_panel {
+            FocusedPanel::FileList => handle_file_list_action(app, action),
+            FocusedPanel::Diff => handle_diff_action(app, action),
+            FocusedPanel::CommitSelector => handle_commit_selector_action(app, action),
+        },
+    }
 }
