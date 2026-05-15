@@ -1025,6 +1025,8 @@ impl Theme {
             aqua: rgb(131, 192, 146),   // #83c092
             blue: rgb(127, 187, 179),   // #7fbbb3
             purple: rgb(214, 153, 182), // #d699b6
+            // two-face has no Everforest syntect theme; Gruvbox is the
+            // closest warm, low-saturation, earthy match available.
             syntect_theme: EmbeddedThemeName::GruvboxDark,
         })
     }
@@ -1050,6 +1052,8 @@ impl Theme {
             aqua: rgb(53, 167, 124),      // #35a77c
             blue: rgb(58, 148, 197),      // #3a94c5
             purple: rgb(223, 105, 186),   // #df69ba
+            // two-face has no Everforest syntect theme; Gruvbox is the
+            // closest warm, low-saturation, earthy match available.
             syntect_theme: EmbeddedThemeName::GruvboxLight,
         })
     }
