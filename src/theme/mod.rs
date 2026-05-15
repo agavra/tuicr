@@ -1717,7 +1717,7 @@ fn print_help() -> ! {
         "tuicr - A code review TUI with vim keybindings. Export to GitHub or clipboard.
 
 Usage: {name} [OPTIONS]
-       {name} mcp
+       {name} review <COMMAND>
 
 Options:
   -r, --revisions <REVSET>  Commit range/Revset to review (syntax depends on VCS backend)
@@ -1737,7 +1737,7 @@ Options:
   -h, --help             Print this help message
 
 Commands:
-  mcp                    Start the headless stdio MCP server
+  review                 Run agent-readable review commands
 
 Press ? in the application for keybinding help."
     );

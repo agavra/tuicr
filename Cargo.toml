@@ -40,8 +40,6 @@ base64 = "0.22"
 ignore = "0.4"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt"] }
-rmcp = { version = "1.6", features = ["transport-io"] }
-tokio = { version = "1", features = ["macros", "net", "rt-multi-thread"] }
 
 # Syntax highlighting
 syntect = "5.2"

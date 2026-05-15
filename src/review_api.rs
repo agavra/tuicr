@@ -1,21 +1,20 @@
-//! Public review service API shared by the headless MCP server and external integrations.
+//! Public review service API shared by the review CLI and external integrations.
 //!
 //! This module intentionally exposes a narrow service surface instead of the
-//! TUI `App` state. MCP remains one adapter over the same underlying review
-//! logic; other tools can depend on this module without reimplementing tuicr
-//! review semantics.
+//! TUI `App` state. The `tuicr review` commands are one adapter over the same
+//! underlying review logic; other tools can depend on this module without
+//! reimplementing tuicr review semantics.
 
 use std::path::PathBuf;
 
 use crate::error::Result;
-use crate::mcp::ReviewServiceInner;
-pub use crate::mcp::{
+use crate::review_service::ReviewServiceInner;
+pub use crate::review_service::{
     AddCommentArgs as AddCommentRequest, AgentCommentType as ReviewCommentTypeView,
     AgentReviewComment as ReviewCommentView, AgentReviewFile as ReviewFileView,
     AgentReviewSession as ReviewSessionView, CommentScope, FileDiffArgs as FileDiffRequest,
-    FileDiffView, GetReviewArgs as GetReviewRequest, McpDiffSource as ReviewDiffSource,
-    OpenReviewArgs as OpenReviewRequest, SessionIdArgs as SessionIdRequest,
-    SetReviewedArgs as SetReviewedRequest,
+    FileDiffView, GetReviewArgs as GetReviewRequest, OpenReviewArgs as OpenReviewRequest,
+    ReviewDiffSource, SessionIdArgs as SessionIdRequest, SetReviewedArgs as SetReviewedRequest,
 };
 
 #[derive(Clone)]
@@ -27,13 +26,6 @@ impl ReviewService {
     pub fn new(default_repo_path: impl Into<PathBuf>) -> Self {
         Self {
             inner: ReviewServiceInner::new(default_repo_path.into()),
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn new_ephemeral(default_repo_path: impl Into<PathBuf>) -> Self {
-        Self {
-            inner: ReviewServiceInner::new_ephemeral(default_repo_path.into()),
         }
     }
 

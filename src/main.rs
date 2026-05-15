@@ -37,8 +37,8 @@ const MIN_WIDTH_FOR_FILE_LIST: u16 = 100;
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
-    if args.get(1).is_some_and(|arg| arg == "mcp") {
-        return tuicr::mcp::run_stdio_blocking();
+    if args.get(1).is_some_and(|arg| arg == "review") {
+        return tuicr::review_cli::run_from_args(&args);
     }
 
     profile::init_from_env();

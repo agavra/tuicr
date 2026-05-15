@@ -127,22 +127,26 @@ tuicr --stdout > review.md
 tuicr --stdout | pbcopy
 ```
 
-## MCP server
+## Agent review CLI
 
-tuicr also exposes a lightweight MCP server for agentic code review. It uses
-stdio transport and the same diff loading, comment model, reviewed state, and
-Markdown export format as the TUI.
+tuicr exposes a lightweight `review` command for agentic code review. It uses
+the same diff loading, comment model, reviewed state, and Markdown export format
+as the TUI while returning JSON or agent-readable text.
 
 ```bash
-tuicr mcp
+tuicr review open --repo . --diff-source working-tree --json
+tuicr review diff --session <id> --path src/main.rs --max-lines 200
+tuicr review comment add --session <id> --path src/main.rs --line 42 --side new --type issue --body "..."
+tuicr review file reviewed --session <id> --path src/main.rs --set true
+tuicr review export --session <id>
+tuicr review clear --session <id>
 ```
 
-Available MCP tools include `open_review`, `get_review`, `get_file_diff`,
-`add_comment`, `set_file_reviewed`, `clear_review`, and `export_review`.
-
 Rust integrations can reuse the same review service through
-`tuicr::review_api::ReviewService`. The public review API exposes the request
-and response types used by `tuicr mcp` without exposing TUI render state.
+`tuicr::review_api::ReviewService`. The public review API exposes request and
+response types for opening reviews, reading file diffs, adding comments, marking
+files reviewed, clearing review state, and exporting Markdown without exposing
+TUI render state.
 
 ## Configuration
 
