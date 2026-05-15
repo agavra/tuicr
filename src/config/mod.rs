@@ -6,6 +6,8 @@ use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use toml::Value;
 
+pub const DEFAULT_LEADER_KEY: char = ';';
+
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct CommentTypeConfig {
@@ -51,6 +53,7 @@ pub struct AppConfig {
     pub export_legend: Option<bool>,
     pub cursor_line: Option<bool>,
     pub mouse: Option<bool>,
+    pub leader: Option<char>,
     pub transparent_background: Option<bool>,
     pub scroll_offset: Option<usize>,
     /// `[forge]` section settings. Always present; `None` means "no override"
@@ -72,6 +75,7 @@ const KNOWN_KEYS: &[&str] = &[
     "export_legend",
     "cursor_line",
     "mouse",
+    "leader",
     "transparent_background",
     "scroll_offset",
     "forge",
@@ -146,6 +150,22 @@ fn read_string(table: &toml::Table, key: &str, warnings: &mut Vec<String>) -> Op
             "Warning: Config key '{key}' must be a string; ignoring value"
         ));
         None
+    }
+}
+
+/// Read a single-character leader key, pushing a warning if the value is unusable.
+fn read_leader(table: &toml::Table, warnings: &mut Vec<String>) -> Option<char> {
+    let raw = read_string(table, "leader", warnings)?;
+    let mut chars = raw.chars();
+    match (chars.next(), chars.next()) {
+        (Some(leader), None) => Some(leader),
+        _ => {
+            warnings.push(
+                "Warning: Config key 'leader' must be a single character; ignoring value"
+                    .to_string(),
+            );
+            None
+        }
     }
 }
 
@@ -240,6 +260,7 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         export_legend: read_bool(table, "export_legend", &mut warnings),
         cursor_line: read_bool(table, "cursor_line", &mut warnings),
         mouse: read_bool(table, "mouse", &mut warnings),
+        leader: read_leader(table, &mut warnings),
         transparent_background: read_bool(table, "transparent_background", &mut warnings),
         scroll_offset: read_usize(table, "scroll_offset", &mut warnings),
         forge: table
@@ -766,6 +787,40 @@ mod tests {
         assert_eq!(
             outcome.warnings[0],
             "Warning: Config key 'mouse' must be a boolean; ignoring value"
+        );
+    }
+
+    // leader
+
+    #[test]
+    fn should_parse_single_character_leader() {
+        let outcome = parse_config("leader = \",\"\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.leader),
+            Some(',')
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_warn_and_ignore_multi_character_leader() {
+        let outcome = parse_config("leader = \",,\"\n");
+        assert_eq!(outcome.config.as_ref().and_then(|cfg| cfg.leader), None);
+        assert_eq!(outcome.warnings.len(), 1);
+        assert_eq!(
+            outcome.warnings[0],
+            "Warning: Config key 'leader' must be a single character; ignoring value"
+        );
+    }
+
+    #[test]
+    fn should_warn_and_ignore_leader_with_invalid_type() {
+        let outcome = parse_config("leader = true\n");
+        assert_eq!(outcome.config.as_ref().and_then(|cfg| cfg.leader), None);
+        assert_eq!(outcome.warnings.len(), 1);
+        assert_eq!(
+            outcome.warnings[0],
+            "Warning: Config key 'leader' must be a string; ignoring value"
         );
     }
 

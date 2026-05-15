@@ -124,21 +124,21 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
-                "  ;h/;l     ",
+                format!("  {}h/{}l     ", app.leader_key, app.leader_key),
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("Focus file list/diff"),
         ]),
         Line::from(vec![
             Span::styled(
-                "  ;k/;j     ",
+                format!("  {}k/{}j     ", app.leader_key, app.leader_key),
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("Focus commit selector/diff"),
         ]),
         Line::from(vec![
             Span::styled(
-                "  ;e        ",
+                format!("  {}e        ", app.leader_key),
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("Toggle file list visibility"),
@@ -315,7 +315,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
-                "  ;c        ",
+                format!("  {}c        ", app.leader_key),
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("Add review comment"),

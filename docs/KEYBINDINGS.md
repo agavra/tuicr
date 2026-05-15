@@ -2,6 +2,8 @@
 
 Full reference. Press `?` inside tuicr for an in-app version of this list.
 
+`<leader>` defaults to `;`. Override it with `leader = ","` in `~/.config/tuicr/config.toml`.
+
 ## Navigation
 
 | Key | Action |
@@ -38,11 +40,11 @@ Full reference. Press `?` inside tuicr for an in-app version of this list.
 | Key | Action |
 |-----|--------|
 | `Tab` / `Shift-Tab` | Cycle focus forward / backward between file list, diff, and commit selector |
-| `;h` | Focus file list (left panel) |
-| `;l` | Focus diff view (right panel) |
-| `;k` | Focus commit selector (top panel) |
-| `;j` | Focus diff view |
-| `;e` | Toggle file list visibility |
+| `<leader>h` | Focus file list (left panel) |
+| `<leader>l` | Focus diff view (right panel) |
+| `<leader>k` | Focus commit selector (top panel) |
+| `<leader>j` | Focus diff view |
+| `<leader>e` | Toggle file list visibility |
 | `Enter` | Select file (when file list is focused) |
 
 ## Review actions
@@ -52,7 +54,7 @@ Full reference. Press `?` inside tuicr for an in-app version of this list.
 | `r` | Toggle file reviewed |
 | `c` | Add line comment (or file comment if not on a diff line) |
 | `C` | Add file comment |
-| `;c` | Add review comment |
+| `<leader>c` | Add review comment |
 | `v` / `V` | Enter visual mode for range comments |
 | `dd` | Delete comment at cursor |
 | `i` | Edit comment at cursor |
@@ -122,7 +124,7 @@ Full reference. Press `?` inside tuicr for an in-app version of this list.
 
 ## Inline commit selector
 
-Shown at the top of the diff when reviewing multiple commits. Focus it with `;k` or `Tab`.
+Shown at the top of the diff when reviewing multiple commits. Focus it with `<leader>k` or `Tab`.
 
 | Key | Action |
 |-----|--------|

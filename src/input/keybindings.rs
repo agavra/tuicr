@@ -20,7 +20,7 @@ pub enum Action {
     PrevHunk,
     PendingZCommand,
     PendingShiftZCommand,
-    PendingSemicolonCommand,
+    PendingLeaderCommand,
     ScrollLeft(usize),
     ScrollRight(usize),
     ScrollViewDown(usize),
@@ -129,9 +129,9 @@ pub enum Action {
     None,
 }
 
-pub fn map_key_to_action(key: KeyEvent, mode: InputMode) -> Action {
+pub fn map_key_to_action(key: KeyEvent, mode: InputMode, leader_key: char) -> Action {
     match mode {
-        InputMode::Normal => map_normal_mode(key),
+        InputMode::Normal => map_normal_mode(key, leader_key),
         InputMode::Command => map_command_mode(key),
         InputMode::Search => map_search_mode(key),
         InputMode::Comment => map_comment_mode(key),
@@ -145,8 +145,12 @@ pub fn map_key_to_action(key: KeyEvent, mode: InputMode) -> Action {
     }
 }
 
-fn map_normal_mode(key: KeyEvent) -> Action {
+fn map_normal_mode(key: KeyEvent, leader_key: char) -> Action {
     match (key.code, key.modifiers) {
+        (KeyCode::Char(key), KeyModifiers::NONE) if key == leader_key => {
+            Action::PendingLeaderCommand
+        }
+
         // Cursor movement (vim-like: cursor moves, scroll follows when needed)
         (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => Action::CursorDown(1),
         (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => Action::CursorUp(1),
@@ -162,7 +166,6 @@ fn map_normal_mode(key: KeyEvent) -> Action {
         (KeyCode::Char('G'), _) => Action::GoToBottom,
         (KeyCode::Char('z'), KeyModifiers::NONE) => Action::PendingZCommand,
         (KeyCode::Char('Z'), _) => Action::PendingShiftZCommand,
-        (KeyCode::Char(';'), _) => Action::PendingSemicolonCommand,
 
         // File navigation (use _ for modifiers since shift is implicit in the character)
         (KeyCode::Char('}'), _) => Action::NextFile,
@@ -406,6 +409,7 @@ fn map_visual_mode(key: KeyEvent) -> Action {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::DEFAULT_LEADER_KEY;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     fn key(code: KeyCode) -> KeyEvent {
@@ -420,7 +424,7 @@ mod tests {
     fn should_map_digit_keys_to_digit_action_in_normal_mode() {
         for d in 0..=9u8 {
             let c = (b'0' + d) as char;
-            let action = map_normal_mode(key(KeyCode::Char(c)));
+            let action = map_normal_mode(key(KeyCode::Char(c)), DEFAULT_LEADER_KEY);
             assert_eq!(
                 action,
                 Action::Digit(d),
@@ -431,13 +435,13 @@ mod tests {
 
     #[test]
     fn should_map_uppercase_g_to_go_to_bottom_in_normal_mode() {
-        let action = map_normal_mode(key_shift('G'));
+        let action = map_normal_mode(key_shift('G'), DEFAULT_LEADER_KEY);
         assert_eq!(action, Action::GoToBottom);
     }
 
     #[test]
     fn should_map_lowercase_g_to_go_to_top_in_normal_mode() {
-        let action = map_normal_mode(key(KeyCode::Char('g')));
+        let action = map_normal_mode(key(KeyCode::Char('g')), DEFAULT_LEADER_KEY);
         assert_eq!(action, Action::GoToTop);
     }
 
@@ -474,7 +478,7 @@ mod tests {
         // be treated as Action::Digit.
         for d in 0..=9u8 {
             let c = (b'0' + d) as char;
-            let action = map_normal_mode(key_shift(c));
+            let action = map_normal_mode(key_shift(c), DEFAULT_LEADER_KEY);
             assert_ne!(
                 action,
                 Action::Digit(d),
@@ -485,7 +489,10 @@ mod tests {
 
     #[test]
     fn should_map_backtab_to_reverse_focus_in_normal_mode() {
-        let action = map_normal_mode(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+        let action = map_normal_mode(
+            KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT),
+            DEFAULT_LEADER_KEY,
+        );
         assert_eq!(action, Action::ToggleFocusReverse);
     }
 
@@ -493,6 +500,38 @@ mod tests {
     fn should_map_backtab_to_reverse_comment_type_in_comment_mode() {
         let action = map_comment_mode(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
         assert_eq!(action, Action::CycleCommentTypeReverse);
+    }
+
+    #[test]
+    fn should_map_configured_leader_to_pending_leader_action() {
+        let action = map_key_to_action(key(KeyCode::Char(',')), InputMode::Normal, ',');
+        assert_eq!(action, Action::PendingLeaderCommand);
+    }
+
+    #[test]
+    fn should_leave_semicolon_unbound_when_another_leader_is_configured() {
+        let action = map_key_to_action(key(KeyCode::Char(';')), InputMode::Normal, ',');
+        assert_eq!(action, Action::None);
+    }
+
+    #[test]
+    fn should_preserve_modified_shortcuts_when_character_is_leader() {
+        let action = map_key_to_action(
+            KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL),
+            InputMode::Normal,
+            'e',
+        );
+        assert_eq!(action, Action::ScrollViewDown(1));
+    }
+
+    #[test]
+    fn should_keep_semicolon_as_default_leader() {
+        let action = map_key_to_action(
+            key(KeyCode::Char(DEFAULT_LEADER_KEY)),
+            InputMode::Normal,
+            DEFAULT_LEADER_KEY,
+        );
+        assert_eq!(action, Action::PendingLeaderCommand);
     }
 
     #[test]
@@ -575,7 +614,7 @@ mod tests {
             for mods in mod_sets {
                 let ev = KeyEvent::new(code, mods);
                 for action in [
-                    map_normal_mode(ev),
+                    map_normal_mode(ev, DEFAULT_LEADER_KEY),
                     map_command_mode(ev),
                     map_search_mode(ev),
                     map_comment_mode(ev),
