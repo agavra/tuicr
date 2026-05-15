@@ -35,8 +35,8 @@ pub fn expanded_context_style(theme: &Theme) -> Style {
 
 pub fn diff_hunk_header_style(theme: &Theme) -> Style {
     Style::default()
-        .fg(theme.diff_hunk_header)
-        .add_modifier(Modifier::BOLD)
+        .fg(theme.fg_dim)
+        .bg(theme.section_highlight_bg())
 }
 
 pub fn file_header_style(theme: &Theme) -> Style {
@@ -113,8 +113,11 @@ pub fn comment_type_style(_theme: &Theme, color: Color) -> Style {
     Style::default().fg(color).add_modifier(Modifier::BOLD)
 }
 
-pub fn comment_border_style(_theme: &Theme, color: Color) -> Style {
-    Style::default().fg(color)
+pub fn comment_border_style(theme: &Theme, _color: Color) -> Style {
+    // Match the file-header separator look so the comment box reads as a
+    // structural divider rather than as colour-coded chrome. The comment-
+    // type colour still lives on the [NOTE]/[ISSUE]/... label inside.
+    file_header_style(theme)
 }
 
 pub fn visual_selection_style(theme: &Theme) -> Style {

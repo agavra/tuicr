@@ -64,16 +64,23 @@ pub fn format_comment_input_lines(
     };
 
     let mut result = Vec::new();
-    // Track cursor position: line offset within result, column (display width)
-    // Default to first content line (index 1) with cursor at start of content (after border)
-    let border_prefix = "     │ ";
+    // Box left edge sits at col 5 (after the 1-col cursor indicator + 4 pad
+    // chars) so the bar painter can extend a `│` up through the diff lines
+    // the comment covers without colliding with the col-6 `▌` add/del prefix.
+    let border_prefix = "    │  ";
     let border_width = border_prefix.width() as u16;
-    let mut cursor_line_offset: usize = 1; // First content line (after header)
-    let mut cursor_column: u16 = border_width; // After the border prefix
+    let mut cursor_line_offset: usize = 1;
+    let mut cursor_column: u16 = border_width;
+
+    // Top-left corner becomes `├` when a line range is present — the bar
+    // painter then draws `│` going up through the range and a `╭` at the
+    // topmost covered line, so the tee reads as the bar joining the box.
+    let top_corner = if line_range.is_some() { '├' } else { '╭' };
+    let top_prefix = format!("    {top_corner}── ");
 
     // Top border with type label and hints
     result.push(Line::from(vec![
-        Span::styled("     ╭─ ", border_style),
+        Span::styled(top_prefix, border_style),
         Span::styled(format!("{} ", action), styles::dim_style(theme)),
         Span::styled(format!("[{}] ", comment_type.label), type_style),
         Span::styled(line_info, styles::dim_style(theme)),
@@ -147,7 +154,7 @@ pub fn format_comment_input_lines(
 
     // Bottom border
     result.push(Line::from(vec![Span::styled(
-        "     ╰".to_string() + &"─".repeat(38),
+        "    ╰".to_string() + &"─".repeat(39),
         border_style,
     )]));
 
@@ -193,6 +200,8 @@ pub fn format_remote_thread_lines(
         None => String::new(),
     };
 
+    // Remote review threads always anchor on a specific line/range, so the
+    // top corner is a tee — the bar painter draws the rest going up.
     let mut result = Vec::new();
     let mut iter = thread.comments.iter().peekable();
     let mut is_first = true;
@@ -207,14 +216,14 @@ pub fn format_remote_thread_lines(
             }
             badge_text.push_str("] ");
             result.push(Line::from(vec![
-                Span::styled("     ╭─ ".to_string(), border_style),
+                Span::styled("    ├── ".to_string(), border_style),
                 Span::styled(badge_text, badge_style),
                 Span::styled(line_info.clone(), styles::dim_style(theme)),
                 Span::styled("─".repeat(20), border_style),
             ]));
         } else {
             result.push(Line::from(vec![
-                Span::styled("     ├─ ".to_string(), border_style),
+                Span::styled("    ├── ".to_string(), border_style),
                 Span::styled(format!("↳ @{author} "), reply_badge_style),
                 Span::styled("─".repeat(28), border_style),
             ]));
@@ -222,7 +231,7 @@ pub fn format_remote_thread_lines(
 
         for line in comment.body.split('\n') {
             result.push(Line::from(vec![
-                Span::styled("     │ ".to_string(), border_style),
+                Span::styled("    │  ".to_string(), border_style),
                 Span::styled(line.to_string(), body_style),
             ]));
         }
@@ -232,7 +241,7 @@ pub fn format_remote_thread_lines(
     }
 
     result.push(Line::from(vec![Span::styled(
-        "     ╰".to_string() + &"─".repeat(38),
+        "    ╰".to_string() + &"─".repeat(39),
         border_style,
     )]));
 
@@ -258,9 +267,12 @@ pub fn format_comment_lines(
 
     let mut result = Vec::new();
 
+    let top_corner = if line_range.is_some() { '├' } else { '╭' };
+    let top_prefix = format!("    {top_corner}── ");
+
     // Top border with type label
     result.push(Line::from(vec![
-        Span::styled("     ╭─ ", border_style),
+        Span::styled(top_prefix, border_style),
         Span::styled(format!("[{}] ", comment_type.label), type_style),
         Span::styled(line_info, styles::dim_style(theme)),
         Span::styled("─".repeat(30), border_style),
@@ -269,14 +281,14 @@ pub fn format_comment_lines(
     // Content lines
     for line in &content_lines {
         result.push(Line::from(vec![
-            Span::styled("     │ ", border_style),
+            Span::styled("    │  ", border_style),
             Span::raw(line.to_string()),
         ]));
     }
 
     // Bottom border
     result.push(Line::from(vec![Span::styled(
-        "     ╰".to_string() + &"─".repeat(38),
+        "    ╰".to_string() + &"─".repeat(39),
         border_style,
     )]));
 

@@ -15,8 +15,9 @@ use crate::ui::comment_panel;
 use crate::ui::diff_view::{
     apply_horizontal_scroll, comment_type_presentation, cursor_indicator, cursor_indicator_spaced,
     diff_stat_title, is_line_highlighted, paint_unified_diff_rows_with,
-    paint_visual_selection_overlay, populate_row_to_annotation, render_expander_line,
-    render_hidden_lines, scroll_comment_input_into_view, unified_line_bg_style,
+    paint_visual_selection_overlay, populate_row_to_annotation, push_comment_bar,
+    render_expander_line, render_hidden_lines, scroll_comment_input_into_view,
+    unified_line_bg_style,
 };
 use crate::ui::styles;
 use crate::vcs::git::calculate_gap;
@@ -63,6 +64,9 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
     // Track the full extent of the comment input box so we can auto-scroll
     // the viewport to keep it visible while the user types.
     let mut comment_input_box_range: Option<(usize, usize)> = None;
+    // Records per-comment bar info — populated at each line-level comment
+    // call site and consumed by the bar paint pass at the end of render.
+    let mut comment_bars: Vec<crate::ui::diff_view::CommentBarAnchor> = Vec::new();
 
     let is_review_comment_mode =
         app.input_mode == InputMode::Comment && app.comment_is_review_level;
@@ -432,8 +436,8 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                 // Diff lines
                 for diff_line in &hunk.lines {
                     let (prefix, base_style) = match diff_line.origin {
-                        LineOrigin::Addition => ("+", styles::diff_add_style(&app.theme)),
-                        LineOrigin::Deletion => ("-", styles::diff_del_style(&app.theme)),
+                        LineOrigin::Addition => ("▌", styles::diff_add_style(&app.theme)),
+                        LineOrigin::Deletion => ("▌", styles::diff_del_style(&app.theme)),
                         LineOrigin::Context => (" ", styles::diff_context_style(&app.theme)),
                     };
 
@@ -535,6 +539,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                         comment_cursor_logical_line =
                                             Some(line_idx + cursor_info.line_offset);
                                         comment_cursor_column = 1 + cursor_info.column;
+                                        let box_top_row = line_idx;
                                         comment_input_box_range = Some((
                                             line_idx,
                                             line_idx + input_lines.len().saturating_sub(1),
@@ -562,6 +567,11 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                             lines.push(input_line);
                                             line_idx += 1;
                                         }
+                                        push_comment_bar(
+                                            &mut comment_bars,
+                                            box_top_row,
+                                            line_range,
+                                        );
                                     } else {
                                         let line_range = comment
                                             .line_range
@@ -572,6 +582,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                             &comment.content,
                                             line_range,
                                         );
+                                        let box_top_row = line_idx;
                                         for mut comment_line in comment_lines {
                                             let is_current = line_idx == current_line_idx;
                                             let indicator = if is_current { "▶" } else { " " };
@@ -587,6 +598,11 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                             lines.push(comment_line);
                                             line_idx += 1;
                                         }
+                                        push_comment_bar(
+                                            &mut comment_bars,
+                                            box_top_row,
+                                            line_range,
+                                        );
                                     }
                                 }
                             }
@@ -601,6 +617,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                             path,
                             old_ln,
                             LineSide::Old,
+                            &mut comment_bars,
                         );
 
                         // Render inline input for new line comment (old side)
@@ -621,6 +638,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                 );
                             comment_cursor_logical_line = Some(line_idx + cursor_info.line_offset);
                             comment_cursor_column = 1 + cursor_info.column;
+                            let box_top_row = line_idx;
                             comment_input_box_range =
                                 Some((line_idx, line_idx + input_lines.len().saturating_sub(1)));
                             app.comment_input_annotation_offset =
@@ -638,6 +656,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                 lines.push(input_line);
                                 line_idx += 1;
                             }
+                            push_comment_bar(&mut comment_bars, box_top_row, line_range);
                         }
                     }
 
@@ -674,6 +693,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                         comment_cursor_logical_line =
                                             Some(line_idx + cursor_info.line_offset);
                                         comment_cursor_column = 1 + cursor_info.column;
+                                        let box_top_row = line_idx;
                                         comment_input_box_range = Some((
                                             line_idx,
                                             line_idx + input_lines.len().saturating_sub(1),
@@ -701,6 +721,11 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                             lines.push(input_line);
                                             line_idx += 1;
                                         }
+                                        push_comment_bar(
+                                            &mut comment_bars,
+                                            box_top_row,
+                                            line_range,
+                                        );
                                     } else {
                                         let line_range = comment
                                             .line_range
@@ -711,6 +736,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                             &comment.content,
                                             line_range,
                                         );
+                                        let box_top_row = line_idx;
                                         for mut comment_line in comment_lines {
                                             let indicator =
                                                 cursor_indicator(line_idx, current_line_idx);
@@ -726,6 +752,11 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                             lines.push(comment_line);
                                             line_idx += 1;
                                         }
+                                        push_comment_bar(
+                                            &mut comment_bars,
+                                            box_top_row,
+                                            line_range,
+                                        );
                                     }
                                 }
                             }
@@ -740,6 +771,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                             path,
                             new_ln,
                             LineSide::New,
+                            &mut comment_bars,
                         );
 
                         // Render inline input for new line comment (new side)
@@ -760,6 +792,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                 );
                             comment_cursor_logical_line = Some(line_idx + cursor_info.line_offset);
                             comment_cursor_column = 1 + cursor_info.column;
+                            let box_top_row = line_idx;
                             comment_input_box_range =
                                 Some((line_idx, line_idx + input_lines.len().saturating_sub(1)));
                             app.comment_input_annotation_offset =
@@ -777,6 +810,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                 lines.push(input_line);
                                 line_idx += 1;
                             }
+                            push_comment_bar(&mut comment_bars, box_top_row, line_range);
                         }
                     }
                 }
@@ -866,6 +900,23 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
         |_idx, line| unified_line_bg_style(line, &app.theme),
     );
 
+    let overlay_ctx = crate::ui::diff_view::DiffOverlayPaint {
+        inner,
+        visible_lines_unscrolled: &visible_lines_unscrolled_for_bg,
+        line_widths: &line_widths,
+        wrap_lines: app.diff_state.wrap_lines,
+        viewport_width: inner.width as usize,
+        scroll_x,
+        scroll_offset: app.diff_state.scroll_offset,
+        theme: &app.theme,
+        comment_bars: &comment_bars,
+    };
+
+    // Section-marker row tint (hunk headers + expand/hidden stubs). Painted
+    // before the paragraph so cursor-line and selection overlays still win
+    // on the active row.
+    crate::ui::diff_view::paint_section_highlight(frame, &overlay_ctx);
+
     // Keep paragraph bg unset so pre-painted per-row diff backgrounds remain visible.
     let mut diff = Paragraph::new(visible_lines).style(Style::default().fg(app.theme.fg_primary));
     if app.diff_state.wrap_lines {
@@ -892,6 +943,14 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
     if let Some(sel) = app.visual_selection {
         paint_visual_selection_overlay(frame, inner, app, sel, &app.theme);
     }
+
+    // File-section header rules extended to the full viewport width.
+    crate::ui::diff_view::paint_file_header_fill(frame, &overlay_ctx);
+
+    // Comment-box overlays painted last so the box + bar always win on their
+    // single cells regardless of cursor-line / selection underlays.
+    crate::ui::diff_view::paint_comment_box_bar(frame, &overlay_ctx);
+    crate::ui::diff_view::paint_comment_box_right_border(frame, &overlay_ctx);
 
     // Calculate screen position for comment cursor if in Comment mode
     if let Some(cursor_logical_line) = comment_cursor_logical_line {
@@ -944,6 +1003,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
 /// growing line buffer. No-op when `:comments hide` is active or when no
 /// threads anchor here. Resolved/outdated threads use muted styling per
 /// the spec; visible-but-resolved threads only render under `:comments all`.
+#[allow(clippy::too_many_arguments)]
 fn render_remote_threads_for_anchor(
     lines: &mut Vec<ratatui::text::Line<'static>>,
     line_idx: &mut usize,
@@ -952,6 +1012,7 @@ fn render_remote_threads_for_anchor(
     file_path: &std::path::Path,
     line: u32,
     side: LineSide,
+    comment_bars: &mut Vec<crate::ui::diff_view::CommentBarAnchor>,
 ) {
     let visibility = app.session.remote_comments_visibility;
     if matches!(visibility, PrCommentsVisibility::Hide) {
@@ -991,6 +1052,7 @@ fn render_remote_threads_for_anchor(
         // Render the entire thread as one fused box so it reads as a
         // single discussion unit.
         let thread_lines = comment_panel::format_remote_thread_lines(&app.theme, thread, muted);
+        let box_top_row = *line_idx;
         for mut comment_line in thread_lines {
             let indicator = cursor_indicator(*line_idx, current_line_idx);
             comment_line.spans.insert(
@@ -1003,6 +1065,11 @@ fn render_remote_threads_for_anchor(
             lines.push(comment_line);
             *line_idx += 1;
         }
+        push_comment_bar(
+            comment_bars,
+            box_top_row,
+            Some(crate::model::LineRange::single(thread_line)),
+        );
     }
 }
 

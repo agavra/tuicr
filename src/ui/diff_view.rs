@@ -395,10 +395,10 @@ pub(super) fn is_line_highlighted(app: &App, viewport_idx: usize) -> bool {
 }
 
 pub(super) fn unified_line_bg_style(line: &Line, theme: &Theme) -> Option<Style> {
-    let prefix = line.spans.get(2)?.content.as_ref();
-    let default_bg = match prefix {
-        "+ " => theme.diff_add_bg,
-        "- " => theme.diff_del_bg,
+    let prefix_span = line.spans.get(2)?;
+    let default_bg = match prefix_span.style.fg {
+        Some(fg) if fg == theme.diff_add => theme.diff_add_bg,
+        Some(fg) if fg == theme.diff_del => theme.diff_del_bg,
         _ => return None,
     };
 
@@ -457,6 +457,357 @@ pub(super) fn paint_unified_diff_rows_with<F>(
         } else {
             visual_row += rows_for_line;
         }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum CommentBoxRow {
+    Top,
+    Divider,
+    Middle,
+    Bottom,
+}
+
+/// Detect whether a logical diff line is part of an inline comment box and,
+/// if so, which row of the box (top border, reply divider, content, or
+/// bottom border). Inspected on unscrolled lines so we match the original
+/// border-prefix span before any horizontal-scroll trimming.
+///
+/// Both `╭` (no line range) and `├` (line range present, bar joins from
+/// above) appear at the prefix's corner slot; reply dividers in remote
+/// threads also use `├`. We disambiguate Divider from Top by looking at the
+/// next span's content — replies start with `↳`.
+pub(super) fn comment_box_row(line: &Line) -> Option<CommentBoxRow> {
+    let prefix = line.spans.get(1)?.content.as_ref();
+    if prefix.starts_with("    ╭") {
+        Some(CommentBoxRow::Top)
+    } else if prefix.starts_with("    ├") {
+        let next = line.spans.get(2).map(|s| s.content.as_ref()).unwrap_or("");
+        if next.starts_with("↳") {
+            Some(CommentBoxRow::Divider)
+        } else {
+            Some(CommentBoxRow::Top)
+        }
+    } else if prefix.starts_with("    │") {
+        Some(CommentBoxRow::Middle)
+    } else if prefix.starts_with("    ╰") {
+        Some(CommentBoxRow::Bottom)
+    } else {
+        None
+    }
+}
+
+pub(super) struct DiffOverlayPaint<'a> {
+    pub inner: Rect,
+    pub visible_lines_unscrolled: &'a [Line<'a>],
+    pub line_widths: &'a [usize],
+    pub wrap_lines: bool,
+    pub viewport_width: usize,
+    pub scroll_x: usize,
+    pub scroll_offset: usize,
+    pub theme: &'a Theme,
+    pub comment_bars: &'a [CommentBarAnchor],
+}
+
+/// Records that an inline comment box at `box_top_row` (logical line index
+/// in the full diff stream) covers a range `height` rows tall — the bar
+/// painter extends `│` from `box_top_row - 1` up to `box_top_row - height`
+/// and caps the topmost row with `╭`.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct CommentBarAnchor {
+    pub box_top_row: usize,
+    pub height: usize,
+}
+
+/// Per-call-site helper: record a bar anchor if the comment has a line
+/// range. No-op for file-level / review-level comments which don't anchor
+/// to a covered line span.
+pub(super) fn push_comment_bar(
+    bars: &mut Vec<CommentBarAnchor>,
+    box_top_row: usize,
+    line_range: Option<crate::model::LineRange>,
+) {
+    if let Some(range) = line_range {
+        bars.push(CommentBarAnchor {
+            box_top_row,
+            height: (range.end - range.start + 1) as usize,
+        });
+    }
+}
+
+/// Stamp the right-edge border glyph at the viewport's rightmost column for
+/// each comment-box line so the box closes flush with the panel width. For
+/// horizontal-rule rows (top/divider/bottom) the gap between the existing
+/// dash content and the right corner is filled with `─` so the box reads as
+/// one continuous frame. Runs after the paragraph and any cursor-line /
+/// selection overlays so it always wins on the cells it writes.
+pub(super) fn paint_comment_box_right_border(frame: &mut Frame, ctx: &DiffOverlayPaint) {
+    if ctx.inner.width == 0 || ctx.viewport_width == 0 {
+        return;
+    }
+    let bg = ctx.theme.panel_bg;
+    let right_x = ctx.inner.x + ctx.inner.width - 1;
+    let mut visual_row: usize = 0;
+    for (idx, line) in ctx.visible_lines_unscrolled.iter().enumerate() {
+        if visual_row >= ctx.inner.height as usize {
+            break;
+        }
+        let rows = visual_rows_for_line(ctx.line_widths, idx, ctx.wrap_lines, ctx.viewport_width);
+        if let Some(pos) = comment_box_row(line) {
+            let fg = line
+                .spans
+                .get(1)
+                .and_then(|s| s.style.fg)
+                .unwrap_or(ctx.theme.fg_primary);
+            let line_width = ctx.line_widths.get(idx).copied().unwrap_or(0);
+
+            for r in 0..rows {
+                if visual_row + r >= ctx.inner.height as usize {
+                    break;
+                }
+                let y = ctx.inner.y + (visual_row + r) as u16;
+                let is_last_visual_row = r + 1 == rows;
+
+                // For horizontal-rule rows the right border + dash fill only
+                // belongs on the last visual row; the corner sits at the
+                // logical line's true end. Middle rows close on every wrap
+                // row since each is its own "content" line visually.
+                let stamp_here = match pos {
+                    CommentBoxRow::Top | CommentBoxRow::Divider | CommentBoxRow::Bottom => {
+                        is_last_visual_row
+                    }
+                    CommentBoxRow::Middle => true,
+                };
+                if !stamp_here {
+                    continue;
+                }
+
+                if matches!(
+                    pos,
+                    CommentBoxRow::Top | CommentBoxRow::Divider | CommentBoxRow::Bottom
+                ) {
+                    // Width of the visible content on this visual row.
+                    let content_w = if ctx.wrap_lines {
+                        let prior = r * ctx.viewport_width;
+                        line_width.saturating_sub(prior).min(ctx.viewport_width)
+                    } else {
+                        line_width
+                            .saturating_sub(ctx.scroll_x)
+                            .min(ctx.viewport_width)
+                    };
+                    let fill_start = ctx.inner.x + content_w as u16;
+                    let mut x = fill_start;
+                    while x < right_x {
+                        let cell = &mut frame.buffer_mut()[(x, y)];
+                        cell.set_char('─');
+                        cell.set_fg(fg);
+                        cell.set_bg(bg);
+                        x += 1;
+                    }
+                }
+
+                let glyph = match pos {
+                    CommentBoxRow::Top => '╮',
+                    CommentBoxRow::Divider => '┤',
+                    CommentBoxRow::Middle => '│',
+                    CommentBoxRow::Bottom => '╯',
+                };
+                let cell = &mut frame.buffer_mut()[(right_x, y)];
+                cell.set_char(glyph);
+                cell.set_fg(fg);
+                cell.set_bg(bg);
+            }
+        }
+        visual_row += rows;
+    }
+}
+
+/// Inline comment-box "bar" overlay: for each tracked comment box that has
+/// a line range, draw a vertical bar at col 5 of the visible diff rows the
+/// comment covers, capped with a `╭` at the topmost covered row. Painted
+/// after the paragraph so the glyphs always win on their single cell.
+pub(super) fn paint_comment_box_bar(frame: &mut Frame, ctx: &DiffOverlayPaint) {
+    if ctx.inner.width == 0 || ctx.viewport_width == 0 || ctx.comment_bars.is_empty() {
+        return;
+    }
+    if ctx.scroll_x > 4 {
+        return;
+    }
+    let bar_screen_col = ctx.inner.x + 5 - ctx.scroll_x as u16;
+    if bar_screen_col >= ctx.inner.x + ctx.inner.width {
+        return;
+    }
+    // Bar style matches the box border (which is the file-header style),
+    // so the bar reads as the same structural divider element.
+    let style = styles::file_header_style(ctx.theme);
+    let fg = style.fg.unwrap_or(ctx.theme.fg_primary);
+
+    // Walk visible logical rows once, mapping each to its first visual row.
+    let mut row_visual: Vec<(usize, u16)> = Vec::with_capacity(ctx.visible_lines_unscrolled.len());
+    let mut visual_row: usize = 0;
+    for (idx, _) in ctx.visible_lines_unscrolled.iter().enumerate() {
+        if visual_row >= ctx.inner.height as usize {
+            break;
+        }
+        let logical = ctx.scroll_offset + idx;
+        row_visual.push((logical, ctx.inner.y + visual_row as u16));
+        let rows = visual_rows_for_line(ctx.line_widths, idx, ctx.wrap_lines, ctx.viewport_width);
+        visual_row += rows;
+    }
+
+    for anchor in ctx.comment_bars {
+        if anchor.height == 0 {
+            continue;
+        }
+        let bar_top_logical = anchor.box_top_row.saturating_sub(anchor.height);
+        // Bar covers logical rows [bar_top_logical, box_top_row - 1].
+        for (logical, y) in &row_visual {
+            if *logical >= anchor.box_top_row {
+                break;
+            }
+            if *logical < bar_top_logical {
+                continue;
+            }
+            let glyph = if *logical == bar_top_logical {
+                '╭'
+            } else {
+                '│'
+            };
+            let cell = &mut frame.buffer_mut()[(bar_screen_col, *y)];
+            cell.set_char(glyph);
+            cell.set_fg(fg);
+            if let Some(bg) = style.bg {
+                cell.set_bg(bg);
+            }
+        }
+    }
+}
+
+/// Hunk headers (`@@ … @@`), gap expanders (`... ↓ expand (N) ...`), and
+/// hidden-line stubs (`... N lines hidden ...`) all read as structural
+/// section markers in the diff stream — fill their row with a subtle bg
+/// tint so they're easy to spot without using a loud accent colour. Painted
+/// before the paragraph so cursor-line and selection overlays still win on
+/// the active row.
+pub(super) fn paint_section_highlight(frame: &mut Frame, ctx: &DiffOverlayPaint) {
+    if ctx.inner.width == 0 || ctx.viewport_width == 0 {
+        return;
+    }
+    let bg = ctx.theme.section_highlight_bg();
+    let mut visual_row: usize = 0;
+    for (idx, line) in ctx.visible_lines_unscrolled.iter().enumerate() {
+        if visual_row >= ctx.inner.height as usize {
+            break;
+        }
+        let rows = visual_rows_for_line(ctx.line_widths, idx, ctx.wrap_lines, ctx.viewport_width);
+        if is_section_highlight_line(line) {
+            for r in 0..rows {
+                if visual_row + r >= ctx.inner.height as usize {
+                    break;
+                }
+                let row_rect = Rect {
+                    x: ctx.inner.x,
+                    y: ctx.inner.y + (visual_row + r) as u16,
+                    width: ctx.inner.width,
+                    height: 1,
+                };
+                frame
+                    .buffer_mut()
+                    .set_style(row_rect, Style::default().bg(bg));
+            }
+        }
+        visual_row += rows;
+    }
+}
+
+fn is_section_highlight_line(line: &Line) -> bool {
+    let Some(content) = line.spans.get(1).map(|s| s.content.as_ref()) else {
+        return false;
+    };
+    content.starts_with("@@") || content.starts_with("       ... ")
+}
+
+/// File-section header lines (the `═══ path/to/file [M] …══════` rows that
+/// separate files in the diff stream) emit a fixed trailing run of `═`. Fill
+/// any gap between that content and the right edge with `═` so the header
+/// rule reads as one continuous bar across the viewport, regardless of how
+/// wide the panel is.
+pub(super) fn paint_file_header_fill(frame: &mut Frame, ctx: &DiffOverlayPaint) {
+    if ctx.inner.width == 0 || ctx.viewport_width == 0 {
+        return;
+    }
+    let panel_bg = ctx.theme.panel_bg;
+    let right_x = ctx.inner.x + ctx.inner.width - 1;
+    let mut visual_row: usize = 0;
+    for (idx, line) in ctx.visible_lines_unscrolled.iter().enumerate() {
+        if visual_row >= ctx.inner.height as usize {
+            break;
+        }
+        let rows = visual_rows_for_line(ctx.line_widths, idx, ctx.wrap_lines, ctx.viewport_width);
+        if is_file_header_line(line) {
+            let fg = line
+                .spans
+                .iter()
+                .find(|s| s.content.starts_with('═'))
+                .or_else(|| line.spans.get(1))
+                .and_then(|s| s.style.fg)
+                .unwrap_or(ctx.theme.fg_primary);
+            let line_width = ctx.line_widths.get(idx).copied().unwrap_or(0);
+            // Only fill the trailing edge of the last visual row of the header
+            // — wrapped intermediate rows of an unusually long header path are
+            // already entirely covered by content.
+            let last_row = rows.saturating_sub(1);
+            if visual_row + last_row >= ctx.inner.height as usize {
+                visual_row += rows;
+                continue;
+            }
+            let y = ctx.inner.y + (visual_row + last_row) as u16;
+            let content_w = if ctx.wrap_lines {
+                let prior = last_row * ctx.viewport_width;
+                line_width.saturating_sub(prior).min(ctx.viewport_width)
+            } else {
+                line_width
+                    .saturating_sub(ctx.scroll_x)
+                    .min(ctx.viewport_width)
+            };
+            let mut x = ctx.inner.x + content_w as u16;
+            while x <= right_x {
+                let cell = &mut frame.buffer_mut()[(x, y)];
+                cell.set_char('═');
+                cell.set_fg(fg);
+                cell.set_bg(panel_bg);
+                x += 1;
+            }
+        }
+        visual_row += rows;
+    }
+}
+
+/// A file-section header is a line whose first content span (after the
+/// cursor indicator) begins with `═══ ` — covers both per-file headers and
+/// the synthetic "Review Comments" section header.
+fn is_file_header_line(line: &Line) -> bool {
+    line.spans
+        .get(1)
+        .map(|s| s.content.starts_with("═══ "))
+        .unwrap_or(false)
+}
+
+fn visual_rows_for_line(
+    line_widths: &[usize],
+    idx: usize,
+    wrap_lines: bool,
+    viewport_width: usize,
+) -> usize {
+    if wrap_lines && viewport_width > 0 {
+        let w = line_widths.get(idx).copied().unwrap_or(0);
+        if w == 0 {
+            1
+        } else {
+            w.div_ceil(viewport_width)
+        }
+    } else {
+        1
     }
 }
 

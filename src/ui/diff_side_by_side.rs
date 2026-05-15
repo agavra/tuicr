@@ -41,6 +41,9 @@ struct SideBySideContext<'a> {
     editing_comment_id: Option<&'a str>,
     supports_keyboard_enhancement: bool,
     current_file_idx: usize,
+    // RefCell so deeply-nested rendering helpers can push without each
+    // intermediate function needing a `&mut Vec` parameter threaded through.
+    comment_bars: std::cell::RefCell<Vec<crate::ui::diff_view::CommentBarAnchor>>,
 }
 
 pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -95,6 +98,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
         editing_comment_id: app.editing_comment_id.as_deref(),
         supports_keyboard_enhancement: app.supports_keyboard_enhancement,
         current_file_idx: app.diff_state.current_file_idx,
+        comment_bars: std::cell::RefCell::new(Vec::new()),
     };
 
     // Build all diff lines for side-by-side view
@@ -498,6 +502,10 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
         line_idx += 1;
     }
 
+    let comment_bars = {
+        let mut bars = ctx.comment_bars.borrow_mut();
+        std::mem::take(&mut *bars)
+    };
     drop(ctx);
     app.comment_input_annotation_offset = annotation_offset;
 
@@ -552,6 +560,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
     }
 
     let scroll_x = app.diff_state.scroll_x;
+    let visible_lines_unscrolled_for_overlay = visible_lines_unscrolled.clone();
     let visible_lines: Vec<Line> = if app.diff_state.wrap_lines {
         visible_lines_unscrolled
     } else {
@@ -560,6 +569,21 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
             .map(|line| apply_horizontal_scroll(line, scroll_x))
             .collect()
     };
+
+    let overlay_ctx = crate::ui::diff_view::DiffOverlayPaint {
+        inner,
+        visible_lines_unscrolled: &visible_lines_unscrolled_for_overlay,
+        line_widths: &line_widths,
+        wrap_lines: app.diff_state.wrap_lines,
+        viewport_width: inner.width as usize,
+        scroll_x,
+        scroll_offset: app.diff_state.scroll_offset,
+        theme: &app.theme,
+        comment_bars: &comment_bars,
+    };
+
+    // Section-marker row tint (hunk headers + expand/hidden stubs).
+    crate::ui::diff_view::paint_section_highlight(frame, &overlay_ctx);
 
     let mut diff = Paragraph::new(visible_lines).style(styles::panel_style(&app.theme));
     if app.diff_state.wrap_lines {
@@ -588,6 +612,14 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
     if let Some(sel) = app.visual_selection {
         paint_visual_selection_overlay(frame, inner, app, sel, &app.theme);
     }
+
+    // File-section header rules extended to the full viewport width.
+    crate::ui::diff_view::paint_file_header_fill(frame, &overlay_ctx);
+
+    // Comment-box overlays painted last so the box + bar always win on their
+    // single cells.
+    crate::ui::diff_view::paint_comment_box_bar(frame, &overlay_ctx);
+    crate::ui::diff_view::paint_comment_box_right_border(frame, &overlay_ctx);
 
     // Calculate screen position for comment cursor if in Comment mode
     if let Some(cursor_logical_line) = comment_cursor_logical_line {
@@ -1017,7 +1049,7 @@ fn add_deletion_spans(
         format!("{line_num} "),
         styles::dim_style(theme),
     ));
-    spans.push(Span::styled("-".to_string(), styles::diff_del_style(theme)));
+    spans.push(Span::styled("▌".to_string(), styles::diff_del_style(theme)));
 
     // Use syntax highlighting if available
     if let Some(ref highlighted) = diff_line.highlighted_spans {
@@ -1047,7 +1079,7 @@ fn add_addition_spans(
         format!("{line_num} "),
         styles::dim_style(theme),
     ));
-    spans.push(Span::styled("+".to_string(), styles::diff_add_style(theme)));
+    spans.push(Span::styled("▌".to_string(), styles::diff_add_style(theme)));
 
     // Use syntax highlighting if available
     if let Some(ref highlighted) = diff_line.highlighted_spans {
@@ -1110,6 +1142,7 @@ fn add_remote_threads_to_line(
             continue;
         }
         let thread_lines = comment_panel::format_remote_thread_lines(ctx.theme, thread, muted);
+        let box_top_row = line_idx;
         for mut comment_line in thread_lines {
             let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
             comment_line.spans.insert(
@@ -1119,6 +1152,11 @@ fn add_remote_threads_to_line(
             lines.push(comment_line);
             line_idx += 1;
         }
+        crate::ui::diff_view::push_comment_bar(
+            &mut ctx.comment_bars.borrow_mut(),
+            box_top_row,
+            Some(crate::model::LineRange::single(thread_line)),
+        );
     }
     line_idx
 }
@@ -1162,6 +1200,7 @@ fn add_comments_to_line(
                         true,
                         ctx.supports_keyboard_enhancement,
                     );
+                    let box_top_row = line_idx;
                     let box_end = line_idx + input_lines.len().saturating_sub(1);
                     let annotations_replaced = 2 + comment.content.split('\n').count();
                     cursor_info_out = Some((
@@ -1184,6 +1223,11 @@ fn add_comments_to_line(
                         lines.push(input_line);
                         line_idx += 1;
                     }
+                    crate::ui::diff_view::push_comment_bar(
+                        &mut ctx.comment_bars.borrow_mut(),
+                        box_top_row,
+                        line_range,
+                    );
                 } else {
                     let line_range = comment
                         .line_range
@@ -1194,6 +1238,7 @@ fn add_comments_to_line(
                         &comment.content,
                         line_range,
                     );
+                    let box_top_row = line_idx;
                     for mut comment_line in comment_lines {
                         let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
                         comment_line.spans.insert(
@@ -1206,6 +1251,11 @@ fn add_comments_to_line(
                         lines.push(comment_line);
                         line_idx += 1;
                     }
+                    crate::ui::diff_view::push_comment_bar(
+                        &mut ctx.comment_bars.borrow_mut(),
+                        box_top_row,
+                        line_range,
+                    );
                 }
             }
         }
@@ -1225,6 +1275,7 @@ fn add_comments_to_line(
             false,
             ctx.supports_keyboard_enhancement,
         );
+        let box_top_row = line_idx;
         let box_end = line_idx + input_lines.len().saturating_sub(1);
         cursor_info_out = Some((
             line_idx + cursor_info.line_offset,
@@ -1243,6 +1294,11 @@ fn add_comments_to_line(
             lines.push(input_line);
             line_idx += 1;
         }
+        crate::ui::diff_view::push_comment_bar(
+            &mut ctx.comment_bars.borrow_mut(),
+            box_top_row,
+            line_range,
+        );
     }
 
     (line_idx, cursor_info_out)

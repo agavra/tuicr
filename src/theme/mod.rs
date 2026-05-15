@@ -1692,6 +1692,29 @@ impl Theme {
             SyntaxHighlighter::new(self.syntect_theme, self.syntax_add_bg, self.syntax_del_bg)
         })
     }
+
+    /// Subtle row-tint for diff section markers (hunk headers, gap
+    /// expanders, hidden-line stubs) — derived as a brightness shift from
+    /// `panel_bg` so it adapts across all themed palettes without per-theme
+    /// tuning.
+    pub fn section_highlight_bg(&self) -> Color {
+        shift_lightness(self.panel_bg, 18)
+    }
+}
+
+fn shift_lightness(c: Color, amount: i32) -> Color {
+    match c {
+        Color::Rgb(r, g, b) => {
+            let avg = (r as i32 + g as i32 + b as i32) / 3;
+            let amt = if avg < 128 { amount } else { -amount };
+            Color::Rgb(
+                (r as i32 + amt).clamp(0, 255) as u8,
+                (g as i32 + amt).clamp(0, 255) as u8,
+                (b as i32 + amt).clamp(0, 255) as u8,
+            )
+        }
+        _ => c,
+    }
 }
 
 /// Print version and exit
