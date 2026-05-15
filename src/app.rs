@@ -344,6 +344,12 @@ pub fn annotation_file_idx(annotation: &AnnotatedLine) -> Option<usize> {
 /// `side` best matches `target_lineno` within the file identified by
 /// `current_file`. `side` selects whether to compare against `new_lineno`
 /// (post-change) or `old_lineno` (pre-change).
+///
+/// Test-only entry point that exercises the core matching algorithm against
+/// `DiffLine` / `SideBySideLine` annotations. Production code goes through
+/// `App::find_source_line_in_diff`, which also resolves `ExpandedContext`
+/// lines through `get_expanded_line`.
+#[cfg(test)]
 pub fn find_source_line(
     annotations: &[AnnotatedLine],
     current_file: usize,
@@ -3611,11 +3617,24 @@ impl App {
 
     pub fn go_to_source_line(&mut self, target_lineno: u32, side: LineSide) {
         let current_file = self.diff_state.current_file_idx;
-        let result = find_source_line(&self.line_annotations, current_file, target_lineno, side);
+        let mut result = self.find_source_line_in_diff(target_lineno, side);
         let side_label = match side {
             LineSide::New => "",
             LineSide::Old => " (old)",
         };
+
+        // If the line isn't already annotated, see whether it falls inside a
+        // collapsed (or partially collapsed) gap between hunks. If so, expand
+        // the gap so the line becomes visible and re-search.
+        if !matches!(result, FindSourceLineResult::Exact(_))
+            && let Some(gap_id) = self.find_gap_containing_lineno(current_file, target_lineno, side)
+        {
+            if let Err(e) = self.expand_gap(gap_id, ExpandDirection::Both, None) {
+                self.set_error(format!("Expand failed: {e}"));
+                return;
+            }
+            result = self.find_source_line_in_diff(target_lineno, side);
+        }
 
         match result {
             FindSourceLineResult::Exact(idx) | FindSourceLineResult::Nearest(idx) => {
@@ -3635,6 +3654,100 @@ impl App {
                 ));
             }
         }
+    }
+
+    /// Like the free `find_source_line` but also resolves `ExpandedContext`
+    /// annotations through `get_expanded_line` so newly-revealed context lines
+    /// count toward the match.
+    fn find_source_line_in_diff(&self, target_lineno: u32, side: LineSide) -> FindSourceLineResult {
+        let current_file = self.diff_state.current_file_idx;
+        let mut best: Option<(usize, u32)> = None;
+
+        for (idx, annotation) in self.line_annotations.iter().enumerate() {
+            let (file_idx, candidate) = match annotation {
+                AnnotatedLine::DiffLine {
+                    file_idx,
+                    old_lineno,
+                    new_lineno,
+                    ..
+                }
+                | AnnotatedLine::SideBySideLine {
+                    file_idx,
+                    old_lineno,
+                    new_lineno,
+                    ..
+                } => {
+                    let c = match side {
+                        LineSide::New => *new_lineno,
+                        LineSide::Old => *old_lineno,
+                    };
+                    (*file_idx, c)
+                }
+                AnnotatedLine::ExpandedContext { gap_id, line_idx } => {
+                    let Some(line) = self.get_expanded_line(gap_id, *line_idx) else {
+                        continue;
+                    };
+                    let c = match side {
+                        LineSide::New => line.new_lineno,
+                        LineSide::Old => line.old_lineno,
+                    };
+                    (gap_id.file_idx, c)
+                }
+                _ => continue,
+            };
+            if file_idx != current_file {
+                continue;
+            }
+            if let Some(ln) = candidate {
+                let dist = ln.abs_diff(target_lineno);
+                if dist == 0 {
+                    return FindSourceLineResult::Exact(idx);
+                }
+                if best.is_none() || dist < best.unwrap().1 {
+                    best = Some((idx, dist));
+                }
+            }
+        }
+
+        match best {
+            Some((idx, _)) => FindSourceLineResult::Nearest(idx),
+            None => FindSourceLineResult::NotFound,
+        }
+    }
+
+    /// Return the gap (between-hunk or pre-first-hunk region) in `file_idx`
+    /// whose line range on `side` contains `target_lineno`, if any. Used by
+    /// `go_to_source_line` to auto-expand collapsed context when the user
+    /// jumps to a line that's hidden behind an expander.
+    fn find_gap_containing_lineno(
+        &self,
+        file_idx: usize,
+        target_lineno: u32,
+        side: LineSide,
+    ) -> Option<GapId> {
+        let file = self.diff_files.get(file_idx)?;
+        for hunk_idx in 0..file.hunks.len() {
+            let hunk = &file.hunks[hunk_idx];
+            let prev_hunk = if hunk_idx > 0 {
+                Some(&file.hunks[hunk_idx - 1])
+            } else {
+                None
+            };
+            let (start, end) = match side {
+                LineSide::New => match prev_hunk {
+                    None => (1, hunk.new_start.saturating_sub(1)),
+                    Some(p) => (p.new_start + p.new_count, hunk.new_start.saturating_sub(1)),
+                },
+                LineSide::Old => match prev_hunk {
+                    None => (1, hunk.old_start.saturating_sub(1)),
+                    Some(p) => (p.old_start + p.old_count, hunk.old_start.saturating_sub(1)),
+                },
+            };
+            if start <= end && target_lineno >= start && target_lineno <= end {
+                return Some(GapId { file_idx, hunk_idx });
+            }
+        }
+        None
     }
 
     pub fn file_list_down(&mut self, n: usize) {
@@ -10231,6 +10344,87 @@ mod expand_gap_tests {
             .filter(|a| matches!(a, AnnotatedLine::Expander { gap_id: g, direction: ExpandDirection::Both } if *g == gap_id))
             .count();
         assert_eq!(both_count, 1, "should merge to ↕ when <20 remaining");
+    }
+
+    fn cursor_new_lineno(app: &App) -> Option<u32> {
+        match &app.line_annotations[app.diff_state.cursor_line] {
+            AnnotatedLine::DiffLine { new_lineno, .. }
+            | AnnotatedLine::SideBySideLine { new_lineno, .. } => *new_lineno,
+            AnnotatedLine::ExpandedContext { gap_id, line_idx } => app
+                .get_expanded_line(gap_id, *line_idx)
+                .and_then(|l| l.new_lineno),
+            _ => None,
+        }
+    }
+
+    fn cursor_old_lineno(app: &App) -> Option<u32> {
+        match &app.line_annotations[app.diff_state.cursor_line] {
+            AnnotatedLine::DiffLine { old_lineno, .. }
+            | AnnotatedLine::SideBySideLine { old_lineno, .. } => *old_lineno,
+            AnnotatedLine::ExpandedContext { gap_id, line_idx } => app
+                .get_expanded_line(gap_id, *line_idx)
+                .and_then(|l| l.old_lineno),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn should_expand_collapsed_gap_when_jumping_into_it() {
+        // given: file with a 50-line gap before the first hunk (hunk @ line 51)
+        let file = make_file_with_hunks("test.rs", vec![make_hunk(51, 5)]);
+        let mut app = build_app_with_files(vec![file], 100);
+        let gap_id = GapId {
+            file_idx: 0,
+            hunk_idx: 0,
+        };
+        assert!(!app.expanded_top.contains_key(&gap_id));
+        assert!(!app.expanded_bottom.contains_key(&gap_id));
+
+        // when: jump to line 30, which lives inside the collapsed gap
+        app.go_to_source_line(30, LineSide::New);
+
+        // then: the gap was expanded and the cursor sits on the line whose
+        // new_lineno is exactly 30
+        assert_eq!(cursor_new_lineno(&app), Some(30));
+    }
+
+    #[test]
+    fn should_not_expand_when_line_is_already_in_a_hunk() {
+        // Line 52 lives inside the hunk's own range, not in a gap — no
+        // expansion should occur.
+        let file = make_file_with_hunks("test.rs", vec![make_hunk(51, 5)]);
+        let mut app = build_app_with_files(vec![file], 100);
+        let gap_id = GapId {
+            file_idx: 0,
+            hunk_idx: 0,
+        };
+
+        app.go_to_source_line(52, LineSide::New);
+
+        assert!(!app.expanded_top.contains_key(&gap_id));
+        assert!(!app.expanded_bottom.contains_key(&gap_id));
+    }
+
+    #[test]
+    fn should_expand_old_side_gap_when_jumping_with_o_prefix() {
+        // Old/new line numbers diverge: hunk @ old line 51 (count 5), new
+        // line 41 (count 5). The gap before the hunk spans old [1..=50] and
+        // new [1..=40]. Jumping to old line 30 must land us on the right
+        // annotation even though the new-side mapping is different.
+        let mut hunk = make_hunk(41, 5);
+        hunk.old_start = 51;
+        hunk.old_count = 5;
+        // adjust line numbers inside the hunk to reflect the divergence
+        for (i, line) in hunk.lines.iter_mut().enumerate() {
+            line.new_lineno = Some(41 + i as u32);
+            line.old_lineno = Some(51 + i as u32);
+        }
+        let file = make_file_with_hunks("test.rs", vec![hunk]);
+        let mut app = build_app_with_files(vec![file], 100);
+
+        app.go_to_source_line(30, LineSide::Old);
+
+        assert_eq!(cursor_old_lineno(&app), Some(30));
     }
 }
 
