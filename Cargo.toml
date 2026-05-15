@@ -31,6 +31,7 @@ thiserror = "2.0"
 anyhow = "1.0"
 
 # Utilities
+clap = { version = "4.5", features = ["derive"] }
 directories = "6.0"
 ureq = { version = "3", features = ["json"] }
 unicode-width = "0.2"

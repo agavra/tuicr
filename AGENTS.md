@@ -121,6 +121,7 @@ Repository-managed agent integrations:
 ### Dependencies
 
 - `ratatui` + `crossterm`: TUI framework
+- `clap`: CLI argument parsing
 - `git2`: Native git operations
 - `serde` + `serde_json`: Session serialization
 - `toml`: User config parsing

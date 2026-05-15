@@ -2,8 +2,9 @@
 //!
 //! Provides dark and light themes with automatic terminal background detection.
 
-use std::{process::Command, sync::OnceLock};
+use std::{ffi::OsString, process::Command, sync::OnceLock};
 
+use clap::{CommandFactory, FromArgMatches, Parser};
 use ratatui::style::Color;
 use two_face::theme::EmbeddedThemeName;
 
@@ -1371,6 +1372,64 @@ pub struct CliArgs {
     pub file_path: Option<String>,
 }
 
+/// Raw clap-backed command-line arguments.
+#[derive(Debug, Clone, Parser)]
+#[command(
+    name = "tuicr",
+    version,
+    about = "Review AI-generated diffs like a GitHub pull request",
+    args_override_self = true,
+    disable_help_subcommand = true
+)]
+struct RawCliArgs {
+    /// Commit range/Revset to review. Syntax depends on VCS backend.
+    #[arg(short = 'r', long = "revisions", value_name = "REVSET", value_parser = parse_non_empty_value)]
+    revisions: Option<String>,
+
+    /// Color theme to use.
+    #[arg(long = "theme", value_name = "THEME", value_parser = parse_theme_arg)]
+    theme: Option<ThemeArg>,
+
+    /// Appearance mode for default theme. Used when no explicit theme is set.
+    #[arg(long = "appearance", value_name = "MODE", value_parser = parse_appearance_arg)]
+    appearance: Option<AppearanceArg>,
+
+    /// Filter diff to a specific file or directory.
+    #[arg(short = 'p', long = "path", value_name = "PATH", value_parser = parse_non_empty_value)]
+    path_filter: Option<String>,
+
+    /// Include uncommitted changes.
+    #[arg(short = 'w', long = "working-tree")]
+    working_tree: bool,
+
+    /// Open a file for annotation without VCS.
+    #[arg(long = "file", value_name = "PATH", value_parser = parse_non_empty_value)]
+    file_path: Option<String>,
+
+    /// Output to stdout instead of clipboard when exporting.
+    #[arg(long = "stdout")]
+    output_to_stdout: bool,
+
+    /// Skip checking for updates on startup.
+    #[arg(long = "no-update-check")]
+    no_update_check: bool,
+}
+
+impl From<RawCliArgs> for CliArgs {
+    fn from(raw: RawCliArgs) -> Self {
+        Self {
+            theme: raw.theme,
+            appearance: raw.appearance,
+            output_to_stdout: raw.output_to_stdout,
+            no_update_check: raw.no_update_check,
+            revisions: raw.revisions,
+            working_tree: raw.working_tree,
+            path_filter: raw.path_filter,
+            file_path: raw.file_path,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AppearanceArg {
     Light,
@@ -1692,204 +1751,68 @@ impl Theme {
     }
 }
 
-/// Print version and exit
-fn print_version() -> ! {
-    println!("tuicr {}", env!("CARGO_PKG_VERSION"));
-    std::process::exit(0);
-}
-
-/// Print help message and exit
-fn print_help() -> ! {
-    let name = std::env::args()
-        .next()
-        .and_then(|p| {
-            std::path::Path::new(&p)
-                .file_name()
-                .map(|s| s.to_string_lossy().into_owned())
-        })
-        .unwrap_or_else(|| "tuicr".to_string());
-    let valid_values = ThemeArg::valid_values_display();
-    let appearance_values = AppearanceArg::valid_values_display();
+fn build_cli_command() -> clap::Command {
     let config_path = config_path_hint();
-    println!(
-        "tuicr - Review AI-generated diffs like a GitHub pull request
-
-Usage: {name} [OPTIONS]
-
-Options:
-  -r, --revisions <REVSET>  Commit range/Revset to review (syntax depends on VCS backend)
-  --theme <THEME>        Color theme to use
-                          Valid values: {valid_values}
-  --appearance <MODE>    Appearance mode for default theme
-                         Valid values: {appearance_values}
-                         Used when no explicit theme is set
-                         Precedence: --appearance > {config_path} > system
-  -p, --path <PATH>     Filter diff to a specific file or directory
-  -w, --working-tree     Include uncommitted changes (skip commit selector when used alone,
-                         combine with commits when used with -r)
-  --file <PATH>          Open a file for annotation (no VCS required)
-  --stdout               Output to stdout instead of clipboard when exporting
-  --no-update-check      Skip checking for updates on startup
-  -V, --version          Print version
-  -h, --help             Print this help message
-
-Press ? in the application for keybinding help."
-    );
-    std::process::exit(0);
+    RawCliArgs::command().after_help(format!(
+        "Theme values: {}\nAppearance values: {}\nAppearance precedence: --appearance > {config_path} > system\n\nPress ? in the application for keybinding help.",
+        ThemeArg::valid_values_display(),
+        AppearanceArg::valid_values_display(),
+    ))
 }
 
-/// Parse CLI arguments from command line
-///
-/// We use a handrolled argument parser instead of clap to keep binary size
-/// small and build times fast. If we end up needing more complex argument
-/// handling, we can revisit this decision.
-pub fn parse_cli_args() -> CliArgs {
-    let args: Vec<String> = std::env::args().collect();
-    parse_cli_args_from(&args).unwrap_or_else(|err| {
-        eprintln!("Error: {err}");
-        std::process::exit(2);
+fn parse_theme_arg(value: &str) -> Result<ThemeArg, String> {
+    if value.is_empty() {
+        return Err(format!(
+            "--theme requires a value ({})",
+            ThemeArg::valid_values_display()
+        ));
+    }
+
+    ThemeArg::from_str(value).ok_or_else(|| {
+        format!(
+            "Unknown theme '{value}'. Valid options: {}",
+            ThemeArg::valid_values_display()
+        )
     })
 }
 
-fn parse_cli_args_from(args: &[String]) -> Result<CliArgs, String> {
-    let mut cli_args = CliArgs::default();
-
-    for i in 0..args.len() {
-        // Handle --version / -V
-        if args[i] == "--version" || args[i] == "-V" {
-            print_version();
-        }
-
-        // Handle --help / -h
-        if args[i] == "--help" || args[i] == "-h" {
-            print_help();
-        }
-
-        // Handle --stdout
-        if args[i] == "--stdout" {
-            cli_args.output_to_stdout = true;
-        }
-
-        // Handle --no-update-check
-        if args[i] == "--no-update-check" {
-            cli_args.no_update_check = true;
-        }
-
-        // Handle -w / --working-tree
-        if args[i] == "-w" || args[i] == "--working-tree" {
-            cli_args.working_tree = true;
-        }
-
-        // Handle --theme value
-        if args[i] == "--theme" {
-            let valid_values = ThemeArg::valid_values_display();
-            let value = args
-                .get(i + 1)
-                .ok_or_else(|| format!("--theme requires a value ({valid_values})"))?;
-
-            if value.starts_with('-') {
-                return Err(format!("--theme requires a value ({valid_values})"));
-            }
-
-            cli_args.theme = ThemeArg::from_str(value)
-                .ok_or_else(|| format!("Unknown theme '{value}'. Valid options: {valid_values}"))
-                .map(Some)?;
-        }
-        // Handle --theme=value
-        if let Some(value) = args[i].strip_prefix("--theme=") {
-            let valid_values = ThemeArg::valid_values_display();
-            if value.is_empty() {
-                return Err(format!("--theme requires a value ({valid_values})"));
-            }
-
-            cli_args.theme = ThemeArg::from_str(value)
-                .ok_or_else(|| format!("Unknown theme '{value}'. Valid options: {valid_values}"))
-                .map(Some)?;
-        }
-
-        // Handle --appearance value
-        if args[i] == "--appearance" {
-            let valid_values = AppearanceArg::valid_values_display();
-            let value = args
-                .get(i + 1)
-                .ok_or_else(|| format!("--appearance requires a value ({valid_values})"))?;
-
-            if value.starts_with('-') {
-                return Err(format!("--appearance requires a value ({valid_values})"));
-            }
-
-            cli_args.appearance = AppearanceArg::from_str(value)
-                .ok_or_else(|| {
-                    format!("Unknown appearance '{value}'. Valid options: {valid_values}")
-                })
-                .map(Some)?;
-        }
-
-        // Handle --appearance=value
-        if let Some(value) = args[i].strip_prefix("--appearance=") {
-            let valid_values = AppearanceArg::valid_values_display();
-            if value.is_empty() {
-                return Err(format!("--appearance requires a value ({valid_values})"));
-            }
-
-            cli_args.appearance = AppearanceArg::from_str(value)
-                .ok_or_else(|| {
-                    format!("Unknown appearance '{value}'. Valid options: {valid_values}")
-                })
-                .map(Some)?;
-        }
-
-        // Handle -p / --path value
-        if args[i] == "-p" || args[i] == "--path" {
-            let value = args
-                .get(i + 1)
-                .ok_or_else(|| "--path requires a file or directory path".to_string())?;
-            if value.starts_with('-') {
-                return Err("--path requires a file or directory path".to_string());
-            }
-            cli_args.path_filter = Some(value.clone());
-        }
-        // Handle --path=value
-        if let Some(value) = args[i].strip_prefix("--path=") {
-            if value.is_empty() {
-                return Err("--path requires a file or directory path".to_string());
-            }
-            cli_args.path_filter = Some(value.to_string());
-        }
-
-        // Handle --file value
-        if args[i] == "--file" {
-            let value = args
-                .get(i + 1)
-                .ok_or_else(|| "--file requires a file path".to_string())?;
-            if value.starts_with('-') {
-                return Err("--file requires a file path".to_string());
-            }
-            cli_args.file_path = Some(value.clone());
-        }
-        // Handle --file=value
-        if let Some(value) = args[i].strip_prefix("--file=") {
-            if value.is_empty() {
-                return Err("--file requires a file path".to_string());
-            }
-            cli_args.file_path = Some(value.to_string());
-        }
-
-        // Handle -r / --revisions value
-        if args[i] == "-r" || args[i] == "--revisions" {
-            if let Some(value) = args.get(i + 1) {
-                cli_args.revisions = Some(value.clone());
-            } else {
-                eprintln!("Warning: {0} requires a value", args[i]);
-            }
-        }
-        // Handle --revisions=value
-        if let Some(value) = args[i].strip_prefix("--revisions=") {
-            cli_args.revisions = Some(value.to_string());
-        }
+fn parse_appearance_arg(value: &str) -> Result<AppearanceArg, String> {
+    if value.is_empty() {
+        return Err(format!(
+            "--appearance requires a value ({})",
+            AppearanceArg::valid_values_display()
+        ));
     }
 
-    Ok(cli_args)
+    AppearanceArg::from_str(value).ok_or_else(|| {
+        format!(
+            "Unknown appearance '{value}'. Valid options: {}",
+            AppearanceArg::valid_values_display()
+        )
+    })
+}
+
+fn parse_non_empty_value(value: &str) -> Result<String, String> {
+    if value.is_empty() {
+        Err("value cannot be empty".to_string())
+    } else {
+        Ok(value.to_string())
+    }
+}
+
+/// Parse CLI arguments from command line
+pub fn parse_cli_args() -> CliArgs {
+    parse_cli_args_from(std::env::args_os()).unwrap_or_else(|err| err.exit())
+}
+
+fn parse_cli_args_from<I, T>(args: I) -> Result<CliArgs, clap::Error>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
+    let matches = build_cli_command().try_get_matches_from(args)?;
+    let raw = RawCliArgs::from_arg_matches(&matches)?;
+    Ok(raw.into())
 }
 
 #[cfg(test)]
@@ -1897,9 +1820,15 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
-    fn parse_for_test(args: &[&str]) -> Result<CliArgs, String> {
+    fn parse_for_test(args: &[&str]) -> Result<CliArgs, clap::Error> {
         let args = args.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        parse_cli_args_from(&args)
+        parse_cli_args_from(args)
+    }
+
+    fn parse_error_for_test(args: &[&str]) -> String {
+        parse_for_test(args)
+            .expect_err("parse should fail")
+            .to_string()
     }
 
     #[test]
@@ -1977,21 +1906,61 @@ mod tests {
     }
 
     #[test]
+    fn should_parse_revisions_long_flag() {
+        let parsed = parse_for_test(&["tuicr", "--revisions", "main..feature"])
+            .expect("parse should succeed");
+        assert_eq!(parsed.revisions, Some("main..feature".to_string()));
+    }
+
+    #[test]
+    fn should_parse_revisions_equals_syntax() {
+        let parsed =
+            parse_for_test(&["tuicr", "--revisions=HEAD~2.."]).expect("parse should succeed");
+        assert_eq!(parsed.revisions, Some("HEAD~2..".to_string()));
+    }
+
+    #[test]
+    fn should_error_when_revisions_value_missing() {
+        let err = parse_error_for_test(&["tuicr", "--revisions"]);
+        assert!(err.contains("--revisions"));
+        assert!(err.contains("value"));
+    }
+
+    #[test]
+    fn should_error_when_revisions_equals_empty() {
+        let err = parse_error_for_test(&["tuicr", "--revisions="]);
+        assert!(err.contains("value cannot be empty"));
+    }
+
+    #[test]
+    fn should_parse_stdout_flag() {
+        let parsed = parse_for_test(&["tuicr", "--stdout"]).expect("parse should succeed");
+        assert!(parsed.output_to_stdout);
+    }
+
+    #[test]
+    fn should_parse_no_update_check_flag() {
+        let parsed = parse_for_test(&["tuicr", "--no-update-check"]).expect("parse should succeed");
+        assert!(parsed.no_update_check);
+    }
+
+    #[test]
     fn should_error_for_invalid_theme_in_separate_arg() {
-        let err = parse_for_test(&["tuicr", "--theme", "nope"]).expect_err("parse should fail");
+        let err = parse_error_for_test(&["tuicr", "--theme", "nope"]);
         assert!(err.contains("Unknown theme 'nope'"));
     }
 
     #[test]
     fn should_error_for_invalid_theme_in_equals_arg() {
-        let err = parse_for_test(&["tuicr", "--theme=nope"]).expect_err("parse should fail");
+        let err = parse_error_for_test(&["tuicr", "--theme=nope"]);
         assert!(err.contains("Unknown theme 'nope'"));
     }
 
     #[test]
     fn should_error_when_theme_value_missing() {
-        let err = parse_for_test(&["tuicr", "--theme"]).expect_err("parse should fail");
-        assert!(err.contains("--theme requires a value"));
+        let err = parse_error_for_test(&["tuicr", "--theme"]);
+        assert!(err.contains("--theme"));
+        assert!(err.contains("value"));
     }
 
     #[test]
@@ -2003,8 +1972,7 @@ mod tests {
 
     #[test]
     fn should_error_for_invalid_appearance() {
-        let err =
-            parse_for_test(&["tuicr", "--appearance", "nope"]).expect_err("parse should fail");
+        let err = parse_error_for_test(&["tuicr", "--appearance", "nope"]);
         assert!(err.contains("Unknown appearance 'nope'"));
     }
 
@@ -2255,14 +2223,54 @@ mod tests {
 
     #[test]
     fn should_error_when_path_value_missing() {
-        let err = parse_for_test(&["tuicr", "--path"]).expect_err("parse should fail");
-        assert!(err.contains("--path requires a file or directory path"));
+        let err = parse_error_for_test(&["tuicr", "--path"]);
+        assert!(err.contains("--path"));
+        assert!(err.contains("value"));
     }
 
     #[test]
     fn should_error_when_path_equals_empty() {
-        let err = parse_for_test(&["tuicr", "--path="]).expect_err("parse should fail");
-        assert!(err.contains("--path requires a file or directory path"));
+        let err = parse_error_for_test(&["tuicr", "--path="]);
+        assert!(err.contains("value cannot be empty"));
+    }
+
+    #[test]
+    fn should_error_for_unknown_short_flag_cluster() {
+        let err = parse_error_for_test(&["tuicr", "-version"]);
+        assert!(err.contains("unexpected argument") || err.contains("unknown argument"));
+    }
+
+    #[test]
+    fn should_error_for_unknown_long_flag() {
+        let err = parse_error_for_test(&["tuicr", "--unknown"]);
+        assert!(err.contains("--unknown"));
+    }
+
+    #[test]
+    fn should_parse_file_path() {
+        let parsed =
+            parse_for_test(&["tuicr", "--file", "notes.md"]).expect("parse should succeed");
+        assert_eq!(parsed.file_path, Some("notes.md".to_string()));
+    }
+
+    #[test]
+    fn should_parse_file_equals_syntax() {
+        let parsed =
+            parse_for_test(&["tuicr", "--file=docs/review.md"]).expect("parse should succeed");
+        assert_eq!(parsed.file_path, Some("docs/review.md".to_string()));
+    }
+
+    #[test]
+    fn should_error_when_file_value_missing() {
+        let err = parse_error_for_test(&["tuicr", "--file"]);
+        assert!(err.contains("--file"));
+        assert!(err.contains("value"));
+    }
+
+    #[test]
+    fn should_error_when_file_equals_empty() {
+        let err = parse_error_for_test(&["tuicr", "--file="]);
+        assert!(err.contains("value cannot be empty"));
     }
 
     #[test]
@@ -2285,5 +2293,45 @@ mod tests {
             .expect("parse should succeed");
         assert_eq!(parsed.path_filter, Some("src/".to_string()));
         assert_eq!(parsed.revisions, Some("HEAD~3..".to_string()));
+    }
+
+    #[test]
+    fn should_parse_multiple_cli_options_together() {
+        let parsed = parse_for_test(&[
+            "tuicr",
+            "--theme",
+            "github-dark",
+            "--appearance",
+            "dark",
+            "--stdout",
+            "--no-update-check",
+            "-w",
+            "-p",
+            "src",
+            "-r",
+            "main..feature",
+        ])
+        .expect("parse should succeed");
+
+        assert_eq!(parsed.theme, Some(ThemeArg::GithubDark));
+        assert_eq!(parsed.appearance, Some(AppearanceArg::Dark));
+        assert!(parsed.output_to_stdout);
+        assert!(parsed.no_update_check);
+        assert!(parsed.working_tree);
+        assert_eq!(parsed.path_filter, Some("src".to_string()));
+        assert_eq!(parsed.revisions, Some("main..feature".to_string()));
+    }
+
+    #[test]
+    fn should_return_help_without_parsing_app_args() {
+        let err = parse_for_test(&["tuicr", "--help"]).expect_err("help should short-circuit");
+        assert_eq!(err.kind(), clap::error::ErrorKind::DisplayHelp);
+    }
+
+    #[test]
+    fn should_return_version_without_parsing_app_args() {
+        let err =
+            parse_for_test(&["tuicr", "--version"]).expect_err("version should short-circuit");
+        assert_eq!(err.kind(), clap::error::ErrorKind::DisplayVersion);
     }
 }

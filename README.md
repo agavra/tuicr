@@ -104,12 +104,18 @@ Detection order: Jujutsu → Git → Mercurial. Jujutsu is tried first because j
 | `-r` / `--revisions <REVSET>` | Commit range/Revision set to review. Exact syntax depends on VCS backend (Git, JJ, Hg) |
 | `--theme <THEME>` | Color theme override (`dark`, `light`, `ayu-light`, `onedark`, `github-light`, `github-dark`, `catppuccin-latte`, `catppuccin-frappe`, `catppuccin-macchiato`, `catppuccin-mocha`, `gruvbox-dark`, `gruvbox-light`, `nord-dark`, `nord-light`, `nord-dark-high-contrast`, `nord-light-high-contrast`, `solarized-light`, `solarized-dark`, `tokyo-night-storm`) |
 | `--appearance <MODE>` | Appearance mode for default theme (`dark`, `light`, `system`) |
+| `-p` / `--path <PATH>` | Filter diff to a specific file or directory |
+| `-w` / `--working-tree` | Include uncommitted changes |
+| `--file <PATH>` | Open a file for annotation without VCS |
 | `--stdout` | Output to stdout instead of clipboard when exporting |
 | `--no-update-check` | Skip checking for updates on startup |
+| `-V` / `--version` | Print version |
+| `-h` / `--help` | Print help |
 
 By default, `tuicr` starts in commit selection mode.  
 If staged or unstaged changes exist, the first selectable entries are `Staged changes` and/or `Unstaged changes`.  
 When `-r` / `--revisions` is provided, `tuicr` opens that revision range directly.
+Invalid or unknown CLI arguments exit non-zero.
 On narrow terminals (less than 100 columns), `tuicr` starts with the file list hidden; toggle it with `;e`.
 
 ### Configuration
