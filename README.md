@@ -174,6 +174,20 @@ A first-session cheatsheet. Press `?` inside tuicr for the full reference.
 
 Full reference in [docs/KEYBINDINGS.md](docs/KEYBINDINGS.md).
 
+## Sponsors
+
+Thanks to the folks below for keeping tuicr development going, it means a lot to have the
+work I'm doing here appreciated!
+
+<p>
+  <a href="https://www.coderabbit.ai/">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="./public/sponsors/coderabbit-dark.svg">
+      <img src="./public/sponsors/coderabbit-light.svg" alt="CodeRabbit" height="40">
+    </picture>
+  </a>
+</p>
+
 ## License
 
 MIT licensed. Contribution notes in [CONTRIBUTING.md](CONTRIBUTING.md).
