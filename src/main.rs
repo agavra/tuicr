@@ -17,6 +17,7 @@ use crossterm::{
 use ratatui::{Terminal, backend::CrosstermBackend};
 
 use tuicr::app::{App, AppStartupOptions, FocusedPanel, InputMode};
+use tuicr::error::TuicrError;
 use tuicr::handler::{
     handle_command_action, handle_comment_action, handle_commit_select_action,
     handle_commit_selector_action, handle_confirm_action, handle_diff_action,
@@ -181,7 +182,7 @@ fn main() -> anyhow::Result<()> {
             // when the failure was the absence of a repo. For other
             // startup errors — `tuicr pr <bad-url>`, forge auth issues,
             // missing PR, `--file <missing-path>` — the hint is wrong.
-            if matches!(e, crate::error::TuicrError::NotARepository) {
+            if matches!(e, TuicrError::NotARepository) {
                 eprintln!(
                     "\nMake sure you're in a git, jujutsu, or mercurial repository with commits or staged/unstaged changes."
                 );

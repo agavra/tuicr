@@ -453,6 +453,7 @@ impl ReviewServiceInner {
                 &state.diff_source,
                 &state.comment_types,
                 true,
+                &[],
             )
         })
     }
@@ -629,6 +630,7 @@ fn load_review_state(repo_path: &Path, args: OpenReviewArgs) -> Result<ReviewSta
                 path_filter: args.path.as_deref(),
                 file_path: args.file.as_deref(),
                 git_backend_preference,
+                pr_target: None,
             },
         )?;
         return Ok(ReviewState {
@@ -948,6 +950,7 @@ fn diff_source_label(diff_source: &DiffSource) -> &'static str {
         DiffSource::StagedAndUnstaged => "staged_and_unstaged",
         DiffSource::CommitRange(_) => "commit_range",
         DiffSource::StagedUnstagedAndCommits(_) => "staged_unstaged_and_commits",
+        DiffSource::PullRequest(_) => "pull_request",
     }
 }
 
