@@ -184,10 +184,13 @@ fn main() -> anyhow::Result<()> {
         Ok(mut app) => {
             app.supports_keyboard_enhancement = keyboard_enhancement_supported;
             startup_warnings.extend(app.vcs.startup_warnings());
-            if let Some(cfg) = config_outcome.config.as_ref()
-                && let Some(forge_cfg) = cfg.forge.clone()
-            {
-                app.forge_config = forge_cfg;
+            if let Some(cfg) = config_outcome.config.as_ref() {
+                if let Some(forge_cfg) = cfg.forge.clone() {
+                    app.forge_config = forge_cfg;
+                }
+                if let Some(leader) = cfg.leader {
+                    app.leader_key = leader;
+                }
             }
             app
         }
@@ -281,8 +284,8 @@ fn main() -> anyhow::Result<()> {
     let mut pending_shift_z = false;
     // Track pending d command for dd delete
     let mut pending_d = false;
-    // Track pending ; command for ;e toggle file list
-    let mut pending_semicolon = false;
+    // Track pending leader command for leader-prefixed actions.
+    let mut pending_leader = false;
     // Track pending Ctrl+C for "press twice to exit" (with timestamp for 2s timeout)
     let mut pending_ctrl_c: Option<Instant> = None;
 
@@ -419,9 +422,9 @@ fn main() -> anyhow::Result<()> {
                         // Otherwise fall through to normal handling
                     }
 
-                    // Handle pending ; command for panel focus, file list toggle, and review comments
-                    if pending_semicolon {
-                        pending_semicolon = false;
+                    // Handle pending leader command for panel focus, file list toggle, and review comments.
+                    if pending_leader {
+                        pending_leader = false;
                         match key.code {
                             crossterm::event::KeyCode::Char('e') => {
                                 app.toggle_file_list();
@@ -462,7 +465,7 @@ fn main() -> anyhow::Result<()> {
                         if app.input_mode == InputMode::CommitSelect && app.pr_filter_editing() {
                             map_target_filter_mode(key)
                         } else {
-                            map_key_to_action(key, app.input_mode)
+                            map_key_to_action(key, app.input_mode, app.leader_key)
                         };
 
                     // Handle pending command setters (these work in any mode)
@@ -482,8 +485,8 @@ fn main() -> anyhow::Result<()> {
                             app.pending_count = None;
                             continue;
                         }
-                        Action::PendingSemicolonCommand => {
-                            pending_semicolon = true;
+                        Action::PendingLeaderCommand => {
+                            pending_leader = true;
                             app.pending_count = None;
                             continue;
                         }
