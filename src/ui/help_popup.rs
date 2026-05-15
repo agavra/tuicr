@@ -445,6 +445,20 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         Line::from(""),
         Line::from(vec![
             Span::styled(
+                "  :{N}      ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Jump to new-side line N in current file"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :o{N}     ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Jump to old-side line N in current file (matches deletions)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  :w        ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
