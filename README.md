@@ -147,8 +147,9 @@ definition = "must fix before merge"
 
 Themes: `dark`, `light`, `ayu-light`, `ayu-mirage`, `onedark`, `github-light`, `github-dark`,
 `catppuccin-latte`, `catppuccin-frappe`, `catppuccin-macchiato`, `catppuccin-mocha`,
-`gruvbox-dark`, `gruvbox-light`, `nord-dark`, `nord-light`, `nord-dark-high-contrast`,
-`nord-light-high-contrast`, `solarized-light`, `solarized-dark`, `tokyo-night-storm`.
+`everforest-dark`, `everforest-light`, `gruvbox-dark`, `gruvbox-light`, `nord-dark`,
+`nord-light`, `nord-dark-high-contrast`, `nord-light-high-contrast`, `solarized-light`,
+`solarized-dark`, `tokyo-night-storm`.
 
 Full options, theme resolution precedence, `comment_types` semantics, and `.tuicrignore` rules in
 [docs/CONFIG.md](docs/CONFIG.md).

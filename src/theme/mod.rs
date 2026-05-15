@@ -1003,6 +1003,54 @@ impl Theme {
             syntect_theme: EmbeddedThemeName::Base16OceanLight,
         })
     }
+
+    /// Everforest dark (medium variant) — sainnhe/everforest palette.
+    pub fn everforest_dark() -> Self {
+        everforest_theme(EverforestFlavor {
+            bg0: rgb(39, 46, 51),       // #272e33
+            bg1: rgb(46, 56, 60),       // #2e383c
+            bg3: rgb(65, 75, 80),       // #414b50
+            bg5: rgb(79, 91, 88),       // #4f5b58
+            bg_red: rgb(73, 59, 64),    // #493b40
+            bg_green: rgb(60, 72, 65),  // #3c4841
+            fg: rgb(211, 198, 170),     // #d3c6aa
+            gray0: rgb(122, 132, 120),  // #7a8478
+            gray1: rgb(133, 146, 137),  // #859289
+            gray2: rgb(157, 169, 160),  // #9da9a0
+            red: rgb(230, 126, 128),    // #e67e80
+            orange: rgb(230, 152, 117), // #e69875
+            yellow: rgb(219, 188, 127), // #dbbc7f
+            green: rgb(167, 192, 128),  // #a7c080
+            aqua: rgb(131, 192, 146),   // #83c092
+            blue: rgb(127, 187, 179),   // #7fbbb3
+            purple: rgb(214, 153, 182), // #d699b6
+            syntect_theme: EmbeddedThemeName::GruvboxDark,
+        })
+    }
+
+    /// Everforest light (medium variant) — sainnhe/everforest palette.
+    pub fn everforest_light() -> Self {
+        everforest_theme(EverforestFlavor {
+            bg0: rgb(253, 246, 227),      // #fdf6e3
+            bg1: rgb(244, 240, 217),      // #f4f0d9
+            bg3: rgb(230, 226, 204),      // #e6e2cc
+            bg5: rgb(189, 195, 175),      // #bdc3af
+            bg_red: rgb(251, 227, 218),   // #fbe3da
+            bg_green: rgb(240, 241, 210), // #f0f1d2
+            fg: rgb(92, 106, 114),        // #5c6a72
+            gray0: rgb(166, 176, 160),    // #a6b0a0
+            gray1: rgb(147, 159, 145),    // #939f91
+            gray2: rgb(130, 145, 129),    // #829181
+            red: rgb(248, 85, 82),        // #f85552
+            orange: rgb(245, 125, 38),    // #f57d26
+            yellow: rgb(223, 160, 0),     // #dfa000
+            green: rgb(141, 161, 1),      // #8da101
+            aqua: rgb(53, 167, 124),      // #35a77c
+            blue: rgb(58, 148, 197),      // #3a94c5
+            purple: rgb(223, 105, 186),   // #df69ba
+            syntect_theme: EmbeddedThemeName::GruvboxLight,
+        })
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1043,6 +1091,28 @@ struct NordFlavor {
     orange: Color,
     yellow: Color,
     green: Color,
+    syntect_theme: EmbeddedThemeName,
+}
+
+#[derive(Clone, Copy)]
+struct EverforestFlavor {
+    bg0: Color,
+    bg1: Color,
+    bg3: Color,
+    bg5: Color,
+    bg_red: Color,
+    bg_green: Color,
+    fg: Color,
+    gray0: Color,
+    gray1: Color,
+    gray2: Color,
+    red: Color,
+    orange: Color,
+    yellow: Color,
+    green: Color,
+    aqua: Color,
+    blue: Color,
+    purple: Color,
     syntect_theme: EmbeddedThemeName,
 }
 
@@ -1239,6 +1309,68 @@ fn gruvbox_theme(flavor: GruvboxFlavor) -> Theme {
     }
 }
 
+fn everforest_theme(flavor: EverforestFlavor) -> Theme {
+    let accent_fg = flavor.bg0;
+    let syntax_add_bg = blend(flavor.bg0, flavor.green, 12);
+    let syntax_del_bg = blend(flavor.bg0, flavor.red, 12);
+
+    Theme {
+        highlighter: OnceLock::new(),
+
+        panel_bg: flavor.bg0,
+        bg_highlight: flavor.bg3,
+        fg_primary: flavor.fg,
+        fg_secondary: flavor.gray2,
+        fg_dim: flavor.gray0,
+
+        diff_add: flavor.green,
+        diff_add_bg: flavor.bg_green,
+        diff_del: flavor.red,
+        diff_del_bg: flavor.bg_red,
+        diff_context: flavor.fg,
+        diff_hunk_header: flavor.blue,
+        expanded_context_fg: flavor.gray1,
+
+        syntax_add_bg,
+        syntax_del_bg,
+
+        syntect_theme: flavor.syntect_theme,
+
+        file_added: flavor.green,
+        file_modified: flavor.yellow,
+        file_deleted: flavor.red,
+        file_renamed: flavor.purple,
+
+        reviewed: flavor.green,
+        pending: flavor.yellow,
+
+        comment_note: flavor.blue,
+        comment_suggestion: flavor.aqua,
+        comment_issue: flavor.red,
+        comment_praise: flavor.green,
+
+        border_focused: flavor.aqua,
+        border_unfocused: flavor.bg5,
+        status_bar_bg: flavor.bg1,
+        cursor_color: flavor.orange,
+        cursor_line_bg: flavor.bg1,
+        branch_name: flavor.aqua,
+        help_indicator: flavor.gray0,
+
+        message_info_fg: accent_fg,
+        message_info_bg: flavor.blue,
+        message_warning_fg: accent_fg,
+        message_warning_bg: flavor.yellow,
+        message_error_fg: accent_fg,
+        message_error_bg: flavor.red,
+        update_badge_fg: accent_fg,
+        update_badge_bg: flavor.orange,
+
+        mode_fg: accent_fg,
+        mode_bg: flavor.green,
+    }
+}
+
 fn nord_theme(flavor: NordFlavor) -> Theme {
     let accent_fg = if flavor.dark { flavor.bg0 } else { flavor.fg1 };
     let diff_add_bg = blend(flavor.bg0, flavor.green, 15);
@@ -1327,9 +1459,11 @@ pub enum ThemeArg {
     SolarizedLight,
     SolarizedDark,
     TokyoNightStorm,
+    EverforestDark,
+    EverforestLight,
 }
 
-const THEME_CHOICES: [(&str, ThemeArg); 20] = [
+const THEME_CHOICES: [(&str, ThemeArg); 22] = [
     ("dark", ThemeArg::Dark),
     ("light", ThemeArg::Light),
     ("ayu-light", ThemeArg::AyuLight),
@@ -1350,6 +1484,8 @@ const THEME_CHOICES: [(&str, ThemeArg); 20] = [
     ("solarized-light", ThemeArg::SolarizedLight),
     ("solarized-dark", ThemeArg::SolarizedDark),
     ("tokyo-night-storm", ThemeArg::TokyoNightStorm),
+    ("everforest-dark", ThemeArg::EverforestDark),
+    ("everforest-light", ThemeArg::EverforestLight),
 ];
 
 /// CLI arguments parsed from command line
@@ -1459,6 +1595,8 @@ pub fn resolve_theme(arg: ThemeArg) -> Theme {
         ThemeArg::SolarizedLight => Theme::solarized_light(),
         ThemeArg::SolarizedDark => Theme::solarized_dark(),
         ThemeArg::TokyoNightStorm => Theme::tokyo_night_storm(),
+        ThemeArg::EverforestDark => Theme::everforest_dark(),
+        ThemeArg::EverforestLight => Theme::everforest_light(),
     }
 }
 
@@ -2207,6 +2345,29 @@ mod tests {
         let hc = resolve_theme(ThemeArg::NordLightHighContrast);
         assert_ne!(light.fg_dim, hc.fg_dim);
         assert_eq!(hc.fg_dim, Color::Rgb(67, 76, 94)); // nord2
+    }
+
+    #[test]
+    fn should_parse_everforest_themes() {
+        let parsed =
+            parse_for_test(&["tuicr", "--theme", "everforest-dark"]).expect("parse should succeed");
+        assert_eq!(parsed.theme, Some(ThemeArg::EverforestDark));
+
+        let parsed =
+            parse_for_test(&["tuicr", "--theme=everforest-light"]).expect("parse should succeed");
+        assert_eq!(parsed.theme, Some(ThemeArg::EverforestLight));
+    }
+
+    #[test]
+    fn should_resolve_everforest_dark_to_gruvbox_dark_syntect_theme() {
+        let theme = resolve_theme(ThemeArg::EverforestDark);
+        assert_eq!(theme.syntect_theme, EmbeddedThemeName::GruvboxDark);
+    }
+
+    #[test]
+    fn should_resolve_everforest_light_to_gruvbox_light_syntect_theme() {
+        let theme = resolve_theme(ThemeArg::EverforestLight);
+        assert_eq!(theme.syntect_theme, EmbeddedThemeName::GruvboxLight);
     }
 
     #[test]
