@@ -1,4 +1,5 @@
 use std::ffi::OsStr;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Result, TuicrError};
@@ -533,7 +534,8 @@ pub fn parse_github_remote_url(remote_url: &str) -> Option<ForgeRepository> {
     }
 
     if let Some((host, path)) = parse_scp_like_remote(trimmed) {
-        return repository_from_path(host, path);
+        let resolved = resolve_ssh_hostname(host);
+        return repository_from_path(&resolved, path);
     }
 
     let without_scheme = strip_scheme(trimmed).unwrap_or(trimmed);
@@ -599,6 +601,54 @@ fn parse_repo_hash_target(target: &str) -> Option<PullRequestTarget> {
     Some(PullRequestTarget::with_repository(
         repository, number, target,
     ))
+}
+
+/// Resolve an SSH host alias to its real `HostName` via `~/.ssh/config`.
+/// Returns the alias unchanged when the config is missing, unreadable, or
+/// contains no matching block.
+///
+/// Limitations: only exact `Host` patterns are matched. Wildcard (`*`),
+/// negation (`!`), `Match`, and `Include` directives are not supported;
+/// a `Host`/`HostName` pair that depends on any of those falls back to
+/// the alias unchanged.
+fn resolve_ssh_hostname(alias: &str) -> String {
+    let Ok(home) = std::env::var("HOME") else {
+        return alias.to_string();
+    };
+    let path = PathBuf::from(home).join(".ssh/config");
+    let Ok(content) = fs::read_to_string(path) else {
+        return alias.to_string();
+    };
+    resolve_ssh_hostname_from_config(alias, &content)
+}
+
+fn resolve_ssh_hostname_from_config(alias: &str, config: &str) -> String {
+    let mut in_block = false;
+    for raw in config.lines() {
+        // Strip inline comments and surrounding whitespace.
+        let line = raw.split_once('#').map_or(raw, |(before, _)| before).trim();
+        if line.is_empty() {
+            continue;
+        }
+        // SSH config separates keyword from value by whitespace or '='.
+        let (key, value) = line
+            .split_once(|c: char| c.is_whitespace() || c == '=')
+            .unwrap_or((line, ""));
+        let value = value
+            .trim_start_matches(|c: char| c.is_whitespace() || c == '=')
+            .trim();
+
+        if key.eq_ignore_ascii_case("Host") {
+            // Exact match only; wildcards and negation are intentionally unsupported.
+            in_block = value.split_whitespace().any(|pat| pat == alias);
+        } else if key.eq_ignore_ascii_case("Match") {
+            // Match blocks aren't supported; exit any Host block we were in.
+            in_block = false;
+        } else if in_block && key.eq_ignore_ascii_case("HostName") {
+            return value.to_string();
+        }
+    }
+    alias.to_string()
 }
 
 fn parse_scp_like_remote(remote_url: &str) -> Option<(&str, &str)> {
@@ -1053,6 +1103,158 @@ index 1111111..2222222 100644
             parse_github_remote_url("ssh://git@github.example.com/agavra/tuicr.git").unwrap();
         assert_eq!(repository.host, "github.example.com");
         assert_eq!(repository.slug(), "agavra/tuicr");
+    }
+
+    #[test]
+    fn resolve_ssh_hostname_resolves_alias_to_configured_hostname() {
+        // (case name, alias, config, expected hostname)
+        let cases: &[(&str, &str, &str, &str)] = &[
+            (
+                "basic alias",
+                "github-work",
+                "Host github-work\n    HostName github.com\n",
+                "github.com",
+            ),
+            (
+                "tab separator",
+                "github-work",
+                "Host\tgithub-work\n\tHostName\tgithub.com\n",
+                "github.com",
+            ),
+            (
+                "equals separator",
+                "github-work",
+                "Host=github-work\n    HostName=github.com\n",
+                "github.com",
+            ),
+            (
+                "case-insensitive keywords",
+                "github-work",
+                "host github-work\n    hostname github.com\n",
+                "github.com",
+            ),
+            (
+                "trailing comment stripped",
+                "github-work",
+                "Host github-work\n    HostName github.com # inline comment\n",
+                "github.com",
+            ),
+            (
+                "blank and comment lines ignored",
+                "github-work",
+                "\
+# leading comment
+
+Host github-work
+    # nested comment
+    HostName github.com
+",
+                "github.com",
+            ),
+            (
+                "multi-pattern block: second pattern",
+                "github-work",
+                "\
+Host github.com github-personal
+    HostName github.com
+
+Host github-work
+    HostName github.mycompany.com
+",
+                "github.mycompany.com",
+            ),
+            (
+                "multi-pattern block: first pattern",
+                "github-personal",
+                "\
+Host github.com github-personal
+    HostName github.com
+
+Host github-work
+    HostName github.mycompany.com
+",
+                "github.com",
+            ),
+            (
+                "duplicate Host blocks: first wins",
+                "github-work",
+                "\
+Host github-work
+    HostName first.example.com
+
+Host github-work
+    HostName second.example.com
+",
+                "first.example.com",
+            ),
+        ];
+
+        for (name, alias, config, expected) in cases {
+            assert_eq!(
+                resolve_ssh_hostname_from_config(alias, config),
+                *expected,
+                "case: {name}",
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_ssh_hostname_falls_back_to_alias_when_unresolved() {
+        // (case name, alias, config). All cases expect the alias back unchanged.
+        let cases: &[(&str, &str, &str)] = &[
+            (
+                "host not in config",
+                "github-work",
+                "Host github.com\n    HostName github.com\n",
+            ),
+            (
+                "block has no HostName",
+                "github-work",
+                "Host github-work\n    User git\n    IdentitiesOnly yes\n",
+            ),
+            (
+                "wildcard patterns unsupported",
+                "foo.github.com",
+                "\
+Host *.github.com
+    HostName fallback.example.com
+
+Host *
+    HostName catchall.example.com
+",
+            ),
+            (
+                "Match directive terminates Host block",
+                "github-work",
+                "\
+Host github-work
+Match host github-work
+    HostName should-not-leak.example.com
+",
+            ),
+        ];
+
+        for (name, alias, config) in cases {
+            assert_eq!(
+                resolve_ssh_hostname_from_config(alias, config),
+                *alias,
+                "case: {name}",
+            );
+        }
+    }
+
+    #[test]
+    fn parse_scp_url_with_ssh_alias_resolves_via_config() {
+        // End-to-end check on the SCP-style path: alias in the URL gets
+        // swapped for the configured HostName before repository construction.
+        let config = "Host github-work\n    HostName github.com\n";
+        let url = "git@github-work:example-org/example-repo.git";
+        let trimmed = trim_url_suffix(url.trim());
+        let (host, path) = parse_scp_like_remote(trimmed).unwrap();
+        let resolved = resolve_ssh_hostname_from_config(host, config);
+        let repo = repository_from_path(&resolved, path).unwrap();
+        assert_eq!(repo.host, "github.com");
+        assert_eq!(repo.slug(), "example-org/example-repo");
     }
 
     #[test]
