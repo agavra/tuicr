@@ -340,33 +340,42 @@ pub fn annotation_file_idx(annotation: &AnnotatedLine) -> Option<usize> {
     }
 }
 
-/// Search `line_annotations` for the annotation whose `new_lineno` best matches
-/// `target_lineno` within the file identified by `current_file`.
+/// Search `line_annotations` for the annotation whose line number on the given
+/// `side` best matches `target_lineno` within the file identified by
+/// `current_file`. `side` selects whether to compare against `new_lineno`
+/// (post-change) or `old_lineno` (pre-change).
 pub fn find_source_line(
     annotations: &[AnnotatedLine],
     current_file: usize,
     target_lineno: u32,
+    side: LineSide,
 ) -> FindSourceLineResult {
     let mut best: Option<(usize, u32)> = None; // (index, distance)
 
     for (idx, annotation) in annotations.iter().enumerate() {
-        let (file_idx, new_lineno) = match annotation {
+        let (file_idx, old_lineno, new_lineno) = match annotation {
             AnnotatedLine::DiffLine {
                 file_idx,
+                old_lineno,
                 new_lineno,
                 ..
-            } => (*file_idx, *new_lineno),
+            } => (*file_idx, *old_lineno, *new_lineno),
             AnnotatedLine::SideBySideLine {
                 file_idx,
+                old_lineno,
                 new_lineno,
                 ..
-            } => (*file_idx, *new_lineno),
+            } => (*file_idx, *old_lineno, *new_lineno),
             _ => continue,
         };
         if file_idx != current_file {
             continue;
         }
-        if let Some(ln) = new_lineno {
+        let candidate = match side {
+            LineSide::New => new_lineno,
+            LineSide::Old => old_lineno,
+        };
+        if let Some(ln) = candidate {
             let dist = ln.abs_diff(target_lineno);
             if dist == 0 {
                 return FindSourceLineResult::Exact(idx);
@@ -3600,9 +3609,13 @@ impl App {
             .min(max_scroll);
     }
 
-    pub fn go_to_source_line(&mut self, target_lineno: u32) {
+    pub fn go_to_source_line(&mut self, target_lineno: u32, side: LineSide) {
         let current_file = self.diff_state.current_file_idx;
-        let result = find_source_line(&self.line_annotations, current_file, target_lineno);
+        let result = find_source_line(&self.line_annotations, current_file, target_lineno, side);
+        let side_label = match side {
+            LineSide::New => "",
+            LineSide::Old => " (old)",
+        };
 
         match result {
             FindSourceLineResult::Exact(idx) | FindSourceLineResult::Nearest(idx) => {
@@ -3612,12 +3625,14 @@ impl App {
                 self.update_current_file_from_cursor();
                 if matches!(result, FindSourceLineResult::Nearest(_)) {
                     self.set_message(format!(
-                        "Line {target_lineno} not in diff, jumped to nearest"
+                        "Line {target_lineno}{side_label} not in diff, jumped to nearest"
                     ));
                 }
             }
             FindSourceLineResult::NotFound => {
-                self.set_warning(format!("Line {target_lineno} not found in current file"));
+                self.set_warning(format!(
+                    "Line {target_lineno}{side_label} not found in current file"
+                ));
             }
         }
     }
@@ -9377,14 +9392,26 @@ mod scroll_behavior_tests {
 mod find_source_line_tests {
     use super::*;
 
-    // hunk_idx and line_idx are set to 0 because find_source_line doesn't use them;
-    // only file_idx and new_lineno matter for the search.
     fn make_diff_line(file_idx: usize, new_lineno: Option<u32>) -> AnnotatedLine {
         AnnotatedLine::DiffLine {
             file_idx,
             hunk_idx: 0,
             line_idx: 0,
             old_lineno: None,
+            new_lineno,
+        }
+    }
+
+    fn make_diff_line_with_old(
+        file_idx: usize,
+        old_lineno: Option<u32>,
+        new_lineno: Option<u32>,
+    ) -> AnnotatedLine {
+        AnnotatedLine::DiffLine {
+            file_idx,
+            hunk_idx: 0,
+            line_idx: 0,
+            old_lineno,
             new_lineno,
         }
     }
@@ -9409,7 +9436,7 @@ mod find_source_line_tests {
             make_diff_line(0, Some(12)),
         ];
 
-        let result = find_source_line(&annotations, 0, 11);
+        let result = find_source_line(&annotations, 0, 11, LineSide::New);
         assert_eq!(result, FindSourceLineResult::Exact(2));
     }
 
@@ -9422,7 +9449,7 @@ mod find_source_line_tests {
         ];
 
         // Target 12 is closest to line 10 (dist=2) vs 15 (dist=3) vs 20 (dist=8)
-        let result = find_source_line(&annotations, 0, 12);
+        let result = find_source_line(&annotations, 0, 12, LineSide::New);
         assert_eq!(result, FindSourceLineResult::Nearest(0));
     }
 
@@ -9435,14 +9462,14 @@ mod find_source_line_tests {
         ];
 
         // Target 18 is closest to line 20 (dist=2) vs 15 (dist=3) vs 10 (dist=8)
-        let result = find_source_line(&annotations, 0, 18);
+        let result = find_source_line(&annotations, 0, 18, LineSide::New);
         assert_eq!(result, FindSourceLineResult::Nearest(2));
     }
 
     #[test]
     fn should_return_not_found_for_empty_annotations() {
         let annotations: Vec<AnnotatedLine> = vec![];
-        let result = find_source_line(&annotations, 0, 42);
+        let result = find_source_line(&annotations, 0, 42, LineSide::New);
         assert_eq!(result, FindSourceLineResult::NotFound);
     }
 
@@ -9451,7 +9478,7 @@ mod find_source_line_tests {
         let annotations = vec![make_diff_line(1, Some(10)), make_diff_line(1, Some(20))];
 
         // File 0 has no lines
-        let result = find_source_line(&annotations, 0, 10);
+        let result = find_source_line(&annotations, 0, 10, LineSide::New);
         assert_eq!(result, FindSourceLineResult::NotFound);
     }
 
@@ -9464,7 +9491,7 @@ mod find_source_line_tests {
         ];
 
         // Searching file 0 for line 42 — should find nearest (50, dist=8) not file 1's exact match
-        let result = find_source_line(&annotations, 0, 42);
+        let result = find_source_line(&annotations, 0, 42, LineSide::New);
         assert_eq!(result, FindSourceLineResult::Nearest(2));
     }
 
@@ -9480,7 +9507,7 @@ mod find_source_line_tests {
             make_diff_line(0, Some(42)),
         ];
 
-        let result = find_source_line(&annotations, 0, 42);
+        let result = find_source_line(&annotations, 0, 42, LineSide::New);
         assert_eq!(result, FindSourceLineResult::Exact(3));
     }
 
@@ -9489,7 +9516,7 @@ mod find_source_line_tests {
         // Deletion-only lines have new_lineno = None
         let annotations = vec![make_diff_line(0, None), make_diff_line(0, Some(20))];
 
-        let result = find_source_line(&annotations, 0, 5);
+        let result = find_source_line(&annotations, 0, 5, LineSide::New);
         assert_eq!(result, FindSourceLineResult::Nearest(1));
     }
 
@@ -9501,7 +9528,7 @@ mod find_source_line_tests {
             make_sbs_line(0, Some(30)),
         ];
 
-        let result = find_source_line(&annotations, 0, 20);
+        let result = find_source_line(&annotations, 0, 20, LineSide::New);
         assert_eq!(result, FindSourceLineResult::Exact(1));
     }
 
@@ -9513,7 +9540,7 @@ mod find_source_line_tests {
             make_diff_line(0, Some(30)),
         ];
 
-        let result = find_source_line(&annotations, 0, 25);
+        let result = find_source_line(&annotations, 0, 25, LineSide::New);
         // Nearest is line 20 (dist=5) or line 30 (dist=5), first match wins
         assert_eq!(result, FindSourceLineResult::Nearest(1));
     }
@@ -9529,7 +9556,7 @@ mod find_source_line_tests {
             },
         ];
 
-        let result = find_source_line(&annotations, 0, 42);
+        let result = find_source_line(&annotations, 0, 42, LineSide::New);
         assert_eq!(result, FindSourceLineResult::NotFound);
     }
 
@@ -9541,7 +9568,7 @@ mod find_source_line_tests {
             make_diff_line(0, Some(43)), // dist=1 from target 42
         ];
 
-        let result = find_source_line(&annotations, 0, 42);
+        let result = find_source_line(&annotations, 0, 42, LineSide::New);
         assert_eq!(result, FindSourceLineResult::Exact(1));
     }
 
@@ -9551,7 +9578,7 @@ mod find_source_line_tests {
         // still return the nearest line rather than panicking.
         let annotations = vec![make_diff_line(0, Some(1)), make_diff_line(0, Some(5))];
 
-        let result = find_source_line(&annotations, 0, 0);
+        let result = find_source_line(&annotations, 0, 0, LineSide::New);
         assert_eq!(result, FindSourceLineResult::Nearest(0));
     }
 
@@ -9566,8 +9593,35 @@ mod find_source_line_tests {
             make_diff_line(0, Some(10)),
         ];
 
-        let result = find_source_line(&annotations, 0, 20);
+        let result = find_source_line(&annotations, 0, 20, LineSide::New);
         assert_eq!(result, FindSourceLineResult::Nearest(0));
+    }
+
+    #[test]
+    fn should_match_old_lineno_when_side_is_old() {
+        // Deletion-only lines carry old_lineno but no new_lineno. `:o<n>`
+        // must match those.
+        let annotations = vec![
+            make_diff_line_with_old(0, Some(5), None),
+            make_diff_line_with_old(0, Some(10), None),
+            make_diff_line(0, Some(50)), // new-side line — should be ignored when side=Old
+        ];
+
+        let exact = find_source_line(&annotations, 0, 10, LineSide::Old);
+        assert_eq!(exact, FindSourceLineResult::Exact(1));
+
+        let nearest = find_source_line(&annotations, 0, 7, LineSide::Old);
+        assert_eq!(nearest, FindSourceLineResult::Nearest(0));
+    }
+
+    #[test]
+    fn should_not_match_new_lineno_when_side_is_old() {
+        // A pure-addition line has no old_lineno; searching old-side should
+        // not fall back to its new_lineno.
+        let annotations = vec![make_diff_line(0, Some(42))];
+
+        let result = find_source_line(&annotations, 0, 42, LineSide::Old);
+        assert_eq!(result, FindSourceLineResult::NotFound);
     }
 }
 

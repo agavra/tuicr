@@ -6,7 +6,7 @@ use crate::app::{
     VisualSelection,
 };
 use crate::input::Action;
-use crate::model::ClearScope;
+use crate::model::{ClearScope, LineSide};
 use crate::output::{export_to_clipboard, generate_export_content};
 use crate::persistence::save_session;
 use crate::text_edit::{
@@ -510,12 +510,28 @@ pub fn handle_command_action(app: &mut App, action: Action) {
                         }
                     }
                 }
-                _ => app.set_message(format!("Unknown command: {cmd}")),
+                _ => {
+                    if let Some((lineno, side)) = parse_lineno_command(&cmd) {
+                        app.go_to_source_line(lineno, side);
+                    } else {
+                        app.set_message(format!("Unknown command: {cmd}"));
+                    }
+                }
             }
             app.exit_command_mode();
         }
         Action::Quit => app.should_quit = true,
         _ => {}
+    }
+}
+
+/// Parse `:<n>` (new-side) or `:o<n>` (old-side) jump targets. The leading `:`
+/// has already been stripped by the time we get here.
+fn parse_lineno_command(cmd: &str) -> Option<(u32, LineSide)> {
+    if let Some(rest) = cmd.strip_prefix('o') {
+        rest.parse::<u32>().ok().map(|n| (n, LineSide::Old))
+    } else {
+        cmd.parse::<u32>().ok().map(|n| (n, LineSide::New))
     }
 }
 

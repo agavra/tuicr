@@ -505,7 +505,7 @@ fn main() -> anyhow::Result<()> {
                                 let count = app.pending_count.unwrap().max(1);
                                 app.pending_count = None;
                                 // Safe cast: count is clamped to 999_999 which fits in u32
-                                app.go_to_source_line(count as u32);
+                                app.go_to_source_line(count as u32, crate::model::LineSide::New);
                                 continue;
                             }
                             _ => {
