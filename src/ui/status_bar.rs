@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use ratatui::{
     Frame,
     layout::Rect,
@@ -251,30 +253,32 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
 
         let mode_span = Span::styled(mode_str, styles::mode_style(theme));
 
-        let hints = if app.message.is_some() {
-            String::new()
+        let hints: Cow<'static, str> = if app.message.is_some() {
+            Cow::Borrowed("")
         } else {
             match app.input_mode {
-                InputMode::Normal => format!(
+                InputMode::Normal => Cow::Owned(format!(
                     " j/k:scroll  {{/}}:file  r:reviewed  c:comment  {}c:review  V:visual  /:search  ?:help  :q:quit ",
                     app.leader_key
-                ),
-                InputMode::Command => " Enter:execute  Esc:cancel ".to_string(),
-                InputMode::Search => " Enter:search  Esc:cancel ".to_string(),
-                InputMode::Comment => " Ctrl-S:save  Esc:cancel ".to_string(),
-                InputMode::Help => " q/?/Esc:close ".to_string(),
-                InputMode::Confirm => " y:yes  n:no ".to_string(),
+                )),
+                InputMode::Command => Cow::Borrowed(" Enter:execute  Esc:cancel "),
+                InputMode::Search => Cow::Borrowed(" Enter:search  Esc:cancel "),
+                InputMode::Comment => Cow::Borrowed(" Ctrl-S:save  Esc:cancel "),
+                InputMode::Help => Cow::Borrowed(" q/?/Esc:close "),
+                InputMode::Confirm => Cow::Borrowed(" y:yes  n:no "),
                 InputMode::CommitSelect => {
-                    " j/k:navigate  Space:select  Enter:confirm  Esc:back  q:quit ".to_string()
+                    Cow::Borrowed(" j/k:navigate  Space:select  Enter:confirm  Esc:back  q:quit ")
                 }
                 InputMode::VisualSelect => {
-                    " j/k:extend  c/Enter:comment  y:yank  Esc/V:cancel ".to_string()
+                    Cow::Borrowed(" j/k:extend  c/Enter:comment  y:yank  Esc/V:cancel ")
                 }
                 InputMode::SubmitResolver => {
-                    " j/k:move  Enter:toggle  s:submit  Esc:cancel ".to_string()
+                    Cow::Borrowed(" j/k:move  Enter:toggle  s:submit  Esc:cancel ")
                 }
-                InputMode::SubmitConfirm => " y:submit  n:cancel  Esc:cancel ".to_string(),
-                InputMode::SubmitActionPicker => " j/k:move  Enter:submit  Esc:cancel ".to_string(),
+                InputMode::SubmitConfirm => Cow::Borrowed(" y:submit  n:cancel  Esc:cancel "),
+                InputMode::SubmitActionPicker => {
+                    Cow::Borrowed(" j/k:move  Enter:submit  Esc:cancel ")
+                }
             }
         };
         let hints_span = Span::styled(hints, Style::default().fg(theme.fg_secondary));
