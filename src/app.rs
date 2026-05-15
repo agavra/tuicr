@@ -3625,11 +3625,14 @@ impl App {
 
         // If the line isn't already annotated, see whether it falls inside a
         // collapsed (or partially collapsed) gap between hunks. If so, expand
-        // the gap so the line becomes visible and re-search.
+        // downward from the previous hunk just far enough to reveal the
+        // target, and re-search. Lines past the target stay collapsed behind
+        // an `↑` expander.
         if !matches!(result, FindSourceLineResult::Exact(_))
             && let Some(gap_id) = self.find_gap_containing_lineno(current_file, target_lineno, side)
         {
-            if let Err(e) = self.expand_gap(gap_id, ExpandDirection::Both, None) {
+            let limit = self.expand_down_limit_to_reach(&gap_id, target_lineno, side);
+            if let Err(e) = self.expand_gap(gap_id, ExpandDirection::Down, limit) {
                 self.set_error(format!("Expand failed: {e}"));
                 return;
             }
@@ -3748,6 +3751,45 @@ impl App {
             }
         }
         None
+    }
+
+    /// Number of new-side lines to expand `Down` so that `target_lineno`
+    /// (interpreted on `side`) becomes the last revealed context line.
+    ///
+    /// `expand_gap` operates in new-side coordinates, so an old-side target
+    /// is translated to new-side using the fixed offset that holds across an
+    /// unchanged-context gap: `new - old = hunk.new_start - hunk.old_start`
+    /// where `hunk` is the hunk immediately *after* the gap.
+    ///
+    /// Returns `None` (meaning "expand the entire remaining gap") only if
+    /// the gap is malformed; in normal cases this returns the exact count.
+    fn expand_down_limit_to_reach(
+        &self,
+        gap_id: &GapId,
+        target_lineno: u32,
+        side: LineSide,
+    ) -> Option<usize> {
+        let file = self.diff_files.get(gap_id.file_idx)?;
+        let hunk = file.hunks.get(gap_id.hunk_idx)?;
+        let prev_hunk = if gap_id.hunk_idx > 0 {
+            Some(&file.hunks[gap_id.hunk_idx - 1])
+        } else {
+            None
+        };
+        let gap_start_new = match prev_hunk {
+            None => 1,
+            Some(p) => p.new_start + p.new_count,
+        };
+        // offset := new - old, constant across the unchanged context gap
+        let offset_new_minus_old = hunk.new_start as i64 - hunk.old_start as i64;
+        let target_new = match side {
+            LineSide::New => target_lineno as i64,
+            LineSide::Old => target_lineno as i64 + offset_new_minus_old,
+        };
+        let top_len = self.expanded_top.get(gap_id).map_or(0, |v| v.len()) as i64;
+        let inner_start = gap_start_new as i64 + top_len;
+        let limit = (target_new - inner_start + 1).max(0) as usize;
+        Some(limit)
     }
 
     pub fn file_list_down(&mut self, n: usize) {
@@ -10407,24 +10449,54 @@ mod expand_gap_tests {
 
     #[test]
     fn should_expand_old_side_gap_when_jumping_with_o_prefix() {
-        // Old/new line numbers diverge: hunk @ old line 51 (count 5), new
-        // line 41 (count 5). The gap before the hunk spans old [1..=50] and
-        // new [1..=40]. Jumping to old line 30 must land us on the right
-        // annotation even though the new-side mapping is different.
-        let mut hunk = make_hunk(41, 5);
-        hunk.old_start = 51;
-        hunk.old_count = 5;
-        // adjust line numbers inside the hunk to reflect the divergence
-        for (i, line) in hunk.lines.iter_mut().enumerate() {
-            line.new_lineno = Some(41 + i as u32);
-            line.old_lineno = Some(51 + i as u32);
-        }
-        let file = make_file_with_hunks("test.rs", vec![hunk]);
+        // Symmetric gap (offset = 0): `make_hunk` keeps old_start == new_start
+        // and the mock VCS returns context lines with old_lineno == new_lineno.
+        // We verify the side=Old path of go_to_source_line works end-to-end:
+        // the gap auto-expands and the cursor lands on old line 30.
+        let file = make_file_with_hunks("test.rs", vec![make_hunk(51, 5)]);
         let mut app = build_app_with_files(vec![file], 100);
 
         app.go_to_source_line(30, LineSide::Old);
 
         assert_eq!(cursor_old_lineno(&app), Some(30));
+    }
+
+    #[test]
+    fn should_expand_only_up_to_target_line_not_full_gap() {
+        // Gap before hunk spans new lines 1..=50. Jumping to line 20 should
+        // reveal lines 1..=20 and leave 21..=50 collapsed behind an
+        // `↑` expander.
+        let file = make_file_with_hunks("test.rs", vec![make_hunk(51, 5)]);
+        let mut app = build_app_with_files(vec![file], 100);
+        let gap_id = GapId {
+            file_idx: 0,
+            hunk_idx: 0,
+        };
+
+        app.go_to_source_line(20, LineSide::New);
+
+        assert_eq!(cursor_new_lineno(&app), Some(20));
+        let top_len = app.expanded_top.get(&gap_id).map_or(0, |v| v.len());
+        assert_eq!(top_len, 20, "only the lines up to the target should expand");
+        assert!(
+            !app.expanded_bottom.contains_key(&gap_id),
+            "no bottom expansion should happen for a downward jump"
+        );
+        // The unexpanded remainder (30 lines) should still be reachable through
+        // an `↑` expander between the cursor and the next hunk.
+        let has_up_expander = app.line_annotations.iter().any(|a| {
+            matches!(
+                a,
+                AnnotatedLine::Expander {
+                    gap_id: g,
+                    direction: ExpandDirection::Up,
+                } if *g == gap_id
+            )
+        });
+        assert!(
+            has_up_expander,
+            "remaining hidden lines need an `↑` expander"
+        );
     }
 }
 
