@@ -1007,16 +1007,17 @@ impl Theme {
     /// Everforest dark (medium variant) — sainnhe/everforest palette.
     pub fn everforest_dark() -> Self {
         everforest_theme(EverforestFlavor {
-            bg0: rgb(39, 46, 51),       // #272e33
-            bg1: rgb(46, 56, 60),       // #2e383c
-            bg3: rgb(65, 75, 80),       // #414b50
-            bg5: rgb(79, 91, 88),       // #4f5b58
-            bg_red: rgb(73, 59, 64),    // #493b40
-            bg_green: rgb(60, 72, 65),  // #3c4841
+            dark: true,
+            bg0: rgb(45, 53, 59),       // #2d353b
+            bg1: rgb(52, 63, 68),       // #343f44
+            bg3: rgb(71, 82, 88),       // #475258
+            bg5: rgb(86, 99, 95),       // #56635f
+            bg_red: rgb(81, 64, 69),    // #514045
+            bg_green: rgb(66, 80, 71),  // #425047
             fg: rgb(211, 198, 170),     // #d3c6aa
-            gray0: rgb(122, 132, 120),  // #7a8478
-            gray1: rgb(133, 146, 137),  // #859289
-            gray2: rgb(157, 169, 160),  // #9da9a0
+            grey0: rgb(122, 132, 120),  // #7a8478
+            grey1: rgb(133, 146, 137),  // #859289
+            grey2: rgb(157, 169, 160),  // #9da9a0
             red: rgb(230, 126, 128),    // #e67e80
             orange: rgb(230, 152, 117), // #e69875
             yellow: rgb(219, 188, 127), // #dbbc7f
@@ -1031,16 +1032,17 @@ impl Theme {
     /// Everforest light (medium variant) — sainnhe/everforest palette.
     pub fn everforest_light() -> Self {
         everforest_theme(EverforestFlavor {
+            dark: false,
             bg0: rgb(253, 246, 227),      // #fdf6e3
             bg1: rgb(244, 240, 217),      // #f4f0d9
             bg3: rgb(230, 226, 204),      // #e6e2cc
             bg5: rgb(189, 195, 175),      // #bdc3af
-            bg_red: rgb(251, 227, 218),   // #fbe3da
+            bg_red: rgb(253, 227, 218),   // #fde3da
             bg_green: rgb(240, 241, 210), // #f0f1d2
             fg: rgb(92, 106, 114),        // #5c6a72
-            gray0: rgb(166, 176, 160),    // #a6b0a0
-            gray1: rgb(147, 159, 145),    // #939f91
-            gray2: rgb(130, 145, 129),    // #829181
+            grey0: rgb(166, 176, 160),    // #a6b0a0
+            grey1: rgb(147, 159, 145),    // #939f91
+            grey2: rgb(130, 145, 129),    // #829181
             red: rgb(248, 85, 82),        // #f85552
             orange: rgb(245, 125, 38),    // #f57d26
             yellow: rgb(223, 160, 0),     // #dfa000
@@ -1096,6 +1098,7 @@ struct NordFlavor {
 
 #[derive(Clone, Copy)]
 struct EverforestFlavor {
+    dark: bool,
     bg0: Color,
     bg1: Color,
     bg3: Color,
@@ -1103,9 +1106,9 @@ struct EverforestFlavor {
     bg_red: Color,
     bg_green: Color,
     fg: Color,
-    gray0: Color,
-    gray1: Color,
-    gray2: Color,
+    grey0: Color,
+    grey1: Color,
+    grey2: Color,
     red: Color,
     orange: Color,
     yellow: Color,
@@ -1310,7 +1313,7 @@ fn gruvbox_theme(flavor: GruvboxFlavor) -> Theme {
 }
 
 fn everforest_theme(flavor: EverforestFlavor) -> Theme {
-    let accent_fg = flavor.bg0;
+    let accent_fg = if flavor.dark { flavor.bg0 } else { flavor.fg };
     let syntax_add_bg = blend(flavor.bg0, flavor.green, 12);
     let syntax_del_bg = blend(flavor.bg0, flavor.red, 12);
 
@@ -1320,8 +1323,8 @@ fn everforest_theme(flavor: EverforestFlavor) -> Theme {
         panel_bg: flavor.bg0,
         bg_highlight: flavor.bg3,
         fg_primary: flavor.fg,
-        fg_secondary: flavor.gray2,
-        fg_dim: flavor.gray0,
+        fg_secondary: flavor.grey2,
+        fg_dim: flavor.grey0,
 
         diff_add: flavor.green,
         diff_add_bg: flavor.bg_green,
@@ -1329,7 +1332,7 @@ fn everforest_theme(flavor: EverforestFlavor) -> Theme {
         diff_del_bg: flavor.bg_red,
         diff_context: flavor.fg,
         diff_hunk_header: flavor.blue,
-        expanded_context_fg: flavor.gray1,
+        expanded_context_fg: flavor.grey1,
 
         syntax_add_bg,
         syntax_del_bg,
@@ -1355,7 +1358,7 @@ fn everforest_theme(flavor: EverforestFlavor) -> Theme {
         cursor_color: flavor.orange,
         cursor_line_bg: flavor.bg1,
         branch_name: flavor.aqua,
-        help_indicator: flavor.gray0,
+        help_indicator: flavor.grey0,
 
         message_info_fg: accent_fg,
         message_info_bg: flavor.blue,
@@ -2368,6 +2371,21 @@ mod tests {
     fn should_resolve_everforest_light_to_gruvbox_light_syntect_theme() {
         let theme = resolve_theme(ThemeArg::EverforestLight);
         assert_eq!(theme.syntect_theme, EmbeddedThemeName::GruvboxLight);
+    }
+
+    #[test]
+    fn should_use_medium_variant_bg0_for_everforest_dark() {
+        // Pin the medium-variant bg0 so a hard/medium swap can't slip in.
+        let theme = Theme::everforest_dark();
+        assert_eq!(theme.panel_bg, Color::Rgb(45, 53, 59)); // #2d353b
+    }
+
+    #[test]
+    fn should_use_dark_fg_on_bright_accents_for_everforest_light() {
+        // Light variant must use the dark fg (#5c6a72) on bright accent
+        // backgrounds — using bg0 would produce near-white on near-white.
+        let theme = Theme::everforest_light();
+        assert_eq!(theme.mode_fg, Color::Rgb(92, 106, 114)); // #5c6a72
     }
 
     #[test]
