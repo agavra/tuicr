@@ -138,6 +138,7 @@ theme = "catppuccin-mocha"
 diff_view = "side-by-side"   # or "unified"
 appearance = "system"        # or "dark" / "light"
 mouse = true
+leader = ";"                  # configurable prefix for leader shortcuts
 
 [[comment_types]]
 id = "issue"
