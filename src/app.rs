@@ -3816,6 +3816,13 @@ impl App {
                 self.commit_selection_range = Some((cursor, cursor));
             }
             Some((start, end)) => {
+                let all_commits_selected =
+                    self.commit_list.len() > 1 && start == 0 && end == self.commit_list.len() - 1;
+                if all_commits_selected {
+                    self.commit_selection_range = Some((cursor, cursor));
+                    return;
+                }
+
                 if cursor >= start && cursor <= end {
                     // Cursor is within the range - shrink or deselect
                     if start == end {
@@ -5231,6 +5238,38 @@ mod commit_selection_tests {
         let app = build_app(vec![normal_commit("abc123"), App::staged_commit_entry()]);
 
         assert_eq!(app.special_commit_count(), 0);
+    }
+
+    #[test]
+    fn toggle_commit_selection_from_all_selected_selects_only_cursor() {
+        for cursor in 0..3 {
+            let mut app = build_app(vec![
+                normal_commit("abc123"),
+                normal_commit("def456"),
+                normal_commit("789abc"),
+            ]);
+            app.commit_selection_range = Some((0, 2));
+            app.commit_list_cursor = cursor;
+
+            app.toggle_commit_selection();
+
+            assert_eq!(app.commit_selection_range, Some((cursor, cursor)));
+        }
+    }
+
+    #[test]
+    fn toggle_commit_selection_keeps_partial_range_shrink_behavior() {
+        let mut app = build_app(vec![
+            normal_commit("abc123"),
+            normal_commit("def456"),
+            normal_commit("789abc"),
+        ]);
+        app.commit_selection_range = Some((0, 1));
+        app.commit_list_cursor = 0;
+
+        app.toggle_commit_selection();
+
+        assert_eq!(app.commit_selection_range, Some((1, 1)));
     }
 }
 
