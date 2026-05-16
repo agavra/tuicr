@@ -8,95 +8,194 @@ use ratatui::{
 
 use crate::app::{App, TargetTab};
 use crate::forge::selector::{PrTabStatus, PrTabView};
+use crate::ui::commit_row::{
+    CURSOR_GLYPH, CommitRowSpec, format_relative_short, render_commit_row,
+};
 use crate::ui::status_bar;
 use crate::ui::styles;
 use crate::ui::text_utils::truncate_str;
 
+const TAB_LOCAL: &str = "Local";
+const TAB_PULL_REQUESTS: &str = "Pull Requests";
+
 pub(super) fn render_commit_select(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
 
+    // Layout: header, blank, tab strip (full-width bg, active tab is a
+    // brighter chip inside the strip), bordered body, footer.
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // Header
-            Constraint::Length(1), // Tab strip
-            Constraint::Min(0),    // Active tab body
-            Constraint::Length(1), // Footer hints
+            Constraint::Length(1), // header
+            Constraint::Length(1), // blank
+            Constraint::Length(1), // tab strip
+            Constraint::Min(0),    // body block (full borders)
+            Constraint::Length(1), // footer
         ])
         .split(area);
 
-    // Header
-    let header = Paragraph::new(" Select a review target ")
-        .style(styles::header_style(&app.theme))
-        .block(Block::default().style(styles::panel_style(&app.theme)));
-    frame.render_widget(header, chunks[0]);
+    render_header_line(frame, app, chunks[0]);
+    render_tab_strip(frame, app, chunks[2]);
 
-    render_target_tab_strip(frame, app, chunks[1]);
+    let body_area = chunks[3];
+    let body_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(styles::border_style(&app.theme, true))
+        .style(styles::panel_style(&app.theme));
+    let inner = body_block.inner(body_area);
+    frame.render_widget(body_block, body_area);
 
     match app.target_tab {
-        TargetTab::Local => render_local_target_tab(frame, app, chunks[2]),
-        TargetTab::PullRequests => render_pull_requests_tab(frame, app, chunks[2]),
+        TargetTab::Local => render_local_target_tab(frame, app, inner),
+        TargetTab::PullRequests => render_pull_requests_tab(frame, app, inner),
     }
 
-    render_target_selector_footer(frame, app, chunks[3]);
+    render_target_selector_footer(frame, app, chunks[4]);
 }
 
-fn render_target_tab_strip(frame: &mut Frame, app: &App, area: Rect) {
+fn render_header_line(frame: &mut Frame, app: &App, area: Rect) {
+    let theme = &app.theme;
+    let vcs_type = &app.vcs_info.vcs_type;
+    let branch = app.vcs_info.branch_name.as_deref().unwrap_or("detached");
+
+    let brand = Span::styled(
+        " tuicr  ",
+        Style::default()
+            .fg(theme.fg_primary)
+            .add_modifier(Modifier::BOLD),
+    );
+    let action = Span::styled(
+        "select review target",
+        Style::default().fg(theme.fg_secondary),
+    );
+    let right = format!("{vcs_type}:{branch} ");
+    let right_width = right.len();
+    let right_span = Span::styled(right, Style::default().fg(theme.fg_secondary));
+
+    let left = vec![brand, action];
+    let left_width: usize = left.iter().map(|s| s.content.len()).sum();
+    let total_width = area.width as usize;
+    let pad = total_width.saturating_sub(left_width + right_width);
+
+    let mut spans = left;
+    spans.push(Span::raw(" ".repeat(pad)));
+    spans.push(right_span);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)).style(styles::panel_style(theme)),
+        area,
+    );
+}
+
+/// Single-row tab strip filling the full terminal width with a subtle bg.
+/// The active tab renders as a brighter chip (`bg_highlight` + bold primary
+/// fg); inactive tab text sits flat on the strip bg in dim fg. The right
+/// slot carries the PR-tab status hint when that tab is active.
+fn render_tab_strip(frame: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
     let active = app.target_tab;
-    let active_style = Style::default()
-        .fg(theme.fg_primary)
-        .add_modifier(Modifier::BOLD | Modifier::REVERSED);
-    let bracket_style = Style::default().fg(theme.fg_secondary);
-    let inactive_label_style = Style::default().fg(theme.fg_primary);
-
-    let mut spans: Vec<Span> = Vec::with_capacity(8);
-    spans.push(Span::raw(" "));
-
     let local_active = active == TargetTab::Local;
-    spans.push(Span::styled("[", bracket_style));
-    if local_active {
-        spans.push(Span::styled(" Local ", active_style));
-    } else {
-        spans.push(Span::styled(" Local ", inactive_label_style));
+    let pr_active = active == TargetTab::PullRequests;
+
+    let strip_bg = theme.status_bar_bg;
+    let strip_fg = theme.fg_dim;
+    let strip_style = Style::default().bg(strip_bg).fg(strip_fg);
+
+    let active_chip = Style::default()
+        .bg(theme.bg_highlight)
+        .fg(theme.fg_primary)
+        .add_modifier(Modifier::BOLD);
+    let inactive_chip = Style::default().bg(strip_bg).fg(theme.fg_dim);
+
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    spans.push(Span::styled(" ".to_string(), strip_style));
+    spans.push(Span::styled(
+        format!(" {TAB_LOCAL} "),
+        if local_active {
+            active_chip
+        } else {
+            inactive_chip
+        },
+    ));
+    spans.push(Span::styled(" ".to_string(), strip_style));
+    spans.push(Span::styled(
+        format!(" {TAB_PULL_REQUESTS} "),
+        if pr_active {
+            active_chip
+        } else {
+            inactive_chip
+        },
+    ));
+
+    let left_width: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+
+    let (right_span, right_width) = match active {
+        TargetTab::PullRequests => pr_status_hint_span(app, strip_bg),
+        TargetTab::Local => (Span::raw(""), 0),
+    };
+
+    let total_width = area.width as usize;
+    let pad = total_width.saturating_sub(left_width + right_width);
+    spans.push(Span::styled(" ".repeat(pad), strip_style));
+    if right_width > 0 {
+        spans.push(right_span);
     }
-    spans.push(Span::styled("]", bracket_style));
 
-    spans.push(Span::raw("  "));
+    frame.render_widget(Paragraph::new(Line::from(spans)).style(strip_style), area);
+}
 
-    let prs_active = active == TargetTab::PullRequests;
-    spans.push(Span::styled("[", bracket_style));
-    if prs_active {
-        spans.push(Span::styled(" Pull Requests ", active_style));
-    } else {
-        spans.push(Span::styled(" Pull Requests ", inactive_label_style));
-    }
-    spans.push(Span::styled("]", bracket_style));
-
-    let line = Line::from(spans);
-    let strip = Paragraph::new(line).style(styles::panel_style(theme));
-    frame.render_widget(strip, area);
+/// Right-slot status hint for the PR tab. Idle ready states show
+/// `<count> loaded · /<filter>` (filter only when set). Loading shows a
+/// braille spinner + label. Error renders in error color. The caller
+/// supplies the strip bg so the hint blends with the tab strip's bar.
+fn pr_status_hint_span(app: &App, strip_bg: ratatui::style::Color) -> (Span<'static>, usize) {
+    let theme = &app.theme;
+    let view = app.pr_tab.view();
+    let base = Style::default().bg(strip_bg).fg(theme.fg_secondary);
+    let (content, style) = match &view.status {
+        PrTabStatus::Disabled(reason) => (format!("{reason} — Shift-Tab to go back "), base),
+        PrTabStatus::Idle => (" waiting… ".to_string(), base),
+        PrTabStatus::Loading => {
+            let glyph = pr_open_spinner_glyph(std::time::Duration::from_millis(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0),
+            ));
+            (format!("{glyph} loading… "), base)
+        }
+        PrTabStatus::LoadingMore => {
+            let glyph = pr_open_spinner_glyph(std::time::Duration::from_millis(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0),
+            ));
+            (format!("{glyph} loading more… "), base)
+        }
+        PrTabStatus::Error(msg) => (
+            format!("error \u{00b7} {msg} "),
+            styles::error_inline_style(theme).bg(strip_bg),
+        ),
+        PrTabStatus::Ready => {
+            let mut s = format!("{} loaded", view.rows.len());
+            if !view.filter.is_empty() {
+                s.push_str(&format!(" \u{00b7} /{}", view.filter));
+            }
+            s.push(' ');
+            (s, base)
+        }
+    };
+    let width = content.len();
+    (Span::styled(content, style), width)
 }
 
 fn render_local_target_tab(frame: &mut Frame, app: &mut App, area: Rect) {
-    let block = Block::default()
-        .title(" Recent Commits ")
-        .borders(Borders::ALL)
-        .style(styles::panel_style(&app.theme))
-        .border_style(styles::border_style(&app.theme, true));
-
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
     // Update viewport height for scroll calculations
-    app.commit_list_viewport_height = inner.height as usize;
-    app.commit_list_inner_area = Some(inner);
+    app.commit_list_viewport_height = area.height as usize;
+    app.commit_list_inner_area = Some(area);
     app.pr_list_inner_area = None;
 
-    // Get range info for visual indicators
-    let range = app.commit_selection_range;
-
-    // Determine commits to show
     let total_commits = app.commit_list.len();
     let visible_count = app.visible_commit_count.min(total_commits);
 
@@ -106,255 +205,57 @@ fn render_local_target_tab(frame: &mut Frame, app: &mut App, area: Rect) {
         .take(visible_count)
         .enumerate()
         .map(|(i, commit)| {
-            let is_selected = app.is_commit_selected(i);
-            let is_cursor = i == app.commit_list_cursor;
-
-            // Range boundary indicators
-            let range_marker = match range {
-                Some((start, end)) if i == start && i == end => "─",
-                Some((start, _)) if i == start => "┌",
-                Some((_, end)) if i == end => "└",
-                Some((start, end)) if i > start && i < end => "│",
-                _ => " ",
-            };
-
-            let checkbox = if is_selected { "[x]" } else { "[ ]" };
-            let pointer = if is_cursor { ">" } else { " " };
-
-            let style = if is_cursor {
-                styles::selected_style(&app.theme)
-            } else if is_selected {
-                Style::default().fg(app.theme.fg_secondary)
-            } else {
-                Style::default()
-            };
-
-            let checkbox_style = if is_selected {
-                styles::reviewed_style(&app.theme)
-            } else {
-                styles::pending_style(&app.theme)
-            };
-
-            let range_style = if is_selected {
-                styles::reviewed_style(&app.theme)
-            } else {
-                Style::default().fg(app.theme.fg_secondary)
-            };
-
-            // Format: > ┌ [x] abc1234  Commit message (author, date)
-            let time_str = commit.time.format("%Y-%m-%d").to_string();
-            let mut spans = vec![
-                Span::styled(format!("{pointer} "), style),
-                Span::styled(format!("{range_marker} "), range_style),
-                Span::styled(format!("{checkbox} "), checkbox_style),
-                Span::styled(
-                    format!("{} ", commit.short_id),
-                    styles::hash_style(&app.theme),
-                ),
-            ];
-
-            if commit.id == crate::app::STAGED_SELECTION_ID
-                || commit.id == crate::app::UNSTAGED_SELECTION_ID
-            {
-                spans.push(Span::styled(&commit.summary, style));
-                return Line::from(spans);
-            }
-
-            if let Some(branch_name) = &commit.branch_name {
-                spans.push(Span::styled(
-                    format!("[{}] ", truncate_str(branch_name, 20)),
-                    styles::branch_style(&app.theme),
-                ));
-            }
-
-            spans.push(Span::styled(truncate_str(&commit.summary, 50), style));
-            spans.push(Span::styled(
-                format!(" ({}, {})", commit.author, time_str),
-                Style::default().fg(app.theme.fg_secondary),
-            ));
-
-            Line::from(spans)
+            render_commit_row(&CommitRowSpec {
+                commit,
+                is_cursor: i == app.commit_list_cursor,
+                is_selected: app.is_commit_selected(i),
+                theme: &app.theme,
+            })
         })
         .collect();
 
-    // Show an expand row when commits are collapsed
     if app.can_show_more_commits() {
-        let is_cursor = app.commit_list_cursor == visible_count;
-
-        let style = if is_cursor {
-            styles::selected_style(&app.theme)
-        } else {
-            Style::default().fg(app.theme.fg_secondary)
-        };
-
-        items.push(Line::from(vec![
-            Span::styled(if is_cursor { "> " } else { "  " }, style),
-            Span::styled("       ... show more commits ...", style),
-        ]));
+        items.push(overflow_row(
+            &app.theme,
+            app.commit_list_cursor == visible_count,
+            "show more commits",
+        ));
     }
 
-    // Apply scroll offset and take only visible items
     let visible_items: Vec<Line> = items
         .into_iter()
         .skip(app.commit_list_scroll_offset)
-        .take(inner.height as usize)
+        .take(area.height as usize)
         .collect();
 
     let list = Paragraph::new(visible_items).style(styles::panel_style(&app.theme));
-    frame.render_widget(list, inner);
+    frame.render_widget(list, area);
+}
+
+fn overflow_row<'a>(theme: &crate::theme::Theme, is_cursor: bool, label: &'a str) -> Line<'a> {
+    let style = if is_cursor {
+        styles::selected_style(theme)
+    } else {
+        Style::default().fg(theme.fg_dim)
+    };
+    let pointer = if is_cursor {
+        format!("{CURSOR_GLYPH} ")
+    } else {
+        "  ".to_string()
+    };
+    Line::from(vec![
+        Span::styled(pointer, style),
+        Span::styled(format!("    \u{2026} {label}"), style),
+    ])
 }
 
 fn render_pull_requests_tab(frame: &mut Frame, app: &mut App, area: Rect) {
-    let title = match app.forge_repository.as_ref() {
-        Some(repo) => format!(" Pull Requests ({}) ", repo.display_name()),
-        None => " Pull Requests ".to_string(),
-    };
-    let block = Block::default()
-        .title(title)
-        .borders(Borders::ALL)
-        .style(styles::panel_style(&app.theme))
-        .border_style(styles::border_style(&app.theme, true));
-
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
     app.commit_list_inner_area = None;
-    app.pr_list_inner_area = Some(inner);
-    app.pr_list_viewport_height = inner.height.saturating_sub(1) as usize;
-
-    // Reserve one row at the top for the status / filter banner.
-    let body_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(0)])
-        .split(inner);
-    let banner_area = body_chunks[0];
-    let list_area = body_chunks[1];
-    app.pr_list_viewport_height = list_area.height as usize;
+    app.pr_list_inner_area = Some(area);
+    app.pr_list_viewport_height = area.height as usize;
 
     let view = app.pr_tab.view();
-    render_pr_banner(frame, app, banner_area, &view);
-    render_pr_list(frame, app, list_area, &view);
-}
-
-fn render_pr_banner(frame: &mut Frame, app: &App, area: Rect, view: &PrTabView<'_>) {
-    let theme = &app.theme;
-
-    if let Some(draft) = app.pr_filter_draft.as_ref() {
-        let prefix = Span::styled(" filter: ", Style::default().fg(theme.fg_secondary));
-        let value = Span::styled(format!("/{draft}"), Style::default().fg(theme.fg_primary));
-        let hint = Span::styled(
-            "   (Enter: apply  Esc: cancel)",
-            Style::default().fg(theme.fg_secondary),
-        );
-        let line = Line::from(vec![prefix, value, hint]);
-        let banner = Paragraph::new(line).style(styles::panel_style(theme));
-        frame.render_widget(banner, area);
-        return;
-    }
-
-    match &view.status {
-        PrTabStatus::Disabled(reason) => {
-            let line = Line::from(Span::styled(
-                format!(" {reason} — switch back with Shift-Tab "),
-                Style::default().fg(theme.fg_secondary),
-            ));
-            frame.render_widget(Paragraph::new(line).style(styles::panel_style(theme)), area);
-        }
-        PrTabStatus::Idle => {
-            let line = Line::from(Span::styled(
-                " Press Tab again or wait — loading…",
-                Style::default().fg(theme.fg_secondary),
-            ));
-            frame.render_widget(Paragraph::new(line).style(styles::panel_style(theme)), area);
-        }
-        PrTabStatus::Loading => {
-            render_pr_progress(frame, app, area, "Fetching pull requests from origin...");
-        }
-        PrTabStatus::LoadingMore => {
-            render_pr_progress(frame, app, area, "Loading more pull requests...");
-        }
-        PrTabStatus::Error(msg) => {
-            let line = Line::from(vec![
-                Span::styled(
-                    " error: ",
-                    Style::default()
-                        .fg(theme.message_error_fg)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled((*msg).to_string(), Style::default().fg(theme.fg_primary)),
-            ]);
-            frame.render_widget(Paragraph::new(line).style(styles::panel_style(theme)), area);
-        }
-        PrTabStatus::Ready => {
-            let mut spans: Vec<Span> = vec![Span::styled(
-                format!(" {} loaded", view.rows.len()),
-                Style::default().fg(theme.fg_secondary),
-            )];
-            if !view.filter.is_empty() {
-                spans.push(Span::styled(
-                    format!("   filter: /{}", view.filter),
-                    Style::default().fg(theme.fg_primary),
-                ));
-                spans.push(Span::styled(
-                    "   ('/' to edit, Esc to clear)",
-                    Style::default().fg(theme.fg_secondary),
-                ));
-            } else {
-                spans.push(Span::styled(
-                    "   '/' to filter",
-                    Style::default().fg(theme.fg_secondary),
-                ));
-            }
-            frame.render_widget(
-                Paragraph::new(Line::from(spans)).style(styles::panel_style(theme)),
-                area,
-            );
-        }
-    }
-}
-
-fn render_pr_progress(frame: &mut Frame, app: &App, area: Rect, label: &str) {
-    let theme = &app.theme;
-    let width = area.width.saturating_sub(label.len() as u16 + 5).max(4) as usize;
-    // Indeterminate bar: a windowed block of ~width/3 that travels using
-    // wall-clock seconds, so the bar visibly moves between frames without
-    // requiring per-frame state on App.
-    let block_width = (width / 3).max(2);
-    let travel = (width + block_width).max(1);
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as usize)
-        .unwrap_or(0);
-    let position = (now / 80) % travel;
-    let mut bar = String::with_capacity(width);
-    for i in 0..width {
-        if position < block_width {
-            if i < position {
-                bar.push(' ');
-            } else if i < position + block_width && i < width {
-                bar.push('#');
-            } else {
-                bar.push(' ');
-            }
-        } else {
-            let start = position.saturating_sub(block_width);
-            if i >= start && i < position && i < width {
-                bar.push('#');
-            } else {
-                bar.push(' ');
-            }
-        }
-    }
-    let line = Line::from(vec![
-        Span::styled(
-            format!(" {label} "),
-            Style::default().fg(theme.fg_secondary),
-        ),
-        Span::styled(
-            format!("[{bar}]"),
-            Style::default().fg(theme.diff_hunk_header),
-        ),
-    ]);
-    frame.render_widget(Paragraph::new(line).style(styles::panel_style(theme)), area);
+    render_pr_list(frame, app, area, &view);
 }
 
 fn render_pr_list(frame: &mut Frame, app: &App, area: Rect, view: &PrTabView<'_>) {
@@ -363,9 +264,37 @@ fn render_pr_list(frame: &mut Frame, app: &App, area: Rect, view: &PrTabView<'_>
         return;
     }
 
-    // Pre-compute the spinner glyph once per draw so it animates without
-    // per-row recalculation. Held outside the loop because Rust's borrow
-    // rules around `app` are simpler that way.
+    // The tab-strip right slot already surfaces loading / error / disabled
+    // hints concisely; the body only fills in when there's a useful action
+    // (idle → tap Tab again, error → retry guidance). Disabled / Loading /
+    // LoadingMore leave the body blank so we don't echo the same text twice.
+    match view.status {
+        PrTabStatus::Disabled(_) | PrTabStatus::Loading | PrTabStatus::LoadingMore => return,
+        PrTabStatus::Idle => {
+            let line = Line::from(Span::styled(
+                "  Press Tab again to load pull requests\u{2026}",
+                Style::default().fg(theme.fg_dim),
+            ));
+            frame.render_widget(
+                Paragraph::new(vec![line]).style(styles::panel_style(theme)),
+                area,
+            );
+            return;
+        }
+        PrTabStatus::Error(msg) => {
+            let line = Line::from(vec![
+                Span::styled("  error \u{00b7} ", styles::error_inline_style(theme)),
+                Span::styled(msg.to_string(), Style::default().fg(theme.fg_primary)),
+            ]);
+            frame.render_widget(
+                Paragraph::new(vec![line]).style(styles::panel_style(theme)),
+                area,
+            );
+            return;
+        }
+        PrTabStatus::Ready => {}
+    }
+
     let spinner = app
         .pr_open_state
         .as_ref()
@@ -378,13 +307,11 @@ fn render_pr_list(frame: &mut Frame, app: &App, area: Rect, view: &PrTabView<'_>
             (spinner, app.pr_open_state.as_ref()),
             (Some(_), Some(s)) if s.matches(&row.summary.repository, row.summary.number)
         );
-        // Spinner glyph replaces the cursor pointer (per design A): the
-        // row's leading character means "this is the active thing" in
-        // both the navigation and loading states.
+
         let pointer_str = if is_loading {
             format!("{} ", spinner.unwrap_or("⠋"))
         } else if is_cursor {
-            "> ".to_string()
+            format!("{CURSOR_GLYPH} ")
         } else {
             "  ".to_string()
         };
@@ -393,61 +320,50 @@ fn render_pr_list(frame: &mut Frame, app: &App, area: Rect, view: &PrTabView<'_>
         } else {
             Style::default().fg(theme.fg_secondary)
         };
+
+        // The PR list does not use the bordered-row range model; PRs are
+        // single-select. We still align with the commit-row column layout
+        // for visual consistency: leading cursor, a placeholder for the
+        // range column, and a leading number badge.
         let number = format!("#{:<5}", row.summary.number);
         let title = truncate_str(&row.summary.title, 60);
         let author = row.summary.author.as_deref().unwrap_or("?");
         let updated = row
             .summary
             .updated_at
-            .map(format_relative_time)
+            .as_ref()
+            .map(format_relative_short)
             .unwrap_or_else(|| "—".to_string());
         let draft = if row.summary.is_draft { " [draft]" } else { "" };
 
-        let line = Line::from(vec![
+        lines.push(Line::from(vec![
             Span::styled(pointer_str, pointer_style),
+            Span::styled("  ", Style::default()),
             Span::styled(number, styles::hash_style(theme)),
             Span::styled(" ", Style::default()),
             Span::styled(title, Style::default().fg(theme.fg_primary)),
             Span::styled(
-                format!("   @{author}"),
+                format!("  {} \u{00b7} {}{}", author, updated, draft),
                 Style::default().fg(theme.fg_secondary),
             ),
-            Span::styled(
-                format!("   updated {updated}{draft}"),
-                Style::default().fg(theme.fg_secondary),
-            ),
-        ]);
-        lines.push(line);
+        ]));
     }
 
     if view.has_load_more {
         let load_idx = view.rows.len();
         let is_cursor = view.cursor == load_idx;
-        let style = if is_cursor {
-            styles::selected_style(theme)
-        } else {
-            Style::default().fg(theme.fg_secondary)
-        };
-        let pointer = if is_cursor { "> " } else { "  " };
-        lines.push(Line::from(vec![
-            Span::styled(pointer, style),
-            Span::styled("... load more pull requests", style),
-        ]));
+        lines.push(overflow_row(theme, is_cursor, "load more pull requests"));
     }
 
     if lines.is_empty() {
-        // Empty state placeholder under the banner.
-        if !matches!(view.status, PrTabStatus::Ready) {
-            return;
-        }
         let msg = if view.filter.is_empty() {
-            " No open pull requests"
+            "  No open pull requests"
         } else {
-            " No pull requests match the filter"
+            "  No pull requests match the filter"
         };
         lines.push(Line::from(Span::styled(
             msg,
-            Style::default().fg(theme.fg_secondary),
+            Style::default().fg(theme.fg_dim),
         )));
     }
 
@@ -469,74 +385,84 @@ pub(crate) fn pr_open_spinner_glyph(elapsed: std::time::Duration) -> &'static st
     FRAMES[idx]
 }
 
-fn format_relative_time(time: chrono::DateTime<chrono::Utc>) -> String {
-    let now = chrono::Utc::now();
-    let delta = now.signed_duration_since(time);
-    if delta.num_seconds() < 0 {
-        return "just now".to_string();
-    }
-    let secs = delta.num_seconds();
-    if secs < 60 {
-        return "just now".to_string();
-    }
-    let mins = delta.num_minutes();
-    if mins < 60 {
-        return format!("{mins}m ago");
-    }
-    let hours = delta.num_hours();
-    if hours < 24 {
-        return format!("{hours}h ago");
-    }
-    let days = delta.num_days();
-    if days < 30 {
-        return format!("{days}d ago");
-    }
-    let months = days / 30;
-    if months < 12 {
-        return format!("{months}mo ago");
-    }
-    let years = days / 365;
-    format!("{years}y ago")
-}
-
 fn render_target_selector_footer(frame: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
+
+    // While editing the PR filter, the footer becomes a vim-style input
+    // line: left slot carries `/<draft>|`, right slot the apply/cancel hint.
+    if let Some(draft) = app.pr_filter_draft.as_ref() {
+        let left = vec![Span::styled(
+            format!(" /{draft}"),
+            Style::default().fg(theme.fg_primary),
+        )];
+        let (message_span, message_width) =
+            status_bar::build_message_span(app.message.as_ref(), theme);
+        let right_span = if message_width > 0 {
+            message_span
+        } else {
+            Span::styled(
+                " enter apply \u{00b7} esc cancel ",
+                Style::default().fg(theme.fg_secondary),
+            )
+        };
+        let right_width = right_span.content.len();
+        let spans = status_bar::build_right_aligned_spans(
+            left,
+            right_span,
+            right_width,
+            area.width as usize,
+        );
+        let footer = Paragraph::new(Line::from(spans)).style(styles::status_bar_style(theme));
+        frame.render_widget(footer, area);
+
+        // Set the terminal cursor at the end of the filter buffer so users
+        // see where typing will land.
+        let cursor_x = area.x + 2 + draft.len() as u16;
+        let cursor_y = area.y;
+        frame.set_cursor_position(ratatui::layout::Position {
+            x: cursor_x.min(area.x + area.width.saturating_sub(1)),
+            y: cursor_y,
+        });
+        return;
+    }
+
     let mode_span = Span::styled(" SELECT ", styles::mode_style(theme));
 
     let hints = if app.message.is_some() {
         String::new()
-    } else if app.pr_filter_editing() {
-        " Enter:apply  Esc:cancel ".to_string()
     } else {
         match app.target_tab {
             TargetTab::Local => {
-                let selected_count = match app.commit_selection_range {
-                    Some((start, end)) => end - start + 1,
-                    None => 0,
-                };
-                let selection_info = if selected_count > 0 {
-                    format!(" ({selected_count} selected)")
-                } else {
-                    String::new()
-                };
-                format!(
-                    " Tab:tabs  j/k:navigate  Space:select range  Enter:confirm  q:quit{selection_info}"
-                )
+                "   j/k navigate \u{00b7} space range \u{00b7} \u{21b5} confirm \u{00b7} q quit"
+                    .to_string()
             }
             TargetTab::PullRequests => {
-                " Tab:tabs  j/k:navigate  Enter:open  /:filter  Esc/q:back ".to_string()
+                "   j/k navigate \u{00b7} \u{21b5} open \u{00b7} / filter \u{00b7} esc/q back"
+                    .to_string()
             }
         }
     };
     let hints_span = Span::styled(hints, Style::default().fg(theme.fg_secondary));
 
-    let left_spans = vec![mode_span, hints_span];
+    let selected_count = match app.commit_selection_range {
+        Some((start, end)) if app.target_tab == TargetTab::Local => end - start + 1,
+        _ => 0,
+    };
 
-    let (message_span, message_width) = status_bar::build_message_span(app.message.as_ref(), theme);
+    let (right_span, right_width) = if let (Some(_), _) = (&app.message, ()) {
+        status_bar::build_message_span(app.message.as_ref(), theme)
+    } else if selected_count > 0 {
+        let text = format!(" {selected_count} selected ");
+        let width = text.len();
+        (Span::styled(text, Style::default().fg(theme.fg_dim)), width)
+    } else {
+        (Span::raw(""), 0)
+    };
+
     let spans = status_bar::build_right_aligned_spans(
-        left_spans,
-        message_span,
-        message_width,
+        vec![mode_span, hints_span],
+        right_span,
+        right_width,
         area.width as usize,
     );
 
@@ -551,9 +477,7 @@ mod selector_render_snapshot_tests {
     //! Render-snapshot tests for the review-target selector. We drive the
     //! real `render` against ratatui's `TestBackend` and assert on the
     //! resulting character grid (plus a few style checks for the active
-    //! tab highlight). These tests caught a regression where the inactive
-    //! tab rendered as bare dim text with no bracket / cue, making the
-    //! Pull Requests tab functionally invisible.
+    //! tab highlight).
     use crate::app::{App, DiffSource, InputMode};
     use crate::error::Result as TuicrResult;
     use crate::error::TuicrError;
@@ -683,98 +607,105 @@ mod selector_render_snapshot_tests {
             .collect()
     }
 
-    /// True when at least one cell in [x_start, x_end) on row `y` carries the
-    /// REVERSED modifier — our visual marker for the active tab.
-    fn any_reversed_in_range(buffer: &Buffer, y: u16, x_start: u16, x_end: u16) -> bool {
-        (x_start..x_end.min(buffer.area.width)).any(|x| {
-            buffer[(x, y)]
-                .style()
-                .add_modifier
-                .contains(Modifier::REVERSED)
-        })
+    /// True when at least one cell in [x_start, x_end) on row `y` carries
+    /// the BOLD modifier — the active-label cue in the new flat design.
+    fn any_bold_in_range(buffer: &Buffer, y: u16, x_start: u16, x_end: u16) -> bool {
+        (x_start..x_end.min(buffer.area.width))
+            .any(|x| buffer[(x, y)].style().add_modifier.contains(Modifier::BOLD))
     }
 
     /// Locate the inclusive x-range of a substring on row `y`. Panics if
-    /// the substring is not present, with a helpful dump.
+    /// the substring is not present.
     fn locate(buffer: &Buffer, y: u16, needle: &str) -> (u16, u16) {
         let line = row_text(buffer, y);
         let byte_idx = line
             .find(needle)
             .unwrap_or_else(|| panic!("expected to find {needle:?} on row {y}, got {line:?}"));
-        // Symbols are ASCII in our render so byte index == column index.
         let start = byte_idx as u16;
         let end = start + needle.len() as u16;
         (start, end)
     }
 
+    const TAB_STRIP_ROW: u16 = 2;
+
+    /// True when at least one cell in [x_start, x_end) on row `y` carries
+    /// the given background color.
+    fn any_bg_in_range(
+        buffer: &Buffer,
+        y: u16,
+        x_start: u16,
+        x_end: u16,
+        bg: ratatui::style::Color,
+    ) -> bool {
+        (x_start..x_end.min(buffer.area.width)).any(|x| buffer[(x, y)].style().bg == Some(bg))
+    }
+
     #[test]
-    fn should_render_both_tabs_with_brackets_when_local_active_and_no_forge() {
-        // given — plain app with no GitHub remote
+    fn should_render_both_tab_labels_with_active_chip_bg_when_local_active() {
+        // given — plain app, Local is active by default
         let mut app = make_app(vec![commit(0), commit(1)]);
+        let highlight_bg = app.theme.bg_highlight;
         // when
         let buffer = draw(&mut app);
-        // then — tab strip has both bracketed labels
-        let strip = row_text(&buffer, 1);
+        // then — tab strip shows both labels in the single bg-filled row
+        let strip = row_text(&buffer, TAB_STRIP_ROW);
         assert!(
-            strip.contains("[ Local ]") && strip.contains("[ Pull Requests ]"),
-            "tab strip missing brackets: {strip:?}"
+            strip.contains("Local") && strip.contains("Pull Requests"),
+            "tab strip missing labels: {strip:?}"
         );
-        // and — the active "Local" label is REVERSED, inactive PR label is not
-        let (lo, hi) = locate(&buffer, 1, "Local");
+        // and — the active "Local" chip carries the highlight bg
+        let (lo, hi) = locate(&buffer, TAB_STRIP_ROW, "Local");
         assert!(
-            any_reversed_in_range(&buffer, 1, lo, hi),
-            "active Local label should be REVERSED"
+            any_bg_in_range(&buffer, TAB_STRIP_ROW, lo, hi, highlight_bg),
+            "active Local chip should carry bg_highlight"
         );
-        let (lo, hi) = locate(&buffer, 1, "Pull Requests");
+        // and the active label is BOLD
         assert!(
-            !any_reversed_in_range(&buffer, 1, lo, hi),
-            "inactive Pull Requests label should NOT be REVERSED"
+            any_bold_in_range(&buffer, TAB_STRIP_ROW, lo, hi),
+            "active Local label should be BOLD"
+        );
+        // inactive "Pull Requests" is NOT highlighted
+        let (lo, hi) = locate(&buffer, TAB_STRIP_ROW, "Pull Requests");
+        assert!(
+            !any_bg_in_range(&buffer, TAB_STRIP_ROW, lo, hi, highlight_bg),
+            "inactive Pull Requests chip should NOT carry bg_highlight"
         );
     }
 
     #[test]
-    fn should_show_disabled_banner_when_pr_tab_active_without_forge() {
+    fn should_show_disabled_hint_in_status_slot_when_pr_tab_active_without_forge() {
         // given
         let mut app = make_app(vec![commit(0)]);
         app.target_tab = crate::app::TargetTab::PullRequests;
         // when
         let buffer = draw(&mut app);
-        // then — banner spells out the reason
-        let body = (3..buffer.area.height)
-            .map(|y| row_text(&buffer, y))
-            .collect::<Vec<_>>()
-            .join("\n");
+        // then — tab strip carries the disabled reason in its right slot
+        let strip = row_text(&buffer, TAB_STRIP_ROW);
         assert!(
-            body.contains("No GitHub remote on this repo"),
-            "expected disabled banner, got body:\n{body}"
+            strip.contains("No GitHub remote on this repo"),
+            "expected disabled hint in tab strip, got: {strip:?}"
         );
     }
 
     #[test]
-    fn should_highlight_pr_tab_label_when_pr_tab_active() {
-        // given — forge repo configured, PR tab active in Idle state
+    fn should_bold_pr_tab_label_when_pr_tab_active() {
+        // given
         let mut app = make_app(vec![commit(0)]);
         app.forge_repository = Some(repo());
         app.pr_tab = PullRequestsTab::new(Some(repo()));
         app.target_tab = crate::app::TargetTab::PullRequests;
         // when
         let buffer = draw(&mut app);
-        // then — Pull Requests is the highlighted (REVERSED) label
-        let (lo, hi) = locate(&buffer, 1, "Pull Requests");
-        assert!(
-            any_reversed_in_range(&buffer, 1, lo, hi),
-            "active Pull Requests label should be REVERSED"
-        );
-        let (lo, hi) = locate(&buffer, 1, "Local");
-        assert!(
-            !any_reversed_in_range(&buffer, 1, lo, hi),
-            "inactive Local label should NOT be REVERSED"
-        );
+        // then
+        let (lo, hi) = locate(&buffer, TAB_STRIP_ROW, "Pull Requests");
+        assert!(any_bold_in_range(&buffer, TAB_STRIP_ROW, lo, hi));
+        let (lo, hi) = locate(&buffer, TAB_STRIP_ROW, "Local");
+        assert!(!any_bold_in_range(&buffer, TAB_STRIP_ROW, lo, hi));
     }
 
     #[test]
     fn should_render_loaded_pr_rows_with_number_title_author() {
-        // given — three loaded PRs, second with no author
+        // given — two loaded PRs
         let mut app = make_app(vec![commit(0)]);
         app.forge_repository = Some(repo());
         let mut tab = PullRequestsTab::new(Some(repo()));
@@ -790,8 +721,8 @@ mod selector_render_snapshot_tests {
         app.target_tab = crate::app::TargetTab::PullRequests;
         // when
         let buffer = draw(&mut app);
-        // then — both rows are present in the rendered body
-        let body = (3..buffer.area.height)
+        // then
+        let body = (4..buffer.area.height)
             .map(|y| row_text(&buffer, y))
             .collect::<Vec<_>>()
             .join("\n");
@@ -808,6 +739,29 @@ mod selector_render_snapshot_tests {
     }
 
     #[test]
+    fn should_show_loaded_count_in_tab_strip_status_slot_when_ready() {
+        // given
+        let mut app = make_app(vec![commit(0)]);
+        app.forge_repository = Some(repo());
+        let mut tab = PullRequestsTab::new(Some(repo()));
+        tab.start_initial_load();
+        tab.apply_initial_load(Ok((
+            vec![pr(1, "alpha", "a"), pr(2, "beta", "b"), pr(3, "gamma", "c")],
+            false,
+        )));
+        app.pr_tab = tab;
+        app.target_tab = crate::app::TargetTab::PullRequests;
+        // when
+        let buffer = draw(&mut app);
+        // then — `3 loaded` lives in the tab-strip right slot
+        let strip = row_text(&buffer, TAB_STRIP_ROW);
+        assert!(
+            strip.contains("3 loaded"),
+            "expected '3 loaded' in tab strip, got: {strip:?}"
+        );
+    }
+
+    #[test]
     fn should_show_load_more_row_when_has_more_and_no_filter() {
         // given
         let mut app = make_app(vec![commit(0)]);
@@ -820,7 +774,7 @@ mod selector_render_snapshot_tests {
         // when
         let buffer = draw(&mut app);
         // then
-        let body = (3..buffer.area.height)
+        let body = (4..buffer.area.height)
             .map(|y| row_text(&buffer, y))
             .collect::<Vec<_>>()
             .join("\n");
@@ -832,7 +786,7 @@ mod selector_render_snapshot_tests {
 
     #[test]
     fn should_hide_load_more_row_when_filter_active() {
-        // given — has_more is true but a filter is set
+        // given
         let mut app = make_app(vec![commit(0)]);
         app.forge_repository = Some(repo());
         let mut tab = PullRequestsTab::new(Some(repo()));
@@ -844,7 +798,7 @@ mod selector_render_snapshot_tests {
         // when
         let buffer = draw(&mut app);
         // then
-        let body = (3..buffer.area.height)
+        let body = (4..buffer.area.height)
             .map(|y| row_text(&buffer, y))
             .collect::<Vec<_>>()
             .join("\n");
@@ -855,7 +809,7 @@ mod selector_render_snapshot_tests {
     }
 
     #[test]
-    fn should_render_filter_draft_banner_when_editing_filter() {
+    fn should_render_filter_draft_input_in_footer_when_editing() {
         // given
         let mut app = make_app(vec![commit(0)]);
         app.forge_repository = Some(repo());
@@ -867,19 +821,20 @@ mod selector_render_snapshot_tests {
         app.pr_filter_draft = Some("alp".to_string());
         // when
         let buffer = draw(&mut app);
-        // then — the banner shows the in-progress filter expression
-        let body = (3..buffer.area.height)
-            .map(|y| row_text(&buffer, y))
-            .collect::<Vec<_>>()
-            .join("\n");
+        // then — footer (last row) carries `/alp` on the left and apply/cancel on the right
+        let footer = row_text(&buffer, buffer.area.height - 1);
         assert!(
-            body.contains("/alp") && body.contains("filter"),
-            "expected filter draft banner, got:\n{body}"
+            footer.contains("/alp"),
+            "expected filter draft in footer, got: {footer:?}"
+        );
+        assert!(
+            footer.contains("apply") && footer.contains("cancel"),
+            "expected apply/cancel hint in footer, got: {footer:?}"
         );
     }
 
     #[test]
-    fn should_render_error_banner_when_pr_load_failed() {
+    fn should_render_error_state_in_tab_strip_status_slot_when_pr_load_failed() {
         // given
         let mut app = make_app(vec![commit(0)]);
         app.forge_repository = Some(repo());
@@ -891,42 +846,35 @@ mod selector_render_snapshot_tests {
         // when
         let buffer = draw(&mut app);
         // then
-        let body = (3..buffer.area.height)
-            .map(|y| row_text(&buffer, y))
-            .collect::<Vec<_>>()
-            .join("\n");
+        let strip = row_text(&buffer, TAB_STRIP_ROW);
         assert!(
-            body.contains("error") && body.contains("network down"),
-            "expected error banner, got:\n{body}"
+            strip.contains("error") && strip.contains("network down"),
+            "expected error in tab-strip status slot, got: {strip:?}"
         );
     }
 
     #[test]
-    fn should_render_loading_banner_when_pr_load_in_flight() {
+    fn should_render_loading_state_in_tab_strip_status_slot_when_pr_load_in_flight() {
         // given
         let mut app = make_app(vec![commit(0)]);
         app.forge_repository = Some(repo());
         let mut tab = PullRequestsTab::new(Some(repo()));
         tab.start_initial_load();
-        // (stays in Loading until apply_initial_load)
         app.pr_tab = tab;
         app.target_tab = crate::app::TargetTab::PullRequests;
         // when
         let buffer = draw(&mut app);
         // then
-        let body = (3..buffer.area.height)
-            .map(|y| row_text(&buffer, y))
-            .collect::<Vec<_>>()
-            .join("\n");
+        let strip = row_text(&buffer, TAB_STRIP_ROW);
         assert!(
-            body.contains("Fetching pull requests"),
-            "expected loading banner, got:\n{body}"
+            strip.contains("loading"),
+            "expected loading hint in tab strip, got: {strip:?}"
         );
     }
 
     #[test]
     fn should_render_spinner_glyph_in_place_of_cursor_for_loading_pr_row() {
-        // given — two PRs loaded, an open in-flight for #148
+        // given
         use crate::app::PrOpenRequest;
         use std::time::Instant;
         let mut app = make_app(vec![commit(0)]);
@@ -949,35 +897,24 @@ mod selector_render_snapshot_tests {
         });
         // when
         let buffer = draw(&mut app);
-        // then — the loading row leads with one of the braille spinner glyphs
+        // then
         let frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-        let lines: Vec<String> = (3..buffer.area.height)
+        let lines: Vec<String> = (4..buffer.area.height)
             .map(|y| row_text(&buffer, y))
             .collect();
         let loading_row = lines
             .iter()
             .find(|l| l.contains("#148"))
             .expect("#148 row missing");
-        let non_loading_row = lines
-            .iter()
-            .find(|l| l.contains("#125"))
-            .expect("#125 row missing");
         assert!(
-            frames
-                .iter()
-                .any(|g| loading_row.starts_with(&format!(" {g}")) || loading_row.contains(g)),
+            frames.iter().any(|g| loading_row.contains(g)),
             "loading row should contain a spinner glyph: {loading_row:?}"
-        );
-        // The non-loading row should not have any spinner glyph at the front.
-        assert!(
-            !frames.iter().any(|g| non_loading_row.contains(g)),
-            "non-loading row should not contain a spinner glyph: {non_loading_row:?}"
         );
     }
 
     #[test]
     fn should_keep_cursor_pointer_on_other_rows_during_loading() {
-        // given — loading #148, cursor on #125
+        // given
         use crate::app::PrOpenRequest;
         use std::time::Instant;
         let mut app = make_app(vec![commit(0)]);
@@ -992,7 +929,7 @@ mod selector_render_snapshot_tests {
             false,
         )));
         if let PullRequestsTab::Loaded { cursor, .. } = &mut tab {
-            *cursor = 1; // cursor on #125
+            *cursor = 1;
         }
         app.pr_tab = tab;
         app.target_tab = crate::app::TargetTab::PullRequests;
@@ -1003,8 +940,8 @@ mod selector_render_snapshot_tests {
         });
         // when
         let buffer = draw(&mut app);
-        // then — #125 row keeps the `> ` cursor pointer (after the panel border)
-        let lines: Vec<String> = (3..buffer.area.height)
+        // then — #125 row keeps the cursor arrow
+        let lines: Vec<String> = (4..buffer.area.height)
             .map(|y| row_text(&buffer, y))
             .collect();
         let cursor_row = lines
@@ -1012,8 +949,8 @@ mod selector_render_snapshot_tests {
             .find(|l| l.contains("#125"))
             .expect("#125 row missing");
         assert!(
-            cursor_row.contains("> #125"),
-            "cursor row should contain `> #125`: {cursor_row:?}"
+            cursor_row.contains("\u{25b8}"),
+            "cursor row should contain ▸ glyph: {cursor_row:?}"
         );
     }
 }
@@ -1030,7 +967,6 @@ mod pr_open_spinner_tests {
         assert_eq!(pr_open_spinner_glyph(Duration::from_millis(99)), "⠋");
         assert_eq!(pr_open_spinner_glyph(Duration::from_millis(100)), "⠙");
         assert_eq!(pr_open_spinner_glyph(Duration::from_millis(900)), "⠏");
-        // Wraps after the 10th frame.
         assert_eq!(pr_open_spinner_glyph(Duration::from_millis(1000)), "⠋");
     }
 }

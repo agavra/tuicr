@@ -1,5 +1,6 @@
 pub mod app_layout;
 pub mod comment_panel;
+pub mod commit_row;
 pub mod diff_side_by_side;
 pub mod diff_unified;
 pub mod diff_view;
