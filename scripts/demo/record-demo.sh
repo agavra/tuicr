@@ -90,11 +90,10 @@ trap cleanup EXIT
 
 fixture_dir="${run_dir}/fixture"
 config_home="${run_dir}/config"
-data_home="${run_dir}/data"
 
 "${ROOT_DIR}/scripts/demo/setup-fixture.sh" "$fixture_dir" >/dev/null
 
-mkdir -p "${config_home}/tuicr" "$data_home"
+mkdir -p "${config_home}/tuicr"
 cat > "${config_home}/tuicr/config.toml" <<'EOF'
 diff_view = "side-by-side"
 show_file_list = true
@@ -118,7 +117,9 @@ driver_cmd="$(printf '%q ' \
   --rows "$ROWS")"
 
 export XDG_CONFIG_HOME="$config_home"
-export XDG_DATA_HOME="$data_home"
+# Do not export XDG_DATA_HOME here — Claude Code (and other tools the driver
+# spawns) use it to locate their installed versions, and pointing it at a
+# temp dir followed by cleanup leaves their CLI symlinks dangling.
 export TERM="xterm-256color"
 export COLORTERM="truecolor"
 unset NO_COLOR
