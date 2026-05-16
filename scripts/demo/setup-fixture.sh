@@ -76,12 +76,18 @@ EOF
 cat > src/lib.rs <<'EOF'
 pub mod auth;
 pub mod retry;
-pub mod session_store;
+pub mod session;
 EOF
+
+mkdir -p src/retry src/session
 
 cat > src/retry.rs <<'EOF'
 //! Shared retry primitives used by the auth and session modules.
 
+pub mod policy;
+EOF
+
+cat > src/retry/policy.rs <<'EOF'
 use std::time::Duration;
 
 /// How retries should escalate when an upstream call fails.
@@ -118,9 +124,13 @@ mod tests {
 }
 EOF
 
-cat > src/session_store.rs <<'EOF'
-//! In-memory session bookkeeping used to drive auth flows.
+cat > src/session.rs <<'EOF'
+//! Session bookkeeping primitives used to drive auth flows.
 
+pub mod store;
+EOF
+
+cat > src/session/store.rs <<'EOF'
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -265,7 +275,7 @@ commit_with_date "2026-05-01T09:00:00Z" "Create review fixture crate"
 python3 - <<'PY'
 from pathlib import Path
 
-retry_path = Path("src/retry.rs")
+retry_path = Path("src/retry/policy.rs")
 retry_text = retry_path.read_text()
 retry_text = retry_text.replace("max_attempts: 5,", "max_attempts: 3,")
 retry_text = retry_text.replace(
@@ -278,7 +288,7 @@ retry_text = retry_text.replace(
 )
 retry_path.write_text(retry_text)
 
-store_path = Path("src/session_store.rs")
+store_path = Path("src/session/store.rs")
 store_text = store_path.read_text()
 store_text = store_text.replace(
     "heartbeat_interval: Duration::from_secs(60),",
@@ -381,7 +391,7 @@ mod tests {
 path.write_text(new)
 PY
 
-git add src/auth.rs src/retry.rs src/session_store.rs
+git add src/auth.rs src/retry/policy.rs src/session/store.rs
 commit_with_date "2026-05-01T09:05:00Z" "Shorten session token timeout"
 
 python3 - <<'PY'
