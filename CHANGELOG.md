@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.14.0] - 2026-05-16
+
+### Documentation
+
+- Add CodeRabbit sponsor section to README (#309)
+
+### Forge
+
+- Review target selector UX (PR 2 of forge v1) (#292)
+- PR diff mode + remote context expansion
+- Existing remote GitHub comments, read-only (PR 4 of forge v1) (#295)
+- Per-commit selector in PR review mode (PR 4.5) (#296)
+- Submit preflight + resolver + payload (PR 5 of forge v1) (#297)
+- GitHub review creation + locking (PR 6 of forge v1) (#298)
+- Resolve SSH host aliases for GitHub remotes (#303)
+
+### Input
+
+- Route bracketed paste to text-input modes
+- Add :<n> and :o<n> jump-to-line commands (#305)
+
+### Ui
+
+- Split app_layout.rs by feature (PR 2.5) (#293)
+- Revamp diff frame chrome and comment-box presentation
 ## [0.13.0] - 2026-05-13
 
 ### Bug Fixes
