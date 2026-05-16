@@ -22,6 +22,64 @@ pub(super) fn render_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
+/// Build the diff view's left title: ` <path> ` when a file is in view, or
+/// ` Overview ` in overview mode. Long paths are prefix-truncated so the
+/// most-informative tail (closest to the filename) survives.
+pub(super) fn diff_title(app: &App, area_width: u16) -> String {
+    if app.is_cursor_in_overview() || app.current_file_path().is_none() {
+        return " Overview ".to_string();
+    }
+    let path = app
+        .current_file_path()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+
+    // Reserve room for the title's own spacing (` <path> `), the stats title
+    // on the right, and the two corner glyphs. We deliberately under-reserve
+    // — the precise stats width depends on the file's add/del counts, so the
+    // worst case is a few-char overshoot that ratatui will truncate cleanly.
+    let stats_reserve = 16; // ` +DDDD -DDDD ` plus padding
+    let chrome_reserve = 4; // corners + leading/trailing space around title
+    let max_path_width = (area_width as usize)
+        .saturating_sub(stats_reserve + chrome_reserve)
+        .max(8);
+
+    format!(" {} ", truncate_path_smart(&path, max_path_width))
+}
+
+/// Truncate `path` to fit within `max_width` cells by dropping leading path
+/// segments and prefixing with `…/`. Always keeps the basename intact; falls
+/// back to suffix-truncating the basename only when the basename alone is
+/// wider than `max_width`.
+pub(super) fn truncate_path_smart(path: &str, max_width: usize) -> String {
+    if path.chars().count() <= max_width {
+        return path.to_string();
+    }
+    let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    if segments.is_empty() {
+        return path.to_string();
+    }
+
+    for n in (1..segments.len()).rev() {
+        let tail = segments[segments.len() - n..].join("/");
+        let candidate = format!("\u{2026}/{tail}");
+        if candidate.chars().count() <= max_width {
+            return candidate;
+        }
+    }
+
+    let basename = *segments.last().unwrap();
+    let basename_w = basename.chars().count();
+    if basename_w <= max_width {
+        return basename.to_string();
+    }
+    // Basename alone is too wide: keep the leading chars + `…`.
+    let kept = max_width.saturating_sub(1);
+    let mut s: String = basename.chars().take(kept).collect();
+    s.push('\u{2026}');
+    s
+}
+
 /// Build a right-aligned title showing diff stats for the current scope.
 /// In overview: total stats across all files. In a file: that file's stats.
 pub(super) fn diff_stat_title(app: &App) -> Line<'static> {

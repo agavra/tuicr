@@ -10,13 +10,20 @@ use ratatui::text::{Line, Span};
 use crate::app::{STAGED_SELECTION_ID, UNSTAGED_SELECTION_ID};
 use crate::theme::Theme;
 use crate::ui::styles;
-use crate::ui::text_utils::truncate_str;
+use crate::ui::text_utils::{truncate_or_pad, truncate_str};
 use crate::vcs::CommitInfo;
 
 pub const CURSOR_GLYPH: &str = "\u{25b8}"; // ▸
 pub const RANGE_BAR_GLYPH: &str = "\u{258c}"; // ▌
 pub const SELECTED_BOX_GLYPH: &str = "\u{25a3}"; // ▣
 pub const UNSELECTED_BOX_GLYPH: &str = "\u{25a2}"; // ▢
+
+// Fixed column widths so author/date land at the same x across every row.
+// Branch column gets `[branch_name]` padded to width including brackets and a
+// trailing space; rows without a branch render the same number of blanks.
+const BRANCH_COL_WIDTH: usize = 16;
+const SUMMARY_COL_WIDTH: usize = 50;
+const AUTHOR_COL_WIDTH: usize = 12;
 
 pub struct CommitRowSpec<'a> {
     pub commit: &'a CommitInfo,
@@ -82,21 +89,31 @@ pub fn render_commit_row<'a>(spec: &CommitRowSpec<'a>) -> Line<'a> {
         styles::hash_style(theme),
     ));
 
+    // Branch column: always BRANCH_COL_WIDTH cells. With a branch we render
+    // `[<name>]` padded out with trailing spaces; without one we render
+    // BRANCH_COL_WIDTH spaces so the summary column starts at the same x.
     if let Some(branch_name) = &spec.commit.branch_name {
+        let chip = format!("[{}]", truncate_str(branch_name, BRANCH_COL_WIDTH - 3));
         spans.push(Span::styled(
-            format!("[{}] ", truncate_str(branch_name, 20)),
+            truncate_or_pad(&chip, BRANCH_COL_WIDTH),
             styles::branch_style(theme),
         ));
+    } else {
+        spans.push(Span::raw(" ".repeat(BRANCH_COL_WIDTH)));
     }
 
     spans.push(Span::styled(
-        truncate_str(&spec.commit.summary, 50),
+        truncate_or_pad(&spec.commit.summary, SUMMARY_COL_WIDTH),
         row_text_style,
     ));
 
     let when = format_relative_short(&spec.commit.time);
     spans.push(Span::styled(
-        format!("  {} \u{00b7} {}", spec.commit.author, when),
+        format!(
+            "  {} \u{00b7} {}",
+            truncate_or_pad(&spec.commit.author, AUTHOR_COL_WIDTH),
+            when
+        ),
         Style::default().fg(theme.fg_secondary),
     ));
 

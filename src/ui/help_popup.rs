@@ -11,7 +11,11 @@ use crate::ui::styles;
 
 pub fn render_help(frame: &mut Frame, app: &mut App) {
     let theme = &app.theme;
-    let area = centered_rect(60, 70, frame.area());
+    // Center over the diff pane (matches the submit-modal anchoring) so the
+    // file list doesn't tug the popup's visual centre off to one side. Fall
+    // back to the full frame when no diff area is laid out yet.
+    let anchor = app.diff_area.unwrap_or(frame.area());
+    let area = centered_rect(80, 90, anchor);
 
     // Clear the area behind the popup
     frame.render_widget(Clear, area);

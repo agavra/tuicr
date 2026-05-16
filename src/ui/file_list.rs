@@ -1,7 +1,6 @@
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem},
 };
@@ -12,11 +11,21 @@ use crate::app::{App, FileTreeItem, FocusedPanel};
 use crate::ui::diff_view::apply_horizontal_scroll;
 use crate::ui::styles;
 
+const EXPANDED_GLYPH: &str = "\u{25bc}"; // ▼
+const COLLAPSED_GLYPH: &str = "\u{25b6}"; // ▶
+const REVIEWED_BOX: &str = "\u{25a3}"; // ▣
+const UNREVIEWED_BOX: &str = "\u{25a2}"; // ▢
+
 pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focused_panel == FocusedPanel::FileList;
 
+    let title = format!(
+        " Files \u{00b7} {}/{} ",
+        app.reviewed_count(),
+        app.file_count()
+    );
     let block = Block::default()
-        .title(" Files ")
+        .title(title)
         .borders(Borders::ALL)
         .style(styles::panel_style(&app.theme))
         .border_style(styles::border_style(&app.theme, focused));
@@ -42,7 +51,7 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
                     .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or("?");
-                depth * 2 + 3 + 3 + filename.width()
+                depth * 2 + 4 + filename.width()
             }
         })
         .max()
@@ -78,95 +87,77 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
         }
     }
 
-    let selected_idx = app.file_list_state.selected();
-
     let items: Vec<ListItem> = visible_items
         .iter()
-        .enumerate()
-        .map(|(i, item)| {
-            let is_selected = i == selected_idx;
-
-            match item {
+        .map(|item| {
+            let line = match item {
                 FileTreeItem::Directory {
                     path,
                     depth,
                     expanded,
                 } => {
                     let indent = "  ".repeat(*depth);
-                    let icon = if *expanded { "▾" } else { "▸" };
+                    let icon = if *expanded {
+                        EXPANDED_GLYPH
+                    } else {
+                        COLLAPSED_GLYPH
+                    };
                     let dir_name = Path::new(path)
                         .file_name()
                         .and_then(|n| n.to_str())
                         .unwrap_or(path);
-
-                    let style = if is_selected {
-                        styles::selected_style(&app.theme).add_modifier(Modifier::UNDERLINED)
-                    } else {
-                        Style::default()
-                    };
-
-                    let line = Line::from(vec![
-                        Span::styled(indent, Style::default()),
+                    Line::from(vec![
+                        Span::raw(indent),
                         Span::styled(format!("{icon} "), styles::dir_icon_style(&app.theme)),
-                        Span::styled(format!("{dir_name}/"), style),
-                    ]);
-
-                    ListItem::new(apply_horizontal_scroll(line, scroll_x))
+                        Span::raw(format!("{dir_name}/")),
+                    ])
                 }
                 FileTreeItem::File { file_idx, depth } => {
                     let file = &app.diff_files[*file_idx];
                     let path = file.display_path();
                     let is_reviewed = app.session.is_file_reviewed(path);
-                    let review_mark = if is_reviewed { "✓" } else { " " };
-
-                    let style = if is_selected {
-                        styles::selected_style(&app.theme).add_modifier(Modifier::UNDERLINED)
+                    let checkbox = if is_reviewed {
+                        REVIEWED_BOX
                     } else {
-                        Style::default()
+                        UNREVIEWED_BOX
                     };
-
-                    let line = if file.is_commit_message {
+                    let checkbox_style = if is_reviewed {
+                        styles::reviewed_style(&app.theme)
+                    } else {
+                        styles::pending_style(&app.theme)
+                    };
+                    if file.is_commit_message {
                         Line::from(vec![
-                            Span::styled(
-                                format!("[{review_mark}]"),
-                                if is_reviewed {
-                                    styles::reviewed_style(&app.theme)
-                                } else {
-                                    styles::pending_style(&app.theme)
-                                },
-                            ),
-                            Span::styled("   Commit Message".to_string(), style),
+                            Span::styled(format!("{checkbox} "), checkbox_style),
+                            Span::raw("  Commit Message".to_string()),
                         ])
                     } else {
                         let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
                         let status = file.status.as_char();
                         let indent = "  ".repeat(*depth);
                         Line::from(vec![
-                            Span::styled(indent, Style::default()),
+                            Span::raw(indent),
+                            Span::styled(format!("{checkbox} "), checkbox_style),
                             Span::styled(
-                                format!("[{review_mark}]"),
-                                if is_reviewed {
-                                    styles::reviewed_style(&app.theme)
-                                } else {
-                                    styles::pending_style(&app.theme)
-                                },
-                            ),
-                            Span::styled(
-                                format!(" {status} "),
+                                format!("{status} "),
                                 styles::file_status_style(&app.theme, status),
                             ),
-                            Span::styled(filename.to_string(), style),
+                            Span::raw(filename.to_string()),
                         ])
-                    };
-
-                    ListItem::new(apply_horizontal_scroll(line, scroll_x))
+                    }
                 }
-            }
+            };
+
+            ListItem::new(apply_horizontal_scroll(line, scroll_x))
         })
         .collect();
 
+    // Full-row bg highlight on the selected row (no leading cursor glyph or
+    // underline modifier) — mirrors how the diff view highlights its cursor
+    // line.
     let list = List::new(items)
         .style(styles::panel_style(&app.theme))
+        .highlight_style(styles::selected_style(&app.theme))
         .block(block);
 
     frame.render_stateful_widget(list, area, &mut app.file_list_state.list_state);

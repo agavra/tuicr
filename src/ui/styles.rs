@@ -2,13 +2,6 @@ use ratatui::style::{Color, Modifier, Style};
 
 use crate::theme::Theme;
 
-pub fn header_style(theme: &Theme) -> Style {
-    Style::default()
-        .bg(theme.panel_bg)
-        .fg(theme.fg_primary)
-        .add_modifier(Modifier::BOLD)
-}
-
 pub fn selected_style(theme: &Theme) -> Style {
     Style::default().bg(theme.bg_highlight).fg(theme.fg_primary)
 }

@@ -52,152 +52,137 @@ pub fn build_right_aligned_spans<'a>(
 
 pub fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
-    let vcs_type = &app.vcs_info.vcs_type;
-    let branch = app.vcs_info.branch_name.as_deref().unwrap_or("detached");
-
     let in_pr_mode = matches!(app.diff_source, DiffSource::PullRequest(_));
 
-    let title = if in_pr_mode {
-        " tuicr - PR Review ".to_string()
+    let brand = Span::styled(
+        " tuicr ",
+        Style::default()
+            .fg(theme.fg_primary)
+            .add_modifier(Modifier::BOLD),
+    );
+
+    // Right-cluster: source/context chunks, bullet-separated. PR mode leads
+    // with a `PR Mode` tag; otherwise we show `<vcs>:<branch> · <source>`.
+    let mut chunks: Vec<String> = Vec::new();
+    if in_pr_mode {
+        chunks.push("PR Mode".to_string());
     } else {
-        " tuicr - Code Review ".to_string()
-    };
-    let vcs_info = if in_pr_mode {
-        // PR mode header is anchored on the PR identity, not the local VCS.
+        let vcs_type = &app.vcs_info.vcs_type;
+        let branch = app.vcs_info.branch_name.as_deref().unwrap_or("detached");
+        chunks.push(format!("{vcs_type}:{branch}"));
+    }
+    if let Some(source) = header_source_chunk(app) {
+        chunks.push(source);
+    }
+    let source_text = if chunks.is_empty() {
         String::new()
     } else {
-        format!("[{vcs_type}:{branch}] ")
+        format!(" {} ", chunks.join(" \u{00b7} "))
+    };
+    let source_width = source_text.chars().count();
+    let source_span = Span::styled(source_text, Style::default().fg(theme.fg_secondary));
+
+    let (update_span, update_width) = match app.update_info.as_ref() {
+        Some(info) if info.update_available => {
+            let text = format!(" v{} available ", info.latest_version);
+            let width = text.chars().count();
+            (
+                Span::styled(
+                    text,
+                    Style::default()
+                        .fg(theme.update_badge_fg)
+                        .bg(theme.update_badge_bg)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                width,
+            )
+        }
+        Some(info) if info.is_ahead => {
+            let text = format!(" unreleased v{} ", info.current_version);
+            let width = text.chars().count();
+            (
+                Span::styled(
+                    text,
+                    Style::default()
+                        .fg(theme.update_badge_fg)
+                        .bg(theme.update_badge_bg)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                width,
+            )
+        }
+        _ => (Span::raw(""), 0),
     };
 
-    // Show diff source info
-    let source_info = match &app.diff_source {
-        DiffSource::WorkingTree => String::new(),
-        DiffSource::Staged => "[staged] ".to_string(),
-        DiffSource::Unstaged => "[unstaged] ".to_string(),
-        DiffSource::StagedAndUnstaged => "[staged + unstaged] ".to_string(),
+    let total_width = area.width as usize;
+    let brand_width = brand.content.chars().count();
+    let right_width = source_width + update_width;
+    let pad_width = total_width.saturating_sub(brand_width + right_width);
+
+    let mut spans = vec![brand, Span::raw(" ".repeat(pad_width)), source_span];
+    if update_width > 0 {
+        spans.push(update_span);
+    }
+
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)).style(styles::status_bar_style(theme)),
+        area,
+    );
+}
+
+/// Short, lowercase description of the active review source. Returns `None`
+/// for plain working-tree review (no extra label needed beyond `vcs:branch`).
+fn header_source_chunk(app: &App) -> Option<String> {
+    match &app.diff_source {
+        DiffSource::WorkingTree => None,
+        DiffSource::Staged => Some("staged".to_string()),
+        DiffSource::Unstaged => Some("unstaged".to_string()),
+        DiffSource::StagedAndUnstaged => Some("staged + unstaged".to_string()),
         DiffSource::CommitRange(commits) => {
             if commits.len() == 1 {
-                format!("[commit {}] ", &commits[0][..7.min(commits[0].len())])
+                Some(format!("commit {}", &commits[0][..7.min(commits[0].len())]))
             } else {
                 match app.commit_selection_range {
-                    Some((start, end)) if end - start + 1 < app.review_commits.len() => {
-                        format!(
-                            "[{}/{} commits] ",
-                            end - start + 1,
-                            app.review_commits.len()
-                        )
-                    }
-                    _ => format!("[{} commits] ", commits.len()),
+                    Some((start, end)) if end - start + 1 < app.review_commits.len() => Some(
+                        format!("{}/{} commits", end - start + 1, app.review_commits.len()),
+                    ),
+                    _ => Some(format!("{} commits", commits.len())),
                 }
             }
         }
         DiffSource::StagedUnstagedAndCommits(commits) => {
             if commits.len() == 1 {
-                format!(
-                    "[staged + unstaged + commit {}] ",
+                Some(format!(
+                    "staged + unstaged + commit {}",
                     &commits[0][..7.min(commits[0].len())]
-                )
+                ))
             } else {
-                format!("[staged + unstaged + {} commits] ", commits.len())
+                Some(format!("staged + unstaged + {} commits", commits.len()))
             }
         }
         DiffSource::PullRequest(pr) => {
             let slug = pr.key.repository.display_name();
-            let trimmed_title = if pr.title.len() > 60 {
-                format!("{}…", &pr.title[..59])
+            let trimmed_title = if pr.title.chars().count() > 60 {
+                format!("{}\u{2026}", &pr.title[..59])
             } else {
                 pr.title.clone()
             };
-            let mut info = format!(
-                "[PR mode · {slug}#{number} · {trimmed_title}] ",
-                number = pr.key.number,
+            let mut s = format!(
+                "{slug}#{number} \u{00b7} {trimmed_title}",
+                number = pr.key.number
             );
-            if let Some(state) = pr.read_only_reason() {
-                info.push_str(&format!("[{state} — read only] "));
-            }
-            // Surface a strict-subset selection so the user can see at a
-            // glance that the diff is scoped to a narrower commit range
-            // than the full PR. Single-commit PRs (no selector) and
-            // full-range selection get no label.
             let total = app.pr_commits.len();
             if total > 1
                 && let Some((start, end)) = app.commit_selection_range
             {
                 let selected = end - start + 1;
                 if selected < total {
-                    info.push_str(&format!("[{selected} of {total} commits] "));
+                    s.push_str(&format!(" \u{00b7} {selected} of {total} commits"));
                 }
             }
-            info
+            Some(s)
         }
-    };
-
-    let progress = format!("{}/{} reviewed ", app.reviewed_count(), app.file_count());
-
-    let title_span = Span::styled(title, styles::header_style(theme));
-    let vcs_span = Span::styled(vcs_info, Style::default().fg(theme.fg_secondary));
-    let source_span = Span::styled(source_info, Style::default().fg(theme.diff_hunk_header));
-    let progress_span = Span::styled(
-        progress,
-        if app.reviewed_count() == app.file_count() {
-            styles::reviewed_style(theme)
-        } else {
-            styles::pending_style(theme)
-        },
-    );
-
-    let (update_span, update_width) = if let Some(ref info) = app.update_info {
-        if info.update_available {
-            let text = format!(" v{} available ", info.latest_version);
-            let width = text.len();
-            (
-                Span::styled(
-                    text,
-                    Style::default()
-                        .fg(theme.update_badge_fg)
-                        .bg(theme.update_badge_bg)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                width,
-            )
-        } else if info.is_ahead {
-            let text = format!(" unreleased v{} ", info.current_version);
-            let width = text.len();
-            (
-                Span::styled(
-                    text,
-                    Style::default()
-                        .fg(theme.update_badge_fg)
-                        .bg(theme.update_badge_bg)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                width,
-            )
-        } else {
-            (Span::raw(""), 0)
-        }
-    } else {
-        (Span::raw(""), 0)
-    };
-
-    let left_spans = vec![title_span, vcs_span, source_span, progress_span];
-    let left_width: usize = left_spans.iter().map(|s| s.content.len()).sum();
-    let total_width = area.width as usize;
-    let padding_width = total_width.saturating_sub(left_width + update_width);
-
-    let mut spans = left_spans;
-    spans.push(Span::raw(" ".repeat(padding_width)));
-    if update_width > 0 {
-        spans.push(update_span);
     }
-
-    let line = Line::from(spans);
-
-    let header = Paragraph::new(line)
-        .style(styles::status_bar_style(theme))
-        .block(Block::default());
-
-    frame.render_widget(header, area);
 }
 
 pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
@@ -257,60 +242,43 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             Cow::Borrowed("")
         } else {
             match app.input_mode {
-                InputMode::Normal => Cow::Owned(format!(
-                    " j/k:scroll  {{/}}:file  r:reviewed  c:comment  {}c:review  V:visual  /:search  ?:help  :q:quit ",
-                    app.leader_key
-                )),
-                InputMode::Command => Cow::Borrowed(" Enter:execute  Esc:cancel "),
-                InputMode::Search => Cow::Borrowed(" Enter:search  Esc:cancel "),
-                InputMode::Comment => Cow::Borrowed(" Ctrl-S:save  Esc:cancel "),
-                InputMode::Help => Cow::Borrowed(" q/?/Esc:close "),
-                InputMode::Confirm => Cow::Borrowed(" y:yes  n:no "),
-                InputMode::CommitSelect => {
-                    Cow::Borrowed(" j/k:navigate  Space:select  Enter:confirm  Esc:back  q:quit ")
+                InputMode::Normal => Cow::Borrowed(
+                    "   j/k scroll \u{00b7} {/} file \u{00b7} r reviewed \u{00b7} c comment \u{00b7} ? help",
+                ),
+                InputMode::Command => Cow::Borrowed("   \u{21b5} execute \u{00b7} esc cancel"),
+                InputMode::Search => Cow::Borrowed("   \u{21b5} search \u{00b7} esc cancel"),
+                InputMode::Comment => Cow::Borrowed("   ctrl-s save \u{00b7} esc cancel"),
+                InputMode::Help => Cow::Borrowed("   q/?/esc close"),
+                InputMode::Confirm => Cow::Borrowed("   y yes \u{00b7} n no"),
+                InputMode::CommitSelect => Cow::Borrowed(
+                    "   j/k navigate \u{00b7} space select \u{00b7} \u{21b5} confirm \u{00b7} esc back",
+                ),
+                InputMode::VisualSelect => Cow::Borrowed(
+                    "   j/k extend \u{00b7} c/\u{21b5} comment \u{00b7} y yank \u{00b7} esc/V cancel",
+                ),
+                InputMode::SubmitResolver => Cow::Borrowed(
+                    "   j/k move \u{00b7} \u{21b5} toggle \u{00b7} s submit \u{00b7} esc cancel",
+                ),
+                InputMode::SubmitConfirm => {
+                    Cow::Borrowed("   y submit \u{00b7} n cancel \u{00b7} esc cancel")
                 }
-                InputMode::VisualSelect => {
-                    Cow::Borrowed(" j/k:extend  c/Enter:comment  y:yank  Esc/V:cancel ")
-                }
-                InputMode::SubmitResolver => {
-                    Cow::Borrowed(" j/k:move  Enter:toggle  s:submit  Esc:cancel ")
-                }
-                InputMode::SubmitConfirm => Cow::Borrowed(" y:submit  n:cancel  Esc:cancel "),
                 InputMode::SubmitActionPicker => {
-                    Cow::Borrowed(" j/k:move  Enter:submit  Esc:cancel ")
+                    Cow::Borrowed("   j/k move \u{00b7} \u{21b5} submit \u{00b7} esc cancel")
                 }
             }
         };
         let hints_span = Span::styled(hints, Style::default().fg(theme.fg_secondary));
 
-        let dirty_indicator = if app.dirty {
-            Span::styled(" [modified] ", Style::default().fg(theme.pending))
-        } else {
-            Span::raw("")
-        };
-
-        // Inline hint while remote review threads are still loading in PR
-        // mode. The diff is already visible; this just tells the user that
-        // existing GitHub discussions are still on the way.
-        let remote_loading = if app.forge_review_threads_loading {
-            Span::styled(
-                " Loading remote comments… ",
-                Style::default().fg(theme.fg_dim),
-            )
-        } else {
-            Span::raw("")
-        };
-
-        vec![mode_span, hints_span, dirty_indicator, remote_loading]
+        vec![mode_span, hints_span]
     };
 
-    // Right-aligned slot: while `:e` is in flight we put the spinner
-    // there instead of any pending message, mirroring how messages are
-    // placed. The user sees one prominent right-aligned indicator at a
-    // time. After the reload lands, the success message takes the slot
-    // back. A range re-fetch (toggling commit selection in PR mode) takes
-    // the same slot but with its own label.
-    let (right_span, right_width) = if let Some(submit) = app.pr_submit_state.as_ref() {
+    // Right-aligned slot priority: active message > pr-flow spinners
+    // (submit/reload/range) > remote-comments loading hint > modified
+    // indicator. Surfaces the most important transient state without
+    // crowding the hints on the left.
+    let (right_span, right_width) = if app.message.is_some() {
+        build_message_span(app.message.as_ref(), theme)
+    } else if let Some(submit) = app.pr_submit_state.as_ref() {
         use crate::forge::submit::SubmitEvent;
         let glyph = crate::ui::selector::pr_open_spinner_glyph(submit.started_at.elapsed());
         let label = match submit.event {
@@ -318,7 +286,7 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             _ => "Submitting review…",
         };
         let content = format!(" {glyph} {label} ");
-        let width = content.len();
+        let width = content.chars().count();
         (
             Span::styled(
                 content,
@@ -332,7 +300,7 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     } else if let Some(reload) = app.pr_reload_state.as_ref() {
         let glyph = crate::ui::selector::pr_open_spinner_glyph(reload.started_at.elapsed());
         let content = format!(" {glyph} Reloading PR… ");
-        let width = content.len();
+        let width = content.chars().count();
         (
             Span::styled(
                 content,
@@ -346,7 +314,7 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     } else if let Some(range) = app.pr_range_reload_state.as_ref() {
         let glyph = crate::ui::selector::pr_open_spinner_glyph(range.started_at.elapsed());
         let content = format!(" {glyph} Loading range diff… ");
-        let width = content.len();
+        let width = content.chars().count();
         (
             Span::styled(
                 content,
@@ -357,8 +325,22 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             ),
             width,
         )
+    } else if app.forge_review_threads_loading {
+        let content = " loading remote comments\u{2026} ".to_string();
+        let width = content.chars().count();
+        (
+            Span::styled(content, Style::default().fg(theme.fg_dim)),
+            width,
+        )
+    } else if app.dirty {
+        let content = " \u{2022} modified ".to_string();
+        let width = content.chars().count();
+        (
+            Span::styled(content, Style::default().fg(theme.pending)),
+            width,
+        )
     } else {
-        build_message_span(app.message.as_ref(), theme)
+        (Span::raw(""), 0)
     };
     let total_width = area.width as usize;
     let spans = build_right_aligned_spans(left_spans, right_span, right_width, total_width);
@@ -535,34 +517,44 @@ mod pr_header_snapshot_tests {
         let app = build_pr_app(pr_source(false, false));
         // when
         let buffer = draw_header(&app);
-        // then
+        // then — brand on the left, then bullet-separated PR Mode tag,
+        // slug#number, and title in the right cluster.
         let line = row_text(&buffer, 0);
-        assert!(line.contains("tuicr - PR Review"), "got: {line:?}");
-        assert!(line.contains("PR mode"), "got: {line:?}");
+        assert!(line.contains("tuicr"), "got: {line:?}");
+        assert!(line.contains("PR Mode"), "got: {line:?}");
         assert!(line.contains("agavra/tuicr#125"), "got: {line:?}");
         assert!(line.contains("Add forge-backed PR review"), "got: {line:?}");
     }
 
+    // Read-only badges are no longer shown in the header: the `PR Mode`
+    // tag itself signals the user is on a forge-managed review; whether
+    // the PR is open/closed/merged is left to the submit flow to surface
+    // (the submit action errors with a clear message). These tests now
+    // assert the simpler invariant: closed/merged still show `PR Mode`
+    // but don't add a `read only` chip.
+
     #[test]
-    fn should_render_read_only_badge_for_closed_pr() {
+    fn should_not_show_read_only_badge_for_closed_pr() {
         // given a closed PR
         let app = build_pr_app(pr_source(true, false));
         // when
         let buffer = draw_header(&app);
         // then
         let line = row_text(&buffer, 0);
-        assert!(line.contains("closed — read only"), "got: {line:?}");
+        assert!(line.contains("PR Mode"), "got: {line:?}");
+        assert!(!line.contains("read only"), "got: {line:?}");
     }
 
     #[test]
-    fn should_render_read_only_badge_for_merged_pr() {
+    fn should_not_show_read_only_badge_for_merged_pr() {
         // given a merged PR
         let app = build_pr_app(pr_source(false, true));
         // when
         let buffer = draw_header(&app);
         // then
         let line = row_text(&buffer, 0);
-        assert!(line.contains("merged — read only"), "got: {line:?}");
+        assert!(line.contains("PR Mode"), "got: {line:?}");
+        assert!(!line.contains("read only"), "got: {line:?}");
     }
 
     #[test]
@@ -615,9 +607,9 @@ mod pr_header_snapshot_tests {
         app.commit_selection_range = Some((0, 2));
         // when
         let buffer = draw_header(&app);
-        // then
+        // then — no `N of M commits` subset label since the full range is selected
         let line = row_text(&buffer, 0);
-        assert!(!line.contains("commits]"), "got: {line:?}");
+        assert!(!line.contains(" of 3 commits"), "got: {line:?}");
     }
 
     #[test]
@@ -630,6 +622,6 @@ mod pr_header_snapshot_tests {
         let buffer = draw_header(&app);
         // then
         let line = row_text(&buffer, 0);
-        assert!(!line.contains("of"), "got: {line:?}");
+        assert!(!line.contains(" of "), "got: {line:?}");
     }
 }

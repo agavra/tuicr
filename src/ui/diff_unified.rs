@@ -25,14 +25,7 @@ use crate::vcs::git::calculate_gap;
 pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focused_panel == FocusedPanel::Diff;
 
-    let title = if app.is_cursor_in_overview() || app.current_file_path().is_none() {
-        " Diff (Unified) \u{2014} Overview ".to_string()
-    } else {
-        format!(
-            " Diff (Unified) \u{2014} {} ",
-            app.current_file_path().unwrap().display()
-        )
-    };
+    let title = crate::ui::diff_view::diff_title(app, area.width);
 
     let block = Block::default()
         .title(title)

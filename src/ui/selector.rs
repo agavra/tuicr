@@ -13,7 +13,7 @@ use crate::ui::commit_row::{
 };
 use crate::ui::status_bar;
 use crate::ui::styles;
-use crate::ui::text_utils::truncate_str;
+use crate::ui::text_utils::truncate_or_pad;
 
 const TAB_LOCAL: &str = "Local";
 const TAB_PULL_REQUESTS: &str = "Pull Requests";
@@ -21,23 +21,20 @@ const TAB_PULL_REQUESTS: &str = "Pull Requests";
 pub(super) fn render_commit_select(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
 
-    // Layout: header, blank, tab strip (full-width bg, active tab is a
-    // brighter chip inside the strip), bordered body, footer.
+    // Layout: top bar (brand + tabs + right-slot status), bordered body,
+    // footer. The tabs live INSIDE the top bar — no separate strip row.
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // header
-            Constraint::Length(1), // blank
-            Constraint::Length(1), // tab strip
+            Constraint::Length(1), // top bar (brand + tabs + status)
             Constraint::Min(0),    // body block (full borders)
             Constraint::Length(1), // footer
         ])
         .split(area);
 
-    render_header_line(frame, app, chunks[0]);
-    render_tab_strip(frame, app, chunks[2]);
+    render_top_bar(frame, app, chunks[0]);
 
-    let body_area = chunks[3];
+    let body_area = chunks[1];
     let body_block = Block::default()
         .borders(Borders::ALL)
         .border_style(styles::border_style(&app.theme, true))
@@ -50,57 +47,25 @@ pub(super) fn render_commit_select(frame: &mut Frame, app: &mut App) {
         TargetTab::PullRequests => render_pull_requests_tab(frame, app, inner),
     }
 
-    render_target_selector_footer(frame, app, chunks[4]);
+    render_target_selector_footer(frame, app, chunks[2]);
 }
 
-fn render_header_line(frame: &mut Frame, app: &App, area: Rect) {
-    let theme = &app.theme;
-    let vcs_type = &app.vcs_info.vcs_type;
-    let branch = app.vcs_info.branch_name.as_deref().unwrap_or("detached");
-
-    let brand = Span::styled(
-        " tuicr  ",
-        Style::default()
-            .fg(theme.fg_primary)
-            .add_modifier(Modifier::BOLD),
-    );
-    let action = Span::styled(
-        "select review target",
-        Style::default().fg(theme.fg_secondary),
-    );
-    let right = format!("{vcs_type}:{branch} ");
-    let right_width = right.len();
-    let right_span = Span::styled(right, Style::default().fg(theme.fg_secondary));
-
-    let left = vec![brand, action];
-    let left_width: usize = left.iter().map(|s| s.content.len()).sum();
-    let total_width = area.width as usize;
-    let pad = total_width.saturating_sub(left_width + right_width);
-
-    let mut spans = left;
-    spans.push(Span::raw(" ".repeat(pad)));
-    spans.push(right_span);
-
-    frame.render_widget(
-        Paragraph::new(Line::from(spans)).style(styles::panel_style(theme)),
-        area,
-    );
-}
-
-/// Single-row tab strip filling the full terminal width with a subtle bg.
-/// The active tab renders as a brighter chip (`bg_highlight` + bold primary
-/// fg); inactive tab text sits flat on the strip bg in dim fg. The right
-/// slot carries the PR-tab status hint when that tab is active.
-fn render_tab_strip(frame: &mut Frame, app: &App, area: Rect) {
+/// Combined top bar: brand on the left, tab chips, then a right slot
+/// carrying `git:<branch>` (Local tab) or the PR-tab status hint. The entire
+/// row uses `status_bar_bg` so the active tab's `bg_highlight` reads as a
+/// chip popping out of the strip.
+fn render_top_bar(frame: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
     let active = app.target_tab;
     let local_active = active == TargetTab::Local;
     let pr_active = active == TargetTab::PullRequests;
 
     let strip_bg = theme.status_bar_bg;
-    let strip_fg = theme.fg_dim;
-    let strip_style = Style::default().bg(strip_bg).fg(strip_fg);
-
+    let strip_style = Style::default().bg(strip_bg).fg(theme.fg_dim);
+    let brand_style = Style::default()
+        .bg(strip_bg)
+        .fg(theme.fg_primary)
+        .add_modifier(Modifier::BOLD);
     let active_chip = Style::default()
         .bg(theme.bg_highlight)
         .fg(theme.fg_primary)
@@ -108,7 +73,7 @@ fn render_tab_strip(frame: &mut Frame, app: &App, area: Rect) {
     let inactive_chip = Style::default().bg(strip_bg).fg(theme.fg_dim);
 
     let mut spans: Vec<Span<'static>> = Vec::new();
-    spans.push(Span::styled(" ".to_string(), strip_style));
+    spans.push(Span::styled(" tuicr  ", brand_style));
     spans.push(Span::styled(
         format!(" {TAB_LOCAL} "),
         if local_active {
@@ -131,7 +96,13 @@ fn render_tab_strip(frame: &mut Frame, app: &App, area: Rect) {
 
     let (right_span, right_width) = match active {
         TargetTab::PullRequests => pr_status_hint_span(app, strip_bg),
-        TargetTab::Local => (Span::raw(""), 0),
+        TargetTab::Local => {
+            let vcs_type = &app.vcs_info.vcs_type;
+            let branch = app.vcs_info.branch_name.as_deref().unwrap_or("detached");
+            let content = format!(" {vcs_type}:{branch} ");
+            let width = content.chars().count();
+            (Span::styled(content, strip_style), width)
+        }
     };
 
     let total_width = area.width as usize;
@@ -321,13 +292,13 @@ fn render_pr_list(frame: &mut Frame, app: &App, area: Rect, view: &PrTabView<'_>
             Style::default().fg(theme.fg_secondary)
         };
 
-        // The PR list does not use the bordered-row range model; PRs are
-        // single-select. We still align with the commit-row column layout
-        // for visual consistency: leading cursor, a placeholder for the
-        // range column, and a leading number badge.
+        // PRs are single-select. Mirror the commit-row column layout for
+        // visual consistency (leading cursor + a placeholder column where
+        // the range bar lives on commit rows) and pad title/author so the
+        // date column lands at the same x across rows.
         let number = format!("#{:<5}", row.summary.number);
-        let title = truncate_str(&row.summary.title, 60);
-        let author = row.summary.author.as_deref().unwrap_or("?");
+        let title = truncate_or_pad(&row.summary.title, 60);
+        let author = truncate_or_pad(row.summary.author.as_deref().unwrap_or("?"), 12);
         let updated = row
             .summary
             .updated_at
@@ -626,7 +597,7 @@ mod selector_render_snapshot_tests {
         (start, end)
     }
 
-    const TAB_STRIP_ROW: u16 = 2;
+    const TAB_STRIP_ROW: u16 = 0;
 
     /// True when at least one cell in [x_start, x_end) on row `y` carries
     /// the given background color.
@@ -722,7 +693,7 @@ mod selector_render_snapshot_tests {
         // when
         let buffer = draw(&mut app);
         // then
-        let body = (4..buffer.area.height)
+        let body = (2..buffer.area.height)
             .map(|y| row_text(&buffer, y))
             .collect::<Vec<_>>()
             .join("\n");
@@ -774,7 +745,7 @@ mod selector_render_snapshot_tests {
         // when
         let buffer = draw(&mut app);
         // then
-        let body = (4..buffer.area.height)
+        let body = (2..buffer.area.height)
             .map(|y| row_text(&buffer, y))
             .collect::<Vec<_>>()
             .join("\n");
@@ -798,7 +769,7 @@ mod selector_render_snapshot_tests {
         // when
         let buffer = draw(&mut app);
         // then
-        let body = (4..buffer.area.height)
+        let body = (2..buffer.area.height)
             .map(|y| row_text(&buffer, y))
             .collect::<Vec<_>>()
             .join("\n");
@@ -899,7 +870,7 @@ mod selector_render_snapshot_tests {
         let buffer = draw(&mut app);
         // then
         let frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-        let lines: Vec<String> = (4..buffer.area.height)
+        let lines: Vec<String> = (2..buffer.area.height)
             .map(|y| row_text(&buffer, y))
             .collect();
         let loading_row = lines
@@ -941,7 +912,7 @@ mod selector_render_snapshot_tests {
         // when
         let buffer = draw(&mut app);
         // then — #125 row keeps the cursor arrow
-        let lines: Vec<String> = (4..buffer.area.height)
+        let lines: Vec<String> = (2..buffer.area.height)
             .map(|y| row_text(&buffer, y))
             .collect();
         let cursor_row = lines

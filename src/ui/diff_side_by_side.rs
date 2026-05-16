@@ -49,14 +49,7 @@ struct SideBySideContext<'a> {
 pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focused_panel == FocusedPanel::Diff;
 
-    let title = if app.is_cursor_in_overview() || app.current_file_path().is_none() {
-        " Diff (Side-by-Side) \u{2014} Overview ".to_string()
-    } else {
-        format!(
-            " Diff (Side-by-Side) \u{2014} {} ",
-            app.current_file_path().unwrap().display()
-        )
-    };
+    let title = crate::ui::diff_view::diff_title(app, area.width);
 
     let block = Block::default()
         .title(title)
