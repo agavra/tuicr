@@ -301,20 +301,18 @@ def run_claude_paste(
         # them (the equivalent of Shift+Cmd+V in the terminal), Claude treats
         # the bytes as raw input and renders every line inline.
         send_unbracketed_paste(claude, markdown.rstrip())
-        sleep_and_drain(claude, 4.5)
-
-        # Quit without submitting: two Ctrl-C presses (the first shows the
-        # "press again to exit" hint, the second exits).
-        claude.send("\x03")
-        sleep_and_drain(claude, 0.5)
-        claude.send("\x03")
-        try:
-            claude.expect(pexpect.EOF, timeout=5)
-        except (pexpect.TIMEOUT, pexpect.EOF):
-            pass
+        sleep_and_drain(claude, 3.5)
     finally:
+        # SIGKILL rather than Ctrl-C: the graceful exit dance clears the input
+        # box and the "Press Ctrl-C again to exit" hint, which makes for an
+        # ugly final frame. Hard-killing leaves the full paste on screen and
+        # agg's --last-frame-duration holds that view to close the demo.
         if claude.isalive():
-            claude.terminate(force=True)
+            claude.kill(9)
+            try:
+                claude.expect(pexpect.EOF, timeout=2)
+            except (pexpect.TIMEOUT, pexpect.EOF):
+                pass
 
 
 def main() -> int:
@@ -398,7 +396,6 @@ def main() -> int:
         markdown = resolve_clipboard_markdown(capture.text())
         pretype(capture, "claude", args.typing_delay)
         run_claude_paste(markdown, capture, env, args.cols, args.rows)
-        time.sleep(1.2)
         return 0
     finally:
         if child.isalive():

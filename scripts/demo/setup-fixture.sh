@@ -75,6 +75,100 @@ EOF
 
 cat > src/lib.rs <<'EOF'
 pub mod auth;
+pub mod retry;
+pub mod session_store;
+EOF
+
+cat > src/retry.rs <<'EOF'
+//! Shared retry primitives used by the auth and session modules.
+
+use std::time::Duration;
+
+/// How retries should escalate when an upstream call fails.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetryPolicy {
+    /// Maximum total attempts (including the initial call).
+    pub max_attempts: u32,
+    /// Base backoff applied between attempts.
+    pub base_delay: Duration,
+    /// Hard ceiling for any single backoff interval.
+    pub max_delay: Duration,
+}
+
+impl Default for RetryPolicy {
+    fn default() -> Self {
+        Self {
+            max_attempts: 5,
+            base_delay: Duration::from_millis(500),
+            max_delay: Duration::from_secs(10),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_policy_has_sane_bounds() {
+        let policy = RetryPolicy::default();
+        assert!(policy.max_attempts >= 1);
+        assert!(policy.base_delay <= policy.max_delay);
+    }
+}
+EOF
+
+cat > src/session_store.rs <<'EOF'
+//! In-memory session bookkeeping used to drive auth flows.
+
+use std::collections::HashMap;
+use std::time::Duration;
+
+/// Background bookkeeping cadence for live sessions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StoreTuning {
+    pub heartbeat_interval: Duration,
+    pub eviction_grace: Duration,
+}
+
+impl Default for StoreTuning {
+    fn default() -> Self {
+        Self {
+            heartbeat_interval: Duration::from_secs(60),
+            eviction_grace: Duration::from_secs(300),
+        }
+    }
+}
+
+/// Maps a session id to its current attempt count for the demo fixture.
+#[derive(Debug, Default)]
+pub struct SessionStore {
+    inflight: HashMap<String, u32>,
+}
+
+impl SessionStore {
+    pub fn touch(&mut self, id: &str) {
+        *self.inflight.entry(id.to_string()).or_insert(0) += 1;
+    }
+
+    pub fn attempts(&self, id: &str) -> u32 {
+        self.inflight.get(id).copied().unwrap_or(0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn touch_increments_attempts() {
+        let mut store = SessionStore::default();
+        store.touch("alpha");
+        store.touch("alpha");
+        assert_eq!(store.attempts("alpha"), 2);
+        assert_eq!(store.attempts("beta"), 0);
+    }
+}
 EOF
 
 cat > src/auth.rs <<'EOF'
@@ -171,6 +265,31 @@ commit_with_date "2026-05-01T09:00:00Z" "Create review fixture crate"
 python3 - <<'PY'
 from pathlib import Path
 
+retry_path = Path("src/retry.rs")
+retry_text = retry_path.read_text()
+retry_text = retry_text.replace("max_attempts: 5,", "max_attempts: 3,")
+retry_text = retry_text.replace(
+    "base_delay: Duration::from_millis(500),",
+    "base_delay: Duration::from_millis(250),",
+)
+retry_text = retry_text.replace(
+    "max_delay: Duration::from_secs(10),",
+    "max_delay: Duration::from_secs(2),",
+)
+retry_path.write_text(retry_text)
+
+store_path = Path("src/session_store.rs")
+store_text = store_path.read_text()
+store_text = store_text.replace(
+    "heartbeat_interval: Duration::from_secs(60),",
+    "heartbeat_interval: Duration::from_secs(5),",
+)
+store_text = store_text.replace(
+    "eviction_grace: Duration::from_secs(300),",
+    "eviction_grace: Duration::from_secs(30),",
+)
+store_path.write_text(store_text)
+
 path = Path("src/auth.rs")
 old = path.read_text()
 new = """//! Authentication helpers used by the tuicr-demo crate.
@@ -262,7 +381,7 @@ mod tests {
 path.write_text(new)
 PY
 
-git add src/auth.rs
+git add src/auth.rs src/retry.rs src/session_store.rs
 commit_with_date "2026-05-01T09:05:00Z" "Shorten session token timeout"
 
 python3 - <<'PY'
