@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.14.1] - 2026-05-16
+
+### Ui
+
+- Make it more beauitful (#314)
 ## [0.14.0] - 2026-05-16
 
 ### Documentation
