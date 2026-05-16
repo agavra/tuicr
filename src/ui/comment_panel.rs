@@ -5,12 +5,69 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
 };
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::App;
 use crate::model::LineRange;
 use crate::theme::Theme;
 use crate::ui::styles;
+
+/// Content prefix used on every comment-body line. 4 pad chars + `│` + 2 spaces.
+/// The 4-char left pad lets the bar painter draw `│` up through diff lines
+/// without colliding with the col-6 `▌` add/del prefix.
+const BORDER_PREFIX: &str = "    │  ";
+const BORDER_PREFIX_WIDTH: usize = 7;
+
+/// Split `text` into segments whose display width each fits within `content_area`.
+/// Returns a single-element vec when the text already fits. The returned slices
+/// borrow from `text`, so the caller must keep `text` alive while iterating.
+fn wrap_segments(text: &str, content_area: usize) -> Vec<&str> {
+    if content_area == 0 || text.width() <= content_area {
+        return vec![text];
+    }
+    let mut segments = Vec::new();
+    let mut remaining = text;
+    while !remaining.is_empty() {
+        let mut take_bytes = 0usize;
+        let mut taken_width = 0usize;
+        for c in remaining.chars() {
+            let cw = UnicodeWidthChar::width(c).unwrap_or(0);
+            if taken_width + cw > content_area {
+                break;
+            }
+            taken_width += cw;
+            take_bytes += c.len_utf8();
+        }
+        // Single character wider than content_area — emit it anyway so we don't loop forever
+        if take_bytes == 0 {
+            take_bytes = remaining.chars().next().map_or(0, |c| c.len_utf8());
+        }
+        let (seg, rest) = remaining.split_at(take_bytes);
+        segments.push(seg);
+        remaining = rest;
+    }
+    segments
+}
+
+/// Push spans for a text segment containing the cursor. The cursor is rendered
+/// as a styled span on the character at the split point, or a trailing space
+/// when the cursor is at end-of-segment.
+fn push_cursor_spans(
+    spans: &mut Vec<Span<'static>>,
+    before: &str,
+    after: &str,
+    cursor_style: Style,
+) {
+    spans.push(Span::raw(before.to_string()));
+    let mut chars = after.chars();
+    match chars.next() {
+        Some(cursor_char) => {
+            spans.push(Span::styled(cursor_char.to_string(), cursor_style));
+            spans.push(Span::raw(chars.as_str().to_string()));
+        }
+        None => spans.push(Span::styled(" ", cursor_style)),
+    }
+}
 
 /// Information about where the cursor should be positioned within comment input
 #[derive(Debug, Clone)]
@@ -35,6 +92,7 @@ pub struct CommentTypePresentation {
 ///
 /// Returns a tuple of (lines, cursor_info) where cursor_info contains the position
 /// of the cursor within the formatted output for IME positioning.
+#[allow(clippy::too_many_arguments)]
 pub fn format_comment_input_lines(
     theme: &Theme,
     comment_type: CommentTypePresentation,
@@ -43,6 +101,7 @@ pub fn format_comment_input_lines(
     line_range: Option<LineRange>,
     is_editing: bool,
     supports_keyboard_enhancement: bool,
+    width: usize,
 ) -> (Vec<Line<'static>>, CommentCursorInfo) {
     let type_style = styles::comment_type_style(theme, comment_type.color);
     let border_style = styles::comment_border_style(theme, comment_type.color);
@@ -63,14 +122,12 @@ pub fn format_comment_input_lines(
         "Ctrl-J"
     };
 
+    // "    │  " is the per-line content prefix; everything past that is content.
+    let content_area = width.saturating_sub(BORDER_PREFIX_WIDTH);
+
     let mut result = Vec::new();
-    // Box left edge sits at col 5 (after the 1-col cursor indicator + 4 pad
-    // chars) so the bar painter can extend a `│` up through the diff lines
-    // the comment covers without colliding with the col-6 `▌` add/del prefix.
-    let border_prefix = "    │  ";
-    let border_width = border_prefix.width() as u16;
     let mut cursor_line_offset: usize = 1;
-    let mut cursor_column: u16 = border_width;
+    let mut cursor_column: u16 = BORDER_PREFIX_WIDTH as u16;
 
     // Top-left corner becomes `├` when a line range is present — the bar
     // painter then draws `│` going up through the range and a `╭` at the
@@ -97,64 +154,67 @@ pub fn format_comment_input_lines(
     if buffer.is_empty() {
         // Show placeholder with cursor at start
         result.push(Line::from(vec![
-            Span::styled(border_prefix, border_style),
+            Span::styled(BORDER_PREFIX, border_style),
             Span::styled(" ", cursor_style),
             Span::styled("Type your comment...", styles::dim_style(theme)),
         ]));
         // cursor_line_offset is already 1 (first content line)
-        // cursor_column is already border_width (cursor at start of content)
+        // cursor_column is already BORDER_PREFIX_WIDTH (cursor at start of content)
     } else {
-        // Split buffer into lines and render with cursor
         let buffer_lines: Vec<&str> = buffer.split('\n').collect();
-        let mut char_offset = 0;
+        let mut byte_offset = 0;
+        // Tracks how many visual lines have been pushed so far (not counting the header).
+        let mut total_visual_lines: usize = 0;
 
         for (line_idx, text) in buffer_lines.iter().enumerate() {
-            let line_start = char_offset;
-            let line_end = char_offset + text.len();
+            let line_start = byte_offset;
+            let line_end = byte_offset + text.len();
+            let is_last_logical = line_idx + 1 == buffer_lines.len();
 
             // Check if cursor is on this line
             let cursor_on_this_line = cursor_pos >= line_start
-                && (cursor_pos <= line_end
-                    || (line_idx == buffer_lines.len() - 1 && cursor_pos == buffer.len()));
+                && (cursor_pos <= line_end || (is_last_logical && cursor_pos == buffer.len()));
 
-            let mut line_spans = vec![Span::styled(border_prefix, border_style)];
+            // Pre-wrap this logical line into segments so ratatui never wraps it.
+            // Short lines come back as a single-element vec.
+            let segments = wrap_segments(text, content_area);
+            let mut seg_byte_start = 0usize;
 
-            if cursor_on_this_line {
-                let cursor_pos_in_line = cursor_pos - line_start;
-                let cursor_pos_in_line = cursor_pos_in_line.min(text.len());
-                let (before_cursor, after_cursor) = text.split_at(cursor_pos_in_line);
+            for (seg_idx, seg) in segments.iter().enumerate() {
+                let seg_start = line_start + seg_byte_start;
+                let seg_end = seg_start + seg.len();
+                let is_last_seg = seg_idx + 1 == segments.len();
+                let cursor_in_seg = cursor_on_this_line
+                    && cursor_pos >= seg_start
+                    && (cursor_pos < seg_end || is_last_seg);
 
-                // Track cursor position for IME
-                // line_offset: header (1) + current content line index
-                cursor_line_offset = 1 + line_idx;
-                // column: border width + display width of text before cursor
-                cursor_column = border_width + before_cursor.width() as u16;
+                let mut line_spans = vec![Span::styled(BORDER_PREFIX, border_style)];
 
-                if after_cursor.is_empty() {
-                    line_spans.push(Span::raw(before_cursor.to_string()));
-                    line_spans.push(Span::styled(" ", cursor_style));
+                if cursor_in_seg {
+                    let cursor_pos_in_seg = (cursor_pos - seg_start).min(seg.len());
+                    let (before, after) = seg.split_at(cursor_pos_in_seg);
+
+                    // Track cursor position for IME
+                    cursor_line_offset = 1 + total_visual_lines;
+                    cursor_column = BORDER_PREFIX_WIDTH as u16 + before.width() as u16;
+                    push_cursor_spans(&mut line_spans, before, after, cursor_style);
                 } else {
-                    let mut chars = after_cursor.chars();
-                    let cursor_char = chars.next().unwrap();
-                    let remaining = chars.as_str();
-                    line_spans.push(Span::raw(before_cursor.to_string()));
-                    line_spans.push(Span::styled(cursor_char.to_string(), cursor_style));
-                    line_spans.push(Span::raw(remaining.to_string()));
+                    line_spans.push(Span::raw(seg.to_string()));
                 }
-            } else {
-                line_spans.push(Span::raw(text.to_string()));
+
+                result.push(Line::from(line_spans));
+                total_visual_lines += 1;
+                seg_byte_start += seg.len();
             }
 
-            result.push(Line::from(line_spans));
-
             // Account for newline character (except for last line)
-            char_offset = line_end + 1;
+            byte_offset = line_end + 1;
         }
     }
 
-    // Bottom border
+    // Bottom border — "    ╰" = 5 chars, fill to width
     result.push(Line::from(vec![Span::styled(
-        "    ╰".to_string() + &"─".repeat(39),
+        "    ╰".to_string() + &"─".repeat(width.saturating_sub(5)),
         border_style,
     )]));
 
@@ -254,6 +314,7 @@ pub fn format_comment_lines(
     comment_type: CommentTypePresentation,
     content: &str,
     line_range: Option<LineRange>,
+    width: usize,
 ) -> Vec<Line<'static>> {
     let type_style = styles::comment_type_style(theme, comment_type.color);
     let border_style = styles::comment_border_style(theme, comment_type.color);
@@ -263,6 +324,10 @@ pub fn format_comment_lines(
         Some(range) => format!("L{}-L{} ", range.start, range.end),
         None => String::new(),
     };
+
+    // "    │  " is the per-line content prefix; everything past that is content.
+    let content_area = width.saturating_sub(BORDER_PREFIX_WIDTH);
+
     let content_lines: Vec<&str> = content.split('\n').collect();
 
     let mut result = Vec::new();
@@ -270,25 +335,29 @@ pub fn format_comment_lines(
     let top_corner = if line_range.is_some() { '├' } else { '╭' };
     let top_prefix = format!("    {top_corner}── ");
 
-    // Top border with type label
+    // Top border — fill dynamically so total line = width.
+    // top_prefix = 8, "[LABEL] " = label.len()+3, line_info = variable
+    let top_fill = width.saturating_sub(8 + comment_type.label.len() + 3 + line_info.width());
     result.push(Line::from(vec![
         Span::styled(top_prefix, border_style),
         Span::styled(format!("[{}] ", comment_type.label), type_style),
         Span::styled(line_info, styles::dim_style(theme)),
-        Span::styled("─".repeat(30), border_style),
+        Span::styled("─".repeat(top_fill), border_style),
     ]));
 
-    // Content lines
+    // Content lines — pre-wrap at content_area so ratatui never wraps them
     for line in &content_lines {
-        result.push(Line::from(vec![
-            Span::styled("    │  ", border_style),
-            Span::raw(line.to_string()),
-        ]));
+        for seg in wrap_segments(line, content_area) {
+            result.push(Line::from(vec![
+                Span::styled(BORDER_PREFIX, border_style),
+                Span::raw(seg.to_string()),
+            ]));
+        }
     }
 
-    // Bottom border
+    // Bottom border — "    ╰" = 5 chars, fill to width
     result.push(Line::from(vec![Span::styled(
-        "    ╰".to_string() + &"─".repeat(39),
+        "    ╰".to_string() + &"─".repeat(width.saturating_sub(5)),
         border_style,
     )]));
 
@@ -346,6 +415,106 @@ mod tests {
         Theme::default()
     }
 
+    // -- wrap_segments tests --
+
+    #[test]
+    fn wrap_segments_returns_single_segment_when_text_fits() {
+        // given
+        let text = "hello";
+
+        // when
+        let segments = wrap_segments(text, 80);
+
+        // then
+        assert_eq!(segments, vec!["hello"]);
+    }
+
+    #[test]
+    fn wrap_segments_returns_single_segment_for_empty_text() {
+        // given
+        let text = "";
+
+        // when
+        let segments = wrap_segments(text, 80);
+
+        // then
+        assert_eq!(segments, vec![""]);
+    }
+
+    #[test]
+    fn wrap_segments_returns_text_unchanged_when_content_area_is_zero() {
+        // given
+        let text = "anything";
+
+        // when
+        let segments = wrap_segments(text, 0);
+
+        // then
+        assert_eq!(segments, vec!["anything"]);
+    }
+
+    #[test]
+    fn wrap_segments_splits_long_ascii_at_content_area() {
+        // given
+        let text = "hello world";
+
+        // when - content_area=5 means each segment is at most 5 display cols
+        let segments = wrap_segments(text, 5);
+
+        // then
+        assert_eq!(segments, vec!["hello", " worl", "d"]);
+    }
+
+    #[test]
+    fn wrap_segments_respects_cjk_display_width() {
+        // given - each CJK char is 2 display cols, total = 8 cols, 12 bytes
+        let text = "中文测试";
+
+        // when - content_area=4 fits exactly 2 CJK chars per segment
+        let segments = wrap_segments(text, 4);
+
+        // then
+        assert_eq!(segments, vec!["中文", "测试"]);
+    }
+
+    #[test]
+    fn wrap_segments_handles_mixed_ascii_and_cjk() {
+        // given - 'a'(1) + '中'(2) + 'b'(1) + '文'(2) = 6 display cols
+        let text = "a中b文";
+
+        // when - content_area=3 fits "a中" (1+2=3), then "b文" (1+2=3)
+        let segments = wrap_segments(text, 3);
+
+        // then
+        assert_eq!(segments, vec!["a中", "b文"]);
+    }
+
+    #[test]
+    fn wrap_segments_emits_oversized_char_to_avoid_infinite_loop() {
+        // given - '中' is 2 cols wide but content_area only allows 1
+        let text = "中a";
+
+        // when
+        let segments = wrap_segments(text, 1);
+
+        // then - '中' is emitted even though it exceeds content_area
+        assert_eq!(segments, vec!["中", "a"]);
+    }
+
+    #[test]
+    fn wrap_segments_handles_exact_width_boundary() {
+        // given - text exactly fills content_area
+        let text = "12345";
+
+        // when
+        let segments = wrap_segments(text, 5);
+
+        // then - single segment, no spurious empty trailing segment
+        assert_eq!(segments, vec!["12345"]);
+    }
+
+    // -- format_comment_input_lines tests --
+
     #[test]
     fn should_return_cursor_at_start_for_empty_buffer() {
         // given
@@ -363,6 +532,7 @@ mod tests {
             None,
             false,
             false,
+            80,
         );
 
         // then
@@ -390,6 +560,7 @@ mod tests {
             None,
             false,
             false,
+            80,
         );
 
         // then
@@ -416,6 +587,7 @@ mod tests {
             None,
             false,
             false,
+            80,
         );
 
         // then
@@ -443,6 +615,7 @@ mod tests {
             None,
             false,
             false,
+            80,
         );
 
         // then
@@ -469,6 +642,7 @@ mod tests {
             None,
             false,
             false,
+            80,
         );
 
         // then
@@ -496,6 +670,7 @@ mod tests {
             None,
             false,
             false,
+            80,
         );
 
         // then
