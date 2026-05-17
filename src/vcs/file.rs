@@ -52,10 +52,7 @@ impl FileBackend {
         let metadata = std::fs::metadata(&canonical)?;
 
         let (root_path, files) = if metadata.is_file() {
-            let root = canonical
-                .parent()
-                .unwrap_or(Path::new("/"))
-                .to_path_buf();
+            let root = canonical.parent().unwrap_or(Path::new("/")).to_path_buf();
             (root, vec![(canonical, metadata.len())])
         } else if metadata.is_dir() {
             let files = collect_text_files(&canonical);
@@ -309,13 +306,7 @@ mod tests {
 
         let names: Vec<_> = diffs
             .iter()
-            .map(|d| {
-                d.new_path
-                    .as_ref()
-                    .unwrap()
-                    .to_string_lossy()
-                    .into_owned()
-            })
+            .map(|d| d.new_path.as_ref().unwrap().to_string_lossy().into_owned())
             .collect();
 
         assert_eq!(names, vec!["kept.txt"]);
