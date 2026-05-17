@@ -25,6 +25,7 @@ wrap = false
 cursor_line = true
 transparent_background = true
 scroll_offset = 5
+no_update_check = false
 
 backend = "libgit2"
 
@@ -53,6 +54,7 @@ comment_types = [
 | `cursor_line` | `true` | Highlight the current cursor line and visual selection. |
 | `transparent_background` | `true` | Let the terminal background show through panels. `false` paints the theme's `panel_bg`. |
 | `scroll_offset` | `0` | Minimum lines visible above and below the cursor when scrolling (like Vim's `scrolloff`). |
+| `no_update_check` | `false` | Skip startup update check when `true`. |
 | `backend` | `libgit2` | Git backend: `libgit2` or `cli`. Sparse-checkout repos auto-route to `cli`. |
 | `comment_types` | (built-in) | Comment categories. See [Comment types](#comment-types). |
 

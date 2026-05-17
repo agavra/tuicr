@@ -56,6 +56,7 @@ pub struct AppConfig {
     pub leader: Option<char>,
     pub transparent_background: Option<bool>,
     pub scroll_offset: Option<usize>,
+    pub no_update_check: Option<bool>,
     /// `[forge]` section settings. Always present; `None` means "no override"
     /// and downstream code should treat it as `ForgeConfig::default()`.
     pub forge: Option<ForgeConfig>,
@@ -78,6 +79,7 @@ const KNOWN_KEYS: &[&str] = &[
     "leader",
     "transparent_background",
     "scroll_offset",
+    "no_update_check",
     "forge",
 ];
 
@@ -263,6 +265,7 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         leader: read_leader(table, &mut warnings),
         transparent_background: read_bool(table, "transparent_background", &mut warnings),
         scroll_offset: read_usize(table, "scroll_offset", &mut warnings),
+        no_update_check: read_bool(table, "no_update_check", &mut warnings),
         forge: table
             .get("forge")
             .and_then(|v| parse_forge(v, &mut warnings)),
@@ -821,6 +824,52 @@ mod tests {
         assert_eq!(
             outcome.warnings[0],
             "Warning: Config key 'leader' must be a string; ignoring value"
+        );
+    }
+
+    // no_update_check
+
+    #[test]
+    fn should_parse_no_update_check_true() {
+        let outcome = parse_config("no_update_check = true\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.no_update_check),
+            Some(true)
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_parse_no_update_check_false() {
+        let outcome = parse_config("no_update_check = false\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.no_update_check),
+            Some(false)
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_default_no_update_check_to_none() {
+        let outcome = parse_config("\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.no_update_check),
+            None
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_warn_and_ignore_no_update_check_with_invalid_type() {
+        let outcome = parse_config("no_update_check = \"yes\"\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.no_update_check),
+            None
+        );
+        assert_eq!(outcome.warnings.len(), 1);
+        assert_eq!(
+            outcome.warnings[0],
+            "Warning: Config key 'no_update_check' must be a boolean; ignoring value"
         );
     }
 

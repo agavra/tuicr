@@ -143,8 +143,15 @@ fn main() -> anyhow::Result<()> {
         theme.panel_bg = ratatui::style::Color::Reset;
     }
 
+    let no_update_check = cli_args.no_update_check
+        || config_outcome
+            .config
+            .as_ref()
+            .and_then(|cfg| cfg.no_update_check)
+            .unwrap_or(false);
+
     // Start update check in background (non-blocking)
-    let update_rx = if !cli_args.no_update_check {
+    let update_rx = if !no_update_check {
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
             let result = update::check_for_updates();
