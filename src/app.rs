@@ -1097,8 +1097,11 @@ impl App {
                 None, // no path_filter
             )?;
 
-            // Hide file list since there's only one file
-            app.show_file_list = false;
+            // Hide the file list only when reviewing a single file; in
+            // directory mode the user needs the list to navigate.
+            if app.diff_files.len() == 1 {
+                app.show_file_list = false;
+            }
             app.focused_panel = FocusedPanel::Diff;
 
             return Ok(app);
