@@ -30,13 +30,26 @@ impl Libgit2Backend {
             .map(|c| c.id().to_string())
             .unwrap_or_else(|| "HEAD".to_string());
 
-        let branch_name = repo.head().ok().and_then(|h| {
-            if h.is_branch() {
-                h.shorthand().map(|s| s.to_string())
-            } else {
-                None
-            }
-        });
+        // For unborn HEAD (fresh `git init` / `git clone` of an empty remote),
+        // `repo.head()` errors, so fall back to reading HEAD's symbolic target
+        // directly. That way the status bar still shows e.g. `git:main` instead
+        // of `git:detached` before the first commit lands.
+        let branch_name = repo
+            .head()
+            .ok()
+            .and_then(|h| {
+                if h.is_branch() {
+                    h.shorthand().map(|s| s.to_string())
+                } else {
+                    None
+                }
+            })
+            .or_else(|| {
+                repo.find_reference("HEAD")
+                    .ok()
+                    .and_then(|r| r.symbolic_target().map(str::to_string))
+                    .and_then(|t| t.strip_prefix("refs/heads/").map(str::to_string))
+            });
 
         let info = VcsInfo {
             root_path,

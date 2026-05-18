@@ -10,19 +10,25 @@ pub fn get_working_tree_diff(
     repo: &Repository,
     highlighter: &SyntaxHighlighter,
 ) -> Result<Vec<DiffFile>> {
-    let head = repo.head()?.peel_to_tree()?;
+    // Unborn HEAD (fresh `git init` / `git clone` of an empty remote) has no
+    // tree to compare against; diff against an empty baseline so freshly
+    // staged/added files still surface in the working-tree review.
+    let head = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
 
     let mut opts = DiffOptions::new();
     opts.include_untracked(true);
     opts.show_untracked_content(true);
     opts.recurse_untracked_dirs(true);
 
-    let diff = repo.diff_tree_to_workdir_with_index(Some(&head), Some(&mut opts))?;
+    let diff = repo.diff_tree_to_workdir_with_index(head.as_ref(), Some(&mut opts))?;
     let mut files = parse_diff(&diff, highlighter)?;
     enhance_with_full_file_highlight(
         &mut files,
         highlighter,
-        |path| read_path_from_tree(repo, &head, path),
+        |path| {
+            head.as_ref()
+                .and_then(|tree| read_path_from_tree(repo, tree, path))
+        },
         |path| read_path_from_workdir(repo, path),
     );
     Ok(files)
@@ -444,5 +450,27 @@ mod tests {
             get_unstaged_diff(&repo, &highlighter),
             Err(TuicrError::NoChanges)
         ));
+    }
+
+    #[test]
+    fn should_surface_staged_files_on_unborn_head() {
+        // given a freshly initialised repo with a staged file but no commits
+        // (the "naked clone" / `git init` state — HEAD is unborn)
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let repo = Repository::init(temp_dir.path()).expect("failed to init repo");
+        fs::write(temp_dir.path().join("file.txt"), "hello\n").expect("write file");
+        let mut index = repo.index().expect("open index");
+        index.add_path(Path::new("file.txt")).expect("stage file");
+        index.write().expect("write index");
+
+        // when
+        let files = get_working_tree_diff(&repo, &SyntaxHighlighter::default())
+            .expect("unborn HEAD should produce a diff against an empty tree");
+
+        // then the staged file shows up as an addition rather than crashing
+        // with `reference 'refs/heads/main' not found`
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].display_path(), Path::new("file.txt"));
+        assert!(matches!(files[0].status, FileStatus::Added));
     }
 }

@@ -65,6 +65,18 @@ pub fn get_recent_commits(
     offset: usize,
     limit: usize,
 ) -> Result<Vec<CommitInfo>> {
+    // Unborn HEAD (fresh `git init` / `git clone` of an empty remote): the
+    // branch ref does not point at a commit yet, so there is nothing to walk.
+    // Probe with `repo.head()` — `revwalk.push_head()` rewraps the underlying
+    // "reference not found" error with a generic code, which would slip past
+    // an `ErrorCode::UnbornBranch` check. Treat unborn HEAD as zero commits
+    // so App startup falls through to the staged/unstaged paths.
+    if matches!(
+        repo.head().map_err(|e| e.code()),
+        Err(git2::ErrorCode::UnbornBranch | git2::ErrorCode::NotFound)
+    ) {
+        return Ok(Vec::new());
+    }
     let mut revwalk = repo.revwalk()?;
     revwalk.push_head()?;
     let branch_tip_names = get_branch_tip_names(repo);
@@ -187,4 +199,24 @@ pub fn resolve_revisions(repo: &Repository, revisions: &str) -> Result<Vec<Strin
     // revwalk outputs newest first; reverse so oldest is first
     commit_ids.reverse();
     Ok(commit_ids)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn should_return_empty_recent_commits_for_unborn_head() {
+        // given a fresh `git init` repo (HEAD points at refs/heads/main but
+        // the ref does not exist yet — the "naked clone" state)
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let repo = Repository::init(temp_dir.path()).expect("failed to init repo");
+
+        // when
+        let result = get_recent_commits(&repo, 0, 50);
+
+        // then unborn HEAD is treated as zero commits, not an error
+        let commits = result.expect("unborn HEAD should yield an empty list");
+        assert!(commits.is_empty(), "unborn HEAD has no commits to walk");
+    }
 }

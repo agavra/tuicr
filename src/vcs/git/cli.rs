@@ -253,6 +253,13 @@ impl VcsBackend for GitCliBackend {
     }
 
     fn get_recent_commits(&self, offset: usize, limit: usize) -> Result<Vec<CommitInfo>> {
+        // Unborn HEAD (fresh `git init` / `git clone` of an empty remote):
+        // `git log` returns 128 with "does not have any commits yet". Detect
+        // that up-front and return an empty list so startup can fall through
+        // to the staged/unstaged paths.
+        if run_git_command(&self.root_path, &["rev-parse", "--verify", "HEAD"]).is_err() {
+            return Ok(Vec::new());
+        }
         let branch_tip_names = get_branch_tip_names(&self.root_path);
         let output = run_git_command_args(
             &self.root_path,
