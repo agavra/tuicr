@@ -171,6 +171,7 @@ fn session_filename(session: &ReviewSession) -> String {
         SessionDiffSource::WorkingTreeAndCommits => "worktree_and_commits",
         SessionDiffSource::StagedUnstagedAndCommits => "staged_unstaged_and_commits",
         SessionDiffSource::PullRequest => "pr",
+        SessionDiffSource::Pristine => "pristine",
     };
 
     let timestamp = session.created_at.format("%Y%m%d_%H%M%S");
@@ -259,6 +260,7 @@ pub fn load_latest_session_for_context(
         SessionDiffSource::CommitRange => "commits",
         SessionDiffSource::WorkingTreeAndCommits => "worktree_and_commits",
         SessionDiffSource::StagedUnstagedAndCommits => "staged_unstaged_and_commits",
+        SessionDiffSource::Pristine => "pristine",
         // PR sessions are looked up via `load_pr_session`. If a caller asks
         // for the local-session loader with this diff source, return nothing.
         SessionDiffSource::PullRequest => return Ok(None),
@@ -361,8 +363,19 @@ pub fn load_latest_session_for_context(
 
         let session_branch = session.branch_name.as_deref();
         if session_branch == branch_name {
-            if branch_name.is_none() && session.base_commit != head_commit {
-                continue;
+            if branch_name.is_none() {
+                // Pristine sessions key on the path-list hash, not the HEAD
+                // sha, so an advancing HEAD after `git pull` still reloads
+                // the same comments. Other branch-less sessions fall back to
+                // exact head_commit comparison.
+                let exact_match = if matches!(diff_source, SessionDiffSource::Pristine) {
+                    pristine_keys_match(&session.base_commit, head_commit)
+                } else {
+                    session.base_commit == head_commit
+                };
+                if !exact_match {
+                    continue;
+                }
             }
 
             return Ok(Some((path, session)));
@@ -379,6 +392,26 @@ pub fn load_latest_session_for_context(
     }
 
     Ok(legacy_candidate)
+}
+
+/// Match two pristine session keys by their path-hash suffix.
+///
+/// Pristine `base_commit` values have the shape `"pristine:<head>:<hash>"`.
+/// Two sessions belong to the same review if they share the same path-list
+/// hash, regardless of HEAD; the prefix and trailing hash must both match.
+fn pristine_keys_match(a: &str, b: &str) -> bool {
+    let Some(a_hash) = pristine_key_hash(a) else {
+        return false;
+    };
+    let Some(b_hash) = pristine_key_hash(b) else {
+        return false;
+    };
+    a_hash == b_hash
+}
+
+fn pristine_key_hash(key: &str) -> Option<&str> {
+    let rest = key.strip_prefix("pristine:")?;
+    rest.rsplit_once(':').map(|(_, hash)| hash)
 }
 
 #[cfg(test)]
@@ -1085,5 +1118,136 @@ mod tests {
         // then each load returns its matching PR
         assert_eq!(loaded_a.1.pr_session_key.as_ref(), Some(&key_a));
         assert_eq!(loaded_b.1.pr_session_key.as_ref(), Some(&key_b));
+    }
+
+    // ---------- Pristine session key tests ----------
+
+    #[test]
+    fn pristine_key_hash_extracts_trailing_segment() {
+        assert_eq!(pristine_key_hash("pristine:abc1234:9f0a"), Some("9f0a"));
+        assert_eq!(pristine_key_hash("pristine:none:0000"), Some("0000"));
+        assert_eq!(pristine_key_hash("worktree:abc1234"), None);
+        assert_eq!(pristine_key_hash("pristine:no-trailing-hash"), None);
+    }
+
+    #[test]
+    fn pristine_keys_match_when_path_hash_equal_even_if_head_changed() {
+        assert!(pristine_keys_match(
+            "pristine:abc1234:9f0a",
+            "pristine:def5678:9f0a"
+        ));
+        assert!(!pristine_keys_match(
+            "pristine:abc1234:9f0a",
+            "pristine:def5678:beef"
+        ));
+        assert!(!pristine_keys_match(
+            "pristine:abc1234:9f0a",
+            "worktree:abc1234"
+        ));
+    }
+
+    #[test]
+    fn pristine_session_reloads_after_head_advance() {
+        let _guard = with_test_reviews_dir();
+        let repo_path =
+            std::env::temp_dir().join(format!("tuicr-pristine-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&repo_path).unwrap();
+
+        let session = create_session(
+            repo_path.clone(),
+            "pristine:abc1234:9f0a",
+            None,
+            SessionDiffSource::Pristine,
+            None,
+        );
+        let saved_path = save_session(&session).unwrap();
+
+        // HEAD advanced; the new key shares the same path hash suffix.
+        let loaded = load_latest_session_for_context(
+            &repo_path,
+            None,
+            "pristine:def5678:9f0a",
+            SessionDiffSource::Pristine,
+            None,
+        )
+        .unwrap();
+        assert!(
+            loaded.is_some(),
+            "advanced HEAD must still find the session"
+        );
+        assert_eq!(loaded.unwrap().0, saved_path);
+    }
+
+    #[test]
+    fn pristine_session_does_not_reload_when_path_hash_differs() {
+        let _guard = with_test_reviews_dir();
+        let repo_path =
+            std::env::temp_dir().join(format!("tuicr-pristine-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&repo_path).unwrap();
+
+        let session = create_session(
+            repo_path.clone(),
+            "pristine:abc1234:aaaa",
+            None,
+            SessionDiffSource::Pristine,
+            None,
+        );
+        save_session(&session).unwrap();
+
+        let loaded = load_latest_session_for_context(
+            &repo_path,
+            None,
+            "pristine:abc1234:bbbb",
+            SessionDiffSource::Pristine,
+            None,
+        )
+        .unwrap();
+        assert!(
+            loaded.is_none(),
+            "different path-hash must NOT match a stored pristine session"
+        );
+    }
+
+    #[test]
+    fn pristine_session_does_not_collide_with_single_file_session() {
+        let _guard = with_test_reviews_dir();
+        let repo_path =
+            std::env::temp_dir().join(format!("tuicr-pristine-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&repo_path).unwrap();
+
+        // Single-file `--file` session at the same root_path uses base_commit "file".
+        let single = create_session(
+            repo_path.clone(),
+            "file",
+            None,
+            SessionDiffSource::WorkingTree,
+            None,
+        );
+        save_session(&single).unwrap();
+
+        // Pristine session at the same root_path uses base_commit "pristine:...".
+        let pristine = create_session(
+            repo_path.clone(),
+            "pristine:abc1234:9f0a",
+            None,
+            SessionDiffSource::Pristine,
+            None,
+        );
+        let pristine_path = save_session(&pristine).unwrap();
+
+        let loaded = load_latest_session_for_context(
+            &repo_path,
+            None,
+            "pristine:abc1234:9f0a",
+            SessionDiffSource::Pristine,
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            loaded.0, pristine_path,
+            "pristine loader must return the pristine session, not the --file one"
+        );
+        assert_eq!(loaded.1.diff_source, SessionDiffSource::Pristine);
     }
 }

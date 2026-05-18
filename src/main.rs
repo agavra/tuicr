@@ -81,7 +81,7 @@ fn main() -> anyhow::Result<()> {
         matches!(supports_keyboard_enhancement(), Ok(true))
     };
 
-    // --file is mutually exclusive with --path, -r, and -w
+    // --file is mutually exclusive with --path, -r, -w, and --all-files
     if cli_args.file_path.is_some() {
         if cli_args.path_filter.is_some() {
             eprintln!("Error: --file cannot be combined with --path");
@@ -93,6 +93,27 @@ fn main() -> anyhow::Result<()> {
         }
         if cli_args.working_tree {
             eprintln!("Error: --file cannot be combined with -w/--working-tree");
+            std::process::exit(2);
+        }
+        if cli_args.all_files {
+            eprintln!("Error: --file cannot be combined with -A/--all-files");
+            std::process::exit(2);
+        }
+    }
+
+    // --all-files is mutually exclusive with --path, -r, and -w (--file
+    // already covered above)
+    if cli_args.all_files {
+        if cli_args.path_filter.is_some() {
+            eprintln!("Error: --all-files cannot be combined with --path");
+            std::process::exit(2);
+        }
+        if cli_args.revisions.is_some() {
+            eprintln!("Error: --all-files cannot be combined with -r/--revisions");
+            std::process::exit(2);
+        }
+        if cli_args.working_tree {
+            eprintln!("Error: --all-files cannot be combined with -w/--working-tree");
             std::process::exit(2);
         }
     }
@@ -183,6 +204,7 @@ fn main() -> anyhow::Result<()> {
                 working_tree: cli_args.working_tree,
                 path_filter: cli_args.path_filter.as_deref(),
                 file_path: cli_args.file_path.as_deref(),
+                all_files: cli_args.all_files,
                 git_backend_preference,
                 pr_target: cli_args.pr_target.as_deref(),
             },
@@ -208,9 +230,15 @@ fn main() -> anyhow::Result<()> {
             // startup errors — `tuicr pr <bad-url>`, forge auth issues,
             // missing PR, `--file <missing-path>` — the hint is wrong.
             if matches!(e, crate::error::TuicrError::NotARepository) {
-                eprintln!(
-                    "\nMake sure you're in a git, jujutsu, or mercurial repository with commits or staged/unstaged changes."
-                );
+                if cli_args.all_files {
+                    eprintln!(
+                        "\ntuicr --all-files requires a git repository with tracked files. Run `git init && git add -A` to bootstrap one."
+                    );
+                } else {
+                    eprintln!(
+                        "\nMake sure you're in a git, jujutsu, or mercurial repository with commits or staged/unstaged changes."
+                    );
+                }
             }
             std::process::exit(1);
         }
@@ -256,7 +284,9 @@ fn main() -> anyhow::Result<()> {
             app.show_file_list = false;
             app.focused_panel = FocusedPanel::Diff;
         }
-        if cfg.diff_view.as_deref() == Some("side-by-side") {
+        // Pristine mode has no diff, so side-by-side would render two
+        // identical panes. Honor the config for every other mode.
+        if cfg.diff_view.as_deref() == Some("side-by-side") && !app.is_pristine_mode {
             app.diff_view_mode = app::DiffViewMode::SideBySide;
         }
         if let Some(wrap) = cfg.wrap {

@@ -872,6 +872,10 @@ pub struct App {
     pub pending_confirm: Option<ConfirmAction>,
     pub supports_keyboard_enhancement: bool,
     pub show_file_list: bool,
+    /// `true` when the session was opened via `--all-files`. Drives the
+    /// `PRISTINE · N files` chip in the status bar and prevents that chip
+    /// from showing in the regular `--file <dir>` directory mode.
+    pub is_pristine_mode: bool,
     pub cursor_line_highlight: bool,
     pub leader_key: char,
     pub scroll_offset: usize,
@@ -1055,6 +1059,9 @@ pub struct AppStartupOptions<'a> {
     pub working_tree: bool,
     pub path_filter: Option<&'a str>,
     pub file_path: Option<&'a str>,
+    /// Whole-repo annotation mode (`--all-files`). Mutually exclusive with
+    /// the other selectors; the binary validates that before reaching here.
+    pub all_files: bool,
     pub git_backend_preference: GitBackendPreference,
     /// Direct PR target (`tuicr pr <target>`). Mutually exclusive with the
     /// other selectors above; the binary validates that before reaching here.
@@ -1103,6 +1110,64 @@ impl App {
                 app.show_file_list = false;
             }
             app.focused_panel = FocusedPanel::Diff;
+
+            return Ok(app);
+        }
+
+        // --all-files mode: enumerate every tracked file via `git ls-files`
+        // and render in context-only mode for whole-repo annotation. Git-only
+        // for MVP; non-git invocation surfaces as `NotARepository`.
+        if options.all_files {
+            let cwd = std::env::current_dir()
+                .map_err(|_| TuicrError::NotARepository)?
+                .canonicalize()
+                .map_err(|_| TuicrError::NotARepository)?;
+            let paths = crate::vcs::pristine::collect_tracked_paths(&cwd)?;
+
+            let mut joined = Vec::new();
+            for path in &paths {
+                joined.extend_from_slice(path.as_os_str().as_encoded_bytes());
+                joined.push(b'\n');
+            }
+            let path_hash = crate::hash::fnv1a_64(&joined);
+            let head_or_none = crate::vcs::pristine::head_short_sha(&cwd);
+            let base_commit = format!("pristine:{head_or_none}:{path_hash:016x}");
+
+            let vcs = Box::new(FileBackend::new_pristine(paths, cwd.clone())?);
+            let mut vcs_info = vcs.info().clone();
+            vcs_info.head_commit = base_commit;
+            let highlighter = theme.syntax_highlighter();
+            let diff_files = vcs.get_working_tree_diff(highlighter)?;
+            // `git ls-files` already honors `.gitignore`, but `.tuicrignore`
+            // is tuicr-specific and not known to git. Run the same post-VCS
+            // filter every other mode uses so users can elide tracked-but-
+            // boring files (lockfiles, generated docs) from the review surface.
+            let diff_files = Self::filter_ignored_diff_files(&cwd, diff_files);
+            if diff_files.is_empty() {
+                return Err(TuicrError::NoChanges);
+            }
+            let session = Self::load_or_create_session(&vcs_info, SessionDiffSource::Pristine);
+
+            let mut app = Self::build(
+                vcs,
+                vcs_info,
+                theme,
+                comment_type_configs,
+                output_to_stdout,
+                diff_files,
+                session,
+                DiffSource::WorkingTree,
+                InputMode::Normal,
+                Vec::new(),
+                None, // no path_filter
+            )?;
+
+            app.is_pristine_mode = true;
+            app.focused_panel = FocusedPanel::Diff;
+            // Force unified view: pristine mode has no diff, so side-by-side
+            // would render two identical panes. The `:diff` command is gated
+            // separately so the user cannot toggle back.
+            app.diff_view_mode = DiffViewMode::Unified;
 
             return Ok(app);
         }
@@ -1461,6 +1526,7 @@ impl App {
             pending_confirm: None,
             supports_keyboard_enhancement: false,
             show_file_list: true,
+            is_pristine_mode: false,
             cursor_line_highlight: true,
             leader_key: crate::config::DEFAULT_LEADER_KEY,
             scroll_offset: 0,
@@ -6280,6 +6346,13 @@ impl App {
     }
 
     pub fn toggle_diff_view_mode(&mut self) {
+        if self.is_pristine_mode {
+            // Side-by-side has nothing to show in pristine mode: there is no
+            // diff, so the two panes would render identical content. Keep
+            // the view unified and tell the user why the toggle did nothing.
+            self.set_message("side-by-side not available in pristine mode");
+            return;
+        }
         self.diff_view_mode = match self.diff_view_mode {
             DiffViewMode::Unified => DiffViewMode::SideBySide,
             DiffViewMode::SideBySide => DiffViewMode::Unified,

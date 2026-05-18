@@ -66,6 +66,11 @@ pub enum SessionDiffSource {
     /// `ReviewSession::pr_session_key`; this variant is a discriminator so
     /// the persistence layer can route to PR-specific filename construction.
     PullRequest,
+    /// Whole-repo annotation surface. Every tracked file is shown in
+    /// context-only rendering, sourced from `git ls-files`. The persisted
+    /// `base_commit` for these sessions starts with `"pristine:"` so the
+    /// reload path can match by prefix instead of exact HEAD.
+    Pristine,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

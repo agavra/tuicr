@@ -133,17 +133,23 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
                         ])
                     } else {
                         let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
-                        let status = file.status.as_char();
                         let indent = "  ".repeat(*depth);
-                        Line::from(vec![
+                        let mut spans = vec![
                             Span::raw(indent),
                             Span::styled(format!("{checkbox} "), checkbox_style),
-                            Span::styled(
+                        ];
+                        // Pristine mode reviews unchanged code; the M/A/D
+                        // badge would lie. Suppress it and leave the row as
+                        // checkbox + filename.
+                        if !app.is_pristine_mode {
+                            let status = file.status.as_char();
+                            spans.push(Span::styled(
                                 format!("{status} "),
                                 styles::file_status_style(&app.theme, status),
-                            ),
-                            Span::raw(filename.to_string()),
-                        ])
+                            ));
+                        }
+                        spans.push(Span::raw(filename.to_string()));
+                        Line::from(spans)
                     }
                 }
             };

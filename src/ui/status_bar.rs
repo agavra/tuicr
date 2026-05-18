@@ -74,6 +74,24 @@ pub fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     if let Some(source) = header_source_chunk(app) {
         chunks.push(source);
     }
+    if app.is_pristine_mode {
+        // The pristine session key has shape `pristine:<head_or_none>:<hash>`,
+        // so the middle segment is the short SHA of the HEAD we're reviewing.
+        // "none" renders as `uncommitted` so empty repos read sensibly. A
+        // missing prefix falls back to `?` rather than crashing the chip.
+        let head_label = app
+            .vcs_info
+            .head_commit
+            .strip_prefix("pristine:")
+            .and_then(|rest| rest.split(':').next())
+            .map(|raw| if raw == "none" { "uncommitted" } else { raw })
+            .unwrap_or("?");
+        chunks.push(format!(
+            "PRISTINE \u{00b7} {} \u{00b7} {} files",
+            head_label,
+            app.diff_files.len()
+        ));
+    }
     let source_text = if chunks.is_empty() {
         String::new()
     } else {

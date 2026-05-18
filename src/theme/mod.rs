@@ -1510,8 +1510,11 @@ pub struct CliArgs {
     pub working_tree: bool,
     /// Filter diff to a specific file or directory path
     pub path_filter: Option<String>,
-    /// Open a single file for annotation (no VCS required)
+    /// Open a single file or directory for annotation (no VCS required)
     pub file_path: Option<String>,
+    /// Whole-repo annotation mode (`--all-files` / `-A`). Lists every tracked
+    /// file via `git ls-files` and renders them in context-only mode.
+    pub all_files: bool,
     /// Direct pull request target from `tuicr pr <target>`.
     pub pr_target: Option<String>,
 }
@@ -1897,7 +1900,8 @@ Options:
   -p, --path <PATH>     Filter diff to a specific file or directory
   -w, --working-tree     Include uncommitted changes (skip commit selector when used alone,
                          combine with commits when used with -r)
-  --file <PATH>          Open a file for annotation (no VCS required)
+  --file <PATH>          Open a file or directory for annotation (no VCS required)
+  -A, --all-files        Review every tracked file in the cwd's git repo
   --stdout               Output to stdout instead of clipboard when exporting
   --no-update-check      Skip checking for updates on startup
   -V, --version          Print version
@@ -2059,6 +2063,11 @@ fn parse_cli_args_from(args: &[String]) -> Result<CliArgs, String> {
                 return Err("--file requires a file path".to_string());
             }
             cli_args.file_path = Some(value.to_string());
+        }
+
+        // Handle --all-files / -A
+        if args[i] == "--all-files" || args[i] == "-A" {
+            cli_args.all_files = true;
         }
 
         // Handle -r / --revisions value

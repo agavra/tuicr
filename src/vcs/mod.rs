@@ -17,6 +17,7 @@ pub mod git;
 mod hg;
 mod jj;
 pub mod pr_noop;
+pub mod pristine;
 pub(crate) mod traits;
 
 pub use file::FileBackend;
