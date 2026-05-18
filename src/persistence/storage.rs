@@ -43,7 +43,13 @@ fn parse_session_filename(filename: &str) -> Option<SessionFilenameParts> {
 
     if !matches!(
         *diff_source,
-        "worktree" | "commits" | "worktree_and_commits"
+        "worktree"
+            | "staged"
+            | "unstaged"
+            | "staged_and_unstaged"
+            | "commits"
+            | "worktree_and_commits"
+            | "staged_unstaged_and_commits"
     ) {
         return None;
     }
@@ -198,6 +204,30 @@ pub fn load_session(path: &PathBuf) -> Result<ReviewSession> {
     let session: ReviewSession =
         serde_json::from_str(&contents).map_err(|e| TuicrError::CorruptedSession(e.to_string()))?;
     Ok(session)
+}
+
+pub fn load_session_by_id(session_id: &str) -> Result<Option<(PathBuf, ReviewSession)>> {
+    let reviews_dir = get_reviews_dir()?;
+    let entries = match fs::read_dir(&reviews_dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(TuicrError::Io(e)),
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(session) = load_session(&path) else {
+            continue;
+        };
+        if session.id == session_id {
+            return Ok(Some((path, session)));
+        }
+    }
+
+    Ok(None)
 }
 
 /// Look up the most recent persisted session for a PR keyed by forge identity,

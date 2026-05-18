@@ -129,6 +129,27 @@ tuicr --stdout > review.md
 tuicr --stdout | pbcopy
 ```
 
+## Agent review CLI
+
+tuicr exposes a lightweight `review` command for agentic code review. It uses
+the same diff loading, comment model, reviewed state, and Markdown export format
+as the TUI while returning JSON or agent-readable text.
+
+```bash
+tuicr review open --repo . --diff-source working-tree --json
+tuicr review diff --session <id> --path src/main.rs --max-lines 200
+tuicr review comment add --session <id> --path src/main.rs --line 42 --side new --type issue --body "..."
+tuicr review file reviewed --session <id> --path src/main.rs --set true
+tuicr review export --session <id>
+tuicr review clear --session <id>
+```
+
+Rust integrations can reuse the same review service through
+`tuicr::review_api::ReviewService`. The public review API exposes request and
+response types for opening reviews, reading file diffs, adding comments, marking
+files reviewed, clearing review state, and exporting Markdown without exposing
+TUI render state.
+
 ## Configuration
 
 Path: `~/.config/tuicr/config.toml` on Linux/macOS, `%APPDATA%\tuicr\config.toml` on Windows.

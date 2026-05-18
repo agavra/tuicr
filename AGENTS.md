@@ -13,6 +13,10 @@ tuicr is a Rust terminal UI application for code reviews. Here's the module stru
 ```
 src/
 ├── main.rs              # Entry point, event loop, action dispatch
+├── lib.rs               # Library module exports used by the TUI and agent review CLI
+├── review_api.rs        # Public review service API reused by review CLI and external integrations
+├── review_cli.rs        # Agent-readable review subcommands
+├── review_service.rs    # Shared review/session/comment/export implementation
 ├── config/
 │   └── mod.rs           # User config loading (XDG on Unix, %APPDATA% on Windows)
 ├── app.rs               # Application state (App struct, InputMode, etc.)
@@ -86,6 +90,8 @@ src/
 
 Repository-managed agent integrations:
 - `skills/tuicr/` - Shared agent skill bundle for coding agents, for example Claude Code, Codex, and similar tools; launches tuicr in a tmux split pane
+- `tuicr review` - Agent-readable CLI commands for opening reviews, inspecting diffs, adding comments, marking files reviewed, clearing state, and exporting Markdown
+- `tuicr::review_api` - Narrow Rust API for external integrations that need the same review/session/comment/export semantics as `tuicr review`
 
 ### Key Types
 

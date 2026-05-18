@@ -1534,7 +1534,7 @@ impl ThemeArg {
         &THEME_CHOICES
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         let normalized = s.trim().to_ascii_lowercase();
         Self::choices().iter().find_map(|(name, theme)| {
             if *name == normalized {
@@ -1559,7 +1559,7 @@ impl AppearanceArg {
         &APPEARANCE_CHOICES
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         let normalized = s.trim().to_ascii_lowercase();
         Self::choices().iter().find_map(|(name, appearance)| {
             if *name == normalized {
@@ -1708,7 +1708,7 @@ pub fn resolve_theme_arg_with_config(
     }
 
     if let Some(config_theme) = config_theme {
-        if let Some(theme) = ThemeArg::from_str(config_theme) {
+        if let Some(theme) = ThemeArg::parse(config_theme) {
             return (Some(theme), warnings);
         }
 
@@ -1732,7 +1732,7 @@ pub fn resolve_appearance_arg_with_config(
     }
 
     if let Some(config_appearance) = config_appearance {
-        if let Some(appearance) = AppearanceArg::from_str(config_appearance) {
+        if let Some(appearance) = AppearanceArg::parse(config_appearance) {
             return (appearance, warnings);
         }
 
@@ -1754,7 +1754,7 @@ fn parse_theme_variant_from_config(
         return (None, warnings);
     };
 
-    if let Some(theme) = ThemeArg::from_str(value) {
+    if let Some(theme) = ThemeArg::parse(value) {
         return (Some(theme), warnings);
     }
 
@@ -1885,6 +1885,7 @@ fn print_help() -> ! {
         "tuicr - A code review TUI with vim keybindings. Export to GitHub or clipboard.
 
 Usage: {name} [OPTIONS]
+       {name} review <COMMAND>
 
 Options:
   -r, --revisions <REVSET>  Commit range/Revset to review (syntax depends on VCS backend)
@@ -1902,6 +1903,9 @@ Options:
   --no-update-check      Skip checking for updates on startup
   -V, --version          Print version
   -h, --help             Print this help message
+
+Commands:
+  review                 Run agent-readable review commands
 
 Press ? in the application for keybinding help."
     );
@@ -1977,7 +1981,7 @@ fn parse_cli_args_from(args: &[String]) -> Result<CliArgs, String> {
                 return Err(format!("--theme requires a value ({valid_values})"));
             }
 
-            cli_args.theme = ThemeArg::from_str(value)
+            cli_args.theme = ThemeArg::parse(value)
                 .ok_or_else(|| format!("Unknown theme '{value}'. Valid options: {valid_values}"))
                 .map(Some)?;
         }
@@ -1988,7 +1992,7 @@ fn parse_cli_args_from(args: &[String]) -> Result<CliArgs, String> {
                 return Err(format!("--theme requires a value ({valid_values})"));
             }
 
-            cli_args.theme = ThemeArg::from_str(value)
+            cli_args.theme = ThemeArg::parse(value)
                 .ok_or_else(|| format!("Unknown theme '{value}'. Valid options: {valid_values}"))
                 .map(Some)?;
         }
@@ -2004,7 +2008,7 @@ fn parse_cli_args_from(args: &[String]) -> Result<CliArgs, String> {
                 return Err(format!("--appearance requires a value ({valid_values})"));
             }
 
-            cli_args.appearance = AppearanceArg::from_str(value)
+            cli_args.appearance = AppearanceArg::parse(value)
                 .ok_or_else(|| {
                     format!("Unknown appearance '{value}'. Valid options: {valid_values}")
                 })
@@ -2018,7 +2022,7 @@ fn parse_cli_args_from(args: &[String]) -> Result<CliArgs, String> {
                 return Err(format!("--appearance requires a value ({valid_values})"));
             }
 
-            cli_args.appearance = AppearanceArg::from_str(value)
+            cli_args.appearance = AppearanceArg::parse(value)
                 .ok_or_else(|| {
                     format!("Unknown appearance '{value}'. Valid options: {valid_values}")
                 })
@@ -2197,7 +2201,7 @@ mod tests {
     #[test]
     fn should_roundtrip_all_canonical_theme_values() {
         for (name, expected_theme) in ThemeArg::choices() {
-            assert_eq!(ThemeArg::from_str(name), Some(*expected_theme));
+            assert_eq!(ThemeArg::parse(name), Some(*expected_theme));
         }
     }
 
