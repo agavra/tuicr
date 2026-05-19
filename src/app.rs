@@ -123,13 +123,40 @@ pub enum ExpandDirection {
     Both,
 }
 
-/// Unified diff gutter: 1 (cursor indicator) + 5 (line_num + space) + 2 (prefix + space).
-pub const UNIFIED_GUTTER: u16 = 8;
-/// Side-by-side leading width before Old content: indicator(1) + lineno(4) + space(1) + prefix(1).
-pub const SBS_LEFT_GUTTER: u16 = 7;
-/// Side-by-side fixed overhead (both gutters + " │ " divider). The two content
-/// panes share what's left of the inner width equally.
-pub const SBS_OVERHEAD: u16 = 16;
+/// Minimum line-number column width (covers files up to 9 999 lines).
+const MIN_LINENO_WIDTH: usize = 4;
+
+/// Number of characters needed to display `n` in decimal, minimum `MIN_LINENO_WIDTH`.
+pub fn lineno_width(max_lineno: u32) -> usize {
+    if max_lineno == 0 {
+        return MIN_LINENO_WIDTH;
+    }
+    let mut digits = 0;
+    let mut n = max_lineno;
+    while n > 0 {
+        digits += 1;
+        n /= 10;
+    }
+    digits.max(MIN_LINENO_WIDTH)
+}
+
+/// Unified diff gutter: indicator(1) + lineno(w) + space(1) + prefix(1) + space(1).
+pub fn unified_gutter(w: usize) -> u16 {
+    (w + 4) as u16
+}
+
+/// Side-by-side leading width before Old content: indicator(1) + lineno(w) + space(1) + prefix(1).
+pub fn sbs_left_gutter(w: usize) -> u16 {
+    (w + 3) as u16
+}
+
+/// Side-by-side fixed overhead (both gutters + " │ " divider).
+/// Left: indicator(1) + lineno(w) + space(1) + prefix(1)
+/// Right: lineno(w) + space(1) + prefix(1)
+/// Divider: 3
+pub fn sbs_overhead(w: usize) -> u16 {
+    (2 * w + 8) as u16
+}
 
 /// X-coords of one diff content pane. SBS has Old and New; Unified has one.
 #[derive(Debug, Clone, Copy)]
@@ -4158,26 +4185,46 @@ impl App {
         Ok(count)
     }
 
+    pub fn lineno_width(&self) -> usize {
+        let hunk_max = self
+            .diff_files
+            .iter()
+            .map(|f| f.max_lineno())
+            .max()
+            .unwrap_or(0);
+        let cache_max = self
+            .file_line_count_cache
+            .values()
+            .copied()
+            .max()
+            .unwrap_or(0);
+        lineno_width(hunk_max.max(cache_max))
+    }
+
     pub fn pane_geometry(&self, inner: ratatui::layout::Rect, side: LineSide) -> PaneGeom {
+        let w = self.lineno_width();
         match self.diff_view_mode {
             DiffViewMode::Unified => {
-                let content_width = (inner.width as usize).saturating_sub(UNIFIED_GUTTER as usize);
+                let gutter = unified_gutter(w);
+                let content_width = (inner.width as usize).saturating_sub(gutter as usize);
                 PaneGeom {
-                    content_x_start: inner.x + UNIFIED_GUTTER,
+                    content_x_start: inner.x + gutter,
                     content_x_end: inner.x + inner.width,
                     content_width,
                 }
             }
             DiffViewMode::SideBySide => {
-                let half_w = (inner.width.saturating_sub(SBS_OVERHEAD) / 2) as usize;
+                let overhead = sbs_overhead(w);
+                let left_gutter = sbs_left_gutter(w);
+                let half_w = (inner.width.saturating_sub(overhead) / 2) as usize;
                 match side {
                     LineSide::Old => PaneGeom {
-                        content_x_start: inner.x + SBS_LEFT_GUTTER,
-                        content_x_end: inner.x + SBS_LEFT_GUTTER + half_w as u16,
+                        content_x_start: inner.x + left_gutter,
+                        content_x_end: inner.x + left_gutter + half_w as u16,
                         content_width: half_w,
                     },
                     LineSide::New => {
-                        let start = inner.x + SBS_OVERHEAD + half_w as u16;
+                        let start = inner.x + overhead + half_w as u16;
                         PaneGeom {
                             content_x_start: start,
                             content_x_end: start + half_w as u16,
@@ -4195,11 +4242,12 @@ impl App {
         x: u16,
         ann_default: LineSide,
     ) -> LineSide {
+        let w = self.lineno_width();
         match self.diff_view_mode {
             DiffViewMode::Unified => ann_default,
             DiffViewMode::SideBySide => {
-                let half_w = inner.width.saturating_sub(SBS_OVERHEAD) / 2;
-                let divider = inner.x + SBS_LEFT_GUTTER + half_w;
+                let half_w = inner.width.saturating_sub(sbs_overhead(w)) / 2;
+                let divider = inner.x + sbs_left_gutter(w) + half_w;
                 if x < divider {
                     LineSide::Old
                 } else {

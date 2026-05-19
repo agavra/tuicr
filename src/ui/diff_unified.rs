@@ -47,6 +47,8 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
     // Reset comment input annotation offset (will be set if a comment input box is rendered)
     app.comment_input_annotation_offset = None;
 
+    let lw = app.lineno_width();
+
     // Build all diff lines for infinite scroll
     // Track line index to mark the current line (cursor position)
     let mut lines: Vec<Line> = Vec::new();
@@ -355,6 +357,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                 current_line_idx,
                                 expanded_line,
                                 &app.theme,
+                                lw,
                             );
                         }
                     }
@@ -424,6 +427,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                 current_line_idx,
                                 expanded_line,
                                 &app.theme,
+                                lw,
                             );
                         }
                     }
@@ -450,20 +454,21 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
 
                     let style = base_style;
 
+                    let blank = " ".repeat(lw + 1);
                     let line_num_str = match diff_line.origin {
                         LineOrigin::Addition => diff_line
                             .new_lineno
-                            .map(|n| format!("{n:>4} "))
-                            .unwrap_or_else(|| "     ".to_string()),
+                            .map(|n| format!("{n:>lw$} "))
+                            .unwrap_or_else(|| blank.clone()),
                         LineOrigin::Deletion => diff_line
                             .old_lineno
-                            .map(|n| format!("{n:>4} "))
-                            .unwrap_or_else(|| "     ".to_string()),
+                            .map(|n| format!("{n:>lw$} "))
+                            .unwrap_or_else(|| blank.clone()),
                         _ => diff_line
                             .new_lineno
                             .or(diff_line.old_lineno)
-                            .map(|n| format!("{n:>4} "))
-                            .unwrap_or_else(|| "     ".to_string()),
+                            .map(|n| format!("{n:>lw$} "))
+                            .unwrap_or_else(|| blank),
                     };
 
                     let indicator = cursor_indicator(line_idx, current_line_idx);
@@ -870,6 +875,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                             current_line_idx,
                             expanded_line,
                             &app.theme,
+                            lw,
                         );
                     }
                 }
@@ -904,6 +910,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                             current_line_idx,
                             expanded_line,
                             &app.theme,
+                            lw,
                         );
                     }
                 }
@@ -1173,12 +1180,13 @@ fn render_expanded_context_line(
     current_line_idx: usize,
     expanded_line: &crate::model::DiffLine,
     theme: &Theme,
+    lw: usize,
 ) {
     let indicator = cursor_indicator(*line_idx, current_line_idx);
     let line_num = expanded_line
         .new_lineno
-        .map(|n| format!("{n:>4} "))
-        .unwrap_or_else(|| "     ".to_string());
+        .map(|n| format!("{n:>lw$} "))
+        .unwrap_or_else(|| " ".repeat(lw + 1));
     let line_spans = vec![
         Span::styled(indicator, styles::current_line_indicator_style(theme)),
         Span::styled(line_num, styles::expanded_context_style(theme)),

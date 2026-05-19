@@ -34,6 +34,7 @@ struct SideBySideContext<'a> {
     content_width: usize,
     panel_width: usize,
     current_line_idx: usize,
+    lineno_width: usize,
     // Comment input state for inline editing
     comment_input_mode: bool,
     comment_line: Option<(u32, LineSide)>,
@@ -71,8 +72,8 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
     // Reset comment input annotation offset (will be set if a comment input box is rendered)
     app.comment_input_annotation_offset = None;
 
-    // Layout: indicator(1) + linenum(4) + space(1) + prefix(1) + content + " │ "(3) + linenum(4) + space(1) + prefix(1) + content
-    let available_width = inner.width.saturating_sub(crate::app::SBS_OVERHEAD) as usize;
+    let lw = app.lineno_width();
+    let available_width = inner.width.saturating_sub(crate::app::sbs_overhead(lw)) as usize;
     let content_width = available_width / 2;
 
     // Determine if we're in line comment mode (not file-level)
@@ -86,6 +87,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
         content_width,
         panel_width: inner.width as usize,
         current_line_idx: app.diff_state.cursor_line,
+        lineno_width: lw,
         comment_input_mode,
         comment_line: app.comment_line,
         comment_type: app.comment_type.clone(),
@@ -391,6 +393,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                                 expanded_line,
                                 ctx.content_width,
                                 &app.theme,
+                                lw,
                             );
                         }
                     }
@@ -461,6 +464,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                                 expanded_line,
                                 ctx.content_width,
                                 &app.theme,
+                                lw,
                             );
                         }
                     }
@@ -534,6 +538,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                             expanded_line,
                             ctx.content_width,
                             &app.theme,
+                            lw,
                         );
                     }
                 }
@@ -569,6 +574,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                             expanded_line,
                             ctx.content_width,
                             &app.theme,
+                            lw,
                         );
                     }
                 }
@@ -752,16 +758,17 @@ fn render_sbs_expanded_context_line(
     expanded_line: &crate::model::DiffLine,
     content_width: usize,
     theme: &Theme,
+    lw: usize,
 ) {
     let indicator = cursor_indicator(*line_idx, current_line_idx);
     let old_line_num = expanded_line
         .old_lineno
-        .map(|n| format!("{n:>4} "))
-        .unwrap_or_else(|| "     ".to_string());
+        .map(|n| format!("{n:>lw$} "))
+        .unwrap_or_else(|| " ".repeat(lw + 1));
     let new_line_num = expanded_line
         .new_lineno
-        .map(|n| format!("{n:>4} "))
-        .unwrap_or_else(|| "     ".to_string());
+        .map(|n| format!("{n:>lw$} "))
+        .unwrap_or_else(|| " ".repeat(lw + 1));
     let line_spans = vec![
         Span::styled(indicator, styles::current_line_indicator_style(theme)),
         Span::styled(old_line_num, styles::expanded_context_style(theme)),
@@ -861,14 +868,15 @@ fn render_context_line_side_by_side(
     mut line_idx: usize,
     lines: &mut Vec<Line>,
 ) -> (usize, Option<SideBySideCursorInfo>) {
+    let w = ctx.lineno_width;
     let old_line_num = diff_line
         .old_lineno
-        .map(|n| format!("{n:>4}"))
-        .unwrap_or_else(|| "    ".to_string());
+        .map(|n| format!("{n:>w$}"))
+        .unwrap_or_else(|| " ".repeat(w));
     let new_line_num = diff_line
         .new_lineno
-        .map(|n| format!("{n:>4}"))
-        .unwrap_or_else(|| "    ".to_string());
+        .map(|n| format!("{n:>w$}"))
+        .unwrap_or_else(|| " ".repeat(w));
 
     let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
 
@@ -988,9 +996,15 @@ fn render_deletion_addition_pair_side_by_side(
         // Left side (deletion)
         if offset < del_count {
             let del_line = &hunk_lines[start_idx + offset];
-            add_deletion_spans(ctx.theme, &mut spans, del_line, ctx.content_width);
+            add_deletion_spans(
+                ctx.theme,
+                &mut spans,
+                del_line,
+                ctx.content_width,
+                ctx.lineno_width,
+            );
         } else {
-            add_empty_column_spans(&mut spans, ctx.content_width);
+            add_empty_column_spans(&mut spans, ctx.content_width, ctx.lineno_width);
         }
 
         spans.push(Span::styled(" │ ", styles::dim_style(ctx.theme)));
@@ -998,9 +1012,15 @@ fn render_deletion_addition_pair_side_by_side(
         // Right side (addition)
         if offset < add_count {
             let add_line = &hunk_lines[add_start + offset];
-            add_addition_spans(ctx.theme, &mut spans, add_line, ctx.content_width);
+            add_addition_spans(
+                ctx.theme,
+                &mut spans,
+                add_line,
+                ctx.content_width,
+                ctx.lineno_width,
+            );
         } else {
-            add_empty_column_spans(&mut spans, ctx.content_width);
+            add_empty_column_spans(&mut spans, ctx.content_width, ctx.lineno_width);
         }
 
         lines.push(Line::from(spans));
@@ -1086,9 +1106,15 @@ fn render_standalone_addition_side_by_side(
         indicator,
         styles::current_line_indicator_style(ctx.theme),
     )];
-    add_empty_column_spans(&mut spans, ctx.content_width);
+    add_empty_column_spans(&mut spans, ctx.content_width, ctx.lineno_width);
     spans.push(Span::styled(" │ ", styles::dim_style(ctx.theme)));
-    add_addition_spans(ctx.theme, &mut spans, diff_line, ctx.content_width);
+    add_addition_spans(
+        ctx.theme,
+        &mut spans,
+        diff_line,
+        ctx.content_width,
+        ctx.lineno_width,
+    );
 
     lines.push(Line::from(spans));
     line_idx += 1;
@@ -1128,11 +1154,12 @@ fn add_deletion_spans(
     spans: &mut Vec<Span>,
     diff_line: &crate::model::DiffLine,
     content_width: usize,
+    lw: usize,
 ) {
     let line_num = diff_line
         .old_lineno
-        .map(|n| format!("{n:>4}"))
-        .unwrap_or_else(|| "    ".to_string());
+        .map(|n| format!("{n:>lw$}"))
+        .unwrap_or_else(|| " ".repeat(lw));
 
     spans.push(Span::styled(
         format!("{line_num} "),
@@ -1158,11 +1185,12 @@ fn add_addition_spans(
     spans: &mut Vec<Span>,
     diff_line: &crate::model::DiffLine,
     content_width: usize,
+    lw: usize,
 ) {
     let line_num = diff_line
         .new_lineno
-        .map(|n| format!("{n:>4}"))
-        .unwrap_or_else(|| "    ".to_string());
+        .map(|n| format!("{n:>lw$}"))
+        .unwrap_or_else(|| " ".repeat(lw));
 
     spans.push(Span::styled(
         format!("{line_num} "),
@@ -1183,10 +1211,10 @@ fn add_addition_spans(
 }
 
 /// Add empty column spans (for when one side has no content)
-fn add_empty_column_spans(spans: &mut Vec<Span>, content_width: usize) {
-    // line_num(4) + space(1) + prefix(1) + content
+fn add_empty_column_spans(spans: &mut Vec<Span>, content_width: usize, lw: usize) {
+    // line_num(lw) + space(1) + prefix(1) + content
     spans.push(Span::styled(
-        " ".repeat(5 + 1 + content_width),
+        " ".repeat(lw + 1 + 1 + content_width),
         Style::default(),
     ));
 }

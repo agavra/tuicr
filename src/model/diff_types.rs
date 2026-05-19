@@ -91,6 +91,17 @@ impl DiffFile {
         hasher.finish()
     }
 
+    /// Highest line number reachable from hunk headers (old or new side).
+    /// Used to size the gutter; expanded context beyond hunks is covered
+    /// separately via `file_line_count_cache`.
+    pub fn max_lineno(&self) -> u32 {
+        self.hunks
+            .iter()
+            .map(|h| (h.old_start + h.old_count).max(h.new_start + h.new_count))
+            .max()
+            .unwrap_or(0)
+    }
+
     pub fn display_path(&self) -> &PathBuf {
         self.new_path
             .as_ref()
