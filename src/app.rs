@@ -682,16 +682,16 @@ pub enum PrRangeReloadEvent {
     },
 }
 
-/// Snapshot of the submit state needed to clear local drafts after the
-/// background `gh api .../reviews` call returns. Captured at spawn time and
-/// stashed on `App::pr_submit_state` so the in-flight spinner has something
-/// to render and the result handler knows which local comments to drop.
+/// Snapshot of the submit state needed to lock the matching local comments
+/// after the background `gh api .../reviews` call returns. Captured at spawn
+/// time and stashed on `App::pr_submit_state` so the in-flight spinner has
+/// something to render and the result handler can flip lifecycle state on
+/// every comment that was sent.
 ///
-/// On success every comment that was sent — inline, summary-bound, or review-
-/// level — is removed from the local session, since GitHub now owns them and
-/// a subsequent PR reload would otherwise show duplicates (inline comments
-/// reappearing as remote review threads, plus stale locked drafts cluttering
-/// the diff for items that are now part of the review body).
+/// Locked comments stay visible after submit so the user keeps seeing their
+/// just-submitted work; they're pruned out of the session the next time
+/// `forge_review_threads` is refreshed (via `:e` or reopen) so the freshly
+/// fetched remote copies don't render alongside stale locals.
 #[derive(Debug, Clone)]
 pub struct SubmitInFlightState {
     pub event: crate::forge::submit::SubmitEvent,
@@ -5837,40 +5837,74 @@ impl App {
         self.set_message(message);
     }
 
-    /// Remove every comment that was sent in this review from the local
-    /// session: inline mappable comments, summary-bound unmappable comments,
-    /// and review-level comments rendered into the body. Reloading the PR
-    /// will refetch the published inline comments as remote review threads,
-    /// so retaining the local copies would show them twice.
+    /// Flip every comment that was sent — inline, summary-bound, and review-
+    /// level — from `LocalDraft` to `Submitted` (or `PushedDraft` for
+    /// `:submit draft`) and stamp `remote_review_id`. The comments stay in
+    /// the session so the user keeps seeing their work; they're pruned by
+    /// `prune_locked_comments` when remote threads are next fetched.
     pub fn apply_submit_success(
         &mut self,
         in_flight: &SubmitInFlightState,
-        _response: &crate::forge::traits::GhCreateReviewResponse,
+        response: &crate::forge::traits::GhCreateReviewResponse,
     ) {
-        let submitted_ids: std::collections::HashSet<&str> = in_flight
+        use crate::forge::submit::SubmitEvent;
+        use crate::model::comment::CommentLifecycleState;
+
+        let new_state = match in_flight.event {
+            SubmitEvent::Draft => CommentLifecycleState::PushedDraft,
+            _ => CommentLifecycleState::Submitted,
+        };
+        let review_id = response.id.to_string();
+
+        let target_ids: std::collections::HashSet<&str> = in_flight
             .mappable
             .iter()
             .map(|c| c.comment_id.as_str())
             .chain(in_flight.summary_comment_ids.iter().map(String::as_str))
             .chain(in_flight.review_comment_ids.iter().map(String::as_str))
             .collect();
-        if submitted_ids.is_empty() {
+        if target_ids.is_empty() {
             return;
         }
 
-        self.session
-            .review_comments
-            .retain(|c| !submitted_ids.contains(c.id.as_str()));
+        for comment in self.session.review_comments.iter_mut() {
+            if target_ids.contains(comment.id.as_str()) {
+                comment.lifecycle_state = new_state;
+                comment.remote_review_id = Some(review_id.clone());
+            }
+        }
         for review in self.session.files.values_mut() {
-            review
-                .file_comments
-                .retain(|c| !submitted_ids.contains(c.id.as_str()));
+            for comment in review.file_comments.iter_mut() {
+                if target_ids.contains(comment.id.as_str()) {
+                    comment.lifecycle_state = new_state;
+                    comment.remote_review_id = Some(review_id.clone());
+                }
+            }
             for comments in review.line_comments.values_mut() {
-                comments.retain(|c| !submitted_ids.contains(c.id.as_str()));
+                for comment in comments.iter_mut() {
+                    if target_ids.contains(comment.id.as_str()) {
+                        comment.lifecycle_state = new_state;
+                        comment.remote_review_id = Some(review_id.clone());
+                    }
+                }
+            }
+        }
+        self.rebuild_annotations();
+    }
+
+    /// Drop locked (`Submitted`/`PushedDraft`) comments from the session.
+    /// Called after a successful `forge_review_threads` fetch: anything that
+    /// was published to the forge is now represented by the fresh remote
+    /// threads, so keeping the locals would double-render every line.
+    pub fn prune_locked_comments(&mut self) {
+        self.session.review_comments.retain(|c| !c.is_locked());
+        for review in self.session.files.values_mut() {
+            review.file_comments.retain(|c| !c.is_locked());
+            for comments in review.line_comments.values_mut() {
+                comments.retain(|c| !c.is_locked());
             }
             review.line_comments.retain(|_, v| !v.is_empty());
         }
-        self.rebuild_annotations();
     }
 
     /// Open the review target selector on a specific tab.
@@ -6318,6 +6352,8 @@ impl App {
                 match result {
                     Ok(threads) => {
                         self.forge_review_threads = threads;
+                        self.prune_locked_comments();
+                        let _ = crate::persistence::save_session(&self.session);
                         self.rebuild_annotations();
                     }
                     Err(e) => {
@@ -6425,6 +6461,7 @@ impl App {
             .unwrap_or_default();
         self.enter_pr_diff_mode(backend, opened)?;
         self.forge_review_threads = threads;
+        self.prune_locked_comments();
         self.rebuild_annotations();
         Ok(())
     }
@@ -11917,7 +11954,7 @@ mod submit_flow_tests {
     }
 
     #[test]
-    fn should_remove_submitted_inline_comments_from_session() {
+    fn should_flip_comments_to_submitted_and_stamp_review_id_on_success() {
         // given an app with one line comment that we'll claim got submitted
         let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
         let comment = line_comment(LineSide::New, Some(11), None);
@@ -11932,14 +11969,15 @@ mod submit_flow_tests {
         let response = make_response(987654, "https://example.com/r", "COMMENTED");
         // when
         app.apply_submit_success(&in_flight, &response);
-        // then — the comment is gone from the session so a PR reload won't
-        // double-render it alongside the remote thread.
+        // then — the comment stays visible but is locked; remote_review_id set
         let review = app.session.files.get(&PathBuf::from("src/lib.rs")).unwrap();
-        assert!(!review.line_comments.contains_key(&11));
+        let saved = &review.line_comments.get(&11).unwrap()[0];
+        assert_eq!(saved.lifecycle_state, CommentLifecycleState::Submitted);
+        assert_eq!(saved.remote_review_id.as_deref(), Some("987654"));
     }
 
     #[test]
-    fn should_remove_inline_comments_from_session_on_draft_submission() {
+    fn should_flip_comments_to_pushed_draft_for_draft_submission() {
         // given
         let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
         let comment = line_comment(LineSide::New, Some(11), None);
@@ -11949,14 +11987,15 @@ mod submit_flow_tests {
         let response = make_response(42, "https://example.com/r", "PENDING");
         // when
         app.apply_submit_success(&in_flight, &response);
-        // then — pending-review comments are also visible via GraphQL on reload,
-        // so they get cleared too.
+        // then
         let review = app.session.files.get(&PathBuf::from("src/lib.rs")).unwrap();
-        assert!(!review.line_comments.contains_key(&11));
+        let saved = &review.line_comments.get(&11).unwrap()[0];
+        assert_eq!(saved.lifecycle_state, CommentLifecycleState::PushedDraft);
+        assert_eq!(saved.remote_review_id.as_deref(), Some("42"));
     }
 
     #[test]
-    fn should_only_remove_comments_whose_ids_were_submitted() {
+    fn should_only_flip_comments_whose_ids_were_submitted() {
         // given — one matching id and one stray local-draft that wasn't in the submit
         let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
         let comment = line_comment(LineSide::New, Some(11), None);
@@ -11970,16 +12009,18 @@ mod submit_flow_tests {
         let response = make_response(1, "u", "COMMENTED");
         // when
         app.apply_submit_success(&in_flight, &response);
-        // then — only the submitted id is gone; the unsent local draft stays put
+        // then — only the target id moved to Submitted; the other stays a LocalDraft
         let review = app.session.files.get(&PathBuf::from("src/lib.rs")).unwrap();
         let comments = review.line_comments.get(&11).unwrap();
-        assert!(comments.iter().all(|c| c.id != target_id));
+        let target = comments.iter().find(|c| c.id == target_id).unwrap();
         let other = comments.iter().find(|c| c.id == untouched_id).unwrap();
+        assert_eq!(target.lifecycle_state, CommentLifecycleState::Submitted);
         assert_eq!(other.lifecycle_state, CommentLifecycleState::LocalDraft);
+        assert!(other.remote_review_id.is_none());
     }
 
     #[test]
-    fn should_remove_review_level_comments_after_successful_submit() {
+    fn should_flip_review_level_comments_on_submit_success() {
         // given a PR session with a review-level comment included in the
         // review body. Its id is tracked on the in-flight state so we know
         // exactly which review-level entries went out.
@@ -11989,15 +12030,22 @@ mod submit_flow_tests {
         app.session.review_comments.push(review_comment);
         let mut in_flight = make_in_flight(SubmitEvent::Comment, &[], "abcdef0123", 0);
         in_flight.review_comment_ids = vec![review_comment_id.clone()];
-        let response = make_response(1, "u", "COMMENTED");
+        let response = make_response(55, "u", "COMMENTED");
         // when
         app.apply_submit_success(&in_flight, &response);
-        // then — review_comments is empty, since the body now lives on GitHub.
-        assert!(app.session.review_comments.is_empty());
+        // then — review-level comments locked too, since they went out in the body
+        let saved = app
+            .session
+            .review_comments
+            .iter()
+            .find(|c| c.id == review_comment_id)
+            .unwrap();
+        assert_eq!(saved.lifecycle_state, CommentLifecycleState::Submitted);
+        assert_eq!(saved.remote_review_id.as_deref(), Some("55"));
     }
 
     #[test]
-    fn should_remove_summary_bound_unmappable_comments_after_successful_submit() {
+    fn should_flip_summary_bound_unmappable_comments_on_submit_success() {
         // given an unmappable line comment the user chose to "move to summary"
         // — it was embedded in the review body, so the local copy is now stale.
         let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
@@ -12006,12 +12054,54 @@ mod submit_flow_tests {
         add_line_comment(&mut app, "src/lib.rs", 11, comment);
         let mut in_flight = make_in_flight(SubmitEvent::Comment, &[], "abcdef0123", 1);
         in_flight.summary_comment_ids = vec![summary_id.clone()];
-        let response = make_response(1, "u", "COMMENTED");
+        let response = make_response(77, "u", "COMMENTED");
         // when
         app.apply_submit_success(&in_flight, &response);
         // then
         let review = app.session.files.get(&PathBuf::from("src/lib.rs")).unwrap();
+        let saved = &review.line_comments.get(&11).unwrap()[0];
+        assert_eq!(saved.lifecycle_state, CommentLifecycleState::Submitted);
+        assert_eq!(saved.remote_review_id.as_deref(), Some("77"));
+    }
+
+    #[test]
+    fn should_prune_locked_comments_across_all_buckets() {
+        // given a session populated with one locked comment in each bucket
+        // (review-level, file-level, line) plus an unlocked draft that must
+        // survive the prune.
+        let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+
+        let mut review_locked = Comment::new("body item".to_string(), CommentType::Note, None);
+        review_locked.lifecycle_state = CommentLifecycleState::Submitted;
+        app.session.review_comments.push(review_locked);
+
+        let mut file_locked = Comment::new("file-level".to_string(), CommentType::Note, None);
+        file_locked.lifecycle_state = CommentLifecycleState::PushedDraft;
+        let mut line_locked = line_comment(LineSide::New, Some(11), None);
+        line_locked.lifecycle_state = CommentLifecycleState::Submitted;
+        let line_unlocked = line_comment(LineSide::New, Some(12), None);
+        let unlocked_id = line_unlocked.id.clone();
+        {
+            let review = app
+                .session
+                .get_file_mut(&PathBuf::from("src/lib.rs"))
+                .unwrap();
+            review.file_comments.push(file_locked);
+        }
+        add_line_comment(&mut app, "src/lib.rs", 11, line_locked);
+        add_line_comment(&mut app, "src/lib.rs", 12, line_unlocked);
+
+        // when remote threads come back and pruning runs
+        app.prune_locked_comments();
+
+        // then — every locked entry is gone; the unlocked draft survives
+        assert!(app.session.review_comments.is_empty());
+        let review = app.session.files.get(&PathBuf::from("src/lib.rs")).unwrap();
+        assert!(review.file_comments.is_empty());
         assert!(!review.line_comments.contains_key(&11));
+        let surviving = review.line_comments.get(&12).unwrap();
+        assert_eq!(surviving.len(), 1);
+        assert_eq!(surviving[0].id, unlocked_id);
     }
 
     #[test]
@@ -12065,7 +12155,7 @@ mod submit_flow_tests {
     }
 
     #[test]
-    fn should_keep_comments_in_session_on_submit_failure() {
+    fn should_keep_comments_as_local_draft_on_submit_failure() {
         // given a local-draft comment in the session
         let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
         let comment = line_comment(LineSide::New, Some(11), None);
@@ -12085,10 +12175,11 @@ mod submit_flow_tests {
                     .to_string(),
             ),
         );
-        // then — the comment is still in the session and editable
+        // then — the comment is still LocalDraft and editable
         let review = app.session.files.get(&PathBuf::from("src/lib.rs")).unwrap();
         let saved = &review.line_comments.get(&11).unwrap()[0];
         assert_eq!(saved.lifecycle_state, CommentLifecycleState::LocalDraft);
+        assert!(saved.remote_review_id.is_none());
         // and — a sticky error message is set
         let msg = app.message.as_ref().expect("error message");
         assert_eq!(msg.message_type, MessageType::Error);
@@ -12120,7 +12211,7 @@ mod submit_flow_tests {
         drop(tx);
         // when
         app.poll_pr_submit_events();
-        // then — comment still present and editable, info message about discard
+        // then — comment lifecycle untouched, info message about discarded result.
         let review = app.session.files.get(&PathBuf::from("src/lib.rs")).unwrap();
         let saved = &review.line_comments.get(&11).unwrap()[0];
         assert_eq!(saved.lifecycle_state, CommentLifecycleState::LocalDraft);
@@ -12134,7 +12225,7 @@ mod submit_flow_tests {
 
     #[test]
     fn should_apply_result_via_poll_when_head_sha_matches() {
-        // given a session with a local-draft comment ready to be cleared on submit
+        // given a session with a local-draft comment ready to be locked
         let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
         let comment = line_comment(LineSide::New, Some(11), None);
         let comment_id = comment.id.clone();
@@ -12158,15 +12249,17 @@ mod submit_flow_tests {
         drop(tx);
         // when
         app.poll_pr_submit_events();
-        // then — comment is removed and the spinner state is cleared
+        // then — lifecycle moved and the spinner state is cleared.
         assert!(app.pr_submit_state.is_none());
         assert!(app.pr_submit_rx.is_none());
         let review = app.session.files.get(&PathBuf::from("src/lib.rs")).unwrap();
-        assert!(!review.line_comments.contains_key(&11));
+        let saved = &review.line_comments.get(&11).unwrap()[0];
+        assert_eq!(saved.lifecycle_state, CommentLifecycleState::Submitted);
+        assert_eq!(saved.remote_review_id.as_deref(), Some("123"));
     }
 
     #[test]
-    fn should_remove_file_level_comment_via_submit_success() {
+    fn should_lock_file_level_comment_via_submit_success() {
         // given — a file-level comment lives in `file_comments`, not `line_comments`
         let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
         let comment = Comment::new("file-level".to_string(), CommentType::Note, None);
@@ -12189,7 +12282,14 @@ mod submit_flow_tests {
         app.apply_submit_success(&in_flight, &response);
         // then
         let review = app.session.files.get(&PathBuf::from("src/lib.rs")).unwrap();
-        assert!(review.file_comments.is_empty());
+        assert_eq!(
+            review.file_comments[0].lifecycle_state,
+            CommentLifecycleState::Submitted
+        );
+        assert_eq!(
+            review.file_comments[0].remote_review_id.as_deref(),
+            Some("7")
+        );
     }
 
     #[test]
