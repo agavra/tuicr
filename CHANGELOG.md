@@ -2,6 +2,32 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.15.0] - 2026-05-19
+
+### Bug Fixes
+
+- **config:** Honour `wrap = false` (#323)
+- **vcs:** Open worktrees from bare clones, and don't crash on unborn HEAD (#325)
+- Pre-wrap comment box content to prevent border overflow (#318)
+
+### Documentation
+
+- Remove docs/decisions directory
+
+### Features
+
+- Add no_update_check config option (#319)
+- Allow --file to accept a directory for codebase review (#321)
+- Add --all-files for whole-repo annotation (#324)
+
+### Performance
+
+- **ui:** Bracket each frame in synchronized output (DEC 2026) (#322)
+
+### Demo
+
+- Automate README gif recording with bash + claude bookends (#316)
+- Nested fixture tree + cleaner claude tail (#317)
 ## [0.14.1] - 2026-05-16
 
 ### Ui
