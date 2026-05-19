@@ -4515,6 +4515,32 @@ impl App {
         let mut content_lines = 0;
         let mut comment_lines = 0;
 
+        // Pre-aggregate remote-thread rows by (line, side) for this file. Must
+        // mirror the filter/anchor logic in build_remote_thread_index — the
+        // rebuild_annotations renderer uses the same filter, and the two must
+        // emit identical row counts or scroll math goes out of sync.
+        let remote_thread_rows: HashMap<(u32, LineSide), usize> = {
+            use crate::forge::remote_comments::{RemoteCommentSide, thread_display_lines};
+            let mut map: HashMap<(u32, LineSide), usize> = HashMap::new();
+            let path_str = path.to_string_lossy();
+            let visibility = self.session.remote_comments_visibility;
+            for thread in &self.forge_review_threads {
+                if thread.path != *path_str {
+                    continue;
+                }
+                if visibility.render_decision(thread).is_none() {
+                    continue;
+                }
+                let Some(line) = thread.line else { continue };
+                let side = match thread.side {
+                    RemoteCommentSide::Right => LineSide::New,
+                    RemoteCommentSide::Left => LineSide::Old,
+                };
+                *map.entry((line, side)).or_default() += thread_display_lines(thread);
+            }
+            map
+        };
+
         if let Some(review) = self.session.files.get(path) {
             for comment in &review.file_comments {
                 comment_lines +=
@@ -4585,6 +4611,19 @@ impl App {
                                     }
                                 }
                             }
+
+                            if let Some(old_ln) = diff_line.old_lineno {
+                                comment_lines += remote_thread_rows
+                                    .get(&(old_ln, LineSide::Old))
+                                    .copied()
+                                    .unwrap_or(0);
+                            }
+                            if let Some(new_ln) = diff_line.new_lineno {
+                                comment_lines += remote_thread_rows
+                                    .get(&(new_ln, LineSide::New))
+                                    .copied()
+                                    .unwrap_or(0);
+                            }
                         }
                     }
                     DiffViewMode::SideBySide => {
@@ -4612,6 +4651,12 @@ impl App {
                                                 );
                                             }
                                         }
+                                    }
+                                    if let Some(new_ln) = diff_line.new_lineno {
+                                        comment_lines += remote_thread_rows
+                                            .get(&(new_ln, LineSide::New))
+                                            .copied()
+                                            .unwrap_or(0);
                                     }
                                     i += 1;
                                 }
@@ -4674,6 +4719,23 @@ impl App {
                                         }
                                     }
 
+                                    for line in &lines[del_start..del_end] {
+                                        if let Some(old_ln) = line.old_lineno {
+                                            comment_lines += remote_thread_rows
+                                                .get(&(old_ln, LineSide::Old))
+                                                .copied()
+                                                .unwrap_or(0);
+                                        }
+                                    }
+                                    for line in &lines[add_start..add_end] {
+                                        if let Some(new_ln) = line.new_lineno {
+                                            comment_lines += remote_thread_rows
+                                                .get(&(new_ln, LineSide::New))
+                                                .copied()
+                                                .unwrap_or(0);
+                                        }
+                                    }
+
                                     i = add_end;
                                 }
                                 LineOrigin::Addition => {
@@ -4692,6 +4754,12 @@ impl App {
                                                 );
                                             }
                                         }
+                                    }
+                                    if let Some(new_ln) = diff_line.new_lineno {
+                                        comment_lines += remote_thread_rows
+                                            .get(&(new_ln, LineSide::New))
+                                            .copied()
+                                            .unwrap_or(0);
                                     }
 
                                     i += 1;
@@ -11266,6 +11334,43 @@ mod expand_gap_tests {
             hidden_count, 0,
             "small EOF gap should not show hidden lines"
         );
+    }
+
+    #[test]
+    fn total_lines_must_match_annotations_with_remote_threads() {
+        // Regression: file_render_height previously ignored RemoteThreadLine
+        // rows pushed by rebuild_annotations, so max_scroll_offset clamped
+        // above the tail of a remote thread on the last line of the last file.
+        use crate::forge::remote_comments::{
+            RemoteCommentSide, RemoteReviewComment, RemoteReviewThread,
+        };
+
+        let files = vec![
+            make_file_with_hunks("a.rs", vec![make_hunk(1, 5)]),
+            make_file_with_hunks("b.rs", vec![make_hunk(1, 1)]),
+        ];
+        let mut app = build_app_with_files(files, 1);
+        app.sync_viewport_width(80);
+
+        app.forge_review_threads = vec![RemoteReviewThread {
+            id: "T1".into(),
+            path: "b.rs".into(),
+            line: Some(1),
+            side: RemoteCommentSide::Right,
+            is_resolved: false,
+            is_outdated: false,
+            comments: vec![RemoteReviewComment {
+                id: "C1".into(),
+                author: Some("alice".into()),
+                body: "first\nsecond\nthird\nfourth".into(),
+                created_at: None,
+                in_reply_to: None,
+                url: "https://example.com/c1".into(),
+            }],
+        }];
+        app.rebuild_annotations();
+
+        assert_eq!(app.total_lines(), app.line_annotations.len());
     }
 
     #[test]
