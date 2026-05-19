@@ -4324,7 +4324,8 @@ impl App {
 
         if let Some(review) = self.session.files.get(path) {
             for comment in &review.file_comments {
-                comment_lines += Self::comment_display_lines(comment, self.diff_state.viewport_width);
+                comment_lines +=
+                    Self::comment_display_lines(comment, self.diff_state.viewport_width);
             }
         }
 
@@ -4370,7 +4371,10 @@ impl App {
                                 {
                                     for comment in comments {
                                         if comment.side == Some(LineSide::Old) {
-                                            comment_lines += Self::comment_display_lines(comment, self.diff_state.viewport_width);
+                                            comment_lines += Self::comment_display_lines(
+                                                comment,
+                                                self.diff_state.viewport_width,
+                                            );
                                         }
                                     }
                                 }
@@ -4380,7 +4384,10 @@ impl App {
                                 {
                                     for comment in comments {
                                         if comment.side != Some(LineSide::Old) {
-                                            comment_lines += Self::comment_display_lines(comment, self.diff_state.viewport_width);
+                                            comment_lines += Self::comment_display_lines(
+                                                comment,
+                                                self.diff_state.viewport_width,
+                                            );
                                         }
                                     }
                                 }
@@ -4406,8 +4413,10 @@ impl App {
                                     {
                                         for comment in comments {
                                             if comment.side != Some(LineSide::Old) {
-                                                comment_lines +=
-                                                    Self::comment_display_lines(comment, self.diff_state.viewport_width);
+                                                comment_lines += Self::comment_display_lines(
+                                                    comment,
+                                                    self.diff_state.viewport_width,
+                                                );
                                             }
                                         }
                                     }
@@ -4446,7 +4455,10 @@ impl App {
                                                 for comment in comments {
                                                     if comment.side == Some(LineSide::Old) {
                                                         comment_lines +=
-                                                            Self::comment_display_lines(comment, self.diff_state.viewport_width);
+                                                            Self::comment_display_lines(
+                                                                comment,
+                                                                self.diff_state.viewport_width,
+                                                            );
                                                     }
                                                 }
                                             }
@@ -4459,7 +4471,10 @@ impl App {
                                                 for comment in comments {
                                                     if comment.side != Some(LineSide::Old) {
                                                         comment_lines +=
-                                                            Self::comment_display_lines(comment, self.diff_state.viewport_width);
+                                                            Self::comment_display_lines(
+                                                                comment,
+                                                                self.diff_state.viewport_width,
+                                                            );
                                                     }
                                                 }
                                             }
@@ -4478,8 +4493,10 @@ impl App {
                                     {
                                         for comment in comments {
                                             if comment.side != Some(LineSide::Old) {
-                                                comment_lines +=
-                                                    Self::comment_display_lines(comment, self.diff_state.viewport_width);
+                                                comment_lines += Self::comment_display_lines(
+                                                    comment,
+                                                    self.diff_state.viewport_width,
+                                                );
                                             }
                                         }
                                     }
@@ -7138,7 +7155,8 @@ impl App {
         self.line_annotations
             .push(AnnotatedLine::ReviewCommentsHeader);
         for (comment_idx, comment) in self.session.review_comments.iter().enumerate() {
-            let comment_lines = Self::comment_display_lines(comment, self.diff_state.viewport_width);
+            let comment_lines =
+                Self::comment_display_lines(comment, self.diff_state.viewport_width);
             for _ in 0..comment_lines {
                 self.line_annotations
                     .push(AnnotatedLine::ReviewComment { comment_idx });
@@ -7160,7 +7178,8 @@ impl App {
             // File comments
             if let Some(review) = self.session.files.get(path) {
                 for (comment_idx, comment) in review.file_comments.iter().enumerate() {
-                    let comment_lines = Self::comment_display_lines(comment, self.diff_state.viewport_width);
+                    let comment_lines =
+                        Self::comment_display_lines(comment, self.diff_state.viewport_width);
                     for _ in 0..comment_lines {
                         self.line_annotations.push(AnnotatedLine::FileComment {
                             file_idx,

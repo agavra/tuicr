@@ -258,7 +258,8 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                     comment_cursor_column = 1 + cursor_info.column;
                     comment_input_box_range =
                         Some((line_idx, line_idx + input_lines.len().saturating_sub(1)));
-                    let annotations_replaced = App::comment_display_lines(comment, inner.width as usize);
+                    let annotations_replaced =
+                        App::comment_display_lines(comment, inner.width as usize);
                     annotation_offset = Some((line_idx, input_lines.len(), annotations_replaced));
 
                     for mut input_line in input_lines {

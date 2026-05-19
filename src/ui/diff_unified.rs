@@ -216,7 +216,8 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                     comment_cursor_column = 1 + cursor_info.column;
                     comment_input_box_range =
                         Some((line_idx, line_idx + input_lines.len().saturating_sub(1)));
-                    let annotations_replaced = App::comment_display_lines(comment, inner.width as usize);
+                    let annotations_replaced =
+                        App::comment_display_lines(comment, inner.width as usize);
                     app.comment_input_annotation_offset =
                         Some((line_idx, input_lines.len(), annotations_replaced));
 
@@ -545,8 +546,10 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                             line_idx,
                                             line_idx + input_lines.len().saturating_sub(1),
                                         ));
-                                        let annotations_replaced =
-                                            App::comment_display_lines(comment, inner.width as usize);
+                                        let annotations_replaced = App::comment_display_lines(
+                                            comment,
+                                            inner.width as usize,
+                                        );
                                         app.comment_input_annotation_offset = Some((
                                             line_idx,
                                             input_lines.len(),
@@ -702,8 +705,10 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                             line_idx,
                                             line_idx + input_lines.len().saturating_sub(1),
                                         ));
-                                        let annotations_replaced =
-                                            App::comment_display_lines(comment, inner.width as usize);
+                                        let annotations_replaced = App::comment_display_lines(
+                                            comment,
+                                            inner.width as usize,
+                                        );
                                         app.comment_input_annotation_offset = Some((
                                             line_idx,
                                             input_lines.len(),
