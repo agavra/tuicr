@@ -544,7 +544,7 @@ mod tests {
         let backend = FileBackend::new_pristine(vec![path_a, path_b], root).unwrap();
 
         let lines = backend
-            .fetch_context_lines(Path::new("b.txt"), FileStatus::Modified, 1, 3)
+            .fetch_context_lines(Path::new("b.txt"), FileStatus::Modified, None, 1, 3)
             .unwrap();
 
         assert_eq!(lines.len(), 3);
@@ -568,7 +568,7 @@ mod tests {
 
         let backend = FileBackend::new_pristine(vec![kept], repo.clone()).unwrap();
         let lines = backend
-            .fetch_context_lines(Path::new("../secret.txt"), FileStatus::Modified, 1, 1)
+            .fetch_context_lines(Path::new("../secret.txt"), FileStatus::Modified, None, 1, 1)
             .unwrap();
         assert!(
             lines.is_empty(),
