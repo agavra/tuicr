@@ -1,9 +1,9 @@
 use ratatui::{
-    Frame,
     layout::{Constraint, Flex, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
+    Frame,
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -21,7 +21,7 @@ const BORDER_PREFIX_WIDTH: usize = 7;
 /// Split `text` into segments whose display width each fits within `content_area`.
 /// Returns a single-element vec when the text already fits. The returned slices
 /// borrow from `text`, so the caller must keep `text` alive while iterating.
-fn wrap_segments(text: &str, content_area: usize) -> Vec<&str> {
+pub(crate) fn wrap_segments(text: &str, content_area: usize) -> Vec<&str> {
     if content_area == 0 || text.width() <= content_area {
         return vec![text];
     }
@@ -59,13 +59,13 @@ fn push_cursor_spans(
     cursor_style: Style,
 ) {
     spans.push(Span::raw(before.to_string()));
+    // Cursor at end-of-segment: no trailing space so the line stays within
+    // bounds. The terminal cursor (set_cursor_position) handles the visible
+    // position without needing an extra styled space.
     let mut chars = after.chars();
-    match chars.next() {
-        Some(cursor_char) => {
-            spans.push(Span::styled(cursor_char.to_string(), cursor_style));
-            spans.push(Span::raw(chars.as_str().to_string()));
-        }
-        None => spans.push(Span::styled(" ", cursor_style)),
+    if let Some(cursor_char) = chars.next() {
+        spans.push(Span::styled(cursor_char.to_string(), cursor_style));
+        spans.push(Span::raw(chars.as_str().to_string()));
     }
 }
 
@@ -123,7 +123,9 @@ pub fn format_comment_input_lines(
     };
 
     // "    │  " is the per-line content prefix; everything past that is content.
-    let content_area = width.saturating_sub(BORDER_PREFIX_WIDTH);
+    // Subtract two extra: one so ratatui never wraps an exact-fit line, and
+    // one so the terminal cursor at end-of-segment stays clear of the border.
+    let content_area = width.saturating_sub(BORDER_PREFIX_WIDTH + 2);
 
     let mut result = Vec::new();
     let mut cursor_line_offset: usize = 1;
@@ -326,7 +328,9 @@ pub fn format_comment_lines(
     };
 
     // "    │  " is the per-line content prefix; everything past that is content.
-    let content_area = width.saturating_sub(BORDER_PREFIX_WIDTH);
+    // Subtract two extra: one so ratatui never wraps an exact-fit line, and
+    // one so the terminal cursor at end-of-segment stays clear of the border.
+    let content_area = width.saturating_sub(BORDER_PREFIX_WIDTH + 2);
 
     let content_lines: Vec<&str> = content.split('\n').collect();
 

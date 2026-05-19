@@ -144,7 +144,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
             comment_cursor_column = 1 + cursor_info.column;
             comment_input_box_range =
                 Some((line_idx, line_idx + input_lines.len().saturating_sub(1)));
-            let annotations_replaced = 2 + comment.content.split('\n').count();
+            let annotations_replaced = App::comment_display_lines(comment, inner.width as usize);
             annotation_offset = Some((line_idx, input_lines.len(), annotations_replaced));
 
             for mut input_line in input_lines {
@@ -258,7 +258,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                     comment_cursor_column = 1 + cursor_info.column;
                     comment_input_box_range =
                         Some((line_idx, line_idx + input_lines.len().saturating_sub(1)));
-                    let annotations_replaced = 2 + comment.content.split('\n').count();
+                    let annotations_replaced = App::comment_display_lines(comment, inner.width as usize);
                     annotation_offset = Some((line_idx, input_lines.len(), annotations_replaced));
 
                     for mut input_line in input_lines {
@@ -538,7 +538,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
 
     let max_content_width = line_widths.iter().copied().max().unwrap_or(0);
 
-    app.diff_state.viewport_width = inner.width as usize;
+    app.sync_viewport_width(inner.width as usize);
     app.diff_state.max_content_width = max_content_width;
 
     let scroll_offset = app.diff_state.scroll_offset;
@@ -1204,7 +1204,7 @@ fn add_comments_to_line(
                     );
                     let box_top_row = line_idx;
                     let box_end = line_idx + input_lines.len().saturating_sub(1);
-                    let annotations_replaced = 2 + comment.content.split('\n').count();
+                    let annotations_replaced = App::comment_display_lines(comment, ctx.panel_width);
                     cursor_info_out = Some((
                         line_idx + cursor_info.line_offset,
                         1 + cursor_info.column,
