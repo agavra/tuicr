@@ -432,18 +432,8 @@ pub fn build_review_body(
         sections.push(block);
     }
 
-    if config.review_footer {
-        sections.push(REVIEW_FOOTER.to_string());
-    }
-
     sections.join("\n\n")
 }
-
-/// Footer appended to every tuicr-authored GitHub review body (when
-/// `forge.review_footer` is enabled). Kept as a constant so it's trivial to
-/// snapshot-test in the body builder.
-pub const REVIEW_FOOTER: &str =
-    "<sub>Reviewed with [tuicr](https://github.com/agavra/tuicr).</sub>";
 
 #[cfg(test)]
 mod tests {
@@ -779,7 +769,6 @@ mod tests {
         let comment = comment_with_line(LineSide::New, Some(11), None);
         let cfg = ForgeConfig {
             comment_type_prefix: false,
-            review_footer: true,
         };
         let mapped = map_comment(&comment, anchor_from(&comment), &typical_file(), &cfg);
         match mapped {
@@ -798,31 +787,20 @@ mod tests {
     }
 
     #[test]
-    fn should_return_empty_body_when_no_inputs_and_footer_disabled() {
-        let cfg = ForgeConfig {
-            comment_type_prefix: true,
-            review_footer: false,
-        };
-        let body = build_review_body(&[], &[], &cfg);
-        assert_eq!(body, "");
-    }
-
-    #[test]
-    fn should_return_footer_only_when_no_review_comments_and_no_summary() {
+    fn should_return_empty_body_when_no_inputs() {
         let body = build_review_body(&[], &[], &default_config());
-        assert_eq!(body, REVIEW_FOOTER);
+        assert_eq!(body, "");
     }
 
     #[test]
     fn should_render_review_level_comments_with_type_prefix() {
         let comments = vec![note("first"), note("second")];
         let body = build_review_body(&comments, &[], &default_config());
-        assert!(body.starts_with("[NOTE] first\n\n[NOTE] second"));
-        assert!(body.ends_with(REVIEW_FOOTER));
+        assert_eq!(body, "[NOTE] first\n\n[NOTE] second");
     }
 
     #[test]
-    fn should_render_unplaced_comments_section_before_footer() {
+    fn should_render_unplaced_comments_section() {
         let item = MovedToSummaryItem {
             comment: Comment::new("kaboom".to_string(), CommentType::Issue, None),
             file: PathBuf::from("src/lib.rs"),
@@ -830,11 +808,10 @@ mod tests {
         let body = build_review_body(&[], &[item], &default_config());
         assert!(body.contains("## Unplaced comments"));
         assert!(body.contains("- [ISSUE] src/lib.rs: kaboom"));
-        assert!(body.ends_with(REVIEW_FOOTER));
     }
 
     #[test]
-    fn should_render_all_three_sections_in_order() {
+    fn should_render_review_level_above_unplaced_section() {
         let review = vec![note("top")];
         let summary = vec![MovedToSummaryItem {
             comment: Comment::new("middle".to_string(), CommentType::Note, None),
@@ -843,15 +820,13 @@ mod tests {
         let body = build_review_body(&review, &summary, &default_config());
         let top = body.find("[NOTE] top").expect("review comment");
         let middle = body.find("## Unplaced comments").expect("unplaced section");
-        let bottom = body.find(REVIEW_FOOTER).expect("footer");
-        assert!(top < middle && middle < bottom, "section ordering: {body}");
+        assert!(top < middle, "section ordering: {body}");
     }
 
     #[test]
     fn should_omit_type_prefix_in_body_when_disabled() {
         let cfg = ForgeConfig {
             comment_type_prefix: false,
-            review_footer: false,
         };
         let comments = vec![note("just text")];
         let body = build_review_body(&comments, &[], &cfg);

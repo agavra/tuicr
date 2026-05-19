@@ -228,12 +228,11 @@ fn describe_row(item: &UnmappableItem) -> String {
 
 fn body_summary_label(app: &App, moved_count: usize) -> String {
     let review_level = app.session.review_comments.len();
-    match (review_level, moved_count, app.forge_config.review_footer) {
-        (0, 0, false) => "empty".to_string(),
-        (0, 0, true) => "footer only".to_string(),
-        (n, 0, _) => format!("{n} review comment{s}", s = plural(n)),
-        (0, m, _) => format!("{m} unplaced comment{s}", s = plural(m)),
-        (n, m, _) => format!("{n} review comment{sn} + {m} unplaced", sn = plural(n)),
+    match (review_level, moved_count) {
+        (0, 0) => "empty".to_string(),
+        (n, 0) => format!("{n} review comment{s}", s = plural(n)),
+        (0, m) => format!("{m} unplaced comment{s}", s = plural(m)),
+        (n, m) => format!("{n} review comment{sn} + {m} unplaced", sn = plural(n)),
     }
 }
 

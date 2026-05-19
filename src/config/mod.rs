@@ -24,16 +24,12 @@ pub struct ForgeConfig {
     /// reader can see the comment classification at a glance. Defaults to
     /// `true`; set to `false` to send the raw comment body.
     pub comment_type_prefix: bool,
-    /// Append the `<sub>Reviewed with tuicr…</sub>` footer to the GitHub
-    /// review body on submit. Defaults to `true`.
-    pub review_footer: bool,
 }
 
 impl Default for ForgeConfig {
     fn default() -> Self {
         Self {
             comment_type_prefix: true,
-            review_footer: true,
         }
     }
 }
@@ -83,7 +79,7 @@ const KNOWN_KEYS: &[&str] = &[
     "forge",
 ];
 
-const FORGE_KNOWN_KEYS: &[&str] = &["comment_type_prefix", "review_footer"];
+const FORGE_KNOWN_KEYS: &[&str] = &["comment_type_prefix"];
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ConfigLoadOutcome {
@@ -306,10 +302,6 @@ fn parse_forge(value: &Value, warnings: &mut Vec<String>) -> Option<ForgeConfig>
 
     if let Some(v) = read_forge_bool(table, "comment_type_prefix", warnings) {
         cfg.comment_type_prefix = v;
-        any_override = true;
-    }
-    if let Some(v) = read_forge_bool(table, "review_footer", warnings) {
-        cfg.review_footer = v;
         any_override = true;
     }
 
@@ -982,7 +974,6 @@ mod tests {
         let outcome = parse_config(
             r#"[forge]
 comment_type_prefix = false
-review_footer = false
 "#,
         );
         let forge = outcome
@@ -991,7 +982,6 @@ review_footer = false
             .and_then(|cfg| cfg.forge.clone())
             .expect("forge section should parse");
         assert!(!forge.comment_type_prefix);
-        assert!(!forge.review_footer);
         assert!(outcome.warnings.is_empty());
     }
 
@@ -1011,7 +1001,7 @@ review_footer = false
     fn should_warn_on_unknown_forge_keys() {
         let outcome = parse_config(
             r#"[forge]
-review_footer = true
+comment_type_prefix = false
 foo = "bar"
 "#,
         );
@@ -1020,8 +1010,7 @@ foo = "bar"
             .as_ref()
             .and_then(|cfg| cfg.forge.clone())
             .expect("forge section should parse");
-        assert!(forge.review_footer);
-        assert!(forge.comment_type_prefix);
+        assert!(!forge.comment_type_prefix);
         assert_eq!(outcome.warnings.len(), 1);
         assert_eq!(
             outcome.warnings[0],
@@ -1070,12 +1059,9 @@ comment_type_prefix = "yes"
     }
 
     #[test]
-    fn forge_defaults_are_both_true() {
-        // Guard against silent changes to public defaults — both knobs ship
-        // enabled per the spec.
+    fn forge_defaults_enable_comment_type_prefix() {
         let cfg = ForgeConfig::default();
         assert!(cfg.comment_type_prefix);
-        assert!(cfg.review_footer);
     }
 
     #[test]
