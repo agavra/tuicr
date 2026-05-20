@@ -20,7 +20,11 @@ use crate::model::ReviewSession;
 use crate::model::review::SessionDiffSource;
 
 pub const MANIFEST_FILENAME: &str = "index.json";
-const MANIFEST_VERSION: &str = "1.0";
+pub const MANIFEST_VERSION: &str = "2.0";
+/// Subdirectory inside `reviews/` where session JSON files live under the
+/// flat layout. The presence of this directory signals "current layout" to
+/// the migration check.
+pub const SESSIONS_DIRNAME: &str = "sessions";
 
 /// A slug may map to more than one [`ManifestEntry`] when two local checkouts
 /// of the same repo are both under review (same slug, different canonical

@@ -1,19 +1,20 @@
 //! Slug-addressed storage layer for review sessions.
 //!
-//! Layout under `~/.local/share/tuicr/reviews/`:
+//! Layout under the platform data dir's `tuicr/reviews/`:
 //!
 //! ```text
 //! reviews/
-//!   index.json                          # manifest, source of truth for lookups
-//!   local/<fp>/<owner>/<repo>/<ref>/<source>.json
-//!   local/<fp>/<repo>/<ref>/<source>.json        # no-owner fallback
-//!   gh/<owner>/<repo>/pr/<number>/<head_sha>.json
+//!   index.json                # manifest, source of truth for lookups
+//!   sessions/
+//!     <16-hex>.json           # one file per session, deterministic name
 //! ```
 //!
-//! Every save writes a session JSON file and updates the manifest. Every load
-//! is a manifest lookup keyed by the slug derived from the caller's context.
-//! Per-session JSON files are self-describing so the manifest can be rebuilt
-//! by walking the tree if it gets lost or corrupted.
+//! The session filename is a hash of the slug plus the canonical repo path
+//! (for local) or head SHA (for PR), so the same logical session always
+//! lands at the same path without consulting the manifest. The manifest is
+//! the authoritative slug -> file mapping; if it goes missing or corrupts,
+//! the session JSONs are self-describing and the manifest can be rebuilt by
+//! walking `sessions/`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -23,13 +24,11 @@ use directories::ProjectDirs;
 
 use crate::error::{Result, TuicrError};
 use crate::forge::traits::PrSessionKey;
-use crate::hash::fnv1a_64;
+use crate::hash::Fnv1aHasher;
 use crate::model::ReviewSession;
 use crate::model::review::SessionDiffSource;
-use crate::persistence::manifest::{self, MANIFEST_FILENAME, ManifestKind};
-use crate::slug::{self, LocalSlug, Slug, SlugAnchor, SlugSource};
-
-const FINGERPRINT_HEX_LEN: usize = 8;
+use crate::persistence::manifest::{self, MANIFEST_FILENAME, ManifestKind, SESSIONS_DIRNAME};
+use crate::slug::{self, Slug};
 
 // ---------- Public API ----------
 
@@ -203,36 +202,20 @@ fn get_reviews_dir() -> Result<PathBuf> {
     }
 }
 
-/// On first run under the new layout, move any old flat-layout sessions out
-/// of the reviews dir. The new layout is identified by the presence of the
-/// manifest file. If the reviews dir contains top-level `.json` session files
-/// (old layout), rename it to `<reviews>.v1` and start fresh.
+/// On first run under the flat layout, move any pre-existing reviews dir
+/// aside. The current layout is identified by the presence of the
+/// `sessions/` subdirectory; if it's missing but the reviews dir has any
+/// other contents (an older flat layout's `*.json` files, a previous tree
+/// layout with `local/` and `gh/` subdirs, or a stale manifest), rename the
+/// whole directory to `<reviews>.bak1` and start fresh.
 fn maybe_migrate(reviews_dir: &Path) -> Result<()> {
     if !reviews_dir.exists() {
         return Ok(());
     }
-    if reviews_dir.join(MANIFEST_FILENAME).exists() {
+    if reviews_dir.join(SESSIONS_DIRNAME).exists() {
         return Ok(());
     }
-
-    let mut has_top_level_json = false;
-    for entry in fs::read_dir(reviews_dir)? {
-        let entry = entry?;
-        let ft = entry.file_type()?;
-        if !ft.is_file() {
-            continue;
-        }
-        if entry
-            .file_name()
-            .to_str()
-            .is_some_and(|n| n.ends_with(".json"))
-        {
-            has_top_level_json = true;
-            break;
-        }
-    }
-
-    if !has_top_level_json {
+    if fs::read_dir(reviews_dir)?.next().is_none() {
         return Ok(());
     }
 
@@ -243,11 +226,11 @@ fn maybe_migrate(reviews_dir: &Path) -> Result<()> {
         .file_name()
         .and_then(|n| n.to_str())
         .ok_or_else(|| TuicrError::Io(std::io::Error::other("reviews dir has no name")))?;
-    let mut backup = parent.join(format!("{stem}.v1"));
+    let mut backup = parent.join(format!("{stem}.bak1"));
     let mut suffix = 1u32;
     while backup.exists() {
         suffix += 1;
-        backup = parent.join(format!("{stem}.v{suffix}"));
+        backup = parent.join(format!("{stem}.bak{suffix}"));
     }
 
     fs::rename(reviews_dir, &backup)?;
@@ -259,105 +242,51 @@ fn maybe_migrate(reviews_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Compute the relative path of a session's JSON file under `reviews/`.
+///
+/// Files live in a single flat `sessions/` directory; their name is the FNV-1a
+/// hash of identity-defining inputs, so the same logical session always lands
+/// at the same path and no manifest lookup is needed to construct it:
+///
+/// - **Local**: hash of `slug || canonical_repo_path`. Two checkouts of the
+///   same repo produce distinct hashes because their canonical paths differ.
+/// - **PR**: hash of `slug || head_sha`. A new head produces a new file.
 fn relative_path_for_slug(slug: &Slug, session: &ReviewSession) -> Result<PathBuf> {
+    let mut hasher = Fnv1aHasher::new();
     match slug {
-        Slug::Local(local) => Ok(local_relative_path(local, &session.repo_path)),
+        Slug::Local(_) => {
+            hasher.write(b"local|");
+            hasher.write(slug.to_string().as_bytes());
+            hasher.write(b"|");
+            let canonical =
+                fs::canonicalize(&session.repo_path).unwrap_or_else(|_| session.repo_path.clone());
+            let normalized = canonical.to_string_lossy().to_string();
+            let normalized = if cfg!(windows) {
+                normalized.to_lowercase()
+            } else {
+                normalized
+            };
+            hasher.write(normalized.as_bytes());
+        }
         Slug::Pr(_) => {
             let key = session.pr_session_key.as_ref().ok_or_else(|| {
                 TuicrError::CorruptedSession(
                     "PR slug requires session.pr_session_key to be populated".to_string(),
                 )
             })?;
-            Ok(pr_relative_path(key))
+            hasher.write(b"pr|");
+            hasher.write(slug.to_string().as_bytes());
+            hasher.write(b"|");
+            hasher.write(key.head_sha.as_bytes());
         }
     }
-}
-
-fn local_relative_path(local: &LocalSlug, repo_path: &Path) -> PathBuf {
-    let fp = repo_path_fingerprint(repo_path);
-    let mut path = PathBuf::from("local").join(&fp);
-    if let Some(owner) = &local.owner {
-        path = path.join(sanitize_path_segment(owner));
-    }
-    path = path
-        .join(sanitize_path_segment(&local.repo))
-        .join(sanitize_path_segment(&anchor_segment(&local.anchor)));
-    for segment in source_segments(&local.source) {
-        path = path.join(sanitize_path_segment(&segment));
-    }
-    path.with_extension("json")
-}
-
-fn pr_relative_path(key: &PrSessionKey) -> PathBuf {
-    PathBuf::from("gh")
-        .join(sanitize_path_segment(&key.repository.owner))
-        .join(sanitize_path_segment(&key.repository.name))
-        .join("pr")
-        .join(key.number.to_string())
-        .join(format!("{}.json", sanitize_path_segment(&key.head_sha)))
-}
-
-fn anchor_segment(anchor: &SlugAnchor) -> String {
-    match anchor {
-        SlugAnchor::Branch(name) => name.clone(),
-        SlugAnchor::Anonymous(sha) => format!("~{sha}"),
-    }
-}
-
-fn source_segments(source: &SlugSource) -> Vec<String> {
-    match source {
-        SlugSource::Worktree => vec!["worktree".to_string()],
-        SlugSource::Staged => vec!["staged".to_string()],
-        SlugSource::Unstaged => vec!["unstaged".to_string()],
-        SlugSource::StagedAndUnstaged => vec!["staged-and-unstaged".to_string()],
-        SlugSource::Pristine => vec!["pristine".to_string()],
-        SlugSource::Commits(r) => vec!["commits".to_string(), format!("{}..{}", r.base, r.head)],
-        SlugSource::WorktreeAndCommits(r) => vec![
-            "worktree-and-commits".to_string(),
-            format!("{}..{}", r.base, r.head),
-        ],
-        SlugSource::StagedUnstagedAndCommits(r) => vec![
-            "staged-and-unstaged-and-commits".to_string(),
-            format!("{}..{}", r.base, r.head),
-        ],
-    }
-}
-
-/// Filenames must not contain path separators or otherwise-illegal characters.
-/// Slugs are already constrained but path segments may receive raw input
-/// (e.g., owner names with `.`) — be defensive.
-fn sanitize_path_segment(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for ch in value.chars() {
-        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '~' | '+') {
-            out.push(ch);
-        } else {
-            out.push('-');
-        }
-    }
-    if out.is_empty() {
-        "unknown".to_string()
-    } else {
-        out
-    }
-}
-
-fn repo_path_fingerprint(repo_path: &Path) -> String {
-    let canonical = fs::canonicalize(repo_path).unwrap_or_else(|_| repo_path.to_path_buf());
-    let normalized = canonical.to_string_lossy().to_string();
-    let normalized = if cfg!(windows) {
-        normalized.to_lowercase()
-    } else {
-        normalized
-    };
-    let hash = fnv1a_64(normalized.as_bytes());
-    let hex = format!("{hash:016x}");
-    hex[..FINGERPRINT_HEX_LEN].to_string()
+    let hex = format!("{:016x}", hasher.finish());
+    Ok(PathBuf::from(SESSIONS_DIRNAME).join(format!("{hex}.json")))
 }
 
 fn manifest_anchor_for(slug: &Slug) -> String {
     match slug {
-        Slug::Local(local) => anchor_segment(&local.anchor),
+        Slug::Local(local) => local.anchor.to_string(),
         Slug::Pr(pr) => format!("pr/{}", pr.number),
     }
 }
@@ -462,7 +391,7 @@ mod tests {
     }
 
     #[test]
-    fn should_save_under_new_layout_for_local() {
+    fn should_save_under_flat_sessions_dir_for_local() {
         let _g = with_test_reviews_dir();
         let repo = make_repo();
         let session = make_local_session(
@@ -474,22 +403,46 @@ mod tests {
         );
         let path = save_session(&session).unwrap();
         let display = path.display().to_string();
-        assert!(display.contains("/local/"), "expected /local/ in {display}");
-        assert!(display.ends_with("/worktree.json"));
+        assert!(
+            display.contains("/sessions/"),
+            "expected /sessions/ in {display}"
+        );
+        let name = path.file_name().unwrap().to_str().unwrap();
+        assert!(
+            name.len() == 21 && name.ends_with(".json"),
+            "expected 16-hex-char filename, got {name}"
+        );
     }
 
     #[test]
-    fn should_save_under_new_layout_for_pr() {
+    fn should_save_under_flat_sessions_dir_for_pr() {
         let _g = with_test_reviews_dir();
         let key = make_pr_key(125, "abcdef0123456789");
         let session = make_pr_session(&key);
         let path = save_session(&session).unwrap();
         let display = path.display().to_string();
         assert!(
-            display.contains("/gh/agavra/tuicr/pr/125/"),
-            "expected gh/agavra/tuicr/pr/125 segment in {display}"
+            display.contains("/sessions/"),
+            "expected /sessions/ in {display}"
         );
-        assert!(display.ends_with("/abcdef0123456789.json"));
+        let name = path.file_name().unwrap().to_str().unwrap();
+        assert!(
+            name.len() == 21 && name.ends_with(".json"),
+            "expected 16-hex-char filename, got {name}"
+        );
+    }
+
+    #[test]
+    fn should_produce_distinct_paths_for_different_pr_heads() {
+        let _g = with_test_reviews_dir();
+        let key_a = make_pr_key(125, "abcdef0123456789");
+        let key_b = make_pr_key(125, "9999999999999999");
+        let path_a = save_session(&make_pr_session(&key_a)).unwrap();
+        let path_b = save_session(&make_pr_session(&key_b)).unwrap();
+        assert_ne!(
+            path_a, path_b,
+            "PR sessions with different heads must hash to different files"
+        );
     }
 
     #[test]
@@ -744,10 +697,10 @@ mod tests {
         assert!(loaded.is_none());
     }
 
-    // ---- Branch sanitization in paths ----
+    // ---- Branch sanitization in slug ----
 
     #[test]
-    fn should_sanitize_branch_slashes_in_storage_path() {
+    fn should_sanitize_branch_slashes_in_slug() {
         let _g = with_test_reviews_dir();
         let repo = make_repo();
         let session = make_local_session(
@@ -757,24 +710,29 @@ mod tests {
             SessionDiffSource::WorkingTree,
             None,
         );
-        let path = save_session(&session).unwrap();
-        let display = path.display().to_string();
+        save_session(&session).unwrap();
+
+        let slug = slug_for_session(&session).unwrap();
         assert!(
-            display.contains("/feature-login/"),
-            "branch slash not sanitized in {display}"
+            slug.to_string().contains("@feature-login/worktree"),
+            "branch slash not sanitized in {slug}"
         );
     }
 
     // ---- Migration ----
 
     #[test]
-    fn should_migrate_old_flat_layout_on_first_run() {
+    fn should_migrate_pre_flat_layout_on_first_run() {
         let _g = with_test_reviews_dir();
         let reviews_dir = get_reviews_dir().unwrap();
 
-        // Drop an old-style flat session file into the reviews dir directly.
-        let old_file = reviews_dir.join("old_session.json");
-        fs::write(&old_file, "{\"legacy\":true}").unwrap();
+        // Pre-flat artifact: a top-level *.json from the original flat
+        // layout, or a tree-layout subdir from the intermediate v2 layout.
+        let stray = reviews_dir.join("old_session.json");
+        fs::write(&stray, "{\"legacy\":true}").unwrap();
+        let tree_subdir = reviews_dir.join("local").join("abcd");
+        fs::create_dir_all(&tree_subdir).unwrap();
+        fs::write(tree_subdir.join("foo.json"), "{}").unwrap();
 
         let session = make_local_session(
             make_repo(),
@@ -786,21 +744,24 @@ mod tests {
         save_session(&session).unwrap();
 
         assert!(
-            !old_file.exists(),
-            "old flat session file should have moved during migration"
+            !stray.exists(),
+            "pre-flat artifacts should have moved during migration"
         );
+        assert!(reviews_dir.join(SESSIONS_DIRNAME).exists());
+
         let parent = reviews_dir.parent().unwrap();
         let backup_exists = fs::read_dir(parent)
             .unwrap()
             .flatten()
-            .any(|e| e.file_name().to_string_lossy().contains(".v1"));
-        assert!(backup_exists, "expected a .v1 backup dir under {parent:?}");
+            .any(|e| e.file_name().to_string_lossy().contains(".bak"));
+        assert!(backup_exists, "expected a .bak backup dir under {parent:?}");
     }
 
     #[test]
-    fn should_not_migrate_when_manifest_already_present() {
+    fn should_not_migrate_when_sessions_dir_already_present() {
         let _g = with_test_reviews_dir();
         let reviews_dir = get_reviews_dir().unwrap();
+        fs::create_dir_all(reviews_dir.join(SESSIONS_DIRNAME)).unwrap();
         let manifest = Manifest::new();
         manifest::save_manifest(&reviews_dir, &manifest).unwrap();
 
@@ -817,7 +778,30 @@ mod tests {
         save_session(&session).unwrap();
         assert!(
             stray.exists(),
-            "stray .json must survive when manifest exists"
+            "stray .json must survive when sessions/ already exists"
+        );
+    }
+
+    #[test]
+    fn should_not_migrate_when_reviews_dir_is_empty() {
+        let _g = with_test_reviews_dir();
+        let reviews_dir = get_reviews_dir().unwrap();
+        // Reviews dir exists but is empty: no migration trigger.
+        maybe_migrate(&reviews_dir).unwrap();
+        assert!(reviews_dir.exists());
+        let stem = reviews_dir
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let parent = reviews_dir.parent().unwrap();
+        let our_backup_exists = fs::read_dir(parent).unwrap().flatten().any(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            name.starts_with(&stem) && name.contains(".bak")
+        });
+        assert!(
+            !our_backup_exists,
+            "should not migrate when reviews dir is empty"
         );
     }
 }
