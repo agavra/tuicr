@@ -876,6 +876,82 @@ impl Theme {
         }
     }
 
+    /// Tokyo Night Day (folke/tokyonight.nvim "day" variant)
+    pub fn tokyo_night_day() -> Self {
+        let bg = Color::Rgb(225, 226, 231); // #e1e2e7
+        let bg_dark = Color::Rgb(208, 213, 227); // #d0d5e3
+        let bg_highlight = Color::Rgb(196, 200, 218); // #c4c8da
+        let terminal_black = Color::Rgb(108, 110, 117); // #6c6e75
+        let fg = Color::Rgb(55, 96, 191); // #3760bf
+        let fg_dark = Color::Rgb(97, 114, 176); // #6172b0
+        let dark3 = Color::Rgb(132, 140, 181); // #848cb5
+        let comment = Color::Rgb(132, 140, 181); // #848cb5
+        let blue = Color::Rgb(46, 125, 233); // #2e7de9
+        let cyan = Color::Rgb(0, 113, 151); // #007197
+        let magenta = Color::Rgb(120, 71, 189); // #7847bd
+        let orange = Color::Rgb(177, 92, 0); // #b15c00
+        let yellow = Color::Rgb(140, 108, 62); // #8c6c3e
+        let green = Color::Rgb(88, 117, 57); // #587539
+        let red = Color::Rgb(245, 42, 101); // #f52a65
+
+        Self {
+            highlighter: OnceLock::new(),
+
+            panel_bg: bg,
+            bg_highlight,
+            fg_primary: fg,
+            fg_secondary: fg_dark,
+            fg_dim: dark3,
+
+            diff_add: green,
+            diff_add_bg: Color::Rgb(197, 221, 230), // #c5dde6 (light blue-tinted)
+            diff_del: red,
+            diff_del_bg: Color::Rgb(243, 197, 203), // #f3c5cb (light rose)
+            diff_context: fg,
+            diff_hunk_header: blue,
+            expanded_context_fg: dark3,
+
+            syntax_add_bg: Color::Rgb(216, 230, 236), // #d8e6ec
+            syntax_del_bg: Color::Rgb(245, 213, 217), // #f5d5d9
+
+            // Light syntect base with muted blue feel, matching the storm sibling's choice of a base16 family
+            syntect_theme: EmbeddedThemeName::Base16OceanLight,
+
+            file_added: green,
+            file_modified: yellow,
+            file_deleted: red,
+            file_renamed: magenta,
+
+            reviewed: green,
+            pending: yellow,
+
+            comment_note: blue,
+            comment_suggestion: cyan,
+            comment_issue: red,
+            comment_praise: green,
+
+            border_focused: blue,
+            border_unfocused: terminal_black,
+            status_bar_bg: bg_dark,
+            cursor_color: orange,
+            cursor_line_bg: bg_highlight,
+            branch_name: cyan,
+            help_indicator: comment,
+
+            message_info_fg: bg,
+            message_info_bg: blue,
+            message_warning_fg: bg,
+            message_warning_bg: yellow,
+            message_error_fg: bg,
+            message_error_bg: red,
+            update_badge_fg: bg,
+            update_badge_bg: yellow,
+
+            mode_fg: bg,
+            mode_bg: blue,
+        }
+    }
+
     pub fn gruvbox_dark() -> Self {
         let flavor = GruvboxFlavor {
             dark: true,
@@ -1466,11 +1542,12 @@ pub enum ThemeArg {
     SolarizedLight,
     SolarizedDark,
     TokyoNightStorm,
+    TokyoNightDay,
     EverforestDark,
     EverforestLight,
 }
 
-const THEME_CHOICES: [(&str, ThemeArg); 22] = [
+const THEME_CHOICES: [(&str, ThemeArg); 23] = [
     ("dark", ThemeArg::Dark),
     ("light", ThemeArg::Light),
     ("ayu-light", ThemeArg::AyuLight),
@@ -1491,6 +1568,7 @@ const THEME_CHOICES: [(&str, ThemeArg); 22] = [
     ("solarized-light", ThemeArg::SolarizedLight),
     ("solarized-dark", ThemeArg::SolarizedDark),
     ("tokyo-night-storm", ThemeArg::TokyoNightStorm),
+    ("tokyo-night-day", ThemeArg::TokyoNightDay),
     ("everforest-dark", ThemeArg::EverforestDark),
     ("everforest-light", ThemeArg::EverforestLight),
 ];
@@ -1605,6 +1683,7 @@ pub fn resolve_theme(arg: ThemeArg) -> Theme {
         ThemeArg::SolarizedLight => Theme::solarized_light(),
         ThemeArg::SolarizedDark => Theme::solarized_dark(),
         ThemeArg::TokyoNightStorm => Theme::tokyo_night_storm(),
+        ThemeArg::TokyoNightDay => Theme::tokyo_night_day(),
         ThemeArg::EverforestDark => Theme::everforest_dark(),
         ThemeArg::EverforestLight => Theme::everforest_light(),
     }
