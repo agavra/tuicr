@@ -10,6 +10,7 @@ mod output;
 mod persistence;
 mod process;
 mod profile;
+mod slug;
 mod syntax;
 mod text_edit;
 mod theme;
@@ -243,6 +244,14 @@ fn main() -> anyhow::Result<()> {
             std::process::exit(1);
         }
     };
+
+    // Announce the slug for the active session so agents and wrapper scripts
+    // can discover it without parsing the markdown export. This is emitted to
+    // stderr before the alt-screen swap so the line stays on the user's
+    // scrollback after tuicr exits.
+    if let Some(slug) = app.session_slug() {
+        eprintln!("tuicr-session: {slug}");
+    }
 
     // Setup terminal
     // When --stdout is used, render TUI to /dev/tty so stdout is free for export output

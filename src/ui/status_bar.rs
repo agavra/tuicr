@@ -77,6 +77,9 @@ pub fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     if app.is_single_file_view {
         chunks.push("FOCUS".to_string());
     }
+    if let Some(slug) = app.session_slug() {
+        chunks.push(slug);
+    }
     if app.is_pristine_mode {
         // The pristine session key has shape `pristine:<head_or_none>:<hash>`,
         // so the middle segment is the short SHA of the HEAD we're reviewing.

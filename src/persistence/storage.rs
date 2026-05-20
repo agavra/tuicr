@@ -1,248 +1,74 @@
-use directories::ProjectDirs;
+//! Slug-addressed storage layer for review sessions.
+//!
+//! Layout under `~/.local/share/tuicr/reviews/`:
+//!
+//! ```text
+//! reviews/
+//!   index.json                          # manifest, source of truth for lookups
+//!   local/<fp>/<owner>/<repo>/<ref>/<source>.json
+//!   local/<fp>/<repo>/<ref>/<source>.json        # no-owner fallback
+//!   gh/<owner>/<repo>/pr/<number>/<head_sha>.json
+//! ```
+//!
+//! Every save writes a session JSON file and updates the manifest. Every load
+//! is a manifest lookup keyed by the slug derived from the caller's context.
+//! Per-session JSON files are self-describing so the manifest can be rebuilt
+//! by walking the tree if it gets lost or corrupted.
+
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+
+#[cfg(not(test))]
+use directories::ProjectDirs;
 
 use crate::error::{Result, TuicrError};
 use crate::forge::traits::PrSessionKey;
 use crate::hash::fnv1a_64;
 use crate::model::ReviewSession;
 use crate::model::review::SessionDiffSource;
+use crate::persistence::manifest::{self, MANIFEST_FILENAME, ManifestKind};
+use crate::slug::{self, LocalSlug, Slug, SlugAnchor, SlugSource};
 
-const SESSION_MAX_AGE_DAYS: u64 = 7;
-const SESSION_FILENAME_MIN_PARTS: usize = 6;
-const SESSION_FILENAME_SUFFIX_PARTS: usize = 4;
-const SESSION_FILENAME_DATE_LEN: usize = 8;
-const SESSION_FILENAME_TIME_LEN: usize = 6;
 const FINGERPRINT_HEX_LEN: usize = 8;
 
-struct SessionFilenameParts {
-    repo_fingerprints: Vec<String>,
-    diff_source: String,
-}
+// ---------- Public API ----------
 
-fn parse_session_filename(filename: &str) -> Option<SessionFilenameParts> {
-    // PR sessions use a different layout; never treat them as local session
-    // candidates here.
-    if filename.starts_with("pr_github_") {
-        return None;
-    }
-    let stem = filename.strip_suffix(".json")?;
-    let parts: Vec<&str> = stem.split('_').collect();
-
-    if parts.len() < SESSION_FILENAME_MIN_PARTS {
-        return None;
-    }
-
-    let diff_source_idx = parts.len().checked_sub(SESSION_FILENAME_SUFFIX_PARTS)?;
-    let date_idx = parts.len().checked_sub(SESSION_FILENAME_SUFFIX_PARTS - 1)?;
-    let time_idx = parts.len().checked_sub(SESSION_FILENAME_SUFFIX_PARTS - 2)?;
-    let diff_source = parts.get(diff_source_idx)?;
-    let date_part = parts.get(date_idx)?;
-    let time_part = parts.get(time_idx)?;
-
-    if !matches!(
-        *diff_source,
-        "worktree" | "commits" | "worktree_and_commits"
-    ) {
-        return None;
-    }
-
-    if !is_timestamp_part(date_part, SESSION_FILENAME_DATE_LEN)
-        || !is_timestamp_part(time_part, SESSION_FILENAME_TIME_LEN)
-    {
-        return None;
-    }
-
-    let mut fingerprints = Vec::new();
-    for part in &parts[..diff_source_idx] {
-        if is_hex_fingerprint(part) && !fingerprints.iter().any(|candidate| candidate == part) {
-            fingerprints.push((*part).to_string());
-        }
-    }
-
-    if fingerprints.is_empty() {
-        return None;
-    }
-
-    Some(SessionFilenameParts {
-        repo_fingerprints: fingerprints,
-        diff_source: diff_source.to_string(),
-    })
-}
-
-fn is_timestamp_part(part: &str, len: usize) -> bool {
-    part.len() == len && part.chars().all(|ch| ch.is_ascii_digit())
-}
-
-fn is_hex_fingerprint(part: &str) -> bool {
-    part.len() == FINGERPRINT_HEX_LEN && part.chars().all(|ch| ch.is_ascii_hexdigit())
-}
-
-fn get_reviews_dir() -> Result<PathBuf> {
-    #[cfg(test)]
-    if let Some(dir) = std::env::var_os("TUICR_REVIEWS_DIR") {
-        let path = PathBuf::from(dir);
-        fs::create_dir_all(&path)?;
-        return Ok(path);
-    }
-
-    let proj_dirs = ProjectDirs::from("", "", "tuicr").ok_or_else(|| {
-        TuicrError::Io(std::io::Error::other("Could not determine data directory"))
-    })?;
-
-    let data_dir = proj_dirs.data_dir().join("reviews");
-    fs::create_dir_all(&data_dir)?;
-    Ok(data_dir)
-}
-
-const MAX_FILENAME_COMPONENT_LEN: usize = 64;
-
-fn sanitize_filename_component(value: &str) -> String {
-    let mut sanitized = String::with_capacity(value.len().min(MAX_FILENAME_COMPONENT_LEN));
-    for ch in value.chars() {
-        if sanitized.len() >= MAX_FILENAME_COMPONENT_LEN {
-            break;
-        }
-        let ok = ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.');
-        sanitized.push(if ok { ch } else { '-' });
-    }
-
-    let sanitized = sanitized.trim_matches('-');
-    if sanitized.is_empty() {
-        "unknown".to_string()
-    } else {
-        sanitized.to_string()
-    }
-}
-
-fn repo_path_fingerprint(repo_path: &Path) -> String {
-    let normalized = normalize_repo_path(repo_path);
-    let hash = fnv1a_64(normalized.as_bytes());
-    let hex = format!("{hash:016x}");
-    hex[..FINGERPRINT_HEX_LEN].to_string()
-}
-
-fn normalize_repo_path(repo_path: &Path) -> String {
-    let canonical = fs::canonicalize(repo_path).unwrap_or_else(|_| repo_path.to_path_buf());
-    let normalized = canonical.to_string_lossy().to_string();
-
-    if cfg!(windows) {
-        normalized.to_lowercase()
-    } else {
-        normalized
-    }
-}
-
-fn session_filename(session: &ReviewSession) -> String {
-    // PR sessions key by forge identity + PR number + head SHA so multiple
-    // PR opens of the same repo land in distinct files, and reopening the
-    // same PR at the same head reuses the same session.
-    if let Some(key) = session.pr_session_key.as_ref() {
-        let host = sanitize_filename_component(&key.repository.host);
-        let owner = sanitize_filename_component(&key.repository.owner);
-        let repo = sanitize_filename_component(&key.repository.name);
-        let short = sanitize_filename_component(&key.short_head());
-        let id_fragment = session.id.split('-').next().unwrap_or(&session.id);
-        return format!(
-            "pr_github_{}_{}_{}_{}_{}_{}.json",
-            host, owner, repo, key.number, short, id_fragment,
-        );
-    }
-
-    let repo_name = session
-        .repo_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("unknown");
-
-    let repo_name = sanitize_filename_component(repo_name);
-    let repo_fingerprint = repo_path_fingerprint(&session.repo_path);
-
-    let branch = session.branch_name.as_deref().unwrap_or("detached");
-    let branch = sanitize_filename_component(branch);
-
-    let diff_source = match session.diff_source {
-        SessionDiffSource::WorkingTree => "worktree",
-        SessionDiffSource::Staged => "staged",
-        SessionDiffSource::Unstaged => "unstaged",
-        SessionDiffSource::StagedAndUnstaged => "staged_and_unstaged",
-        SessionDiffSource::CommitRange => "commits",
-        SessionDiffSource::WorkingTreeAndCommits => "worktree_and_commits",
-        SessionDiffSource::StagedUnstagedAndCommits => "staged_unstaged_and_commits",
-        SessionDiffSource::PullRequest => "pr",
-        SessionDiffSource::Pristine => "pristine",
-    };
-
-    let timestamp = session.created_at.format("%Y%m%d_%H%M%S");
-    let id_fragment = session.id.split('-').next().unwrap_or(&session.id);
-
-    format!(
-        "{}_{}_{}_{}_{}_{}.json",
-        repo_name, repo_fingerprint, branch, diff_source, timestamp, id_fragment
-    )
-}
-
+/// Save a session to disk and update the manifest. The on-disk path is
+/// derived from the session's slug; the slug is computed from the session's
+/// fields at save time.
 pub fn save_session(session: &ReviewSession) -> Result<PathBuf> {
     let reviews_dir = get_reviews_dir()?;
-    let filename = session_filename(session);
-    let path = reviews_dir.join(&filename);
+    maybe_migrate(&reviews_dir)?;
 
-    let json = serde_json::to_string_pretty(session)?;
-    fs::write(&path, json)?;
+    let slug = slug_for_session(session)?;
+    let relative = relative_path_for_slug(&slug, session)?;
+    let full_path = reviews_dir.join(&relative);
 
-    Ok(path)
-}
-
-pub fn load_session(path: &PathBuf) -> Result<ReviewSession> {
-    let contents = fs::read_to_string(path)?;
-    let session: ReviewSession =
-        serde_json::from_str(&contents).map_err(|e| TuicrError::CorruptedSession(e.to_string()))?;
-    Ok(session)
-}
-
-/// Look up the most recent persisted session for a PR keyed by forge identity,
-/// PR number, and head SHA. Returns `None` when no matching session exists.
-///
-/// PR sessions key only by identity; we deliberately do not consult mtime or
-/// other filename fields because reopening the same PR at the same head must
-/// restore the exact session that was last persisted for it.
-pub fn load_pr_session(key: &PrSessionKey) -> Result<Option<(PathBuf, ReviewSession)>> {
-    let reviews_dir = get_reviews_dir()?;
-    let entries = match fs::read_dir(&reviews_dir) {
-        Ok(entries) => entries,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(TuicrError::Io(e)),
-    };
-
-    let mut best: Option<(PathBuf, ReviewSession)> = None;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Some(filename) = path.file_name().and_then(|n| n.to_str()) else {
-            continue;
-        };
-        if !filename.starts_with("pr_github_") || !filename.ends_with(".json") {
-            continue;
-        }
-        let Ok(session) = load_session(&path) else {
-            continue;
-        };
-        if session.pr_session_key.as_ref() == Some(key) {
-            // Keep the most recently updated entry when more than one exists
-            // (e.g. multiple draft saves in flight before cleanup).
-            let candidate_updated = session.updated_at;
-            let prefer_new = match best.as_ref() {
-                Some((_, current)) => candidate_updated > current.updated_at,
-                None => true,
-            };
-            if prefer_new {
-                best = Some((path, session));
-            }
-        }
+    if let Some(parent) = full_path.parent() {
+        fs::create_dir_all(parent)?;
     }
-    Ok(best)
+    let json = serde_json::to_string_pretty(session)?;
+    fs::write(&full_path, json)?;
+
+    let mut manifest = manifest::load_manifest(&reviews_dir).unwrap_or_default();
+    let anchor = manifest_anchor_for(&slug);
+    let entry = manifest::entry_from_session(session, relative, anchor);
+    manifest.upsert(slug.to_string(), entry);
+    manifest::save_manifest(&reviews_dir, &manifest)?;
+
+    Ok(full_path)
 }
 
+/// Load a session JSON file from an absolute path.
+pub fn load_session(path: &Path) -> Result<ReviewSession> {
+    let contents = fs::read_to_string(path)?;
+    serde_json::from_str(&contents).map_err(|e| TuicrError::CorruptedSession(e.to_string()))
+}
+
+/// Look up the persisted local session that matches the requested context.
+/// Returns `None` if no matching slug is in the manifest, or if a manifest
+/// entry exists but belongs to a different canonical checkout (same slug,
+/// different path on disk).
 pub fn load_latest_session_for_context(
     repo_path: &Path,
     branch_name: Option<&str>,
@@ -250,786 +76,360 @@ pub fn load_latest_session_for_context(
     diff_source: SessionDiffSource,
     commit_range: Option<&[String]>,
 ) -> Result<Option<(PathBuf, ReviewSession)>> {
-    let current_repo_path = normalize_repo_path(repo_path);
-    let current_fingerprint = repo_path_fingerprint(repo_path);
-    let current_diff_source = match diff_source {
-        SessionDiffSource::WorkingTree => "worktree",
-        SessionDiffSource::Staged => "staged",
-        SessionDiffSource::Unstaged => "unstaged",
-        SessionDiffSource::StagedAndUnstaged => "staged_and_unstaged",
-        SessionDiffSource::CommitRange => "commits",
-        SessionDiffSource::WorkingTreeAndCommits => "worktree_and_commits",
-        SessionDiffSource::StagedUnstagedAndCommits => "staged_unstaged_and_commits",
-        SessionDiffSource::Pristine => "pristine",
-        // PR sessions are looked up via `load_pr_session`. If a caller asks
-        // for the local-session loader with this diff source, return nothing.
-        SessionDiffSource::PullRequest => return Ok(None),
-    };
-
-    let reviews_dir = get_reviews_dir()?;
-    let now = SystemTime::now();
-    let max_age = Duration::from_secs(SESSION_MAX_AGE_DAYS * 24 * 60 * 60);
-
-    let mut session_files: Vec<_> = fs::read_dir(&reviews_dir)?
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| {
-            let path = entry.path();
-
-            if !path
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
-            {
-                return false;
-            }
-
-            // Delete sessions older than 7 days
-            if let Ok(metadata) = entry.metadata()
-                && let Ok(modified) = metadata.modified()
-                && let Ok(age) = now.duration_since(modified)
-                && age > max_age
-            {
-                let _ = fs::remove_file(&path);
-                return false;
-            }
-
-            let Some(filename) = path.file_name().and_then(|f| f.to_str()) else {
-                return false;
-            };
-
-            let Some(parts) = parse_session_filename(filename) else {
-                return true;
-            };
-
-            if !parts
-                .repo_fingerprints
-                .iter()
-                .any(|fingerprint| fingerprint == &current_fingerprint)
-            {
-                return false;
-            }
-
-            if parts.diff_source != current_diff_source {
-                return false;
-            }
-
-            true
-        })
-        .collect();
-
-    session_files.sort_by(|a, b| {
-        let a_modified = a
-            .metadata()
-            .ok()
-            .and_then(|m| m.modified().ok())
-            .unwrap_or(SystemTime::UNIX_EPOCH);
-        let b_modified = b
-            .metadata()
-            .ok()
-            .and_then(|m| m.modified().ok())
-            .unwrap_or(SystemTime::UNIX_EPOCH);
-
-        b_modified
-            .cmp(&a_modified)
-            .then_with(|| a.file_name().cmp(&b.file_name()))
-    });
-
-    let mut legacy_candidate = None;
-
-    for entry in session_files {
-        let path = entry.path();
-        let Ok(session) = load_session(&path) else {
-            continue;
-        };
-
-        if normalize_repo_path(&session.repo_path) != current_repo_path {
-            continue;
-        }
-
-        if session.diff_source != diff_source {
-            continue;
-        }
-
-        if matches!(
-            diff_source,
-            SessionDiffSource::CommitRange
-                | SessionDiffSource::WorkingTreeAndCommits
-                | SessionDiffSource::StagedUnstagedAndCommits
-        ) && let Some(expected_range) = commit_range
-            && session.commit_range.as_deref() != Some(expected_range)
-        {
-            continue;
-        }
-
-        let session_branch = session.branch_name.as_deref();
-        if session_branch == branch_name {
-            if branch_name.is_none() {
-                // Pristine sessions key on the path-list hash, not the HEAD
-                // sha, so an advancing HEAD after `git pull` still reloads
-                // the same comments. Other branch-less sessions fall back to
-                // exact head_commit comparison.
-                let exact_match = if matches!(diff_source, SessionDiffSource::Pristine) {
-                    pristine_keys_match(&session.base_commit, head_commit)
-                } else {
-                    session.base_commit == head_commit
-                };
-                if !exact_match {
-                    continue;
-                }
-            }
-
-            return Ok(Some((path, session)));
-        }
-
-        let eligible_legacy = branch_name.is_some()
-            && legacy_candidate.is_none()
-            && commit_range.is_none()
-            && session_branch.is_none()
-            && session.base_commit == head_commit;
-        if eligible_legacy {
-            legacy_candidate = Some((path, session));
-        }
+    // PR sessions are resolved via `load_pr_session`. Mirror the old behavior
+    // so callers that pass `PullRequest` here get `None` rather than an error.
+    if matches!(diff_source, SessionDiffSource::PullRequest) {
+        return Ok(None);
     }
 
-    Ok(legacy_candidate)
+    let reviews_dir = get_reviews_dir()?;
+    maybe_migrate(&reviews_dir)?;
+
+    let owner_repo = slug::resolve_owner_repo(repo_path)
+        .map_err(|e| TuicrError::CorruptedSession(format!("slug derive: {e}")))?;
+    let local = slug::build_local_slug(
+        owner_repo,
+        branch_name,
+        head_commit,
+        diff_source,
+        commit_range,
+    )
+    .map_err(|e| TuicrError::CorruptedSession(format!("slug build: {e}")))?;
+    let slug = Slug::Local(local);
+
+    let manifest = manifest::load_manifest(&reviews_dir).unwrap_or_default();
+    let canonical = fs::canonicalize(repo_path).unwrap_or_else(|_| repo_path.to_path_buf());
+    let Some(entry) = manifest.get_local(&slug.to_string(), &canonical) else {
+        return Ok(None);
+    };
+
+    let full_path = reviews_dir.join(&entry.path);
+    let session = load_session(&full_path)?;
+    Ok(Some((full_path, session)))
 }
 
-/// Match two pristine session keys by their path-hash suffix.
-///
-/// Pristine `base_commit` values have the shape `"pristine:<head>:<hash>"`.
-/// Two sessions belong to the same review if they share the same path-list
-/// hash, regardless of HEAD; the prefix and trailing hash must both match.
-fn pristine_keys_match(a: &str, b: &str) -> bool {
-    let Some(a_hash) = pristine_key_hash(a) else {
-        return false;
+/// Look up the persisted PR session for a key. Returns `None` if no entry
+/// exists for the slug, or if the manifest's current head differs from the
+/// requested head (the old head's file may still be on disk but is not
+/// surfaced).
+pub fn load_pr_session(key: &PrSessionKey) -> Result<Option<(PathBuf, ReviewSession)>> {
+    let reviews_dir = get_reviews_dir()?;
+    maybe_migrate(&reviews_dir)?;
+
+    let slug: Slug = key.into();
+    let manifest = manifest::load_manifest(&reviews_dir).unwrap_or_default();
+    let Some(entry) = manifest.get_pr(&slug.to_string()) else {
+        return Ok(None);
     };
-    let Some(b_hash) = pristine_key_hash(b) else {
-        return false;
-    };
-    a_hash == b_hash
+
+    match &entry.kind {
+        ManifestKind::Pr { head_sha, .. } if head_sha == &key.head_sha => {
+            let full_path = reviews_dir.join(&entry.path);
+            let session = load_session(&full_path)?;
+            Ok(Some((full_path, session)))
+        }
+        _ => Ok(None),
+    }
 }
 
-fn pristine_key_hash(key: &str) -> Option<&str> {
-    let rest = key.strip_prefix("pristine:")?;
-    rest.rsplit_once(':').map(|(_, hash)| hash)
+/// Derive the slug for a session from its embedded fields. Local sessions
+/// require resolving the repo's `origin` remote (I/O); PR sessions are
+/// derived purely from the embedded `pr_session_key`.
+pub fn slug_for_session(session: &ReviewSession) -> Result<Slug> {
+    if let Some(key) = session.pr_session_key.as_ref() {
+        return Ok(key.into());
+    }
+    let owner_repo = slug::resolve_owner_repo(&session.repo_path)
+        .map_err(|e| TuicrError::CorruptedSession(format!("slug derive: {e}")))?;
+    let local = slug::build_local_slug(
+        owner_repo,
+        session.branch_name.as_deref(),
+        &session.base_commit,
+        session.diff_source,
+        session.commit_range.as_deref(),
+    )
+    .map_err(|e| TuicrError::CorruptedSession(format!("slug build: {e}")))?;
+    Ok(Slug::Local(local))
+}
+
+// ---------- Internals ----------
+
+#[cfg(test)]
+thread_local! {
+    static TEST_REVIEWS_DIR: std::cell::RefCell<Option<PathBuf>> = const {
+        std::cell::RefCell::new(None)
+    };
 }
 
 #[cfg(test)]
-fn delete_session(path: &PathBuf) -> Result<()> {
-    fs::remove_file(path)?;
+pub(crate) fn set_test_reviews_dir(path: Option<PathBuf>) {
+    TEST_REVIEWS_DIR.with(|cell| *cell.borrow_mut() = path);
+}
+
+fn get_reviews_dir() -> Result<PathBuf> {
+    #[cfg(test)]
+    {
+        // In tests, the reviews dir is a thread-local so that two parallel
+        // tests never share state through it. Tests that touch storage and
+        // care about isolation set the thread-local via
+        // `set_test_reviews_dir`; tests that hit storage incidentally (e.g.,
+        // App tests that toggle save markers) fall back to a per-thread
+        // temp dir. The real `~/.local/share/tuicr/reviews` is never used in
+        // test mode.
+        let configured = TEST_REVIEWS_DIR.with(|cell| cell.borrow().clone());
+        if let Some(path) = configured {
+            fs::create_dir_all(&path)?;
+            return Ok(path);
+        }
+        let thread_id = std::thread::current().id();
+        let path = std::env::temp_dir().join(format!(
+            "tuicr-test-thread-{:?}-{}",
+            thread_id,
+            std::process::id()
+        ));
+        fs::create_dir_all(&path)?;
+        Ok(path)
+    }
+
+    #[cfg(not(test))]
+    {
+        let proj_dirs = ProjectDirs::from("", "", "tuicr").ok_or_else(|| {
+            TuicrError::Io(std::io::Error::other("Could not determine data directory"))
+        })?;
+
+        let data_dir = proj_dirs.data_dir().join("reviews");
+        fs::create_dir_all(&data_dir)?;
+        Ok(data_dir)
+    }
+}
+
+/// On first run under the new layout, move any old flat-layout sessions out
+/// of the reviews dir. The new layout is identified by the presence of the
+/// manifest file. If the reviews dir contains top-level `.json` session files
+/// (old layout), rename it to `<reviews>.v1` and start fresh.
+fn maybe_migrate(reviews_dir: &Path) -> Result<()> {
+    if !reviews_dir.exists() {
+        return Ok(());
+    }
+    if reviews_dir.join(MANIFEST_FILENAME).exists() {
+        return Ok(());
+    }
+
+    let mut has_top_level_json = false;
+    for entry in fs::read_dir(reviews_dir)? {
+        let entry = entry?;
+        let ft = entry.file_type()?;
+        if !ft.is_file() {
+            continue;
+        }
+        if entry
+            .file_name()
+            .to_str()
+            .is_some_and(|n| n.ends_with(".json"))
+        {
+            has_top_level_json = true;
+            break;
+        }
+    }
+
+    if !has_top_level_json {
+        return Ok(());
+    }
+
+    let parent = reviews_dir
+        .parent()
+        .ok_or_else(|| TuicrError::Io(std::io::Error::other("reviews dir has no parent")))?;
+    let stem = reviews_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| TuicrError::Io(std::io::Error::other("reviews dir has no name")))?;
+    let mut backup = parent.join(format!("{stem}.v1"));
+    let mut suffix = 1u32;
+    while backup.exists() {
+        suffix += 1;
+        backup = parent.join(format!("{stem}.v{suffix}"));
+    }
+
+    fs::rename(reviews_dir, &backup)?;
+    fs::create_dir_all(reviews_dir)?;
+    eprintln!(
+        "[tuicr] migrating reviews to new layout; previous reviews moved to {}",
+        backup.display()
+    );
     Ok(())
 }
+
+fn relative_path_for_slug(slug: &Slug, session: &ReviewSession) -> Result<PathBuf> {
+    match slug {
+        Slug::Local(local) => Ok(local_relative_path(local, &session.repo_path)),
+        Slug::Pr(_) => {
+            let key = session.pr_session_key.as_ref().ok_or_else(|| {
+                TuicrError::CorruptedSession(
+                    "PR slug requires session.pr_session_key to be populated".to_string(),
+                )
+            })?;
+            Ok(pr_relative_path(key))
+        }
+    }
+}
+
+fn local_relative_path(local: &LocalSlug, repo_path: &Path) -> PathBuf {
+    let fp = repo_path_fingerprint(repo_path);
+    let mut path = PathBuf::from("local").join(&fp);
+    if let Some(owner) = &local.owner {
+        path = path.join(sanitize_path_segment(owner));
+    }
+    path = path
+        .join(sanitize_path_segment(&local.repo))
+        .join(sanitize_path_segment(&anchor_segment(&local.anchor)));
+    for segment in source_segments(&local.source) {
+        path = path.join(sanitize_path_segment(&segment));
+    }
+    path.with_extension("json")
+}
+
+fn pr_relative_path(key: &PrSessionKey) -> PathBuf {
+    PathBuf::from("gh")
+        .join(sanitize_path_segment(&key.repository.owner))
+        .join(sanitize_path_segment(&key.repository.name))
+        .join("pr")
+        .join(key.number.to_string())
+        .join(format!("{}.json", sanitize_path_segment(&key.head_sha)))
+}
+
+fn anchor_segment(anchor: &SlugAnchor) -> String {
+    match anchor {
+        SlugAnchor::Branch(name) => name.clone(),
+        SlugAnchor::Anonymous(sha) => format!("~{sha}"),
+    }
+}
+
+fn source_segments(source: &SlugSource) -> Vec<String> {
+    match source {
+        SlugSource::Worktree => vec!["worktree".to_string()],
+        SlugSource::Staged => vec!["staged".to_string()],
+        SlugSource::Unstaged => vec!["unstaged".to_string()],
+        SlugSource::StagedAndUnstaged => vec!["staged-and-unstaged".to_string()],
+        SlugSource::Pristine => vec!["pristine".to_string()],
+        SlugSource::Commits(r) => vec!["commits".to_string(), format!("{}..{}", r.base, r.head)],
+        SlugSource::WorktreeAndCommits(r) => vec![
+            "worktree-and-commits".to_string(),
+            format!("{}..{}", r.base, r.head),
+        ],
+        SlugSource::StagedUnstagedAndCommits(r) => vec![
+            "staged-and-unstaged-and-commits".to_string(),
+            format!("{}..{}", r.base, r.head),
+        ],
+    }
+}
+
+/// Filenames must not contain path separators or otherwise-illegal characters.
+/// Slugs are already constrained but path segments may receive raw input
+/// (e.g., owner names with `.`) — be defensive.
+fn sanitize_path_segment(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '~' | '+') {
+            out.push(ch);
+        } else {
+            out.push('-');
+        }
+    }
+    if out.is_empty() {
+        "unknown".to_string()
+    } else {
+        out
+    }
+}
+
+fn repo_path_fingerprint(repo_path: &Path) -> String {
+    let canonical = fs::canonicalize(repo_path).unwrap_or_else(|_| repo_path.to_path_buf());
+    let normalized = canonical.to_string_lossy().to_string();
+    let normalized = if cfg!(windows) {
+        normalized.to_lowercase()
+    } else {
+        normalized
+    };
+    let hash = fnv1a_64(normalized.as_bytes());
+    let hex = format!("{hash:016x}");
+    hex[..FINGERPRINT_HEX_LEN].to_string()
+}
+
+fn manifest_anchor_for(slug: &Slug) -> String {
+    match slug {
+        Slug::Local(local) => anchor_segment(&local.anchor),
+        Slug::Pr(pr) => format!("pr/{}", pr.number),
+    }
+}
+
+#[allow(dead_code)]
+pub(crate) fn manifest_path_for(reviews_dir: &Path) -> PathBuf {
+    reviews_dir.join(MANIFEST_FILENAME)
+}
+
+// ---------- Tests ----------
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::forge::traits::{ForgeRepository, PrSessionKey};
     use crate::model::FileStatus;
+    use crate::persistence::manifest::Manifest;
     use std::path::PathBuf;
-    use std::sync::{Mutex, OnceLock};
-    use std::time::Duration;
 
-    const TEST_MTIME_RETRIES: usize = 40;
-    const TEST_MTIME_SLEEP_MS: u64 = 100;
-
-    fn create_test_session() -> ReviewSession {
-        let mut session = ReviewSession::new(
-            PathBuf::from("/tmp/test-repo"),
-            "abc1234def".to_string(),
-            Some("main".to_string()),
-            SessionDiffSource::WorkingTree,
-        );
-        session.add_file(PathBuf::from("src/main.rs"), FileStatus::Modified, 0);
-        session
-    }
-
-    static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-
-    struct TestReviewsDirGuard<'a> {
-        _lock: std::sync::MutexGuard<'a, ()>,
+    struct TestReviewsDirGuard {
         path: PathBuf,
     }
 
-    impl Drop for TestReviewsDirGuard<'_> {
+    impl Drop for TestReviewsDirGuard {
         fn drop(&mut self) {
-            unsafe {
-                std::env::remove_var("TUICR_REVIEWS_DIR");
-            }
+            set_test_reviews_dir(None);
             let _ = fs::remove_dir_all(&self.path);
         }
     }
 
-    fn with_test_reviews_dir() -> TestReviewsDirGuard<'static> {
-        let lock = TEST_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+    fn with_test_reviews_dir() -> TestReviewsDirGuard {
         let path =
             std::env::temp_dir().join(format!("tuicr-reviews-test-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&path).unwrap();
-        unsafe {
-            std::env::set_var("TUICR_REVIEWS_DIR", path.as_os_str());
-        }
-
-        TestReviewsDirGuard { _lock: lock, path }
+        set_test_reviews_dir(Some(path.clone()));
+        TestReviewsDirGuard { path }
     }
 
-    fn create_session(
+    fn make_repo() -> PathBuf {
+        let repo = std::env::temp_dir().join(format!("tuicr-repo-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&repo).unwrap();
+        repo
+    }
+
+    fn make_local_session(
         repo_path: PathBuf,
         base_commit: &str,
         branch_name: Option<&str>,
         diff_source: SessionDiffSource,
         commit_range: Option<Vec<String>>,
     ) -> ReviewSession {
-        let mut session = ReviewSession::new(
+        let mut s = ReviewSession::new(
             repo_path,
             base_commit.to_string(),
-            branch_name.map(|s| s.to_string()),
+            branch_name.map(|b| b.to_string()),
             diff_source,
         );
-        session.commit_range = commit_range;
-        session.add_file(PathBuf::from("src/main.rs"), FileStatus::Modified, 0);
-        session
+        s.commit_range = commit_range;
+        s.add_file(PathBuf::from("src/main.rs"), FileStatus::Modified, 0);
+        s
     }
 
-    fn save_legacy_session(reviews_dir: &Path, session: &ReviewSession) -> PathBuf {
-        let mut value = serde_json::to_value(session).unwrap();
-        let obj = value.as_object_mut().unwrap();
-        obj.remove("branch_name");
-        obj.remove("diff_source");
-        obj.remove("commit_range");
-        obj.insert(
-            "version".to_string(),
-            serde_json::Value::String("1.0".to_string()),
-        );
-
-        let id_fragment = session.id.split('-').next().unwrap_or(&session.id);
-        let path = reviews_dir.join(format!("legacy_{id_fragment}.json"));
-        fs::write(&path, serde_json::to_string_pretty(&value).unwrap()).unwrap();
-        path
-    }
-
-    fn ensure_newer_mtime(newer: &Path, older: &Path) {
-        let older_time = fs::metadata(older)
-            .ok()
-            .and_then(|m| m.modified().ok())
-            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-
-        for _ in 0..TEST_MTIME_RETRIES {
-            let newer_time = fs::metadata(newer)
-                .ok()
-                .and_then(|m| m.modified().ok())
-                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-
-            if newer_time > older_time {
-                return;
-            }
-
-            std::thread::sleep(Duration::from_millis(TEST_MTIME_SLEEP_MS));
-            let contents = fs::read_to_string(newer).unwrap();
-            fs::write(newer, contents).unwrap();
-        }
-
-        let newer_time = fs::metadata(newer)
-            .ok()
-            .and_then(|m| m.modified().ok())
-            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-
-        assert!(
-            newer_time > older_time,
-            "failed to produce newer mtime for {}",
-            newer.display()
-        );
-    }
-
-    #[test]
-    fn should_generate_correct_filename() {
-        let session = create_test_session();
-        let filename = session_filename(&session);
-        assert!(filename.starts_with("test-repo_"));
-        assert!(filename.contains("_main_worktree_"));
-        assert!(filename.ends_with(".json"));
-    }
-
-    #[test]
-    fn should_generate_filename_for_staged_unstaged() {
-        let session = create_session(
-            PathBuf::from("/tmp/test-repo"),
-            "abc1234def",
-            Some("main"),
-            SessionDiffSource::StagedAndUnstaged,
-            None,
-        );
-        let filename = session_filename(&session);
-        assert!(filename.contains("_staged_and_unstaged_"));
-    }
-
-    #[test]
-    fn should_roundtrip_session() {
-        let _guard = with_test_reviews_dir();
-        let session = create_test_session();
-        let path = save_session(&session).unwrap();
-        let loaded = load_session(&path).unwrap();
-        assert_eq!(session.id, loaded.id);
-        assert_eq!(session.base_commit, loaded.base_commit);
-        assert_eq!(session.branch_name, loaded.branch_name);
-        assert_eq!(session.diff_source, loaded.diff_source);
-        assert_eq!(session.files.len(), loaded.files.len());
-        let _ = delete_session(&path);
-    }
-
-    #[test]
-    fn should_sanitize_branch_name_in_filename() {
-        let session = create_session(
-            PathBuf::from("/tmp/test-repo"),
-            "abc1234def",
-            Some("feature/login"),
-            SessionDiffSource::WorkingTree,
-            None,
-        );
-        let filename = session_filename(&session);
-        assert!(!filename.contains('/'));
-        assert!(filename.contains("feature-login"));
-    }
-
-    #[test]
-    fn should_select_latest_session_for_branch() {
-        let _guard = with_test_reviews_dir();
-        let repo_path = std::env::temp_dir().join(format!("tuicr-repo-{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&repo_path).unwrap();
-
-        let session1 = create_session(
-            repo_path.clone(),
-            "commit-1",
-            Some("main"),
-            SessionDiffSource::WorkingTree,
-            None,
-        );
-        let path1 = save_session(&session1).unwrap();
-
-        let session2 = create_session(
-            repo_path.clone(),
-            "commit-2",
-            Some("main"),
-            SessionDiffSource::WorkingTree,
-            None,
-        );
-        let path2 = save_session(&session2).unwrap();
-        ensure_newer_mtime(&path2, &path1);
-        let (selected_path, selected) = load_latest_session_for_context(
-            &repo_path,
-            Some("main"),
-            "head-does-not-matter-for-branch",
-            SessionDiffSource::WorkingTree,
-            None,
-        )
-        .unwrap()
-        .unwrap();
-        assert_eq!(selected_path, path2);
-        assert_ne!(selected_path, path1);
-        assert_eq!(selected.base_commit, "commit-2");
-    }
-
-    #[test]
-    fn should_match_branch_even_when_head_commit_differs() {
-        let _guard = with_test_reviews_dir();
-        let repo_path = std::env::temp_dir().join(format!("tuicr-repo-{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&repo_path).unwrap();
-
-        let session = create_session(
-            repo_path.clone(),
-            "old-head",
-            Some("main"),
-            SessionDiffSource::WorkingTree,
-            None,
-        );
-        let _ = save_session(&session).unwrap();
-        let loaded = load_latest_session_for_context(
-            &repo_path,
-            Some("main"),
-            "new-head",
-            SessionDiffSource::WorkingTree,
-            None,
-        )
-        .unwrap();
-        assert!(loaded.is_some());
-    }
-
-    #[test]
-    fn should_load_session_with_underscore_branch_name() {
-        let _guard = with_test_reviews_dir();
-        let repo_path = std::env::temp_dir().join(format!("tuicr-repo-{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&repo_path).unwrap();
-
-        let session = create_session(
-            repo_path.clone(),
-            "head-commit",
-            Some("feature/with_underscores"),
-            SessionDiffSource::WorkingTree,
-            None,
-        );
-        let _ = save_session(&session).unwrap();
-        let loaded = load_latest_session_for_context(
-            &repo_path,
-            Some("feature/with_underscores"),
-            "new-head",
-            SessionDiffSource::WorkingTree,
-            None,
-        )
-        .unwrap();
-        assert!(loaded.is_some());
-    }
-
-    #[test]
-    fn should_load_session_with_hex_like_branch_segment() {
-        let _guard = with_test_reviews_dir();
-        let repo_path = std::env::temp_dir().join(format!("tuicr-repo-{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&repo_path).unwrap();
-
-        let session = create_session(
-            repo_path.clone(),
-            "head-commit",
-            Some("feature/deadbeef_fix"),
-            SessionDiffSource::WorkingTree,
-            None,
-        );
-        let _ = save_session(&session).unwrap();
-        let loaded = load_latest_session_for_context(
-            &repo_path,
-            Some("feature/deadbeef_fix"),
-            "new-head",
-            SessionDiffSource::WorkingTree,
-            None,
-        )
-        .unwrap();
-        assert!(loaded.is_some());
-    }
-
-    #[test]
-    fn should_prefer_branch_match_over_legacy_candidate() {
-        let guard = with_test_reviews_dir();
-        let repo_path = std::env::temp_dir().join(format!("tuicr-repo-{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&repo_path).unwrap();
-
-        let branch_session = create_session(
-            repo_path.clone(),
-            "branch-base",
-            Some("main"),
-            SessionDiffSource::WorkingTree,
-            None,
-        );
-        let branch_path = save_session(&branch_session).unwrap();
-
-        let legacy_source = create_session(
-            repo_path.clone(),
-            "head-commit",
-            None,
-            SessionDiffSource::WorkingTree,
-            None,
-        );
-        let legacy_path = save_legacy_session(&guard.path, &legacy_source);
-        let (selected_path, _selected) = load_latest_session_for_context(
-            &repo_path,
-            Some("main"),
-            "head-commit",
-            SessionDiffSource::WorkingTree,
-            None,
-        )
-        .unwrap()
-        .unwrap();
-        assert_eq!(selected_path, branch_path);
-        assert_ne!(selected_path, legacy_path);
-    }
-
-    #[test]
-    fn should_fallback_to_legacy_session_when_no_branch_session_exists() {
-        let guard = with_test_reviews_dir();
-        let repo_path = std::env::temp_dir().join(format!("tuicr-repo-{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&repo_path).unwrap();
-
-        let legacy_source = create_session(
-            repo_path.clone(),
-            "head-commit",
-            None,
-            SessionDiffSource::WorkingTree,
-            None,
-        );
-        let legacy_path = save_legacy_session(&guard.path, &legacy_source);
-        let (selected_path, selected) = load_latest_session_for_context(
-            &repo_path,
-            Some("main"),
-            "head-commit",
-            SessionDiffSource::WorkingTree,
-            None,
-        )
-        .unwrap()
-        .unwrap();
-        assert_eq!(selected_path, legacy_path);
-        assert_eq!(selected.branch_name, None);
-        assert_eq!(selected.diff_source, SessionDiffSource::WorkingTree);
-    }
-
-    #[test]
-    fn should_not_select_legacy_session_when_head_commit_differs() {
-        let guard = with_test_reviews_dir();
-        let repo_path = std::env::temp_dir().join(format!("tuicr-repo-{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&repo_path).unwrap();
-
-        let legacy_source = create_session(
-            repo_path.clone(),
-            "old-head",
-            None,
-            SessionDiffSource::WorkingTree,
-            None,
-        );
-        let _legacy_path = save_legacy_session(&guard.path, &legacy_source);
-        let loaded = load_latest_session_for_context(
-            &repo_path,
-            Some("main"),
-            "new-head",
-            SessionDiffSource::WorkingTree,
-            None,
-        )
-        .unwrap();
-        assert!(loaded.is_none());
-    }
-
-    #[test]
-    fn should_require_commit_match_in_detached_head() {
-        let _guard = with_test_reviews_dir();
-        let repo_path = std::env::temp_dir().join(format!("tuicr-repo-{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&repo_path).unwrap();
-
-        let session = create_session(
-            repo_path.clone(),
-            "detached-head",
-            None,
-            SessionDiffSource::WorkingTree,
-            None,
-        );
-        let _ = save_session(&session).unwrap();
-        let mismatch = load_latest_session_for_context(
-            &repo_path,
-            None,
-            "different-head",
-            SessionDiffSource::WorkingTree,
-            None,
-        )
-        .unwrap();
-        let match_ = load_latest_session_for_context(
-            &repo_path,
-            None,
-            "detached-head",
-            SessionDiffSource::WorkingTree,
-            None,
-        )
-        .unwrap();
-        assert!(mismatch.is_none());
-        assert!(match_.is_some());
-    }
-
-    #[test]
-    fn should_ignore_sessions_with_different_diff_source() {
-        let _guard = with_test_reviews_dir();
-        let repo_path = std::env::temp_dir().join(format!("tuicr-repo-{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&repo_path).unwrap();
-
-        let commit_range = vec!["commit-2".to_string(), "commit-1".to_string()];
-        let commits_session = create_session(
-            repo_path.clone(),
-            "commit-2",
-            Some("main"),
-            SessionDiffSource::CommitRange,
-            Some(commit_range.clone()),
-        );
-        let _ = save_session(&commits_session).unwrap();
-        let worktree = load_latest_session_for_context(
-            &repo_path,
-            Some("main"),
-            "head",
-            SessionDiffSource::WorkingTree,
-            None,
-        )
-        .unwrap();
-        let commits = load_latest_session_for_context(
-            &repo_path,
-            Some("main"),
-            "head",
-            SessionDiffSource::CommitRange,
-            Some(commit_range.as_slice()),
-        )
-        .unwrap();
-        assert!(worktree.is_none());
-        assert!(commits.is_some());
-    }
-
-    #[test]
-    fn should_match_commit_range_session() {
-        let _guard = with_test_reviews_dir();
-        let repo_path = std::env::temp_dir().join(format!("tuicr-repo-{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&repo_path).unwrap();
-
-        let commit_range_a = vec!["commit-a2".to_string(), "commit-a1".to_string()];
-        let commit_range_b = vec!["commit-b2".to_string(), "commit-b1".to_string()];
-
-        let session_a = create_session(
-            repo_path.clone(),
-            "commit-a2",
-            Some("main"),
-            SessionDiffSource::CommitRange,
-            Some(commit_range_a.clone()),
-        );
-        let path_a = save_session(&session_a).unwrap();
-
-        let session_b = create_session(
-            repo_path.clone(),
-            "commit-b2",
-            Some("main"),
-            SessionDiffSource::CommitRange,
-            Some(commit_range_b.clone()),
-        );
-        let path_b = save_session(&session_b).unwrap();
-        let (selected_path, selected) = load_latest_session_for_context(
-            &repo_path,
-            Some("main"),
-            "commit-b2",
-            SessionDiffSource::CommitRange,
-            Some(commit_range_b.as_slice()),
-        )
-        .unwrap()
-        .unwrap();
-        assert_eq!(selected_path, path_b);
-        assert_ne!(selected_path, path_a);
-        assert_eq!(
-            selected.commit_range.as_deref(),
-            Some(commit_range_b.as_slice())
-        );
-    }
-
-    #[test]
-    fn should_roundtrip_commit_range_session() {
-        let _guard = with_test_reviews_dir();
-        let repo_path = std::env::temp_dir().join(format!("tuicr-repo-{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&repo_path).unwrap();
-
-        let commit_range = vec!["commit-2".to_string(), "commit-1".to_string()];
-        let session = create_session(
-            repo_path,
-            "commit-2",
-            Some("main"),
-            SessionDiffSource::CommitRange,
-            Some(commit_range.clone()),
-        );
-        let path = save_session(&session).unwrap();
-        let loaded = load_session(&path).unwrap();
-        assert_eq!(loaded.commit_range, Some(commit_range));
-        assert_eq!(loaded.diff_source, SessionDiffSource::CommitRange);
-        let _ = delete_session(&path);
-    }
-
-    #[test]
-    fn should_require_commit_range_order_match() {
-        let _guard = with_test_reviews_dir();
-        let repo_path = std::env::temp_dir().join(format!("tuicr-repo-{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&repo_path).unwrap();
-
-        let commit_range = vec!["commit-2".to_string(), "commit-1".to_string()];
-        let reversed_range = vec!["commit-1".to_string(), "commit-2".to_string()];
-
-        let session = create_session(
-            repo_path.clone(),
-            "commit-2",
-            Some("main"),
-            SessionDiffSource::CommitRange,
-            Some(commit_range),
-        );
-        let _ = save_session(&session).unwrap();
-        let loaded = load_latest_session_for_context(
-            &repo_path,
-            Some("main"),
-            "commit-2",
-            SessionDiffSource::CommitRange,
-            Some(reversed_range.as_slice()),
-        )
-        .unwrap();
-        assert!(loaded.is_none());
-    }
-
-    #[test]
-    fn should_skip_commit_sessions_without_range_match() {
-        let _guard = with_test_reviews_dir();
-        let repo_path = std::env::temp_dir().join(format!("tuicr-repo-{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&repo_path).unwrap();
-
-        let commit_range = vec!["commit-2".to_string(), "commit-1".to_string()];
-
-        let session = create_session(
-            repo_path.clone(),
-            "commit-2",
-            Some("main"),
-            SessionDiffSource::CommitRange,
-            None,
-        );
-        let _ = save_session(&session).unwrap();
-        let loaded = load_latest_session_for_context(
-            &repo_path,
-            Some("main"),
-            "commit-2",
-            SessionDiffSource::CommitRange,
-            Some(commit_range.as_slice()),
-        )
-        .unwrap();
-        assert!(loaded.is_none());
-    }
-
-    #[test]
-    fn should_disambiguate_repos_with_same_folder_name() {
-        let _guard = with_test_reviews_dir();
-        let base = std::env::temp_dir().join(format!("tuicr-repos-{}", uuid::Uuid::new_v4()));
-        let repo_a = base.join("a").join("same-repo");
-        let repo_b = base.join("b").join("same-repo");
-        fs::create_dir_all(&repo_a).unwrap();
-        fs::create_dir_all(&repo_b).unwrap();
-
-        let session_a = create_session(
-            repo_a.clone(),
-            "head-a",
-            Some("main"),
-            SessionDiffSource::WorkingTree,
-            None,
-        );
-        let _ = save_session(&session_a).unwrap();
-
-        let session_b = create_session(
-            repo_b.clone(),
-            "head-b",
-            Some("main"),
-            SessionDiffSource::WorkingTree,
-            None,
-        );
-        let _ = save_session(&session_b).unwrap();
-        let (_path, selected) = load_latest_session_for_context(
-            &repo_a,
-            Some("main"),
-            "head",
-            SessionDiffSource::WorkingTree,
-            None,
-        )
-        .unwrap()
-        .unwrap();
-        assert_eq!(selected.base_commit, "head-a");
-        assert_eq!(
-            normalize_repo_path(&selected.repo_path),
-            normalize_repo_path(&repo_a)
-        );
-    }
-
-    fn pr_key(number: u64, head_sha: &str) -> PrSessionKey {
+    fn make_pr_key(number: u64, head_sha: &str) -> PrSessionKey {
         PrSessionKey::new(
-            crate::forge::traits::ForgeRepository::github("github.com", "agavra", "tuicr"),
+            ForgeRepository::github("github.com", "agavra", "tuicr"),
             number,
             head_sha.to_string(),
         )
     }
 
-    fn pr_session(key: &PrSessionKey) -> ReviewSession {
-        let mut session = ReviewSession::new(
+    fn make_pr_session(key: &PrSessionKey) -> ReviewSession {
+        let mut s = ReviewSession::new(
             PathBuf::from(format!(
                 "forge:{}/{}/{}",
                 key.repository.host, key.repository.owner, key.repository.name
@@ -1038,216 +438,386 @@ mod tests {
             Some("reviews".to_string()),
             SessionDiffSource::PullRequest,
         );
-        session.pr_session_key = Some(key.clone());
-        session
+        s.pr_session_key = Some(key.clone());
+        s
     }
 
-    #[test]
-    fn should_generate_pr_session_filename_keyed_by_identity_and_head() {
-        // given a PR session
-        let key = pr_key(125, "abcdef0123456789");
-        let session = pr_session(&key);
-        // when
-        let filename = session_filename(&session);
-        // then
-        assert!(filename.starts_with("pr_github_github.com_agavra_tuicr_125_abcdef01_"));
-        assert!(filename.ends_with(".json"));
-    }
+    // ---- Save/load round trips ----
 
     #[test]
-    fn should_round_trip_pr_session_via_storage() {
-        let _guard = with_test_reviews_dir();
-        // given
-        let key = pr_key(125, "abcdef0123456789");
-        let session = pr_session(&key);
-        // when
+    fn should_roundtrip_local_session() {
+        let _g = with_test_reviews_dir();
+        let repo = make_repo();
+        let session = make_local_session(
+            repo.clone(),
+            "abc1234",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
+            None,
+        );
         let path = save_session(&session).unwrap();
-        let (loaded_path, loaded) = load_pr_session(&key).unwrap().unwrap();
-        // then
-        assert_eq!(loaded_path, path);
-        assert_eq!(loaded.pr_session_key.as_ref(), Some(&key));
-        assert_eq!(loaded.diff_source, SessionDiffSource::PullRequest);
-        let _ = delete_session(&path);
+        let loaded = load_session(&path).unwrap();
+        assert_eq!(session.id, loaded.id);
+        assert_eq!(session.base_commit, loaded.base_commit);
     }
 
     #[test]
-    fn should_return_none_when_no_session_matches_head_sha() {
-        let _guard = with_test_reviews_dir();
-        // given a session at old head
-        let old_key = pr_key(125, "abcdef0123456789");
-        let _ = save_session(&pr_session(&old_key)).unwrap();
-        // when looking up a new head
-        let new_key = pr_key(125, "9999999999999999");
-        let loaded = load_pr_session(&new_key).unwrap();
-        // then
-        assert!(loaded.is_none());
+    fn should_save_under_new_layout_for_local() {
+        let _g = with_test_reviews_dir();
+        let repo = make_repo();
+        let session = make_local_session(
+            repo.clone(),
+            "abc1234",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
+            None,
+        );
+        let path = save_session(&session).unwrap();
+        let display = path.display().to_string();
+        assert!(display.contains("/local/"), "expected /local/ in {display}");
+        assert!(display.ends_with("/worktree.json"));
     }
 
     #[test]
-    fn should_skip_pr_files_when_loading_local_session() {
-        let _guard = with_test_reviews_dir();
-        // given a saved PR session and no local sessions
-        let key = pr_key(125, "abcdef0123456789");
-        let _ = save_session(&pr_session(&key)).unwrap();
-        let repo_path = std::env::temp_dir().join(format!("tuicr-repo-{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&repo_path).unwrap();
-        // when asking for a local working-tree session
+    fn should_save_under_new_layout_for_pr() {
+        let _g = with_test_reviews_dir();
+        let key = make_pr_key(125, "abcdef0123456789");
+        let session = make_pr_session(&key);
+        let path = save_session(&session).unwrap();
+        let display = path.display().to_string();
+        assert!(
+            display.contains("/gh/agavra/tuicr/pr/125/"),
+            "expected gh/agavra/tuicr/pr/125 segment in {display}"
+        );
+        assert!(display.ends_with("/abcdef0123456789.json"));
+    }
+
+    #[test]
+    fn should_update_manifest_on_save() {
+        let _g = with_test_reviews_dir();
+        let repo = make_repo();
+        let session = make_local_session(
+            repo.clone(),
+            "abc1234",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
+            None,
+        );
+        save_session(&session).unwrap();
+
+        let reviews_dir = get_reviews_dir().unwrap();
+        let manifest = manifest::load_manifest(&reviews_dir).unwrap();
+        let slug = slug_for_session(&session).unwrap();
+        let canonical = fs::canonicalize(&repo).unwrap_or(repo);
+        let entry = manifest
+            .get_local(&slug.to_string(), &canonical)
+            .expect("entry exists");
+        assert!(matches!(entry.kind, ManifestKind::Local));
+        assert_eq!(entry.display.file_count, 1);
+    }
+
+    // ---- Lookup ----
+
+    #[test]
+    fn should_return_none_for_unknown_context() {
+        let _g = with_test_reviews_dir();
+        let repo = make_repo();
         let loaded = load_latest_session_for_context(
-            &repo_path,
+            &repo,
             Some("main"),
             "head",
             SessionDiffSource::WorkingTree,
             None,
         )
         .unwrap();
-        // then PR sessions are not surfaced to the local loader
         assert!(loaded.is_none());
     }
 
     #[test]
-    fn should_keep_pr_sessions_separate_per_pr_number() {
-        let _guard = with_test_reviews_dir();
-        // given two PR sessions for different numbers
-        let key_a = pr_key(125, "abcdef0123456789");
-        let key_b = pr_key(148, "abcdef0123456789");
-        let _ = save_session(&pr_session(&key_a)).unwrap();
-        let _ = save_session(&pr_session(&key_b)).unwrap();
-        // when
-        let loaded_a = load_pr_session(&key_a).unwrap().unwrap();
-        let loaded_b = load_pr_session(&key_b).unwrap().unwrap();
-        // then each load returns its matching PR
-        assert_eq!(loaded_a.1.pr_session_key.as_ref(), Some(&key_a));
-        assert_eq!(loaded_b.1.pr_session_key.as_ref(), Some(&key_b));
-    }
-
-    // ---------- Pristine session key tests ----------
-
-    #[test]
-    fn pristine_key_hash_extracts_trailing_segment() {
-        assert_eq!(pristine_key_hash("pristine:abc1234:9f0a"), Some("9f0a"));
-        assert_eq!(pristine_key_hash("pristine:none:0000"), Some("0000"));
-        assert_eq!(pristine_key_hash("worktree:abc1234"), None);
-        assert_eq!(pristine_key_hash("pristine:no-trailing-hash"), None);
-    }
-
-    #[test]
-    fn pristine_keys_match_when_path_hash_equal_even_if_head_changed() {
-        assert!(pristine_keys_match(
-            "pristine:abc1234:9f0a",
-            "pristine:def5678:9f0a"
-        ));
-        assert!(!pristine_keys_match(
-            "pristine:abc1234:9f0a",
-            "pristine:def5678:beef"
-        ));
-        assert!(!pristine_keys_match(
-            "pristine:abc1234:9f0a",
-            "worktree:abc1234"
-        ));
-    }
-
-    #[test]
-    fn pristine_session_reloads_after_head_advance() {
-        let _guard = with_test_reviews_dir();
-        let repo_path =
-            std::env::temp_dir().join(format!("tuicr-pristine-{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&repo_path).unwrap();
-
-        let session = create_session(
-            repo_path.clone(),
-            "pristine:abc1234:9f0a",
-            None,
-            SessionDiffSource::Pristine,
+    fn should_load_session_by_matching_context() {
+        let _g = with_test_reviews_dir();
+        let repo = make_repo();
+        let session = make_local_session(
+            repo.clone(),
+            "abc1234",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
             None,
         );
-        let saved_path = save_session(&session).unwrap();
+        save_session(&session).unwrap();
 
-        // HEAD advanced; the new key shares the same path hash suffix.
-        let loaded = load_latest_session_for_context(
-            &repo_path,
-            None,
-            "pristine:def5678:9f0a",
-            SessionDiffSource::Pristine,
+        let (_, loaded) = load_latest_session_for_context(
+            &repo,
+            Some("main"),
+            "new-head",
+            SessionDiffSource::WorkingTree,
             None,
         )
-        .unwrap();
-        assert!(
-            loaded.is_some(),
-            "advanced HEAD must still find the session"
-        );
-        assert_eq!(loaded.unwrap().0, saved_path);
+        .unwrap()
+        .expect("session should be found regardless of head_commit on a branched session");
+        assert_eq!(loaded.id, session.id);
     }
 
     #[test]
-    fn pristine_session_does_not_reload_when_path_hash_differs() {
-        let _guard = with_test_reviews_dir();
-        let repo_path =
-            std::env::temp_dir().join(format!("tuicr-pristine-{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&repo_path).unwrap();
-
-        let session = create_session(
-            repo_path.clone(),
-            "pristine:abc1234:aaaa",
-            None,
-            SessionDiffSource::Pristine,
+    fn should_ignore_sessions_with_different_diff_source() {
+        let _g = with_test_reviews_dir();
+        let repo = make_repo();
+        let session = make_local_session(
+            repo.clone(),
+            "abc1234",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
             None,
         );
         save_session(&session).unwrap();
 
         let loaded = load_latest_session_for_context(
-            &repo_path,
-            None,
-            "pristine:abc1234:bbbb",
-            SessionDiffSource::Pristine,
+            &repo,
+            Some("main"),
+            "head",
+            SessionDiffSource::Staged,
             None,
         )
         .unwrap();
-        assert!(
-            loaded.is_none(),
-            "different path-hash must NOT match a stored pristine session"
-        );
+        assert!(loaded.is_none());
     }
 
     #[test]
-    fn pristine_session_does_not_collide_with_single_file_session() {
-        let _guard = with_test_reviews_dir();
-        let repo_path =
-            std::env::temp_dir().join(format!("tuicr-pristine-{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&repo_path).unwrap();
+    fn should_require_commit_range_match() {
+        let _g = with_test_reviews_dir();
+        let repo = make_repo();
+        let range_a = vec!["c1".to_string(), "c0".to_string()];
+        let range_b = vec!["c3".to_string(), "c2".to_string()];
 
-        // Single-file `--file` session at the same root_path uses base_commit "file".
-        let single = create_session(
-            repo_path.clone(),
-            "file",
-            None,
-            SessionDiffSource::WorkingTree,
-            None,
+        let session_a = make_local_session(
+            repo.clone(),
+            "c1",
+            Some("main"),
+            SessionDiffSource::CommitRange,
+            Some(range_a.clone()),
         );
-        save_session(&single).unwrap();
+        save_session(&session_a).unwrap();
 
-        // Pristine session at the same root_path uses base_commit "pristine:...".
-        let pristine = create_session(
-            repo_path.clone(),
-            "pristine:abc1234:9f0a",
-            None,
-            SessionDiffSource::Pristine,
-            None,
+        let session_b = make_local_session(
+            repo.clone(),
+            "c3",
+            Some("main"),
+            SessionDiffSource::CommitRange,
+            Some(range_b.clone()),
         );
-        let pristine_path = save_session(&pristine).unwrap();
+        save_session(&session_b).unwrap();
 
-        let loaded = load_latest_session_for_context(
-            &repo_path,
-            None,
-            "pristine:abc1234:9f0a",
-            SessionDiffSource::Pristine,
-            None,
+        let (_, loaded_a) = load_latest_session_for_context(
+            &repo,
+            Some("main"),
+            "c1",
+            SessionDiffSource::CommitRange,
+            Some(range_a.as_slice()),
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
-            loaded.0, pristine_path,
-            "pristine loader must return the pristine session, not the --file one"
+        assert_eq!(loaded_a.id, session_a.id);
+
+        let (_, loaded_b) = load_latest_session_for_context(
+            &repo,
+            Some("main"),
+            "c3",
+            SessionDiffSource::CommitRange,
+            Some(range_b.as_slice()),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(loaded_b.id, session_b.id);
+    }
+
+    #[test]
+    fn should_disambiguate_two_checkouts_with_same_repo_name() {
+        let _g = with_test_reviews_dir();
+        let base = std::env::temp_dir().join(format!("tuicr-multi-{}", uuid::Uuid::new_v4()));
+        let repo_a = base.join("a").join("same-repo");
+        let repo_b = base.join("b").join("same-repo");
+        fs::create_dir_all(&repo_a).unwrap();
+        fs::create_dir_all(&repo_b).unwrap();
+
+        let session_a = make_local_session(
+            repo_a.clone(),
+            "head-a",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
+            None,
         );
-        assert_eq!(loaded.1.diff_source, SessionDiffSource::Pristine);
+        let session_b = make_local_session(
+            repo_b.clone(),
+            "head-b",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
+            None,
+        );
+        save_session(&session_a).unwrap();
+        save_session(&session_b).unwrap();
+
+        // Same slug for both (no remote, fallback to dir name) but
+        // canonical_repo_path disambiguates.
+        let slug = slug_for_session(&session_a).unwrap();
+        let slug_b = slug_for_session(&session_b).unwrap();
+        assert_eq!(slug.to_string(), slug_b.to_string());
+
+        let (_, loaded_a) = load_latest_session_for_context(
+            &repo_a,
+            Some("main"),
+            "head-a",
+            SessionDiffSource::WorkingTree,
+            None,
+        )
+        .unwrap()
+        .expect("repo_a lookup");
+        assert_eq!(loaded_a.id, session_a.id);
+
+        let (_, loaded_b) = load_latest_session_for_context(
+            &repo_b,
+            Some("main"),
+            "head-b",
+            SessionDiffSource::WorkingTree,
+            None,
+        )
+        .unwrap()
+        .expect("repo_b lookup");
+        assert_eq!(loaded_b.id, session_b.id);
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    // ---- PR sessions ----
+
+    #[test]
+    fn should_roundtrip_pr_session() {
+        let _g = with_test_reviews_dir();
+        let key = make_pr_key(125, "abcdef0123456789");
+        let session = make_pr_session(&key);
+        let path = save_session(&session).unwrap();
+        let (loaded_path, loaded) = load_pr_session(&key).unwrap().unwrap();
+        assert_eq!(loaded_path, path);
+        assert_eq!(loaded.pr_session_key.as_ref(), Some(&key));
+    }
+
+    #[test]
+    fn should_return_none_when_head_changes_for_pr() {
+        let _g = with_test_reviews_dir();
+        let old_key = make_pr_key(125, "abcdef0123456789");
+        let session = make_pr_session(&old_key);
+        save_session(&session).unwrap();
+
+        let new_key = make_pr_key(125, "9999999999999999");
+        let loaded = load_pr_session(&new_key).unwrap();
+        assert!(loaded.is_none());
+    }
+
+    #[test]
+    fn should_separate_pr_sessions_by_number() {
+        let _g = with_test_reviews_dir();
+        let key_a = make_pr_key(125, "abcdef0123456789");
+        let key_b = make_pr_key(148, "abcdef0123456789");
+        save_session(&make_pr_session(&key_a)).unwrap();
+        save_session(&make_pr_session(&key_b)).unwrap();
+
+        let loaded_a = load_pr_session(&key_a).unwrap().unwrap();
+        let loaded_b = load_pr_session(&key_b).unwrap().unwrap();
+        assert_eq!(loaded_a.1.pr_session_key.as_ref(), Some(&key_a));
+        assert_eq!(loaded_b.1.pr_session_key.as_ref(), Some(&key_b));
+    }
+
+    #[test]
+    fn should_skip_pr_files_in_local_context_lookup() {
+        let _g = with_test_reviews_dir();
+        let key = make_pr_key(125, "abcdef0123456789");
+        save_session(&make_pr_session(&key)).unwrap();
+
+        let repo = make_repo();
+        let loaded = load_latest_session_for_context(
+            &repo,
+            Some("main"),
+            "head",
+            SessionDiffSource::WorkingTree,
+            None,
+        )
+        .unwrap();
+        assert!(loaded.is_none());
+    }
+
+    // ---- Branch sanitization in paths ----
+
+    #[test]
+    fn should_sanitize_branch_slashes_in_storage_path() {
+        let _g = with_test_reviews_dir();
+        let repo = make_repo();
+        let session = make_local_session(
+            repo.clone(),
+            "abc1234",
+            Some("feature/login"),
+            SessionDiffSource::WorkingTree,
+            None,
+        );
+        let path = save_session(&session).unwrap();
+        let display = path.display().to_string();
+        assert!(
+            display.contains("/feature-login/"),
+            "branch slash not sanitized in {display}"
+        );
+    }
+
+    // ---- Migration ----
+
+    #[test]
+    fn should_migrate_old_flat_layout_on_first_run() {
+        let _g = with_test_reviews_dir();
+        let reviews_dir = get_reviews_dir().unwrap();
+
+        // Drop an old-style flat session file into the reviews dir directly.
+        let old_file = reviews_dir.join("old_session.json");
+        fs::write(&old_file, "{\"legacy\":true}").unwrap();
+
+        let session = make_local_session(
+            make_repo(),
+            "abc1234",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
+            None,
+        );
+        save_session(&session).unwrap();
+
+        assert!(
+            !old_file.exists(),
+            "old flat session file should have moved during migration"
+        );
+        let parent = reviews_dir.parent().unwrap();
+        let backup_exists = fs::read_dir(parent)
+            .unwrap()
+            .flatten()
+            .any(|e| e.file_name().to_string_lossy().contains(".v1"));
+        assert!(backup_exists, "expected a .v1 backup dir under {parent:?}");
+    }
+
+    #[test]
+    fn should_not_migrate_when_manifest_already_present() {
+        let _g = with_test_reviews_dir();
+        let reviews_dir = get_reviews_dir().unwrap();
+        let manifest = Manifest::new();
+        manifest::save_manifest(&reviews_dir, &manifest).unwrap();
+
+        let stray = reviews_dir.join("stray.json");
+        fs::write(&stray, "{}").unwrap();
+
+        let session = make_local_session(
+            make_repo(),
+            "abc1234",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
+            None,
+        );
+        save_session(&session).unwrap();
+        assert!(
+            stray.exists(),
+            "stray .json must survive when manifest exists"
+        );
     }
 }

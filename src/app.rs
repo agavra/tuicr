@@ -1658,6 +1658,16 @@ impl App {
         Ok(app)
     }
 
+    /// Slug for the currently active session, derived from the session's
+    /// embedded fields. Returns `None` if derivation fails (e.g., a local
+    /// session pointing at a non-existent path). The slug is cheap to derive
+    /// from PR sessions (no I/O) and a few stat calls for local sessions.
+    pub fn session_slug(&self) -> Option<String> {
+        crate::persistence::storage::slug_for_session(&self.session)
+            .ok()
+            .map(|s| s.to_string())
+    }
+
     /// Detect a GitHub forge repository from the local checkout, if any.
     /// Lazily called during startup — running this synchronously is fine
     /// because it only reads local config, never the network.

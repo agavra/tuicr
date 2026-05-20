@@ -23,6 +23,7 @@ pub fn generate_export_content(
     comment_types: &[CommentTypeDefinition],
     show_legend: bool,
     remote_threads: &[RemoteReviewThread],
+    session_slug: Option<&str>,
 ) -> Result<String> {
     // In PR mode it's still useful to export PR identity + remote
     // discussions even if the user has no local drafts. Outside PR mode
@@ -38,6 +39,7 @@ pub fn generate_export_content(
         comment_types,
         show_legend,
         remote_threads,
+        session_slug,
     ))
 }
 
@@ -47,6 +49,7 @@ pub fn export_to_clipboard(
     comment_types: &[CommentTypeDefinition],
     show_legend: bool,
     remote_threads: &[RemoteReviewThread],
+    session_slug: Option<&str>,
 ) -> Result<String> {
     let content = generate_export_content(
         session,
@@ -54,6 +57,7 @@ pub fn export_to_clipboard(
         comment_types,
         show_legend,
         remote_threads,
+        session_slug,
     )?;
     let via_terminal = copy_text_to_clipboard(&content)?;
     Ok(if via_terminal {
@@ -172,8 +176,14 @@ fn generate_markdown(
     comment_types: &[CommentTypeDefinition],
     show_legend: bool,
     remote_threads: &[RemoteReviewThread],
+    session_slug: Option<&str>,
 ) -> String {
     let mut md = String::new();
+
+    if let Some(slug) = session_slug {
+        let _ = writeln!(md, "## Session: {slug}");
+        let _ = writeln!(md);
+    }
 
     // Intro for agents
     let _ = writeln!(
@@ -513,13 +523,43 @@ mod tests {
     }
 
     #[test]
+    fn should_include_session_slug_header_when_provided() {
+        let session = create_test_session();
+        let diff_source = DiffSource::WorkingTree;
+
+        let markdown = generate_markdown(
+            &session,
+            &diff_source,
+            &comment_types(),
+            true,
+            &[],
+            Some("agavra/tuicr@main/worktree"),
+        );
+
+        assert!(
+            markdown.contains("## Session: agavra/tuicr@main/worktree"),
+            "expected slug header in:\n{markdown}"
+        );
+    }
+
+    #[test]
+    fn should_omit_session_slug_header_when_absent() {
+        let session = create_test_session();
+        let diff_source = DiffSource::WorkingTree;
+
+        let markdown = generate_markdown(&session, &diff_source, &comment_types(), true, &[], None);
+
+        assert!(!markdown.contains("## Session:"));
+    }
+
+    #[test]
     fn should_generate_valid_markdown() {
         // given
         let session = create_test_session();
         let diff_source = DiffSource::WorkingTree;
 
         // when
-        let markdown = generate_markdown(&session, &diff_source, &comment_types(), true, &[]);
+        let markdown = generate_markdown(&session, &diff_source, &comment_types(), true, &[], None);
 
         // then
         assert!(markdown.contains("I reviewed your code and have the following comments"));
@@ -560,8 +600,14 @@ mod tests {
             color: None,
         }];
 
-        let markdown =
-            generate_markdown(&session, &DiffSource::WorkingTree, &custom_types, true, &[]);
+        let markdown = generate_markdown(
+            &session,
+            &DiffSource::WorkingTree,
+            &custom_types,
+            true,
+            &[],
+            None,
+        );
 
         assert!(markdown.contains("Comment types: QUESTION (ask for clarification)"));
         assert!(markdown.contains("**[QUESTION]**"));
@@ -574,7 +620,7 @@ mod tests {
         let diff_source = DiffSource::WorkingTree;
 
         // when
-        let markdown = generate_markdown(&session, &diff_source, &comment_types(), true, &[]);
+        let markdown = generate_markdown(&session, &diff_source, &comment_types(), true, &[], None);
 
         // then
         // Should have 2 numbered comments
@@ -597,6 +643,7 @@ mod tests {
             &comment_types(),
             true,
             &[],
+            None,
         );
 
         assert!(markdown
@@ -618,6 +665,7 @@ mod tests {
             &comment_types(),
             true,
             &[],
+            None,
         );
 
         assert!(markdown.contains(
@@ -637,7 +685,7 @@ mod tests {
         let diff_source = DiffSource::WorkingTree;
 
         // when
-        let result = export_to_clipboard(&session, &diff_source, &comment_types(), true, &[]);
+        let result = export_to_clipboard(&session, &diff_source, &comment_types(), true, &[], None);
 
         // then
         assert!(result.is_err());
@@ -651,7 +699,8 @@ mod tests {
         let diff_source = DiffSource::WorkingTree;
 
         // when
-        let result = generate_export_content(&session, &diff_source, &comment_types(), true, &[]);
+        let result =
+            generate_export_content(&session, &diff_source, &comment_types(), true, &[], None);
 
         // then
         assert!(result.is_ok());
@@ -673,7 +722,8 @@ mod tests {
         let diff_source = DiffSource::WorkingTree;
 
         // when
-        let result = generate_export_content(&session, &diff_source, &comment_types(), true, &[]);
+        let result =
+            generate_export_content(&session, &diff_source, &comment_types(), true, &[], None);
 
         // then
         assert!(result.is_err());
@@ -690,7 +740,7 @@ mod tests {
         ]);
 
         // when
-        let markdown = generate_markdown(&session, &diff_source, &comment_types(), true, &[]);
+        let markdown = generate_markdown(&session, &diff_source, &comment_types(), true, &[], None);
 
         // then
         assert!(markdown.contains("Reviewing commits: abc1234, def4567"));
@@ -703,7 +753,7 @@ mod tests {
         let diff_source = DiffSource::CommitRange(vec!["abc1234567890".to_string()]);
 
         // when
-        let markdown = generate_markdown(&session, &diff_source, &comment_types(), true, &[]);
+        let markdown = generate_markdown(&session, &diff_source, &comment_types(), true, &[], None);
 
         // then
         assert!(markdown.contains("Reviewing commit: abc1234"));
@@ -764,7 +814,7 @@ mod tests {
         // given - simulate what would be copied during export
         let session = create_test_session();
         let diff_source = DiffSource::WorkingTree;
-        let markdown = generate_markdown(&session, &diff_source, &comment_types(), true, &[]);
+        let markdown = generate_markdown(&session, &diff_source, &comment_types(), true, &[], None);
         let mut buffer: Vec<u8> = Vec::new();
 
         // when
@@ -806,7 +856,7 @@ mod tests {
         let diff_source = DiffSource::WorkingTree;
 
         // when
-        let markdown = generate_markdown(&session, &diff_source, &comment_types(), true, &[]);
+        let markdown = generate_markdown(&session, &diff_source, &comment_types(), true, &[], None);
 
         // then
         assert!(markdown.contains("`src/main.rs:42`"));
@@ -839,7 +889,7 @@ mod tests {
         let diff_source = DiffSource::WorkingTree;
 
         // when
-        let markdown = generate_markdown(&session, &diff_source, &comment_types(), true, &[]);
+        let markdown = generate_markdown(&session, &diff_source, &comment_types(), true, &[], None);
 
         // then
         assert!(markdown.contains("`src/main.rs:10-15`"));
@@ -872,7 +922,7 @@ mod tests {
         let diff_source = DiffSource::WorkingTree;
 
         // when
-        let markdown = generate_markdown(&session, &diff_source, &comment_types(), true, &[]);
+        let markdown = generate_markdown(&session, &diff_source, &comment_types(), true, &[], None);
 
         // then
         assert!(markdown.contains("`src/main.rs:~20-~25`"));
@@ -904,7 +954,7 @@ mod tests {
         let diff_source = DiffSource::WorkingTree;
 
         // when
-        let markdown = generate_markdown(&session, &diff_source, &comment_types(), true, &[]);
+        let markdown = generate_markdown(&session, &diff_source, &comment_types(), true, &[], None);
 
         // then
         assert!(markdown.contains("`src/main.rs:~30`"));
@@ -936,7 +986,7 @@ mod tests {
         let diff_source = DiffSource::WorkingTree;
 
         // when
-        let markdown = generate_markdown(&session, &diff_source, &comment_types(), true, &[]);
+        let markdown = generate_markdown(&session, &diff_source, &comment_types(), true, &[], None);
 
         // then
         assert!(markdown.contains("`src/main.rs:50`"));
@@ -947,7 +997,8 @@ mod tests {
         let session = create_test_session();
         let diff_source = DiffSource::WorkingTree;
 
-        let markdown = generate_markdown(&session, &diff_source, &comment_types(), false, &[]);
+        let markdown =
+            generate_markdown(&session, &diff_source, &comment_types(), false, &[], None);
 
         assert!(!markdown.contains("Comment types:"));
         assert!(markdown.contains("[SUGGESTION]"));
@@ -977,6 +1028,7 @@ mod tests {
             &comment_types(),
             true,
             &[],
+            None,
         );
 
         assert!(markdown.contains("Comment types: PRAISE (positive feedback)"));
@@ -1064,6 +1116,7 @@ mod tests {
             &comment_types(),
             true,
             &threads,
+            None,
         );
 
         // then
@@ -1098,6 +1151,7 @@ mod tests {
             &comment_types(),
             true,
             &threads,
+            None,
         );
 
         // then — export succeeds even with no local comments
@@ -1131,6 +1185,7 @@ mod tests {
             &comment_types(),
             true,
             &threads,
+            None,
         );
 
         // then — the section is omitted in non-PR modes
@@ -1169,8 +1224,14 @@ mod tests {
             },
         ];
 
-        let markdown =
-            generate_markdown(&session, &DiffSource::WorkingTree, &custom_types, true, &[]);
+        let markdown = generate_markdown(
+            &session,
+            &DiffSource::WorkingTree,
+            &custom_types,
+            true,
+            &[],
+            None,
+        );
 
         assert!(markdown.contains("Comment types: QUESTION (ask for clarification)"));
         assert!(!markdown.contains("ISSUE"));

@@ -177,6 +177,7 @@ fn handle_left_click(app: &mut App, pos: Position) {
 /// Export review: either to clipboard or set pending stdout output based on app.output_to_stdout.
 /// When output_to_stdout is true, stores the content and sets should_quit.
 fn handle_export(app: &mut App) {
+    let slug = app.session_slug();
     if app.output_to_stdout {
         match generate_export_content(
             &app.session,
@@ -184,6 +185,7 @@ fn handle_export(app: &mut App) {
             &app.comment_types,
             app.export_legend,
             &app.forge_review_threads,
+            slug.as_deref(),
         ) {
             Ok(content) => {
                 app.pending_stdout_output = Some(content);
@@ -198,6 +200,7 @@ fn handle_export(app: &mut App) {
             &app.comment_types,
             app.export_legend,
             &app.forge_review_threads,
+            slug.as_deref(),
         ) {
             Ok(msg) => app.set_message(msg),
             Err(e) => app.set_warning(format!("{e}")),
@@ -632,6 +635,7 @@ pub fn handle_confirm_action(app: &mut App, action: Action) {
     match action {
         Action::ConfirmYes => {
             if let Some(app::ConfirmAction::CopyAndQuit) = app.pending_confirm {
+                let slug = app.session_slug();
                 if app.output_to_stdout {
                     match generate_export_content(
                         &app.session,
@@ -639,6 +643,7 @@ pub fn handle_confirm_action(app: &mut App, action: Action) {
                         &app.comment_types,
                         app.export_legend,
                         &app.forge_review_threads,
+                        slug.as_deref(),
                     ) {
                         Ok(content) => app.pending_stdout_output = Some(content),
                         Err(e) => app.set_warning(format!("{e}")),
@@ -650,6 +655,7 @@ pub fn handle_confirm_action(app: &mut App, action: Action) {
                         &app.comment_types,
                         app.export_legend,
                         &app.forge_review_threads,
+                        slug.as_deref(),
                     ) {
                         Ok(msg) => app.set_message(msg),
                         Err(e) => app.set_warning(format!("{e}")),
