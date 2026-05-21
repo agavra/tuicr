@@ -100,18 +100,6 @@ pub fn config_path() -> Result<PathBuf> {
     config_path_from_parts(xdg_config_home, home, appdata)
 }
 
-pub fn config_path_hint() -> &'static str {
-    #[cfg(windows)]
-    {
-        r"%APPDATA%\tuicr\config.toml"
-    }
-
-    #[cfg(not(windows))]
-    {
-        "$XDG_CONFIG_HOME/tuicr/config.toml (default: ~/.config/tuicr/config.toml)"
-    }
-}
-
 fn config_path_from_parts(
     xdg_config_home: Option<PathBuf>,
     home: Option<PathBuf>,

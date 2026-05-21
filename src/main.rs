@@ -1,4 +1,5 @@
 mod app;
+mod cli;
 mod config;
 mod error;
 mod forge;
@@ -39,6 +40,7 @@ use crossterm::{
 use ratatui::{Terminal, backend::CrosstermBackend};
 
 use app::{App, AppStartupOptions, FocusedPanel, InputMode};
+use cli::parse_cli_args;
 use handler::{
     handle_command_action, handle_comment_action, handle_commit_select_action,
     handle_commit_selector_action, handle_confirm_action, handle_diff_action,
@@ -47,7 +49,7 @@ use handler::{
     handle_submit_resolver_action, handle_visual_action,
 };
 use input::{Action, map_key_to_action, map_target_filter_mode};
-use theme::{parse_cli_args, resolve_theme_with_config};
+use theme::resolve_theme_with_config;
 use vcs::GitBackendPreference;
 
 /// Timeout for the "press Ctrl+C again to exit" feature
@@ -81,43 +83,6 @@ fn main() -> anyhow::Result<()> {
     } else {
         matches!(supports_keyboard_enhancement(), Ok(true))
     };
-
-    // --file is mutually exclusive with --path, -r, -w, and --all-files
-    if cli_args.file_path.is_some() {
-        if cli_args.path_filter.is_some() {
-            eprintln!("Error: --file cannot be combined with --path");
-            std::process::exit(2);
-        }
-        if cli_args.revisions.is_some() {
-            eprintln!("Error: --file cannot be combined with -r/--revisions");
-            std::process::exit(2);
-        }
-        if cli_args.working_tree {
-            eprintln!("Error: --file cannot be combined with -w/--working-tree");
-            std::process::exit(2);
-        }
-        if cli_args.all_files {
-            eprintln!("Error: --file cannot be combined with -A/--all-files");
-            std::process::exit(2);
-        }
-    }
-
-    // --all-files is mutually exclusive with --path, -r, and -w (--file
-    // already covered above)
-    if cli_args.all_files {
-        if cli_args.path_filter.is_some() {
-            eprintln!("Error: --all-files cannot be combined with --path");
-            std::process::exit(2);
-        }
-        if cli_args.revisions.is_some() {
-            eprintln!("Error: --all-files cannot be combined with -r/--revisions");
-            std::process::exit(2);
-        }
-        if cli_args.working_tree {
-            eprintln!("Error: --all-files cannot be combined with -w/--working-tree");
-            std::process::exit(2);
-        }
-    }
 
     // --path implies --working-tree unless -r is explicitly provided
     if cli_args.path_filter.is_some() && !cli_args.working_tree && cli_args.revisions.is_none() {
