@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.16.0] - 2026-05-21
+
+### Bug Fixes
+
+- **forge:** Clear submitted comments from local session on success (#332)
+- **forge:** Count remote-thread rows in file_render_height (#336)
+
+### Features
+
+- **forge:** Remove the "Reviewed with tuicr" review-body footer (#334)
+- **theme:** Add tokyo-night-day light theme (#340)
+- Add single-file view with file-walking navigation (#342)
 ## [0.15.0] - 2026-05-19
 
 ### Bug Fixes
