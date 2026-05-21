@@ -1612,6 +1612,7 @@ mod remote_comments_side_by_side_snapshot_tests {
             InputMode::Normal,
             Vec::new(),
             None,
+            None,
         )
         .expect("build app");
         app.diff_view_mode = DiffViewMode::SideBySide;

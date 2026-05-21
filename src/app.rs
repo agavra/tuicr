@@ -602,8 +602,14 @@ pub enum TargetTab {
 /// Background-thread events that the PR tab consumes through `pr_load_rx`.
 #[derive(Debug)]
 pub enum PrLoadEvent {
-    /// Result of the initial PR list fetch.
-    Initial(std::result::Result<(Vec<crate::forge::traits::PullRequestSummary>, bool), String>),
+    /// Result of the initial PR list fetch. `canonical` carries the
+    /// repository the fetch was actually executed against — i.e. the result
+    /// of the canonical (fork-parent) resolver — so the main thread can
+    /// promote `App.forge_repository` to it before applying the rows.
+    Initial {
+        canonical: crate::forge::traits::ForgeRepository,
+        result: std::result::Result<(Vec<crate::forge::traits::PullRequestSummary>, bool), String>,
+    },
     /// Result of a "load more" fetch.
     LoadMore(std::result::Result<(Vec<crate::forge::traits::PullRequestSummary>, bool), String>),
 }
@@ -845,8 +851,16 @@ pub struct App {
     // Review target selector tab state. The selector reuses InputMode::CommitSelect
     // but is conceptually a "target" picker with Local and Pull Requests tabs.
     pub target_tab: TargetTab,
-    /// GitHub forge repository detected from the local `origin` remote, if any.
+    /// GitHub forge repository used for all PR operations. Initially set
+    /// from the local `origin` remote; replaced with the canonical (parent)
+    /// repository on first PR-tab entry, or pre-empted by `--repo-url`.
     pub forge_repository: Option<ForgeRepository>,
+    /// Explicit `--repo-url` override. When `Some`, the canonical resolver
+    /// skips the `gh api` parent lookup and uses this value directly.
+    pub repo_url_override: Option<ForgeRepository>,
+    /// True once the canonical resolver has run for this session — avoids
+    /// repeating the `gh api` parent lookup on every PR-tab visit.
+    pub canonical_resolved: bool,
     /// State machine for the Pull Requests tab.
     pub pr_tab: PullRequestsTab,
     /// Viewport height of the PR list (set during render).
@@ -1139,6 +1153,10 @@ pub struct AppStartupOptions<'a> {
     /// Direct PR target (`tuicr pr <target>`). Mutually exclusive with the
     /// other selectors above; the binary validates that before reaching here.
     pub pr_target: Option<&'a str>,
+    /// `--repo-url` override for PR operations, already parsed into a
+    /// `ForgeRepository`. When `Some`, the canonical resolver short-circuits
+    /// the `gh api` parent lookup and uses this value directly.
+    pub repo_url_override: Option<ForgeRepository>,
 }
 
 impl App {
@@ -1152,7 +1170,13 @@ impl App {
         // selector. Errors here surface before TUI startup like other
         // startup failures.
         if let Some(target) = options.pr_target {
-            return Self::new_from_pr_target(theme, comment_type_configs, output_to_stdout, target);
+            return Self::new_from_pr_target(
+                theme,
+                comment_type_configs,
+                output_to_stdout,
+                target,
+                options.repo_url_override.clone(),
+            );
         }
 
         // --file mode: open a single file for annotation without VCS
@@ -1175,6 +1199,7 @@ impl App {
                 InputMode::Normal,
                 Vec::new(),
                 None, // no path_filter
+                options.repo_url_override.clone(),
             )?;
 
             // Hide the file list only when reviewing a single file; in
@@ -1233,6 +1258,7 @@ impl App {
                 InputMode::Normal,
                 Vec::new(),
                 None, // no path_filter
+                options.repo_url_override.clone(),
             )?;
 
             app.is_pristine_mode = true;
@@ -1325,6 +1351,7 @@ impl App {
                     InputMode::Normal,
                     Vec::new(),
                     options.path_filter,
+                    options.repo_url_override.clone(),
                 )?;
 
                 app.range_diff_files = Some(app.diff_files.clone());
@@ -1379,6 +1406,7 @@ impl App {
                 InputMode::Normal,
                 Vec::new(),
                 options.path_filter,
+                options.repo_url_override.clone(),
             )?;
 
             // Set up inline commit selector for multi-commit reviews
@@ -1423,6 +1451,7 @@ impl App {
                 InputMode::Normal,
                 Vec::new(),
                 options.path_filter,
+                options.repo_url_override.clone(),
             )?;
 
             Ok(app)
@@ -1492,6 +1521,7 @@ impl App {
                 InputMode::CommitSelect,
                 commit_list,
                 options.path_filter,
+                options.repo_url_override.clone(),
             )?;
 
             app.has_more_commit = commits.len() >= VISIBLE_COMMIT_COUNT;
@@ -1518,6 +1548,7 @@ impl App {
         input_mode: InputMode,
         commit_list: Vec<CommitInfo>,
         path_filter: Option<&str>,
+        repo_url_override: Option<ForgeRepository>,
     ) -> Result<Self> {
         // Ensure all diff files are registered in the session
         for file in &diff_files {
@@ -1571,6 +1602,8 @@ impl App {
             has_more_commit,
             target_tab: TargetTab::Local,
             forge_repository: None,
+            repo_url_override,
+            canonical_resolved: false,
             pr_tab: PullRequestsTab::new(None),
             pr_list_viewport_height: 0,
             pr_list_inner_area: None,
@@ -1661,6 +1694,15 @@ impl App {
     /// Lazily called during startup — running this synchronously is fine
     /// because it only reads local config, never the network.
     fn detect_forge_repository(&mut self) {
+        // `--repo-url` short-circuits detection: the user has told us
+        // exactly which repo to target, so skip both the local-remote
+        // probe and the `gh api` parent lookup that runs on PR-tab entry.
+        if let Some(override_repo) = self.repo_url_override.clone() {
+            self.forge_repository = Some(override_repo.clone());
+            self.pr_tab = PullRequestsTab::new(Some(override_repo));
+            self.canonical_resolved = true;
+            return;
+        }
         let repo = crate::forge::detect_github_repository(&self.vcs_info.root_path);
         self.forge_repository = repo.clone();
         self.pr_tab = PullRequestsTab::new(repo);
@@ -1938,22 +1980,36 @@ impl App {
         comment_type_configs: Option<Vec<CommentTypeConfig>>,
         output_to_stdout: bool,
         target: &str,
+        repo_url_override: Option<ForgeRepository>,
     ) -> Result<Self> {
         use crate::forge::github::gh::{GitHubGhBackend, parse_pull_request_target};
         use crate::forge::pr_open::open_pull_request;
 
         let parsed = parse_pull_request_target(target)?;
-        // Detect a default repo when the target is bare (`tuicr pr 125`).
-        // For URL/owner-repo targets, this is just an optional optimization
-        // since `parsed.repository` is already populated.
+        // Resolution order when the target lacks an explicit repo
+        // (`tuicr pr 125`):
+        //   1. `--repo-url` override (explicit user intent; no I/O)
+        //   2. canonical of the local `origin` (gh api parent lookup —
+        //      so `tuicr pr 125` from a fork checkout opens the PR on
+        //      the upstream, matching the PR-tab behavior)
+        //   3. detected local `origin` as the final fallback
+        // URL- and owner-repo-hash targets carry their own repository, which
+        // wins over all of the above since it's PR-specific.
         let local_repo_root = std::env::current_dir().ok();
-        let default_repo = local_repo_root
+        let detected_repo = local_repo_root
             .as_deref()
             .and_then(crate::forge::detect_github_repository);
+        let canonical_repo = detected_repo.as_ref().map(|origin| {
+            use crate::forge::canonical::resolve_canonical_repository;
+            use crate::forge::github::gh::SystemGhRunner;
+            resolve_canonical_repository(origin, repo_url_override.as_ref(), &SystemGhRunner)
+        });
         let target_repo = parsed
             .repository
             .clone()
-            .or_else(|| default_repo.clone())
+            .or_else(|| repo_url_override.clone())
+            .or_else(|| canonical_repo.clone())
+            .or_else(|| detected_repo.clone())
             .ok_or_else(|| {
                 TuicrError::Forge(
                     "tuicr pr <number> requires a local GitHub remote. \
@@ -2013,11 +2069,16 @@ impl App {
             InputMode::Normal,
             Vec::new(),
             None,
+            repo_url_override,
         )?;
 
         // Wire the forge backend so context expansion routes through it.
         app.forge_backend = Some(Box::new(backend));
         app.forge_repository = Some(target_repo);
+        // PR open establishes the target repo directly; no further canonical
+        // resolution needed on PR-tab entry (which won't happen anyway since
+        // the user came straight from CLI into PR diff mode).
+        app.canonical_resolved = true;
         app.current_pr_head = Some(details_for_threads.head_sha.clone());
         if let DiffSource::PullRequest(pr) = &app.diff_source.clone()
             && pr.is_read_only()
@@ -6448,15 +6509,28 @@ impl App {
     /// Triggers the first network call lazily.
     fn on_target_tab_entered(&mut self) {
         if let Some(repo) = self.pr_tab.start_initial_load() {
-            self.spawn_pr_initial_load(repo);
+            let override_repo = self.repo_url_override.clone();
+            let skip_resolution = self.canonical_resolved;
+            self.spawn_pr_initial_load(repo, override_repo, skip_resolution);
         }
     }
 
     /// Spawn a background thread that fetches the initial PR list. The
     /// resulting `PrLoadEvent::Initial` is delivered through `pr_load_rx`
     /// and applied in the main loop via `poll_pr_load_events`.
-    fn spawn_pr_initial_load(&mut self, repository: ForgeRepository) {
-        use crate::forge::github::gh::GitHubGhBackend;
+    ///
+    /// On the first PR-tab visit (`skip_resolution=false`) the thread first
+    /// resolves the detected origin to its canonical (fork-parent) repo via
+    /// `gh api`, then lists PRs against that canonical. Subsequent visits
+    /// reuse the already-resolved repo and skip the resolver.
+    fn spawn_pr_initial_load(
+        &mut self,
+        origin: ForgeRepository,
+        override_repo: Option<ForgeRepository>,
+        skip_resolution: bool,
+    ) {
+        use crate::forge::canonical::resolve_canonical_repository;
+        use crate::forge::github::gh::{GitHubGhBackend, SystemGhRunner};
         use crate::forge::selector::PR_PAGE_SIZE;
         use crate::forge::traits::{ForgeBackend, PullRequestListQuery};
 
@@ -6464,13 +6538,19 @@ impl App {
         self.pr_load_rx = Some(rx);
 
         std::thread::spawn(move || {
-            let backend = GitHubGhBackend::new(Some(repository.clone()));
-            let query = PullRequestListQuery::first_page(repository, PR_PAGE_SIZE);
+            let canonical = if skip_resolution {
+                origin
+            } else {
+                let runner = SystemGhRunner;
+                resolve_canonical_repository(&origin, override_repo.as_ref(), &runner)
+            };
+            let backend = GitHubGhBackend::new(Some(canonical.clone()));
+            let query = PullRequestListQuery::first_page(canonical.clone(), PR_PAGE_SIZE);
             let result = backend
                 .list_pull_requests(query)
                 .map(|page| (page.pull_requests, page.has_more))
                 .map_err(|err| err.to_string());
-            let _ = tx.send(PrLoadEvent::Initial(result));
+            let _ = tx.send(PrLoadEvent::Initial { canonical, result });
         });
     }
 
@@ -6516,7 +6596,16 @@ impl App {
         self.pr_load_rx = None;
         for event in events {
             match event {
-                PrLoadEvent::Initial(result) => self.pr_tab.apply_initial_load(result),
+                PrLoadEvent::Initial { canonical, result } => {
+                    // The background thread may have resolved a fork's origin
+                    // to its upstream parent. Promote App state to the
+                    // resolved repo so every PR-related call (open, threads,
+                    // submit, load-more) targets the canonical from here on.
+                    self.pr_tab.apply_canonical(canonical.clone());
+                    self.forge_repository = Some(canonical);
+                    self.canonical_resolved = true;
+                    self.pr_tab.apply_initial_load(result);
+                }
                 PrLoadEvent::LoadMore(result) => self.pr_tab.apply_load_more(result),
             }
         }
@@ -8833,6 +8922,7 @@ mod commit_selection_tests {
             InputMode::CommitSelect,
             commit_list,
             None,
+            None,
         )
         .expect("failed to build test app")
     }
@@ -8992,6 +9082,7 @@ mod target_selector_tests {
             DiffSource::WorkingTree,
             InputMode::Normal,
             Vec::new(),
+            None,
             None,
         )
         .expect("failed to build test app")
@@ -9587,10 +9678,10 @@ mod target_selector_tests {
         app.pr_tab.start_initial_load();
         let (tx, rx) = std::sync::mpsc::channel();
         app.pr_load_rx = Some(rx);
-        tx.send(PrLoadEvent::Initial(Ok((
-            vec![sample_pr(7, "lucky")],
-            false,
-        ))))
+        tx.send(PrLoadEvent::Initial {
+            canonical: ForgeRepository::github("github.com", "agavra", "tuicr"),
+            result: Ok((vec![sample_pr(7, "lucky")], false)),
+        })
         .unwrap();
         drop(tx);
         // when
@@ -9599,6 +9690,31 @@ mod target_selector_tests {
         assert!(app.pr_load_rx.is_none());
         assert_eq!(app.pr_tab.view().rows.len(), 1);
         assert_eq!(app.pr_tab.view().rows[0].summary.number, 7);
+    }
+
+    #[test]
+    fn should_promote_app_forge_repository_to_canonical_on_initial_load() {
+        // given — origin is a fork; canonical from the background thread is upstream
+        let origin = ForgeRepository::github("github.com", "agavra", "slatedb");
+        let canonical = ForgeRepository::github("github.com", "slatedb", "slatedb");
+        let mut app = build_app();
+        app.forge_repository = Some(origin.clone());
+        app.pr_tab = PullRequestsTab::new(Some(origin));
+        app.pr_tab.start_initial_load();
+        assert!(!app.canonical_resolved);
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.pr_load_rx = Some(rx);
+        tx.send(PrLoadEvent::Initial {
+            canonical: canonical.clone(),
+            result: Ok((Vec::new(), false)),
+        })
+        .unwrap();
+        drop(tx);
+        // when
+        app.poll_pr_load_events();
+        // then
+        assert_eq!(app.forge_repository.as_ref(), Some(&canonical));
+        assert!(app.canonical_resolved);
     }
 
     #[test]
@@ -10209,6 +10325,7 @@ mod scroll_behavior_tests {
             DiffSource::WorkingTree,
             InputMode::Normal,
             Vec::new(),
+            None,
             None,
         )
         .expect("failed to build test app");
@@ -11087,6 +11204,7 @@ mod expand_gap_tests {
             DiffSource::WorkingTree,
             InputMode::Normal,
             Vec::new(),
+            None,
             None,
         )
         .expect("failed to build test app")
@@ -12030,6 +12148,7 @@ mod submit_flow_tests {
             InputMode::Normal,
             Vec::new(),
             None,
+            None,
         )
         .expect("build app");
         app.current_pr_head = Some("abcdef0123".to_string());
@@ -12315,6 +12434,7 @@ mod submit_flow_tests {
             DiffSource::WorkingTree,
             InputMode::Normal,
             Vec::new(),
+            None,
             None,
         )
         .expect("build app");
@@ -13019,6 +13139,7 @@ mod single_file_view_tests {
             DiffSource::WorkingTree,
             InputMode::Normal,
             Vec::new(),
+            None,
             None,
         )
         .expect("build app")

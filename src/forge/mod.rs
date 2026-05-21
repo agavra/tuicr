@@ -5,6 +5,7 @@
 //! instead of shelling out to forge-specific tools directly.
 #![allow(dead_code)]
 
+pub mod canonical;
 pub mod context;
 pub mod github;
 pub mod pr_open;

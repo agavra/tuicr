@@ -380,6 +380,7 @@ mod tests {
             InputMode::Normal,
             Vec::new(),
             None,
+            None,
         )
         .expect("build app");
         app.current_pr_head = Some("abcdef0123".to_string());

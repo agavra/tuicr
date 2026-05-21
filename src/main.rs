@@ -208,6 +208,10 @@ fn main() -> anyhow::Result<()> {
                 all_files: cli_args.all_files,
                 git_backend_preference,
                 pr_target: cli_args.pr_target.as_deref(),
+                repo_url_override: cli_args
+                    .repo_url
+                    .as_deref()
+                    .and_then(crate::forge::github::gh::parse_github_remote_url),
             },
         )
     }) {

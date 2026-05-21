@@ -1424,6 +1424,7 @@ mod remote_comments_snapshot_tests {
             InputMode::Normal,
             Vec::new(),
             None,
+            None,
         )
         .expect("build app")
     }

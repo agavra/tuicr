@@ -141,6 +141,19 @@ impl PullRequestsTab {
         None
     }
 
+    /// Promote the in-flight `Loading` tab to a (possibly different)
+    /// canonical repository. Called by `poll_pr_load_events` right before
+    /// `apply_initial_load` so the rows land on the correct repo when the
+    /// background thread resolved a fork's parent. No-op when not in
+    /// `Loading` or when the canonical matches the existing repository.
+    pub fn apply_canonical(&mut self, canonical: ForgeRepository) {
+        if let PullRequestsTab::Loading { repository } = self
+            && *repository != canonical
+        {
+            *repository = canonical;
+        }
+    }
+
     /// Apply the result of the initial load.
     pub fn apply_initial_load(&mut self, result: Result<(Vec<PullRequestSummary>, bool), String>) {
         let repository = match self {
@@ -603,6 +616,39 @@ mod tests {
         // then
         assert!(first.is_some());
         assert!(second.is_none());
+    }
+
+    #[test]
+    fn should_promote_loading_repository_via_apply_canonical() {
+        // given — origin is a fork; canonical is the upstream parent
+        let origin = ForgeRepository::github("github.com", "agavra", "slatedb");
+        let canonical = ForgeRepository::github("github.com", "slatedb", "slatedb");
+        let mut tab = PullRequestsTab::new(Some(origin));
+        tab.start_initial_load();
+        // when
+        tab.apply_canonical(canonical.clone());
+        tab.apply_initial_load(Ok((vec![pr(9, "x", "a", "h", "m")], false)));
+        // then — Loaded carries the canonical, not the origin
+        if let PullRequestsTab::Loaded { repository, .. } = &tab {
+            assert_eq!(repository, &canonical);
+        } else {
+            panic!("expected Loaded state");
+        }
+    }
+
+    #[test]
+    fn should_be_noop_when_apply_canonical_called_outside_loading() {
+        // given — tab is still Idle
+        let mut tab = PullRequestsTab::new(Some(repo()));
+        let other = ForgeRepository::github("github.com", "other", "other");
+        // when
+        tab.apply_canonical(other);
+        // then — still Idle on the original repo (no silent promotion)
+        if let PullRequestsTab::Idle { repository } = &tab {
+            assert_eq!(repository, &repo());
+        } else {
+            panic!("expected Idle state");
+        }
     }
 
     #[test]

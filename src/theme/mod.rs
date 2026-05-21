@@ -1595,6 +1595,11 @@ pub struct CliArgs {
     pub all_files: bool,
     /// Direct pull request target from `tuicr pr <target>`.
     pub pr_target: Option<String>,
+    /// Override the GitHub repository used for all PR operations. Useful when
+    /// the local `origin` points at a fork (e.g. `agavra/slatedb`) but PRs
+    /// live on the upstream (`slatedb/slatedb`). Accepts any URL form
+    /// `parse_github_remote_url` understands (HTTPS, SCP-SSH, ssh://).
+    pub repo_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1983,6 +1988,9 @@ Options:
   -A, --all-files        Review every tracked file in the cwd's git repo
   --stdout               Output to stdout instead of clipboard when exporting
   --no-update-check      Skip checking for updates on startup
+  --repo-url <URL>       Override the GitHub repo used for PR operations
+                         (e.g. when origin is a fork and PRs live on upstream).
+                         Accepts HTTPS, SCP-style SSH, or ssh:// URLs.
   -V, --version          Print version
   -h, --help             Print this help message
 
@@ -2002,6 +2010,19 @@ pub fn parse_cli_args() -> CliArgs {
         eprintln!("Error: {err}");
         std::process::exit(2);
     })
+}
+
+/// Reject `--repo-url` values that don't parse as a GitHub remote URL so the
+/// failure is surfaced at startup rather than when the PR tab is opened.
+fn validate_repo_url(value: &str) -> Result<(), String> {
+    if crate::forge::github::gh::parse_github_remote_url(value).is_some() {
+        return Ok(());
+    }
+    Err(format!(
+        "--repo-url value '{value}' is not a recognized GitHub URL. \
+         Expected forms: https://github.com/owner/repo, git@github.com:owner/repo, \
+         or ssh://git@github.com/owner/repo"
+    ))
 }
 
 fn parse_cli_args_from(args: &[String]) -> Result<CliArgs, String> {
@@ -2147,6 +2168,26 @@ fn parse_cli_args_from(args: &[String]) -> Result<CliArgs, String> {
         // Handle --all-files / -A
         if args[i] == "--all-files" || args[i] == "-A" {
             cli_args.all_files = true;
+        }
+
+        // Handle --repo-url value
+        if args[i] == "--repo-url" {
+            let value = args
+                .get(i + 1)
+                .ok_or_else(|| "--repo-url requires a value (e.g. https://github.com/owner/repo or git@github.com:owner/repo)".to_string())?;
+            if value.starts_with('-') {
+                return Err("--repo-url requires a value (e.g. https://github.com/owner/repo or git@github.com:owner/repo)".to_string());
+            }
+            validate_repo_url(value)?;
+            cli_args.repo_url = Some(value.clone());
+        }
+        // Handle --repo-url=value
+        if let Some(value) = args[i].strip_prefix("--repo-url=") {
+            if value.is_empty() {
+                return Err("--repo-url requires a value (e.g. https://github.com/owner/repo or git@github.com:owner/repo)".to_string());
+            }
+            validate_repo_url(value)?;
+            cli_args.repo_url = Some(value.to_string());
         }
 
         // Handle -r / --revisions value
@@ -2660,5 +2701,87 @@ mod tests {
         let parsed = parse_for_test(&["tuicr"]).expect("parse should succeed");
         // then
         assert_eq!(parsed.pr_target, None);
+    }
+
+    #[test]
+    fn should_parse_repo_url_https() {
+        // given/when
+        let parsed = parse_for_test(&["tuicr", "--repo-url", "https://github.com/slatedb/slatedb"])
+            .expect("parse should succeed");
+        // then
+        assert_eq!(
+            parsed.repo_url,
+            Some("https://github.com/slatedb/slatedb".to_string())
+        );
+    }
+
+    #[test]
+    fn should_parse_repo_url_equals_form() {
+        // given/when
+        let parsed = parse_for_test(&["tuicr", "--repo-url=git@github.com:slatedb/slatedb.git"])
+            .expect("parse should succeed");
+        // then
+        assert_eq!(
+            parsed.repo_url,
+            Some("git@github.com:slatedb/slatedb.git".to_string())
+        );
+    }
+
+    #[test]
+    fn should_parse_repo_url_ssh_scheme() {
+        // given/when
+        let parsed = parse_for_test(&[
+            "tuicr",
+            "--repo-url",
+            "ssh://git@github.com/slatedb/slatedb.git",
+        ])
+        .expect("parse should succeed");
+        // then
+        assert_eq!(
+            parsed.repo_url,
+            Some("ssh://git@github.com/slatedb/slatedb.git".to_string())
+        );
+    }
+
+    #[test]
+    fn should_error_when_repo_url_value_missing() {
+        // given/when
+        let err = parse_for_test(&["tuicr", "--repo-url"]).expect_err("parse should fail");
+        // then
+        assert!(err.contains("--repo-url requires a value"));
+    }
+
+    #[test]
+    fn should_error_when_repo_url_value_is_flag() {
+        // given/when
+        let err =
+            parse_for_test(&["tuicr", "--repo-url", "--theme"]).expect_err("parse should fail");
+        // then
+        assert!(err.contains("--repo-url requires a value"));
+    }
+
+    #[test]
+    fn should_error_when_repo_url_unparseable() {
+        // given/when
+        let err =
+            parse_for_test(&["tuicr", "--repo-url", "not-a-url"]).expect_err("parse should fail");
+        // then
+        assert!(err.contains("not a recognized GitHub URL"));
+    }
+
+    #[test]
+    fn should_error_when_repo_url_equals_empty() {
+        // given/when
+        let err = parse_for_test(&["tuicr", "--repo-url="]).expect_err("parse should fail");
+        // then
+        assert!(err.contains("--repo-url requires a value"));
+    }
+
+    #[test]
+    fn should_leave_repo_url_none_when_not_provided() {
+        // given/when
+        let parsed = parse_for_test(&["tuicr"]).expect("parse should succeed");
+        // then
+        assert_eq!(parsed.repo_url, None);
     }
 }

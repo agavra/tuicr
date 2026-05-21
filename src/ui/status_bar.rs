@@ -522,6 +522,7 @@ mod pr_header_snapshot_tests {
             InputMode::Normal,
             Vec::new(),
             None,
+            None,
         )
         .expect("build pr app")
     }

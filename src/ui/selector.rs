@@ -550,6 +550,7 @@ mod selector_render_snapshot_tests {
             InputMode::CommitSelect,
             commits,
             None,
+            None,
         )
         .expect("build app")
     }
