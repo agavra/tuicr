@@ -21,8 +21,8 @@ use crate::update::UpdateInfo;
 use crate::vcs::git::calculate_gap;
 use crate::vcs::traits::VcsType;
 use crate::vcs::{
-    CommitInfo, FileBackend, GitBackendPreference, PrNoopVcs, VcsBackend, VcsChangeStatus, VcsInfo,
-    detect_vcs,
+    ChangeKind, CommitInfo, FileBackend, GitBackendPreference, PrNoopVcs, VcsBackend,
+    VcsChangeStatus, VcsInfo, detect_vcs,
 };
 
 const VISIBLE_COMMIT_COUNT: usize = 10;
@@ -1298,7 +1298,7 @@ impl App {
                 .rev()
                 .collect();
                 // Prepend staged/unstaged entries only when the backend supports them
-                let (change_status, _) = Self::get_change_status_with_ignore(
+                let change_status = Self::get_change_status_with_ignore(
                     vcs.as_ref(),
                     &vcs_info.root_path,
                     highlighter,
@@ -1427,7 +1427,7 @@ impl App {
 
             Ok(app)
         } else {
-            let (change_status, used_backend_status_probe) = Self::get_change_status_with_ignore(
+            let change_status = Self::get_change_status_with_ignore(
                 vcs.as_ref(),
                 &vcs_info.root_path,
                 highlighter,
@@ -1436,21 +1436,10 @@ impl App {
             let has_staged_changes = change_status.staged;
             let has_unstaged_changes = change_status.unstaged;
 
-            let working_tree_diff =
-                if (has_staged_changes || has_unstaged_changes) && !used_backend_status_probe {
-                    match Self::get_working_tree_diff_with_ignore(
-                        vcs.as_ref(),
-                        &vcs_info.root_path,
-                        highlighter,
-                        options.path_filter,
-                    ) {
-                        Ok(diff_files) => Some(diff_files),
-                        Err(TuicrError::NoChanges) => None,
-                        Err(e) => return Err(e),
-                    }
-                } else {
-                    None
-                };
+            // No eager working-tree-diff fetch — the selector only needs to
+            // know whether to render the Staged/Unstaged rows. The actual
+            // diff loads when the user picks one (load_staged_selection /
+            // load_unstaged_selection / load_staged_and_unstaged_selection).
 
             let commits = crate::profile::time_with(
                 "startup.recent_commits",
@@ -1497,7 +1486,7 @@ impl App {
                 theme,
                 comment_type_configs,
                 output_to_stdout,
-                working_tree_diff.unwrap_or_default(),
+                Vec::new(),
                 session,
                 diff_source,
                 InputMode::CommitSelect,
@@ -2850,14 +2839,6 @@ impl App {
         Ok(diff_files)
     }
 
-    fn diff_exists(diff_files: Result<Vec<DiffFile>>) -> Result<bool> {
-        match diff_files {
-            Ok(_) => Ok(true),
-            Err(TuicrError::NoChanges) | Err(TuicrError::UnsupportedOperation(_)) => Ok(false),
-            Err(e) => Err(e),
-        }
-    }
-
     fn get_working_tree_diff_with_ignore(
         vcs: &dyn VcsBackend,
         repo_root: &Path,
@@ -2968,55 +2949,146 @@ impl App {
         Self::require_non_empty_diff_files(diff_files)
     }
 
+    /// Resolve the staged/unstaged status the commit selector renders.
+    ///
+    /// When `.gitignore`/`.tuicrignore` rules are present the cheap probe alone
+    /// can't be trusted — a file the probe sees may be ignored. To verify
+    /// without paying the full-diff cost, we ask the backend for just the
+    /// changed paths and filter them through the same ignore rules. Backends
+    /// that don't expose a path probe fall back to parsing the full diff.
     fn get_change_status_with_ignore(
         vcs: &dyn VcsBackend,
         repo_root: &Path,
         highlighter: &SyntaxHighlighter,
         path_filter: Option<&str>,
-    ) -> Result<(VcsChangeStatus, bool)> {
+    ) -> Result<VcsChangeStatus> {
         if path_filter.is_none() {
             match vcs.get_change_status() {
                 Ok(status) => {
                     if !crate::tuicrignore::has_ignore_rules(repo_root) {
-                        return Ok((status, true));
+                        return Ok(status);
                     }
-
-                    let staged = status.staged
-                        && Self::diff_exists(Self::get_staged_diff_with_ignore(
-                            vcs,
-                            repo_root,
-                            highlighter,
-                            path_filter,
-                        ))?;
-                    let unstaged = status.unstaged
-                        && Self::diff_exists(Self::get_unstaged_diff_with_ignore(
-                            vcs,
-                            repo_root,
-                            highlighter,
-                            path_filter,
-                        ))?;
-
-                    return Ok((VcsChangeStatus { staged, unstaged }, true));
+                    return Self::verify_status_against_ignore(
+                        vcs,
+                        repo_root,
+                        highlighter,
+                        path_filter,
+                        status,
+                    );
                 }
                 Err(TuicrError::UnsupportedOperation(_)) => {}
                 Err(e) => return Err(e),
             }
         }
 
-        let staged = Self::diff_exists(Self::get_staged_diff_with_ignore(
+        Self::verify_status_against_ignore(
             vcs,
             repo_root,
             highlighter,
             path_filter,
-        ))?;
-        let unstaged = Self::diff_exists(Self::get_unstaged_diff_with_ignore(
-            vcs,
-            repo_root,
-            highlighter,
-            path_filter,
-        ))?;
+            VcsChangeStatus {
+                staged: true,
+                unstaged: true,
+            },
+        )
+    }
 
-        Ok((VcsChangeStatus { staged, unstaged }, false))
+    /// Refine `assumed_status` by checking each side actually has at least one
+    /// non-ignored, non-filtered path. Tries the cheap path probe first; falls
+    /// back to parsing the full diff for backends that don't implement it.
+    fn verify_status_against_ignore(
+        vcs: &dyn VcsBackend,
+        repo_root: &Path,
+        highlighter: &SyntaxHighlighter,
+        path_filter: Option<&str>,
+        assumed_status: VcsChangeStatus,
+    ) -> Result<VcsChangeStatus> {
+        let staged = if assumed_status.staged {
+            Self::side_has_visible_changes(
+                vcs,
+                repo_root,
+                highlighter,
+                path_filter,
+                ChangeKind::Staged,
+            )?
+        } else {
+            false
+        };
+        let unstaged = if assumed_status.unstaged {
+            Self::side_has_visible_changes(
+                vcs,
+                repo_root,
+                highlighter,
+                path_filter,
+                ChangeKind::Unstaged,
+            )?
+        } else {
+            false
+        };
+        Ok(VcsChangeStatus { staged, unstaged })
+    }
+
+    fn side_has_visible_changes(
+        vcs: &dyn VcsBackend,
+        repo_root: &Path,
+        highlighter: &SyntaxHighlighter,
+        path_filter: Option<&str>,
+        kind: ChangeKind,
+    ) -> Result<bool> {
+        match vcs.list_changed_paths(kind) {
+            Ok(paths) => Ok(Self::any_path_survives_filters(
+                paths,
+                repo_root,
+                path_filter,
+            )),
+            Err(TuicrError::UnsupportedOperation(_)) => {
+                // Backend can't list paths cheaply — parse the diff to see if
+                // anything survives. This still happens for jj/hg today.
+                let diff_result = match kind {
+                    ChangeKind::Staged => {
+                        Self::get_staged_diff_with_ignore(vcs, repo_root, highlighter, path_filter)
+                    }
+                    ChangeKind::Unstaged => Self::get_unstaged_diff_with_ignore(
+                        vcs,
+                        repo_root,
+                        highlighter,
+                        path_filter,
+                    ),
+                };
+                match diff_result {
+                    Ok(_) => Ok(true),
+                    Err(TuicrError::NoChanges) | Err(TuicrError::UnsupportedOperation(_)) => {
+                        Ok(false)
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    fn any_path_survives_filters(
+        paths: Vec<PathBuf>,
+        repo_root: &Path,
+        path_filter: Option<&str>,
+    ) -> bool {
+        let after_ignore = crate::tuicrignore::filter_paths(repo_root, paths);
+        let after_path = match path_filter {
+            Some(p) => Self::filter_paths_by_pathspec(after_ignore, p),
+            None => after_ignore,
+        };
+        !after_path.is_empty()
+    }
+
+    fn filter_paths_by_pathspec(paths: Vec<PathBuf>, pathspec: &str) -> Vec<PathBuf> {
+        let pathspec = pathspec.trim_end_matches('/');
+        paths
+            .into_iter()
+            .filter(|p| {
+                let display = p.to_string_lossy();
+                display == pathspec || display.starts_with(&format!("{pathspec}/"))
+            })
+            .collect()
     }
 
     fn load_staged_and_unstaged_selection(&mut self) -> Result<()> {
@@ -6253,7 +6325,7 @@ impl App {
         }
 
         let highlighter = self.theme.syntax_highlighter();
-        let (change_status, _) = Self::get_change_status_with_ignore(
+        let change_status = Self::get_change_status_with_ignore(
             self.vcs.as_ref(),
             &self.vcs_info.root_path,
             highlighter,
@@ -10774,7 +10846,7 @@ mod change_status_tests {
         vcs.staged_files = vec![diff_file("ignored/generated.rs")];
         vcs.unstaged_files = vec![diff_file("src/lib.rs")];
 
-        let (status, used_probe) = App::get_change_status_with_ignore(
+        let status = App::get_change_status_with_ignore(
             &vcs,
             dir.path(),
             &SyntaxHighlighter::default(),
@@ -10782,7 +10854,6 @@ mod change_status_tests {
         )
         .expect("failed to get change status");
 
-        assert!(used_probe);
         assert_eq!(
             status,
             VcsChangeStatus {
@@ -10790,6 +10861,10 @@ mod change_status_tests {
                 unstaged: true,
             }
         );
+        // The mock backend's full-diff path was used (no list_changed_paths
+        // override), so it returned the unstaged file. With a real backend
+        // that implements list_changed_paths the same path-filter logic runs
+        // without ever materializing the diff.
     }
 
     #[test]
@@ -10797,7 +10872,7 @@ mod change_status_tests {
         let dir = tempdir().expect("failed to create temp dir");
         let vcs = mock_vcs(dir.path().to_path_buf());
 
-        let (status, used_probe) = App::get_change_status_with_ignore(
+        let status = App::get_change_status_with_ignore(
             &vcs,
             dir.path(),
             &SyntaxHighlighter::default(),
@@ -10805,7 +10880,6 @@ mod change_status_tests {
         )
         .expect("failed to get change status");
 
-        assert!(used_probe);
         assert_eq!(
             status,
             VcsChangeStatus {
@@ -10813,6 +10887,102 @@ mod change_status_tests {
                 unstaged: true,
             }
         );
+        // No ignore rules → no diffs were loaded by the probe (the mock's
+        // get_X_diff methods would have errored if hit, since staged_files
+        // and unstaged_files are empty).
+    }
+
+    #[test]
+    fn list_changed_paths_used_to_verify_ignore_rules() {
+        use std::cell::Cell;
+
+        struct PathProbeMock {
+            inner: StatusProbeMock,
+            list_calls: Cell<u32>,
+            staged_paths: Vec<PathBuf>,
+            unstaged_paths: Vec<PathBuf>,
+        }
+
+        impl VcsBackend for PathProbeMock {
+            fn info(&self) -> &VcsInfo {
+                self.inner.info()
+            }
+            fn get_working_tree_diff(
+                &self,
+                _highlighter: &SyntaxHighlighter,
+            ) -> Result<Vec<DiffFile>> {
+                Err(TuicrError::UnsupportedOperation(
+                    "should not be called".into(),
+                ))
+            }
+            fn get_staged_diff(&self, _highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+                Err(TuicrError::UnsupportedOperation(
+                    "should not be called".into(),
+                ))
+            }
+            fn get_unstaged_diff(&self, _highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+                Err(TuicrError::UnsupportedOperation(
+                    "should not be called".into(),
+                ))
+            }
+            fn get_change_status(&self) -> Result<VcsChangeStatus> {
+                self.inner.get_change_status()
+            }
+            fn list_changed_paths(&self, kind: ChangeKind) -> Result<Vec<PathBuf>> {
+                self.list_calls.set(self.list_calls.get() + 1);
+                Ok(match kind {
+                    ChangeKind::Staged => self.staged_paths.clone(),
+                    ChangeKind::Unstaged => self.unstaged_paths.clone(),
+                })
+            }
+            fn fetch_context_lines(
+                &self,
+                _file_path: &Path,
+                _file_status: FileStatus,
+                _ref_commit: Option<&str>,
+                _start_line: u32,
+                _end_line: u32,
+            ) -> Result<Vec<DiffLine>> {
+                Ok(Vec::new())
+            }
+            fn file_line_count(
+                &self,
+                _file_path: &Path,
+                _file_status: FileStatus,
+                _ref_commit: Option<&str>,
+            ) -> Result<u32> {
+                Ok(0)
+            }
+        }
+
+        let dir = tempdir().expect("failed to create temp dir");
+        fs::write(dir.path().join(".tuicrignore"), "ignored/\n")
+            .expect("failed to write .tuicrignore");
+
+        let vcs = PathProbeMock {
+            inner: mock_vcs(dir.path().to_path_buf()),
+            list_calls: Cell::new(0),
+            staged_paths: vec![PathBuf::from("ignored/generated.rs")],
+            unstaged_paths: vec![PathBuf::from("src/lib.rs")],
+        };
+
+        let status = App::get_change_status_with_ignore(
+            &vcs,
+            dir.path(),
+            &SyntaxHighlighter::default(),
+            None,
+        )
+        .expect("failed to get change status");
+
+        assert_eq!(
+            status,
+            VcsChangeStatus {
+                staged: false,
+                unstaged: true,
+            }
+        );
+        // Both sides probed via cheap path listing, not via full diff parsing.
+        assert_eq!(vcs.list_calls.get(), 2);
     }
 }
 

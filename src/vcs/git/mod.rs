@@ -6,14 +6,14 @@ pub mod repository;
 pub mod staging;
 
 use std::ffi::OsStr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::error::{Result, TuicrError};
 use crate::model::{DiffFile, DiffLine, FileStatus};
 use crate::process::{CommandOutputError, CommandOutputErrorKind, run_command_output};
 use crate::syntax::SyntaxHighlighter;
 
-use super::traits::{CommitInfo, VcsBackend, VcsChangeStatus, VcsInfo};
+use super::traits::{ChangeKind, CommitInfo, VcsBackend, VcsChangeStatus, VcsInfo};
 use cli::GitCliBackend;
 pub use libgit2::Libgit2Backend;
 
@@ -196,6 +196,13 @@ impl VcsBackend for GitBackend {
         match self {
             Self::Libgit2(backend) => backend.get_change_status(),
             Self::Cli(backend) => backend.get_change_status(),
+        }
+    }
+
+    fn list_changed_paths(&self, kind: ChangeKind) -> Result<Vec<PathBuf>> {
+        match self {
+            Self::Libgit2(backend) => backend.list_changed_paths(kind),
+            Self::Cli(backend) => backend.list_changed_paths(kind),
         }
     }
 

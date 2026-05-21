@@ -12,7 +12,7 @@ use crate::error::{Result, TuicrError};
 use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin, LineSide};
 use crate::syntax::SyntaxHighlighter;
 use crate::vcs::diff_parser::{self, DiffFormat};
-use crate::vcs::{CommitInfo, VcsBackend, VcsChangeStatus, VcsInfo};
+use crate::vcs::{ChangeKind, CommitInfo, VcsBackend, VcsChangeStatus, VcsInfo};
 use crate::vcs::{container_file_paths, enhance_with_full_file_highlight, tabify};
 
 use super::{
@@ -231,6 +231,22 @@ impl VcsBackend for GitCliBackend {
             tracked_unstaged || has_untracked_changes(&self.root_path, &untracked_pathspecs)?;
 
         Ok(VcsChangeStatus { staged, unstaged })
+    }
+
+    fn list_changed_paths(&self, kind: ChangeKind) -> Result<Vec<PathBuf>> {
+        match kind {
+            ChangeKind::Staged => list_diff_paths(
+                &self.root_path,
+                &["diff", "--cached", "--name-only", "-z", "--"],
+            ),
+            ChangeKind::Unstaged => {
+                let mut paths =
+                    list_diff_paths(&self.root_path, &["diff", "--name-only", "-z", "--"])?;
+                let untracked_pathspecs = sparse_checkout_untracked_pathspecs(&self.root_path)?;
+                paths.extend(list_untracked_paths(&self.root_path, &untracked_pathspecs)?);
+                Ok(paths)
+            }
+        }
     }
 
     fn fetch_context_lines(
@@ -467,6 +483,58 @@ fn has_diff_changes(workdir: &Path, args: &[&str]) -> Result<bool> {
             String::from_utf8_lossy(&output.stderr).trim().to_string(),
         )),
     }
+}
+
+/// Parse a `\0`-separated NUL-byte stream of paths (the output of e.g.
+/// `git diff -z --name-only`) into a Vec<PathBuf>. Empty paths skipped.
+fn split_nul_paths(bytes: &[u8]) -> Vec<PathBuf> {
+    bytes
+        .split(|b| *b == 0)
+        .filter(|chunk| !chunk.is_empty())
+        .map(|chunk| PathBuf::from(String::from_utf8_lossy(chunk).into_owned()))
+        .collect()
+}
+
+fn list_diff_paths(workdir: &Path, args: &[&str]) -> Result<Vec<PathBuf>> {
+    let output = Command::new("git")
+        .current_dir(workdir)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| TuicrError::VcsCommand(format!("Failed to run git: {e}")))?;
+
+    if !output.status.success() {
+        return Err(TuicrError::VcsCommand(
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        ));
+    }
+
+    Ok(split_nul_paths(&output.stdout))
+}
+
+fn list_untracked_paths(workdir: &Path, pathspecs: &[String]) -> Result<Vec<PathBuf>> {
+    let mut args: Vec<&str> = vec!["ls-files", "--others", "--exclude-standard", "-z"];
+    if !pathspecs.is_empty() {
+        args.push("--");
+        args.extend(pathspecs.iter().map(String::as_str));
+    }
+
+    let output = Command::new("git")
+        .current_dir(workdir)
+        .args(&args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| TuicrError::VcsCommand(format!("Failed to run git: {e}")))?;
+
+    if !output.status.success() {
+        return Err(TuicrError::VcsCommand(
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        ));
+    }
+
+    Ok(split_nul_paths(&output.stdout))
 }
 
 fn has_untracked_changes(workdir: &Path, pathspecs: &[String]) -> Result<bool> {

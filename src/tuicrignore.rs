@@ -20,6 +20,20 @@ pub fn filter_diff_files(repo_root: &Path, diff_files: Vec<DiffFile>) -> Vec<Dif
         .collect()
 }
 
+/// Apply `.tuicrignore` (and `.gitignore`, for `!`-unignore patterns) rules to a
+/// list of paths. Used by the cheap status probe to verify that survives the
+/// ignore filter without paying the full-diff cost.
+pub fn filter_paths(repo_root: &Path, paths: Vec<std::path::PathBuf>) -> Vec<std::path::PathBuf> {
+    let Some(matcher) = load_matcher(repo_root) else {
+        return paths;
+    };
+
+    paths
+        .into_iter()
+        .filter(|p| !matcher.matched_path_or_any_parents(p, false).is_ignore())
+        .collect()
+}
+
 /// Return true when repo-level ignore rules can affect tuicr's diff file list.
 pub fn has_ignore_rules(repo_root: &Path) -> bool {
     repo_root.join(".gitignore").is_file() || repo_root.join(".tuicrignore").is_file()

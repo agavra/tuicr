@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use crate::error::{Result, TuicrError};
 use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin};
 use crate::syntax::{SyntaxHighlighter, needs_full_file_highlight};
+use crate::vcs::traits::ChangeKind;
 use crate::vcs::{enhance_with_full_file_highlight, tabify};
 
 pub fn get_working_tree_diff(
@@ -57,6 +58,44 @@ pub fn get_staged_diff(
 }
 
 /// Get the unstaged diff (working tree vs index)
+/// List the changed paths for either the staged or unstaged diff, without
+/// materializing hunks or running the syntax highlighter. Lets callers verify
+/// `get_change_status` against ignore rules cheaply — full diff parsing only
+/// happens once the user actually selects the staged/unstaged view.
+pub fn list_changed_paths(repo: &Repository, kind: ChangeKind) -> Result<Vec<PathBuf>> {
+    let diff = match kind {
+        ChangeKind::Staged => {
+            let head = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
+            let index = repo.index()?;
+            repo.diff_tree_to_index(head.as_ref(), Some(&index), None)?
+        }
+        ChangeKind::Unstaged => {
+            let index = repo.index()?;
+            let mut opts = DiffOptions::new();
+            opts.include_untracked(true);
+            // `show_untracked_content(false)` keeps libgit2 from reading each
+            // untracked file's bytes — only the paths are needed here.
+            opts.show_untracked_content(false);
+            opts.recurse_untracked_dirs(true);
+            opts.skip_binary_check(true);
+            repo.diff_index_to_workdir(Some(&index), Some(&mut opts))?
+        }
+    };
+
+    let mut paths: Vec<PathBuf> = Vec::with_capacity(diff.deltas().len());
+    for delta in diff.deltas() {
+        let path = delta
+            .new_file()
+            .path()
+            .or_else(|| delta.old_file().path())
+            .map(PathBuf::from);
+        if let Some(p) = path {
+            paths.push(p);
+        }
+    }
+    Ok(paths)
+}
+
 pub fn get_unstaged_diff(
     repo: &Repository,
     highlighter: &SyntaxHighlighter,

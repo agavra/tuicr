@@ -1,5 +1,5 @@
 use git2::Repository;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Once;
 
 use crate::error::{Result, TuicrError};
@@ -7,7 +7,7 @@ use crate::model::{DiffFile, DiffLine, FileStatus};
 use crate::syntax::SyntaxHighlighter;
 
 use super::{context, diff, repository, staging};
-use crate::vcs::traits::{CommitInfo, VcsBackend, VcsInfo, VcsType};
+use crate::vcs::traits::{ChangeKind, CommitInfo, VcsBackend, VcsInfo, VcsType};
 
 /// Git backend implementation using the git2/libgit2 library.
 pub struct Libgit2Backend {
@@ -102,6 +102,10 @@ impl VcsBackend for Libgit2Backend {
 
     fn get_unstaged_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
         diff::get_unstaged_diff(&self.repo, highlighter)
+    }
+
+    fn list_changed_paths(&self, kind: ChangeKind) -> Result<Vec<PathBuf>> {
+        diff::list_changed_paths(&self.repo, kind)
     }
 
     fn fetch_context_lines(

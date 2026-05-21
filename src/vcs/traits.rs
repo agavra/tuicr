@@ -56,6 +56,16 @@ pub struct VcsChangeStatus {
     pub unstaged: bool,
 }
 
+/// Which side of the working tree to enumerate for the cheap path probes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChangeKind {
+    /// HEAD vs index — paths that would land in `get_staged_diff`.
+    Staged,
+    /// Index vs workdir, including untracked — paths that would land in
+    /// `get_unstaged_diff`.
+    Unstaged,
+}
+
 /// Trait for VCS backend implementations
 pub trait VcsBackend: Send {
     /// Get repository information
@@ -95,6 +105,15 @@ pub trait VcsBackend: Send {
     fn get_change_status(&self) -> Result<VcsChangeStatus> {
         Err(crate::error::TuicrError::UnsupportedOperation(
             "Change status not supported for this VCS".into(),
+        ))
+    }
+
+    /// List the paths that would appear in the corresponding diff, without
+    /// parsing hunks or highlighting. Used to verify `get_change_status`
+    /// against `.gitignore`/`.tuicrignore` rules without paying the diff cost.
+    fn list_changed_paths(&self, _kind: ChangeKind) -> Result<Vec<PathBuf>> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Listing changed paths not supported for this VCS".into(),
         ))
     }
 
