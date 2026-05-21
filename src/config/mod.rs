@@ -53,9 +53,9 @@ pub struct AppConfig {
     pub transparent_background: Option<bool>,
     pub scroll_offset: Option<usize>,
     pub no_update_check: Option<bool>,
-    /// When true, every session opens in single-file view (`:focus`).
-    /// Pristine `--all-files` mode already defaults to true regardless
-    /// of this setting. Defaults to false.
+    /// Render single-file and pristine views in full-width mode by default.
+    /// Pristine `--all-files` mode already defaults to true regardless of
+    /// this setting. Defaults to false.
     pub single_file_view: Option<bool>,
     /// `[forge]` section settings. Always present; `None` means "no override"
     /// and downstream code should treat it as `ForgeConfig::default()`.
@@ -93,14 +93,45 @@ pub struct ConfigLoadOutcome {
 }
 
 pub fn config_path() -> Result<PathBuf> {
-    let xdg_config_home = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from);
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    let appdata = std::env::var_os("APPDATA").map(PathBuf::from);
-
-    config_path_from_parts(xdg_config_home, home, appdata)
+    Ok(config_dir()?.join("config.toml"))
 }
 
+pub fn themes_dir() -> Result<PathBuf> {
+    Ok(config_dir()?.join("themes"))
+}
+
+fn config_path_env_parts() -> (Option<PathBuf>, Option<PathBuf>, Option<PathBuf>) {
+    (
+        std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from),
+        std::env::var_os("HOME").map(PathBuf::from),
+        std::env::var_os("APPDATA").map(PathBuf::from),
+    )
+}
+
+fn config_dir() -> Result<PathBuf> {
+    let (xdg_config_home, home, appdata) = config_path_env_parts();
+    config_dir_from_parts(xdg_config_home, home, appdata)
+}
+
+#[cfg(test)]
 fn config_path_from_parts(
+    xdg_config_home: Option<PathBuf>,
+    home: Option<PathBuf>,
+    _appdata: Option<PathBuf>,
+) -> Result<PathBuf> {
+    Ok(config_dir_from_parts(xdg_config_home, home, _appdata)?.join("config.toml"))
+}
+
+#[cfg(test)]
+fn themes_dir_from_parts(
+    xdg_config_home: Option<PathBuf>,
+    home: Option<PathBuf>,
+    _appdata: Option<PathBuf>,
+) -> Result<PathBuf> {
+    config_dir_from_parts(xdg_config_home, home, _appdata).map(|dir| dir.join("themes"))
+}
+
+fn config_dir_from_parts(
     xdg_config_home: Option<PathBuf>,
     home: Option<PathBuf>,
     _appdata: Option<PathBuf>,
@@ -110,19 +141,19 @@ fn config_path_from_parts(
         let base = _appdata
             .filter(|p| !p.as_os_str().is_empty())
             .ok_or_else(|| anyhow!("Could not determine APPDATA for config directory"))?;
-        return Ok(base.join("tuicr").join("config.toml"));
+        return Ok(base.join("tuicr"));
     }
 
     #[cfg(not(windows))]
     {
         if let Some(base) = xdg_config_home.filter(|p| !p.as_os_str().is_empty()) {
-            return Ok(base.join("tuicr").join("config.toml"));
+            return Ok(base.join("tuicr"));
         }
 
         let home = home
             .filter(|p| !p.as_os_str().is_empty())
             .ok_or_else(|| anyhow!("Could not determine HOME for config directory"))?;
-        Ok(home.join(".config").join("tuicr").join("config.toml"))
+        Ok(home.join(".config").join("tuicr"))
     }
 }
 
@@ -1133,6 +1164,28 @@ comment_type_prefix = "yes"
         assert!(path.ends_with(Path::new("tuicr").join("config.toml")));
     }
 
+    #[cfg(not(windows))]
+    #[test]
+    fn should_use_xdg_themes_dir_when_set() {
+        let path = themes_dir_from_parts(
+            Some(PathBuf::from("/tmp/xdg-config")),
+            Some(PathBuf::from("/tmp/home")),
+            None,
+        )
+        .expect("themes dir should resolve");
+
+        assert_eq!(path, PathBuf::from("/tmp/xdg-config/tuicr/themes"));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn should_fallback_to_home_dot_config_themes_dir_when_xdg_unset() {
+        let path = themes_dir_from_parts(None, Some(PathBuf::from("/home/tester")), None)
+            .expect("themes dir should resolve");
+
+        assert_eq!(path, PathBuf::from("/home/tester/.config/tuicr/themes"));
+    }
+
     #[cfg(windows)]
     #[test]
     fn should_use_windows_appdata_base_dir() {
@@ -1146,6 +1199,22 @@ comment_type_prefix = "yes"
         assert_eq!(
             path,
             PathBuf::from(r"C:\Users\tester\AppData\Roaming\tuicr\config.toml")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn should_use_windows_appdata_themes_dir() {
+        let path = themes_dir_from_parts(
+            Some(PathBuf::from(r"C:\xdg\ignored")),
+            Some(PathBuf::from(r"C:\Users\tester")),
+            Some(PathBuf::from(r"C:\Users\tester\AppData\Roaming")),
+        )
+        .expect("themes dir should resolve");
+
+        assert_eq!(
+            path,
+            PathBuf::from(r"C:\Users\tester\AppData\Roaming\tuicr\themes")
         );
     }
 }

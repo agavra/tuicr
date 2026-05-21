@@ -3,9 +3,16 @@
 tuicr reads a TOML config file at startup.
 
 | Platform | Path |
-|----------|------|
+| --- | --- |
 | Linux / macOS | `$XDG_CONFIG_HOME/tuicr/config.toml` (default: `~/.config/tuicr/config.toml`) |
 | Windows | `%APPDATA%\tuicr\config.toml` |
+
+Local themes live in the sibling `themes/` directory:
+
+| Platform | Theme directory |
+| --- | --- |
+| Linux / macOS | `$XDG_CONFIG_HOME/tuicr/themes/` (default: `~/.config/tuicr/themes/`) |
+| Windows | `%APPDATA%\tuicr\themes\` |
 
 Unknown keys are ignored with a startup warning.
 
@@ -45,10 +52,10 @@ comment_type_prefix = true
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `theme` | (none) | Explicit theme. See [Themes](#themes) for valid values. |
+| `theme` | (none) | Explicit theme name. See [Themes](#themes) for bundled names and local theme lookup. |
 | `appearance` | `system` | `dark`, `light`, or `system`. Used when no explicit theme is set. |
-| `theme_dark` | (none) | Theme for dark appearance (paired with `theme_light`). |
-| `theme_light` | (none) | Theme for light appearance (paired with `theme_dark`). |
+| `theme_dark` | (none) | Theme name for dark appearance (paired with `theme_light`). |
+| `theme_light` | (none) | Theme name for light appearance (paired with `theme_dark`). |
 | `diff_view` | `unified` | `unified` or `side-by-side`. Toggle in-app with `:diff`. |
 | `show_file_list` | `true` | Whether the file list panel is visible on startup. Toggle with `<leader>e`. |
 | `mouse` | `true` | Wheel scrolling, clicks, and drag-to-select. |
@@ -63,9 +70,51 @@ comment_type_prefix = true
 
 ## Themes
 
-Built-in themes:
+Bundled themes:
 
 `dark`, `light`, `ayu-light`, `ayu-mirage`, `onedark`, `github-light`, `github-dark`, `catppuccin-latte`, `catppuccin-frappe`, `catppuccin-macchiato`, `catppuccin-mocha`, `everforest-dark`, `everforest-light`, `gruvbox-dark`, `gruvbox-light`, `nord-dark`, `nord-light`, `nord-dark-high-contrast`, `nord-light-high-contrast`, `solarized-light`, `solarized-dark`, `tokyo-night-storm`.
+
+Local themes:
+
+- `--theme <name>` and config `theme = "<name>"` first check bundled theme names, then try `<themes dir>/<name>.toml`.
+- `theme_dark` and `theme_light` follow the same bundled-then-local lookup.
+- Bundled names win if a local file uses the same name.
+- TOML comments are supported, so local theme files can document where palette values came from.
+
+### Local theme file format
+
+Local theme files are flat TOML files with required palette keys matching tuicr's UI colors.
+Use the checked-in example for a complete file, then adjust the palette values to taste.
+
+```toml
+# ~/.config/tuicr/themes/my-theme.toml
+# Local theme file names are selected by theme name.
+# `theme = "my-theme"` loads `my-theme.toml` from the local themes directory.
+
+panel_bg = "#011627"
+bg_highlight = "#1d3b53"
+fg_primary = "#c3ccdc"
+fg_secondary = "#a1aab8"
+# `syntax_theme` points to a local `.tmTheme` file, relative to this file.
+syntax_theme = "my-syntax.tmTheme"
+
+# Remaining keys are required. See `examples/nightfly.toml` for the full list.
+diff_add = "#21c7a8"
+diff_del = "#ff5874"
+status_bar_bg = "#252c3f"
+mode_bg = "#82aaff"
+```
+
+Notes:
+
+- Every listed color key is required.
+- Color values accept named terminal colors or `#RRGGBB`.
+- `syntax_theme` is optional. When present it must point to a local `.tmTheme` file.
+- Relative `syntax_theme` paths resolve relative to the local theme TOML file.
+- If `syntax_theme` is omitted, tuicr falls back to a bundled dark or light syntax theme based on the local theme background.
+- `theme`, `theme_dark`, and `theme_light` may name either a bundled theme or a local theme file without the `.toml` suffix.
+- A ready-to-copy Nightfly-inspired example lives at [`examples/nightfly.toml`](../examples/nightfly.toml).
+- The checked-in Nightfly example credits [`bluz71/vim-nightfly-colors`](https://github.com/bluz71/vim-nightfly-colors) for the UI palette and [`bluz71/fly16-bat`](https://github.com/bluz71/fly16-bat) for the syntax theme source file.
 
 ### Resolution precedence
 
@@ -77,9 +126,11 @@ When multiple sources are set, tuicr resolves the theme in this order:
 4. `theme_dark` alone or `theme_light` alone in config (appearance ignored)
 5. `--appearance <MODE>` flag (only when no explicit theme or variants are set)
 6. `appearance` in config (only when no explicit theme or variants are set)
-7. Built-in default (`system`)
+7. Bundled default (`system`)
 
-Invalid `--theme` values cause an immediate non-zero exit.
+Invalid `--theme` values cause an immediate non-zero exit. The same is true when a selected
+local theme file exists but is invalid. Invalid config-selected local themes emit startup warnings
+and fall back through normal precedence.
 
 ## Comment types
 

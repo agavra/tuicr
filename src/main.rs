@@ -118,6 +118,10 @@ fn main() -> anyhow::Result<()> {
                 .as_ref()
                 .and_then(|cfg| cfg.appearance.as_deref()),
         )
+    })
+    .unwrap_or_else(|err| {
+        eprintln!("Error: {err}");
+        std::process::exit(2);
     });
     startup_warnings.extend(theme_warnings);
 

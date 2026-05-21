@@ -72,10 +72,15 @@ impl Default for SyntaxHighlighter {
 impl SyntaxHighlighter {
     /// Create a new syntax highlighter with the given theme and diff background colors
     pub fn new(theme_name: EmbeddedThemeName, add_bg: Color, del_bg: Color) -> Self {
-        let syntax_set = two_face::syntax::extra_newlines();
         let theme_set = two_face::theme::extra();
         let theme = theme_set[theme_name].clone();
 
+        Self::with_theme(theme, add_bg, del_bg)
+    }
+
+    /// Create a new syntax highlighter with a preloaded syntect theme.
+    pub fn with_theme(theme: syntect::highlighting::Theme, add_bg: Color, del_bg: Color) -> Self {
+        let syntax_set = two_face::syntax::extra_newlines();
         Self {
             syntax_set,
             theme,
@@ -218,7 +223,7 @@ impl SyntaxHighlighter {
     }
 
     fn syntect_to_ratatui_style(style: syntect::highlighting::Style) -> Style {
-        let fg_color = Color::Rgb(style.foreground.r, style.foreground.g, style.foreground.b);
+        let fg_color = Self::syntect_color_to_ratatui(style.foreground);
         let mut ratatui_style = Style::default().fg(fg_color);
 
         if style
@@ -241,6 +246,37 @@ impl SyntaxHighlighter {
         }
 
         ratatui_style
+    }
+
+    /// Translate syntect colors into ratatui colors.
+    ///
+    /// Some bat-compatible Base16 `.tmTheme` files encode ANSI palette slots as
+    /// placeholder colors of the form `#0N000000`. syntect preserves those
+    /// bytes literally, so we translate them here at the render boundary.
+    fn syntect_color_to_ratatui(color: syntect::highlighting::Color) -> Color {
+        if color.g == 0 && color.b == 0 && color.a == 0 {
+            return match color.r {
+                0 => Color::Black,
+                1 => Color::Red,
+                2 => Color::Green,
+                3 => Color::Yellow,
+                4 => Color::Blue,
+                5 => Color::Magenta,
+                6 => Color::Cyan,
+                7 => Color::Gray,
+                8 => Color::DarkGray,
+                9 => Color::LightRed,
+                10 => Color::LightGreen,
+                11 => Color::LightYellow,
+                12 => Color::LightBlue,
+                13 => Color::LightMagenta,
+                14 => Color::LightCyan,
+                15 => Color::White,
+                _ => Color::Rgb(color.r, color.g, color.b),
+            };
+        }
+
+        Color::Rgb(color.r, color.g, color.b)
     }
 
     /// Map extensions not in two-face's syntax set to a known equivalent.
@@ -438,6 +474,33 @@ mod tests {
             let has_fg = spans.iter().any(|(style, _)| style.fg.is_some());
             assert!(has_fg, "line {i} should have foreground color: {spans:?}");
         }
+    }
+
+    #[test]
+    fn should_translate_base16_placeholder_colors_to_ansi_palette() {
+        let style = SyntaxHighlighter::syntect_to_ratatui_style(syntect::highlighting::Style {
+            foreground: syntect::highlighting::Color {
+                r: 7,
+                g: 0,
+                b: 0,
+                a: 0,
+            },
+            background: syntect::highlighting::Color::BLACK,
+            font_style: syntect::highlighting::FontStyle::empty(),
+        });
+        assert_eq!(style.fg, Some(Color::Gray));
+
+        let bright = SyntaxHighlighter::syntect_to_ratatui_style(syntect::highlighting::Style {
+            foreground: syntect::highlighting::Color {
+                r: 12,
+                g: 0,
+                b: 0,
+                a: 0,
+            },
+            background: syntect::highlighting::Color::BLACK,
+            font_style: syntect::highlighting::FontStyle::empty(),
+        });
+        assert_eq!(bright.fg, Some(Color::LightBlue));
     }
 
     #[test]

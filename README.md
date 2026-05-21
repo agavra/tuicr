@@ -143,11 +143,16 @@ color = "red"
 definition = "must fix before merge"
 ```
 
-Themes: `dark`, `light`, `ayu-light`, `ayu-mirage`, `onedark`, `github-light`, `github-dark`,
-`catppuccin-latte`, `catppuccin-frappe`, `catppuccin-macchiato`, `catppuccin-mocha`,
-`everforest-dark`, `everforest-light`, `gruvbox-dark`, `gruvbox-light`, `nord-dark`,
-`nord-light`, `nord-dark-high-contrast`, `nord-light-high-contrast`, `solarized-light`,
-`solarized-dark`, `tokyo-night-storm`.
+Bundled themes: `dark`, `light`, `ayu-light`, `ayu-mirage`, `onedark`, `github-light`,
+`github-dark`, `catppuccin-latte`, `catppuccin-frappe`, `catppuccin-macchiato`,
+`catppuccin-mocha`, `everforest-dark`, `everforest-light`, `gruvbox-dark`,
+`gruvbox-light`, `nord-dark`, `nord-light`, `nord-dark-high-contrast`,
+`nord-light-high-contrast`, `solarized-light`, `solarized-dark`, `tokyo-night-storm`.
+
+Local themes: set `theme = "my-theme"` or run `tuicr --theme my-theme`, then create
+`~/.config/tuicr/themes/my-theme.toml` on Linux/macOS or `%APPDATA%\tuicr\themes\my-theme.toml`
+on Windows. Local themes may reference a local `syntax_theme = "my-syntax.tmTheme"` file for
+syntax highlighting. A ready-to-copy Nightfly example lives at [`examples/nightfly.toml`](examples/nightfly.toml).
 
 Full options, theme resolution precedence, `comment_types` semantics, and `.tuicrignore` rules in
 [docs/CONFIG.md](docs/CONFIG.md).

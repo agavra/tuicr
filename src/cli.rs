@@ -10,7 +10,7 @@ use crate::theme::{AppearanceArg, ThemeArg};
 /// CLI arguments consumed by the rest of the binary.
 #[derive(Debug, Clone, Default)]
 pub struct CliArgs {
-    pub theme: Option<ThemeArg>,
+    pub theme: Option<String>,
     pub appearance: Option<AppearanceArg>,
     /// Output to stdout instead of clipboard when exporting.
     pub output_to_stdout: bool,
@@ -51,9 +51,10 @@ struct Cli {
     )]
     revisions: Option<String>,
 
-    /// Color theme to use.
-    #[arg(long, value_name = "THEME", global = true, value_parser = parse_theme_arg)]
-    theme: Option<ThemeArg>,
+    /// Color theme to use. Bundled themes resolve first; local themes are
+    /// loaded from the config `themes/` directory.
+    #[arg(long, value_name = "THEME", global = true, value_parser = non_empty_theme_name)]
+    theme: Option<String>,
 
     /// Appearance mode (light/dark/system); used when no explicit theme is set.
     #[arg(long, value_name = "MODE", global = true, value_parser = parse_appearance_arg)]
@@ -151,18 +152,20 @@ impl From<Cli> for CliArgs {
     }
 }
 
-fn parse_theme_arg(s: &str) -> Result<ThemeArg, String> {
-    ThemeArg::from_str(s).ok_or_else(|| {
-        let valid = ThemeArg::valid_values_display();
-        format!("Unknown theme '{s}'. Valid options: {valid}")
-    })
-}
-
 fn parse_appearance_arg(s: &str) -> Result<AppearanceArg, String> {
     AppearanceArg::from_str(s).ok_or_else(|| {
         let valid = AppearanceArg::valid_values_display();
         format!("Unknown appearance '{s}'. Valid options: {valid}")
     })
+}
+
+fn non_empty_theme_name(s: &str) -> Result<String, String> {
+    if s.is_empty() {
+        let valid = ThemeArg::valid_values_display();
+        Err(format!("--theme requires a value ({valid})"))
+    } else {
+        Ok(s.to_string())
+    }
 }
 
 /// Reject `--repo-url` values that don't parse as a GitHub remote URL so the
@@ -205,54 +208,54 @@ mod tests {
     #[test]
     fn should_parse_theme_when_provided() {
         let parsed = parse_for_test(&["tuicr", "--theme", "light"]).expect("parse should succeed");
-        assert_eq!(parsed.theme, Some(ThemeArg::Light));
+        assert_eq!(parsed.theme, Some("light".to_string()));
     }
 
     #[test]
     fn should_parse_catppuccin_themes() {
         let parsed = parse_for_test(&["tuicr", "--theme", "catppuccin-mocha"])
             .expect("parse should succeed");
-        assert_eq!(parsed.theme, Some(ThemeArg::CatppuccinMocha));
+        assert_eq!(parsed.theme, Some("catppuccin-mocha".to_string()));
 
         let parsed =
             parse_for_test(&["tuicr", "--theme=catppuccin-latte"]).expect("parse should succeed");
-        assert_eq!(parsed.theme, Some(ThemeArg::CatppuccinLatte));
+        assert_eq!(parsed.theme, Some("catppuccin-latte".to_string()));
     }
 
     #[test]
     fn should_parse_ayu_light_theme() {
         let parsed =
             parse_for_test(&["tuicr", "--theme", "ayu-light"]).expect("parse should succeed");
-        assert_eq!(parsed.theme, Some(ThemeArg::AyuLight));
+        assert_eq!(parsed.theme, Some("ayu-light".to_string()));
     }
 
     #[test]
     fn should_parse_onedark_theme() {
         let parsed =
             parse_for_test(&["tuicr", "--theme", "onedark"]).expect("parse should succeed");
-        assert_eq!(parsed.theme, Some(ThemeArg::Onedark));
+        assert_eq!(parsed.theme, Some("onedark".to_string()));
     }
 
     #[test]
     fn should_parse_gruvbox_themes() {
         let parsed =
             parse_for_test(&["tuicr", "--theme", "gruvbox-dark"]).expect("parse should succeed");
-        assert_eq!(parsed.theme, Some(ThemeArg::GruvboxDark));
+        assert_eq!(parsed.theme, Some("gruvbox-dark".to_string()));
 
         let parsed =
             parse_for_test(&["tuicr", "--theme=gruvbox-light"]).expect("parse should succeed");
-        assert_eq!(parsed.theme, Some(ThemeArg::GruvboxLight));
+        assert_eq!(parsed.theme, Some("gruvbox-light".to_string()));
     }
 
     #[test]
     fn should_parse_everforest_themes() {
         let parsed =
             parse_for_test(&["tuicr", "--theme", "everforest-dark"]).expect("parse should succeed");
-        assert_eq!(parsed.theme, Some(ThemeArg::EverforestDark));
+        assert_eq!(parsed.theme, Some("everforest-dark".to_string()));
 
         let parsed =
             parse_for_test(&["tuicr", "--theme=everforest-light"]).expect("parse should succeed");
-        assert_eq!(parsed.theme, Some(ThemeArg::EverforestLight));
+        assert_eq!(parsed.theme, Some("everforest-light".to_string()));
     }
 
     #[test]
@@ -288,17 +291,17 @@ mod tests {
     }
 
     #[test]
-    fn should_error_for_invalid_theme_in_separate_arg() {
-        let err = parse_for_test(&["tuicr", "--theme", "nope"]).expect_err("parse should fail");
-        assert_eq!(err.kind(), ErrorKind::ValueValidation);
-        assert!(err.to_string().contains("Unknown theme 'nope'"));
+    fn should_allow_custom_theme_name_in_separate_arg() {
+        let parsed = parse_for_test(&["tuicr", "--theme", "nightfly"])
+            .expect("custom theme parse should succeed");
+        assert_eq!(parsed.theme, Some("nightfly".to_string()));
     }
 
     #[test]
-    fn should_error_for_invalid_theme_in_equals_arg() {
-        let err = parse_for_test(&["tuicr", "--theme=nope"]).expect_err("parse should fail");
-        assert_eq!(err.kind(), ErrorKind::ValueValidation);
-        assert!(err.to_string().contains("Unknown theme 'nope'"));
+    fn should_allow_custom_theme_name_in_equals_arg() {
+        let parsed = parse_for_test(&["tuicr", "--theme=nightfly"])
+            .expect("custom theme parse should succeed");
+        assert_eq!(parsed.theme, Some("nightfly".to_string()));
     }
 
     #[test]
@@ -472,7 +475,7 @@ mod tests {
         let parsed = parse_for_test(&["tuicr", "pr", "125", "--theme", "dark"])
             .expect("parse should succeed");
         assert_eq!(parsed.pr_target, Some("125".to_string()));
-        assert_eq!(parsed.theme, Some(ThemeArg::Dark));
+        assert_eq!(parsed.theme, Some("dark".to_string()));
     }
 
     #[test]

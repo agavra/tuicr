@@ -2,12 +2,25 @@
 //!
 //! Provides dark and light themes with automatic terminal background detection.
 
-use std::{process::Command, sync::OnceLock};
+use std::{
+    fs,
+    path::{Component, Path},
+    process::Command,
+    sync::OnceLock,
+};
 
 use ratatui::style::Color;
+use syntect::highlighting::ThemeSet;
 use two_face::theme::EmbeddedThemeName;
 
+use crate::config::themes_dir;
 use crate::syntax::SyntaxHighlighter;
+
+#[derive(Clone)]
+pub enum SyntaxThemeSource {
+    Embedded(EmbeddedThemeName),
+    Custom(Box<syntect::highlighting::Theme>),
+}
 
 /// Complete color theme for the application
 pub struct Theme {
@@ -34,8 +47,9 @@ pub struct Theme {
     pub syntax_add_bg: Color,
     pub syntax_del_bg: Color,
 
-    // Syntect theme name for syntax highlighting
-    pub syntect_theme: EmbeddedThemeName,
+    // Syntax highlighting source. Bundled themes use an embedded theme;
+    // local themes may preload a custom `.tmTheme`.
+    pub syntax_theme: SyntaxThemeSource,
 
     // File status colors
     pub file_added: Color,
@@ -110,7 +124,7 @@ impl Theme {
             syntax_del_bg: Color::Rgb(45, 0, 0),
 
             // Syntect theme for syntax highlighting
-            syntect_theme: EmbeddedThemeName::Base16EightiesDark,
+            syntax_theme: SyntaxThemeSource::Embedded(EmbeddedThemeName::Base16EightiesDark),
 
             // File status colors
             file_added: Color::Rgb(80, 220, 120),
@@ -180,7 +194,7 @@ impl Theme {
             syntax_del_bg: Color::Rgb(255, 230, 230), // Very light pink
 
             // Syntect theme for syntax highlighting (light variant)
-            syntect_theme: EmbeddedThemeName::Base16OceanLight,
+            syntax_theme: SyntaxThemeSource::Embedded(EmbeddedThemeName::Base16OceanLight),
 
             // File status colors
             file_added: Color::Rgb(0, 100, 0),
@@ -259,7 +273,7 @@ impl Theme {
             syntax_add_bg: Color::Rgb(222, 240, 205),
             syntax_del_bg: Color::Rgb(252, 225, 224),
 
-            syntect_theme: EmbeddedThemeName::SolarizedLight,
+            syntax_theme: SyntaxThemeSource::Embedded(EmbeddedThemeName::SolarizedLight),
 
             file_added: green,
             file_modified: yellow,
@@ -331,7 +345,7 @@ impl Theme {
             syntax_add_bg: Color::Rgb(0, 60, 20),
             syntax_del_bg: Color::Rgb(70, 0, 0),
 
-            syntect_theme: EmbeddedThemeName::SolarizedDark,
+            syntax_theme: SyntaxThemeSource::Embedded(EmbeddedThemeName::SolarizedDark),
 
             file_added: green,
             file_modified: yellow,
@@ -489,7 +503,7 @@ impl Theme {
             syntax_del_bg: Color::Rgb(255, 241, 242),
 
             // Syntect theme for syntax highlighting
-            syntect_theme: EmbeddedThemeName::OneHalfLight,
+            syntax_theme: SyntaxThemeSource::Embedded(EmbeddedThemeName::OneHalfLight),
 
             // File status colors
             file_added: Color::Rgb(134, 179, 0),
@@ -576,7 +590,7 @@ impl Theme {
             syntax_del_bg: Color::Rgb(50, 30, 35),
 
             // Closest embedded base16 dark to the Ayu Mirage feel.
-            syntect_theme: EmbeddedThemeName::Base16EightiesDark,
+            syntax_theme: SyntaxThemeSource::Embedded(EmbeddedThemeName::Base16EightiesDark),
 
             file_added: green,
             file_modified: yellow,
@@ -638,7 +652,7 @@ impl Theme {
             syntax_del_bg: Color::Rgb(59, 37, 40),
 
             // Syntect theme for syntax highlighting
-            syntect_theme: EmbeddedThemeName::OneHalfDark,
+            syntax_theme: SyntaxThemeSource::Embedded(EmbeddedThemeName::OneHalfDark),
 
             // File status colors
             file_added: Color::Rgb(152, 195, 121),
@@ -703,7 +717,7 @@ impl Theme {
             syntax_add_bg: Color::Rgb(230, 255, 236),
             syntax_del_bg: Color::Rgb(255, 235, 233),
 
-            syntect_theme: EmbeddedThemeName::InspiredGithub,
+            syntax_theme: SyntaxThemeSource::Embedded(EmbeddedThemeName::InspiredGithub),
 
             file_added: Color::Rgb(26, 127, 55),
             file_modified: Color::Rgb(154, 103, 0),
@@ -762,7 +776,7 @@ impl Theme {
             syntax_add_bg: Color::Rgb(16, 35, 28),
             syntax_del_bg: Color::Rgb(48, 27, 31),
 
-            syntect_theme: EmbeddedThemeName::OneHalfDark,
+            syntax_theme: SyntaxThemeSource::Embedded(EmbeddedThemeName::OneHalfDark),
 
             file_added: Color::Rgb(63, 185, 80),
             file_modified: Color::Rgb(210, 153, 34),
@@ -838,7 +852,7 @@ impl Theme {
             syntax_del_bg: Color::Rgb(47, 30, 38),
 
             // Closest embedded base16 dark with the muted blue/purple feel
-            syntect_theme: EmbeddedThemeName::Base16EightiesDark,
+            syntax_theme: SyntaxThemeSource::Embedded(EmbeddedThemeName::Base16EightiesDark),
 
             file_added: green,
             file_modified: yellow,
@@ -914,7 +928,7 @@ impl Theme {
             syntax_del_bg: Color::Rgb(245, 213, 217), // #f5d5d9
 
             // Light syntect base with muted blue feel, matching the storm sibling's choice of a base16 family
-            syntect_theme: EmbeddedThemeName::Base16OceanLight,
+            syntax_theme: SyntaxThemeSource::Embedded(EmbeddedThemeName::Base16OceanLight),
 
             file_added: green,
             file_modified: yellow,
@@ -1273,7 +1287,7 @@ fn catppuccin_theme(flavor: CatppuccinFlavor, syntect_theme: EmbeddedThemeName) 
         syntax_del_bg,
 
         // Syntect theme for syntax highlighting
-        syntect_theme,
+        syntax_theme: SyntaxThemeSource::Embedded(syntect_theme),
 
         // File status colors
         file_added: flavor.green,
@@ -1348,7 +1362,7 @@ fn gruvbox_theme(flavor: GruvboxFlavor) -> Theme {
         syntax_del_bg: flavor.bg_red,
 
         // Syntect theme for syntax highlighting
-        syntect_theme,
+        syntax_theme: SyntaxThemeSource::Embedded(syntect_theme),
 
         // File status colors
         file_added: flavor.green,
@@ -1416,7 +1430,7 @@ fn everforest_theme(flavor: EverforestFlavor) -> Theme {
         syntax_add_bg,
         syntax_del_bg,
 
-        syntect_theme: flavor.syntect_theme,
+        syntax_theme: SyntaxThemeSource::Embedded(flavor.syntect_theme),
 
         file_added: flavor.green,
         file_modified: flavor.yellow,
@@ -1480,7 +1494,7 @@ fn nord_theme(flavor: NordFlavor) -> Theme {
         syntax_add_bg,
         syntax_del_bg,
 
-        syntect_theme: flavor.syntect_theme,
+        syntax_theme: SyntaxThemeSource::Embedded(flavor.syntect_theme),
 
         file_added: flavor.green,
         file_modified: flavor.yellow,
@@ -1608,6 +1622,10 @@ impl ThemeArg {
             .collect::<Vec<_>>()
             .join(", ")
     }
+}
+
+pub(crate) fn built_in_theme_names_display() -> String {
+    ThemeArg::valid_values_display()
 }
 
 impl AppearanceArg {
@@ -1754,30 +1772,6 @@ fn is_system_dark_mode() -> Option<bool> {
     None
 }
 
-pub fn resolve_theme_arg_with_config(
-    cli_theme: Option<ThemeArg>,
-    config_theme: Option<&str>,
-) -> (Option<ThemeArg>, Vec<String>) {
-    let mut warnings = Vec::new();
-
-    if let Some(theme) = cli_theme {
-        return (Some(theme), warnings);
-    }
-
-    if let Some(config_theme) = config_theme {
-        if let Some(theme) = ThemeArg::from_str(config_theme) {
-            return (Some(theme), warnings);
-        }
-
-        let valid_values = ThemeArg::valid_values_display();
-        warnings.push(format!(
-            "Warning: Unknown theme '{config_theme}' in config, using appearance mode. Valid options: {valid_values}"
-        ));
-    }
-
-    (None, warnings)
-}
-
 pub fn resolve_appearance_arg_with_config(
     cli_appearance: Option<AppearanceArg>,
     config_appearance: Option<&str>,
@@ -1802,97 +1796,477 @@ pub fn resolve_appearance_arg_with_config(
     (AppearanceArg::System, warnings)
 }
 
-fn parse_theme_variant_from_config(
+fn is_dark_color(c: Color) -> bool {
+    match c {
+        Color::Rgb(r, g, b) => (u16::from(r) + u16::from(g) + u16::from(b)) / 3 < 128,
+        _ => true,
+    }
+}
+
+fn fallback_embedded_theme_for_panel_bg(panel_bg: Color) -> EmbeddedThemeName {
+    if is_dark_color(panel_bg) {
+        EmbeddedThemeName::Base16EightiesDark
+    } else {
+        EmbeddedThemeName::Base16OceanLight
+    }
+}
+
+fn is_supported_color_value(value: &str) -> bool {
+    let normalized = value.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return false;
+    }
+
+    if let Some(hex) = normalized.strip_prefix('#') {
+        return hex.len() == 6 && hex.chars().all(|ch| ch.is_ascii_hexdigit());
+    }
+
+    matches!(
+        normalized.as_str(),
+        "black"
+            | "red"
+            | "green"
+            | "yellow"
+            | "blue"
+            | "magenta"
+            | "cyan"
+            | "gray"
+            | "grey"
+            | "darkgray"
+            | "dark_gray"
+            | "darkgrey"
+            | "dark_grey"
+            | "lightred"
+            | "light_red"
+            | "lightgreen"
+            | "light_green"
+            | "lightyellow"
+            | "light_yellow"
+            | "lightblue"
+            | "light_blue"
+            | "lightmagenta"
+            | "light_magenta"
+            | "lightcyan"
+            | "light_cyan"
+            | "white"
+    )
+}
+
+fn parse_color_value(value: &str) -> Option<Color> {
+    let normalized = value.trim().to_ascii_lowercase();
+    if let Some(hex) = normalized.strip_prefix('#') {
+        let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+        let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+        let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+        return Some(Color::Rgb(r, g, b));
+    }
+
+    Some(match normalized.as_str() {
+        "black" => Color::Black,
+        "red" => Color::Red,
+        "green" => Color::Green,
+        "yellow" => Color::Yellow,
+        "blue" => Color::Blue,
+        "magenta" => Color::Magenta,
+        "cyan" => Color::Cyan,
+        "gray" | "grey" => Color::Gray,
+        "darkgray" | "dark_gray" | "darkgrey" | "dark_grey" => Color::DarkGray,
+        "lightred" | "light_red" => Color::LightRed,
+        "lightgreen" | "light_green" => Color::LightGreen,
+        "lightyellow" | "light_yellow" => Color::LightYellow,
+        "lightblue" | "light_blue" => Color::LightBlue,
+        "lightmagenta" | "light_magenta" => Color::LightMagenta,
+        "lightcyan" | "light_cyan" => Color::LightCyan,
+        "white" => Color::White,
+        _ => return None,
+    })
+}
+
+fn require_local_theme_color(table: &toml::Table, key: &str) -> Result<Color, String> {
+    let value = table
+        .get(key)
+        .ok_or_else(|| format!("Theme key '{key}' is required"))?;
+    let raw = value
+        .as_str()
+        .ok_or_else(|| format!("Theme key '{key}' must be a string"))?;
+    if !is_supported_color_value(raw) {
+        return Err(format!(
+            "Theme key '{key}' must be a named color or #RRGGBB"
+        ));
+    }
+    parse_color_value(raw).ok_or_else(|| format!("Theme key '{key}' could not be parsed"))
+}
+
+fn parse_optional_local_theme_string(
+    table: &toml::Table,
     key: &str,
-    value: Option<&str>,
-) -> (Option<ThemeArg>, Vec<String>) {
+) -> Result<Option<String>, String> {
+    let Some(value) = table.get(key) else {
+        return Ok(None);
+    };
+    let raw = value
+        .as_str()
+        .ok_or_else(|| format!("Theme key '{key}' must be a string"))?
+        .trim()
+        .to_string();
+    if raw.is_empty() {
+        return Err(format!("Theme key '{key}' cannot be empty"));
+    }
+    Ok(Some(raw))
+}
+
+fn load_custom_syntect_theme(
+    theme_path: &Path,
+    syntax_theme: &str,
+) -> Result<syntect::highlighting::Theme, String> {
+    let syntax_path = Path::new(syntax_theme);
+    let resolved = if syntax_path.is_absolute() {
+        syntax_path.to_path_buf()
+    } else {
+        theme_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(syntax_path)
+    };
+
+    if resolved.extension().and_then(|ext| ext.to_str()) != Some("tmTheme") {
+        return Err(format!(
+            "Theme key 'syntax_theme' must point to a .tmTheme file; got '{}'",
+            resolved.display()
+        ));
+    }
+
+    ThemeSet::get_theme(&resolved).map_err(|err| {
+        format!(
+            "Failed to load syntax theme '{}': {err}",
+            resolved.display()
+        )
+    })
+}
+
+// Keep the local theme schema explicit so unknown-key warnings, docs, and
+// tests stay aligned even though Rust cannot derive TOML field names from the
+// `Theme` struct itself.
+const LOCAL_THEME_KEYS: &[&str] = &[
+    "panel_bg",
+    "bg_highlight",
+    "fg_primary",
+    "fg_secondary",
+    "fg_dim",
+    "diff_add",
+    "diff_add_bg",
+    "diff_del",
+    "diff_del_bg",
+    "diff_context",
+    "diff_hunk_header",
+    "expanded_context_fg",
+    "syntax_add_bg",
+    "syntax_del_bg",
+    "syntax_theme",
+    "file_added",
+    "file_modified",
+    "file_deleted",
+    "file_renamed",
+    "reviewed",
+    "pending",
+    "comment_note",
+    "comment_suggestion",
+    "comment_issue",
+    "comment_praise",
+    "border_focused",
+    "border_unfocused",
+    "status_bar_bg",
+    "cursor_color",
+    "cursor_line_bg",
+    "branch_name",
+    "help_indicator",
+    "message_info_fg",
+    "message_info_bg",
+    "message_warning_fg",
+    "message_warning_bg",
+    "message_error_fg",
+    "message_error_bg",
+    "update_badge_fg",
+    "update_badge_bg",
+    "mode_fg",
+    "mode_bg",
+];
+
+fn load_local_theme_from_path(path: &Path) -> Result<(Theme, Vec<String>), String> {
+    let contents = fs::read_to_string(path)
+        .map_err(|err| format!("Failed to read local theme '{}': {err}", path.display()))?;
+    let value: toml::Value = toml::from_str(&contents)
+        .map_err(|err| format!("Failed to parse local theme '{}': {err}", path.display()))?;
+    let table = value
+        .as_table()
+        .ok_or_else(|| format!("Local theme '{}' must be a TOML table", path.display()))?;
+
+    let mut warnings = Vec::new();
+    for key in table.keys() {
+        if !LOCAL_THEME_KEYS.contains(&key.as_str()) {
+            warnings.push(format!(
+                "Warning: Unknown local theme key '{key}' in '{}', ignoring",
+                path.display()
+            ));
+        }
+    }
+
+    let panel_bg = require_local_theme_color(table, "panel_bg")?;
+    let syntax_theme = parse_optional_local_theme_string(table, "syntax_theme")?;
+    let syntax_theme = match syntax_theme.as_deref() {
+        Some(value) => SyntaxThemeSource::Custom(Box::new(load_custom_syntect_theme(path, value)?)),
+        None => SyntaxThemeSource::Embedded(fallback_embedded_theme_for_panel_bg(panel_bg)),
+    };
+
+    let theme = Theme {
+        highlighter: OnceLock::new(),
+        panel_bg,
+        bg_highlight: require_local_theme_color(table, "bg_highlight")?,
+        fg_primary: require_local_theme_color(table, "fg_primary")?,
+        fg_secondary: require_local_theme_color(table, "fg_secondary")?,
+        fg_dim: require_local_theme_color(table, "fg_dim")?,
+        diff_add: require_local_theme_color(table, "diff_add")?,
+        diff_add_bg: require_local_theme_color(table, "diff_add_bg")?,
+        diff_del: require_local_theme_color(table, "diff_del")?,
+        diff_del_bg: require_local_theme_color(table, "diff_del_bg")?,
+        diff_context: require_local_theme_color(table, "diff_context")?,
+        diff_hunk_header: require_local_theme_color(table, "diff_hunk_header")?,
+        expanded_context_fg: require_local_theme_color(table, "expanded_context_fg")?,
+        syntax_add_bg: require_local_theme_color(table, "syntax_add_bg")?,
+        syntax_del_bg: require_local_theme_color(table, "syntax_del_bg")?,
+        syntax_theme,
+        file_added: require_local_theme_color(table, "file_added")?,
+        file_modified: require_local_theme_color(table, "file_modified")?,
+        file_deleted: require_local_theme_color(table, "file_deleted")?,
+        file_renamed: require_local_theme_color(table, "file_renamed")?,
+        reviewed: require_local_theme_color(table, "reviewed")?,
+        pending: require_local_theme_color(table, "pending")?,
+        comment_note: require_local_theme_color(table, "comment_note")?,
+        comment_suggestion: require_local_theme_color(table, "comment_suggestion")?,
+        comment_issue: require_local_theme_color(table, "comment_issue")?,
+        comment_praise: require_local_theme_color(table, "comment_praise")?,
+        border_focused: require_local_theme_color(table, "border_focused")?,
+        border_unfocused: require_local_theme_color(table, "border_unfocused")?,
+        status_bar_bg: require_local_theme_color(table, "status_bar_bg")?,
+        cursor_color: require_local_theme_color(table, "cursor_color")?,
+        cursor_line_bg: require_local_theme_color(table, "cursor_line_bg")?,
+        branch_name: require_local_theme_color(table, "branch_name")?,
+        help_indicator: require_local_theme_color(table, "help_indicator")?,
+        message_info_fg: require_local_theme_color(table, "message_info_fg")?,
+        message_info_bg: require_local_theme_color(table, "message_info_bg")?,
+        message_warning_fg: require_local_theme_color(table, "message_warning_fg")?,
+        message_warning_bg: require_local_theme_color(table, "message_warning_bg")?,
+        message_error_fg: require_local_theme_color(table, "message_error_fg")?,
+        message_error_bg: require_local_theme_color(table, "message_error_bg")?,
+        update_badge_fg: require_local_theme_color(table, "update_badge_fg")?,
+        update_badge_bg: require_local_theme_color(table, "update_badge_bg")?,
+        mode_fg: require_local_theme_color(table, "mode_fg")?,
+        mode_bg: require_local_theme_color(table, "mode_bg")?,
+    };
+
+    Ok((theme, warnings))
+}
+
+fn normalize_local_theme_name(name: &str) -> Result<String, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("theme name cannot be empty".to_string());
+    }
+
+    let path = Path::new(trimmed);
+    if path
+        .components()
+        .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err("theme name must be a plain name, not a path".to_string());
+    }
+
+    Ok(trimmed.to_ascii_lowercase())
+}
+
+fn resolve_theme_name(
+    name: &str,
+    theme_dir: &Path,
+) -> Result<Option<(Theme, Vec<String>)>, String> {
+    if let Some(theme) = ThemeArg::from_str(name) {
+        return Ok(Some((resolve_theme(theme), Vec::new())));
+    }
+
+    let normalized = normalize_local_theme_name(name)?;
+    let path = theme_dir.join(format!("{normalized}.toml"));
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    load_local_theme_from_path(&path).map(Some)
+}
+
+fn resolve_config_theme_name(key: &str, value: Option<&str>) -> (Option<Theme>, Vec<String>) {
     let mut warnings = Vec::new();
     let Some(value) = value else {
         return (None, warnings);
     };
 
-    if let Some(theme) = ThemeArg::from_str(value) {
-        return (Some(theme), warnings);
-    }
+    let theme_dir = match themes_dir() {
+        Ok(path) => path,
+        Err(err) => {
+            warnings.push(format!(
+                "Warning: Could not determine theme directory for config key '{key}': {err}"
+            ));
+            return (None, warnings);
+        }
+    };
 
-    let valid_values = ThemeArg::valid_values_display();
-    warnings.push(format!(
-        "Warning: Unknown theme '{value}' in config key '{key}', ignoring. Valid options: {valid_values}"
-    ));
-    (None, warnings)
+    match resolve_theme_name(value, &theme_dir) {
+        Ok(Some((theme, mut theme_warnings))) => {
+            warnings.append(&mut theme_warnings);
+            (Some(theme), warnings)
+        }
+        Ok(None) => {
+            let valid_values = built_in_theme_names_display();
+            warnings.push(format!(
+                "Warning: Unknown theme '{value}' in config key '{key}', ignoring. Bundled themes: {valid_values}"
+            ));
+            (None, warnings)
+        }
+        Err(err) => {
+            warnings.push(format!(
+                "Warning: Failed to load theme '{value}' from config key '{key}': {err}"
+            ));
+            (None, warnings)
+        }
+    }
 }
 
 pub fn resolve_theme_with_config(
-    cli_theme: Option<ThemeArg>,
+    cli_theme: Option<String>,
     cli_appearance: Option<AppearanceArg>,
     config_theme: Option<&str>,
     config_theme_dark: Option<&str>,
     config_theme_light: Option<&str>,
     config_appearance: Option<&str>,
-) -> (Theme, Vec<String>) {
-    let (theme_arg, mut warnings) = resolve_theme_arg_with_config(cli_theme, config_theme);
+) -> Result<(Theme, Vec<String>), String> {
+    let mut warnings = Vec::new();
     let (appearance_arg, appearance_warnings) =
         resolve_appearance_arg_with_config(cli_appearance, config_appearance);
     warnings.extend(appearance_warnings);
-    let (theme_dark_arg, dark_warnings) =
-        parse_theme_variant_from_config("theme_dark", config_theme_dark);
+    let (theme_dark, dark_warnings) = resolve_config_theme_name("theme_dark", config_theme_dark);
     warnings.extend(dark_warnings);
-    let (theme_light_arg, light_warnings) =
-        parse_theme_variant_from_config("theme_light", config_theme_light);
+    let (theme_light, light_warnings) =
+        resolve_config_theme_name("theme_light", config_theme_light);
     warnings.extend(light_warnings);
 
-    if let Some(theme_arg) = theme_arg {
+    if let Some(cli_theme) = cli_theme {
+        let theme_dir =
+            themes_dir().map_err(|err| format!("Could not determine theme directory: {err}"))?;
+        let (theme, mut theme_warnings) = resolve_theme_name(&cli_theme, &theme_dir)?
+            .ok_or_else(|| {
+                let valid_values = built_in_theme_names_display();
+                format!(
+                    "Unknown theme '{cli_theme}'. Bundled themes: {valid_values}. Local themes are loaded from {}",
+                    theme_dir.display()
+                )
+            })?;
+        warnings.append(&mut theme_warnings);
         if cli_appearance.is_some() || config_appearance.is_some() {
             warnings.push(
                 "Warning: Appearance setting is ignored when theme is explicitly set".to_string(),
             );
         }
-        (resolve_theme(theme_arg), warnings)
-    } else {
-        match (theme_dark_arg, theme_light_arg) {
-            (Some(theme_dark), Some(theme_light)) => {
-                let resolved = match appearance_arg {
-                    AppearanceArg::Dark => theme_dark,
-                    AppearanceArg::Light => theme_light,
-                    AppearanceArg::System => {
-                        if is_system_dark_mode().unwrap_or(true) {
-                            theme_dark
-                        } else {
-                            theme_light
-                        }
+        return Ok((theme, warnings));
+    }
+
+    if let Some(config_theme) = config_theme {
+        match themes_dir() {
+            Ok(theme_dir) => match resolve_theme_name(config_theme, &theme_dir) {
+                Ok(Some((theme, mut theme_warnings))) => {
+                    warnings.append(&mut theme_warnings);
+                    if cli_appearance.is_some() || config_appearance.is_some() {
+                        warnings.push(
+                            "Warning: Appearance setting is ignored when theme is explicitly set"
+                                .to_string(),
+                        );
                     }
-                };
-                (resolve_theme(resolved), warnings)
-            }
-            (Some(theme_dark), None) => {
-                if cli_appearance.is_some() || config_appearance.is_some() {
-                    warnings.push(
-                        "Warning: Appearance setting is ignored when only theme_dark is configured"
-                            .to_string(),
-                    );
+                    return Ok((theme, warnings));
                 }
-                (resolve_theme(theme_dark), warnings)
-            }
-            (None, Some(theme_light)) => {
-                if cli_appearance.is_some() || config_appearance.is_some() {
-                    warnings.push(
-                        "Warning: Appearance setting is ignored when only theme_light is configured"
-                            .to_string(),
-                    );
+                Ok(None) => {
+                    let valid_values = built_in_theme_names_display();
+                    warnings.push(format!(
+                        "Warning: Unknown theme '{config_theme}' in config, using appearance mode. Bundled themes: {valid_values}"
+                    ));
                 }
-                (resolve_theme(theme_light), warnings)
-            }
-            (None, None) => (resolve_theme(resolve_appearance(appearance_arg)), warnings),
+                Err(err) => warnings.push(format!(
+                    "Warning: Failed to load theme '{config_theme}' from config: {err}"
+                )),
+            },
+            Err(err) => warnings.push(format!(
+                "Warning: Could not determine theme directory while resolving config theme '{config_theme}': {err}"
+            )),
         }
     }
+
+    let resolved = match (theme_dark, theme_light) {
+        (Some(theme_dark), Some(theme_light)) => match appearance_arg {
+            AppearanceArg::Dark => theme_dark,
+            AppearanceArg::Light => theme_light,
+            AppearanceArg::System => {
+                if is_system_dark_mode().unwrap_or(true) {
+                    theme_dark
+                } else {
+                    theme_light
+                }
+            }
+        },
+        (Some(theme_dark), None) => {
+            if cli_appearance.is_some() || config_appearance.is_some() {
+                warnings.push(
+                    "Warning: Appearance setting is ignored when only theme_dark is configured"
+                        .to_string(),
+                );
+            }
+            theme_dark
+        }
+        (None, Some(theme_light)) => {
+            if cli_appearance.is_some() || config_appearance.is_some() {
+                warnings.push(
+                    "Warning: Appearance setting is ignored when only theme_light is configured"
+                        .to_string(),
+                );
+            }
+            theme_light
+        }
+        (None, None) => resolve_theme(resolve_appearance(appearance_arg)),
+    };
+
+    Ok((resolved, warnings))
 }
 
 impl Theme {
     /// Get the syntax highlighter for this theme (lazily initialized, cached)
     pub fn syntax_highlighter(&self) -> &SyntaxHighlighter {
-        self.highlighter.get_or_init(|| {
-            SyntaxHighlighter::new(self.syntect_theme, self.syntax_add_bg, self.syntax_del_bg)
+        self.highlighter.get_or_init(|| match &self.syntax_theme {
+            SyntaxThemeSource::Embedded(theme) => {
+                SyntaxHighlighter::new(*theme, self.syntax_add_bg, self.syntax_del_bg)
+            }
+            SyntaxThemeSource::Custom(theme) => SyntaxHighlighter::with_theme(
+                *theme.clone(),
+                self.syntax_add_bg,
+                self.syntax_del_bg,
+            ),
         })
+    }
+
+    #[cfg(test)]
+    pub fn embedded_syntax_theme_name(&self) -> Option<EmbeddedThemeName> {
+        match self.syntax_theme {
+            SyntaxThemeSource::Embedded(theme) => Some(theme),
+            SyntaxThemeSource::Custom(_) => None,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn uses_custom_syntax_theme(&self) -> bool {
+        matches!(self.syntax_theme, SyntaxThemeSource::Custom(_))
     }
 
     /// Subtle row-tint for diff section markers (hunk headers, gap
@@ -1922,7 +2296,90 @@ fn shift_lightness(c: Color, amount: i32) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
+    use std::{
+        collections::HashSet,
+        fs,
+        path::{Path, PathBuf},
+    };
+    use tempfile::tempdir;
+
+    fn sample_tm_theme() -> &'static str {
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>name</key>
+  <string>Fixture Theme</string>
+  <key>settings</key>
+  <array>
+    <dict>
+      <key>settings</key>
+      <dict>
+        <key>foreground</key>
+        <string>#c3ccdc</string>
+        <key>background</key>
+        <string>#011627</string>
+      </dict>
+    </dict>
+  </array>
+</dict>
+</plist>
+"#
+    }
+
+    fn sample_local_theme_body(extra: &str) -> String {
+        format!(
+            r##"panel_bg = "#011627"
+bg_highlight = "#1d3b53"
+fg_primary = "#c3ccdc"
+fg_secondary = "#a1aab8"
+fg_dim = "#7c8f9e"
+diff_add = "#a1cd5e"
+diff_add_bg = "#13311f"
+diff_del = "#ef5350"
+diff_del_bg = "#341a1a"
+diff_context = "#c3ccdc"
+diff_hunk_header = "#82aaff"
+expanded_context_fg = "#7c8f9e"
+syntax_add_bg = "#10281a"
+syntax_del_bg = "#2d1418"
+file_added = "#a1cd5e"
+file_modified = "#e3d18a"
+file_deleted = "#ef5350"
+file_renamed = "#c792ea"
+reviewed = "#a1cd5e"
+pending = "#e3d18a"
+comment_note = "#7fdbca"
+comment_suggestion = "#82aaff"
+comment_issue = "#ef5350"
+comment_praise = "#a1cd5e"
+border_focused = "#82aaff"
+border_unfocused = "#4b6479"
+status_bar_bg = "#0b253a"
+cursor_color = "#ffcb8b"
+cursor_line_bg = "#0f2a3f"
+branch_name = "#7fdbca"
+help_indicator = "#4b6479"
+message_info_fg = "black"
+message_info_bg = "#7fdbca"
+message_warning_fg = "black"
+message_warning_bg = "#ffcb8b"
+message_error_fg = "white"
+message_error_bg = "#ef5350"
+update_badge_fg = "black"
+update_badge_bg = "#ffcb8b"
+mode_fg = "#011627"
+mode_bg = "#82aaff"
+{extra}
+"##
+        )
+    }
+
+    fn write_local_theme(dir: &Path, name: &str, body: &str) -> PathBuf {
+        let path = dir.join(format!("{name}.toml"));
+        fs::write(&path, body).expect("failed to write local theme");
+        path
+    }
 
     #[test]
     fn should_roundtrip_all_canonical_theme_values() {
@@ -1941,39 +2398,128 @@ mod tests {
 
     #[test]
     fn should_use_cli_theme_over_config_theme() {
-        let (resolved, warnings) =
-            resolve_theme_arg_with_config(Some(ThemeArg::Light), Some("dark"));
-        assert_eq!(resolved, Some(ThemeArg::Light));
+        let (resolved, warnings) = resolve_theme_with_config(
+            Some("light".to_string()),
+            None,
+            Some("dark"),
+            None,
+            None,
+            None,
+        )
+        .expect("theme resolution should succeed");
+        assert_eq!(
+            resolved.embedded_syntax_theme_name(),
+            Some(EmbeddedThemeName::Base16OceanLight)
+        );
         assert!(warnings.is_empty());
     }
 
     #[test]
     fn should_use_config_theme_when_cli_missing() {
-        let (resolved, warnings) = resolve_theme_arg_with_config(None, Some("light"));
-        assert_eq!(resolved, Some(ThemeArg::Light));
+        let (resolved, warnings) =
+            resolve_theme_with_config(None, None, Some("light"), None, None, None)
+                .expect("theme resolution should succeed");
+        assert_eq!(
+            resolved.embedded_syntax_theme_name(),
+            Some(EmbeddedThemeName::Base16OceanLight)
+        );
         assert!(warnings.is_empty());
     }
 
     #[test]
     fn should_fallback_to_appearance_and_warn_for_invalid_config_theme() {
-        let (resolved, warnings) = resolve_theme_arg_with_config(None, Some("unknown"));
-        assert_eq!(resolved, None);
+        let (resolved, warnings) = resolve_theme_with_config(
+            None,
+            Some(AppearanceArg::Dark),
+            Some("unknown"),
+            None,
+            None,
+            None,
+        )
+        .expect("theme resolution should succeed");
+        assert_eq!(
+            resolved.embedded_syntax_theme_name(),
+            Some(EmbeddedThemeName::Base16EightiesDark)
+        );
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("Unknown theme 'unknown'"));
     }
 
     #[test]
     fn should_fallback_to_appearance_when_no_theme_is_set() {
-        let (resolved, warnings) = resolve_theme_arg_with_config(None, None);
-        assert_eq!(resolved, None);
+        let (resolved, warnings) =
+            resolve_theme_with_config(None, Some(AppearanceArg::Dark), None, None, None, None)
+                .expect("theme resolution should succeed");
+        assert_eq!(
+            resolved.embedded_syntax_theme_name(),
+            Some(EmbeddedThemeName::Base16EightiesDark)
+        );
         assert!(warnings.is_empty());
     }
 
     #[test]
     fn should_use_catppuccin_theme_from_config_when_cli_missing() {
-        let (resolved, warnings) = resolve_theme_arg_with_config(None, Some("catppuccin-fRappe"));
-        assert_eq!(resolved, Some(ThemeArg::CatppuccinFrappe));
+        let (resolved, warnings) =
+            resolve_theme_with_config(None, None, Some("catppuccin-fRappe"), None, None, None)
+                .expect("theme resolution should succeed");
+        assert_eq!(
+            resolved.embedded_syntax_theme_name(),
+            Some(EmbeddedThemeName::CatppuccinFrappe)
+        );
         assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn should_resolve_local_theme_name_from_directory() {
+        let dir = tempdir().expect("failed to create temp dir");
+        let tm_theme_path = dir.path().join("fly16.tmTheme");
+        fs::write(&tm_theme_path, sample_tm_theme()).expect("failed to write tmTheme");
+        write_local_theme(
+            dir.path(),
+            "nightfly",
+            &sample_local_theme_body(r#"syntax_theme = "fly16.tmTheme""#),
+        );
+
+        let (theme, warnings) = resolve_theme_name("nightfly", dir.path())
+            .expect("theme resolution should succeed")
+            .expect("theme should exist");
+        assert_eq!(theme.panel_bg, Color::Rgb(1, 22, 39));
+        assert!(theme.uses_custom_syntax_theme());
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn should_warn_on_unknown_local_theme_key() {
+        let dir = tempdir().expect("failed to create temp dir");
+        fs::write(dir.path().join("fly16.tmTheme"), sample_tm_theme())
+            .expect("failed to write tmTheme");
+        let body = format!(
+            "{}\nextra_key = \"ignored\"\n",
+            sample_local_theme_body(r#"syntax_theme = "fly16.tmTheme""#)
+        );
+        let path = write_local_theme(dir.path(), "nightfly", &body);
+
+        let (_, warnings) =
+            load_local_theme_from_path(&path).expect("local theme should load successfully");
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("Unknown local theme key 'extra_key'"));
+    }
+
+    #[test]
+    fn should_reject_invalid_local_theme_color() {
+        let dir = tempdir().expect("failed to create temp dir");
+        let body = sample_local_theme_body("");
+        let path = write_local_theme(
+            dir.path(),
+            "nightfly",
+            &body.replace(r##"fg_primary = "#c3ccdc""##, r#"fg_primary = "oops""#),
+        );
+
+        let err = match load_local_theme_from_path(&path) {
+            Ok(_) => panic!("theme should fail"),
+            Err(err) => err,
+        };
+        assert!(err.contains("Theme key 'fg_primary'"));
     }
 
     #[test]
@@ -1986,8 +2532,12 @@ mod tests {
     #[test]
     fn should_use_appearance_when_theme_is_not_set() {
         let (resolved, warnings) =
-            resolve_theme_with_config(None, Some(AppearanceArg::Light), None, None, None, None);
-        assert_eq!(resolved.syntect_theme, EmbeddedThemeName::Base16OceanLight);
+            resolve_theme_with_config(None, Some(AppearanceArg::Light), None, None, None, None)
+                .expect("theme resolution should succeed");
+        assert_eq!(
+            resolved.embedded_syntax_theme_name(),
+            Some(EmbeddedThemeName::Base16OceanLight)
+        );
         assert!(warnings.is_empty());
     }
 
@@ -2000,8 +2550,12 @@ mod tests {
             Some("gruvbox-dark"),
             Some("gruvbox-light"),
             None,
+        )
+        .expect("theme resolution should succeed");
+        assert_eq!(
+            resolved.embedded_syntax_theme_name(),
+            Some(EmbeddedThemeName::GruvboxLight)
         );
-        assert_eq!(resolved.syntect_theme, EmbeddedThemeName::GruvboxLight);
         assert!(warnings.is_empty());
     }
 
@@ -2014,8 +2568,12 @@ mod tests {
             Some("gruvbox-dark"),
             None,
             None,
+        )
+        .expect("theme resolution should succeed");
+        assert_eq!(
+            resolved.embedded_syntax_theme_name(),
+            Some(EmbeddedThemeName::GruvboxDark)
         );
-        assert_eq!(resolved.syntect_theme, EmbeddedThemeName::GruvboxDark);
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("only theme_dark is configured"));
     }
@@ -2023,37 +2581,55 @@ mod tests {
     #[test]
     fn should_resolve_catppuccin_mocha_syntect_theme() {
         let theme = resolve_theme(ThemeArg::CatppuccinMocha);
-        assert_eq!(theme.syntect_theme, EmbeddedThemeName::CatppuccinMocha);
+        assert_eq!(
+            theme.embedded_syntax_theme_name(),
+            Some(EmbeddedThemeName::CatppuccinMocha)
+        );
     }
 
     #[test]
     fn should_resolve_catppuccin_latte_syntect_theme() {
         let theme = resolve_theme(ThemeArg::CatppuccinLatte);
-        assert_eq!(theme.syntect_theme, EmbeddedThemeName::CatppuccinLatte);
+        assert_eq!(
+            theme.embedded_syntax_theme_name(),
+            Some(EmbeddedThemeName::CatppuccinLatte)
+        );
     }
 
     #[test]
     fn should_resolve_nord_dark_to_nord_syntect_theme() {
         let theme = resolve_theme(ThemeArg::NordDark);
-        assert_eq!(theme.syntect_theme, EmbeddedThemeName::Nord);
+        assert_eq!(
+            theme.embedded_syntax_theme_name(),
+            Some(EmbeddedThemeName::Nord)
+        );
     }
 
     #[test]
     fn should_resolve_nord_light_to_ocean_light_syntect_theme() {
         let theme = resolve_theme(ThemeArg::NordLight);
-        assert_eq!(theme.syntect_theme, EmbeddedThemeName::Base16OceanLight);
+        assert_eq!(
+            theme.embedded_syntax_theme_name(),
+            Some(EmbeddedThemeName::Base16OceanLight)
+        );
     }
 
     #[test]
     fn should_resolve_nord_dark_high_contrast_to_nord_syntect_theme() {
         let theme = resolve_theme(ThemeArg::NordDarkHighContrast);
-        assert_eq!(theme.syntect_theme, EmbeddedThemeName::Nord);
+        assert_eq!(
+            theme.embedded_syntax_theme_name(),
+            Some(EmbeddedThemeName::Nord)
+        );
     }
 
     #[test]
     fn should_resolve_nord_light_high_contrast_to_ocean_light_syntect_theme() {
         let theme = resolve_theme(ThemeArg::NordLightHighContrast);
-        assert_eq!(theme.syntect_theme, EmbeddedThemeName::Base16OceanLight);
+        assert_eq!(
+            theme.embedded_syntax_theme_name(),
+            Some(EmbeddedThemeName::Base16OceanLight)
+        );
     }
 
     #[test]
@@ -2087,13 +2663,19 @@ mod tests {
     #[test]
     fn should_resolve_everforest_dark_to_gruvbox_dark_syntect_theme() {
         let theme = resolve_theme(ThemeArg::EverforestDark);
-        assert_eq!(theme.syntect_theme, EmbeddedThemeName::GruvboxDark);
+        assert_eq!(
+            theme.embedded_syntax_theme_name(),
+            Some(EmbeddedThemeName::GruvboxDark)
+        );
     }
 
     #[test]
     fn should_resolve_everforest_light_to_gruvbox_light_syntect_theme() {
         let theme = resolve_theme(ThemeArg::EverforestLight);
-        assert_eq!(theme.syntect_theme, EmbeddedThemeName::GruvboxLight);
+        assert_eq!(
+            theme.embedded_syntax_theme_name(),
+            Some(EmbeddedThemeName::GruvboxLight)
+        );
     }
 
     #[test]
@@ -2114,25 +2696,37 @@ mod tests {
     #[test]
     fn should_resolve_gruvbox_dark_to_dark_syntect_theme() {
         let theme = resolve_theme(ThemeArg::GruvboxDark);
-        assert_eq!(theme.syntect_theme, EmbeddedThemeName::GruvboxDark);
+        assert_eq!(
+            theme.embedded_syntax_theme_name(),
+            Some(EmbeddedThemeName::GruvboxDark)
+        );
     }
 
     #[test]
     fn should_resolve_gruvbox_light_to_light_syntect_theme() {
         let theme = resolve_theme(ThemeArg::GruvboxLight);
-        assert_eq!(theme.syntect_theme, EmbeddedThemeName::GruvboxLight);
+        assert_eq!(
+            theme.embedded_syntax_theme_name(),
+            Some(EmbeddedThemeName::GruvboxLight)
+        );
     }
 
     #[test]
     fn should_resolve_ayu_light_to_onehalf_light_syntect_theme() {
         let theme = resolve_theme(ThemeArg::AyuLight);
-        assert_eq!(theme.syntect_theme, EmbeddedThemeName::OneHalfLight);
+        assert_eq!(
+            theme.embedded_syntax_theme_name(),
+            Some(EmbeddedThemeName::OneHalfLight)
+        );
     }
 
     #[test]
     fn should_resolve_onedark_to_onehalf_dark_syntect_theme() {
         let theme = resolve_theme(ThemeArg::Onedark);
-        assert_eq!(theme.syntect_theme, EmbeddedThemeName::OneHalfDark);
+        assert_eq!(
+            theme.embedded_syntax_theme_name(),
+            Some(EmbeddedThemeName::OneHalfDark)
+        );
     }
 
     #[test]
