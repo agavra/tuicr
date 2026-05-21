@@ -57,4 +57,4 @@ Entering Comment mode snaps `diff_state.scroll_x = 0` so the inline input box al
 - Pristine `--all-files` over a very large repo loads every tracked file at startup; the continuous scroll is gone but the initial load isn't paginated. A lazy file-tree load (only build the diff for the visible file plus a small window) would scale further.
 - Consider per-session toggle persistence so a user who toggled `:focus` once does not have to re-toggle every launch.
 
-[FEAT-0012]: FEAT-0012 Arrow-Key Pane Focus.md
+[FEAT-0012]: FEAT-0012 Arrow Navigation.md

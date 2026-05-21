@@ -1021,6 +1021,9 @@ pub struct App {
     /// at its horizontal scroll boundary. Defaults to false so `h`/`l`
     /// stay as plain horizontal scroll, matching vim's character
     /// navigation; users opt in via `arrow_tree_navigation = true`.
+    /// Also gates the slide-at-boundary between panes (FEAT-0012):
+    /// when false, `h` in the diff at scroll_x=0 and `l` in the file
+    /// list at max_scroll_x are plain no-ops.
     pub arrow_tree_navigation: bool,
     pub cursor_line_highlight: bool,
     pub leader_key: char,
