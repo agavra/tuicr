@@ -36,6 +36,9 @@ comment_types = [
   { id = "praise", definition = "positive feedback" },
   { id = "nit", label = "nitpick", definition = "small optional tweaks", color = "#d19a66" },
 ]
+
+[forge]
+comment_type_prefix = true
 ```
 
 ## Options
@@ -111,6 +114,37 @@ comment_types = [
   { id = "blocker", color = "red", definition = "must be fixed before merge" },
 ]
 ```
+
+## Forge
+
+Settings under the `[forge]` section control how tuicr submits reviews to GitHub.
+
+```toml
+[forge]
+comment_type_prefix = false
+```
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `comment_type_prefix` | `true` | Prepend `[TYPE] ` to comment bodies on submit (e.g. `[ISSUE] Magic number should be a constant`). Set to `false` to send the raw comment body without a classification tag. |
+
+When enabled (the default), submitted comments look like:
+
+```
+[SUGGESTION] Consider adding unit tests
+[ISSUE] Magic number should be a named constant
+[NOTE] File-level: This module could use a doc comment
+```
+
+When disabled, the same comments are submitted without the prefix:
+
+```
+Consider adding unit tests
+Magic number should be a named constant
+This module could use a doc comment
+```
+
+This applies to inline line comments, file-level comments, and review-level comments pushed via `:submit`.
 
 ## .tuicrignore
 
