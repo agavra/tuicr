@@ -72,7 +72,7 @@ comment_type_prefix = true
 
 Bundled themes:
 
-`dark`, `light`, `ayu-light`, `ayu-mirage`, `onedark`, `github-light`, `github-dark`, `catppuccin-latte`, `catppuccin-frappe`, `catppuccin-macchiato`, `catppuccin-mocha`, `everforest-dark`, `everforest-light`, `gruvbox-dark`, `gruvbox-light`, `nord-dark`, `nord-light`, `nord-dark-high-contrast`, `nord-light-high-contrast`, `solarized-light`, `solarized-dark`, `tokyo-night-storm`.
+`dark`, `light`, `ayu-light`, `ayu-mirage`, `onedark`, `github-light`, `github-dark`, `catppuccin-latte`, `catppuccin-frappe`, `catppuccin-macchiato`, `catppuccin-mocha`, `everforest-dark`, `everforest-light`, `gruvbox-dark`, `gruvbox-light`, `nord-dark`, `nord-light`, `nord-dark-high-contrast`, `nord-light-high-contrast`, `solarized-light`, `solarized-dark`, `tokyo-night-storm`, `tokyo-night-day`.
 
 Local themes:
 
@@ -96,9 +96,9 @@ bg_highlight = "#1d3b53"
 fg_primary = "#c3ccdc"
 fg_secondary = "#a1aab8"
 # `syntax_theme` points to a local `.tmTheme` file, relative to this file.
-syntax_theme = "my-syntax.tmTheme"
+syntax_theme = "my-theme.tmTheme"
 
-# Remaining keys are required. See `examples/nightfly.toml` for the full list.
+# Remaining keys are required. See `examples/tuicr-teal.toml` for the full list.
 diff_add = "#21c7a8"
 diff_del = "#ff5874"
 status_bar_bg = "#252c3f"
@@ -113,8 +113,15 @@ Notes:
 - Relative `syntax_theme` paths resolve relative to the local theme TOML file.
 - If `syntax_theme` is omitted, tuicr falls back to a bundled dark or light syntax theme based on the local theme background.
 - `theme`, `theme_dark`, and `theme_light` may name either a bundled theme or a local theme file without the `.toml` suffix.
-- A ready-to-copy Nightfly-inspired example lives at [`examples/nightfly.toml`](../examples/nightfly.toml).
-- The checked-in Nightfly example credits [`bluz71/vim-nightfly-colors`](https://github.com/bluz71/vim-nightfly-colors) for the UI palette and [`bluz71/fly16-bat`](https://github.com/bluz71/fly16-bat) for the syntax theme source file.
+- A ready-to-copy example lives at [`examples/tuicr-teal.toml`](../examples/tuicr-teal.toml) with its matching [`examples/tuicr-teal-syntax.tmTheme`](../examples/tuicr-teal-syntax.tmTheme) syntax theme.
+
+To try the checked-in example locally:
+
+```sh
+mkdir -p ~/.config/tuicr/themes
+cp examples/tuicr-teal.toml examples/tuicr-teal-syntax.tmTheme ~/.config/tuicr/themes/
+tuicr --theme tuicr-teal
+```
 
 ### Resolution precedence
 

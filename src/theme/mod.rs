@@ -2472,15 +2472,15 @@ mode_bg = "#82aaff"
     #[test]
     fn should_resolve_local_theme_name_from_directory() {
         let dir = tempdir().expect("failed to create temp dir");
-        let tm_theme_path = dir.path().join("fly16.tmTheme");
+        let tm_theme_path = dir.path().join("example.tmTheme");
         fs::write(&tm_theme_path, sample_tm_theme()).expect("failed to write tmTheme");
         write_local_theme(
             dir.path(),
-            "nightfly",
-            &sample_local_theme_body(r#"syntax_theme = "fly16.tmTheme""#),
+            "local-teal",
+            &sample_local_theme_body(r#"syntax_theme = "example.tmTheme""#),
         );
 
-        let (theme, warnings) = resolve_theme_name("nightfly", dir.path())
+        let (theme, warnings) = resolve_theme_name("local-teal", dir.path())
             .expect("theme resolution should succeed")
             .expect("theme should exist");
         assert_eq!(theme.panel_bg, Color::Rgb(1, 22, 39));
@@ -2491,13 +2491,13 @@ mode_bg = "#82aaff"
     #[test]
     fn should_warn_on_unknown_local_theme_key() {
         let dir = tempdir().expect("failed to create temp dir");
-        fs::write(dir.path().join("fly16.tmTheme"), sample_tm_theme())
+        fs::write(dir.path().join("example.tmTheme"), sample_tm_theme())
             .expect("failed to write tmTheme");
         let body = format!(
             "{}\nextra_key = \"ignored\"\n",
-            sample_local_theme_body(r#"syntax_theme = "fly16.tmTheme""#)
+            sample_local_theme_body(r#"syntax_theme = "example.tmTheme""#)
         );
-        let path = write_local_theme(dir.path(), "nightfly", &body);
+        let path = write_local_theme(dir.path(), "local-teal", &body);
 
         let (_, warnings) =
             load_local_theme_from_path(&path).expect("local theme should load successfully");
@@ -2511,7 +2511,7 @@ mode_bg = "#82aaff"
         let body = sample_local_theme_body("");
         let path = write_local_theme(
             dir.path(),
-            "nightfly",
+            "local-teal",
             &body.replace(r##"fg_primary = "#c3ccdc""##, r#"fg_primary = "oops""#),
         );
 
@@ -2520,6 +2520,20 @@ mode_bg = "#82aaff"
             Err(err) => err,
         };
         assert!(err.contains("Theme key 'fg_primary'"));
+    }
+
+    #[test]
+    fn should_load_checked_in_tuicr_teal_example() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("examples")
+            .join("tuicr-teal.toml");
+
+        let (theme, warnings) =
+            load_local_theme_from_path(&path).expect("checked-in example should load");
+        assert!(warnings.is_empty());
+        assert_eq!(theme.panel_bg, Color::Rgb(6, 40, 50));
+        assert_eq!(theme.mode_bg, Color::Rgb(78, 227, 255));
+        assert!(theme.uses_custom_syntax_theme());
     }
 
     #[test]

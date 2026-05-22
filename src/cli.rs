@@ -292,16 +292,16 @@ mod tests {
 
     #[test]
     fn should_allow_custom_theme_name_in_separate_arg() {
-        let parsed = parse_for_test(&["tuicr", "--theme", "nightfly"])
+        let parsed = parse_for_test(&["tuicr", "--theme", "tuicr-teal"])
             .expect("custom theme parse should succeed");
-        assert_eq!(parsed.theme, Some("nightfly".to_string()));
+        assert_eq!(parsed.theme, Some("tuicr-teal".to_string()));
     }
 
     #[test]
     fn should_allow_custom_theme_name_in_equals_arg() {
-        let parsed = parse_for_test(&["tuicr", "--theme=nightfly"])
+        let parsed = parse_for_test(&["tuicr", "--theme=tuicr-teal"])
             .expect("custom theme parse should succeed");
-        assert_eq!(parsed.theme, Some("nightfly".to_string()));
+        assert_eq!(parsed.theme, Some("tuicr-teal".to_string()));
     }
 
     #[test]

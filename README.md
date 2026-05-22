@@ -147,12 +147,14 @@ Bundled themes: `dark`, `light`, `ayu-light`, `ayu-mirage`, `onedark`, `github-l
 `github-dark`, `catppuccin-latte`, `catppuccin-frappe`, `catppuccin-macchiato`,
 `catppuccin-mocha`, `everforest-dark`, `everforest-light`, `gruvbox-dark`,
 `gruvbox-light`, `nord-dark`, `nord-light`, `nord-dark-high-contrast`,
-`nord-light-high-contrast`, `solarized-light`, `solarized-dark`, `tokyo-night-storm`.
+`nord-light-high-contrast`, `solarized-light`, `solarized-dark`, `tokyo-night-storm`,
+`tokyo-night-day`.
 
 Local themes: set `theme = "my-theme"` or run `tuicr --theme my-theme`, then create
 `~/.config/tuicr/themes/my-theme.toml` on Linux/macOS or `%APPDATA%\tuicr\themes\my-theme.toml`
 on Windows. Local themes may reference a local `syntax_theme = "my-syntax.tmTheme"` file for
-syntax highlighting. A ready-to-copy Nightfly example lives at [`examples/nightfly.toml`](examples/nightfly.toml).
+syntax highlighting. A ready-to-copy example lives at [`examples/tuicr-teal.toml`](examples/tuicr-teal.toml)
+with its matching [`examples/tuicr-teal-syntax.tmTheme`](examples/tuicr-teal-syntax.tmTheme) syntax theme.
 
 Full options, theme resolution precedence, `comment_types` semantics, and `.tuicrignore` rules in
 [docs/CONFIG.md](docs/CONFIG.md).
