@@ -153,7 +153,7 @@ impl From<Cli> for CliArgs {
 }
 
 fn parse_appearance_arg(s: &str) -> Result<AppearanceArg, String> {
-    AppearanceArg::from_str(s).ok_or_else(|| {
+    AppearanceArg::parse_name(s).ok_or_else(|| {
         let valid = AppearanceArg::valid_values_display();
         format!("Unknown appearance '{s}'. Valid options: {valid}")
     })

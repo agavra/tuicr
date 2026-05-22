@@ -30,6 +30,12 @@ impl Fnv1aHasher {
     }
 }
 
+impl Default for Fnv1aHasher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

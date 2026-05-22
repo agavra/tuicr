@@ -16,6 +16,7 @@
 //! the session JSONs are self-describing and the manifest can be rebuilt by
 //! walking `sessions/`.
 
+use std::cmp::Reverse;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -129,7 +130,7 @@ pub(crate) fn list_local_sessions_for_repo_in_dir(
             matches_repo.then(|| (slug.clone(), entry.clone()))
         })
         .collect();
-    entries.sort_by(|(_, a), (_, b)| b.updated_at.cmp(&a.updated_at));
+    entries.sort_by_key(|(_, entry)| Reverse(entry.updated_at));
     Ok(entries)
 }
 

@@ -1604,15 +1604,8 @@ impl ThemeArg {
         &THEME_CHOICES
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
-        let normalized = s.trim().to_ascii_lowercase();
-        Self::choices().iter().find_map(|(name, theme)| {
-            if *name == normalized {
-                Some(*theme)
-            } else {
-                None
-            }
-        })
+    pub fn parse_name(s: &str) -> Option<Self> {
+        s.parse().ok()
     }
 
     pub(crate) fn valid_values_display() -> String {
@@ -1621,6 +1614,24 @@ impl ThemeArg {
             .map(|(name, _)| *name)
             .collect::<Vec<_>>()
             .join(", ")
+    }
+}
+
+impl std::str::FromStr for ThemeArg {
+    type Err = ();
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        let normalized = s.trim().to_ascii_lowercase();
+        Self::choices()
+            .iter()
+            .find_map(|(name, theme)| {
+                if *name == normalized {
+                    Some(*theme)
+                } else {
+                    None
+                }
+            })
+            .ok_or(())
     }
 }
 
@@ -1633,15 +1644,8 @@ impl AppearanceArg {
         &APPEARANCE_CHOICES
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
-        let normalized = s.trim().to_ascii_lowercase();
-        Self::choices().iter().find_map(|(name, appearance)| {
-            if *name == normalized {
-                Some(*appearance)
-            } else {
-                None
-            }
-        })
+    pub fn parse_name(s: &str) -> Option<Self> {
+        s.parse().ok()
     }
 
     pub(crate) fn valid_values_display() -> String {
@@ -1650,6 +1654,24 @@ impl AppearanceArg {
             .map(|(name, _)| *name)
             .collect::<Vec<_>>()
             .join(", ")
+    }
+}
+
+impl std::str::FromStr for AppearanceArg {
+    type Err = ();
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        let normalized = s.trim().to_ascii_lowercase();
+        Self::choices()
+            .iter()
+            .find_map(|(name, appearance)| {
+                if *name == normalized {
+                    Some(*appearance)
+                } else {
+                    None
+                }
+            })
+            .ok_or(())
     }
 }
 
@@ -1783,7 +1805,7 @@ pub fn resolve_appearance_arg_with_config(
     }
 
     if let Some(config_appearance) = config_appearance {
-        if let Some(appearance) = AppearanceArg::from_str(config_appearance) {
+        if let Some(appearance) = AppearanceArg::parse_name(config_appearance) {
             return (appearance, warnings);
         }
 
@@ -2088,7 +2110,7 @@ fn resolve_theme_name(
     name: &str,
     theme_dir: &Path,
 ) -> Result<Option<(Theme, Vec<String>)>, String> {
-    if let Some(theme) = ThemeArg::from_str(name) {
+    if let Some(theme) = ThemeArg::parse_name(name) {
         return Ok(Some((resolve_theme(theme), Vec::new())));
     }
 
@@ -2384,7 +2406,7 @@ mode_bg = "#82aaff"
     #[test]
     fn should_roundtrip_all_canonical_theme_values() {
         for (name, expected_theme) in ThemeArg::choices() {
-            assert_eq!(ThemeArg::from_str(name), Some(*expected_theme));
+            assert_eq!(ThemeArg::parse_name(name), Some(*expected_theme));
         }
     }
 
