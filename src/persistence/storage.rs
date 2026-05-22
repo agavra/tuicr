@@ -27,7 +27,9 @@ use crate::forge::traits::PrSessionKey;
 use crate::hash::Fnv1aHasher;
 use crate::model::ReviewSession;
 use crate::model::review::SessionDiffSource;
-use crate::persistence::manifest::{self, MANIFEST_FILENAME, ManifestKind, SESSIONS_DIRNAME};
+use crate::persistence::manifest::{
+    self, MANIFEST_FILENAME, ManifestEntry, ManifestKind, SESSIONS_DIRNAME,
+};
 use crate::slug::{self, Slug};
 
 // ---------- Public API ----------
@@ -37,7 +39,11 @@ use crate::slug::{self, Slug};
 /// fields at save time.
 pub fn save_session(session: &ReviewSession) -> Result<PathBuf> {
     let reviews_dir = get_reviews_dir()?;
-    maybe_migrate(&reviews_dir)?;
+    save_session_in_dir(session, &reviews_dir)
+}
+
+pub(crate) fn save_session_in_dir(session: &ReviewSession, reviews_dir: &Path) -> Result<PathBuf> {
+    maybe_migrate(reviews_dir)?;
 
     let slug = slug_for_session(session)?;
     let relative = relative_path_for_slug(&slug, session)?;
@@ -49,11 +55,11 @@ pub fn save_session(session: &ReviewSession) -> Result<PathBuf> {
     let json = serde_json::to_string_pretty(session)?;
     fs::write(&full_path, json)?;
 
-    let mut manifest = manifest::load_manifest(&reviews_dir).unwrap_or_default();
+    let mut manifest = manifest::load_manifest(reviews_dir).unwrap_or_default();
     let anchor = manifest_anchor_for(&slug);
     let entry = manifest::entry_from_session(session, relative, anchor);
     manifest.upsert(slug.to_string(), entry);
-    manifest::save_manifest(&reviews_dir, &manifest)?;
+    manifest::save_manifest(reviews_dir, &manifest)?;
 
     Ok(full_path)
 }
@@ -105,6 +111,26 @@ pub fn load_latest_session_for_context(
     let full_path = reviews_dir.join(&entry.path);
     let session = load_session(&full_path)?;
     Ok(Some((full_path, session)))
+}
+
+pub(crate) fn list_local_sessions_for_repo_in_dir(
+    reviews_dir: &Path,
+    repo_path: &Path,
+) -> Result<Vec<(String, ManifestEntry)>> {
+    maybe_migrate(reviews_dir)?;
+
+    let manifest = manifest::load_manifest(reviews_dir).unwrap_or_default();
+    let canonical = fs::canonicalize(repo_path).unwrap_or_else(|_| repo_path.to_path_buf());
+    let mut entries: Vec<_> = manifest
+        .iter()
+        .filter_map(|(slug, entry)| {
+            let matches_repo = matches!(entry.kind, ManifestKind::Local)
+                && entry.canonical_repo_path.as_deref() == Some(canonical.as_path());
+            matches_repo.then(|| (slug.clone(), entry.clone()))
+        })
+        .collect();
+    entries.sort_by(|(_, a), (_, b)| b.updated_at.cmp(&a.updated_at));
+    Ok(entries)
 }
 
 /// Look up the persisted PR session for a key. Returns `None` if no entry
@@ -165,7 +191,7 @@ pub(crate) fn set_test_reviews_dir(path: Option<PathBuf>) {
     TEST_REVIEWS_DIR.with(|cell| *cell.borrow_mut() = path);
 }
 
-fn get_reviews_dir() -> Result<PathBuf> {
+pub(crate) fn get_reviews_dir() -> Result<PathBuf> {
     #[cfg(test)]
     {
         // In tests, the reviews dir is a thread-local so that two parallel

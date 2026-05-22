@@ -126,6 +126,34 @@ tuicr --stdout > review.md
 tuicr --stdout | pbcopy
 ```
 
+## Library API
+
+tuicr also exposes a Rust library API for tools that want to build on top of its
+persisted review sessions. `ReviewStore` can list sessions for a checkout, load a
+session, and add review, file, line, or range comments using the same insertion
+primitive as the TUI.
+
+```rust
+use tuicr::{AddCommentRequest, CommentTarget, CommentType, LineSide, ReviewStore};
+
+let store = ReviewStore::new();
+let sessions = store.list_sessions_for_repo("/path/to/repo")?;
+let session = &sessions[0].session_ref;
+
+store.add_comment(
+    session,
+    AddCommentRequest {
+        target: CommentTarget::Line {
+            path: "src/main.rs".into(),
+            line: 42,
+            side: LineSide::New,
+        },
+        content: "Handle the empty case here.".into(),
+        comment_type: CommentType::Issue,
+    },
+)?;
+```
+
 ## Configuration
 
 Path: `~/.config/tuicr/config.toml` on Linux/macOS, `%APPDATA%\tuicr\config.toml` on Windows.

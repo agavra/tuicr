@@ -8,15 +8,17 @@ This document serves two purposes:
 
 ## Project Structure
 
-tuicr is a Rust terminal UI application for code reviews. Here's the module structure:
+tuicr is a Rust terminal UI application and library for code reviews. Here's the module structure:
 
 ```
 src/
+├── lib.rs               # Public crate surface: ReviewStore, session/comment types, core modules
 ├── main.rs              # Entry point, event loop, action dispatch
 ├── config/
 │   └── mod.rs           # User config loading (XDG on Unix, %APPDATA% on Windows)
 ├── app.rs               # Application state (App struct, InputMode, etc.)
 ├── error.rs             # Error types (TuicrError enum)
+├── review_store.rs      # Library API for session listing/loading and shared comment insertion
 ├── tuicrignore.rs       # .tuicrignore loader + diff file filtering (gitignore-style patterns)
 ├── theme/
 │   └── mod.rs           # Theme palette definitions + bundled/local theme resolution
@@ -69,7 +71,7 @@ src/
 │
 ├── persistence/
 │   ├── mod.rs
-│   └── storage.rs       # save_session, load_session, find_session_for_repo
+│   └── storage.rs       # save_session, load_session, manifest-backed session lookups
 │
 ├── output/
 │   ├── mod.rs
@@ -114,6 +116,11 @@ Repository-managed agent integrations:
 - Persisted review state with `files: HashMap<PathBuf, FileReview>`
 - Each `FileReview` has: `reviewed: bool`, `file_comments: Vec<Comment>`, `line_comments: HashMap<u32, Vec<Comment>>`
 
+**ReviewStore** (`src/review_store.rs`):
+- Public library facade for persisted review sessions
+- Methods: `list_sessions_for_repo()`, `get_review()`, `add_comment()`, `save_review()`
+- Shared primitive: `add_comment_to_session()` is used by both the library facade and `App::save_comment()`
+
 **Action** (`src/input/keybindings.rs`):
 - All possible user actions (ScrollDown, NextFile, ToggleReviewed, AddLineComment, etc.)
 - `map_key_to_action(key, mode)` returns the appropriate Action
@@ -123,15 +130,16 @@ Repository-managed agent integrations:
 1. **Startup**: Parse CLI args (invalid `--theme` exits non-zero), load config from `$XDG_CONFIG_HOME/tuicr/config.toml` (default `~/.config/tuicr/config.toml`, or `%APPDATA%\tuicr\config.toml` on Windows), ignore unknown config keys with startup warnings, resolve theme precedence (`--theme` > config > dark), then call `App::new()`. Theme selection first checks bundled names, then local theme files from `$XDG_CONFIG_HOME/tuicr/themes/` (default `~/.config/tuicr/themes/`, or `%APPDATA%\tuicr\themes\` on Windows). Local theme files may reference a local `.tmTheme` syntax theme. Some bat-compatible Base16 `.tmTheme` files encode ANSI palette slots as placeholders, and `src/syntax/mod.rs` translates those at render time. `App::new()` calls `detect_vcs()` (Jujutsu first, then Git, then Mercurial), using config `backend = "libgit2"` or `backend = "cli"` for Git. Normal Git repos default to libgit2; sparse checkout repos automatically use the Git CLI backend and show a startup warning when that overrides the default. It filters diff files via repo-root `.tuicrignore`, then enters commit selection mode by default. If staged/unstaged changes exist, the first selection rows are "Staged changes" and/or "Unstaged changes". With `-r/--revisions`, it opens the requested commit range directly. Config `show_file_list = false` hides the file list panel on startup (toggleable with `<leader>e`, where `leader` defaults to `;`). Config `diff_view = "side-by-side"` sets the default diff layout (toggleable with `:diff`). Config `wrap = true` enables line wrapping (toggleable with `:set wrap!`).
 2. **Render**: `ui::render()` draws the TUI based on `App` state
 3. **Input**: `crossterm` events → `map_key_to_action` → match on Action in main loop
-4. **Persistence**: `:w` calls `save_session()`, writes JSON to `~/.local/share/tuicr/reviews/`
-5. **Reload diff**: `:e` re-runs VCS diff loading and reapplies `.tuicrignore` filtering to refresh displayed files
-6. **Export**: `:clip` (alias `:export`) calls `export_to_clipboard()`, generating markdown and copying it to the clipboard (or stdout with `--stdout` flag)
+4. **Comments**: `App::save_comment()` builds an `AddCommentRequest` and calls `add_comment_to_session()` so TUI and library callers share insertion behavior
+5. **Persistence**: `:w` calls `save_session()`, writes JSON to `~/.local/share/tuicr/reviews/`; library callers use `ReviewStore`
+6. **Reload diff**: `:e` re-runs VCS diff loading and reapplies `.tuicrignore` filtering to refresh displayed files
+7. **Export**: `:clip` (alias `:export`) calls `export_to_clipboard()`, generating markdown and copying it to the clipboard (or stdout with `--stdout` flag)
 
 ### Important Implementation Details
 
 - **Infinite scroll**: All files rendered into one `Vec<Line>`, then sliced by `scroll_offset`
 - **Inline comments**: Comments are rendered in `app_layout.rs` after file headers and after relevant diff lines
-- **Session loading**: `App::new()` calls `find_session_for_repo()` to restore previous review
+- **Session loading**: `App::new()` calls manifest-backed persistence helpers to restore previous review
 - **Clipboard**: Uses `arboard` crate for cross-platform clipboard support
 - **Hunk navigation**: `next_hunk()`/`prev_hunk()` calculate positions by iterating through files
 - **Ignore filtering**: `.tuicrignore` is applied whenever diffs are loaded/reloaded

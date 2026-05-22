@@ -1,25 +1,3 @@
-mod app;
-mod cli;
-mod config;
-mod error;
-mod forge;
-mod handler;
-mod hash;
-mod input;
-mod model;
-mod output;
-mod persistence;
-mod process;
-mod profile;
-mod slug;
-mod syntax;
-mod text_edit;
-mod theme;
-mod tuicrignore;
-mod ui;
-mod update;
-mod vcs;
-
 use std::fs::File;
 use std::io::{self, Write};
 use std::sync::mpsc;
@@ -39,18 +17,19 @@ use crossterm::{
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
 
-use app::{App, AppStartupOptions, FocusedPanel, InputMode};
-use cli::parse_cli_args;
-use handler::{
+use tuicr::app::{self, App, AppStartupOptions, FocusedPanel, InputMode};
+use tuicr::cli::parse_cli_args;
+use tuicr::handler::{
     handle_command_action, handle_comment_action, handle_commit_select_action,
     handle_commit_selector_action, handle_confirm_action, handle_diff_action,
     handle_file_list_action, handle_help_action, handle_mouse_event, handle_search_action,
     handle_submit_action_picker_action, handle_submit_confirm_action,
     handle_submit_resolver_action, handle_visual_action,
 };
-use input::{Action, map_key_to_action, map_target_filter_mode};
-use theme::resolve_theme_with_config;
-use vcs::GitBackendPreference;
+use tuicr::input::{Action, map_key_to_action, map_target_filter_mode};
+use tuicr::theme::resolve_theme_with_config;
+use tuicr::vcs::GitBackendPreference;
+use tuicr::{config, handler, persistence, profile, ui, update};
 
 /// Timeout for the "press Ctrl+C again to exit" feature
 const CTRL_C_EXIT_TIMEOUT: Duration = Duration::from_secs(2);
@@ -180,7 +159,7 @@ fn main() -> anyhow::Result<()> {
                 repo_url_override: cli_args
                     .repo_url
                     .as_deref()
-                    .and_then(crate::forge::github::gh::parse_github_remote_url),
+                    .and_then(tuicr::forge::github::gh::parse_github_remote_url),
             },
         )
     }) {
@@ -203,7 +182,7 @@ fn main() -> anyhow::Result<()> {
             // when the failure was the absence of a repo. For other
             // startup errors — `tuicr pr <bad-url>`, forge auth issues,
             // missing PR, `--file <missing-path>` — the hint is wrong.
-            if matches!(e, crate::error::TuicrError::NotARepository) {
+            if matches!(e, tuicr::error::TuicrError::NotARepository) {
                 if cli_args.all_files {
                     eprintln!(
                         "\ntuicr --all-files requires a git repository with tracked files. Run `git init && git add -A` to bootstrap one."
@@ -577,7 +556,7 @@ fn main() -> anyhow::Result<()> {
                             Action::GoToBottom if app.pending_count.is_some() => {
                                 let count = app.pending_count.unwrap().max(1);
                                 app.pending_count = None;
-                                app.go_to_source_line(count as u32, crate::model::LineSide::New);
+                                app.go_to_source_line(count as u32, tuicr::model::LineSide::New);
                                 continue;
                             }
                             _ => {

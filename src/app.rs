@@ -15,6 +15,7 @@ use crate::model::{
     LineRange, LineSide, ReviewSession, SessionDiffSource,
 };
 use crate::persistence::load_latest_session_for_context;
+use crate::review_store::{AddCommentRequest, CommentTarget, add_comment_to_session};
 use crate::syntax::SyntaxHighlighter;
 use crate::theme::Theme;
 use crate::update::UpdateInfo;
@@ -5711,38 +5712,49 @@ impl App {
                 }
             }
         } else if self.comment_is_review_level {
-            let comment = Comment::new(content, self.comment_type.clone(), None);
-            self.session.review_comments.push(comment);
-            message = "Review comment added".to_string();
-        } else if let Some(path) = self.current_file_path().cloned()
-            && let Some(review) = self.session.get_file_mut(&path)
-        {
-            // Create new comment
-            if self.comment_is_file_level {
-                let comment = Comment::new(content, self.comment_type.clone(), None);
-                review.add_file_comment(comment);
-                message = "File comment added".to_string();
+            let request = AddCommentRequest {
+                target: CommentTarget::Review,
+                content,
+                comment_type: self.comment_type.clone(),
+            };
+            message = match add_comment_to_session(&mut self.session, request) {
+                Ok(_) => "Review comment added".to_string(),
+                Err(e) => format!("Error: Could not save comment: {e}"),
+            };
+        } else if let Some(path) = self.current_file_path().cloned() {
+            let (target, success_message) = if self.comment_is_file_level {
+                (
+                    CommentTarget::File { path },
+                    "File comment added".to_string(),
+                )
             } else if let Some((range, side)) = self.comment_line_range {
-                // Range comment from visual selection
-                let comment =
-                    Comment::new_with_range(content, self.comment_type.clone(), Some(side), range);
-                // Store by end line of the range
-                review.add_line_comment(range.end, comment);
-                if range.is_single() {
-                    message = format!("Comment added to line {}", range.end);
+                let message = if range.is_single() {
+                    format!("Comment added to line {}", range.end)
                 } else {
-                    message = format!("Comment added to lines {}-{}", range.start, range.end);
-                }
+                    format!("Comment added to lines {}-{}", range.start, range.end)
+                };
+                (CommentTarget::LineRange { path, range, side }, message)
             } else if let Some((line, side)) = self.comment_line {
-                let comment = Comment::new(content, self.comment_type.clone(), Some(side));
-                review.add_line_comment(line, comment);
-                message = format!("Comment added to line {line}");
+                (
+                    CommentTarget::Line { path, line, side },
+                    format!("Comment added to line {line}"),
+                )
             } else {
-                // Fallback to file comment if no line specified
-                let comment = Comment::new(content, self.comment_type.clone(), None);
-                review.add_file_comment(comment);
-                message = "File comment added".to_string();
-            }
+                (
+                    CommentTarget::File { path },
+                    "File comment added".to_string(),
+                )
+            };
+
+            let request = AddCommentRequest {
+                target,
+                content,
+                comment_type: self.comment_type.clone(),
+            };
+            message = match add_comment_to_session(&mut self.session, request) {
+                Ok(_) => success_message,
+                Err(e) => format!("Error: Could not save comment: {e}"),
+            };
         }
 
         if !message.starts_with("Error:") {
