@@ -310,16 +310,34 @@ pub fn format_remote_thread_lines(
     result
 }
 
-/// Format a comment as multiple lines with a box border (themed version)
+/// Format a comment as multiple lines with a box border (themed version).
+///
+/// `author` advertises the comment's author in the top-row badge and tints
+/// the box border. Callers pass `Some(name)` for non-self comments — the
+/// resulting badge reads `[TYPE @name]`, mirroring the `[github @author]`
+/// format used for remote PR threads. `None` keeps the existing neutral
+/// `[TYPE]` badge and theme border.
 pub fn format_comment_lines(
     theme: &Theme,
     comment_type: CommentTypePresentation,
     content: &str,
     line_range: Option<LineRange>,
     width: usize,
+    author: Option<&str>,
 ) -> Vec<Line<'static>> {
     let type_style = styles::comment_type_style(theme, comment_type.color);
-    let border_style = styles::comment_border_style(theme, comment_type.color);
+    let border_style = match author {
+        Some(name) => Style::default()
+            .fg(styles::author_color_for(name))
+            .add_modifier(ratatui::style::Modifier::BOLD),
+        None => styles::comment_border_style(theme, comment_type.color),
+    };
+
+    let badge_text = match author {
+        Some(name) => format!("[{} @{name}] ", comment_type.label),
+        None => format!("[{}] ", comment_type.label),
+    };
+    let badge_width = badge_text.width();
 
     let line_info = match line_range {
         Some(range) if range.is_single() => format!("L{} ", range.start),
@@ -340,11 +358,12 @@ pub fn format_comment_lines(
     let top_prefix = format!("    {top_corner}── ");
 
     // Top border — fill dynamically so total line = width.
-    // top_prefix = 8, "[LABEL] " = label.len()+3, line_info = variable
-    let top_fill = width.saturating_sub(8 + comment_type.label.len() + 3 + line_info.width());
+    // top_prefix = 8 cols, then the badge (width depends on author), then
+    // optional line_info, then `─` fill out to `width`.
+    let top_fill = width.saturating_sub(8 + badge_width + line_info.width());
     result.push(Line::from(vec![
         Span::styled(top_prefix, border_style),
-        Span::styled(format!("[{}] ", comment_type.label), type_style),
+        Span::styled(badge_text, type_style),
         Span::styled(line_info, styles::dim_style(theme)),
         Span::styled("─".repeat(top_fill), border_style),
     ]));

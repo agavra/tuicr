@@ -127,6 +127,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                 &comment.content,
                 None,
                 comment_width,
+                (comment.author != app.username).then_some(comment.author.as_str()),
             );
             for mut comment_line in comment_lines {
                 let indicator = cursor_indicator(line_idx, current_line_idx);
@@ -275,6 +276,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                         &comment.content,
                         None,
                         comment_width,
+                        (comment.author != app.username).then_some(comment.author.as_str()),
                     );
                     for mut comment_line in comment_lines {
                         let indicator = cursor_indicator(line_idx, current_line_idx);
@@ -624,6 +626,8 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                             &comment.content,
                                             line_range,
                                             comment_width,
+                                            (comment.author != app.username)
+                                                .then_some(comment.author.as_str()),
                                         );
                                         let box_top_row = line_idx;
                                         for mut comment_line in comment_lines {
@@ -783,6 +787,8 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                             &comment.content,
                                             line_range,
                                             comment_width,
+                                            (comment.author != app.username)
+                                                .then_some(comment.author.as_str()),
                                         );
                                         let box_top_row = line_idx;
                                         for mut comment_line in comment_lines {

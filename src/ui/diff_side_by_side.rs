@@ -171,6 +171,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                 &comment.content,
                 None,
                 ctx.panel_width.saturating_sub(1),
+                (comment.author != app.username).then_some(comment.author.as_str()),
             );
             for mut comment_line in comment_lines {
                 let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
@@ -308,6 +309,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                         &comment.content,
                         None,
                         ctx.panel_width.saturating_sub(1),
+                        (comment.author != app.username).then_some(comment.author.as_str()),
                     );
                     for mut comment_line in comment_lines {
                         let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
@@ -1379,6 +1381,7 @@ fn add_comments_to_line(
                         &comment.content,
                         line_range,
                         ctx.panel_width.saturating_sub(1),
+                        (comment.author != ctx.app.username).then_some(comment.author.as_str()),
                     );
                     let box_top_row = line_idx;
                     for mut comment_line in comment_lines {

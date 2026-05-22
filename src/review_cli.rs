@@ -7,8 +7,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::cli::{LineSideArg, ReviewCommand};
+use crate::config;
 use crate::error::{Result, TuicrError};
-use crate::model::comment::CommentLifecycleState;
+use crate::model::comment::{self, CommentLifecycleState};
 use crate::model::{Comment, CommentType, LineRange, LineSide, ReviewSession};
 use crate::review_store::{
     AddCommentRequest, CommentTarget, ReviewStore, SessionRef, SessionSummary,
@@ -31,6 +32,7 @@ fn run_with_writer(command: ReviewCommand, out: &mut impl Write) -> Result<()> {
             line,
             end_line,
             side,
+            username,
             content,
         } => add_comment(
             &session,
@@ -42,6 +44,7 @@ fn run_with_writer(command: ReviewCommand, out: &mut impl Write) -> Result<()> {
                 line,
                 end_line,
                 side,
+                username,
                 content,
             },
             out,
@@ -69,6 +72,7 @@ struct AddCommentOptions {
     line: Option<u32>,
     end_line: Option<u32>,
     side: LineSideArg,
+    username: Option<String>,
     content: Option<String>,
 }
 
@@ -83,12 +87,14 @@ fn add_comment(
     let request_parts = build_add_request_parts(options)?;
     let target = request_parts.target;
     let comment_type = CommentType::from_id(&request_parts.comment_type);
+    let author = resolve_cli_author(request_parts.username);
     let comment = store.add_comment(
         &session_ref,
         AddCommentRequest {
             target: target.clone(),
             content: request_parts.content,
             comment_type,
+            author,
         },
     )?;
     let output = CommentOutput::from_target(&target, &comment);
@@ -101,6 +107,29 @@ struct AddRequestParts {
     target: CommentTarget,
     comment_type: String,
     content: String,
+    username: Option<String>,
+}
+
+/// Resolve the author for a CLI-authored comment.
+///
+/// Priority: explicit `--username` / JSON `username` ► config `username` ►
+/// `Comment::DEFAULT_AUTHOR`. Trims whitespace so `--username " "` doesn't
+/// produce an awkward all-whitespace badge.
+fn resolve_cli_author(explicit: Option<String>) -> String {
+    if let Some(name) = explicit.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        return name.to_string();
+    }
+    if let Ok(outcome) = config::load_config()
+        && let Some(name) = outcome
+            .config
+            .as_ref()
+            .and_then(|cfg| cfg.username.as_deref())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    {
+        return name.to_string();
+    }
+    comment::DEFAULT_AUTHOR.to_string()
 }
 
 fn build_add_request_parts(options: AddCommentOptions) -> Result<AddRequestParts> {
@@ -110,6 +139,7 @@ fn build_add_request_parts(options: AddCommentOptions) -> Result<AddRequestParts
     let mut line = options.line;
     let mut end_line = options.end_line;
     let mut side = options.side;
+    let mut username = options.username;
     let mut target = None;
 
     if let Some(input) = options.input {
@@ -119,6 +149,9 @@ fn build_add_request_parts(options: AddCommentOptions) -> Result<AddRequestParts
         }
         if payload.content.is_some() {
             content = payload.content;
+        }
+        if payload.username.is_some() {
+            username = payload.username;
         }
         if let Some(payload_target) = payload.target {
             target = Some(payload_target.into_comment_target()?);
@@ -152,6 +185,7 @@ fn build_add_request_parts(options: AddCommentOptions) -> Result<AddRequestParts
         target,
         comment_type,
         content,
+        username,
     })
 }
 
@@ -190,6 +224,8 @@ struct AddCommentPayload {
     end_line: Option<u32>,
     #[serde(default)]
     side: Option<String>,
+    #[serde(default, alias = "author")]
+    username: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -619,6 +655,7 @@ mod tests {
             line: None,
             end_line: None,
             side: LineSideArg::New,
+            username: None,
             content: None,
         })
         .unwrap();
@@ -647,6 +684,7 @@ mod tests {
             line: None,
             end_line: None,
             side: LineSideArg::New,
+            username: None,
             content: None,
         })
         .unwrap();
@@ -691,6 +729,7 @@ mod tests {
                     },
                     content: "check this".to_string(),
                     comment_type: CommentType::Issue,
+                    author: crate::model::comment::DEFAULT_AUTHOR.to_string(),
                 },
             )
             .unwrap();

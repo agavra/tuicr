@@ -82,11 +82,20 @@ fn render_comment_row(app: &App, item: &CommentNavigatorItem) -> Line<'static> {
     let dim_style = styles::dim_style(&app.theme);
     let location = comment_location(item);
 
-    Line::from(vec![
-        Span::styled(marker, marker_style),
-        Span::raw(" "),
-        Span::styled(location, dim_style),
-    ])
+    let author_accent = item
+        .author
+        .as_deref()
+        .and_then(|author| styles::author_accent(&app.username, author));
+
+    let mut spans = vec![Span::styled(marker, marker_style), Span::raw(" ")];
+    if let Some(color) = author_accent {
+        spans.push(Span::styled(
+            "● ".to_string(),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ));
+    }
+    spans.push(Span::styled(location, dim_style));
+    Line::from(spans)
 }
 
 fn line_width(line: &Line<'_>) -> usize {

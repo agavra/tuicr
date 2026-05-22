@@ -58,6 +58,10 @@ pub struct AppConfig {
     /// Pristine `--all-files` mode already defaults to true regardless of
     /// this setting. Defaults to false.
     pub single_file_view: Option<bool>,
+    /// Display name stamped on comments authored locally in the TUI, and
+    /// used as the "viewer" identity for per-author coloring in the comment
+    /// pane. Defaults to `"user"` when unset.
+    pub username: Option<String>,
     /// `[forge]` section settings. Always present; `None` means "no override"
     /// and downstream code should treat it as `ForgeConfig::default()`.
     pub forge: Option<ForgeConfig>,
@@ -83,6 +87,7 @@ const KNOWN_KEYS: &[&str] = &[
     "review_watch_interval_ms",
     "no_update_check",
     "single_file_view",
+    "username",
     "forge",
 ];
 
@@ -290,6 +295,7 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         review_watch_interval_ms: read_usize(table, "review_watch_interval_ms", &mut warnings),
         no_update_check: read_bool(table, "no_update_check", &mut warnings),
         single_file_view: read_bool(table, "single_file_view", &mut warnings),
+        username: read_string(table, "username", &mut warnings),
         forge: table
             .get("forge")
             .and_then(|v| parse_forge(v, &mut warnings)),
