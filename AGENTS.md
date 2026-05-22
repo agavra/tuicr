@@ -19,6 +19,7 @@ src/
 ├── app.rs               # Application state (App struct, InputMode, etc.)
 ├── error.rs             # Error types (TuicrError enum)
 ├── review_store.rs      # Library API for session listing/loading and shared comment insertion
+├── review_cli.rs        # Non-interactive `tuicr review` subcommands over ReviewStore
 ├── tuicrignore.rs       # .tuicrignore loader + diff file filtering (gitignore-style patterns)
 ├── theme/
 │   └── mod.rs           # Theme palette definitions + bundled/local theme resolution
@@ -127,13 +128,14 @@ Repository-managed agent integrations:
 
 ### Data Flow
 
-1. **Startup**: Parse CLI args (invalid `--theme` exits non-zero), load config from `$XDG_CONFIG_HOME/tuicr/config.toml` (default `~/.config/tuicr/config.toml`, or `%APPDATA%\tuicr\config.toml` on Windows), ignore unknown config keys with startup warnings, resolve theme precedence (`--theme` > config > dark), then call `App::new()`. Theme selection first checks bundled names, then local theme files from `$XDG_CONFIG_HOME/tuicr/themes/` (default `~/.config/tuicr/themes/`, or `%APPDATA%\tuicr\themes\` on Windows). Local theme files may reference a local `.tmTheme` syntax theme. Some bat-compatible Base16 `.tmTheme` files encode ANSI palette slots as placeholders, and `src/syntax/mod.rs` translates those at render time. `App::new()` calls `detect_vcs()` (Jujutsu first, then Git, then Mercurial), using config `backend = "libgit2"` or `backend = "cli"` for Git. Normal Git repos default to libgit2; sparse checkout repos automatically use the Git CLI backend and show a startup warning when that overrides the default. It filters diff files via repo-root `.tuicrignore`, then enters commit selection mode by default. If staged/unstaged changes exist, the first selection rows are "Staged changes" and/or "Unstaged changes". With `-r/--revisions`, it opens the requested commit range directly. Config `show_file_list = false` hides the file list panel on startup (toggleable with `<leader>e`, where `leader` defaults to `;`). Config `diff_view = "side-by-side"` sets the default diff layout (toggleable with `:diff`). Config `wrap = true` enables line wrapping (toggleable with `:set wrap!`).
+1. **Startup**: Parse CLI args (invalid `--theme` exits non-zero). With no subcommand, or with explicit `tuicr tui`, load config from `$XDG_CONFIG_HOME/tuicr/config.toml` (default `~/.config/tuicr/config.toml`, or `%APPDATA%\tuicr\config.toml` on Windows), ignore unknown config keys with startup warnings, resolve theme precedence (`--theme` > config > dark), then call `App::new()`. Theme selection first checks bundled names, then local theme files from `$XDG_CONFIG_HOME/tuicr/themes/` (default `~/.config/tuicr/themes/`, or `%APPDATA%\tuicr\themes\` on Windows). Local theme files may reference a local `.tmTheme` syntax theme. Some bat-compatible Base16 `.tmTheme` files encode ANSI palette slots as placeholders, and `src/syntax/mod.rs` translates those at render time. `App::new()` calls `detect_vcs()` (Jujutsu first, then Git, then Mercurial), using config `backend = "libgit2"` or `backend = "cli"` for Git. Normal Git repos default to libgit2; sparse checkout repos automatically use the Git CLI backend and show a startup warning when that overrides the default. It filters diff files via repo-root `.tuicrignore`, then enters commit selection mode by default. If staged/unstaged changes exist, the first selection rows are "Staged changes" and/or "Unstaged changes". With `-r/--revisions`, it opens the requested commit range directly. Config `show_file_list = false` hides the file list panel on startup (toggleable with `<leader>e`, where `leader` defaults to `;`). Config `diff_view = "side-by-side"` sets the default diff layout (toggleable with `:diff`). Config `wrap = true` enables line wrapping (toggleable with `:set wrap!`).
 2. **Render**: `ui::render()` draws the TUI based on `App` state
 3. **Input**: `crossterm` events → `map_key_to_action` → match on Action in main loop
 4. **Comments**: `App::save_comment()` builds an `AddCommentRequest` and calls `add_comment_to_session()` so TUI and library callers share insertion behavior
-5. **Persistence**: `:w` calls `save_session()`, writes JSON to `~/.local/share/tuicr/reviews/`; library callers use `ReviewStore`
-6. **Reload diff**: `:e` re-runs VCS diff loading and reapplies `.tuicrignore` filtering to refresh displayed files
-7. **Export**: `:clip` (alias `:export`) calls `export_to_clipboard()`, generating markdown and copying it to the clipboard (or stdout with `--stdout` flag)
+5. **Review CLI**: `tuicr review list|add|comments` exits before TUI startup, uses `ReviewStore`, and always emits JSON; `review add --input` accepts JSON literal, `@file`, or stdin payloads
+6. **Persistence**: `:w` calls `save_session()`, writes JSON to `~/.local/share/tuicr/reviews/`; library callers use `ReviewStore`
+7. **Reload diff**: `:e` re-runs VCS diff loading and reapplies `.tuicrignore` filtering to refresh displayed files
+8. **Export**: `:clip` (alias `:export`) calls `export_to_clipboard()`, generating markdown and copying it to the clipboard (or stdout with `--stdout` flag)
 
 ### Important Implementation Details
 
@@ -157,7 +159,7 @@ Repository-managed agent integrations:
 
 ## Forge integration
 
-PR review (`tuicr pr <target>`) is the only feature in `src/forge/`. The trait shape is forge-agnostic so other forges can plug in later; v1 only ships a GitHub backend that shells out to `gh`.
+PR review (`tuicr pr <target>` or `tuicr tui pr <target>`) is the only feature in `src/forge/`. The trait shape is forge-agnostic so other forges can plug in later; v1 only ships a GitHub backend that shells out to `gh`.
 
 ### ForgeBackend trait
 

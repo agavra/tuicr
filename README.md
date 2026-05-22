@@ -58,10 +58,13 @@ cargo install --path .
 
 ```bash
 tuicr                       # Pick from a commit selector
+tuicr tui                   # Same TUI, explicit subcommand
 tuicr -w                    # Uncommitted changes (skip selector)
 tuicr -r main..HEAD         # Commit range
 tuicr pr 125                # GitHub PR
+tuicr tui pr 125            # GitHub PR via explicit TUI subcommand
 tuicr --stdout              # Pipe the review to stdout
+tuicr review list           # List saved local review sessions
 ```
 
 Inside tuicr, navigate with `j`/`k`, press `c` to comment, then `y` to copy the review or
@@ -125,6 +128,12 @@ Run with `--stdout` to pipe the markdown to another process:
 tuicr --stdout > review.md
 tuicr --stdout | pbcopy
 ```
+
+## Review session CLI
+
+`tuicr review` exposes saved sessions without opening the TUI. It can list
+sessions, add comments, and print stored comments for agent and script
+integrations. See [docs/REVIEW_CLI.md](docs/REVIEW_CLI.md).
 
 ## Library API
 

@@ -53,6 +53,13 @@ fn main() -> anyhow::Result<()> {
     // Parse CLI arguments and resolve theme
     // This also configures syntax highlighting colors before diff parsing
     let mut cli_args = profile::time("startup.parse_cli_args", parse_cli_args);
+    if let Some(review_command) = cli_args.review_command.take() {
+        if let Err(err) = tuicr::review_cli::run(review_command) {
+            eprintln!("Error: {err}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
 
     // Check keyboard enhancement support before enabling raw mode.
     // Skip when --stdout is used because the probe writes escape sequences to stdout,

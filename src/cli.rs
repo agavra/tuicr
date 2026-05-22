@@ -3,7 +3,9 @@
 //! The struct [`Cli`] is the clap-derived parser; [`CliArgs`] is the simple
 //! POJO the rest of the binary consumes. Conversion lives in `From<Cli>`.
 
-use clap::{ArgAction, Parser, Subcommand};
+use std::path::PathBuf;
+
+use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 
 use crate::theme::{AppearanceArg, ThemeArg};
 
@@ -30,6 +32,8 @@ pub struct CliArgs {
     pub pr_target: Option<String>,
     /// Override the GitHub repo used for PR operations.
     pub repo_url: Option<String>,
+    /// Non-interactive review session operation.
+    pub review_command: Option<ReviewCommand>,
 }
 
 #[derive(Parser, Debug)]
@@ -41,23 +45,32 @@ pub struct CliArgs {
     disable_help_subcommand = true
 )]
 struct Cli {
+    #[command(flatten)]
+    tui_options: TuiOptions,
+
+    #[command(subcommand)]
+    command: Option<Subcmd>,
+}
+
+/// Options that launch or configure the interactive TUI.
+#[derive(Args, Debug, Clone, Default)]
+struct TuiOptions {
     /// Commit range / revset to review (syntax depends on VCS backend).
     #[arg(
         short = 'r',
         long = "revisions",
         value_name = "REVSET",
-        global = true,
         allow_hyphen_values = true
     )]
     revisions: Option<String>,
 
     /// Color theme to use. Bundled themes resolve first; local themes are
     /// loaded from the config `themes/` directory.
-    #[arg(long, value_name = "THEME", global = true, value_parser = non_empty_theme_name)]
+    #[arg(long, value_name = "THEME", value_parser = non_empty_theme_name)]
     theme: Option<String>,
 
     /// Appearance mode (light/dark/system); used when no explicit theme is set.
-    #[arg(long, value_name = "MODE", global = true, value_parser = parse_appearance_arg)]
+    #[arg(long, value_name = "MODE", value_parser = parse_appearance_arg)]
     appearance: Option<AppearanceArg>,
 
     /// Filter diff to a specific file or directory.
@@ -65,7 +78,6 @@ struct Cli {
         short = 'p',
         long = "path",
         value_name = "PATH",
-        global = true,
         value_parser = non_empty_path,
         conflicts_with_all = ["file_path", "all_files"],
     )]
@@ -76,7 +88,6 @@ struct Cli {
     #[arg(
         short = 'w',
         long = "working-tree",
-        global = true,
         action = ArgAction::SetTrue,
         conflicts_with_all = ["file_path", "all_files"],
     )]
@@ -86,7 +97,6 @@ struct Cli {
     #[arg(
         long = "file",
         value_name = "PATH",
-        global = true,
         value_parser = non_empty_path,
         conflicts_with_all = ["path_filter", "revisions", "working_tree", "all_files"],
     )]
@@ -96,18 +106,17 @@ struct Cli {
     #[arg(
         short = 'A',
         long = "all-files",
-        global = true,
         action = ArgAction::SetTrue,
         conflicts_with_all = ["path_filter", "revisions", "working_tree", "file_path"],
     )]
     all_files: bool,
 
     /// Output to stdout instead of clipboard when exporting.
-    #[arg(long = "stdout", global = true, action = ArgAction::SetTrue)]
+    #[arg(long = "stdout", action = ArgAction::SetTrue)]
     stdout: bool,
 
     /// Skip checking for updates on startup.
-    #[arg(long = "no-update-check", global = true, action = ArgAction::SetTrue)]
+    #[arg(long = "no-update-check", action = ArgAction::SetTrue)]
     no_update_check: bool,
 
     /// Override the GitHub repo for PR operations (HTTPS, SCP-style SSH,
@@ -115,40 +124,198 @@ struct Cli {
     #[arg(
         long = "repo-url",
         value_name = "URL",
-        global = true,
         value_parser = parse_repo_url
     )]
     repo_url: Option<String>,
-
-    #[command(subcommand)]
-    command: Option<Subcmd>,
 }
 
 #[derive(Subcommand, Debug)]
 enum Subcmd {
+    /// Open the interactive TUI.
+    Tui(TuiCommand),
     /// Review a GitHub pull request.
-    Pr {
-        /// PR target: <number>, <owner/repo#N>, or a PR URL.
-        target: String,
+    Pr(PrCommand),
+    /// Inspect or update persisted review sessions.
+    Review {
+        #[command(subcommand)]
+        command: ReviewCommand,
     },
+}
+
+/// Explicit `tuicr tui` entrypoint. With no nested command, opens the local
+/// target selector / local diff TUI. `tuicr tui pr <target>` opens PR mode.
+#[derive(Args, Debug, Clone, Default)]
+struct TuiCommand {
+    #[command(flatten)]
+    options: TuiOptions,
+
+    #[command(subcommand)]
+    command: Option<TuiSubcmd>,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+enum TuiSubcmd {
+    /// Review a GitHub pull request in the TUI.
+    Pr(PrCommand),
+}
+
+#[derive(Args, Debug, Clone, Default)]
+struct PrCommand {
+    /// PR target: <number>, <owner/repo#N>, or a PR URL.
+    target: String,
+
+    #[command(flatten)]
+    options: TuiOptions,
+}
+
+/// Non-interactive review session commands.
+#[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
+pub enum ReviewCommand {
+    /// List persisted review sessions for a checkout.
+    List {
+        /// Checkout whose local sessions should be listed.
+        #[arg(long, value_name = "PATH", default_value = ".")]
+        repo: PathBuf,
+    },
+
+    /// Add a local draft comment to a persisted session.
+    Add {
+        /// Session slug from `tuicr review list`, or path to a session JSON file.
+        #[arg(long, value_name = "SESSION")]
+        session: String,
+
+        /// JSON payload. Use literal JSON, @path/to/file.json, or - for stdin.
+        #[arg(long, value_name = "JSON|@FILE|-")]
+        input: Option<String>,
+
+        /// Checkout used to resolve a session slug.
+        #[arg(long, value_name = "PATH", default_value = ".")]
+        repo: PathBuf,
+
+        /// Comment classification.
+        #[arg(long = "type", value_name = "TYPE", default_value = "note", value_parser = non_empty_comment_type)]
+        comment_type: String,
+
+        /// File path for a file, line, or range comment. Omit for a review comment.
+        #[arg(long = "target-file", value_name = "PATH")]
+        file: Option<PathBuf>,
+
+        /// Line number for a line or range comment. Requires --target-file.
+        #[arg(long, value_name = "LINE", requires = "file")]
+        line: Option<u32>,
+
+        /// End line for a range comment. Requires --line.
+        #[arg(long = "end-line", value_name = "LINE", requires = "line")]
+        end_line: Option<u32>,
+
+        /// Diff side for line and range comments.
+        #[arg(long, value_enum, default_value_t = LineSideArg::New)]
+        side: LineSideArg,
+
+        /// Comment text.
+        #[arg(
+            value_name = "COMMENT",
+            required_unless_present = "input",
+            value_parser = non_empty_comment_text,
+            allow_hyphen_values = true
+        )]
+        content: Option<String>,
+    },
+
+    /// Print comments stored in a persisted session.
+    #[command(alias = "get")]
+    Comments {
+        /// Session slug from `tuicr review list`, or path to a session JSON file.
+        #[arg(long, value_name = "SESSION")]
+        session: String,
+
+        /// Checkout used to resolve a session slug.
+        #[arg(long, value_name = "PATH", default_value = ".")]
+        repo: PathBuf,
+    },
+}
+
+/// Diff side accepted by `tuicr review add --side`.
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LineSideArg {
+    Old,
+    #[default]
+    New,
 }
 
 impl From<Cli> for CliArgs {
     fn from(cli: Cli) -> Self {
-        let pr_target = cli.command.map(|Subcmd::Pr { target }| target);
+        let (options, pr_target, review_command) = match cli.command {
+            Some(Subcmd::Tui(command)) => match command.command {
+                Some(TuiSubcmd::Pr(pr)) => (
+                    cli.tui_options.merge(command.options).merge(pr.options),
+                    Some(pr.target),
+                    None,
+                ),
+                None => (cli.tui_options.merge(command.options), None, None),
+            },
+            Some(Subcmd::Pr(pr)) => (cli.tui_options.merge(pr.options), Some(pr.target), None),
+            Some(Subcmd::Review { command }) => (TuiOptions::default(), None, Some(command)),
+            None => (cli.tui_options, None, None),
+        };
         Self {
-            theme: cli.theme,
-            appearance: cli.appearance,
-            output_to_stdout: cli.stdout,
-            no_update_check: cli.no_update_check,
-            revisions: cli.revisions,
-            working_tree: cli.working_tree,
-            path_filter: cli.path_filter,
-            file_path: cli.file_path,
-            all_files: cli.all_files,
+            theme: options.theme,
+            appearance: options.appearance,
+            output_to_stdout: options.stdout,
+            no_update_check: options.no_update_check,
+            revisions: options.revisions,
+            working_tree: options.working_tree,
+            path_filter: options.path_filter,
+            file_path: options.file_path,
+            all_files: options.all_files,
             pr_target,
-            repo_url: cli.repo_url,
+            repo_url: options.repo_url,
+            review_command,
         }
+    }
+}
+
+impl TuiOptions {
+    fn has_any_explicit_value(&self) -> bool {
+        self.theme.is_some()
+            || self.appearance.is_some()
+            || self.stdout
+            || self.no_update_check
+            || self.revisions.is_some()
+            || self.working_tree
+            || self.path_filter.is_some()
+            || self.file_path.is_some()
+            || self.all_files
+            || self.repo_url.is_some()
+    }
+
+    fn merge(self, later: TuiOptions) -> Self {
+        Self {
+            theme: later.theme.or(self.theme),
+            appearance: later.appearance.or(self.appearance),
+            stdout: self.stdout || later.stdout,
+            no_update_check: self.no_update_check || later.no_update_check,
+            revisions: later.revisions.or(self.revisions),
+            working_tree: self.working_tree || later.working_tree,
+            path_filter: later.path_filter.or(self.path_filter),
+            file_path: later.file_path.or(self.file_path),
+            all_files: self.all_files || later.all_files,
+            repo_url: later.repo_url.or(self.repo_url),
+        }
+    }
+}
+
+impl Cli {
+    fn try_into_args(self) -> std::result::Result<CliArgs, clap::Error> {
+        if matches!(self.command, Some(Subcmd::Review { .. }))
+            && self.tui_options.has_any_explicit_value()
+        {
+            return Err(clap::Error::raw(
+                clap::error::ErrorKind::ArgumentConflict,
+                "TUI options cannot be used with `tuicr review`; run `tuicr review <command> --help` for review CLI options",
+            ));
+        }
+        Ok(self.into())
     }
 }
 
@@ -190,10 +357,29 @@ fn non_empty_path(s: &str) -> Result<String, String> {
     }
 }
 
+fn non_empty_comment_type(s: &str) -> Result<String, String> {
+    if s.is_empty() {
+        Err("a comment type is required".to_string())
+    } else {
+        Ok(s.to_string())
+    }
+}
+
+fn non_empty_comment_text(s: &str) -> Result<String, String> {
+    if s.trim().is_empty() {
+        Err("comment text cannot be empty".to_string())
+    } else {
+        Ok(s.to_string())
+    }
+}
+
 /// Parse CLI arguments from `std::env::args`. On `--help`/`--version`/parse
 /// errors, clap prints to stdout/stderr and exits the process.
 pub fn parse_cli_args() -> CliArgs {
-    Cli::parse().into()
+    match Cli::parse().try_into_args() {
+        Ok(args) => args,
+        Err(err) => err.exit(),
+    }
 }
 
 #[cfg(test)]
@@ -202,7 +388,7 @@ mod tests {
     use clap::error::ErrorKind;
 
     fn parse_for_test(args: &[&str]) -> Result<CliArgs, clap::Error> {
-        Cli::try_parse_from(args).map(CliArgs::from)
+        Cli::try_parse_from(args).and_then(Cli::try_into_args)
     }
 
     #[test]
@@ -471,11 +657,44 @@ mod tests {
 
     #[test]
     fn should_combine_pr_target_with_theme_flag() {
-        // Flags must still apply after the PR target (theme is a global arg).
+        // Legacy `tuicr pr` still accepts TUI flags on the subcommand.
         let parsed = parse_for_test(&["tuicr", "pr", "125", "--theme", "dark"])
             .expect("parse should succeed");
         assert_eq!(parsed.pr_target, Some("125".to_string()));
         assert_eq!(parsed.theme, Some("dark".to_string()));
+    }
+
+    #[test]
+    fn should_allow_root_tui_options_before_legacy_pr_subcommand() {
+        let parsed = parse_for_test(&["tuicr", "--theme", "dark", "pr", "125"])
+            .expect("parse should succeed");
+        assert_eq!(parsed.pr_target, Some("125".to_string()));
+        assert_eq!(parsed.theme, Some("dark".to_string()));
+    }
+
+    #[test]
+    fn should_parse_explicit_tui_command() {
+        let parsed = parse_for_test(&["tuicr", "tui", "-w", "--theme", "dark"])
+            .expect("parse should succeed");
+        assert!(parsed.working_tree);
+        assert_eq!(parsed.theme, Some("dark".to_string()));
+        assert_eq!(parsed.pr_target, None);
+        assert_eq!(parsed.review_command, None);
+    }
+
+    #[test]
+    fn should_parse_explicit_tui_pr_command() {
+        let parsed = parse_for_test(&["tuicr", "tui", "pr", "125", "--theme", "dark"])
+            .expect("parse should succeed");
+        assert_eq!(parsed.pr_target, Some("125".to_string()));
+        assert_eq!(parsed.theme, Some("dark".to_string()));
+    }
+
+    #[test]
+    fn should_reject_root_tui_options_before_subcommands() {
+        let err = parse_for_test(&["tuicr", "--theme", "dark", "review", "list"])
+            .expect_err("parse should fail");
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
     }
 
     #[test]
@@ -542,5 +761,133 @@ mod tests {
     fn should_leave_repo_url_none_when_not_provided() {
         let parsed = parse_for_test(&["tuicr"]).expect("parse should succeed");
         assert_eq!(parsed.repo_url, None);
+    }
+
+    #[test]
+    fn should_parse_review_list_command() {
+        let parsed = parse_for_test(&["tuicr", "review", "list", "--repo", "/tmp/repo"])
+            .expect("parse should succeed");
+        assert_eq!(
+            parsed.review_command,
+            Some(ReviewCommand::List {
+                repo: PathBuf::from("/tmp/repo"),
+            })
+        );
+    }
+
+    #[test]
+    fn should_reject_review_json_flag_because_output_is_always_json() {
+        let err =
+            parse_for_test(&["tuicr", "review", "list", "--json"]).expect_err("parse should fail");
+        assert_eq!(err.kind(), ErrorKind::UnknownArgument);
+    }
+
+    #[test]
+    fn should_parse_review_add_line_comment() {
+        let parsed = parse_for_test(&[
+            "tuicr",
+            "review",
+            "add",
+            "--session",
+            "agavra/tuicr@main/worktree",
+            "--target-file",
+            "src/main.rs",
+            "--line",
+            "42",
+            "--type",
+            "issue",
+            "--side",
+            "old",
+            "Handle the empty case",
+        ])
+        .expect("parse should succeed");
+
+        assert_eq!(
+            parsed.review_command,
+            Some(ReviewCommand::Add {
+                session: "agavra/tuicr@main/worktree".to_string(),
+                input: None,
+                repo: PathBuf::from("."),
+                comment_type: "issue".to_string(),
+                file: Some(PathBuf::from("src/main.rs")),
+                line: Some(42),
+                end_line: None,
+                side: LineSideArg::Old,
+                content: Some("Handle the empty case".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn should_parse_review_add_json_input() {
+        let parsed = parse_for_test(&[
+            "tuicr",
+            "review",
+            "add",
+            "--session",
+            "agavra/tuicr@main/worktree",
+            "--input",
+            r#"{"file":"src/main.rs","line":42,"side":"old","content":"note"}"#,
+        ])
+        .expect("parse should succeed");
+
+        assert_eq!(
+            parsed.review_command,
+            Some(ReviewCommand::Add {
+                session: "agavra/tuicr@main/worktree".to_string(),
+                input: Some(
+                    r#"{"file":"src/main.rs","line":42,"side":"old","content":"note"}"#.to_string()
+                ),
+                repo: PathBuf::from("."),
+                comment_type: "note".to_string(),
+                file: None,
+                line: None,
+                end_line: None,
+                side: LineSideArg::New,
+                content: None,
+            })
+        );
+    }
+
+    #[test]
+    fn should_parse_review_comments_command() {
+        let parsed = parse_for_test(&["tuicr", "review", "comments", "--session", "session.json"])
+            .expect("parse should succeed");
+        assert_eq!(
+            parsed.review_command,
+            Some(ReviewCommand::Comments {
+                session: "session.json".to_string(),
+                repo: PathBuf::from("."),
+            })
+        );
+    }
+
+    #[test]
+    fn should_parse_review_comments_get_alias() {
+        let parsed = parse_for_test(&["tuicr", "review", "get", "--session", "session.json"])
+            .expect("parse should succeed");
+        assert_eq!(
+            parsed.review_command,
+            Some(ReviewCommand::Comments {
+                session: "session.json".to_string(),
+                repo: PathBuf::from("."),
+            })
+        );
+    }
+
+    #[test]
+    fn should_require_file_for_review_add_line() {
+        let err = parse_for_test(&[
+            "tuicr",
+            "review",
+            "add",
+            "--session",
+            "session",
+            "--line",
+            "42",
+            "note",
+        ])
+        .expect_err("parse should fail");
+        assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
     }
 }
