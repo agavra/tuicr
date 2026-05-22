@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Result, TuicrError};
-use crate::forge::remote_comments::RemoteReviewThread;
+use crate::forge::remote_comments::{RemoteReviewSummary, RemoteReviewThread};
 use crate::forge::traits::{
     ForgeBackend, ForgeFileLinesRequest, ForgeRepository, GhCreateReviewResponse,
     PagedPullRequests, PullRequestCommit, PullRequestDetails, PullRequestListQuery,
@@ -15,6 +15,9 @@ use crate::process::{
 };
 
 use super::models::{GhPrCommit, GhPullRequestDetails, GhPullRequestSummary};
+use super::review_summaries::{
+    build_query as build_reviews_query, parse_graphql_page as parse_reviews_page,
+};
 use super::review_threads::{build_query, parse_graphql_page};
 use super::submit::build_review_payload;
 use crate::forge::traits::CreateReviewRequest;
@@ -362,6 +365,28 @@ where
         Ok(all)
     }
 
+    fn list_review_summaries(&self, pr: &PullRequestDetails) -> Result<Vec<RemoteReviewSummary>> {
+        let mut all: Vec<RemoteReviewSummary> = Vec::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..100 {
+            let args = self.build_review_summaries_args(pr, cursor.as_deref());
+            let output = self.run_gh(args, &pr.repository.host)?;
+            let parsed = parse_reviews_page(&output)?;
+            all.extend(parsed.summaries);
+            let Some(page_info) = parsed.page_info else {
+                break;
+            };
+            if !page_info.has_next_page {
+                break;
+            }
+            let Some(end_cursor) = page_info.end_cursor else {
+                break;
+            };
+            cursor = Some(end_cursor);
+        }
+        Ok(all)
+    }
+
     fn fetch_file_lines(&self, request: ForgeFileLinesRequest) -> Result<Vec<DiffLine>> {
         if request.start_line == 0 || request.start_line > request.end_line {
             return Ok(Vec::new());
@@ -436,7 +461,23 @@ where
         pr: &PullRequestDetails,
         cursor: Option<&str>,
     ) -> Vec<String> {
-        let query = build_query(cursor);
+        self.build_graphql_args(pr, &build_query(cursor), cursor)
+    }
+
+    fn build_review_summaries_args(
+        &self,
+        pr: &PullRequestDetails,
+        cursor: Option<&str>,
+    ) -> Vec<String> {
+        self.build_graphql_args(pr, &build_reviews_query(cursor), cursor)
+    }
+
+    fn build_graphql_args(
+        &self,
+        pr: &PullRequestDetails,
+        query: &str,
+        cursor: Option<&str>,
+    ) -> Vec<String> {
         let mut args = vec![
             "api".to_string(),
             "graphql".to_string(),
@@ -924,9 +965,25 @@ index 1111111..2222222 100644
                         stderr: "unexpected pr command".to_string(),
                     }),
                 },
-                // gh api graphql for review threads.
+                // gh api graphql — dispatch by the query body so the
+                // mock returns shape-appropriate fixtures for both the
+                // reviewThreads and reviews queries.
                 Some("api") if args.get(1).map(String::as_str) == Some("graphql") => {
-                    Ok(REVIEW_THREADS_JSON.to_string())
+                    let query = args
+                        .iter()
+                        .find(|a| a.starts_with("query="))
+                        .map(String::as_str)
+                        .unwrap_or("");
+                    if query.contains("reviewThreads(") {
+                        Ok(REVIEW_THREADS_JSON.to_string())
+                    } else if query.contains("reviews(") {
+                        Ok(REVIEW_SUMMARIES_JSON.to_string())
+                    } else {
+                        Err(GhCommandError::Failed {
+                            status: Some(1),
+                            stderr: "unexpected graphql query".to_string(),
+                        })
+                    }
                 }
                 // gh api repos/.../pulls/<n>/commits (commit list).
                 Some("api")
@@ -1021,6 +1078,28 @@ index 1111111..2222222 100644
                                         }
                                     ]
                                 }
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+    }"##;
+
+    const REVIEW_SUMMARIES_JSON: &str = r##"{
+        "data": {
+            "repository": {
+                "pullRequest": {
+                    "reviews": {
+                        "pageInfo": { "hasNextPage": false, "endCursor": null },
+                        "nodes": [
+                            {
+                                "id": "PRR_1",
+                                "state": "COMMENTED",
+                                "body": "Overall LGTM",
+                                "author": { "login": "alice" },
+                                "submittedAt": "2026-05-12T18:30:00Z",
+                                "url": "https://example.com/r/1"
                             }
                         ]
                     }
@@ -1425,6 +1504,34 @@ Match host github-work
         assert!(graphql_call.iter().any(|a| a == "owner=agavra"));
         assert!(graphql_call.iter().any(|a| a == "name=tuicr"));
         assert!(graphql_call.iter().any(|a| a == "number=125"));
+    }
+
+    #[test]
+    fn should_list_review_summaries_via_graphql_api_call() {
+        // given
+        let runner = FakeGhRunner::default();
+        let backend = GitHubGhBackend::with_runner(Some(repo()), runner);
+        let details = backend
+            .get_pull_request(parse_pull_request_target("125").unwrap())
+            .unwrap();
+        // when
+        let summaries = backend.list_review_summaries(&details).unwrap();
+        // then — the COMMENTED review with body is surfaced.
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].id, "PRR_1");
+        assert_eq!(summaries[0].author.as_deref(), Some("alice"));
+        assert_eq!(summaries[0].body, "Overall LGTM");
+        // and — the call routes the `reviews(` query, not `reviewThreads(`.
+        let calls = backend.runner.calls.borrow();
+        let summaries_call = calls
+            .iter()
+            .find(|args| {
+                args.first().map(String::as_str) == Some("api")
+                    && args.iter().any(|a| a.contains("reviews(first:"))
+            })
+            .expect("expected a reviews graphql call");
+        assert!(summaries_call.iter().any(|a| a == "owner=agavra"));
+        assert!(summaries_call.iter().any(|a| a == "number=125"));
     }
 
     #[test]

@@ -133,6 +133,19 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
         line_idx += 1;
     }
 
+    for summary in &app.forge_review_summaries {
+        let summary_lines = comment_panel::format_remote_review_summary_lines(&app.theme, summary);
+        for mut summary_line in summary_lines {
+            let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
+            summary_line.spans.insert(
+                0,
+                Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
+            );
+            lines.push(summary_line);
+            line_idx += 1;
+        }
+    }
+
     for comment in &app.session.review_comments {
         let is_being_edited =
             app.editing_comment_id.as_ref() == Some(&comment.id) && is_review_comment_mode;

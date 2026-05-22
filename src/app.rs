@@ -235,6 +235,9 @@ pub enum AnnotatedLine {
     ReviewCommentsHeader,
     /// A review-level comment line (part of a multi-line comment box)
     ReviewComment { comment_idx: usize },
+    /// A read-only line of a rendered remote review summary (PR review body).
+    /// Renders at review scope, parallel to `ReviewComment` for local drafts.
+    RemoteReviewSummaryLine { summary_idx: usize },
     /// File header line
     FileHeader { file_idx: usize },
     /// A file-level comment line (part of a multi-line comment box)
@@ -368,6 +371,7 @@ pub fn annotation_file_idx(annotation: &AnnotatedLine) -> Option<usize> {
         | AnnotatedLine::BinaryOrEmpty { file_idx } => Some(*file_idx),
         AnnotatedLine::ReviewCommentsHeader
         | AnnotatedLine::ReviewComment { .. }
+        | AnnotatedLine::RemoteReviewSummaryLine { .. }
         | AnnotatedLine::Expander { .. }
         | AnnotatedLine::HiddenLines { .. }
         | AnnotatedLine::ExpandedContext { .. }
@@ -776,7 +780,10 @@ pub enum PrThreadsEvent {
         repository: crate::forge::traits::ForgeRepository,
         pr_number: u64,
         head_sha: String,
-        result: std::result::Result<Vec<crate::forge::remote_comments::RemoteReviewThread>, String>,
+        threads:
+            std::result::Result<Vec<crate::forge::remote_comments::RemoteReviewThread>, String>,
+        summaries:
+            std::result::Result<Vec<crate::forge::remote_comments::RemoteReviewSummary>, String>,
     },
 }
 
@@ -932,6 +939,10 @@ pub struct App {
     /// `poll_pr_threads_events`). Empty in non-PR modes and during the
     /// loading window.
     pub forge_review_threads: Vec<crate::forge::remote_comments::RemoteReviewThread>,
+    /// Review-level summary comments (body text on each `PullRequestReview`).
+    /// Populated alongside `forge_review_threads`. These render at the top
+    /// of the diff, parallel to local `session.review_comments` drafts.
+    pub forge_review_summaries: Vec<crate::forge::remote_comments::RemoteReviewSummary>,
     /// True while a background remote-thread fetch is in flight for the
     /// currently open PR. Drives the footer "Loading remote comments…"
     /// hint and skips re-fetch if `:e` is hit again before the first
@@ -1158,6 +1169,9 @@ pub enum CommentNavigatorKey {
     },
     Remote {
         thread_idx: usize,
+    },
+    RemoteReview {
+        summary_idx: usize,
     },
 }
 
@@ -1744,6 +1758,7 @@ impl App {
             pr_reload_rx: None,
             forge_backend: None,
             forge_review_threads: Vec::new(),
+            forge_review_summaries: Vec::new(),
             forge_review_threads_loading: false,
             pr_threads_rx: None,
             forge_config: crate::config::ForgeConfig::default(),
@@ -2602,6 +2617,7 @@ impl App {
         // Reset remote-comment state on every PR mode entry; the new PR's
         // threads will be fetched separately by spawn_pr_threads_fetch.
         self.forge_review_threads = Vec::new();
+        self.forge_review_summaries = Vec::new();
         self.forge_review_threads_loading = false;
         self.pr_threads_rx = None;
         // Latest known remote head — equal to the session head at open time;
@@ -4314,6 +4330,11 @@ impl App {
                 let comment = self.session.review_comments.get(*comment_idx)?;
                 Some(comment.content.clone())
             }
+            AnnotatedLine::RemoteReviewSummaryLine { summary_idx } => {
+                let summary = self.forge_review_summaries.get(*summary_idx)?;
+                let author = summary.author.as_deref().unwrap_or("unknown");
+                Some(format!("github @{author} {}", summary.body))
+            }
             AnnotatedLine::FileHeader { file_idx } => {
                 let file = self.diff_files.get(*file_idx)?;
                 Some(format!(
@@ -4845,6 +4866,11 @@ impl App {
             AnnotatedLine::RemoteThreadLine { thread_idx } => Some(CommentNavigatorKey::Remote {
                 thread_idx: *thread_idx,
             }),
+            AnnotatedLine::RemoteReviewSummaryLine { summary_idx } => {
+                Some(CommentNavigatorKey::RemoteReview {
+                    summary_idx: *summary_idx,
+                })
+            }
             _ => None,
         }
     }
@@ -4931,6 +4957,18 @@ impl App {
                     line: thread.line,
                     side: Some(side),
                     author,
+                })
+            }
+            CommentNavigatorKey::RemoteReview { summary_idx } => {
+                let summary = self.forge_review_summaries.get(summary_idx)?;
+                Some(CommentNavigatorItem {
+                    key: CommentNavigatorKey::RemoteReview { summary_idx },
+                    kind: CommentNavigatorKind::Remote { muted: false },
+                    target_annotation,
+                    path: None,
+                    line: None,
+                    side: None,
+                    author: summary.author.clone(),
                 })
             }
         }
@@ -5500,6 +5538,9 @@ impl App {
         // Header line is only rendered in multi-file view. See the guards
         // in `src/ui/diff_unified.rs` and `src/ui/diff_side_by_side.rs`.
         let mut height = if self.is_single_file_view { 0 } else { 1 };
+        for summary in &self.forge_review_summaries {
+            height += crate::forge::remote_comments::summary_display_lines(summary);
+        }
         for comment in &self.session.review_comments {
             height += Self::comment_display_lines(comment, self.diff_state.viewport_width);
         }
@@ -7515,14 +7556,18 @@ impl App {
         std::thread::spawn(move || {
             let backend =
                 GitHubGhBackend::new(Some(repository.clone())).with_local_checkout(local_checkout);
-            let result = backend
+            let threads = backend
                 .list_review_threads(&details_clone)
+                .map_err(|e| e.to_string());
+            let summaries = backend
+                .list_review_summaries(&details_clone)
                 .map_err(|e| e.to_string());
             let _ = tx.send(PrThreadsEvent::Done {
                 repository,
                 pr_number,
                 head_sha,
-                result,
+                threads,
+                summaries,
             });
         });
     }
@@ -7546,7 +7591,8 @@ impl App {
                 repository,
                 pr_number,
                 head_sha,
-                result,
+                threads,
+                summaries,
             } => {
                 // Validate against the currently open PR. If the user has
                 // opened a different PR (or left PR mode) while the fetch
@@ -7566,18 +7612,34 @@ impl App {
                 if !still_relevant {
                     return;
                 }
-                match result {
-                    Ok(threads) => {
-                        self.forge_review_threads = threads;
-                        self.prune_locked_comments();
-                        let _ = self.save_current_session_merging_external();
-                        self.rebuild_annotations();
+                let mut had_error = false;
+                match threads {
+                    Ok(t) => {
+                        self.forge_review_threads = t;
                     }
                     Err(e) => {
                         self.forge_review_threads = Vec::new();
                         self.set_warning(format!("Failed to load remote comments: {e}"));
+                        had_error = true;
                     }
                 }
+                match summaries {
+                    Ok(s) => {
+                        self.forge_review_summaries = s;
+                    }
+                    Err(e) => {
+                        self.forge_review_summaries = Vec::new();
+                        // Only surface the summary error if the threads call
+                        // succeeded — otherwise the user already got a
+                        // warning for the broader failure.
+                        if !had_error {
+                            self.set_warning(format!("Failed to load remote reviews: {e}"));
+                        }
+                    }
+                }
+                self.prune_locked_comments();
+                let _ = self.save_current_session_merging_external();
+                self.rebuild_annotations();
             }
         }
     }
@@ -7671,13 +7733,18 @@ impl App {
             highlighter,
         )?;
         Self::load_or_apply_pr_session(&mut opened);
-        // Sync thread fetch — tests assert on `app.forge_review_threads`
-        // immediately after this returns.
+        // Sync thread + summary fetch — tests assert on
+        // `app.forge_review_threads`/`forge_review_summaries` immediately
+        // after this returns.
         let threads = backend
             .list_review_threads(&opened.details)
             .unwrap_or_default();
+        let summaries = backend
+            .list_review_summaries(&opened.details)
+            .unwrap_or_default();
         self.enter_pr_diff_mode(backend, opened)?;
         self.forge_review_threads = threads;
+        self.forge_review_summaries = summaries;
         self.prune_locked_comments();
         self.rebuild_annotations();
         Ok(())
@@ -8713,6 +8780,13 @@ impl App {
         if !self.is_single_file_view {
             self.line_annotations
                 .push(AnnotatedLine::ReviewCommentsHeader);
+        }
+        for (summary_idx, summary) in self.forge_review_summaries.iter().enumerate() {
+            let summary_lines = crate::forge::remote_comments::summary_display_lines(summary);
+            for _ in 0..summary_lines {
+                self.line_annotations
+                    .push(AnnotatedLine::RemoteReviewSummaryLine { summary_idx });
+            }
         }
         for (comment_idx, comment) in self.session.review_comments.iter().enumerate() {
             let comment_lines =
@@ -10988,7 +11062,8 @@ mod target_selector_tests {
             repository: pr_key.repository.clone(),
             pr_number: pr_key.number,
             head_sha: pr_key.head_sha.clone(),
-            result: Ok(vec![sample_thread(2, "delayed", false, false)]),
+            threads: Ok(vec![sample_thread(2, "delayed", false, false)]),
+            summaries: Ok(Vec::new()),
         })
         .unwrap();
         // when
@@ -11018,7 +11093,8 @@ mod target_selector_tests {
             repository: ForgeRepository::github("github.com", "agavra", "tuicr"),
             pr_number: 999,                         // wrong number
             head_sha: "definitely-not-this".into(), // wrong head
-            result: Ok(vec![sample_thread(2, "stale", false, false)]),
+            threads: Ok(vec![sample_thread(2, "stale", false, false)]),
+            summaries: Ok(Vec::new()),
         })
         .unwrap();
         // when
@@ -12832,6 +12908,39 @@ mod expand_gap_tests {
             CommentNavigatorKey::Remote { thread_idx: 0 }
         ));
         assert_eq!(items[3].author.as_deref(), Some("alice"));
+    }
+
+    #[test]
+    fn comment_navigator_includes_remote_review_summary() {
+        use crate::forge::remote_comments::{RemoteReviewState, RemoteReviewSummary};
+
+        let file = make_file_with_hunks("a.rs", vec![make_hunk(1, 1)]);
+        let mut app = build_app_with_files(vec![file], 10);
+        app.sync_viewport_width(80);
+
+        app.forge_review_summaries = vec![RemoteReviewSummary {
+            id: "PRR_1".into(),
+            author: Some("alice".into()),
+            body: "Overall LGTM".into(),
+            state: RemoteReviewState::Commented,
+            created_at: None,
+            url: "https://example.com/r/1".into(),
+        }];
+        app.rebuild_annotations();
+
+        let items = app.build_comment_navigator_items();
+
+        // Summary appears as the first navigator item — review-scope, before files.
+        assert!(matches!(
+            items[0].key,
+            CommentNavigatorKey::RemoteReview { summary_idx: 0 }
+        ));
+        assert_eq!(items[0].author.as_deref(), Some("alice"));
+        assert!(items[0].path.is_none());
+        assert!(items[0].line.is_none());
+
+        // Scroll math stays consistent: annotation count matches total_lines.
+        assert_eq!(app.total_lines(), app.line_annotations.len());
     }
 
     #[test]

@@ -47,6 +47,62 @@ pub struct RemoteReviewComment {
     pub url: String,
 }
 
+/// State of a remote review at submit time. GitHub exposes one of
+/// `APPROVED`, `CHANGES_REQUESTED`, `COMMENTED`, `DISMISSED`, `PENDING`;
+/// we keep the same set so display chrome can mark approvals vs. blocks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RemoteReviewState {
+    Commented,
+    Approved,
+    ChangesRequested,
+    Dismissed,
+    Pending,
+}
+
+impl RemoteReviewState {
+    pub fn parse(value: &str) -> Self {
+        match value.to_ascii_uppercase().as_str() {
+            "APPROVED" => RemoteReviewState::Approved,
+            "CHANGES_REQUESTED" => RemoteReviewState::ChangesRequested,
+            "DISMISSED" => RemoteReviewState::Dismissed,
+            "PENDING" => RemoteReviewState::Pending,
+            _ => RemoteReviewState::Commented,
+        }
+    }
+
+    /// Short label for badge/header text (e.g. `[github @alice approved]`).
+    pub fn badge_label(&self) -> Option<&'static str> {
+        match self {
+            RemoteReviewState::Commented => None,
+            RemoteReviewState::Approved => Some("approved"),
+            RemoteReviewState::ChangesRequested => Some("changes requested"),
+            RemoteReviewState::Dismissed => Some("dismissed"),
+            RemoteReviewState::Pending => Some("pending"),
+        }
+    }
+}
+
+/// A review-level summary comment, attached directly to a `PullRequestReview`.
+///
+/// Distinct from `RemoteReviewThread`: these have no file/line anchor and
+/// carry the reviewer's summary text alongside the review state (approved /
+/// changes requested / commented). They render in the top-of-diff review
+/// area, parallel to local `session.review_comments`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteReviewSummary {
+    /// Forge-assigned review node ID.
+    pub id: String,
+    /// Login/handle of the reviewer, when available.
+    pub author: Option<String>,
+    /// Markdown body as submitted. Always non-empty by construction —
+    /// fetchers drop reviews with empty bodies (e.g. bare approvals).
+    pub body: String,
+    pub state: RemoteReviewState,
+    pub created_at: Option<DateTime<Utc>>,
+    /// Permalink to the review on the forge.
+    pub url: String,
+}
+
 /// A discussion thread on a forge — one root comment plus zero or more replies.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteReviewThread {
@@ -159,6 +215,16 @@ pub fn thread_display_lines(thread: &RemoteReviewThread) -> usize {
     // single closing rule for the whole thread
     total += 1;
     total
+}
+
+/// Count the number of rendered lines a review summary occupies in the
+/// diff view's review-scope area. Layout must match
+/// `ui::comment_panel::format_remote_review_summary_lines`:
+/// - 1 header line (`├── [github @author commented] ──`)
+/// - 1 body line per `\n`-split line in the summary body
+/// - 1 footer line (`╰────`)
+pub fn summary_display_lines(summary: &RemoteReviewSummary) -> usize {
+    1 + summary.body.split('\n').count() + 1
 }
 
 /// Group threads by file path for export grouping. Preserves the input

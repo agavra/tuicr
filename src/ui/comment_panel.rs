@@ -310,6 +310,51 @@ pub fn format_remote_thread_lines(
     result
 }
 
+/// Format a remote review summary (the body of a `PullRequestReview`) as a
+/// box with a `[github @author <state>]` header. Renders at review scope —
+/// no line anchor — so the top corner is `╭`, not the line-anchored `├`.
+pub fn format_remote_review_summary_lines(
+    theme: &Theme,
+    summary: &crate::forge::remote_comments::RemoteReviewSummary,
+) -> Vec<Line<'static>> {
+    let badge_fg = theme.diff_hunk_header;
+    let border_fg = theme.diff_hunk_header;
+    let body_fg = theme.fg_secondary;
+
+    let badge_style = Style::default().fg(badge_fg).add_modifier(Modifier::BOLD);
+    let border_style = Style::default().fg(border_fg);
+    let body_style = Style::default().fg(body_fg);
+
+    let author = summary.author.as_deref().unwrap_or("unknown");
+    let mut badge_text = format!("[github @{author}");
+    if let Some(state_label) = summary.state.badge_label() {
+        badge_text.push(' ');
+        badge_text.push_str(state_label);
+    }
+    badge_text.push_str("] ");
+
+    let mut result = Vec::new();
+    result.push(Line::from(vec![
+        Span::styled("    ╭── ".to_string(), border_style),
+        Span::styled(badge_text, badge_style),
+        Span::styled("─".repeat(28), border_style),
+    ]));
+
+    for line in summary.body.split('\n') {
+        result.push(Line::from(vec![
+            Span::styled("    │  ".to_string(), border_style),
+            Span::styled(line.to_string(), body_style),
+        ]));
+    }
+
+    result.push(Line::from(vec![Span::styled(
+        "    ╰".to_string() + &"─".repeat(39),
+        border_style,
+    )]));
+
+    result
+}
+
 /// Format a comment as multiple lines with a box border (themed version).
 ///
 /// `author` advertises the comment's author in the top-row badge and tints

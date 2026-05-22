@@ -310,6 +310,16 @@ pub trait ForgeBackend {
     /// and outdated state. Implementations should return all threads in
     /// posted order; filtering by visibility happens in the App.
     fn list_review_threads(&self, pr: &PullRequestDetails) -> Result<Vec<RemoteReviewThread>>;
+    /// Fetch review-level summary comments — the body text on each
+    /// `PullRequestReview`, distinct from line-anchored threads. Default
+    /// returns an empty list; only forges with review-summary semantics
+    /// (GitHub) need to override.
+    fn list_review_summaries(
+        &self,
+        _pr: &PullRequestDetails,
+    ) -> Result<Vec<crate::forge::remote_comments::RemoteReviewSummary>> {
+        Ok(Vec::new())
+    }
     /// List the commits that make up a pull request, in chronological order
     /// (oldest first; the App reverses to newest-first display order). The
     /// list scopes the inline commit selector so users can narrow a PR's
