@@ -33,6 +33,11 @@ pub fn handle_mouse_event(app: &mut App, event: MouseEvent) {
                     wheel_commit_list(app, scroll_up);
                 }
                 InputMode::Normal if over_file_list => handle_file_list_action(app, action),
+                InputMode::Normal
+                    if app.comment_navigator_area.is_some_and(|r| r.contains(pos)) =>
+                {
+                    handle_comment_navigator_action(app, action)
+                }
                 InputMode::Normal if over_diff => handle_diff_action(app, action),
                 InputMode::VisualSelect if over_diff => handle_diff_action(app, action),
                 _ => {}
@@ -151,6 +156,17 @@ fn handle_left_click(app: &mut App, pos: Position) {
                 }
             }
         }
+        return;
+    }
+
+    if app
+        .comment_navigator_inner_area
+        .is_some_and(|r| r.contains(pos))
+        && let Some(idx) = app.comment_navigator_idx_at_screen_row(pos.y)
+    {
+        app.focused_panel = FocusedPanel::Comments;
+        app.comment_navigator_state.select(idx);
+        app.jump_to_selected_comment();
         return;
     }
 
@@ -887,6 +903,22 @@ pub fn handle_file_list_action(app: &mut App, action: Action) {
     }
 }
 
+/// Handle actions when the comment navigator panel is focused
+pub fn handle_comment_navigator_action(app: &mut App, action: Action) {
+    match action {
+        Action::CursorDown(n) => app.comment_navigator_down(n),
+        Action::CursorUp(n) => app.comment_navigator_up(n),
+        Action::ScrollLeft(n) => app.comment_navigator_state.scroll_left(n),
+        Action::ScrollRight(n) => app.comment_navigator_state.scroll_right(n),
+        Action::MouseScrollDown(n) => app.comment_navigator_viewport_scroll_down(n),
+        Action::MouseScrollUp(n) => app.comment_navigator_viewport_scroll_up(n),
+        Action::SelectFile => {
+            app.jump_to_selected_comment();
+        }
+        _ => handle_shared_normal_action(app, action),
+    }
+}
+
 /// Handle actions when diff panel is focused
 pub fn handle_diff_action(app: &mut App, action: Action) {
     match action {
@@ -969,20 +1001,26 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
         Action::ToggleReviewed => app.toggle_reviewed(),
         Action::ToggleFocus => {
             let has_selector = app.has_inline_commit_selector();
-            app.focused_panel = match (app.focused_panel, has_selector) {
-                (FocusedPanel::FileList, _) => FocusedPanel::Diff,
-                (FocusedPanel::Diff, true) => FocusedPanel::CommitSelector,
-                (FocusedPanel::Diff, false) => FocusedPanel::FileList,
-                (FocusedPanel::CommitSelector, _) => FocusedPanel::FileList,
+            let has_comments = app.has_comment_navigator_items();
+            app.focused_panel = match (app.focused_panel, has_selector, has_comments) {
+                (FocusedPanel::FileList, _, true) => FocusedPanel::Comments,
+                (FocusedPanel::FileList, _, false) => FocusedPanel::Diff,
+                (FocusedPanel::Comments, _, _) => FocusedPanel::Diff,
+                (FocusedPanel::Diff, true, _) => FocusedPanel::CommitSelector,
+                (FocusedPanel::Diff, false, _) => FocusedPanel::FileList,
+                (FocusedPanel::CommitSelector, _, _) => FocusedPanel::FileList,
             };
         }
         Action::ToggleFocusReverse => {
             let has_selector = app.has_inline_commit_selector();
-            app.focused_panel = match (app.focused_panel, has_selector) {
-                (FocusedPanel::FileList, true) => FocusedPanel::CommitSelector,
-                (FocusedPanel::FileList, false) => FocusedPanel::Diff,
-                (FocusedPanel::Diff, _) => FocusedPanel::FileList,
-                (FocusedPanel::CommitSelector, _) => FocusedPanel::Diff,
+            let has_comments = app.has_comment_navigator_items();
+            app.focused_panel = match (app.focused_panel, has_selector, has_comments) {
+                (FocusedPanel::FileList, true, _) => FocusedPanel::CommitSelector,
+                (FocusedPanel::FileList, false, _) => FocusedPanel::Diff,
+                (FocusedPanel::Comments, _, _) => FocusedPanel::FileList,
+                (FocusedPanel::Diff, _, true) => FocusedPanel::Comments,
+                (FocusedPanel::Diff, _, false) => FocusedPanel::FileList,
+                (FocusedPanel::CommitSelector, _, _) => FocusedPanel::Diff,
             };
         }
         Action::ExpandAll => {

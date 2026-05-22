@@ -5,11 +5,16 @@ use ratatui::{
 };
 
 use crate::app::{App, InputMode};
+use crate::ui::comment_navigator::render_comment_navigator;
 use crate::ui::diff_view::render_diff_view;
 use crate::ui::file_list::render_file_list;
 use crate::ui::inline_commit_selector::render_inline_commit_selector;
 use crate::ui::selector::render_commit_select;
 use crate::ui::{comment_panel, help_popup, status_bar, styles, submit_modals};
+
+const FILE_LIST_MIN_HEIGHT: u16 = 4;
+const COMMENT_NAVIGATOR_MIN_HEIGHT: u16 = 4;
+const COMMENT_NAVIGATOR_MAX_HEIGHT: u16 = 12;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     frame.render_widget(
@@ -103,13 +108,41 @@ fn render_main_content(frame: &mut Frame, app: &mut App, area: Rect) {
             ])
             .split(content_area);
 
-        app.file_list_area = Some(chunks[0]);
+        let comment_items = app.build_comment_navigator_items();
+        if !comment_items.is_empty()
+            && chunks[0].height >= FILE_LIST_MIN_HEIGHT + COMMENT_NAVIGATOR_MIN_HEIGHT
+        {
+            let available_comment_height = chunks[0].height.saturating_sub(FILE_LIST_MIN_HEIGHT);
+            let max_comment_height = COMMENT_NAVIGATOR_MAX_HEIGHT.min(available_comment_height);
+            let desired_comment_height = comment_items.len() as u16 + 2;
+            let comment_height = desired_comment_height
+                .min(max_comment_height)
+                .max(COMMENT_NAVIGATOR_MIN_HEIGHT);
+            let left_chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Min(FILE_LIST_MIN_HEIGHT),
+                    Constraint::Length(comment_height),
+                ])
+                .split(chunks[0]);
+
+            app.file_list_area = Some(left_chunks[0]);
+            app.comment_navigator_area = Some(left_chunks[1]);
+            render_file_list(frame, app, left_chunks[0]);
+            render_comment_navigator(frame, app, left_chunks[1], &comment_items);
+        } else {
+            app.file_list_area = Some(chunks[0]);
+            app.comment_navigator_area = None;
+            app.comment_navigator_inner_area = None;
+            render_file_list(frame, app, chunks[0]);
+        }
         app.diff_area = Some(chunks[1]);
 
-        render_file_list(frame, app, chunks[0]);
         render_diff_view(frame, app, chunks[1]);
     } else {
         app.file_list_area = None;
+        app.comment_navigator_area = None;
+        app.comment_navigator_inner_area = None;
         app.diff_area = Some(content_area);
 
         render_diff_view(frame, app, content_area);

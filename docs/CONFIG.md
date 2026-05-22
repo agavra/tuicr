@@ -60,7 +60,7 @@ comment_type_prefix = true
 | `diff_view` | `unified` | `unified` or `side-by-side`. Toggle in-app with `:diff`. |
 | `show_file_list` | `true` | Whether the file list panel is visible on startup. Toggle with `<leader>e`. |
 | `mouse` | `true` | Wheel scrolling, clicks, and drag-to-select. |
-| `leader` | `;` | Single-character prefix for panel focus, file-list toggle, and review-comment shortcuts. Invalid multi-character values are ignored with a startup warning. |
+| `leader` | `;` | Single-character prefix for panel focus, sidebar toggles, and review-comment shortcuts. Invalid multi-character values are ignored with a startup warning. |
 | `wrap` | `false` | Line wrap in the diff view. Toggle with `:set wrap!`. |
 | `cursor_line` | `true` | Highlight the current cursor line and visual selection. |
 | `transparent_background` | `true` | Let the terminal background show through panels. `false` paints the theme's `panel_bg`. |

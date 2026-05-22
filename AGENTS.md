@@ -81,6 +81,7 @@ src/
 └── ui/
     ├── mod.rs
     ├── app_layout.rs    # Main render function, file list, diff view with inline comments
+    ├── comment_navigator.rs # Sidebar comment index for jumping local/remote comments
     ├── status_bar.rs    # Header, status bar, command line rendering
     ├── help_popup.rs    # Help overlay (? key)
     ├── comment_panel.rs # Comment input dialog, confirm dialog
@@ -96,6 +97,7 @@ Repository-managed agent integrations:
 - Central application state
 - Contains: `vcs` (Box<dyn VcsBackend>), `vcs_info`, `session`, `diff_files`, `input_mode`, scroll/cursor state
 - Methods: `scroll_down/up`, `next/prev_file`, `next/prev_hunk`, `go_to_source_line`, `toggle_reviewed`, `save_comment`
+- Comment navigation uses `CommentNavigatorState` plus `CommentNavigatorItem` rows derived from `line_annotations`, so local comments and visible remote PR threads jump to the same annotations the diff renders.
 
 **VcsBackend** (`src/vcs/traits.rs`):
 - Trait abstracting VCS operations
@@ -129,7 +131,7 @@ Repository-managed agent integrations:
 ### Data Flow
 
 1. **Startup**: Parse CLI args (invalid `--theme` exits non-zero). With no subcommand, or with explicit `tuicr tui`, load config from `$XDG_CONFIG_HOME/tuicr/config.toml` (default `~/.config/tuicr/config.toml`, or `%APPDATA%\tuicr\config.toml` on Windows), ignore unknown config keys with startup warnings, resolve theme precedence (`--theme` > config > dark), then call `App::new()`. Theme selection first checks bundled names, then local theme files from `$XDG_CONFIG_HOME/tuicr/themes/` (default `~/.config/tuicr/themes/`, or `%APPDATA%\tuicr\themes\` on Windows). Local theme files may reference a local `.tmTheme` syntax theme. Some bat-compatible Base16 `.tmTheme` files encode ANSI palette slots as placeholders, and `src/syntax/mod.rs` translates those at render time. `App::new()` calls `detect_vcs()` (Jujutsu first, then Git, then Mercurial), using config `backend = "libgit2"` or `backend = "cli"` for Git. Normal Git repos default to libgit2; sparse checkout repos automatically use the Git CLI backend and show a startup warning when that overrides the default. It filters diff files via repo-root `.tuicrignore`, then enters commit selection mode by default. If staged/unstaged changes exist, the first selection rows are "Staged changes" and/or "Unstaged changes". With `-r/--revisions`, it opens the requested commit range directly. Config `show_file_list = false` hides the file list panel on startup (toggleable with `<leader>e`, where `leader` defaults to `;`). Config `diff_view = "side-by-side"` sets the default diff layout (toggleable with `:diff`). Config `wrap = true` enables line wrapping (toggleable with `:set wrap!`). Config `review_watch_interval_ms = 1000` controls persisted-session polling; set it to `0` to disable.
-2. **Render**: `ui::render()` draws the TUI based on `App` state
+2. **Render**: `ui::render()` draws the TUI based on `App` state. When rendered comments exist, the left sidebar splits vertically into file tree and comment navigator; the navigator is hidden when there are no rendered comment rows.
 3. **Input**: `crossterm` events → `map_key_to_action` → match on Action in main loop
 4. **Comments**: `App::save_comment()` builds an `AddCommentRequest` and calls `add_comment_to_session()` so TUI and library callers share insertion behavior. The TUI creates a persisted session file as soon as a review session becomes active, so `tuicr review add` can target it immediately. Successful comment submits autosave the session using a locked, atomic write that merges externally added comments first.
 5. **Review CLI**: `tuicr review list|add|comments` exits before TUI startup, uses `ReviewStore`, and always emits JSON; `review list` includes `active: true` for currently open TUI sessions, and `review add --input` accepts JSON literal, `@file`, or stdin payloads
@@ -141,6 +143,7 @@ Repository-managed agent integrations:
 
 - **Infinite scroll**: All files rendered into one `Vec<Line>`, then sliced by `scroll_offset`
 - **Inline comments**: Comments are rendered in `app_layout.rs` after file headers and after relevant diff lines
+- **Comment navigator**: Built from `line_annotations` in rendered order. Local review/file/line comments and visible remote threads appear as compact rows; selecting one calls `move_cursor_to_annotation()` so the diff viewport scrolls to the comment.
 - **Session loading**: `App::new()` calls manifest-backed persistence helpers to restore previous review
 - **Collaborative session writes**: session JSON saves use a storage lock plus temp-file rename, with stale sidecar lock recovery if a process crashes while holding the lock. The TUI keeps a persisted-session snapshot so polling, `:e`, and autosave can merge external `tuicr review add` comments without overwriting local edits.
 - **Clipboard**: Uses `arboard` crate for cross-platform clipboard support

@@ -587,6 +587,7 @@ pub const SUBMIT_PICKER_EVENTS: &[(&str, crate::forge::submit::SubmitEvent)] = &
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusedPanel {
     FileList,
+    Comments,
     Diff,
     CommitSelector,
 }
@@ -851,6 +852,7 @@ pub struct App {
     pub diff_view_mode: DiffViewMode,
 
     pub file_list_state: FileListState,
+    pub comment_navigator_state: CommentNavigatorState,
     pub diff_state: DiffState,
     pub help_state: HelpState,
     pub command_buffer: String,
@@ -1002,9 +1004,12 @@ pub struct App {
     pub leader_key: char,
     pub scroll_offset: usize,
     pub file_list_area: Option<ratatui::layout::Rect>,
+    pub comment_navigator_area: Option<ratatui::layout::Rect>,
     pub diff_area: Option<ratatui::layout::Rect>,
     /// Inner content rect of the file list panel; populated during render.
     pub file_list_inner_area: Option<ratatui::layout::Rect>,
+    /// Inner content rect of the comment navigator panel; populated during render.
+    pub comment_navigator_inner_area: Option<ratatui::layout::Rect>,
     /// Inner content rect of the diff panel; populated during render.
     pub diff_inner_area: Option<ratatui::layout::Rect>,
     /// Inner content rect of the commit list panel (full-screen picker or inline selector);
@@ -1101,6 +1106,70 @@ impl FileListState {
         let max_scroll_x = self.max_content_width.saturating_sub(self.viewport_width);
         self.scroll_x = (self.scroll_x.saturating_add(cols)).min(max_scroll_x);
     }
+}
+
+#[derive(Default)]
+pub struct CommentNavigatorState {
+    pub list_state: ratatui::widgets::ListState,
+    pub scroll_x: usize,
+    pub viewport_width: usize,    // Set during render
+    pub viewport_height: usize,   // Set during render
+    pub max_content_width: usize, // Set during render
+}
+
+impl CommentNavigatorState {
+    pub fn selected(&self) -> usize {
+        self.list_state.selected().unwrap_or(0)
+    }
+
+    pub fn select(&mut self, index: usize) {
+        self.list_state.select(Some(index));
+    }
+
+    pub fn scroll_left(&mut self, cols: usize) {
+        self.scroll_x = self.scroll_x.saturating_sub(cols);
+    }
+
+    pub fn scroll_right(&mut self, cols: usize) {
+        let max_scroll_x = self.max_content_width.saturating_sub(self.viewport_width);
+        self.scroll_x = (self.scroll_x.saturating_add(cols)).min(max_scroll_x);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommentNavigatorKey {
+    Review {
+        comment_idx: usize,
+    },
+    File {
+        file_idx: usize,
+        comment_idx: usize,
+    },
+    Line {
+        file_idx: usize,
+        line: u32,
+        side: LineSide,
+        comment_idx: usize,
+    },
+    Remote {
+        thread_idx: usize,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommentNavigatorKind {
+    Local(CommentType),
+    Remote { muted: bool },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommentNavigatorItem {
+    pub key: CommentNavigatorKey,
+    pub kind: CommentNavigatorKind,
+    pub target_annotation: usize,
+    pub path: Option<String>,
+    pub line: Option<u32>,
+    pub side: Option<LineSide>,
 }
 
 #[derive(Debug)]
@@ -1626,6 +1695,7 @@ impl App {
             focused_panel: FocusedPanel::Diff,
             diff_view_mode: DiffViewMode::Unified,
             file_list_state: FileListState::default(),
+            comment_navigator_state: CommentNavigatorState::default(),
             diff_state: DiffState::default(),
             help_state: HelpState::default(),
             command_buffer: String::new(),
@@ -1690,8 +1760,10 @@ impl App {
             leader_key: crate::config::DEFAULT_LEADER_KEY,
             scroll_offset: 0,
             file_list_area: None,
+            comment_navigator_area: None,
             diff_area: None,
             file_list_inner_area: None,
+            comment_navigator_inner_area: None,
             diff_inner_area: None,
             commit_list_inner_area: None,
             diff_row_to_annotation: Vec::new(),
@@ -4726,6 +4798,227 @@ impl App {
         (idx < total).then_some(idx)
     }
 
+    pub fn comment_navigator_idx_at_screen_row(&self, screen_row: u16) -> Option<usize> {
+        let inner = self.comment_navigator_inner_area?;
+        if screen_row < inner.y || screen_row >= inner.y + inner.height {
+            return None;
+        }
+        let rel = (screen_row - inner.y) as usize;
+        let idx = self.comment_navigator_state.list_state.offset() + rel;
+        let total = self.build_comment_navigator_items().len();
+        (idx < total).then_some(idx)
+    }
+
+    fn comment_navigator_key(annotation: &AnnotatedLine) -> Option<CommentNavigatorKey> {
+        match annotation {
+            AnnotatedLine::ReviewComment { comment_idx } => Some(CommentNavigatorKey::Review {
+                comment_idx: *comment_idx,
+            }),
+            AnnotatedLine::FileComment {
+                file_idx,
+                comment_idx,
+            } => Some(CommentNavigatorKey::File {
+                file_idx: *file_idx,
+                comment_idx: *comment_idx,
+            }),
+            AnnotatedLine::LineComment {
+                file_idx,
+                line,
+                side,
+                comment_idx,
+            } => Some(CommentNavigatorKey::Line {
+                file_idx: *file_idx,
+                line: *line,
+                side: *side,
+                comment_idx: *comment_idx,
+            }),
+            AnnotatedLine::RemoteThreadLine { thread_idx } => Some(CommentNavigatorKey::Remote {
+                thread_idx: *thread_idx,
+            }),
+            _ => None,
+        }
+    }
+
+    fn comment_navigator_item_for_key(
+        &self,
+        key: CommentNavigatorKey,
+        target_annotation: usize,
+    ) -> Option<CommentNavigatorItem> {
+        match key {
+            CommentNavigatorKey::Review { comment_idx } => {
+                let comment = self.session.review_comments.get(comment_idx)?;
+                Some(CommentNavigatorItem {
+                    key: CommentNavigatorKey::Review { comment_idx },
+                    kind: CommentNavigatorKind::Local(comment.comment_type.clone()),
+                    target_annotation,
+                    path: None,
+                    line: None,
+                    side: None,
+                })
+            }
+            CommentNavigatorKey::File {
+                file_idx,
+                comment_idx,
+            } => {
+                let path = self.diff_files.get(file_idx)?.display_path();
+                let review = self.session.files.get(path)?;
+                let comment = review.file_comments.get(comment_idx)?;
+                Some(CommentNavigatorItem {
+                    key: CommentNavigatorKey::File {
+                        file_idx,
+                        comment_idx,
+                    },
+                    kind: CommentNavigatorKind::Local(comment.comment_type.clone()),
+                    target_annotation,
+                    path: Some(path.display().to_string()),
+                    line: None,
+                    side: None,
+                })
+            }
+            CommentNavigatorKey::Line {
+                file_idx,
+                line,
+                side,
+                comment_idx,
+            } => {
+                let path = self.diff_files.get(file_idx)?.display_path();
+                let review = self.session.files.get(path)?;
+                let comments = review.line_comments.get(&line)?;
+                let comment = comments.get(comment_idx)?;
+                Some(CommentNavigatorItem {
+                    key: CommentNavigatorKey::Line {
+                        file_idx,
+                        line,
+                        side,
+                        comment_idx,
+                    },
+                    kind: CommentNavigatorKind::Local(comment.comment_type.clone()),
+                    target_annotation,
+                    path: Some(path.display().to_string()),
+                    line: Some(line),
+                    side: Some(side),
+                })
+            }
+            CommentNavigatorKey::Remote { thread_idx } => {
+                let thread = self.forge_review_threads.get(thread_idx)?;
+                let muted = self
+                    .session
+                    .remote_comments_visibility
+                    .render_decision(thread)?;
+                let side = match thread.side {
+                    crate::forge::remote_comments::RemoteCommentSide::Right => LineSide::New,
+                    crate::forge::remote_comments::RemoteCommentSide::Left => LineSide::Old,
+                };
+                Some(CommentNavigatorItem {
+                    key: CommentNavigatorKey::Remote { thread_idx },
+                    kind: CommentNavigatorKind::Remote { muted },
+                    target_annotation,
+                    path: Some(thread.path.clone()),
+                    line: thread.line,
+                    side: Some(side),
+                })
+            }
+        }
+    }
+
+    pub fn build_comment_navigator_items(&self) -> Vec<CommentNavigatorItem> {
+        let mut items = Vec::new();
+        let mut last_key: Option<CommentNavigatorKey> = None;
+
+        for (idx, annotation) in self.line_annotations.iter().enumerate() {
+            let Some(key) = Self::comment_navigator_key(annotation) else {
+                last_key = None;
+                continue;
+            };
+
+            if last_key.as_ref() == Some(&key) {
+                continue;
+            }
+
+            if let Some(item) = self.comment_navigator_item_for_key(key.clone(), idx) {
+                items.push(item);
+                last_key = Some(key);
+            }
+        }
+
+        items
+    }
+
+    pub fn has_comment_navigator_items(&self) -> bool {
+        !self.build_comment_navigator_items().is_empty()
+    }
+
+    pub fn sync_comment_navigator_selection(&mut self, items: &[CommentNavigatorItem]) {
+        if items.is_empty() {
+            self.comment_navigator_state.list_state.select(None);
+            return;
+        }
+
+        if self.focused_panel == FocusedPanel::Diff
+            && let Some(annotation) = self.line_annotations.get(self.diff_state.cursor_line)
+            && let Some(key) = Self::comment_navigator_key(annotation)
+            && let Some(idx) = items.iter().position(|item| item.key == key)
+        {
+            self.comment_navigator_state.select(idx);
+            return;
+        }
+
+        let selected = self
+            .comment_navigator_state
+            .selected()
+            .min(items.len().saturating_sub(1));
+        self.comment_navigator_state.select(selected);
+    }
+
+    pub fn comment_navigator_down(&mut self, n: usize) {
+        let items = self.build_comment_navigator_items();
+        let max_idx = items.len().saturating_sub(1);
+        let new_idx = (self.comment_navigator_state.selected() + n).min(max_idx);
+        self.comment_navigator_state.select(new_idx);
+    }
+
+    pub fn comment_navigator_up(&mut self, n: usize) {
+        let new_idx = self.comment_navigator_state.selected().saturating_sub(n);
+        self.comment_navigator_state.select(new_idx);
+    }
+
+    pub fn comment_navigator_viewport_scroll_down(&mut self, lines: usize) {
+        let total = self.build_comment_navigator_items().len();
+        let viewport = self.comment_navigator_state.viewport_height.max(1);
+        let max_offset = total.saturating_sub(viewport);
+        let new_offset = (self.comment_navigator_state.list_state.offset() + lines).min(max_offset);
+        *self.comment_navigator_state.list_state.offset_mut() = new_offset;
+        if self.comment_navigator_state.selected() < new_offset {
+            self.comment_navigator_state.select(new_offset);
+        }
+    }
+
+    pub fn comment_navigator_viewport_scroll_up(&mut self, lines: usize) {
+        let viewport = self.comment_navigator_state.viewport_height.max(1);
+        let new_offset = self
+            .comment_navigator_state
+            .list_state
+            .offset()
+            .saturating_sub(lines);
+        *self.comment_navigator_state.list_state.offset_mut() = new_offset;
+        let max_visible = (new_offset + viewport).saturating_sub(1);
+        if self.comment_navigator_state.selected() > max_visible {
+            self.comment_navigator_state.select(max_visible);
+        }
+    }
+
+    pub fn jump_to_selected_comment(&mut self) -> bool {
+        let items = self.build_comment_navigator_items();
+        let Some(item) = items.get(self.comment_navigator_state.selected()) else {
+            self.set_message("No comments to navigate");
+            return false;
+        };
+        self.move_cursor_to_annotation(item.target_annotation);
+        self.center_cursor();
+        self.focused_panel = FocusedPanel::Diff;
+        true
+    }
+
     pub fn commit_list_idx_at_screen_row(&self, screen_row: u16) -> Option<usize> {
         let inner = self.commit_list_inner_area?;
         if screen_row < inner.y || screen_row >= inner.y + inner.height {
@@ -7441,7 +7734,12 @@ impl App {
 
     pub fn toggle_file_list(&mut self) {
         self.show_file_list = !self.show_file_list;
-        if !self.show_file_list && self.focused_panel == FocusedPanel::FileList {
+        if !self.show_file_list
+            && matches!(
+                self.focused_panel,
+                FocusedPanel::FileList | FocusedPanel::Comments
+            )
+        {
             self.focused_panel = FocusedPanel::Diff;
         }
         let status = if self.show_file_list {
@@ -12429,6 +12727,127 @@ mod expand_gap_tests {
         app.rebuild_annotations();
 
         assert_eq!(app.total_lines(), app.line_annotations.len());
+    }
+
+    #[test]
+    fn comment_navigator_items_follow_rendered_comment_order() {
+        use crate::forge::remote_comments::{
+            RemoteCommentSide, RemoteReviewComment, RemoteReviewThread,
+        };
+
+        let files = vec![
+            make_file_with_hunks("a.rs", vec![make_hunk(1, 1)]),
+            make_file_with_hunks("b.rs", vec![make_hunk(1, 2)]),
+        ];
+        let mut app = build_app_with_files(files, 10);
+        app.sync_viewport_width(80);
+
+        app.session.review_comments.push(Comment::new(
+            "review-level".to_string(),
+            CommentType::Note,
+            None,
+        ));
+        app.session
+            .files
+            .get_mut(&PathBuf::from("a.rs"))
+            .unwrap()
+            .file_comments
+            .push(Comment::new(
+                "file-level".to_string(),
+                CommentType::Suggestion,
+                None,
+            ));
+        app.session
+            .files
+            .get_mut(&PathBuf::from("b.rs"))
+            .unwrap()
+            .line_comments
+            .entry(2)
+            .or_default()
+            .push(Comment::new(
+                "line-level".to_string(),
+                CommentType::Issue,
+                Some(LineSide::New),
+            ));
+        app.forge_review_threads = vec![RemoteReviewThread {
+            id: "T1".into(),
+            path: "b.rs".into(),
+            line: Some(2),
+            side: RemoteCommentSide::Right,
+            is_resolved: false,
+            is_outdated: false,
+            comments: vec![RemoteReviewComment {
+                id: "C1".into(),
+                author: Some("alice".into()),
+                body: "remote-thread".into(),
+                created_at: None,
+                in_reply_to: None,
+                url: "https://example.com/c1".into(),
+            }],
+        }];
+        app.rebuild_annotations();
+
+        let items = app.build_comment_navigator_items();
+
+        assert_eq!(items.len(), 4);
+        assert!(matches!(
+            items[0].key,
+            CommentNavigatorKey::Review { comment_idx: 0 }
+        ));
+        assert!(matches!(
+            items[1].key,
+            CommentNavigatorKey::File {
+                file_idx: 0,
+                comment_idx: 0
+            }
+        ));
+        assert!(matches!(
+            items[2].key,
+            CommentNavigatorKey::Line {
+                file_idx: 1,
+                line: 2,
+                side: LineSide::New,
+                comment_idx: 0
+            }
+        ));
+        assert!(matches!(
+            items[3].key,
+            CommentNavigatorKey::Remote { thread_idx: 0 }
+        ));
+    }
+
+    #[test]
+    fn jump_to_selected_comment_uses_comment_annotation_target() {
+        let file = make_file_with_hunks("a.rs", vec![make_hunk(1, 2)]);
+        let mut app = build_app_with_files(vec![file], 10);
+        app.sync_viewport_width(80);
+        app.diff_state.viewport_height = 5;
+        app.session
+            .files
+            .get_mut(&PathBuf::from("a.rs"))
+            .unwrap()
+            .line_comments
+            .entry(2)
+            .or_default()
+            .push(Comment::new(
+                "line-level".to_string(),
+                CommentType::Issue,
+                Some(LineSide::New),
+            ));
+        app.rebuild_annotations();
+        let items = app.build_comment_navigator_items();
+        let target = items[0].target_annotation;
+        let expected_scroll = target
+            .saturating_sub(app.diff_state.viewport_height / 2)
+            .min(app.max_scroll_offset());
+
+        app.focused_panel = FocusedPanel::Comments;
+        app.comment_navigator_state.select(0);
+
+        assert!(app.jump_to_selected_comment());
+        assert_eq!(app.diff_state.cursor_line, target);
+        assert_eq!(app.diff_state.scroll_offset, expected_scroll);
+        assert_eq!(app.focused_panel, FocusedPanel::Diff);
     }
 
     #[test]

@@ -39,13 +39,23 @@ Full reference. Press `?` inside tuicr for an in-app version of this list.
 
 | Key | Action |
 |-----|--------|
-| `Tab` / `Shift-Tab` | Cycle focus forward / backward between file list, diff, and commit selector |
+| `Tab` / `Shift-Tab` | Cycle focus forward / backward between file list, comment navigator, diff, and commit selector |
 | `<leader>h` | Focus file list (left panel) |
 | `<leader>l` | Focus diff view (right panel) |
-| `<leader>k` | Focus commit selector (top panel) |
-| `<leader>j` | Focus diff view |
+| `<leader>k` | Move focus up (comments to files, or diff/files to commit selector when visible) |
+| `<leader>j` | Move focus down (files to comments when visible, otherwise diff) |
 | `<leader>e` | Toggle file list visibility |
 | `Enter` | Select file (when file list is focused) |
+
+## Comment navigator
+
+Shown below the file tree when local comments or visible remote PR threads exist.
+
+| Key | Action |
+|-----|--------|
+| `j` / `k` | Move selection |
+| `h` / `l` | Scroll rows left / right |
+| `Enter` | Jump to selected comment |
 
 ## Review actions
 
@@ -146,7 +156,7 @@ Mouse support is on by default. Disable with `mouse = false` in config.
 
 | Action | Effect |
 |--------|--------|
-| Wheel up / down | Scroll the panel under the cursor (file list, diff, commit list, or help popup) without moving the cursor line |
+| Wheel up / down | Scroll the panel under the cursor (file list, comment navigator, diff, commit list, or help popup) without moving the cursor line |
 | Click on a file | Jump to that file (lazygit-style) |
 | Click on a directory | Expand or collapse it |
 | Click on a diff line | Position the cursor on that line |

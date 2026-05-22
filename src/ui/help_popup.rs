@@ -138,7 +138,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 format!("  {}k/{}j     ", app.leader_key, app.leader_key),
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Focus commit selector/diff"),
+            Span::raw("Move focus up/down between panes"),
         ]),
         Line::from(vec![
             Span::styled(
@@ -323,6 +323,33 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("Collapse all directories"),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Comment Navigator",
+            Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                "  j/k       ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Navigate comments"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  h/l       ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Scroll comment rows left/right"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  Enter     ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Jump to selected comment"),
         ]),
         Line::from(""),
         Line::from(Span::styled(

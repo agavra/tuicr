@@ -20,10 +20,10 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 use tuicr::app::{self, App, AppStartupOptions, FocusedPanel, InputMode};
 use tuicr::cli::parse_cli_args;
 use tuicr::handler::{
-    handle_command_action, handle_comment_action, handle_commit_select_action,
-    handle_commit_selector_action, handle_confirm_action, handle_diff_action,
-    handle_file_list_action, handle_help_action, handle_mouse_event, handle_search_action,
-    handle_submit_action_picker_action, handle_submit_confirm_action,
+    handle_command_action, handle_comment_action, handle_comment_navigator_action,
+    handle_commit_select_action, handle_commit_selector_action, handle_confirm_action,
+    handle_diff_action, handle_file_list_action, handle_help_action, handle_mouse_event,
+    handle_search_action, handle_submit_action_picker_action, handle_submit_confirm_action,
     handle_submit_resolver_action, handle_visual_action,
 };
 use tuicr::input::{Action, map_key_to_action, map_target_filter_mode};
@@ -488,7 +488,9 @@ fn main() -> anyhow::Result<()> {
                                 continue;
                             }
                             crossterm::event::KeyCode::Char('h') => {
-                                app.focused_panel = app::FocusedPanel::FileList;
+                                if app.show_file_list {
+                                    app.focused_panel = app::FocusedPanel::FileList;
+                                }
                                 continue;
                             }
                             crossterm::event::KeyCode::Char('l') => {
@@ -496,13 +498,21 @@ fn main() -> anyhow::Result<()> {
                                 continue;
                             }
                             crossterm::event::KeyCode::Char('k') => {
-                                if app.has_inline_commit_selector() {
+                                if app.focused_panel == app::FocusedPanel::Comments {
+                                    app.focused_panel = app::FocusedPanel::FileList;
+                                } else if app.has_inline_commit_selector() {
                                     app.focused_panel = app::FocusedPanel::CommitSelector;
                                 }
                                 continue;
                             }
                             crossterm::event::KeyCode::Char('j') => {
-                                app.focused_panel = app::FocusedPanel::Diff;
+                                if app.focused_panel == app::FocusedPanel::FileList
+                                    && app.has_comment_navigator_items()
+                                {
+                                    app.focused_panel = app::FocusedPanel::Comments;
+                                } else {
+                                    app.focused_panel = app::FocusedPanel::Diff;
+                                }
                                 continue;
                             }
                             crossterm::event::KeyCode::Char('c') => {
@@ -670,6 +680,7 @@ fn dispatch_action(app: &mut App, action: Action) {
         InputMode::SubmitActionPicker => handle_submit_action_picker_action(app, action),
         InputMode::Normal => match app.focused_panel {
             FocusedPanel::FileList => handle_file_list_action(app, action),
+            FocusedPanel::Comments => handle_comment_navigator_action(app, action),
             FocusedPanel::Diff => handle_diff_action(app, action),
             FocusedPanel::CommitSelector => handle_commit_selector_action(app, action),
         },
