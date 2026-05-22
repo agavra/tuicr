@@ -180,6 +180,14 @@ fn main() -> anyhow::Result<()> {
                 if let Some(leader) = cfg.leader {
                     app.leader_key = leader;
                 }
+                if let Some(username) = cfg
+                    .username
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                {
+                    app.username = username.to_string();
+                }
             }
             app
         }

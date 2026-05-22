@@ -122,6 +122,10 @@ pub struct AddCommentRequest {
     pub target: CommentTarget,
     pub content: String,
     pub comment_type: CommentType,
+    /// Author to stamp on the resulting comment. Caller is responsible for
+    /// picking a sensible default (`Comment::DEFAULT_AUTHOR`) when none is
+    /// supplied.
+    pub author: String,
 }
 
 /// Where a new local draft comment should be attached.
@@ -157,27 +161,30 @@ pub fn add_comment_to_session(
         ));
     }
 
+    let author = request.author;
     let comment = match request.target {
         CommentTarget::Review => {
-            let comment = Comment::new(content, request.comment_type, None);
+            let comment = Comment::new(content, request.comment_type, None).with_author(author);
             session.review_comments.push(comment.clone());
             comment
         }
         CommentTarget::File { path } => {
             let review = file_review_mut(session, &path)?;
-            let comment = Comment::new(content, request.comment_type, None);
+            let comment = Comment::new(content, request.comment_type, None).with_author(author);
             review.add_file_comment(comment.clone());
             comment
         }
         CommentTarget::Line { path, line, side } => {
             let review = file_review_mut(session, &path)?;
-            let comment = Comment::new(content, request.comment_type, Some(side));
+            let comment =
+                Comment::new(content, request.comment_type, Some(side)).with_author(author);
             review.add_line_comment(line, comment.clone());
             comment
         }
         CommentTarget::LineRange { path, range, side } => {
             let review = file_review_mut(session, &path)?;
-            let comment = Comment::new_with_range(content, request.comment_type, Some(side), range);
+            let comment = Comment::new_with_range(content, request.comment_type, Some(side), range)
+                .with_author(author);
             review.add_line_comment(range.end, comment.clone());
             comment
         }
@@ -222,6 +229,7 @@ mod tests {
                 target: CommentTarget::Review,
                 content: "looks good".to_string(),
                 comment_type: CommentType::Praise,
+                author: crate::model::comment::DEFAULT_AUTHOR.to_string(),
             },
         )
         .unwrap();
@@ -241,6 +249,7 @@ mod tests {
                 },
                 content: "file note".to_string(),
                 comment_type: CommentType::Note,
+                author: crate::model::comment::DEFAULT_AUTHOR.to_string(),
             },
         )
         .unwrap();
@@ -264,6 +273,7 @@ mod tests {
                 },
                 content: "range note".to_string(),
                 comment_type: CommentType::Suggestion,
+                author: crate::model::comment::DEFAULT_AUTHOR.to_string(),
             },
         )
         .unwrap();
@@ -284,6 +294,7 @@ mod tests {
                 },
                 content: "note".to_string(),
                 comment_type: CommentType::Note,
+                author: crate::model::comment::DEFAULT_AUTHOR.to_string(),
             },
         )
         .unwrap_err();
@@ -328,6 +339,7 @@ mod tests {
                     },
                     content: "line note".to_string(),
                     comment_type: CommentType::Note,
+                    author: crate::model::comment::DEFAULT_AUTHOR.to_string(),
                 },
             )
             .unwrap();

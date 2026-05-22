@@ -212,6 +212,13 @@ pub enum ReviewCommand {
         #[arg(long, value_enum, default_value_t = LineSideArg::New)]
         side: LineSideArg,
 
+        /// Author stamped on the new comment. Pass an explicit value when
+        /// invoking from an agent (e.g. `--username "Claude Opus 4.7"`) so
+        /// human and agent comments are visually distinguished in the TUI.
+        /// Falls back to the config `username` setting, then to `"user"`.
+        #[arg(long, value_name = "NAME")]
+        username: Option<String>,
+
         /// Comment text.
         #[arg(
             value_name = "COMMENT",
@@ -813,6 +820,7 @@ mod tests {
                 line: Some(42),
                 end_line: None,
                 side: LineSideArg::Old,
+                username: None,
                 content: Some("Handle the empty case".to_string()),
             })
         );
@@ -844,6 +852,7 @@ mod tests {
                 line: None,
                 end_line: None,
                 side: LineSideArg::New,
+                username: None,
                 content: None,
             })
         );

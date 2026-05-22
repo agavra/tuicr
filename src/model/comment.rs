@@ -131,6 +131,15 @@ pub struct LineContext {
     pub content: String,
 }
 
+/// Default author used when a comment is created or deserialized without
+/// an explicit author. Distinguishes human-authored comments from agent /
+/// remote comments which set their own author string.
+pub const DEFAULT_AUTHOR: &str = "user";
+
+fn default_author() -> String {
+    DEFAULT_AUTHOR.to_string()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Comment {
     pub id: String,
@@ -146,6 +155,11 @@ pub struct Comment {
     /// None for file-level comments or single-line comments (backward compatibility)
     #[serde(default)]
     pub line_range: Option<LineRange>,
+    /// Who wrote this comment. Free-form; agents pass `--username "Claude …"`,
+    /// humans default to `"user"`. Old session JSON predates this field and
+    /// rehydrates as `"user"`.
+    #[serde(default = "default_author")]
+    pub author: String,
     /// Where this comment sits in its remote forge lifecycle. Old session
     /// JSON predates this field and rehydrates as `LocalDraft`.
     #[serde(default)]
@@ -170,6 +184,7 @@ impl Comment {
             line_context: None,
             side,
             line_range: None,
+            author: default_author(),
             lifecycle_state: CommentLifecycleState::default(),
             remote_review_id: None,
             remote_comment_id: None,
@@ -191,10 +206,19 @@ impl Comment {
             line_context: None,
             side,
             line_range: Some(line_range),
+            author: default_author(),
             lifecycle_state: CommentLifecycleState::default(),
             remote_review_id: None,
             remote_comment_id: None,
         }
+    }
+
+    /// Builder: set the author and return self. Useful at the boundary where
+    /// we know the username (TUI startup config, CLI `--username` flag) so
+    /// the existing `Comment::new` call sites can stay untouched.
+    pub fn with_author(mut self, author: impl Into<String>) -> Self {
+        self.author = author.into();
+        self
     }
 
     /// True if this comment has been pushed/submitted to the forge and is

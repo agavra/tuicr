@@ -945,6 +945,11 @@ pub struct App {
     /// formatting on submit. Defaults to `ForgeConfig::default()` when the
     /// section is missing.
     pub forge_config: crate::config::ForgeConfig,
+    /// Local viewer identity. Stamped on new comments authored in the TUI,
+    /// and compared against existing comment authors so the comment pane can
+    /// distinguish "your" comments from others. Resolved from the config
+    /// `username` field; defaults to `Comment::DEFAULT_AUTHOR`.
+    pub username: String,
     /// In-flight `:submit*` state. `None` outside the resolver + confirmation
     /// modal flow; preflight populates it.
     pub submit_state: Option<SubmitState>,
@@ -1170,6 +1175,9 @@ pub struct CommentNavigatorItem {
     pub path: Option<String>,
     pub line: Option<u32>,
     pub side: Option<LineSide>,
+    /// Author of the underlying local comment. `None` for remote thread items
+    /// (the renderer styles those by `muted` instead).
+    pub author: Option<String>,
 }
 
 #[derive(Debug)]
@@ -1738,6 +1746,7 @@ impl App {
             forge_review_threads_loading: false,
             pr_threads_rx: None,
             forge_config: crate::config::ForgeConfig::default(),
+            username: crate::model::comment::DEFAULT_AUTHOR.to_string(),
             submit_state: None,
             submit_picker_cursor: 0,
             pr_submit_state: None,
@@ -4854,6 +4863,7 @@ impl App {
                     path: None,
                     line: None,
                     side: None,
+                    author: Some(comment.author.clone()),
                 })
             }
             CommentNavigatorKey::File {
@@ -4873,6 +4883,7 @@ impl App {
                     path: Some(path.display().to_string()),
                     line: None,
                     side: None,
+                    author: Some(comment.author.clone()),
                 })
             }
             CommentNavigatorKey::Line {
@@ -4897,6 +4908,7 @@ impl App {
                     path: Some(path.display().to_string()),
                     line: Some(line),
                     side: Some(side),
+                    author: Some(comment.author.clone()),
                 })
             }
             CommentNavigatorKey::Remote { thread_idx } => {
@@ -4916,6 +4928,7 @@ impl App {
                     path: Some(thread.path.clone()),
                     line: thread.line,
                     side: Some(side),
+                    author: None,
                 })
             }
         }
@@ -6402,6 +6415,7 @@ impl App {
                 target: CommentTarget::Review,
                 content,
                 comment_type: self.comment_type.clone(),
+                author: self.username.clone(),
             };
             message = match add_comment_to_session(&mut self.session, request) {
                 Ok(_) => "Review comment added".to_string(),
@@ -6436,6 +6450,7 @@ impl App {
                 target,
                 content,
                 comment_type: self.comment_type.clone(),
+                author: self.username.clone(),
             };
             message = match add_comment_to_session(&mut self.session, request) {
                 Ok(_) => success_message,

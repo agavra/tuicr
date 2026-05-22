@@ -113,6 +113,52 @@ pub fn comment_border_style(theme: &Theme, _color: Color) -> Style {
     file_header_style(theme)
 }
 
+/// Fixed palette used to tint comment chrome by author. Excludes red/green so
+/// the colour never collides with diff add/del semantics. Cyan/yellow/magenta/
+/// blue/light-magenta/light-cyan give us six visually distinct slots — enough
+/// for a handful of agents alongside the human reviewer.
+const AUTHOR_PALETTE: &[Color] = &[
+    Color::Cyan,
+    Color::Yellow,
+    Color::Magenta,
+    Color::Blue,
+    Color::LightMagenta,
+    Color::LightCyan,
+];
+
+/// Deterministic palette colour for a given author name. Always returns
+/// a colour; callers gate visibility separately via [`author_accent`].
+/// Hashes via FNV-1a so the mapping is platform-independent and survives
+/// across runs.
+pub fn author_color_for(author: &str) -> Color {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for b in author.as_bytes() {
+        hash ^= *b as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    AUTHOR_PALETTE[(hash as usize) % AUTHOR_PALETTE.len()]
+}
+
+/// `Some(colour)` when `author` differs from the viewer (so the comment
+/// chrome should advertise authorship), `None` when the comment is the
+/// viewer's own.
+pub fn author_accent(viewer: &str, author: &str) -> Option<Color> {
+    if author == viewer {
+        None
+    } else {
+        Some(author_color_for(author))
+    }
+}
+
+/// Border style for a comment box, tinted by author when the comment is not
+/// from the current viewer. Falls back to the neutral header style otherwise.
+pub fn comment_border_style_for_author(theme: &Theme, viewer: &str, author: &str) -> Style {
+    match author_accent(viewer, author) {
+        Some(color) => Style::default().fg(color).add_modifier(Modifier::BOLD),
+        None => file_header_style(theme),
+    }
+}
+
 pub fn visual_selection_style(theme: &Theme) -> Style {
     Style::default().bg(theme.bg_highlight)
 }
