@@ -248,7 +248,7 @@ fn walk_json(dir: &Path, visit: &mut impl FnMut(&Path)) -> Result<()> {
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        if name == MANIFEST_FILENAME {
+        if name == MANIFEST_FILENAME || name == "active_sessions.json" {
             continue;
         }
         if !name.ends_with(".json") {

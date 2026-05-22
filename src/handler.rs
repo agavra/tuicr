@@ -8,7 +8,6 @@ use crate::app::{
 use crate::input::Action;
 use crate::model::{ClearScope, LineSide};
 use crate::output::{export_to_clipboard, generate_export_content};
-use crate::persistence::save_session;
 use crate::text_edit::{
     delete_char_before, delete_word_before, next_char_boundary, prev_char_boundary,
 };
@@ -351,16 +350,14 @@ pub fn handle_command_action(app: &mut App, action: Action) {
                     }
                 }
                 "q!" | "quit!" => app.should_quit = true,
-                "w" | "write" => match save_session(&app.session) {
+                "w" | "write" => match app.save_current_session_merging_external() {
                     Ok(path) => {
-                        app.dirty = false;
                         app.set_message(format!("Saved to {}", path.display()));
                     }
                     Err(e) => app.set_error(format!("Save failed: {e}")),
                 },
-                "x" | "wq" => match save_session(&app.session) {
+                "x" | "wq" => match app.save_current_session_merging_external() {
                     Ok(_) => {
-                        app.dirty = false;
                         if app.session.has_comments() {
                             if app.output_to_stdout {
                                 // Skip confirmation dialog, export directly
@@ -377,7 +374,11 @@ pub fn handle_command_action(app: &mut App, action: Action) {
                     Err(e) => app.set_error(format!("Save failed: {e}")),
                 },
                 "e" | "reload" => {
+                    let comment_reload = app.reload_persisted_session_if_changed(true);
                     if matches!(app.diff_source, app::DiffSource::PullRequest(_)) {
+                        if let Err(e) = comment_reload {
+                            app.set_warning(format!("Comment reload failed: {e}"));
+                        }
                         // Async: shows a spinner in the status bar; result
                         // is applied in `poll_pr_reload_events` and the
                         // cursor is restored to the captured anchor.
@@ -387,12 +388,21 @@ pub fn handle_command_action(app: &mut App, action: Action) {
                     } else {
                         match app.reload_diff_files() {
                             Ok((count, invalidated)) => {
+                                let comment_suffix = match comment_reload {
+                                    Ok(added) if added > 0 => {
+                                        format!(", loaded {added} external comments")
+                                    }
+                                    Ok(_) => String::new(),
+                                    Err(e) => format!(", comment reload failed: {e}"),
+                                };
                                 if invalidated > 0 {
                                     app.set_message(format!(
-                                        "Reloaded {count} files, {invalidated} changed since last review"
+                                        "Reloaded {count} files, {invalidated} changed since last review{comment_suffix}"
                                     ));
                                 } else {
-                                    app.set_message(format!("Reloaded {count} files"));
+                                    app.set_message(format!(
+                                        "Reloaded {count} files{comment_suffix}"
+                                    ));
                                 }
                             }
                             Err(e) => app.set_error(format!("Reload failed: {e}")),

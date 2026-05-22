@@ -4,6 +4,17 @@
 intended for scripts and coding agents that need to inspect or update tuicr's
 saved review state.
 
+Interactive TUI sessions create a persisted session file as soon as a review
+target becomes active, so agents can resolve the announced slug immediately.
+If that auto-created file still has no comments and no reviewed files when the
+TUI exits, tuicr removes it.
+
+While a TUI is open, tuicr records the active session in
+`active_sessions.json` beside the storage manifest with the process id, slug,
+session path, and last-seen timestamp. `tuicr review list` also includes an
+`active` boolean so agents can select the live session without guessing from
+timestamps.
+
 Session arguments accept either:
 
 - a slug from `tuicr review list`
@@ -93,6 +104,23 @@ Target types:
 - `line_range` or `range`
 
 ## Output
+
+`list` returns a JSON array:
+
+```json
+[
+  {
+    "slug": "agavra/tuicr@main/worktree",
+    "path": "/Users/alice/Library/Application Support/tuicr/reviews/sessions/9f6c1b3e09a54e2a.json",
+    "updated_at": "2026-05-22T17:20:00Z",
+    "comment_count": 1,
+    "reviewed_count": 0,
+    "file_count": 3,
+    "anchor": "main",
+    "active": true
+  }
+]
+```
 
 `comments` returns a JSON array:
 

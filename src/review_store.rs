@@ -34,16 +34,22 @@ impl ReviewStore {
         let reviews_dir = self.reviews_dir()?;
         let entries =
             storage::list_local_sessions_for_repo_in_dir(&reviews_dir, repo_path.as_ref())?;
+        let active_paths = storage::active_session_paths_in_dir(&reviews_dir)?;
         Ok(entries
             .into_iter()
-            .map(|(slug, entry)| SessionSummary {
-                session_ref: SessionRef::from_path(reviews_dir.join(entry.path)),
-                slug,
-                updated_at: entry.updated_at,
-                comment_count: entry.display.comment_count,
-                reviewed_count: entry.display.reviewed_count,
-                file_count: entry.display.file_count,
-                anchor: entry.display.anchor,
+            .map(|(slug, entry)| {
+                let path = reviews_dir.join(entry.path);
+                let active = active_paths.contains(&storage::normalize_path_for_comparison(&path));
+                SessionSummary {
+                    session_ref: SessionRef::from_path(path),
+                    slug,
+                    updated_at: entry.updated_at,
+                    comment_count: entry.display.comment_count,
+                    reviewed_count: entry.display.reviewed_count,
+                    file_count: entry.display.file_count,
+                    anchor: entry.display.anchor,
+                    active,
+                }
             })
             .collect())
     }
@@ -59,10 +65,11 @@ impl ReviewStore {
         session_ref: &SessionRef,
         request: AddCommentRequest,
     ) -> Result<Comment> {
-        let mut session = self.get_review(session_ref)?;
-        let comment = add_comment_to_session(&mut session, request)?;
         let reviews_dir = self.reviews_dir()?;
-        storage::save_session_in_dir(&session, &reviews_dir)?;
+        let (_session, comment) =
+            storage::update_session_in_dir(session_ref.path(), &reviews_dir, |session| {
+                add_comment_to_session(session, request)
+            })?;
         Ok(comment)
     }
 
@@ -106,6 +113,7 @@ pub struct SessionSummary {
     pub reviewed_count: usize,
     pub file_count: usize,
     pub anchor: String,
+    pub active: bool,
 }
 
 /// Request to add a local draft comment to a session.
@@ -288,7 +296,8 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let repo = temp.path().join("repo");
         std::fs::create_dir_all(&repo).unwrap();
-        let store = ReviewStore::with_reviews_dir(temp.path().join("reviews"));
+        let reviews_dir = temp.path().join("reviews");
+        let store = ReviewStore::with_reviews_dir(reviews_dir.clone());
         let session = test_session(repo.clone());
         let session_ref = store.save_review(&session).unwrap();
 
@@ -297,6 +306,16 @@ mod tests {
         assert_eq!(listed[0].session_ref, session_ref);
         assert_eq!(listed[0].file_count, 1);
         assert_eq!(listed[0].comment_count, 0);
+        assert!(!listed[0].active);
+
+        crate::persistence::storage::mark_session_active_in_dir(
+            &session,
+            session_ref.path(),
+            &reviews_dir,
+        )
+        .unwrap();
+        let listed = store.list_sessions_for_repo(&repo).unwrap();
+        assert!(listed[0].active);
 
         store
             .add_comment(

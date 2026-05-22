@@ -508,7 +508,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw(
-                "Reload diff files (in PR mode: refetch PR; switches session if head SHA advanced)",
+                "Reload diff files and comments (in PR mode: refetch PR; may switch session)",
             ),
         ]),
         Line::from(vec![

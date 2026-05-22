@@ -52,6 +52,7 @@ pub struct AppConfig {
     pub leader: Option<char>,
     pub transparent_background: Option<bool>,
     pub scroll_offset: Option<usize>,
+    pub review_watch_interval_ms: Option<usize>,
     pub no_update_check: Option<bool>,
     /// Render single-file and pristine views in full-width mode by default.
     /// Pristine `--all-files` mode already defaults to true regardless of
@@ -79,6 +80,7 @@ const KNOWN_KEYS: &[&str] = &[
     "leader",
     "transparent_background",
     "scroll_offset",
+    "review_watch_interval_ms",
     "no_update_check",
     "single_file_view",
     "forge",
@@ -285,6 +287,7 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         leader: read_leader(table, &mut warnings),
         transparent_background: read_bool(table, "transparent_background", &mut warnings),
         scroll_offset: read_usize(table, "scroll_offset", &mut warnings),
+        review_watch_interval_ms: read_usize(table, "review_watch_interval_ms", &mut warnings),
         no_update_check: read_bool(table, "no_update_check", &mut warnings),
         single_file_view: read_bool(table, "single_file_view", &mut warnings),
         forge: table
@@ -778,6 +781,51 @@ mod tests {
         assert_eq!(
             outcome.warnings[0],
             "Warning: Config key 'wrap' must be a boolean; ignoring value"
+        );
+    }
+
+    // review_watch_interval_ms
+
+    #[test]
+    fn should_parse_review_watch_interval_ms() {
+        let outcome = parse_config("review_watch_interval_ms = 250\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.review_watch_interval_ms),
+            Some(250)
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_parse_zero_review_watch_interval_ms_to_allow_disable() {
+        let outcome = parse_config("review_watch_interval_ms = 0\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.review_watch_interval_ms),
+            Some(0)
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_warn_and_ignore_negative_review_watch_interval_ms() {
+        let outcome = parse_config("review_watch_interval_ms = -1\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.review_watch_interval_ms),
+            None
+        );
+        assert_eq!(outcome.warnings.len(), 1);
+        assert_eq!(
+            outcome.warnings[0],
+            "Warning: Config key 'review_watch_interval_ms' must be a non-negative integer; ignoring value"
         );
     }
 

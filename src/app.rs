@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use chrono::Utc;
 use ratatui::style::Color;
@@ -28,6 +28,7 @@ use crate::vcs::{
 
 const VISIBLE_COMMIT_COUNT: usize = 10;
 const COMMIT_PAGE_SIZE: usize = 10;
+pub const DEFAULT_REVIEW_WATCH_INTERVAL_MS: u64 = 1000;
 pub const STAGED_SELECTION_ID: &str = "__tuicr_staged__";
 pub const UNSTAGED_SELECTION_ID: &str = "__tuicr_unstaged__";
 pub const GAP_EXPAND_BATCH: usize = 20;
@@ -802,11 +803,46 @@ pub struct Message {
 const MESSAGE_TTL_INFO: Duration = Duration::from_secs(3);
 const MESSAGE_TTL_WARNING: Duration = Duration::from_secs(5);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SessionFileState {
+    modified: Option<SystemTime>,
+    len: u64,
+}
+
+impl SessionFileState {
+    fn from_path(path: &Path) -> Result<Self> {
+        let metadata = std::fs::metadata(path)?;
+        Ok(Self {
+            modified: metadata.modified().ok(),
+            len: metadata.len(),
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StoredComment {
+    location: StoredCommentLocation,
+    comment: Comment,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum StoredCommentLocation {
+    Review,
+    File { path: PathBuf },
+    Line { path: PathBuf, line: u32 },
+}
+
 pub struct App {
     pub theme: Theme,
     pub vcs: Box<dyn VcsBackend>,
     pub vcs_info: VcsInfo,
     pub session: ReviewSession,
+    pub(crate) persisted_session_snapshot: ReviewSession,
+    pub(crate) session_path: Option<PathBuf>,
+    pub(crate) session_file_state: Option<SessionFileState>,
+    pub review_watch_interval: Option<Duration>,
+    pub next_review_watch_at: Instant,
+    pub(crate) ephemeral_session_paths: HashSet<PathBuf>,
     pub diff_files: Vec<DiffFile>,
     pub diff_source: DiffSource,
 
@@ -1565,12 +1601,25 @@ impl App {
 
         let comment_types = Self::resolve_comment_types(&theme, comment_type_configs);
         let default_comment_type = Self::first_comment_type(&comment_types);
+        let session_path = crate::persistence::storage::session_path(&session).ok();
+        let session_file_state = session_path
+            .as_deref()
+            .filter(|path| path.exists())
+            .and_then(|path| SessionFileState::from_path(path).ok());
+        let persisted_session_snapshot = session.clone();
 
         let mut app = Self {
             theme,
             vcs,
             vcs_info,
             session,
+            persisted_session_snapshot,
+            session_path,
+            session_file_state,
+            review_watch_interval: Some(Duration::from_millis(DEFAULT_REVIEW_WATCH_INTERVAL_MS)),
+            next_review_watch_at: Instant::now()
+                + Duration::from_millis(DEFAULT_REVIEW_WATCH_INTERVAL_MS),
+            ephemeral_session_paths: HashSet::new(),
             diff_files,
             diff_source,
             input_mode,
@@ -1689,6 +1738,345 @@ impl App {
         crate::persistence::storage::slug_for_session(&self.session)
             .ok()
             .map(|s| s.to_string())
+    }
+
+    pub fn set_review_watch_interval_ms(&mut self, interval_ms: u64) {
+        if interval_ms == 0 {
+            self.review_watch_interval = None;
+        } else {
+            let interval = Duration::from_millis(interval_ms);
+            self.review_watch_interval = Some(interval);
+            self.next_review_watch_at = Instant::now() + interval;
+        }
+    }
+
+    fn reset_persisted_session_tracking(&mut self) {
+        self.session_path = crate::persistence::storage::session_path(&self.session).ok();
+        self.session_file_state = self
+            .session_path
+            .as_deref()
+            .filter(|path| path.exists())
+            .and_then(|path| SessionFileState::from_path(path).ok());
+        self.persisted_session_snapshot = self.session.clone();
+        if let Err(e) = self.ensure_ephemeral_session_file() {
+            self.set_warning(format!("Failed to initialize review session file: {e}"));
+        }
+    }
+
+    fn mark_session_saved(&mut self, path: PathBuf, saved: ReviewSession) {
+        self.session = saved.clone();
+        self.persisted_session_snapshot = saved;
+        self.session_path = Some(path.clone());
+        self.session_file_state = SessionFileState::from_path(&path).ok();
+        self.dirty = false;
+    }
+
+    pub fn ensure_ephemeral_session_file(&mut self) -> Result<Option<PathBuf>> {
+        let path = match self.session_path.clone() {
+            Some(path) => path,
+            None => {
+                let path = crate::persistence::storage::session_path(&self.session)?;
+                self.session_path = Some(path.clone());
+                path
+            }
+        };
+
+        if path.exists() {
+            if self.ephemeral_session_paths.contains(&path) {
+                let saved_path = self.save_current_session_merging_external()?;
+                return Ok(Some(saved_path));
+            }
+            self.session_file_state = SessionFileState::from_path(&path).ok();
+            self.mark_current_session_active_at(&path);
+            return Ok(None);
+        }
+
+        let saved_path = self.save_current_session_merging_external()?;
+        self.ephemeral_session_paths.insert(saved_path.clone());
+        Ok(Some(saved_path))
+    }
+
+    pub fn cleanup_empty_ephemeral_sessions(&mut self) -> Result<usize> {
+        let mut deleted = 0;
+        for path in self.ephemeral_session_paths.clone() {
+            if crate::persistence::storage::delete_session_if_empty(&path)? {
+                deleted += 1;
+                if self.session_path.as_ref() == Some(&path) {
+                    self.session_file_state = None;
+                }
+            }
+            self.ephemeral_session_paths.remove(&path);
+        }
+        Ok(deleted)
+    }
+
+    pub fn clear_active_session_marker(&mut self) -> Result<()> {
+        crate::persistence::storage::clear_active_session_for_pid()
+    }
+
+    pub fn save_current_session_merging_external(&mut self) -> Result<PathBuf> {
+        let identity = self.session.clone();
+        let current = self.session.clone();
+        let base = self.persisted_session_snapshot.clone();
+        let (path, saved, _changed) =
+            crate::persistence::storage::save_session_by_identity(&identity, |persisted| {
+                let mut merged = current.clone();
+                if let Some(latest) = persisted.as_ref() {
+                    Self::merge_external_session_changes(&mut merged, &base, latest);
+                }
+                merged.updated_at = Utc::now();
+                Ok((merged, ()))
+            })?;
+        self.mark_session_saved(path.clone(), saved);
+        self.mark_current_session_active_at(&path);
+        self.rebuild_annotations();
+        Ok(path)
+    }
+
+    fn mark_current_session_active_at(&mut self, path: &Path) {
+        if let Err(e) = crate::persistence::storage::mark_session_active(&self.session, path) {
+            self.set_warning(format!("Failed to mark active review session: {e}"));
+        }
+    }
+
+    pub fn poll_persisted_session_changes(&mut self) {
+        let Some(interval) = self.review_watch_interval else {
+            return;
+        };
+        let now = Instant::now();
+        if now < self.next_review_watch_at {
+            return;
+        }
+        self.next_review_watch_at = now + interval;
+
+        // Do not mutate the session while the user is composing or editing a
+        // comment. The next poll after the editor closes will merge changes.
+        if self.input_mode == InputMode::Comment {
+            return;
+        }
+
+        if let Err(err) = self.reload_persisted_session_if_changed(false) {
+            self.set_warning(format!("Review reload failed: {err}"));
+        }
+    }
+
+    pub fn reload_persisted_session_if_changed(&mut self, force: bool) -> Result<usize> {
+        let path = match self.session_path.clone() {
+            Some(path) => path,
+            None => match crate::persistence::storage::session_path(&self.session) {
+                Ok(path) => {
+                    self.session_path = Some(path.clone());
+                    path
+                }
+                Err(_) => return Ok(0),
+            },
+        };
+
+        if !path.exists() {
+            self.session_file_state = None;
+            return Ok(0);
+        }
+
+        let state = SessionFileState::from_path(&path)?;
+        if !force && self.session_file_state == Some(state) {
+            return Ok(0);
+        }
+
+        let latest = crate::persistence::storage::load_session(&path)?;
+        let before_count = Self::comment_count(&self.session);
+        let changed = Self::merge_external_session_changes(
+            &mut self.session,
+            &self.persisted_session_snapshot,
+            &latest,
+        );
+        self.persisted_session_snapshot = latest;
+        self.session_file_state = Some(state);
+        if changed > 0 {
+            self.rebuild_annotations();
+        }
+        let after_count = Self::comment_count(&self.session);
+        Ok(after_count.saturating_sub(before_count))
+    }
+
+    fn merge_external_session_changes(
+        current: &mut ReviewSession,
+        base: &ReviewSession,
+        latest: &ReviewSession,
+    ) -> usize {
+        let mut changed = 0;
+
+        for (path, latest_review) in &latest.files {
+            if !current.files.contains_key(path) {
+                current.files.insert(path.clone(), latest_review.clone());
+                changed += latest_review.comment_count();
+                continue;
+            }
+
+            let base_reviewed = base.files.get(path).map(|review| review.reviewed);
+            if let Some(current_review) = current.files.get_mut(path)
+                && Some(current_review.reviewed) == base_reviewed
+                && current_review.reviewed != latest_review.reviewed
+            {
+                current_review.reviewed = latest_review.reviewed;
+                changed += 1;
+            }
+        }
+
+        let base_comments = Self::collect_stored_comments(base);
+        let current_comments = Self::collect_stored_comments(current);
+        let latest_comments = Self::collect_stored_comments(latest);
+
+        for (id, latest_comment) in &latest_comments {
+            match base_comments.get(id) {
+                None => {
+                    if !current_comments.contains_key(id) {
+                        Self::upsert_stored_comment(current, latest_comment.clone());
+                        changed += 1;
+                    }
+                }
+                Some(base_comment) if latest_comment != base_comment => {
+                    match current_comments.get(id) {
+                        Some(current_comment) if current_comment == base_comment => {
+                            Self::upsert_stored_comment(current, latest_comment.clone());
+                            changed += 1;
+                        }
+                        None => {
+                            // Local deletion wins over an external edit.
+                        }
+                        Some(_) => {
+                            // Local edit wins over an external edit of the same comment.
+                        }
+                    }
+                }
+                Some(_) => {}
+            }
+        }
+
+        for (id, base_comment) in &base_comments {
+            if !latest_comments.contains_key(id)
+                && current_comments
+                    .get(id)
+                    .is_some_and(|current_comment| current_comment == base_comment)
+                && Self::remove_stored_comment(current, id)
+            {
+                changed += 1;
+            }
+        }
+
+        changed
+    }
+
+    fn comment_count(session: &ReviewSession) -> usize {
+        session.review_comments.len()
+            + session
+                .files
+                .values()
+                .map(|review| review.comment_count())
+                .sum::<usize>()
+    }
+
+    fn collect_stored_comments(session: &ReviewSession) -> HashMap<String, StoredComment> {
+        let mut comments = HashMap::new();
+        for comment in &session.review_comments {
+            comments.insert(
+                comment.id.clone(),
+                StoredComment {
+                    location: StoredCommentLocation::Review,
+                    comment: comment.clone(),
+                },
+            );
+        }
+
+        for (path, review) in &session.files {
+            for comment in &review.file_comments {
+                comments.insert(
+                    comment.id.clone(),
+                    StoredComment {
+                        location: StoredCommentLocation::File { path: path.clone() },
+                        comment: comment.clone(),
+                    },
+                );
+            }
+
+            for (line, line_comments) in &review.line_comments {
+                for comment in line_comments {
+                    comments.insert(
+                        comment.id.clone(),
+                        StoredComment {
+                            location: StoredCommentLocation::Line {
+                                path: path.clone(),
+                                line: *line,
+                            },
+                            comment: comment.clone(),
+                        },
+                    );
+                }
+            }
+        }
+
+        comments
+    }
+
+    fn upsert_stored_comment(session: &mut ReviewSession, stored: StoredComment) {
+        Self::remove_stored_comment(session, &stored.comment.id);
+        match stored.location {
+            StoredCommentLocation::Review => {
+                session.review_comments.push(stored.comment);
+            }
+            StoredCommentLocation::File { path } => {
+                if let Some(review) = session.files.get_mut(&path) {
+                    review.file_comments.push(stored.comment);
+                }
+            }
+            StoredCommentLocation::Line { path, line } => {
+                if let Some(review) = session.files.get_mut(&path) {
+                    review
+                        .line_comments
+                        .entry(line)
+                        .or_default()
+                        .push(stored.comment);
+                }
+            }
+        }
+    }
+
+    fn remove_stored_comment(session: &mut ReviewSession, id: &str) -> bool {
+        if let Some(index) = session
+            .review_comments
+            .iter()
+            .position(|comment| comment.id == id)
+        {
+            session.review_comments.remove(index);
+            return true;
+        }
+
+        for review in session.files.values_mut() {
+            if let Some(index) = review
+                .file_comments
+                .iter()
+                .position(|comment| comment.id == id)
+            {
+                review.file_comments.remove(index);
+                return true;
+            }
+
+            let mut emptied_line = None;
+            for (line, comments) in &mut review.line_comments {
+                if let Some(index) = comments.iter().position(|comment| comment.id == id) {
+                    comments.remove(index);
+                    if comments.is_empty() {
+                        emptied_line = Some(*line);
+                    }
+                    break;
+                }
+            }
+            if let Some(line) = emptied_line {
+                review.line_comments.remove(&line);
+                return true;
+            }
+        }
+
+        false
     }
 
     /// Detect a GitHub forge repository from the local checkout, if any.
@@ -2110,7 +2498,7 @@ impl App {
 
         // Save the current session before transitioning so local-mode work
         // isn't lost.
-        let _ = crate::persistence::save_session(&self.session);
+        let _ = self.save_current_session_merging_external();
 
         let pr_source = PullRequestDiffSource::from_details(&details);
         let read_only_reason = pr_source.read_only_reason();
@@ -2125,6 +2513,7 @@ impl App {
         self.vcs = Box::new(PrNoopVcs::new(self.vcs_info.clone()));
         self.session = session;
         self.diff_files = diff_files;
+        self.reset_persisted_session_tracking();
         self.diff_source = DiffSource::PullRequest(Box::new(pr_source));
         self.forge_backend = Some(backend);
         self.forge_repository = Some(key.repository.clone());
@@ -2311,7 +2700,7 @@ impl App {
         };
         self.session.commit_selection_range = value;
         self.session.updated_at = chrono::Utc::now();
-        let _ = crate::persistence::save_session(&self.session);
+        let _ = self.save_current_session_merging_external();
     }
 
     /// Resolve the active inline selection (PR mode) to (start_sha,
@@ -2655,7 +3044,7 @@ impl App {
 
         let head_changed = opened.details.head_sha != request.head_sha;
         if head_changed {
-            let _ = crate::persistence::save_session(&self.session);
+            let _ = self.save_current_session_merging_external();
             let details_for_threads = opened.details.clone();
             Self::load_or_apply_pr_session(&mut opened);
             let backend = Box::new(
@@ -2739,7 +3128,7 @@ impl App {
         let head_changed = opened.details.head_sha != current.key.head_sha;
         if head_changed {
             // Save the old-head session before switching so drafts persist.
-            let _ = crate::persistence::save_session(&self.session);
+            let _ = self.save_current_session_merging_external();
             let details_for_threads = opened.details.clone();
             Self::load_or_apply_pr_session(&mut opened);
             self.enter_pr_diff_mode(backend, opened)?;
@@ -3175,6 +3564,7 @@ impl App {
             let path = file.display_path().clone();
             self.session.add_file(path, file.status, file.content_hash);
         }
+        self.reset_persisted_session_tracking();
 
         self.diff_files = diff_files;
         self.diff_source = DiffSource::StagedAndUnstaged;
@@ -3210,6 +3600,7 @@ impl App {
             let path = file.display_path().clone();
             self.session.add_file(path, file.status, file.content_hash);
         }
+        self.reset_persisted_session_tracking();
 
         self.diff_files = diff_files;
         self.diff_source = DiffSource::Staged;
@@ -3245,6 +3636,7 @@ impl App {
             let path = file.display_path().clone();
             self.session.add_file(path, file.status, file.content_hash);
         }
+        self.reset_persisted_session_tracking();
 
         self.diff_files = diff_files;
         self.diff_source = DiffSource::Unstaged;
@@ -5665,6 +6057,7 @@ impl App {
         let content = self.comment_buffer.trim().to_string();
 
         let mut message = "Error: Could not save comment".to_string();
+        let mut autosave_error = None;
 
         // Check if we're editing an existing comment
         if let Some(editing_id) = &self.editing_comment_id {
@@ -5759,8 +6152,15 @@ impl App {
 
         if !message.starts_with("Error:") {
             self.dirty = true;
+            if let Err(e) = self.save_current_session_merging_external() {
+                autosave_error = Some(format!("{message}; autosave failed: {e}"));
+            }
         }
-        self.set_message(message);
+        if let Some(error) = autosave_error {
+            self.set_error(error);
+        } else {
+            self.set_message(message);
+        }
         self.rebuild_annotations();
 
         self.exit_comment_mode();
@@ -6162,7 +6562,7 @@ impl App {
 
         // Save the session BEFORE the network call — keeps the user's
         // local-draft work durable if anything goes sideways below.
-        let _ = crate::persistence::save_session(&self.session);
+        let _ = self.save_current_session_merging_external();
 
         let in_flight = SubmitInFlightState {
             event: state.event,
@@ -6286,7 +6686,7 @@ impl App {
         self.apply_submit_success(&in_flight, &response);
 
         // Post-submit save — captures the lifecycle transitions.
-        let _ = crate::persistence::save_session(&self.session);
+        let _ = self.save_current_session_merging_external();
 
         let inline_count = in_flight.mappable.len();
         let summary_count = in_flight.moved_to_summary_count;
@@ -6860,7 +7260,7 @@ impl App {
                     Ok(threads) => {
                         self.forge_review_threads = threads;
                         self.prune_locked_comments();
-                        let _ = crate::persistence::save_session(&self.session);
+                        let _ = self.save_current_session_merging_external();
                         self.rebuild_annotations();
                     }
                     Err(e) => {
@@ -7328,9 +7728,10 @@ impl App {
         };
 
         // Collect selected entries in order from oldest to newest (end..start).
-        let selected_commits: Vec<&CommitInfo> = (start..=end)
+        let selected_commits: Vec<CommitInfo> = (start..=end)
             .rev()
             .filter_map(|i| self.commit_list.get(i))
+            .cloned()
             .collect();
 
         if selected_commits.is_empty() {
@@ -7338,8 +7739,8 @@ impl App {
             return Ok(());
         }
 
-        let selected_staged = selected_commits.iter().any(|c| Self::is_staged_commit(c));
-        let selected_unstaged = selected_commits.iter().any(|c| Self::is_unstaged_commit(c));
+        let selected_staged = selected_commits.iter().any(Self::is_staged_commit);
+        let selected_unstaged = selected_commits.iter().any(Self::is_unstaged_commit);
         let selected_ids: Vec<String> = selected_commits
             .iter()
             .filter(|c| !Self::is_special_commit(c))
@@ -7347,8 +7748,7 @@ impl App {
             .collect();
 
         if (selected_staged || selected_unstaged) && !selected_ids.is_empty() {
-            let all_selected: Vec<CommitInfo> = selected_commits.into_iter().cloned().collect();
-            return self.load_staged_unstaged_and_commits_selection(selected_ids, all_selected);
+            return self.load_staged_unstaged_and_commits_selection(selected_ids, selected_commits);
         }
 
         if selected_staged && selected_unstaged {
@@ -7413,6 +7813,7 @@ impl App {
             let path = file.display_path().clone();
             self.session.add_file(path, file.status, file.content_hash);
         }
+        self.reset_persisted_session_tracking();
 
         // Update app state
         self.diff_files = diff_files;
@@ -7424,11 +7825,7 @@ impl App {
         self.file_list_state = FileListState::default();
 
         // Set up inline commit selector for multi-commit reviews (newest-first display order)
-        self.review_commits = selected_commits
-            .iter()
-            .rev()
-            .map(|c| (*c).clone())
-            .collect();
+        self.review_commits = selected_commits.iter().rev().cloned().collect();
         self.range_diff_files = Some(self.diff_files.clone());
         self.commit_list = self.review_commits.clone();
         self.commit_list_cursor = 0;
@@ -7617,6 +8014,7 @@ impl App {
             let path = file.display_path().clone();
             self.session.add_file(path, file.status, file.content_hash);
         }
+        self.reset_persisted_session_tracking();
 
         self.diff_files = diff_files;
         self.diff_source = DiffSource::StagedUnstagedAndCommits(selected_ids);
@@ -8667,6 +9065,112 @@ impl App {
         let visible_items = self.build_visible_items();
         let selected_idx = self.file_list_state.selected();
         visible_items.get(selected_idx).cloned()
+    }
+}
+
+#[cfg(test)]
+mod persistence_merge_tests {
+    use super::*;
+
+    const SOME_HASH: u64 = 0xabc;
+
+    fn test_session() -> ReviewSession {
+        let mut session = ReviewSession::new(
+            PathBuf::from("/repo"),
+            "abc1234".to_string(),
+            Some("main".to_string()),
+            SessionDiffSource::WorkingTree,
+        );
+        session.add_file(
+            PathBuf::from("src/main.rs"),
+            FileStatus::Modified,
+            SOME_HASH,
+        );
+        session
+    }
+
+    fn comment(id: &str, content: &str) -> Comment {
+        let mut comment = Comment::new(content.to_string(), CommentType::Note, None);
+        comment.id = id.to_string();
+        comment
+    }
+
+    fn push_file_comment(session: &mut ReviewSession, id: &str, content: &str) {
+        session
+            .get_file_mut(&PathBuf::from("src/main.rs"))
+            .unwrap()
+            .file_comments
+            .push(comment(id, content));
+    }
+
+    fn file_comment_ids(session: &ReviewSession) -> Vec<String> {
+        session
+            .files
+            .get(&PathBuf::from("src/main.rs"))
+            .unwrap()
+            .file_comments
+            .iter()
+            .map(|comment| comment.id.clone())
+            .collect()
+    }
+
+    #[test]
+    fn should_merge_external_comment_without_losing_local_comment() {
+        let base = test_session();
+        let mut current = base.clone();
+        let mut latest = base.clone();
+
+        push_file_comment(&mut current, "local", "from tui");
+        push_file_comment(&mut latest, "external", "from cli");
+
+        let changed = App::merge_external_session_changes(&mut current, &base, &latest);
+
+        assert_eq!(changed, 1);
+        assert_eq!(file_comment_ids(&current), vec!["local", "external"]);
+    }
+
+    #[test]
+    fn should_not_resurrect_locally_deleted_comment_when_disk_is_unchanged() {
+        let mut base = test_session();
+        push_file_comment(&mut base, "deleted", "old");
+        let mut current = base.clone();
+        current
+            .get_file_mut(&PathBuf::from("src/main.rs"))
+            .unwrap()
+            .file_comments
+            .clear();
+        let latest = base.clone();
+
+        let changed = App::merge_external_session_changes(&mut current, &base, &latest);
+
+        assert_eq!(changed, 0);
+        assert!(file_comment_ids(&current).is_empty());
+    }
+
+    #[test]
+    fn should_apply_external_edit_when_comment_is_unchanged_locally() {
+        let mut base = test_session();
+        push_file_comment(&mut base, "same", "old");
+        let mut current = base.clone();
+        let mut latest = base.clone();
+        latest
+            .get_file_mut(&PathBuf::from("src/main.rs"))
+            .unwrap()
+            .file_comments[0]
+            .content = "new".to_string();
+
+        let changed = App::merge_external_session_changes(&mut current, &base, &latest);
+
+        assert_eq!(changed, 1);
+        assert_eq!(
+            current
+                .files
+                .get(&PathBuf::from("src/main.rs"))
+                .unwrap()
+                .file_comments[0]
+                .content,
+            "new"
+        );
     }
 }
 

@@ -29,7 +29,7 @@ use tuicr::handler::{
 use tuicr::input::{Action, map_key_to_action, map_target_filter_mode};
 use tuicr::theme::resolve_theme_with_config;
 use tuicr::vcs::GitBackendPreference;
-use tuicr::{config, handler, persistence, profile, ui, update};
+use tuicr::{config, handler, profile, ui, update};
 
 /// Timeout for the "press Ctrl+C again to exit" feature
 const CTRL_C_EXIT_TIMEOUT: Duration = Duration::from_secs(2);
@@ -204,6 +204,10 @@ fn main() -> anyhow::Result<()> {
         }
     };
 
+    if let Err(e) = app.ensure_ephemeral_session_file() {
+        startup_warnings.push(format!("Failed to initialize review session file: {e}"));
+    }
+
     // Announce the slug for the active session so agents and wrapper scripts
     // can discover it without parsing the markdown export. This is emitted to
     // stderr before the alt-screen swap so the line stays on the user's
@@ -283,6 +287,9 @@ fn main() -> anyhow::Result<()> {
         if let Some(scroll_offset) = cfg.scroll_offset {
             app.scroll_offset = scroll_offset;
         }
+        if let Some(interval_ms) = cfg.review_watch_interval_ms {
+            app.set_review_watch_interval_ms(interval_ms as u64);
+        }
     }
 
     // On narrow terminals, start with only the diff panel visible.
@@ -335,6 +342,7 @@ fn main() -> anyhow::Result<()> {
         app.poll_pr_range_reload_events();
         app.poll_pr_threads_events();
         app.poll_pr_submit_events();
+        app.poll_persisted_session_changes();
 
         // Render. Bracket the frame in a synchronized-output pair
         // (CSI ?2026h/l) so terminals (and zellij) buffer the whole repaint
@@ -434,8 +442,7 @@ fn main() -> anyhow::Result<()> {
                         match key.code {
                             crossterm::event::KeyCode::Char('Z') => {
                                 // ZZ: save session, export, and quit (same as :wq)
-                                let _ = persistence::save_session(&app.session);
-                                app.dirty = false;
+                                let _ = app.save_current_session_merging_external();
                                 if app.session.has_comments() {
                                     handler::handle_export_and_quit(&mut app);
                                 } else {
@@ -633,6 +640,13 @@ fn main() -> anyhow::Result<()> {
     }
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+
+    if let Err(e) = app.cleanup_empty_ephemeral_sessions() {
+        eprintln!("Warning: failed to clean up empty review session: {e}");
+    }
+    if let Err(e) = app.clear_active_session_marker() {
+        eprintln!("Warning: failed to clear active review session marker: {e}");
+    }
 
     // Print pending stdout output if --stdout was used
     if let Some(output) = app.pending_stdout_output {

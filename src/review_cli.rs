@@ -468,6 +468,7 @@ struct SessionSummaryOutput {
     reviewed_count: usize,
     file_count: usize,
     anchor: String,
+    active: bool,
 }
 
 impl From<SessionSummary> for SessionSummaryOutput {
@@ -480,6 +481,7 @@ impl From<SessionSummary> for SessionSummaryOutput {
             reviewed_count: summary.reviewed_count,
             file_count: summary.file_count,
             anchor: summary.anchor,
+            active: summary.active,
         }
     }
 }
@@ -629,7 +631,7 @@ mod tests {
                 path,
                 line: 42,
                 side: LineSide::Old,
-            } if path == PathBuf::from("src/main.rs")
+            } if path.as_path() == Path::new("src/main.rs")
         ));
     }
 

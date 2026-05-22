@@ -135,6 +135,11 @@ tuicr --stdout | pbcopy
 sessions, add comments, and print stored comments for agent and script
 integrations. See [docs/REVIEW_CLI.md](docs/REVIEW_CLI.md).
 
+The TUI creates a persisted session file when a review target becomes active,
+so collaborative tools can add comments immediately. Empty auto-created session
+files are removed when the TUI exits. `tuicr review list` marks currently open
+TUI sessions with `"active": true`.
+
 ## Library API
 
 tuicr also exposes a Rust library API for tools that want to build on top of its
@@ -173,6 +178,7 @@ diff_view = "side-by-side"   # or "unified"
 appearance = "system"        # or "dark" / "light"
 mouse = true
 leader = ";"                  # configurable prefix for leader shortcuts
+review_watch_interval_ms = 1000 # set to 0 to disable persisted-review polling
 
 [[comment_types]]
 id = "issue"

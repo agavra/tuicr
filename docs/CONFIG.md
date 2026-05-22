@@ -33,6 +33,7 @@ cursor_line = true
 transparent_background = true
 scroll_offset = 5
 no_update_check = false
+review_watch_interval_ms = 1000
 
 backend = "libgit2"
 
@@ -65,6 +66,7 @@ comment_type_prefix = true
 | `transparent_background` | `true` | Let the terminal background show through panels. `false` paints the theme's `panel_bg`. |
 | `scroll_offset` | `0` | Minimum lines visible above and below the cursor when scrolling (like Vim's `scrolloff`). |
 | `no_update_check` | `false` | Skip startup update check when `true`. |
+| `review_watch_interval_ms` | `1000` | Poll interval for persisted review-session changes. Set to `0` to disable automatic local-session reloads. |
 | `backend` | `libgit2` | Git backend: `libgit2` or `cli`. Sparse-checkout repos auto-route to `cli`. |
 | `comment_types` | (built-in) | Comment categories. See [Comment types](#comment-types). |
 

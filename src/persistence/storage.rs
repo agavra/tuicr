@@ -17,8 +17,14 @@
 //! walking `sessions/`.
 
 use std::cmp::Reverse;
+use std::collections::HashSet;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant, SystemTime};
+
+use chrono::Utc;
+use serde::{Deserialize, Serialize};
 
 #[cfg(not(test))]
 use directories::ProjectDirs;
@@ -33,6 +39,16 @@ use crate::persistence::manifest::{
 };
 use crate::slug::{self, Slug};
 
+const STORAGE_LOCK_FILENAME: &str = ".tuicr.lock";
+const STORAGE_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
+#[cfg(not(test))]
+const STORAGE_LOCK_STALE_AFTER: Duration = Duration::from_secs(60);
+#[cfg(test)]
+const STORAGE_LOCK_STALE_AFTER: Duration = Duration::from_millis(0);
+const STORAGE_LOCK_REUSE_GUARD_AFTER: Duration = Duration::from_secs(12 * 60 * 60);
+const ACTIVE_SESSIONS_FILENAME: &str = "active_sessions.json";
+const ACTIVE_SESSION_STALE_AFTER: Duration = Duration::from_secs(12 * 60 * 60);
+
 // ---------- Public API ----------
 
 /// Save a session to disk and update the manifest. The on-disk path is
@@ -45,7 +61,247 @@ pub fn save_session(session: &ReviewSession) -> Result<PathBuf> {
 
 pub(crate) fn save_session_in_dir(session: &ReviewSession, reviews_dir: &Path) -> Result<PathBuf> {
     maybe_migrate(reviews_dir)?;
+    with_reviews_dir_lock(reviews_dir, || {
+        save_session_in_dir_unlocked(session, reviews_dir)
+    })
+}
 
+pub(crate) fn update_session_in_dir<T>(
+    session_ref: &Path,
+    reviews_dir: &Path,
+    update: impl FnOnce(&mut ReviewSession) -> Result<T>,
+) -> Result<(ReviewSession, T)> {
+    maybe_migrate(reviews_dir)?;
+    with_reviews_dir_lock(reviews_dir, || {
+        let mut session = load_session(session_ref)?;
+        let output = update(&mut session)?;
+        save_session_in_dir_unlocked(&session, reviews_dir)?;
+        Ok((session, output))
+    })
+}
+
+pub(crate) fn save_session_by_identity<T>(
+    identity: &ReviewSession,
+    update: impl FnOnce(Option<ReviewSession>) -> Result<(ReviewSession, T)>,
+) -> Result<(PathBuf, ReviewSession, T)> {
+    let reviews_dir = get_reviews_dir()?;
+    save_session_by_identity_in_dir(identity, &reviews_dir, update)
+}
+
+pub(crate) fn save_session_by_identity_in_dir<T>(
+    identity: &ReviewSession,
+    reviews_dir: &Path,
+    update: impl FnOnce(Option<ReviewSession>) -> Result<(ReviewSession, T)>,
+) -> Result<(PathBuf, ReviewSession, T)> {
+    maybe_migrate(reviews_dir)?;
+    with_reviews_dir_lock(reviews_dir, || {
+        let path = session_path_in_dir(identity, reviews_dir)?;
+        let persisted = if path.exists() {
+            Some(load_session(&path)?)
+        } else {
+            None
+        };
+        let (session, output) = update(persisted)?;
+        let saved_path = save_session_in_dir_unlocked(&session, reviews_dir)?;
+        Ok((saved_path, session, output))
+    })
+}
+
+pub(crate) fn session_path(session: &ReviewSession) -> Result<PathBuf> {
+    let reviews_dir = get_reviews_dir()?;
+    session_path_in_dir(session, &reviews_dir)
+}
+
+pub(crate) fn session_path_in_dir(session: &ReviewSession, reviews_dir: &Path) -> Result<PathBuf> {
+    let slug = slug_for_session(session)?;
+    let relative = relative_path_for_slug(&slug, session)?;
+    Ok(reviews_dir.join(relative))
+}
+
+pub(crate) fn delete_session_if_empty(path: &Path) -> Result<bool> {
+    let reviews_dir = get_reviews_dir()?;
+    delete_session_if_empty_in_dir(path, &reviews_dir)
+}
+
+pub(crate) fn delete_session_if_empty_in_dir(path: &Path, reviews_dir: &Path) -> Result<bool> {
+    maybe_migrate(reviews_dir)?;
+    with_reviews_dir_lock(reviews_dir, || {
+        if !path.exists() {
+            return Ok(false);
+        }
+
+        let session = load_session(path)?;
+        if session.has_comments() || session.reviewed_count() > 0 {
+            return Ok(false);
+        }
+
+        let slug = slug_for_session(&session)?.to_string();
+        let relative = path
+            .strip_prefix(reviews_dir)
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|_| path.to_path_buf());
+
+        let mut manifest = manifest::load_manifest(reviews_dir).unwrap_or_default();
+        if let Some(bucket) = manifest.entries.get_mut(&slug) {
+            bucket.retain(|entry| entry.path != relative);
+            if bucket.is_empty() {
+                manifest.entries.remove(&slug);
+            }
+            manifest::save_manifest(reviews_dir, &manifest)?;
+        }
+
+        fs::remove_file(path)?;
+
+        Ok(true)
+    })
+}
+
+pub(crate) fn mark_session_active(session: &ReviewSession, path: &Path) -> Result<()> {
+    let reviews_dir = get_reviews_dir()?;
+    mark_session_active_in_dir(session, path, &reviews_dir)
+}
+
+pub(crate) fn mark_session_active_in_dir(
+    session: &ReviewSession,
+    path: &Path,
+    reviews_dir: &Path,
+) -> Result<()> {
+    maybe_migrate(reviews_dir)?;
+    let slug = slug_for_session(session)?.to_string();
+    let path = normalize_active_path(path);
+    with_reviews_dir_lock(reviews_dir, || {
+        let mut active = load_active_sessions_unlocked(reviews_dir).unwrap_or_default();
+        active.prune_stale();
+        let pid = std::process::id();
+        active
+            .sessions
+            .retain(|entry| entry.pid != pid && entry.path != path);
+        active.sessions.push(ActiveSessionEntry {
+            pid,
+            slug,
+            path,
+            last_seen_at: Utc::now(),
+        });
+        save_active_sessions_unlocked(reviews_dir, &active)
+    })
+}
+
+pub(crate) fn clear_active_session_for_pid() -> Result<()> {
+    let reviews_dir = get_reviews_dir()?;
+    clear_active_session_for_pid_in_dir(&reviews_dir)
+}
+
+pub(crate) fn clear_active_session_for_pid_in_dir(reviews_dir: &Path) -> Result<()> {
+    maybe_migrate(reviews_dir)?;
+    with_reviews_dir_lock(reviews_dir, || {
+        let mut active = load_active_sessions_unlocked(reviews_dir).unwrap_or_default();
+        let pid = std::process::id();
+        active.sessions.retain(|entry| entry.pid != pid);
+        save_active_sessions_unlocked(reviews_dir, &active)
+    })
+}
+
+pub(crate) fn active_session_paths_in_dir(reviews_dir: &Path) -> Result<HashSet<PathBuf>> {
+    maybe_migrate(reviews_dir)?;
+    let active = load_active_sessions_unlocked(reviews_dir).unwrap_or_default();
+    Ok(active
+        .sessions
+        .into_iter()
+        .filter(|entry| entry.is_fresh())
+        .map(|entry| normalize_active_path(&entry.path))
+        .collect())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ActiveSessionsFile {
+    version: String,
+    #[serde(default)]
+    sessions: Vec<ActiveSessionEntry>,
+}
+
+impl Default for ActiveSessionsFile {
+    fn default() -> Self {
+        Self {
+            version: "1.0".to_string(),
+            sessions: Vec::new(),
+        }
+    }
+}
+
+impl ActiveSessionsFile {
+    fn prune_stale(&mut self) {
+        self.sessions.retain(ActiveSessionEntry::is_fresh);
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ActiveSessionEntry {
+    pid: u32,
+    slug: String,
+    path: PathBuf,
+    last_seen_at: chrono::DateTime<Utc>,
+}
+
+impl ActiveSessionEntry {
+    fn is_fresh(&self) -> bool {
+        let age_is_fresh = Utc::now()
+            .signed_duration_since(self.last_seen_at)
+            .to_std()
+            .is_ok_and(|age| age <= ACTIVE_SESSION_STALE_AFTER);
+        age_is_fresh && process_is_running(self.pid) && self.path.exists()
+    }
+}
+
+#[cfg(unix)]
+fn process_is_running(pid: u32) -> bool {
+    unsafe extern "C" {
+        fn kill(pid: i32, sig: i32) -> i32;
+    }
+
+    if pid == 0 {
+        return false;
+    }
+
+    let result = unsafe { kill(pid as i32, 0) };
+    if result == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().kind() == std::io::ErrorKind::PermissionDenied
+}
+
+#[cfg(not(unix))]
+fn process_is_running(_pid: u32) -> bool {
+    true
+}
+
+fn active_sessions_path(reviews_dir: &Path) -> PathBuf {
+    reviews_dir.join(ACTIVE_SESSIONS_FILENAME)
+}
+
+fn load_active_sessions_unlocked(reviews_dir: &Path) -> Result<ActiveSessionsFile> {
+    let path = active_sessions_path(reviews_dir);
+    match fs::read_to_string(&path) {
+        Ok(contents) => serde_json::from_str(&contents)
+            .map_err(|e| TuicrError::CorruptedSession(format!("active sessions parse error: {e}"))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(ActiveSessionsFile::default()),
+        Err(e) => Err(TuicrError::Io(e)),
+    }
+}
+
+fn save_active_sessions_unlocked(reviews_dir: &Path, active: &ActiveSessionsFile) -> Result<()> {
+    let json = serde_json::to_string_pretty(active)?;
+    write_atomic(&active_sessions_path(reviews_dir), json.as_bytes())
+}
+
+fn normalize_active_path(path: &Path) -> PathBuf {
+    fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+pub(crate) fn normalize_path_for_comparison(path: &Path) -> PathBuf {
+    normalize_active_path(path)
+}
+
+fn save_session_in_dir_unlocked(session: &ReviewSession, reviews_dir: &Path) -> Result<PathBuf> {
     let slug = slug_for_session(session)?;
     let relative = relative_path_for_slug(&slug, session)?;
     let full_path = reviews_dir.join(&relative);
@@ -54,7 +310,7 @@ pub(crate) fn save_session_in_dir(session: &ReviewSession, reviews_dir: &Path) -
         fs::create_dir_all(parent)?;
     }
     let json = serde_json::to_string_pretty(session)?;
-    fs::write(&full_path, json)?;
+    write_atomic(&full_path, json.as_bytes())?;
 
     let mut manifest = manifest::load_manifest(reviews_dir).unwrap_or_default();
     let anchor = manifest_anchor_for(&slug);
@@ -63,6 +319,116 @@ pub(crate) fn save_session_in_dir(session: &ReviewSession, reviews_dir: &Path) -
     manifest::save_manifest(reviews_dir, &manifest)?;
 
     Ok(full_path)
+}
+
+fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    let parent = path.parent().ok_or_else(|| {
+        TuicrError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("path has no parent: {}", path.display()),
+        ))
+    })?;
+    fs::create_dir_all(parent)?;
+
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("session");
+    let tmp_path = parent.join(format!(".{file_name}.{}.tmp", uuid::Uuid::new_v4()));
+
+    {
+        let mut tmp = fs::File::create(&tmp_path)?;
+        tmp.write_all(bytes)?;
+        tmp.sync_all().ok();
+    }
+    fs::rename(&tmp_path, path)?;
+    Ok(())
+}
+
+struct ReviewsDirLock {
+    path: PathBuf,
+}
+
+impl Drop for ReviewsDirLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+fn with_reviews_dir_lock<T>(reviews_dir: &Path, f: impl FnOnce() -> Result<T>) -> Result<T> {
+    let _lock = acquire_reviews_dir_lock(reviews_dir)?;
+    f()
+}
+
+fn acquire_reviews_dir_lock(reviews_dir: &Path) -> Result<ReviewsDirLock> {
+    fs::create_dir_all(reviews_dir)?;
+    let path = reviews_dir.join(STORAGE_LOCK_FILENAME);
+    let started = Instant::now();
+    loop {
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut file) => {
+                let _ = writeln!(file, "{} {}", std::process::id(), Utc::now());
+                let _ = file.sync_all();
+                return Ok(ReviewsDirLock { path });
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                if remove_stale_reviews_dir_lock(&path)? {
+                    continue;
+                }
+                if started.elapsed() >= STORAGE_LOCK_TIMEOUT {
+                    return Err(TuicrError::Io(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        format!(
+                            "timed out waiting for review storage lock {}",
+                            path.display()
+                        ),
+                    )));
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            Err(err) => return Err(TuicrError::Io(err)),
+        }
+    }
+}
+
+fn remove_stale_reviews_dir_lock(path: &Path) -> Result<bool> {
+    let metadata = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(err) => return Err(TuicrError::Io(err)),
+    };
+    let lock_age = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| SystemTime::now().duration_since(modified).ok());
+    let stale = match read_lock_owner_pid(path) {
+        Some(pid) => {
+            !process_is_running(pid)
+                || lock_age.is_some_and(|age| age >= STORAGE_LOCK_REUSE_GUARD_AFTER)
+        }
+        None => lock_age.is_some_and(|age| age >= STORAGE_LOCK_STALE_AFTER),
+    };
+    if !stale {
+        return Ok(false);
+    }
+    match fs::remove_file(path) {
+        Ok(()) => Ok(true),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(TuicrError::Io(err)),
+    }
+}
+
+fn read_lock_owner_pid(path: &Path) -> Option<u32> {
+    fs::read_to_string(path)
+        .ok()?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
 }
 
 /// Load a session JSON file from an absolute path.
@@ -329,7 +695,7 @@ pub(crate) fn manifest_path_for(reviews_dir: &Path) -> PathBuf {
 mod tests {
     use super::*;
     use crate::forge::traits::{ForgeRepository, PrSessionKey};
-    use crate::model::FileStatus;
+    use crate::model::{Comment, CommentType, FileStatus};
     use crate::persistence::manifest::Manifest;
     use std::path::PathBuf;
 
@@ -415,6 +781,120 @@ mod tests {
         let loaded = load_session(&path).unwrap();
         assert_eq!(session.id, loaded.id);
         assert_eq!(session.base_commit, loaded.base_commit);
+    }
+
+    #[test]
+    fn should_delete_empty_session_and_manifest_entry() {
+        let _g = with_test_reviews_dir();
+        let repo = make_repo();
+        let session = make_local_session(
+            repo.clone(),
+            "abc1234",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
+            None,
+        );
+        let path = save_session(&session).unwrap();
+        assert!(path.exists());
+
+        assert!(delete_session_if_empty(&path).unwrap());
+
+        assert!(!path.exists());
+        let sessions = load_latest_session_for_context(
+            &repo,
+            Some("main"),
+            "abc1234",
+            SessionDiffSource::WorkingTree,
+            None,
+        )
+        .unwrap();
+        assert!(sessions.is_none());
+    }
+
+    #[test]
+    fn should_mark_and_clear_active_session() {
+        let _g = with_test_reviews_dir();
+        let reviews_dir = get_reviews_dir().unwrap();
+        let repo = make_repo();
+        let session = make_local_session(
+            repo,
+            "abc1234",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
+            None,
+        );
+        let path = save_session(&session).unwrap();
+
+        mark_session_active_in_dir(&session, &path, &reviews_dir).unwrap();
+        let active = active_session_paths_in_dir(&reviews_dir).unwrap();
+        assert!(active.contains(&normalize_path_for_comparison(&path)));
+
+        clear_active_session_for_pid_in_dir(&reviews_dir).unwrap();
+        let active = active_session_paths_in_dir(&reviews_dir).unwrap();
+        assert!(!active.contains(&normalize_path_for_comparison(&path)));
+    }
+
+    #[test]
+    fn should_recover_stale_reviews_dir_lock() {
+        let _g = with_test_reviews_dir();
+        let reviews_dir = get_reviews_dir().unwrap();
+        fs::write(reviews_dir.join(STORAGE_LOCK_FILENAME), "stale lock").unwrap();
+        let repo = make_repo();
+        let session = make_local_session(
+            repo,
+            "abc1234",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
+            None,
+        );
+
+        let path = save_session(&session).unwrap();
+
+        assert!(path.exists());
+        assert!(!reviews_dir.join(STORAGE_LOCK_FILENAME).exists());
+    }
+
+    #[test]
+    fn should_keep_session_with_comments_when_deleting_if_empty() {
+        let _g = with_test_reviews_dir();
+        let repo = make_repo();
+        let mut session = make_local_session(
+            repo,
+            "abc1234",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
+            None,
+        );
+        session
+            .review_comments
+            .push(Comment::new("keep me".to_string(), CommentType::Note, None));
+        let path = save_session(&session).unwrap();
+
+        assert!(!delete_session_if_empty(&path).unwrap());
+
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn should_keep_session_with_reviewed_files_when_deleting_if_empty() {
+        let _g = with_test_reviews_dir();
+        let repo = make_repo();
+        let mut session = make_local_session(
+            repo,
+            "abc1234",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
+            None,
+        );
+        session
+            .get_file_mut(&PathBuf::from("src/main.rs"))
+            .unwrap()
+            .reviewed = true;
+        let path = save_session(&session).unwrap();
+
+        assert!(!delete_session_if_empty(&path).unwrap());
+
+        assert!(path.exists());
     }
 
     #[test]
