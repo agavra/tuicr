@@ -1175,8 +1175,9 @@ pub struct CommentNavigatorItem {
     pub path: Option<String>,
     pub line: Option<u32>,
     pub side: Option<LineSide>,
-    /// Author of the underlying local comment. `None` for remote thread items
-    /// (the renderer styles those by `muted` instead).
+    /// Author of the underlying comment — the local commenter for local items,
+    /// or the root comment's author for remote threads. `None` only when the
+    /// forge did not attach an author (e.g. deleted user).
     pub author: Option<String>,
 }
 
@@ -4921,6 +4922,7 @@ impl App {
                     crate::forge::remote_comments::RemoteCommentSide::Right => LineSide::New,
                     crate::forge::remote_comments::RemoteCommentSide::Left => LineSide::Old,
                 };
+                let author = thread.root().and_then(|c| c.author.clone());
                 Some(CommentNavigatorItem {
                     key: CommentNavigatorKey::Remote { thread_idx },
                     kind: CommentNavigatorKind::Remote { muted },
@@ -4928,7 +4930,7 @@ impl App {
                     path: Some(thread.path.clone()),
                     line: thread.line,
                     side: Some(side),
-                    author: None,
+                    author,
                 })
             }
         }
@@ -12829,6 +12831,7 @@ mod expand_gap_tests {
             items[3].key,
             CommentNavigatorKey::Remote { thread_idx: 0 }
         ));
+        assert_eq!(items[3].author.as_deref(), Some("alice"));
     }
 
     #[test]
