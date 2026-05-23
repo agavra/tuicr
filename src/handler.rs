@@ -13,6 +13,10 @@ use crate::text_edit::{
 };
 
 const WHEEL_LINES: usize = 3;
+/// Columns scrolled per horizontal mouse wheel tick. Matches the default
+/// step for keyboard arrow scrolling so the two input methods feel
+/// interchangeable.
+const WHEEL_COLS: usize = 4;
 
 pub fn handle_mouse_event(app: &mut App, event: MouseEvent) {
     let pos = Position::new(event.column, event.row);
@@ -43,6 +47,20 @@ pub fn handle_mouse_event(app: &mut App, event: MouseEvent) {
                 _ => {}
             }
             clear_visual_if_cursor_offscreen(app);
+        }
+        MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight => {
+            // Bypass the Action layer: trackpad swipes dispatch directly to
+            // the diff viewport so they don't trigger keyboard focus-slide
+            // (FEAT-0012) or abort an active VisualSelect.
+            let scroll_left = matches!(event.kind, MouseEventKind::ScrollLeft);
+            let over_diff = app.diff_area.is_some_and(|r| r.contains(pos));
+            if over_diff && matches!(app.input_mode, InputMode::Normal | InputMode::VisualSelect) {
+                if scroll_left {
+                    app.scroll_left(WHEEL_COLS);
+                } else {
+                    app.scroll_right(WHEEL_COLS);
+                }
+            }
         }
         MouseEventKind::Down(MouseButton::Left)
             if matches!(app.input_mode, InputMode::Normal | InputMode::VisualSelect) =>
