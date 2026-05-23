@@ -392,6 +392,7 @@ mod tests {
             path: PathBuf::from("src/lib.rs"),
             line,
             side: GhSide::Right,
+                counterpart_line: None,
             start_line: None,
             start_side: None,
             body: "x".to_string(),

@@ -254,11 +254,23 @@ fn map_comment_mode(key: KeyEvent) -> Action {
         (KeyCode::Enter, KeyModifiers::NONE) => Action::SubmitInput,
         (KeyCode::Enter, KeyModifiers::CONTROL) => Action::SubmitInput,
         (KeyCode::Char('s'), KeyModifiers::CONTROL) => Action::SubmitInput,
-        // Newline: Shift+Enter (modern terminals) or Ctrl+J (universal fallback)
+        // Newline insertion: multiple aliases to survive different terminal/tmux environments.
+        // - Shift+Enter: works when Kitty keyboard protocol is active (modern terminals)
+        // - Alt+Enter:   works in tmux even with vim-tmux-navigator (ESC CR, not intercepted)
+        // - Ctrl+J:      works in terminals without tmux (0x0A → Char('j')+CONTROL)
+        // - Ctrl+K:      works without vim-tmux-navigator, intercepted when navigator is active
+        // vim-tmux-navigator binds C-j (down) and C-k (up), so Alt-Enter is the reliable tmux key.
         (KeyCode::Enter, mods) if mods.contains(KeyModifiers::SHIFT) => Action::InsertChar('\n'),
+        (KeyCode::Enter, mods) if mods.contains(KeyModifiers::ALT) => Action::InsertChar('\n'),
         (KeyCode::Char('j'), KeyModifiers::CONTROL) => Action::InsertChar('\n'),
-        // Comment type: Tab to cycle
-        (KeyCode::Tab, KeyModifiers::NONE) => Action::CycleCommentType,
+        (KeyCode::Char('k'), KeyModifiers::CONTROL) => Action::InsertChar('\n'),
+        // Comment type: Tab to cycle (match any modifier so terminals that
+        // report Tab with unexpected flags still work; Shift+Tab comes in as
+        // BackTab via the second arm).
+        // Also match Char('\t'): some terminal multiplexers (e.g. tmux without
+        // extended-keys) send Tab as the raw byte 0x09 which crossterm maps to
+        // Char('\t') instead of KeyCode::Tab.
+        (KeyCode::Tab, _) | (KeyCode::Char('\t'), _) => Action::CycleCommentType,
         (KeyCode::BackTab, _) => Action::CycleCommentTypeReverse,
         // Cursor movement
         (KeyCode::Char('a'), KeyModifiers::CONTROL) => Action::TextCursorLineStart,
@@ -519,6 +531,12 @@ mod tests {
     fn should_map_backtab_to_reverse_comment_type_in_comment_mode() {
         let action = map_comment_mode(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
         assert_eq!(action, Action::CycleCommentTypeReverse);
+    }
+
+    #[test]
+    fn should_map_tab_to_cycle_comment_type_in_comment_mode() {
+        let action = map_comment_mode(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(action, Action::CycleCommentType);
     }
 
     #[test]

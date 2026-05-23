@@ -98,6 +98,7 @@ impl GhPullRequestDetails {
             updated_at: self.updated_at,
             closed: self.closed,
             merged_at: self.merged_at,
+            diff_start_sha: None,
         })
     }
 }

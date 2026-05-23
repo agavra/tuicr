@@ -34,8 +34,29 @@ pub const STAGED_SELECTION_ID: &str = "__tuicr_staged__";
 pub const UNSTAGED_SELECTION_ID: &str = "__tuicr_unstaged__";
 pub const GAP_EXPAND_BATCH: usize = 20;
 
-/// Count how many annotation lines a gap produces (expanders + hidden count).
-/// `hi_char = None` means slice to the end.
+
+/// Create a forge backend for the given repository.
+/// Routes to the GitHub backend (via `gh`) or the GitLab backend (via `glab`)
+/// based on `repo.kind`.
+fn create_forge_backend(
+    repo: &ForgeRepository,
+    local_checkout: Option<PathBuf>,
+) -> Box<dyn ForgeBackend> {
+    use crate::forge::traits::ForgeKind;
+    match repo.kind {
+        ForgeKind::GitHub => {
+            use crate::forge::github::gh::GitHubGhBackend;
+            Box::new(GitHubGhBackend::new(Some(repo.clone())).with_local_checkout(local_checkout))
+        }
+        ForgeKind::GitLab => {
+            use crate::forge::gitlab::GitLabGlabBackend;
+            Box::new(
+                GitLabGlabBackend::new(Some(repo.clone())).with_local_checkout(local_checkout),
+            )
+        }
+    }
+}
+
 fn char_slice(s: &str, lo_char: usize, hi_char: Option<usize>) -> &str {
     let mut indices = s.char_indices();
     let lo_byte = indices
@@ -2245,7 +2266,7 @@ impl App {
             self.canonical_resolved = true;
             return;
         }
-        let repo = crate::forge::detect_github_repository(&self.vcs_info.root_path);
+        let repo = crate::forge::detect_forge_repository(&self.vcs_info.root_path);
         self.forge_repository = repo.clone();
         self.pr_tab = PullRequestsTab::new(repo);
     }
@@ -2524,10 +2545,16 @@ impl App {
         target: &str,
         repo_url_override: Option<ForgeRepository>,
     ) -> Result<Self> {
-        use crate::forge::github::gh::{GitHubGhBackend, parse_pull_request_target};
+        use crate::forge::github::gh::parse_pull_request_target;
+        use crate::forge::gitlab::glab::parse_pull_request_target_gitlab;
         use crate::forge::pr_open::open_pull_request;
+        use crate::forge::traits::ForgeKind;
 
-        let parsed = parse_pull_request_target(target)?;
+        // Try GitHub-style target first (numeric, GitHub URL, owner/repo#N).
+        // If it embeds a GitLab URL, the GitLab parser picks it up.
+        let parsed = parse_pull_request_target(target)
+            .or_else(|_| parse_pull_request_target_gitlab(target))?;
+
         // Resolution order when the target lacks an explicit repo
         // (`tuicr pr 125`):
         //   1. `--repo-url` override (explicit user intent; no I/O)
@@ -2540,11 +2567,21 @@ impl App {
         let local_repo_root = std::env::current_dir().ok();
         let detected_repo = local_repo_root
             .as_deref()
-            .and_then(crate::forge::detect_github_repository);
-        let canonical_repo = detected_repo.as_ref().map(|origin| {
-            use crate::forge::canonical::resolve_canonical_repository;
-            use crate::forge::github::gh::SystemGhRunner;
-            resolve_canonical_repository(origin, repo_url_override.as_ref(), &SystemGhRunner)
+            .and_then(crate::forge::detect_forge_repository);
+
+        // Canonical resolution (fork parent lookup) only works for GitHub.
+        let canonical_repo = detected_repo.as_ref().and_then(|origin| {
+            if origin.kind == ForgeKind::GitHub {
+                use crate::forge::canonical::resolve_canonical_repository;
+                use crate::forge::github::gh::SystemGhRunner;
+                Some(resolve_canonical_repository(
+                    origin,
+                    repo_url_override.as_ref(),
+                    &SystemGhRunner,
+                ))
+            } else {
+                None
+            }
         });
         let target_repo = parsed
             .repository
@@ -2554,7 +2591,7 @@ impl App {
             .or_else(|| detected_repo.clone())
             .ok_or_else(|| {
                 TuicrError::Forge(
-                    "tuicr pr <number> requires a local GitHub remote. \
+                    "tuicr pr <number> requires a local forge remote. \
                      Use owner/repo#N or a full PR URL outside a checkout."
                         .to_string(),
                 )
@@ -2564,7 +2601,7 @@ impl App {
         // PR's target repository — using a foreign repo's checkout would
         // mis-filter the PR diff.
         let local_checkout_for_target = local_repo_root.as_deref().and_then(|root| {
-            let detected = crate::forge::detect_github_repository(root)?;
+            let detected = crate::forge::detect_forge_repository(root)?;
             if detected == target_repo {
                 Some(root.to_path_buf())
             } else {
@@ -2572,11 +2609,10 @@ impl App {
             }
         });
 
-        let backend = GitHubGhBackend::new(Some(target_repo.clone()))
-            .with_local_checkout(local_checkout_for_target.clone());
+        let backend = create_forge_backend(&target_repo, local_checkout_for_target.clone());
         let highlighter = theme.syntax_highlighter();
         let mut opened = open_pull_request(
-            &backend,
+            backend.as_ref(),
             parsed,
             local_checkout_for_target.as_deref(),
             highlighter,
@@ -2615,7 +2651,7 @@ impl App {
         )?;
 
         // Wire the forge backend so context expansion routes through it.
-        app.forge_backend = Some(Box::new(backend));
+        app.forge_backend = Some(backend);
         app.forge_repository = Some(target_repo);
         // PR open establishes the target repo directly; no further canonical
         // resolution needed on PR-tab entry (which won't happen anyway since
@@ -2976,12 +3012,9 @@ impl App {
         let head_sha = current.key.head_sha.clone();
         let base_sha = current.base_sha.clone();
         std::thread::spawn(move || {
-            use crate::forge::github::gh::GitHubGhBackend;
-
-            let backend =
-                GitHubGhBackend::new(Some(repository.clone())).with_local_checkout(local_checkout);
+            let backend = create_forge_backend(&repository, local_checkout);
             let details = crate::forge::traits::PullRequestDetails {
-                repository,
+                repository: repository.clone(),
                 number: pr_number,
                 title: String::new(),
                 url: String::new(),
@@ -2996,6 +3029,7 @@ impl App {
                 updated_at: None,
                 closed: false,
                 merged_at: None,
+                diff_start_sha: None,
             };
             let outcome = backend
                 .get_pull_request_commit_range_diff(&details, &start_sha, &end_sha)
@@ -3094,7 +3128,6 @@ impl App {
     /// on a background thread. Returns immediately. The result is
     /// applied later in `poll_pr_reload_events`.
     pub fn spawn_pr_reload(&mut self) -> Result<()> {
-        use crate::forge::github::gh::GitHubGhBackend;
         use crate::forge::pr_open::fetch_pr_data;
         use crate::forge::traits::PullRequestTarget;
 
@@ -3128,11 +3161,10 @@ impl App {
         let repository = current.key.repository.clone();
         let pr_number = current.key.number;
         std::thread::spawn(move || {
-            let backend =
-                GitHubGhBackend::new(Some(repository.clone())).with_local_checkout(local_checkout);
+            let backend = create_forge_backend(&repository, local_checkout);
             let target =
                 PullRequestTarget::with_repository(repository, pr_number, pr_number.to_string());
-            let outcome = fetch_pr_data(&backend, target).map_err(|e| e.to_string());
+            let outcome = fetch_pr_data(backend.as_ref(), target).map_err(|e| e.to_string());
             let _ = tx.send(PrReloadEvent::Done {
                 request,
                 result: outcome,
@@ -3180,7 +3212,6 @@ impl App {
         commits: Vec<crate::forge::traits::PullRequestCommit>,
         request: &PrReloadRequest,
     ) -> Result<()> {
-        use crate::forge::github::gh::GitHubGhBackend;
         use crate::forge::pr_open::prepare_open_pr;
 
         let local_checkout = self
@@ -3201,10 +3232,7 @@ impl App {
             let _ = self.save_current_session_merging_external();
             let details_for_threads = opened.details.clone();
             Self::load_or_apply_pr_session(&mut opened);
-            let backend = Box::new(
-                GitHubGhBackend::new(Some(request.repository.clone()))
-                    .with_local_checkout(local_checkout.clone()),
-            );
+            let backend = create_forge_backend(&request.repository, local_checkout.clone());
             self.enter_pr_diff_mode(backend, opened)?;
             self.spawn_pr_threads_fetch(&details_for_threads, local_checkout);
             self.set_message("Reloaded PR at new head — switched to fresh session".to_string());
@@ -3233,8 +3261,6 @@ impl App {
     /// in one call without an mpsc round-trip.
     #[allow(dead_code)]
     pub fn reload_pull_request(&mut self) -> Result<bool> {
-        use crate::forge::github::gh::GitHubGhBackend;
-
         let DiffSource::PullRequest(current) = self.diff_source.clone() else {
             return Err(TuicrError::UnsupportedOperation(
                 "Not in PR mode".to_string(),
@@ -3245,9 +3271,8 @@ impl App {
             .forge_backend
             .as_deref()
             .and_then(|backend| backend.local_checkout_path());
-        let backend = GitHubGhBackend::new(Some(current.key.repository.clone()))
-            .with_local_checkout(local_checkout.clone());
-        self.reload_pull_request_with_backend(Box::new(backend), local_checkout)
+        let backend = create_forge_backend(&current.key.repository, local_checkout.clone());
+        self.reload_pull_request_with_backend(backend, local_checkout)
     }
 
     /// Inner reload path. Takes the forge backend as a parameter so tests
@@ -6666,19 +6691,30 @@ impl App {
         if self.comment_types.is_empty() {
             return;
         }
+        if self.comment_types.len() == 1 {
+            self.set_message("Only one comment type configured");
+            return;
+        }
 
-        let current_id = self.comment_type.id();
+        let current_id = self.comment_type.id().to_string();
         let current_index = self
             .comment_types
             .iter()
             .position(|comment_type| comment_type.id == current_id)
             .unwrap_or(0);
         let next_index = (current_index + 1) % self.comment_types.len();
-        self.comment_type = CommentType::from_id(&self.comment_types[next_index].id);
+        let next_id = self.comment_types[next_index].id.clone();
+        self.comment_type = CommentType::from_id(&next_id);
+        let label = self.comment_type_label(&self.comment_type.clone());
+        self.set_message(format!("Comment type: {label}"));
     }
 
     pub fn cycle_comment_type_reverse(&mut self) {
         if self.comment_types.is_empty() {
+            return;
+        }
+        if self.comment_types.len() == 1 {
+            self.set_message("Only one comment type configured");
             return;
         }
 
@@ -6694,6 +6730,8 @@ impl App {
             current_index - 1
         };
         self.comment_type = CommentType::from_id(&self.comment_types[prev_index].id);
+        let label = self.comment_type_label(&self.comment_type.clone());
+        self.set_message(format!("Comment type: {label}"));
     }
 
     pub fn toggle_help(&mut self) {
@@ -7008,7 +7046,6 @@ impl App {
     /// network round-trip on a background thread. The result is applied
     /// later in `poll_pr_submit_events`.
     pub fn spawn_pr_submit(&mut self) -> Result<()> {
-        use crate::forge::github::gh::GitHubGhBackend;
         use crate::forge::submit::{MovedToSummaryItem, ResolverAction, build_review_body};
         use crate::forge::traits::{CreateReviewRequest, PullRequestTarget};
 
@@ -7090,8 +7127,7 @@ impl App {
         let commit_id = state.commit_id.clone();
 
         std::thread::spawn(move || {
-            let backend =
-                GitHubGhBackend::new(Some(repository.clone())).with_local_checkout(local_checkout);
+            let backend = create_forge_backend(&repository, local_checkout);
             // Need PR details for repo/owner routing; refetch lightly via
             // the same target the user opened with.
             let target = PullRequestTarget::with_repository(
@@ -7186,6 +7222,13 @@ impl App {
 
         let inline_count = in_flight.mappable.len();
         let summary_count = in_flight.moved_to_summary_count;
+        let forge_name = match &self.diff_source {
+            DiffSource::PullRequest(pr) => match pr.key.repository.kind {
+                crate::forge::traits::ForgeKind::GitHub => "GitHub",
+                crate::forge::traits::ForgeKind::GitLab => "GitLab",
+            },
+            _ => "forge",
+        };
         let message = match in_flight.event {
             SubmitEvent::Draft => {
                 let pr_url = match &self.diff_source {
@@ -7194,22 +7237,25 @@ impl App {
                 };
                 if pr_url.is_empty() {
                     format!(
-                        "Pushed pending GitHub review #{}: {} inline, {} moved to summary",
+                        "Pushed pending {forge_name} review #{}: {} inline, {} moved to summary",
                         response.id, inline_count, summary_count,
                     )
                 } else {
                     format!(
-                        "Pushed pending GitHub review #{}: {} inline, {} moved to summary — Finish it in GitHub: {}",
+                        "Pushed pending {forge_name} review #{}: {} inline, {} moved to summary — Finish it in {forge_name}: {}",
                         response.id, inline_count, summary_count, pr_url,
                     )
                 }
             }
             _ => format!(
-                "Submitted GitHub review #{}: {} inline, {} moved to summary",
+                "Submitted {forge_name} review #{}: {} inline, {} moved to summary",
                 response.id, inline_count, summary_count,
             ),
         };
         self.set_message(message);
+
+        // Refetch remote threads so the just-submitted comments appear immediately.
+        self.refetch_pr_threads();
     }
 
     /// Flip every comment that was sent — inline, summary-bound, and review-
@@ -7437,22 +7483,23 @@ impl App {
         override_repo: Option<ForgeRepository>,
         skip_resolution: bool,
     ) {
-        use crate::forge::canonical::resolve_canonical_repository;
-        use crate::forge::github::gh::{GitHubGhBackend, SystemGhRunner};
         use crate::forge::selector::PR_PAGE_SIZE;
-        use crate::forge::traits::{ForgeBackend, PullRequestListQuery};
+        use crate::forge::traits::{ForgeKind, PullRequestListQuery};
 
         let (tx, rx) = std::sync::mpsc::channel();
         self.pr_load_rx = Some(rx);
 
         std::thread::spawn(move || {
-            let canonical = if skip_resolution {
-                origin
+            // Canonical resolution (fork parent lookup) is GitHub-only.
+            let canonical = if skip_resolution || origin.kind != ForgeKind::GitHub {
+                override_repo.unwrap_or(origin)
             } else {
+                use crate::forge::canonical::resolve_canonical_repository;
+                use crate::forge::github::gh::SystemGhRunner;
                 let runner = SystemGhRunner;
                 resolve_canonical_repository(&origin, override_repo.as_ref(), &runner)
             };
-            let backend = GitHubGhBackend::new(Some(canonical.clone()));
+            let backend = create_forge_backend(&canonical, None);
             let query = PullRequestListQuery::first_page(canonical.clone(), PR_PAGE_SIZE);
             let result = backend
                 .list_pull_requests(query)
@@ -7464,15 +7511,14 @@ impl App {
 
     /// Spawn a background thread that fetches the next page of PRs.
     fn spawn_pr_load_more(&mut self, repository: ForgeRepository, already_loaded: usize) {
-        use crate::forge::github::gh::GitHubGhBackend;
         use crate::forge::selector::PR_PAGE_SIZE;
-        use crate::forge::traits::{ForgeBackend, PullRequestListQuery};
+        use crate::forge::traits::PullRequestListQuery;
 
         let (tx, rx) = std::sync::mpsc::channel();
         self.pr_load_rx = Some(rx);
 
         std::thread::spawn(move || {
-            let backend = GitHubGhBackend::new(Some(repository.clone()));
+            let backend = create_forge_backend(&repository, None);
             let query = PullRequestListQuery {
                 repository,
                 already_loaded,
@@ -7561,7 +7607,6 @@ impl App {
     /// drained in `poll_pr_open_events` where parsing happens and PR mode
     /// is entered.
     fn spawn_pr_open(&mut self, summary: &crate::forge::traits::PullRequestSummary) {
-        use crate::forge::github::gh::GitHubGhBackend;
         use crate::forge::pr_open::fetch_pr_data;
         use crate::forge::traits::PullRequestTarget;
 
@@ -7580,11 +7625,10 @@ impl App {
         let pr_number = summary.number;
         let thread_local_checkout = local_checkout.clone();
         std::thread::spawn(move || {
-            let backend = GitHubGhBackend::new(Some(summary_repo.clone()))
-                .with_local_checkout(thread_local_checkout);
+            let backend = create_forge_backend(&summary_repo, thread_local_checkout);
             let target =
                 PullRequestTarget::with_repository(summary_repo, pr_number, pr_number.to_string());
-            let outcome = fetch_pr_data(&backend, target).map_err(|e| e.to_string());
+            let outcome = fetch_pr_data(backend.as_ref(), target).map_err(|e| e.to_string());
             let _ = tx.send(PrOpenEvent::Done {
                 request,
                 result: outcome,
@@ -7647,7 +7691,6 @@ impl App {
         commits: Vec<crate::forge::traits::PullRequestCommit>,
         request: &PrOpenRequest,
     ) -> Result<()> {
-        use crate::forge::github::gh::GitHubGhBackend;
         use crate::forge::pr_open::prepare_open_pr;
 
         let local_checkout = Some(self.vcs_info.root_path.clone());
@@ -7660,10 +7703,7 @@ impl App {
             highlighter,
         )?;
         Self::load_or_apply_pr_session(&mut opened);
-        let backend = Box::new(
-            GitHubGhBackend::new(Some(request.repository.clone()))
-                .with_local_checkout(local_checkout.clone()),
-        );
+        let backend = create_forge_backend(&request.repository, local_checkout.clone());
         self.enter_pr_diff_mode(backend, opened)?;
         // Kick the remote-thread fetch off on a fresh background thread.
         // The diff view is already up; threads fade in once they land.
@@ -7684,9 +7724,6 @@ impl App {
         details: &crate::forge::traits::PullRequestDetails,
         local_checkout: Option<std::path::PathBuf>,
     ) {
-        use crate::forge::github::gh::GitHubGhBackend;
-        use crate::forge::traits::ForgeBackend;
-
         self.forge_review_threads.clear();
         self.forge_review_threads_loading = true;
 
@@ -7699,8 +7736,7 @@ impl App {
         let head_sha = details.head_sha.clone();
 
         std::thread::spawn(move || {
-            let backend =
-                GitHubGhBackend::new(Some(repository.clone())).with_local_checkout(local_checkout);
+            let backend = create_forge_backend(&repository, local_checkout);
             let threads = backend
                 .list_review_threads(&details_clone)
                 .map_err(|e| e.to_string());
@@ -7840,6 +7876,7 @@ impl App {
                 updated_at: None,
                 closed: pr.closed,
                 merged_at: None,
+                diff_start_sha: None,
             },
             _ => return,
         };
@@ -8939,6 +8976,29 @@ impl App {
             for _ in 0..comment_lines {
                 self.line_annotations
                     .push(AnnotatedLine::ReviewComment { comment_idx });
+            }
+        }
+
+        // Emit annotation entries for remote review-level threads (line: None).
+        {
+            use crate::forge::remote_comments::{
+                thread_display_lines, PrCommentsVisibility,
+            };
+            let visibility = self.session.remote_comments_visibility;
+            if !matches!(visibility, PrCommentsVisibility::Hide) {
+                for (thread_idx, thread) in self.forge_review_threads.iter().enumerate() {
+                    if thread.line.is_some() {
+                        continue;
+                    }
+                    let Some(_muted) = visibility.render_decision(thread) else {
+                        continue;
+                    };
+                    let n = thread_display_lines(thread);
+                    for _ in 0..n {
+                        self.line_annotations
+                            .push(AnnotatedLine::RemoteThreadLine { thread_idx });
+                    }
+                }
             }
         }
 
@@ -10138,6 +10198,26 @@ mod target_selector_tests {
         .expect("failed to build test app")
     }
 
+    #[test]
+    fn should_cycle_comment_type_on_tab_action() {
+        let mut app = build_app();
+        app.enter_comment_mode(false, None);
+        assert_eq!(app.input_mode, InputMode::Comment);
+        assert_eq!(app.comment_type.id(), "note");
+
+        app.cycle_comment_type();
+        assert_eq!(app.comment_type.id(), "suggestion");
+
+        app.cycle_comment_type();
+        assert_eq!(app.comment_type.id(), "issue");
+
+        app.cycle_comment_type();
+        assert_eq!(app.comment_type.id(), "praise");
+
+        app.cycle_comment_type();
+        assert_eq!(app.comment_type.id(), "note");
+    }
+
     fn dummy_commit(id: &str) -> CommitInfo {
         CommitInfo {
             id: id.to_string(),
@@ -10167,6 +10247,7 @@ mod target_selector_tests {
             updated_at: None,
             closed: false,
             merged_at: None,
+            diff_start_sha: None,
         }
     }
 
@@ -13918,6 +13999,7 @@ mod submit_flow_tests {
                 path: PathBuf::from("src/lib.rs"),
                 line: 11 + i as u32,
                 side: crate::forge::submit::GhSide::Right,
+                counterpart_line: None,
                 start_line: None,
                 start_side: None,
                 body: "x".to_string(),

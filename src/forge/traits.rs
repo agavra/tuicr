@@ -11,6 +11,7 @@ use crate::model::{DiffLine, FileStatus};
 #[serde(rename_all = "snake_case")]
 pub enum ForgeKind {
     GitHub,
+    GitLab,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -35,12 +36,25 @@ impl ForgeRepository {
         }
     }
 
+    pub fn gitlab(
+        host: impl Into<String>,
+        owner: impl Into<String>,
+        name: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind: ForgeKind::GitLab,
+            host: host.into(),
+            owner: owner.into(),
+            name: name.into(),
+        }
+    }
+
     pub fn slug(&self) -> String {
         format!("{}/{}", self.owner, self.name)
     }
 
     pub fn display_name(&self) -> String {
-        if self.host == "github.com" {
+        if self.host == "github.com" || self.host == "gitlab.com" {
             self.slug()
         } else {
             format!("{}/{}", self.host, self.slug())
@@ -132,6 +146,10 @@ pub struct PullRequestDetails {
     pub updated_at: Option<DateTime<Utc>>,
     pub closed: bool,
     pub merged_at: Option<DateTime<Utc>>,
+    /// GitLab diff start SHA for inline comment position anchoring.
+    /// None for GitHub; populated from `diff_refs.start_sha` for GitLab.
+    #[serde(default)]
+    pub diff_start_sha: Option<String>,
 }
 
 impl PullRequestDetails {

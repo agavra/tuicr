@@ -43,7 +43,6 @@ struct SideBySideContext<'a> {
     comment_cursor: usize,
     comment_line_range: Option<LineRange>,
     editing_comment_id: Option<&'a str>,
-    supports_keyboard_enhancement: bool,
     current_file_idx: usize,
     // RefCell so deeply-nested rendering helpers can push without each
     // intermediate function needing a `&mut Vec` parameter threaded through.
@@ -107,7 +106,6 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
         comment_cursor: app.comment_cursor,
         comment_line_range: app.comment_line_range.map(|(r, _)| r),
         editing_comment_id: app.editing_comment_id.as_deref(),
-        supports_keyboard_enhancement: app.supports_keyboard_enhancement,
         current_file_idx: app.diff_state.current_file_idx,
         comment_bars: std::cell::RefCell::new(Vec::new()),
         visible_start,
@@ -175,7 +173,6 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                 app.comment_cursor,
                 None,
                 true,
-                app.supports_keyboard_enhancement,
                 ctx.panel_width.saturating_sub(1),
             );
             comment_cursor_logical_line = Some(line_idx + cursor_info.line_offset);
@@ -215,6 +212,37 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
         }
     }
 
+    // Render remote review-level threads (general MR notes, line: None).
+    {
+        use crate::forge::remote_comments::{PrCommentsVisibility, RemoteCommentSide};
+        let _ = RemoteCommentSide::Right; // ensure import is used
+        let visibility = app.session.remote_comments_visibility;
+        if !matches!(visibility, PrCommentsVisibility::Hide) {
+            for thread in &app.forge_review_threads {
+                if thread.line.is_some() {
+                    continue; // inline threads are rendered in-diff
+                }
+                let Some(muted) = visibility.render_decision(thread) else {
+                    continue;
+                };
+                let thread_lines =
+                    comment_panel::format_remote_thread_lines(&app.theme, thread, muted);
+                for mut comment_line in thread_lines {
+                    let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
+                    comment_line.spans.insert(
+                        0,
+                        Span::styled(
+                            indicator,
+                            styles::current_line_indicator_style(&app.theme),
+                        ),
+                    );
+                    lines.push(comment_line);
+                    line_idx += 1;
+                }
+            }
+        }
+    }
+
     if is_review_comment_mode && app.editing_comment_id.is_none() {
         let (input_lines, cursor_info) = comment_panel::format_comment_input_lines(
             &app.theme,
@@ -223,7 +251,6 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
             app.comment_cursor,
             None,
             false,
-            app.supports_keyboard_enhancement,
             ctx.panel_width.saturating_sub(1),
         );
         comment_cursor_logical_line = Some(line_idx + cursor_info.line_offset);
@@ -312,7 +339,6 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                         app.comment_cursor,
                         None,
                         true,
-                        app.supports_keyboard_enhancement,
                         ctx.panel_width.saturating_sub(1),
                     );
                     comment_cursor_logical_line = Some(line_idx + cursor_info.line_offset);
@@ -369,7 +395,6 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                 app.comment_cursor,
                 None,
                 false,
-                app.supports_keyboard_enhancement,
                 ctx.panel_width.saturating_sub(1),
             );
             comment_cursor_logical_line = Some(line_idx + cursor_info.line_offset);
@@ -1394,7 +1419,6 @@ fn add_comments_to_line(
                         ctx.comment_cursor,
                         line_range,
                         true,
-                        ctx.supports_keyboard_enhancement,
                         ctx.panel_width.saturating_sub(1),
                     );
                     let box_top_row = line_idx;
@@ -1472,7 +1496,6 @@ fn add_comments_to_line(
             ctx.comment_cursor,
             line_range,
             false,
-            ctx.supports_keyboard_enhancement,
             ctx.panel_width.saturating_sub(1),
         );
         let box_top_row = line_idx;
