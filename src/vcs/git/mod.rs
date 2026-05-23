@@ -111,6 +111,10 @@ impl GitBackend {
             return Ok(Self::Cli(GitCliBackend::discover_from(cwd)?));
         }
 
+        if uses_reftable(cwd) {
+            return Ok(Self::Cli(GitCliBackend::discover_from(cwd)?));
+        }
+
         let backend = Self::Libgit2(Libgit2Backend::discover_from(cwd)?);
         let repo_mode = GitRepoMode::detect(&backend.info().root_path)?;
         if repo_mode.is_sparse_checkout() && !backend.supports_sparse_checkout() {
@@ -147,6 +151,13 @@ fn git_fsmonitor_config_enabled(value: &str) -> bool {
     let value = value.trim();
     git_bool_config_enabled(value)
         || (!value.is_empty() && !matches!(value, "false" | "0" | "no" | "off"))
+}
+
+fn uses_reftable(cwd: &Path) -> bool {
+    run_git_command(cwd, &["config", "--get", "extensions.refStorage"])
+        .ok()
+        .map(|v| v.trim().eq_ignore_ascii_case("reftable"))
+        .unwrap_or(false)
 }
 
 impl VcsBackend for GitBackend {
@@ -375,6 +386,25 @@ mod tests {
             GitBackend::Libgit2(backend) => assert!(!backend.supports_sparse_checkout()),
             GitBackend::Cli(_) => panic!("standard repo should use libgit2 by default"),
         }
+    }
+
+    #[test]
+    fn default_preference_routes_reftable_repo_to_cli() {
+        let temp_dir = tempdir().expect("failed to create temp dir");
+        let root = temp_dir.path();
+        setup_standard_repo(root);
+        run_git_command(root, &["config", "core.repositoryFormatVersion", "1"])
+            .expect("failed to set repositoryFormatVersion");
+        run_git_command(root, &["config", "extensions.refStorage", "reftable"])
+            .expect("failed to set reftable extension");
+
+        let backend = GitBackend::discover_from(root, GitBackendPreference::Libgit2)
+            .expect("reftable repo should open via CLI fallback");
+
+        assert!(
+            matches!(backend, GitBackend::Cli(_)),
+            "reftable repo should use Git CLI backend, not libgit2"
+        );
     }
 
     fn setup_standard_repo(root: &Path) {
