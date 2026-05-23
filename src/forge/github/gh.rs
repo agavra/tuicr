@@ -565,16 +565,25 @@ fn parse_url_target(target: &str) -> Option<PullRequestTarget> {
     let host = parts.next()?;
     let owner = parts.next()?;
     let repo = parts.next()?;
-    if parts.next()? != "pull" {
+    let segment = parts.next()?;
+    let number = if segment == "pull" {
+        // GitHub: /<owner>/<repo>/pull/<n>
+        parts.next()?.parse::<u64>().ok()?
+    } else if segment == "-" {
+        // GitLab: /<owner>/<repo>/-/merge_requests/<n>
+        if parts.next()? != "merge_requests" {
+            return None;
+        }
+        parts.next()?.parse::<u64>().ok()?
+    } else {
         return None;
-    }
-    let number = parts.next()?.parse::<u64>().ok()?;
+    };
     if number == 0 {
         return None;
     }
 
     Some(PullRequestTarget::with_repository(
-        ForgeRepository::github(host, owner, strip_git_suffix(repo)),
+        forge_repo_from_host(host, owner, strip_git_suffix(repo)),
         number,
         target,
     ))
@@ -594,13 +603,23 @@ fn parse_repo_hash_target(target: &str) -> Option<PullRequestTarget> {
         [owner, repo] => {
             ForgeRepository::github(DEFAULT_GITHUB_HOST, *owner, strip_git_suffix(repo))
         }
-        [host, owner, repo] => ForgeRepository::github(*host, *owner, strip_git_suffix(repo)),
+        [host, owner, repo] => forge_repo_from_host(host, owner, strip_git_suffix(repo)),
         _ => return None,
     };
 
     Some(PullRequestTarget::with_repository(
         repository, number, target,
     ))
+}
+
+/// Build a `ForgeRepository` from host/owner/repo, picking the forge kind
+/// based on the host name.
+fn forge_repo_from_host(host: &str, owner: &str, repo: &str) -> ForgeRepository {
+    if host.contains("gitlab") {
+        ForgeRepository::gitlab(host, owner, repo)
+    } else {
+        ForgeRepository::github(host, owner, repo)
+    }
 }
 
 /// Resolve an SSH host alias to its real `HostName` via `~/.ssh/config`.
@@ -1513,6 +1532,7 @@ Match host github-work
             path: PathBuf::from("src/lib.rs"),
             line,
             side: GhSide::Right,
+                counterpart_line: None,
             start_line: None,
             start_side: None,
             body: body.to_string(),

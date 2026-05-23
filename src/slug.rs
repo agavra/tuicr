@@ -101,6 +101,7 @@ impl fmt::Display for PrSlug {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let kind = match self.forge {
             ForgeKind::GitHub => "gh",
+            ForgeKind::GitLab => "gl",
         };
         write!(
             f,
@@ -169,6 +170,7 @@ impl FromStr for Slug {
         if let Some((kind, rest)) = s.split_once(':') {
             let forge = match kind {
                 "gh" => ForgeKind::GitHub,
+                "gl" => ForgeKind::GitLab,
                 other => return Err(SlugParseError::UnknownForge(other.to_string())),
             };
             return parse_pr(forge, rest).map(Slug::Pr);

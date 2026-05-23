@@ -100,7 +100,6 @@ pub fn format_comment_input_lines(
     cursor_pos: usize,
     line_range: Option<LineRange>,
     is_editing: bool,
-    supports_keyboard_enhancement: bool,
     width: usize,
 ) -> (Vec<Line<'static>>, CommentCursorInfo) {
     let type_style = styles::comment_type_style(theme, comment_type.color);
@@ -116,11 +115,7 @@ pub fn format_comment_input_lines(
         None => String::new(),
     };
 
-    let newline_hint = if supports_keyboard_enhancement {
-        "Shift-Enter"
-    } else {
-        "Ctrl-J"
-    };
+    let newline_hint = "Shift-Enter"; // requires extended-keys on in tmux; Alt-Enter also works
 
     // "    │  " is the per-line content prefix; everything past that is content.
     // Subtract two extra: one so ratatui never wraps an exact-fit line, and
@@ -535,7 +530,7 @@ mod tests {
             0,
             None,
             false,
-            false,
+            
             80,
         );
 
@@ -563,7 +558,7 @@ mod tests {
             cursor_pos,
             None,
             false,
-            false,
+            
             80,
         );
 
@@ -590,7 +585,7 @@ mod tests {
             cursor_pos,
             None,
             false,
-            false,
+            
             80,
         );
 
@@ -618,7 +613,7 @@ mod tests {
             cursor_pos,
             None,
             false,
-            false,
+            
             80,
         );
 
@@ -645,7 +640,7 @@ mod tests {
             cursor_pos,
             None,
             false,
-            false,
+            
             80,
         );
 
@@ -673,7 +668,7 @@ mod tests {
             cursor_pos,
             None,
             false,
-            false,
+            
             80,
         );
 

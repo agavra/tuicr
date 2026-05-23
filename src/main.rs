@@ -245,22 +245,24 @@ fn main() -> anyhow::Result<()> {
     // (Enter submitting, ':' opening command mode, etc.) mid-paste.
     execute!(tty_output, EnableBracketedPaste)?;
 
-    // Enable keyboard enhancement for better modifier key detection (e.g., Alt+Enter)
-    // This is supported by modern terminals like Kitty, iTerm2, WezTerm, etc.
-    if keyboard_enhancement_supported {
-        // REPORT_EVENT_TYPES distinguishes Press from Repeat from Release so
-        // the two-press file walk (j/k at file boundary) can require an
-        // actual key release between the two presses. Without it terminals
-        // emit Press for every auto-repeat tick and held-j would walk past
-        // file boundaries.
-        let _ = execute!(
-            tty_output,
-            PushKeyboardEnhancementFlags(
-                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-                    | KeyboardEnhancementFlags::REPORT_EVENT_TYPES,
-            )
-        );
-    }
+    // Always push keyboard enhancement flags. Terminals that do not support the
+    // Kitty keyboard protocol silently ignore these escape sequences, so this is
+    // safe to send unconditionally.  The key benefit: DISAMBIGUATE_ESCAPE_CODES
+    // makes Shift-Enter arrive as Enter+SHIFT (not plain Enter), which is needed
+    // for multi-line comment input.  REPORT_EVENT_TYPES lets tuicr distinguish
+    // key-press from key-repeat so held-j/k don't walk past file boundaries.
+    //
+    // `keyboard_enhancement_supported` (from crossterm's DA1 query) is still
+    // tracked on `app` because it gates the held-key release logic, but we no
+    // longer gate the PushKeyboardEnhancementFlags call on it — crossterm's
+    // query can return false inside tmux even when tmux has `extended-keys on`.
+    let _ = execute!(
+        tty_output,
+        PushKeyboardEnhancementFlags(
+            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                | KeyboardEnhancementFlags::REPORT_EVENT_TYPES,
+        )
+    );
     let backend = CrosstermBackend::new(tty_output);
     let mut terminal = Terminal::new(backend)?;
 

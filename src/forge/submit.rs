@@ -83,14 +83,18 @@ pub struct InlineComment {
     pub path: PathBuf,
     pub line: u32,
     pub side: GhSide,
+    /// Line number on the *other* diff side for context (unchanged) lines.
+    /// `None` for purely added or deleted lines. GitLab requires both
+    /// `old_line` and `new_line` in the position object for context lines;
+    /// GitHub ignores this field.
+    pub counterpart_line: Option<u32>,
     /// Multi-line range start. `None` for single-line comments.
     pub start_line: Option<u32>,
     pub start_side: Option<GhSide>,
     pub body: String,
-    /// Source `Comment.id` this inline was derived from. PR 6 uses this on
-    /// success to locate the source `Comment` and flip its `lifecycle_state`.
-    /// This field is INTERNAL — the GitHub payload builder does not include
-    /// it in the JSON request body.
+    /// Source `Comment.id` this inline was derived from. Used after a
+    /// successful submit to flip the comment's lifecycle state. INTERNAL —
+    /// the forge payload builders do not include it in the request body.
     pub comment_id: String,
 }
 
@@ -197,15 +201,22 @@ pub fn map_comment(
 
     match anchor {
         CommentAnchor::FileLevel => match file.first_valid_line(LineSide::New) {
-            Some(line) => MappedComment::Inline(InlineComment {
-                path,
-                line,
-                side: GhSide::Right,
-                start_line: None,
-                start_side: None,
-                body: build_inline_body(comment, true, config),
-                comment_id: comment.id.clone(),
-            }),
+            Some(line) => {
+                // Use find_line_with_counterpart so context lines include both
+                // new_line and old_line in the GitLab position object.
+                let counterpart_line = find_line_with_counterpart(file, line, LineSide::New)
+                    .and_then(|(_, cp)| cp);
+                MappedComment::Inline(InlineComment {
+                    path,
+                    line,
+                    side: GhSide::Right,
+                    counterpart_line,
+                    start_line: None,
+                    start_side: None,
+                    body: build_inline_body(comment, true, config),
+                    comment_id: comment.id.clone(),
+                })
+            }
             None => MappedComment::Unmappable {
                 comment: comment.clone(),
                 file: path,
@@ -221,40 +232,52 @@ pub fn map_comment(
             },
         },
         CommentAnchor::Line { line, side } => {
-            if !line_present_on_side(file, line, side) {
-                return MappedComment::Unmappable {
+            match find_line_with_counterpart(file, line, side) {
+                None => MappedComment::Unmappable {
                     comment: comment.clone(),
                     file: path,
                     reason: UnmappableReason::LineNotInDiff,
-                };
+                },
+                Some((primary_line, counterpart_line)) => MappedComment::Inline(InlineComment {
+                    path,
+                    line: primary_line,
+                    side: side.into(),
+                    counterpart_line,
+                    start_line: None,
+                    start_side: None,
+                    body: build_inline_body(comment, false, config),
+                    comment_id: comment.id.clone(),
+                }),
             }
-            MappedComment::Inline(InlineComment {
-                path,
-                line,
-                side: side.into(),
-                start_line: None,
-                start_side: None,
-                body: build_inline_body(comment, false, config),
-                comment_id: comment.id.clone(),
-            })
         }
     }
 }
 
 /// True when `line` appears on `side` somewhere in the file's hunks.
 fn line_present_on_side(file: &DiffFile, line: u32, side: LineSide) -> bool {
+    find_line_with_counterpart(file, line, side).is_some()
+}
+
+/// Find `line` on `side` and return `(line, counterpart)` where `counterpart`
+/// is the line number on the opposite side for context lines (`None` for
+/// purely added/deleted lines).
+fn find_line_with_counterpart(file: &DiffFile, line: u32, side: LineSide) -> Option<(u32, Option<u32>)> {
     for hunk in &file.hunks {
         for dl in &hunk.lines {
             let candidate = match side {
-                LineSide::Old => dl.old_lineno,
                 LineSide::New => dl.new_lineno,
+                LineSide::Old => dl.old_lineno,
             };
             if candidate == Some(line) {
-                return true;
+                let counterpart = match side {
+                    LineSide::New => dl.old_lineno,
+                    LineSide::Old => dl.new_lineno,
+                };
+                return Some((line, counterpart));
             }
         }
     }
-    false
+    None
 }
 
 /// Map a multi-line range comment, validating that the range sits on a
@@ -295,6 +318,7 @@ fn map_range(
             path,
             line: range.start,
             side: side.into(),
+            counterpart_line: None,
             start_line: None,
             start_side: None,
             body: build_inline_body(comment, false, config),
@@ -306,6 +330,7 @@ fn map_range(
         path,
         line: range.end,
         side: side.into(),
+        counterpart_line: None,
         start_line: Some(range.start),
         start_side: Some(side.into()),
         body: build_inline_body(comment, false, config),
@@ -602,6 +627,49 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn should_populate_counterpart_line_for_context_line() {
+        // Context lines have both new_lineno and old_lineno set.
+        // The counterpart is needed by GitLab to compute a valid line_code.
+        let comment = comment_with_line(LineSide::New, Some(10), Some(10));
+        let mapped = map_comment(
+            &comment,
+            anchor_from(&comment),
+            &typical_file(),
+            &default_config(),
+        );
+        match mapped {
+            MappedComment::Inline(inline) => {
+                assert_eq!(inline.line, 10);
+                assert_eq!(inline.side, GhSide::Right);
+                // old_lineno (10) must be populated as the counterpart so
+                // GitLab receives both new_line and old_line in the position object.
+                assert_eq!(inline.counterpart_line, Some(10));
+            }
+            other => panic!("expected Inline, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn should_not_populate_counterpart_line_for_addition_line() {
+        // Addition lines only have new_lineno; no counterpart expected.
+        let comment = comment_with_line(LineSide::New, Some(11), None);
+        let mapped = map_comment(
+            &comment,
+            anchor_from(&comment),
+            &typical_file(),
+            &default_config(),
+        );
+        match mapped {
+            MappedComment::Inline(inline) => {
+                assert_eq!(inline.line, 11);
+                assert_eq!(inline.side, GhSide::Right);
+                assert_eq!(inline.counterpart_line, None);
+            }
+            other => panic!("expected Inline, got {other:?}"),
+        }
     }
 
     #[test]

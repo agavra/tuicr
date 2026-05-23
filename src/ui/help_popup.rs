@@ -442,7 +442,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
-                "  Shift-Enter/Ctrl-J",
+                "  Shift-Enter/Alt-Enter/Ctrl-J",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("Insert newline"),
@@ -619,21 +619,21 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  :submit approve",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("  Submit an APPROVE review to GitHub"),
+            Span::raw("  Submit an APPROVE review to the forge"),
         ]),
         Line::from(vec![
             Span::styled(
                 "  :submit request-changes",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("  Submit a REQUEST_CHANGES review to GitHub"),
+            Span::raw("  Submit a REQUEST_CHANGES review to the forge"),
         ]),
         Line::from(vec![
             Span::styled(
                 "  :submit draft",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("  Push a pending (draft) review to GitHub"),
+            Span::raw("  Push a pending (draft) review to the forge"),
         ]),
         Line::from(vec![
             Span::styled(

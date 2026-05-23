@@ -180,6 +180,7 @@ mod tests {
             updated_at: Some(Utc::now()),
             closed: false,
             merged_at: None,
+            diff_start_sha: None,
         }
     }
 

@@ -100,7 +100,6 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                 app.comment_cursor,
                 None,
                 true,
-                app.supports_keyboard_enhancement,
                 comment_width,
             );
             comment_cursor_logical_line = Some(line_idx + cursor_info.line_offset);
@@ -140,6 +139,37 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
         }
     }
 
+    // Render remote review-level threads (general MR notes, line: None).
+    {
+        use crate::forge::remote_comments::{PrCommentsVisibility, RemoteCommentSide};
+        let _ = RemoteCommentSide::Right; // ensure import is used
+        let visibility = app.session.remote_comments_visibility;
+        if !matches!(visibility, PrCommentsVisibility::Hide) {
+            for thread in &app.forge_review_threads {
+                if thread.line.is_some() {
+                    continue; // inline threads are rendered in-diff
+                }
+                let Some(muted) = visibility.render_decision(thread) else {
+                    continue;
+                };
+                let thread_lines =
+                    comment_panel::format_remote_thread_lines(&app.theme, thread, muted);
+                for mut comment_line in thread_lines {
+                    let indicator = cursor_indicator(line_idx, current_line_idx);
+                    comment_line.spans.insert(
+                        0,
+                        Span::styled(
+                            indicator,
+                            styles::current_line_indicator_style(&app.theme),
+                        ),
+                    );
+                    lines.push(comment_line);
+                    line_idx += 1;
+                }
+            }
+        }
+    }
+
     if is_review_comment_mode && app.editing_comment_id.is_none() {
         let (input_lines, cursor_info) = comment_panel::format_comment_input_lines(
             &app.theme,
@@ -148,7 +178,6 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
             app.comment_cursor,
             None,
             false,
-            app.supports_keyboard_enhancement,
             comment_width,
         );
         comment_cursor_logical_line = Some(line_idx + cursor_info.line_offset);
@@ -242,7 +271,6 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                         app.comment_cursor,
                         None,
                         true,
-                        app.supports_keyboard_enhancement,
                         comment_width,
                     );
                     // Track cursor position: logical line = current line_idx + cursor offset within input
@@ -301,7 +329,6 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                 app.comment_cursor,
                 None,
                 false,
-                app.supports_keyboard_enhancement,
                 comment_width,
             );
             // Track cursor position
@@ -573,7 +600,6 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                                 app.comment_cursor,
                                                 line_range,
                                                 true,
-                                                app.supports_keyboard_enhancement,
                                                 comment_width,
                                             );
                                         comment_cursor_logical_line =
@@ -677,7 +703,6 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                     app.comment_cursor,
                                     line_range,
                                     false,
-                                    app.supports_keyboard_enhancement,
                                     comment_width,
                                 );
                             comment_cursor_logical_line = Some(line_idx + cursor_info.line_offset);
@@ -732,7 +757,6 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                                 app.comment_cursor,
                                                 line_range,
                                                 true,
-                                                app.supports_keyboard_enhancement,
                                                 comment_width,
                                             );
                                         comment_cursor_logical_line =
@@ -836,7 +860,6 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                     app.comment_cursor,
                                     line_range,
                                     false,
-                                    app.supports_keyboard_enhancement,
                                     comment_width,
                                 );
                             comment_cursor_logical_line = Some(line_idx + cursor_info.line_offset);
@@ -1534,6 +1557,70 @@ mod remote_comments_snapshot_tests {
         assert!(
             body.contains("[github @bob outdated]"),
             "expected outdated badge in:\n{body}"
+        );
+    }
+
+    #[test]
+    fn should_render_review_level_remote_thread_in_review_comments_section() {
+        // given — a review-level thread (line: None, path: "") as produced by
+        // GitLab individual_note: true discussions
+        let mut app = make_pr_app();
+        app.forge_review_threads = vec![RemoteReviewThread {
+            id: "rv1".to_string(),
+            path: String::new(),
+            line: None,
+            side: RemoteCommentSide::Right,
+            is_resolved: false,
+            is_outdated: false,
+            comments: vec![RemoteReviewComment {
+                id: "rv1-root".to_string(),
+                author: Some("carol".to_string()),
+                body: "overall this looks fine".to_string(),
+                created_at: None,
+                in_reply_to: None,
+                url: String::new(),
+            }],
+        }];
+        app.rebuild_annotations();
+        // when
+        let buffer = draw(&mut app);
+        let body = body_text(&buffer);
+        // then — the badge and body appear in the rendered frame
+        assert!(
+            body.contains("carol"),
+            "expected author in review comments:\n{body}"
+        );
+        assert!(
+            body.contains("overall this looks fine"),
+            "expected body in review comments:\n{body}"
+        );
+    }
+
+    #[test]
+    fn should_not_render_review_level_thread_when_comments_hidden() {
+        let mut app = make_pr_app();
+        app.forge_review_threads = vec![RemoteReviewThread {
+            id: "rv1".to_string(),
+            path: String::new(),
+            line: None,
+            side: RemoteCommentSide::Right,
+            is_resolved: false,
+            is_outdated: false,
+            comments: vec![RemoteReviewComment {
+                id: "rv1-root".to_string(),
+                author: Some("carol".to_string()),
+                body: "should be hidden".to_string(),
+                created_at: None,
+                in_reply_to: None,
+                url: String::new(),
+            }],
+        }];
+        app.set_remote_comments_visibility(PrCommentsVisibility::Hide);
+        let buffer = draw(&mut app);
+        let body = body_text(&buffer);
+        assert!(
+            !body.contains("should be hidden"),
+            "review-level thread leaked under Hide:\n{body}"
         );
     }
 }
