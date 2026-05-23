@@ -65,6 +65,13 @@ pub fn handle_mouse_event(app: &mut App, event: MouseEvent) {
         MouseEventKind::Down(MouseButton::Left)
             if matches!(app.input_mode, InputMode::Normal | InputMode::VisualSelect) =>
         {
+            // Set focus based on the outer panel area (includes the
+            // border) so clicks on dead space still move focus.
+            if app.file_list_area.is_some_and(|r| r.contains(pos)) {
+                app.focused_panel = FocusedPanel::FileList;
+            } else if app.diff_area.is_some_and(|r| r.contains(pos)) {
+                app.focused_panel = FocusedPanel::Diff;
+            }
             // Reset back to Normal so an Up without drag falls through to handle_left_click.
             if app.input_mode == InputMode::VisualSelect {
                 app.exit_visual_mode();
