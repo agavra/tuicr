@@ -1,167 +1,215 @@
 ---
 name: tuicr
-description: Review local git changes with tuicr TUI via a tmux or zellij split pane
+description: Use tuicr's review CLI to read and add comments in active TUI review sessions, and launch tuicr in tmux/zellij when a user needs an interactive review pane.
 ---
 
-# tuicr - TUI Change Reviewer
+# tuicr Review Workflow
 
-Launch the `tuicr` TUI tool in a tmux or zellij split pane to interactively review local git changes.
+Use `tuicr review` as the default agent interface. The TUI is where the human
+reviews code; the CLI is how the agent discovers active sessions, reads user
+comments, and, only when appropriate, adds agent-authored comments.
 
-## Usage
+## Core Rule
 
-```
-/tuicr [directory]
-```
+First decide which workflow the user is asking for:
 
-Or simply mention wanting to review changes with tuicr.
+1. **User-led review of agent-generated changes**
+   - The user wants to inspect the patch and write comments in tuicr.
+   - Your job is to open or find the session, then retrieve the user's comments
+     with `tuicr review comments` when they say comments are ready. If you are
+     explicitly waiting while the user reviews, poll the same command
+     periodically and look for new comment IDs.
+   - Do not add your own review comments, do not preemptively review your own
+     patch, and do not impersonate the user's comments.
 
-## How It Works
+2. **Agent review of an AI-generated patch**
+   - The user wants you to understand, critique, or summarize a patch.
+   - You may inspect the patch and propose findings.
+   - If you can confidently identify this workflow and the target session, add
+     findings directly with `tuicr review add` and an explicit `--username`
+     identifying the agent. Ask first when the workflow or session is ambiguous.
 
-Since coding agents cannot run interactive TUI applications directly, this skill uses a terminal-multiplexer workaround:
+If the user's intent is ambiguous, ask which workflow they want.
 
-1. Detects which multiplexer the agent session is running inside (tmux or zellij)
-2. If detected: Invokes the matching wrapper script, which creates a split pane with tuicr running in it
-3. If neither is detected: Provides instructions to restart the agent inside tmux or zellij
+## Attach To A Session
 
-## Detecting the Multiplexer
+1. Determine the repository directory from the user's request, current working
+   directory, or recent file operations. Ask if it is ambiguous.
 
-Detect the active multiplexer **before** choosing a wrapper script:
+2. List persisted sessions:
 
-| Environment | Multiplexer | Wrapper |
-|-------------|-------------|---------|
-| `$TMUX` is set (non-empty) | tmux | `tuicr-wrapper.sh` |
-| `$ZELLIJ` is set (non-empty) | zellij | `tuicr-wrapper-zellij.sh` |
-| Neither set | none | Tell user to restart the agent inside tmux or zellij |
-
-If both are somehow set, prefer the innermost one (whichever the agent is directly running inside). When in doubt, ask the user.
-
-## Determining the Directory
-
-**Important:** You must determine the correct git repository directory based on context.
-
-Consider:
-- The user's current working directory
-- Any repository they've been working in during the session
-- Explicit directory mentioned in their request
-- The git status output if available
-
-Common patterns:
-- "review my changes" -> use current working directory
-- "review changes in myproject" -> find that repo path
-- After editing files -> use the directory of those files
-
-## Workflow
-
-1. **Determine target directory**:
-   - Check current working directory
-   - Consider recent file operations
-   - Ask user if ambiguous
-
-2. **Detect multiplexer** and select the wrapper script:
-   - tmux -> `<skill-directory>/tuicr-wrapper.sh`
-   - zellij -> `<skill-directory>/tuicr-wrapper-zellij.sh`
-
-3. **Run the wrapper script** with a 10-minute timeout:
    ```bash
-   <skill-directory>/<wrapper-script> [directory]
+   tuicr review list --repo /path/to/repo
    ```
 
-   **IMPORTANT:** Always set `timeout: 600000` (10 minutes) on the Bash tool call.
-   The script waits for tuicr to exit, and without the extended timeout the agent
-   may background the command after 2 minutes.
+3. Choose the session:
+   - If the CLI clearly reports exactly one relevant active session with
+     `"active": true`, attach to it.
+   - If multiple sessions are active, or the correct session is not clear, ask
+     the user which slug to use.
+   - If the user provided a slug or session JSON path, use it directly.
+   - If there is no active session, start or wait for one as described below.
+   - Until active-session discovery is formalized as a stable protocol, treat
+     `"active": true` as a convenience signal. If slug resolution fails, ask the
+     user for the slug or repo path used by the session.
 
-4. **Handle the result**:
-   - If successful: tuicr opens in a split pane and blocks until the user exits
-   - If not in a supported multiplexer: relay the instructions to the user
-   - If not a git repo: inform the user and ask for the correct path
+The CLI works even if the agent is not running inside tmux or zellij, so do not
+require a multiplexer just to connect to an existing active session.
 
-5. **Process instructions from tuicr output**:
+## Start A Session
 
-   The script output may contain instructions between markers:
-   ```
-   === TUICR INSTRUCTIONS ===
-   <instructions here>
-   === END TUICR INSTRUCTIONS ===
-   ```
+When the user needs an interactive tuicr pane and no active session exists:
 
-   **If instructions are present:** Parse and execute them. These are typically
-   code changes or actions the user approved during the review.
+| Environment | Action |
+|-------------|--------|
+| `$TMUX` is set | Run `tuicr-wrapper.sh /path/to/repo` |
+| `$ZELLIJ` is set | Run `tuicr-wrapper-zellij.sh /path/to/repo` |
+| Neither is set | Tell the user you are waiting for them to start `tuicr` in the repo, then attach with `tuicr review list` after they say it is ready |
 
-   **If no instructions in output:** The script will say "No instructions exported"
-   or mention clipboard. Tell the user:
-   > "No instructions were exported from tuicr. If you exported to clipboard,
-   > paste the instructions here and I'll execute them."
+If both `$TMUX` and `$ZELLIJ` are set, prefer the innermost multiplexer if that
+is clear; otherwise ask.
 
-## Configuration
+Wrapper paths are relative to this skill directory:
 
-### tmux wrapper (`tuicr-wrapper.sh`)
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `TUICR_PANE_POSITION` | `top` | Pane position: `top` or `bottom` |
-| `TUICR_PANE_SIZE` | `80` | Pane size as percentage of screen |
-
-Example:
 ```bash
-TUICR_PANE_SIZE=70 TUICR_PANE_POSITION=bottom <skill-directory>/tuicr-wrapper.sh /path/to/repo
+<skill-directory>/tuicr-wrapper.sh /path/to/repo
+<skill-directory>/tuicr-wrapper-zellij.sh /path/to/repo
 ```
 
-### zellij wrapper (`tuicr-wrapper-zellij.sh`)
+If your tool supports command timeouts, use a long timeout, such as 10 minutes,
+because the wrappers wait for the TUI to exit. Once the TUI creates its active
+session, use `tuicr review list --repo /path/to/repo` to capture the slug. If
+your environment cannot run another command while the wrapper is waiting, read
+the comments after the user exits tuicr.
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `TUICR_PANE_DIRECTION` | `stacked` | Split direction: `down`, `right`, or `stacked` |
-| `ZELLIJ_BIN` | `zellij` | Path to the zellij executable |
+## Read User Comments
 
-For backward compatibility the zellij wrapper also accepts the tmux-style
-`TUICR_PANE_POSITION`: `top`/`bottom` -> `down`, `left`/`right` -> `right`,
-`stacked` -> `stacked`.
+This is the main review loop for user-led review.
 
-Example:
+There is no push stream from tuicr to the agent. Read comments by running the
+CLI on demand. After the user says comments are ready, or after the TUI exits,
+run:
+
 ```bash
-TUICR_PANE_DIRECTION=right <skill-directory>/tuicr-wrapper-zellij.sh /path/to/repo
+tuicr review comments --repo /path/to/repo --session <slug>
 ```
 
-## Example Invocations
+The command emits JSON. Each comment includes fields like:
 
-User says: "review my changes"
--> Detect multiplexer, run matching wrapper with the current working directory
+- `id`
+- `location`
+- `path`
+- `start_line`
+- `end_line`
+- `side`
+- `comment_type`
+- `lifecycle_state`
+- `content`
 
-User says: "let me review the changes in myproject"
--> Find myproject path based on context
--> Detect multiplexer, run matching wrapper with that path
+Treat these comments as the user's review feedback:
 
-User says: "/tuicr ~/projects/myapp"
--> Detect multiplexer, run matching wrapper with `~/projects/myapp`
+- `issue`: blocking problem to fix first
+- `suggestion`: consider implementing or explain why not
+- `note`: answer or acknowledge
+- `praise`: no action required
 
-## Tmux Tips (relay to user if needed)
+If you are waiting during an active review, poll this command about every 30
+seconds and compare comment IDs with the previous result. Read immediately when
+the user says comments are ready. Stop polling once the user says the review is
+done or your tooling would block other work.
 
-- Switch between panes: `Ctrl-b` then arrow keys
-- Close tuicr: Press `q` in tuicr (pane closes automatically)
+If the result is empty, ask whether the user saved comments in the intended
+session or whether another active session should be selected. If the review may
+have continued while you were working, rerun `tuicr review comments` before
+claiming completion.
+
+## Add Agent Comments
+
+Only add comments when the workflow allows it and, for agent-authored review,
+after the user approves writing them into tuicr.
+
+Defaults:
+
+- Prefer line comments when a specific file and line are known.
+- Use file comments for file-scoped feedback.
+- Use review-level comments only for whole-review summaries.
+- Use `--type issue` for problems by default.
+- Use `suggestion`, `note`, or `praise` when that better matches the intent.
+- Pass `--username` so agent comments are visually distinguishable.
+
+Examples:
+
+```bash
+tuicr review add --repo /path/to/repo --session <slug> \
+  --target-file src/main.rs \
+  --line 42 \
+  --side new \
+  --type issue \
+  --username "Codex" \
+  "Handle the empty case here."
+```
+
+```bash
+tuicr review add --repo /path/to/repo --session <slug> \
+  --target-file src/main.rs \
+  --type suggestion \
+  --username "Codex" \
+  "Consider splitting this file-level concern into a helper."
+```
+
+Omit `--target-file` for a review-level comment. Add `--end-line` for a range
+comment. Use `--side old` for removed lines and `--side new` for added or
+unchanged lines in the new file.
+
+For structured input, use `--input` with literal JSON, `@path/to/file.json`, or
+`-` for stdin. Supported target types are `review`, `file`, `line`, and
+`line_range`.
+
+## Legacy Export Output
+
+Older wrapper-driven flows may emit:
+
+```text
+=== TUICR INSTRUCTIONS ===
+...
+=== END TUICR INSTRUCTIONS ===
+```
+
+If present, process those instructions. Otherwise prefer
+`tuicr review comments`; it is the primary source of review feedback. If the
+wrapper mentions clipboard export, ask the user to paste it only when the CLI
+comments are unavailable.
+
+## Multiplexer Tips
+
+tmux:
+
+- Switch panes: `Ctrl-b` then arrow keys
+- Close tuicr: press `q`
 - Resize panes: `Ctrl-b` then `Ctrl-arrow`
-- Zoom current pane: `Ctrl-b` then `z` (toggle)
+- Zoom pane: `Ctrl-b` then `z`
 
-## Zellij Tips (relay to user if needed)
+zellij:
 
-- Switch between panes: `Alt` + arrow keys
-- Close tuicr: Press `q` in tuicr (pane closes automatically via `--close-on-exit`)
-- Resize panes: `Ctrl-n` to enter resize mode, then arrow keys
-- Toggle fullscreen for current pane: `Alt-f`
-- Cycle through stacked panes: `Alt` + `[` / `]`
+- Switch panes: `Alt` + arrow keys
+- Close tuicr: press `q`
+- Resize panes: `Ctrl-n`, then arrow keys
+- Toggle fullscreen: `Alt-f`
+- Cycle stacked panes: `Alt` + `[` / `]`
 
 ## Error Handling
 
-| Error | Action |
-|-------|--------|
-| Neither `$TMUX` nor `$ZELLIJ` set | Tell the user to restart the agent inside tmux or zellij |
-| `$TMUX` set but `tmux` binary missing | Tell the user to install tmux (or switch to zellij) |
-| `$ZELLIJ` set but `zellij` binary missing | Tell the user to install zellij (or switch to tmux) |
-| Not a git repo | Ask the user for the correct directory |
+| Situation | Action |
+|-----------|--------|
+| Multiple plausible active sessions | Ask which session slug to use |
+| No active session, tmux/zellij available | Start a new tuicr pane with the matching wrapper |
+| No active session, no multiplexer | Tell the user you are waiting for them to start `tuicr` |
 | `tuicr` not installed | Tell the user to install tuicr |
-| tuicr already running (zellij) | Tell the user to switch to the existing pane via `Alt` + arrow keys |
+| Not a repository | Ask for the correct repo directory |
+| Comments are empty | Confirm the selected session or ask the user to save/add comments |
 
-## When NOT to use
+## When Not To Use
 
-- When the user just wants `git diff` output (use git directly)
-- When reviewing remote/PR changes (use gh CLI or web)
-- When the user explicitly asks for non-interactive review
+- The user only wants raw `git diff` output.
+- The user explicitly asks for a non-tuicr review workflow.
+- The task is remote PR review and no tuicr PR session is involved.
