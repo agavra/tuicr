@@ -5,6 +5,8 @@ use crate::app::{
     self, App, ExpandDirection, FileTreeItem, FocusedPanel, GapCursorHit, InputMode, TargetTab,
     VisualSelection,
 };
+use crate::forge::remote_comments::PrCommentsVisibility;
+use crate::forge::submit::SubmitEvent;
 use crate::input::Action;
 use crate::model::{ClearScope, LineSide};
 use crate::output::{export_to_clipboard, generate_export_content};
@@ -17,6 +19,108 @@ const WHEEL_LINES: usize = 3;
 /// step for keyboard arrow scrolling so the two input methods feel
 /// interchangeable.
 const WHEEL_COLS: usize = 4;
+
+const COMMAND_SPECS: &[CommandSpec] = &[
+    CommandSpec::new(&["q", "quit"], CommandKind::Quit),
+    CommandSpec::new(&["q!", "quit!"], CommandKind::ForceQuit),
+    CommandSpec::new(&["w", "write"], CommandKind::Write),
+    CommandSpec::new(&["x", "wq"], CommandKind::WriteQuit),
+    CommandSpec::new(&["e", "reload"], CommandKind::Reload),
+    CommandSpec::new(&["clip", "export"], CommandKind::Export),
+    CommandSpec::new(
+        &["clear"],
+        CommandKind::Clear(ClearScope::CommentsAndReviewed),
+    ),
+    CommandSpec::new(&["clearc"], CommandKind::Clear(ClearScope::CommentsOnly)),
+    CommandSpec::new(&["version"], CommandKind::Version),
+    CommandSpec::new(&["update"], CommandKind::Update),
+    CommandSpec::new(&["set wrap"], CommandKind::SetWrap),
+    CommandSpec::new(&["set wrap!"], CommandKind::ToggleWrap),
+    CommandSpec::new(&["set commits"], CommandKind::SetCommitsVisible(true)),
+    CommandSpec::new(&["set nocommits"], CommandKind::SetCommitsVisible(false)),
+    CommandSpec::new(&["set commits!"], CommandKind::ToggleCommits),
+    CommandSpec::new(&["diff"], CommandKind::Diff),
+    CommandSpec::new(&["focus", "f"], CommandKind::Focus),
+    CommandSpec::new(&["stage"], CommandKind::Stage),
+    CommandSpec::new(
+        &["commits", "targets"],
+        CommandKind::Targets(TargetTab::Local),
+    ),
+    CommandSpec::new(&["prs"], CommandKind::Targets(TargetTab::PullRequests)),
+    CommandSpec::new(&["submit"], CommandKind::SubmitPicker),
+    CommandSpec::new(
+        &["submit comment"],
+        CommandKind::Submit(SubmitEvent::Comment),
+    ),
+    CommandSpec::new(
+        &["submit approve"],
+        CommandKind::Submit(SubmitEvent::Approve),
+    ),
+    CommandSpec::new(
+        &["submit request-changes"],
+        CommandKind::Submit(SubmitEvent::RequestChanges),
+    ),
+    CommandSpec::new(&["submit draft"], CommandKind::Submit(SubmitEvent::Draft)),
+    CommandSpec::new(
+        &["comments unresolved"],
+        CommandKind::Comments(PrCommentsVisibility::Unresolved),
+    ),
+    CommandSpec::new(
+        &["comments all"],
+        CommandKind::Comments(PrCommentsVisibility::All),
+    ),
+    CommandSpec::new(
+        &["comments hide"],
+        CommandKind::Comments(PrCommentsVisibility::Hide),
+    ),
+];
+
+/// CommandSpec is the single registry entry used by both completion and
+/// command-mode dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CommandSpec {
+    /// Accepted command strings, including aliases.
+    names: &'static [&'static str],
+    /// Behavior shared by every alias in `names`.
+    kind: CommandKind,
+}
+
+impl CommandSpec {
+    const fn new(names: &'static [&'static str], kind: CommandKind) -> Self {
+        Self { names, kind }
+    }
+}
+
+/// CommandKind is the parsed meaning of one command-mode input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CommandKind {
+    Quit,
+    ForceQuit,
+    Write,
+    WriteQuit,
+    Reload,
+    Export,
+    Clear(ClearScope),
+    Version,
+    Update,
+    SetWrap,
+    ToggleWrap,
+    SetCommitsVisible(bool),
+    ToggleCommits,
+    Diff,
+    Focus,
+    Stage,
+    Targets(TargetTab),
+    SubmitPicker,
+    Submit(SubmitEvent),
+    Comments(PrCommentsVisibility),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CommandAfterDispatch {
+    ExitCommandMode,
+    KeepMode,
+}
 
 pub fn handle_mouse_event(app: &mut App, event: MouseEvent) {
     let pos = Position::new(event.column, event.row);
@@ -379,204 +483,239 @@ pub fn handle_command_action(app: &mut App, action: Action) {
         Action::DeleteChar => {
             app.command_buffer.pop();
         }
+        Action::DeleteWord => {
+            let cursor = app.command_buffer.len();
+            delete_word_before(&mut app.command_buffer, cursor);
+        }
+        Action::ClearLine => {
+            app.command_buffer.clear();
+        }
         Action::ExitMode => app.exit_command_mode(),
         Action::SubmitInput => {
             let cmd = app.command_buffer.trim().to_string();
-            match cmd.as_str() {
-                "q" | "quit" => {
-                    if app.dirty {
-                        app.set_error("No write since last change (add ! to override)");
+            let after_dispatch = if let Some(spec) = command_spec_for(&cmd) {
+                dispatch_command(app, spec.kind)
+            } else if let Some((lineno, side)) = parse_lineno_command(&cmd) {
+                app.go_to_source_line(lineno, side);
+                CommandAfterDispatch::ExitCommandMode
+            } else {
+                app.set_message(format!("Unknown command: {cmd}"));
+                CommandAfterDispatch::ExitCommandMode
+            };
+            if matches!(after_dispatch, CommandAfterDispatch::ExitCommandMode) {
+                app.exit_command_mode();
+            }
+        }
+        Action::Quit => app.should_quit = true,
+        _ => {}
+    }
+}
+
+fn command_spec_for(cmd: &str) -> Option<&'static CommandSpec> {
+    COMMAND_SPECS.iter().find(|spec| spec.names.contains(&cmd))
+}
+
+fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
+    match kind {
+        CommandKind::Quit => {
+            if app.dirty {
+                app.set_error("No write since last change (add ! to override)");
+            } else {
+                app.should_quit = true;
+            }
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::ForceQuit => {
+            app.should_quit = true;
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::Write => {
+            match app.save_current_session_merging_external() {
+                Ok(path) => {
+                    app.set_message(format!("Saved to {}", path.display()));
+                }
+                Err(e) => app.set_error(format!("Save failed: {e}")),
+            }
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::WriteQuit => {
+            match app.save_current_session_merging_external() {
+                Ok(_) => {
+                    if app.session.has_comments() {
+                        if app.output_to_stdout {
+                            // Skip confirmation dialog, export directly.
+                            handle_export(app);
+                        } else {
+                            app.exit_command_mode();
+                            app.enter_confirm_mode(app::ConfirmAction::CopyAndQuit);
+                            return CommandAfterDispatch::KeepMode;
+                        }
                     } else {
                         app.should_quit = true;
                     }
                 }
-                "q!" | "quit!" => app.should_quit = true,
-                "w" | "write" => match app.save_current_session_merging_external() {
-                    Ok(path) => {
-                        app.set_message(format!("Saved to {}", path.display()));
-                    }
-                    Err(e) => app.set_error(format!("Save failed: {e}")),
-                },
-                "x" | "wq" => match app.save_current_session_merging_external() {
-                    Ok(_) => {
-                        if app.session.has_comments() {
-                            if app.output_to_stdout {
-                                // Skip confirmation dialog, export directly
-                                handle_export(app);
-                                return;
-                            }
-                            app.exit_command_mode();
-                            app.enter_confirm_mode(app::ConfirmAction::CopyAndQuit);
-                            return;
-                        } else {
-                            app.should_quit = true;
-                        }
-                    }
-                    Err(e) => app.set_error(format!("Save failed: {e}")),
-                },
-                "e" | "reload" => {
-                    let comment_reload = app.reload_persisted_session_if_changed(true);
-                    if matches!(app.diff_source, app::DiffSource::PullRequest(_)) {
-                        if let Err(e) = comment_reload {
-                            app.set_warning(format!("Comment reload failed: {e}"));
-                        }
-                        // Async: shows a spinner in the status bar; result
-                        // is applied in `poll_pr_reload_events` and the
-                        // cursor is restored to the captured anchor.
-                        if let Err(e) = app.spawn_pr_reload() {
-                            app.set_error(format!("Reload failed: {e}"));
-                        }
-                    } else {
-                        match app.reload_diff_files() {
-                            Ok((count, invalidated)) => {
-                                let comment_suffix = match comment_reload {
-                                    Ok(added) if added > 0 => {
-                                        format!(", loaded {added} external comments")
-                                    }
-                                    Ok(_) => String::new(),
-                                    Err(e) => format!(", comment reload failed: {e}"),
-                                };
-                                if invalidated > 0 {
-                                    app.set_message(format!(
-                                        "Reloaded {count} files, {invalidated} changed since last review{comment_suffix}"
-                                    ));
-                                } else {
-                                    app.set_message(format!(
-                                        "Reloaded {count} files{comment_suffix}"
-                                    ));
-                                }
-                            }
-                            Err(e) => app.set_error(format!("Reload failed: {e}")),
-                        }
-                    }
+                Err(e) => app.set_error(format!("Save failed: {e}")),
+            }
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::Reload => {
+            reload_review(app);
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::Export => {
+            handle_export(app);
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::Clear(scope) => {
+            app.clear_comments(scope);
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::Version => {
+            app.set_message(format!("tuicr v{}", env!("CARGO_PKG_VERSION")));
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::Update => {
+            check_for_updates(app);
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::SetWrap => {
+            app.set_diff_wrap(true);
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::ToggleWrap => {
+            app.toggle_diff_wrap();
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::SetCommitsVisible(visible) => {
+            set_commit_selector_visible(app, visible);
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::ToggleCommits => {
+            set_commit_selector_visible(app, !app.show_commit_selector);
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::Diff => {
+            app.toggle_diff_view_mode();
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::Focus => {
+            app.toggle_single_file_view();
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::Stage => {
+            app.stage_reviewed_files();
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::Targets(tab) => {
+            let result = app.enter_target_selector(tab);
+            match (tab, result) {
+                (_, Ok(())) => CommandAfterDispatch::KeepMode,
+                (TargetTab::Local, Err(e)) => {
+                    app.set_error(format!("Failed to load commits: {e}"));
+                    CommandAfterDispatch::ExitCommandMode
                 }
-                "clip" | "export" => handle_export(app),
-                "clear" => app.clear_comments(ClearScope::CommentsAndReviewed),
-                "clearc" => app.clear_comments(ClearScope::CommentsOnly),
-                "version" => {
-                    app.set_message(format!("tuicr v{}", env!("CARGO_PKG_VERSION")));
-                }
-                "update" => match crate::update::check_for_updates() {
-                    crate::update::UpdateCheckResult::UpdateAvailable(info) => {
-                        app.set_message(format!(
-                            "Update available: v{} -> v{}",
-                            info.current_version, info.latest_version
-                        ));
-                    }
-                    crate::update::UpdateCheckResult::UpToDate(info) => {
-                        app.set_message(format!("tuicr v{} is up to date", info.current_version));
-                    }
-                    crate::update::UpdateCheckResult::AheadOfRelease(info) => {
-                        app.set_message(format!(
-                            "You're from the future! v{} > v{}",
-                            info.current_version, info.latest_version
-                        ));
-                    }
-                    crate::update::UpdateCheckResult::Failed(err) => {
-                        app.set_warning(format!("Update check failed: {err}"));
-                    }
-                },
-                "set wrap" => app.set_diff_wrap(true),
-                "set wrap!" => app.toggle_diff_wrap(),
-                "set commits" => {
-                    app.show_commit_selector = true;
-                    app.set_message("Commit selector: visible");
-                }
-                "set nocommits" => {
-                    app.show_commit_selector = false;
-                    if app.focused_panel == FocusedPanel::CommitSelector {
-                        app.focused_panel = FocusedPanel::Diff;
-                    }
-                    app.set_message("Commit selector: hidden");
-                }
-                "set commits!" => {
-                    app.show_commit_selector = !app.show_commit_selector;
-                    if !app.show_commit_selector
-                        && app.focused_panel == FocusedPanel::CommitSelector
-                    {
-                        app.focused_panel = FocusedPanel::Diff;
-                    }
-                    let status = if app.show_commit_selector {
-                        "visible"
-                    } else {
-                        "hidden"
-                    };
-                    app.set_message(format!("Commit selector: {status}"));
-                }
-                "diff" => app.toggle_diff_view_mode(),
-                "focus" | "f" => app.toggle_single_file_view(),
-                "stage" => app.stage_reviewed_files(),
-                "commits" | "targets" => {
-                    if let Err(e) = app.enter_target_selector(TargetTab::Local) {
-                        app.set_error(format!("Failed to load commits: {e}"));
-                    } else {
-                        return;
-                    }
-                }
-                "prs" => {
-                    if let Err(e) = app.enter_target_selector(TargetTab::PullRequests) {
-                        app.set_error(format!("Failed to open PR selector: {e}"));
-                    } else {
-                        return;
-                    }
-                }
-                "submit" => {
-                    app.exit_command_mode();
-                    app.start_submit_action_picker();
-                    return;
-                }
-                "submit comment" => {
-                    app.exit_command_mode();
-                    app.start_submit(crate::forge::submit::SubmitEvent::Comment);
-                    return;
-                }
-                "submit approve" => {
-                    app.exit_command_mode();
-                    app.start_submit(crate::forge::submit::SubmitEvent::Approve);
-                    return;
-                }
-                "submit request-changes" => {
-                    app.exit_command_mode();
-                    app.start_submit(crate::forge::submit::SubmitEvent::RequestChanges);
-                    return;
-                }
-                "submit draft" => {
-                    app.exit_command_mode();
-                    app.start_submit(crate::forge::submit::SubmitEvent::Draft);
-                    return;
-                }
-                "comments unresolved" | "comments all" | "comments hide" => {
-                    use crate::forge::remote_comments::PrCommentsVisibility;
-                    if !matches!(app.diff_source, app::DiffSource::PullRequest(_)) {
-                        app.set_warning(":comments only applies in PR mode");
-                    } else {
-                        let new_visibility = match cmd.as_str() {
-                            "comments unresolved" => PrCommentsVisibility::Unresolved,
-                            "comments all" => PrCommentsVisibility::All,
-                            "comments hide" => PrCommentsVisibility::Hide,
-                            _ => unreachable!(),
-                        };
-                        let changed = app.set_remote_comments_visibility(new_visibility);
-                        let label = new_visibility.label();
-                        if changed {
-                            app.set_message(format!("Remote comments: {label}"));
-                        } else {
-                            app.set_message(format!("Remote comments: already {label}"));
-                        }
-                    }
-                }
-                _ => {
-                    if let Some((lineno, side)) = parse_lineno_command(&cmd) {
-                        app.go_to_source_line(lineno, side);
-                    } else {
-                        app.set_message(format!("Unknown command: {cmd}"));
-                    }
+                (TargetTab::PullRequests, Err(e)) => {
+                    app.set_error(format!("Failed to open PR selector: {e}"));
+                    CommandAfterDispatch::ExitCommandMode
                 }
             }
-            app.exit_command_mode();
         }
-        Action::Quit => app.should_quit = true,
-        _ => {}
+        CommandKind::SubmitPicker => {
+            app.exit_command_mode();
+            app.start_submit_action_picker();
+            CommandAfterDispatch::KeepMode
+        }
+        CommandKind::Submit(event) => {
+            app.exit_command_mode();
+            app.start_submit(event);
+            CommandAfterDispatch::KeepMode
+        }
+        CommandKind::Comments(visibility) => {
+            set_remote_comments_visibility(app, visibility);
+            CommandAfterDispatch::ExitCommandMode
+        }
+    }
+}
+
+fn reload_review(app: &mut App) {
+    let comment_reload = app.reload_persisted_session_if_changed(true);
+    if matches!(app.diff_source, app::DiffSource::PullRequest(_)) {
+        if let Err(e) = comment_reload {
+            app.set_warning(format!("Comment reload failed: {e}"));
+        }
+        // Async: shows a spinner in the status bar; result is applied in
+        // `poll_pr_reload_events` and the cursor is restored to the captured
+        // anchor.
+        if let Err(e) = app.spawn_pr_reload() {
+            app.set_error(format!("Reload failed: {e}"));
+        }
+    } else {
+        match app.reload_diff_files() {
+            Ok((count, invalidated)) => {
+                let comment_suffix = match comment_reload {
+                    Ok(added) if added > 0 => {
+                        format!(", loaded {added} external comments")
+                    }
+                    Ok(_) => String::new(),
+                    Err(e) => format!(", comment reload failed: {e}"),
+                };
+                if invalidated > 0 {
+                    app.set_message(format!(
+                        "Reloaded {count} files, {invalidated} changed since last review{comment_suffix}"
+                    ));
+                } else {
+                    app.set_message(format!("Reloaded {count} files{comment_suffix}"));
+                }
+            }
+            Err(e) => app.set_error(format!("Reload failed: {e}")),
+        }
+    }
+}
+
+fn check_for_updates(app: &mut App) {
+    match crate::update::check_for_updates() {
+        crate::update::UpdateCheckResult::UpdateAvailable(info) => {
+            app.set_message(format!(
+                "Update available: v{} -> v{}",
+                info.current_version, info.latest_version
+            ));
+        }
+        crate::update::UpdateCheckResult::UpToDate(info) => {
+            app.set_message(format!("tuicr v{} is up to date", info.current_version));
+        }
+        crate::update::UpdateCheckResult::AheadOfRelease(info) => {
+            app.set_message(format!(
+                "You're from the future! v{} > v{}",
+                info.current_version, info.latest_version
+            ));
+        }
+        crate::update::UpdateCheckResult::Failed(err) => {
+            app.set_warning(format!("Update check failed: {err}"));
+        }
+    }
+}
+
+fn set_commit_selector_visible(app: &mut App, visible: bool) {
+    app.show_commit_selector = visible;
+    if !visible && app.focused_panel == FocusedPanel::CommitSelector {
+        app.focused_panel = FocusedPanel::Diff;
+    }
+    let status = if visible { "visible" } else { "hidden" };
+    app.set_message(format!("Commit selector: {status}"));
+}
+
+fn set_remote_comments_visibility(app: &mut App, visibility: PrCommentsVisibility) {
+    if !matches!(app.diff_source, app::DiffSource::PullRequest(_)) {
+        app.set_warning(":comments only applies in PR mode");
+        return;
+    }
+
+    let changed = app.set_remote_comments_visibility(visibility);
+    let label = visibility.label();
+    if changed {
+        app.set_message(format!("Remote comments: {label}"));
+    } else {
+        app.set_message(format!("Remote comments: already {label}"));
     }
 }
 
