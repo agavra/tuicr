@@ -220,6 +220,7 @@ A first-session cheatsheet. Press `?` inside tuicr for the full reference.
 | `r` | Toggle file reviewed |
 | `y` | Copy review to clipboard |
 | `:submit` | Push review to GitHub |
+| `Tab` in `:` prompt | Complete or cycle commands |
 | `?` | Toggle full help |
 
 Full reference in [docs/KEYBINDINGS.md](docs/KEYBINDINGS.md).

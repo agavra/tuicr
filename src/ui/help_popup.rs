@@ -524,6 +524,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  Tab       ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Complete or cycle command names in the : prompt"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  :w        ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),

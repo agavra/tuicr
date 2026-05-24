@@ -43,6 +43,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     status_bar::render_header(frame, app, chunks[0]);
     render_main_content(frame, app, chunks[1]);
     status_bar::render_status_bar(frame, app, chunks[2]);
+    status_bar::render_command_completion_popup(frame, app, chunks[2]);
 
     // Render help popup on top if in help mode
     if app.input_mode == InputMode::Help {

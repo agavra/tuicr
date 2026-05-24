@@ -66,6 +66,8 @@ pub enum Action {
     DeleteWord,
     ClearLine,
     SubmitInput,
+    CompleteCommand,
+    CompleteCommandReverse,
     TextCursorLeft,
     TextCursorRight,
     TextCursorLineStart,
@@ -219,6 +221,8 @@ fn map_command_mode(key: KeyEvent) -> Action {
     match (key.code, key.modifiers) {
         (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
         (KeyCode::Enter, KeyModifiers::NONE) => Action::SubmitInput,
+        (KeyCode::Tab, KeyModifiers::NONE) => Action::CompleteCommand,
+        (KeyCode::BackTab, _) => Action::CompleteCommandReverse,
         (KeyCode::Backspace, mods) if mods.contains(KeyModifiers::ALT) => Action::DeleteWord,
         (KeyCode::Backspace, KeyModifiers::NONE) => Action::DeleteChar,
         (KeyCode::Char('w'), KeyModifiers::CONTROL) => Action::DeleteWord,
@@ -540,6 +544,18 @@ mod tests {
         assert_eq!(map_comment_mode(alt_backspace), Action::DeleteWord);
         assert_eq!(map_command_mode(alt_backspace), Action::DeleteWord);
         assert_eq!(map_search_mode(alt_backspace), Action::DeleteWord);
+    }
+
+    #[test]
+    fn should_map_tab_to_command_completion_in_command_mode() {
+        let action = map_command_mode(key(KeyCode::Tab));
+        assert_eq!(action, Action::CompleteCommand);
+    }
+
+    #[test]
+    fn should_map_backtab_to_reverse_command_completion_in_command_mode() {
+        let action = map_command_mode(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+        assert_eq!(action, Action::CompleteCommandReverse);
     }
 
     #[test]

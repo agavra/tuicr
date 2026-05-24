@@ -92,6 +92,9 @@ Shown below the file tree when local comments or visible remote PR threads exist
 
 ## Commands
 
+In command mode,
+`Tab` and `Shift-Tab` complete or cycle command names.
+
 | Command | Action |
 |---------|--------|
 | `:{N}` | Jump to new-side line N in current file |

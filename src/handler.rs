@@ -2,8 +2,8 @@ use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Position;
 
 use crate::app::{
-    self, App, ExpandDirection, FileTreeItem, FocusedPanel, GapCursorHit, InputMode, TargetTab,
-    VisualSelection,
+    self, App, CommandCompletionState, ExpandDirection, FileTreeItem, FocusedPanel, GapCursorHit,
+    InputMode, TargetTab, VisualSelection,
 };
 use crate::forge::remote_comments::PrCommentsVisibility;
 use crate::forge::submit::SubmitEvent;
@@ -120,6 +120,12 @@ enum CommandKind {
 enum CommandAfterDispatch {
     ExitCommandMode,
     KeepMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CompletionDirection {
+    Forward,
+    Reverse,
 }
 
 pub fn handle_mouse_event(app: &mut App, event: MouseEvent) {
@@ -478,20 +484,32 @@ pub fn handle_help_action(app: &mut App, action: Action) {
 /// Handle actions in Command mode (text input for :commands)
 pub fn handle_command_action(app: &mut App, action: Action) {
     match action {
-        Action::InsertChar(c) => app.command_buffer.push(c),
-        Action::Paste(text) => push_single_line(&mut app.command_buffer, &text),
+        Action::InsertChar(c) => {
+            app.command_completion = None;
+            app.command_buffer.push(c);
+        }
+        Action::Paste(text) => {
+            app.command_completion = None;
+            push_single_line(&mut app.command_buffer, &text);
+        }
         Action::DeleteChar => {
+            app.command_completion = None;
             app.command_buffer.pop();
         }
         Action::DeleteWord => {
+            app.command_completion = None;
             let cursor = app.command_buffer.len();
             delete_word_before(&mut app.command_buffer, cursor);
         }
         Action::ClearLine => {
+            app.command_completion = None;
             app.command_buffer.clear();
         }
+        Action::CompleteCommand => complete_command(app, CompletionDirection::Forward),
+        Action::CompleteCommandReverse => complete_command(app, CompletionDirection::Reverse),
         Action::ExitMode => app.exit_command_mode(),
         Action::SubmitInput => {
+            app.command_completion = None;
             let cmd = app.command_buffer.trim().to_string();
             let after_dispatch = if let Some(spec) = command_spec_for(&cmd) {
                 dispatch_command(app, spec.kind)
@@ -513,6 +531,155 @@ pub fn handle_command_action(app: &mut App, action: Action) {
 
 fn command_spec_for(cmd: &str) -> Option<&'static CommandSpec> {
     COMMAND_SPECS.iter().find(|spec| spec.names.contains(&cmd))
+}
+
+/// CommandCompleter computes command-buffer replacements without mutating App.
+struct CommandCompleter<'a> {
+    /// Registry whose command names are exposed as completion candidates.
+    specs: &'a [CommandSpec],
+}
+
+impl<'a> CommandCompleter<'a> {
+    /// Build a completer over the command registry it should expose.
+    pub fn new(specs: &'a [CommandSpec]) -> Self {
+        Self { specs }
+    }
+
+    /// Return the next command-completion state for the current prompt state.
+    ///
+    /// `buffer` is the command text currently shown to the user. `active` is
+    /// the previous completion cycle, if repeated Tab presses are cycling an
+    /// existing match set. The result describes the next buffer contents and
+    /// active completion cycle without mutating App.
+    pub fn complete(
+        &self,
+        buffer: &str,
+        active: Option<&CommandCompletionState>,
+        direction: CompletionDirection,
+    ) -> CompletionResult {
+        if let Some(result) = self.cycle_existing(buffer, active, direction) {
+            return result;
+        }
+
+        let prefix = buffer.trim_start().to_string();
+        let matches: Vec<&'static str> = self
+            .command_names()
+            .filter(|command| command.starts_with(&prefix))
+            .collect();
+
+        match matches.len() {
+            0 => CompletionResult::NoMatch,
+            1 => CompletionResult::replace(matches[0], None),
+            _ => {
+                let common_prefix = Self::common_prefix(&matches);
+                if common_prefix.len() > prefix.len() {
+                    CompletionResult::replace(common_prefix, None)
+                } else {
+                    self.start_cycle(buffer, prefix, matches, direction)
+                }
+            }
+        }
+    }
+
+    fn command_names(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.specs
+            .iter()
+            .flat_map(|spec| spec.names.iter().copied())
+    }
+
+    fn cycle_existing(
+        &self,
+        buffer: &str,
+        active: Option<&CommandCompletionState>,
+        direction: CompletionDirection,
+    ) -> Option<CompletionResult> {
+        let completion = active?;
+        let current = completion.matches.get(completion.selected)?;
+        if buffer != *current {
+            return None;
+        }
+
+        let selected = Self::next_index(completion.selected, completion.matches.len(), direction);
+        Some(CompletionResult::replace(
+            completion.matches[selected],
+            Some(CommandCompletionState {
+                prefix: completion.prefix.clone(),
+                matches: completion.matches.clone(),
+                selected,
+            }),
+        ))
+    }
+
+    fn start_cycle(
+        &self,
+        buffer: &str,
+        prefix: String,
+        matches: Vec<&'static str>,
+        direction: CompletionDirection,
+    ) -> CompletionResult {
+        let selected = matches
+            .iter()
+            .position(|command| *command == buffer)
+            .map(|idx| Self::next_index(idx, matches.len(), direction))
+            .unwrap_or_else(|| match direction {
+                CompletionDirection::Forward => 0,
+                CompletionDirection::Reverse => matches.len() - 1,
+            });
+
+        CompletionResult::replace(
+            matches[selected],
+            Some(CommandCompletionState {
+                prefix,
+                matches,
+                selected,
+            }),
+        )
+    }
+
+    fn next_index(selected: usize, match_count: usize, direction: CompletionDirection) -> usize {
+        match direction {
+            CompletionDirection::Forward => (selected + 1) % match_count,
+            CompletionDirection::Reverse => (selected + match_count - 1) % match_count,
+        }
+    }
+
+    fn common_prefix(matches: &[&str]) -> String {
+        let mut prefix = matches
+            .first()
+            .map(|command| (*command).to_string())
+            .unwrap_or_default();
+        for command in &matches[1..] {
+            while !command.starts_with(&prefix) {
+                prefix.pop();
+            }
+        }
+        prefix
+    }
+}
+
+/// CompletionResult tells the handler how to update command-mode state.
+enum CompletionResult {
+    /// Leave the buffer unchanged and surface a no-match message.
+    NoMatch,
+    /// Replace the buffer and optionally keep a cycling state active.
+    Replace {
+        /// New command-buffer contents.
+        buffer: String,
+        /// Completion state used by the next Tab press, if cycling started.
+        completion: Option<CommandCompletionState>,
+    },
+}
+
+impl CompletionResult {
+    fn replace(
+        buffer: impl Into<String>,
+        completion: Option<CommandCompletionState>,
+    ) -> CompletionResult {
+        CompletionResult::Replace {
+            buffer: buffer.into(),
+            completion,
+        }
+    }
 }
 
 fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
@@ -716,6 +883,24 @@ fn set_remote_comments_visibility(app: &mut App, visibility: PrCommentsVisibilit
         app.set_message(format!("Remote comments: {label}"));
     } else {
         app.set_message(format!("Remote comments: already {label}"));
+    }
+}
+
+fn complete_command(app: &mut App, direction: CompletionDirection) {
+    let completer = CommandCompleter::new(COMMAND_SPECS);
+    match completer.complete(
+        &app.command_buffer,
+        app.command_completion.as_ref(),
+        direction,
+    ) {
+        CompletionResult::NoMatch => {
+            app.command_completion = None;
+            app.set_message("No command matches");
+        }
+        CompletionResult::Replace { buffer, completion } => {
+            app.command_buffer = buffer;
+            app.command_completion = completion;
+        }
     }
 }
 

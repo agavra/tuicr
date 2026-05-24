@@ -464,6 +464,21 @@ pub enum InputMode {
     SubmitActionPicker,
 }
 
+/// CommandCompletionState keeps one Tab-completion run anchored to the text
+/// the user typed before cycling began.
+///
+/// Without this state, repeated Tab presses would re-scan from the currently
+/// displayed candidate and narrow the cycle to a different match set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CommandCompletionState {
+    /// Prefix used to build `matches`.
+    pub(crate) prefix: String,
+    /// Matching command strings in the order they should cycle.
+    pub(crate) matches: Vec<&'static str>,
+    /// Index of the command currently displayed in the command buffer.
+    pub(crate) selected: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DiffSource {
     WorkingTree,
@@ -866,6 +881,7 @@ pub struct App {
     pub diff_state: DiffState,
     pub help_state: HelpState,
     pub command_buffer: String,
+    pub(crate) command_completion: Option<CommandCompletionState>,
     pub search_buffer: String,
     pub last_search_pattern: Option<String>,
     pub comment_buffer: String,
@@ -1726,6 +1742,7 @@ impl App {
             diff_state: DiffState::default(),
             help_state: HelpState::default(),
             command_buffer: String::new(),
+            command_completion: None,
             search_buffer: String::new(),
             last_search_pattern: None,
             comment_buffer: String::new(),
@@ -6264,11 +6281,13 @@ impl App {
     pub fn enter_command_mode(&mut self) {
         self.input_mode = InputMode::Command;
         self.command_buffer.clear();
+        self.command_completion = None;
     }
 
     pub fn exit_command_mode(&mut self) {
         self.input_mode = InputMode::Normal;
         self.command_buffer.clear();
+        self.command_completion = None;
     }
 
     pub fn enter_search_mode(&mut self) {
@@ -10699,6 +10718,98 @@ mod target_selector_tests {
         // then
         assert_eq!(app.target_tab, TargetTab::Local);
         assert_eq!(app.input_mode, InputMode::CommitSelect);
+    }
+
+    #[test]
+    fn should_complete_command_when_only_one_candidate_matches() {
+        // given
+        let mut app = build_app();
+        app.input_mode = InputMode::Command;
+        app.command_buffer = "vers".to_string();
+        // when
+        crate::handler::handle_command_action(&mut app, crate::input::Action::CompleteCommand);
+        // then
+        assert_eq!(app.command_buffer, "version");
+        assert!(app.command_completion.is_none());
+    }
+
+    #[test]
+    fn should_extend_to_common_command_prefix_before_cycling() {
+        // given
+        let mut app = build_app();
+        app.input_mode = InputMode::Command;
+        app.command_buffer = "su".to_string();
+        // when
+        crate::handler::handle_command_action(&mut app, crate::input::Action::CompleteCommand);
+        // then
+        assert_eq!(app.command_buffer, "submit");
+        assert!(app.command_completion.is_none());
+    }
+
+    #[test]
+    fn should_cycle_forward_through_command_matches() {
+        // given
+        let mut app = build_app();
+        app.input_mode = InputMode::Command;
+        app.command_buffer = "submit".to_string();
+        // when
+        crate::handler::handle_command_action(&mut app, crate::input::Action::CompleteCommand);
+        // then
+        assert_eq!(app.command_buffer, "submit comment");
+        assert_eq!(
+            app.command_completion
+                .as_ref()
+                .map(|completion| completion.prefix.as_str()),
+            Some("submit")
+        );
+        // when
+        crate::handler::handle_command_action(&mut app, crate::input::Action::CompleteCommand);
+        // then
+        assert_eq!(app.command_buffer, "submit approve");
+    }
+
+    #[test]
+    fn should_cycle_backward_through_command_matches() {
+        // given
+        let mut app = build_app();
+        app.input_mode = InputMode::Command;
+        app.command_buffer = "submit".to_string();
+        // when
+        crate::handler::handle_command_action(
+            &mut app,
+            crate::input::Action::CompleteCommandReverse,
+        );
+        // then
+        assert_eq!(app.command_buffer, "submit draft");
+    }
+
+    #[test]
+    fn should_leave_unknown_command_completion_unchanged() {
+        // given
+        let mut app = build_app();
+        app.input_mode = InputMode::Command;
+        app.command_buffer = "zz".to_string();
+        // when
+        crate::handler::handle_command_action(&mut app, crate::input::Action::CompleteCommand);
+        // then
+        assert_eq!(app.command_buffer, "zz");
+        assert!(app.command_completion.is_none());
+    }
+
+    #[test]
+    fn should_clear_command_completion_state_after_manual_edit() {
+        // given
+        let mut app = build_app();
+        app.input_mode = InputMode::Command;
+        app.command_buffer = "set ".to_string();
+        crate::handler::handle_command_action(&mut app, crate::input::Action::CompleteCommand);
+        assert_eq!(app.command_buffer, "set wrap");
+        assert!(app.command_completion.is_some());
+        // when
+        crate::handler::handle_command_action(&mut app, crate::input::Action::InsertChar('x'));
+        // then
+        assert_eq!(app.command_buffer, "set wrapx");
+        assert!(app.command_completion.is_none());
     }
 
     // -- async PR open spinner tests -----------------------------------------

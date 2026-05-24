@@ -5,12 +5,16 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Paragraph},
+    widgets::{Block, Borders, Clear, Paragraph},
 };
 
 use crate::app::{App, DiffSource, InputMode, Message, MessageType};
 use crate::theme::Theme;
+use crate::ui::commit_row::CURSOR_GLYPH;
 use crate::ui::styles;
+
+/// Maximum visible completion candidates in the command prompt popup.
+const COMMAND_COMPLETION_MAX_ROWS: usize = 7;
 
 pub fn build_message_span(message: Option<&Message>, theme: &Theme) -> (Span<'static>, usize) {
     if let Some(msg) = message {
@@ -269,7 +273,9 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                 InputMode::Normal => Cow::Borrowed(
                     "   j/k scroll \u{00b7} {/} file \u{00b7} r reviewed \u{00b7} c comment \u{00b7} ? help",
                 ),
-                InputMode::Command => Cow::Borrowed("   \u{21b5} execute \u{00b7} esc cancel"),
+                InputMode::Command => {
+                    Cow::Borrowed("   tab complete \u{00b7} \u{21b5} execute \u{00b7} esc cancel")
+                }
                 InputMode::Search => Cow::Borrowed("   \u{21b5} search \u{00b7} esc cancel"),
                 InputMode::Comment => Cow::Borrowed("   ctrl-s save \u{00b7} esc cancel"),
                 InputMode::Help => Cow::Borrowed("   q/?/esc close"),
@@ -378,6 +384,86 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(status, area);
 }
 
+pub fn render_command_completion_popup(frame: &mut Frame, app: &App, status_area: Rect) {
+    if app.input_mode != InputMode::Command {
+        return;
+    }
+    let Some(completion) = app.command_completion.as_ref() else {
+        return;
+    };
+    if completion.matches.is_empty() || status_area.y < 3 || status_area.width < 4 {
+        return;
+    }
+
+    let available_rows = status_area.y.saturating_sub(2) as usize;
+    let visible_rows = completion
+        .matches
+        .len()
+        .min(COMMAND_COMPLETION_MAX_ROWS)
+        .min(available_rows);
+    if visible_rows == 0 {
+        return;
+    }
+
+    let selected = completion
+        .selected
+        .min(completion.matches.len().saturating_sub(1));
+    let start = completion_window_start(selected, completion.matches.len(), visible_rows);
+    let end = start + visible_rows;
+    let visible_matches = &completion.matches[start..end];
+    let content_width = visible_matches
+        .iter()
+        .map(|command| command.chars().count())
+        .max()
+        .unwrap_or(0)
+        + 2;
+    let popup_width = (content_width as u16 + 2).min(status_area.width);
+    if popup_width == 0 {
+        return;
+    }
+
+    let popup_height = visible_rows as u16 + 2;
+    let popup_area = Rect {
+        x: status_area.x,
+        y: status_area.y.saturating_sub(popup_height),
+        width: popup_width,
+        height: popup_height,
+    };
+
+    let rows: Vec<Line<'_>> = visible_matches
+        .iter()
+        .enumerate()
+        .map(|(offset, command)| {
+            let idx = start + offset;
+            let marker = if idx == selected { CURSOR_GLYPH } else { " " };
+            let style = if idx == selected {
+                styles::selected_style(&app.theme)
+            } else {
+                Style::default().fg(app.theme.fg_secondary)
+            };
+            Line::from(Span::styled(format!("{marker} {command}"), style))
+        })
+        .collect();
+
+    frame.render_widget(Clear, popup_area);
+    frame.render_widget(
+        Paragraph::new(rows)
+            .style(styles::panel_style(&app.theme))
+            .block(Block::default().borders(Borders::ALL)),
+        popup_area,
+    );
+}
+
+fn completion_window_start(selected: usize, match_count: usize, visible_rows: usize) -> usize {
+    if visible_rows >= match_count {
+        return 0;
+    }
+    let half = visible_rows / 2;
+    selected
+        .saturating_sub(half)
+        .min(match_count.saturating_sub(visible_rows))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -405,6 +491,26 @@ mod tests {
         let (span, width) = build_message_span(None, &theme);
         assert_eq!(span.content.as_ref(), "");
         assert_eq!(width, 0);
+    }
+
+    #[test]
+    fn should_center_completion_window_when_possible() {
+        assert_eq!(completion_window_start(5, 12, 7), 2);
+    }
+
+    #[test]
+    fn should_pin_completion_window_to_top_near_start() {
+        assert_eq!(completion_window_start(1, 12, 7), 0);
+    }
+
+    #[test]
+    fn should_pin_completion_window_to_bottom_near_end() {
+        assert_eq!(completion_window_start(10, 12, 7), 5);
+    }
+
+    #[test]
+    fn should_show_all_completion_rows_when_they_fit() {
+        assert_eq!(completion_window_start(3, 5, 7), 0);
     }
 
     #[test]
