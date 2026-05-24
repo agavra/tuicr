@@ -75,6 +75,9 @@ pub fn copy_text_to_clipboard(text: &str) -> Result<bool> {
         copy_osc52(text)?;
         return Ok(true);
     }
+    if try_copy_via_subprocess(text) {
+        return Ok(false);
+    }
     match Clipboard::new().and_then(|mut cb| cb.set_text(text)) {
         Ok(_) => Ok(false),
         Err(_) => {
@@ -82,6 +85,34 @@ pub fn copy_text_to_clipboard(text: &str) -> Result<bool> {
             Ok(true)
         }
     }
+}
+
+/// Try copying via a CLI tool that forks into the background and holds
+/// clipboard ownership beyond tuicr's process lifetime. Returns true on success.
+fn try_copy_via_subprocess(text: &str) -> bool {
+    // Try xclip (X11), then wl-copy (Wayland).
+    for (cmd, args) in [
+        ("xclip", vec!["-selection", "clipboard"]),
+        ("wl-copy", vec![]),
+    ] {
+        use std::process::{Command, Stdio};
+        let Ok(mut child) = Command::new(cmd)
+            .args(&args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        else {
+            continue;
+        };
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = std::io::Write::write_all(&mut stdin, text.as_bytes());
+        }
+        if matches!(child.wait(), Ok(s) if s.success()) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Returns true if we should prefer OSC 52 over the system clipboard.
