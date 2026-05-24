@@ -87,32 +87,29 @@ pub fn copy_text_to_clipboard(text: &str) -> Result<bool> {
     }
 }
 
+/// Try xclip (X11) then wl-copy (Wayland). Returns true if either succeeds.
+fn try_copy_via_subprocess(text: &str) -> bool {
+    try_clipboard_cmd("xclip", &["-selection", "clipboard"], text)
+        || try_clipboard_cmd("wl-copy", &[], text)
+}
+
 /// Try copying via a CLI tool that forks into the background and holds
 /// clipboard ownership beyond tuicr's process lifetime. Returns true on success.
-fn try_copy_via_subprocess(text: &str) -> bool {
-    // Try xclip (X11), then wl-copy (Wayland).
-    for (cmd, args) in [
-        ("xclip", vec!["-selection", "clipboard"]),
-        ("wl-copy", vec![]),
-    ] {
-        use std::process::{Command, Stdio};
-        let Ok(mut child) = Command::new(cmd)
-            .args(&args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-        else {
-            continue;
-        };
-        if let Some(mut stdin) = child.stdin.take() {
-            let _ = std::io::Write::write_all(&mut stdin, text.as_bytes());
-        }
-        if matches!(child.wait(), Ok(s) if s.success()) {
-            return true;
-        }
+fn try_clipboard_cmd(program: &str, args: &[&str], text: &str) -> bool {
+    use std::process::{Command, Stdio};
+    let Ok(mut child) = Command::new(program)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = std::io::Write::write_all(&mut stdin, text.as_bytes());
     }
-    false
+    matches!(child.wait(), Ok(s) if s.success())
 }
 
 /// Returns true if we should prefer OSC 52 over the system clipboard.
