@@ -13,8 +13,8 @@
         naersk-lib = pkgs.callPackage naersk { };
       in
       {
-        defaultPackage = naersk-lib.buildPackage ./.;
-        devShell = with pkgs; mkShell {
+        packages.default = naersk-lib.buildPackage ./.;
+        devShells.default = with pkgs; mkShell {
           buildInputs = [ cargo rustc rustfmt rustPackages.clippy jj git ];
           RUST_SRC_PATH = rustPlatform.rustLibSrc;
         };
