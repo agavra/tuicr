@@ -17,6 +17,7 @@ use crate::ui::styles;
 
 /// Static header rule used for file/section headers; avoids `"═".repeat(40)` per frame.
 pub(super) const HEADER_RULE: &str = "════════════════════════════════════════";
+pub(super) const HEADER_RULE_THIN: &str = "────────────────────────────────────────";
 
 /// Shared empty map so we can borrow `line_comments` without cloning per file per frame.
 pub(super) static EMPTY_LINE_COMMENTS: std::sync::LazyLock<
@@ -825,18 +826,21 @@ pub(super) fn paint_file_header_fill(frame: &mut Frame, ctx: &DiffOverlayPaint) 
             break;
         }
         let rows = visual_rows_for_line(ctx.line_widths, idx, ctx.wrap_lines, ctx.viewport_width);
-        if is_file_header_line(line) {
+        let (is_header, fill_char, corner_char) = header_line_fill_char(line);
+        if is_header {
             let fg = line
                 .spans
                 .iter()
-                .find(|s| s.content.starts_with('═'))
+                .find(|s| {
+                    s.content.starts_with('═')
+                        || s.content.starts_with('─')
+                        || s.content.starts_with('┌')
+                        || s.content.starts_with('└')
+                })
                 .or_else(|| line.spans.get(1))
                 .and_then(|s| s.style.fg)
                 .unwrap_or(ctx.theme.fg_primary);
             let line_width = ctx.line_widths.get(idx).copied().unwrap_or(0);
-            // Only fill the trailing edge of the last visual row of the header
-            // — wrapped intermediate rows of an unusually long header path are
-            // already entirely covered by content.
             let last_row = rows.saturating_sub(1);
             if visual_row + last_row >= ctx.inner.height as usize {
                 visual_row += rows;
@@ -852,9 +856,19 @@ pub(super) fn paint_file_header_fill(frame: &mut Frame, ctx: &DiffOverlayPaint) 
                     .min(ctx.viewport_width)
             };
             let mut x = ctx.inner.x + content_w as u16;
-            while x <= right_x {
+            let is_box_line = corner_char != fill_char;
+            let fill_end = if is_box_line && right_x > 0 {
+                right_x - 1
+            } else {
+                right_x
+            };
+            while x <= fill_end {
                 let cell = &mut frame.buffer_mut()[(x, y)];
-                cell.set_char('═');
+                if x == fill_end && is_box_line {
+                    cell.set_char(corner_char);
+                } else {
+                    cell.set_char(fill_char);
+                }
                 cell.set_fg(fg);
                 cell.set_bg(panel_bg);
                 x += 1;
@@ -864,14 +878,22 @@ pub(super) fn paint_file_header_fill(frame: &mut Frame, ctx: &DiffOverlayPaint) 
     }
 }
 
-/// A file-section header is a line whose first content span (after the
-/// cursor indicator) begins with `═══ ` — covers both per-file headers and
-/// the synthetic "Review Comments" section header.
-fn is_file_header_line(line: &Line) -> bool {
-    line.spans
-        .get(1)
-        .map(|s| s.content.starts_with("═══ "))
-        .unwrap_or(false)
+fn header_line_fill_char(line: &Line) -> (bool, char, char) {
+    if let Some(span) = line.spans.get(1) {
+        if span.content.starts_with("═══ ") {
+            return (true, '═', '═');
+        }
+        if span.content.starts_with("┌─") {
+            return (true, '─', '┐');
+        }
+        if span.content.starts_with("└─") {
+            return (true, '─', '┘');
+        }
+        if span.content.starts_with("│ ") {
+            return (true, ' ', '│');
+        }
+    }
+    (false, ' ', ' ')
 }
 
 fn visual_rows_for_line(
