@@ -35,7 +35,7 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     CommandSpec::new(&["version"], CommandKind::Version),
     CommandSpec::new(&["update"], CommandKind::Update),
     CommandSpec::new(&["set wrap"], CommandKind::SetWrap),
-    CommandSpec::new(&["set wrap!"], CommandKind::ToggleWrap),
+    CommandSpec::new(&["wrap", "set wrap!"], CommandKind::ToggleWrap),
     CommandSpec::new(&["set commits"], CommandKind::SetCommitsVisible(true)),
     CommandSpec::new(&["set nocommits"], CommandKind::SetCommitsVisible(false)),
     CommandSpec::new(&["set commits!"], CommandKind::ToggleCommits),
