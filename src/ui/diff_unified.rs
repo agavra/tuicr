@@ -202,51 +202,35 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
         let status = file.status.as_char();
         let is_reviewed = app.session.is_file_reviewed(path);
 
-        // File header box: ┌──┐ + │ name │ + └──┘.
-        // Single-file view skips this entirely.
+        // File header box: ╔══╗ + ║ name ║ + ╚══╝. Drawn flush to both
+        // panel edges — no indicator gutter, since the cursor never lands
+        // on these decoration lines. Single-file view skips this entirely.
         if !app.is_single_file_view {
             let header_style = styles::file_header_style(&app.theme);
 
             // Top border
-            let indicator_top = cursor_indicator_spaced(line_idx, current_line_idx);
             lines.push(Line::from(vec![
-                Span::styled(
-                    indicator_top,
-                    styles::current_line_indicator_style(&app.theme),
-                ),
-                Span::styled("┌─", header_style),
-                Span::styled(crate::ui::diff_view::HEADER_RULE_THIN, header_style),
+                Span::styled("╔═", header_style),
+                Span::styled(crate::ui::diff_view::HEADER_RULE, header_style),
             ]));
             line_idx += 1;
 
             // Filename row
-            let indicator_mid = cursor_indicator_spaced(line_idx, current_line_idx);
             let review_mark = if is_reviewed { "✓ " } else { "" };
             let header_text = if file.is_commit_message {
-                format!("│ {}Commit Message ", review_mark)
+                format!("║ {}Commit Message ", review_mark)
             } else if app.is_pristine_mode {
-                format!("│ {}{} ", review_mark, path.display())
+                format!("║ {}{} ", review_mark, path.display())
             } else {
-                format!("│ {}{} [{}] ", review_mark, path.display(), status)
+                format!("║ {}{} [{}] ", review_mark, path.display(), status)
             };
-            lines.push(Line::from(vec![
-                Span::styled(
-                    indicator_mid,
-                    styles::current_line_indicator_style(&app.theme),
-                ),
-                Span::styled(header_text, header_style),
-            ]));
+            lines.push(Line::from(vec![Span::styled(header_text, header_style)]));
             line_idx += 1;
 
             // Bottom border
-            let indicator_bot = cursor_indicator_spaced(line_idx, current_line_idx);
             lines.push(Line::from(vec![
-                Span::styled(
-                    indicator_bot,
-                    styles::current_line_indicator_style(&app.theme),
-                ),
-                Span::styled("└─", header_style),
-                Span::styled(crate::ui::diff_view::HEADER_RULE_THIN, header_style),
+                Span::styled("╚═", header_style),
+                Span::styled(crate::ui::diff_view::HEADER_RULE, header_style),
             ]));
             line_idx += 1;
         }

@@ -17,7 +17,6 @@ use crate::ui::styles;
 
 /// Static header rule used for file/section headers; avoids `"═".repeat(40)` per frame.
 pub(super) const HEADER_RULE: &str = "════════════════════════════════════════";
-pub(super) const HEADER_RULE_THIN: &str = "────────────────────────────────────────";
 
 /// Shared empty map so we can borrow `line_comments` without cloning per file per frame.
 pub(super) static EMPTY_LINE_COMMENTS: std::sync::LazyLock<
@@ -857,14 +856,9 @@ pub(super) fn paint_file_header_fill(frame: &mut Frame, ctx: &DiffOverlayPaint) 
             };
             let mut x = ctx.inner.x + content_w as u16;
             let is_box_line = corner_char != fill_char;
-            let fill_end = if is_box_line && right_x > 0 {
-                right_x - 1
-            } else {
-                right_x
-            };
-            while x <= fill_end {
+            while x <= right_x {
                 let cell = &mut frame.buffer_mut()[(x, y)];
-                if x == fill_end && is_box_line {
+                if x == right_x && is_box_line {
                     cell.set_char(corner_char);
                 } else {
                     cell.set_char(fill_char);
@@ -879,18 +873,24 @@ pub(super) fn paint_file_header_fill(frame: &mut Frame, ctx: &DiffOverlayPaint) 
 }
 
 fn header_line_fill_char(line: &Line) -> (bool, char, char) {
-    if let Some(span) = line.spans.get(1) {
-        if span.content.starts_with("═══ ") {
-            return (true, '═', '═');
+    // The ═══ Review Comments banner keeps the 2-char indicator slot, so
+    // its rule starts at span[1].
+    if let Some(span) = line.spans.get(1)
+        && span.content.starts_with("═══ ")
+    {
+        return (true, '═', '═');
+    }
+    // File-header box lines run flush to the left edge (no indicator), so
+    // the box glyphs appear at span[0].
+    if let Some(span) = line.spans.first() {
+        if span.content.starts_with("╔═") {
+            return (true, '═', '╗');
         }
-        if span.content.starts_with("┌─") {
-            return (true, '─', '┐');
+        if span.content.starts_with("╚═") {
+            return (true, '═', '╝');
         }
-        if span.content.starts_with("└─") {
-            return (true, '─', '┘');
-        }
-        if span.content.starts_with("│ ") {
-            return (true, ' ', '│');
+        if span.content.starts_with("║ ") {
+            return (true, ' ', '║');
         }
     }
     (false, ' ', ' ')

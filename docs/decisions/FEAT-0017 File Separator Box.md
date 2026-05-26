@@ -14,20 +14,21 @@ The single `═══ filename [M] ═══` rule separating files in multi-fil
 
 ## Decision
 
-File headers render as a three-line box. The box stops one column before the panel's right edge:
+File headers render as a three-line box that spans the panel from edge to edge. The
+indicator gutter is dropped on these rows since the cursor never lands on them:
 
 ```
   42 │  }
 
-  ┌─────────────────────────────────────────────┐
-  │ ✓ src/app.rs [M]                            │
-  └─────────────────────────────────────────────┘
+╔════════════════════════════════════════════════╗
+║ ✓ src/app.rs [M]                               ║
+╚════════════════════════════════════════════════╝
    1 │  use std::path::Path;
 ``` The trailing `Spacing` annotation from the previous file provides a blank line above.
 
 Three new annotation types support the box: `FileHeaderBorder` for top/bottom borders, the existing `FileHeader` for the filename row, and `Spacing` for the blank line. Cursor movement (`j`/`k`, arrows) skips all decoration lines (`Spacing`, `FileHeader`, `FileHeaderBorder`) and lands on the next content line.
 
-The `paint_file_header_fill` overlay function detects the line type by its leading characters (`┌─` → fill `─` with `┐` corner, `└─` → fill `─` with `┘` corner, `│ ` → fill ` ` with `│` closing bar) and extends the box to viewport width.
+The `paint_file_header_fill` overlay function detects the line type by its leading characters (`╔═` → fill `═` with `╗` corner, `╚═` → fill `═` with `╝` corner, `║ ` → fill ` ` with `║` closing bar) and extends the box to viewport width.
 
 ## Consequences
 
