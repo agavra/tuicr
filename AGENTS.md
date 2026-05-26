@@ -18,6 +18,7 @@ src/
 │   └── mod.rs           # User config loading (XDG on Unix, %APPDATA% on Windows)
 ├── app.rs               # Application state (App struct, InputMode, etc.)
 ├── error.rs             # Error types (TuicrError enum)
+├── editor.rs            # External $EDITOR command construction and launch helpers
 ├── review_store.rs      # Library API for session listing/loading and shared comment insertion
 ├── review_cli.rs        # Non-interactive `tuicr review` subcommands over ReviewStore
 ├── tuicrignore.rs       # .tuicrignore loader + diff file filtering (gitignore-style patterns)

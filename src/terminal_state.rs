@@ -98,6 +98,38 @@ impl<W: Write> TerminalSession<W> {
         if !self.active {
             return Ok(());
         }
+        self.deactivate()?;
+        Ok(())
+    }
+
+    /// Temporarily leaves TUI terminal mode.
+    ///
+    /// The returned guard re-enters TUI mode on `resume()` or,
+    /// as a best-effort fallback,
+    /// when the guard is dropped.
+    pub fn suspend(&mut self) -> anyhow::Result<TerminalSuspension<'_, W>> {
+        self.deactivate()?;
+        Ok(TerminalSuspension {
+            session: Some(self),
+        })
+    }
+
+    fn activate(&mut self) -> anyhow::Result<()> {
+        if self.active {
+            return Ok(());
+        }
+        if let Err(err) = activate_writer(self.terminal.backend_mut(), self.features) {
+            deactivate_writer_best_effort(self.terminal.backend_mut(), self.features.mouse_enabled);
+            return Err(err);
+        }
+        self.active = true;
+        Ok(())
+    }
+
+    fn deactivate(&mut self) -> anyhow::Result<()> {
+        if !self.active {
+            return Ok(());
+        }
         deactivate_writer(self.terminal.backend_mut(), self.features.mouse_enabled)?;
         self.active = false;
         Ok(())
@@ -109,6 +141,41 @@ impl<W: Write> Drop for TerminalSession<W> {
         if self.active {
             deactivate_writer_best_effort(self.terminal.backend_mut(), self.features.mouse_enabled);
             self.active = false;
+        }
+    }
+}
+
+/// Guard for a temporarily suspended TUI terminal session.
+///
+/// Holding this value means tuicr has left raw mode and the alternate screen so
+/// another foreground process can use the terminal.
+/// Dropping the guard re-enters TUI mode on a best-effort basis.
+pub struct TerminalSuspension<'a, W: Write> {
+    session: Option<&'a mut TerminalSession<W>>,
+}
+
+impl<W: Write> TerminalSuspension<'_, W> {
+    /// Re-enters TUI terminal mode and consumes the suspension guard.
+    ///
+    /// Calling this explicit method is preferred on the normal path because it
+    /// reports terminal restoration failures to the caller.
+    pub fn resume(mut self) -> anyhow::Result<()> {
+        let Some(session) = self.session.take() else {
+            return Ok(());
+        };
+        session.activate()?;
+        session.terminal.clear()?;
+        Ok(())
+    }
+}
+
+impl<W: Write> Drop for TerminalSuspension<'_, W> {
+    fn drop(&mut self) {
+        let Some(session) = self.session.take() else {
+            return;
+        };
+        if session.activate().is_ok() {
+            let _ = session.terminal.clear();
         }
     }
 }

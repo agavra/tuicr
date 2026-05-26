@@ -11,6 +11,7 @@ use crossterm::{
 
 use tuicr::app::{self, App, AppStartupOptions, FocusedPanel, InputMode};
 use tuicr::cli::parse_cli_args;
+use tuicr::editor::{EditorError, EditorTarget};
 use tuicr::handler::{
     handle_command_action, handle_comment_action, handle_comment_navigator_action,
     handle_commit_select_action, handle_commit_selector_action, handle_confirm_action,
@@ -19,7 +20,7 @@ use tuicr::handler::{
     handle_submit_resolver_action, handle_visual_action,
 };
 use tuicr::input::{Action, map_key_to_action, map_target_filter_mode};
-use tuicr::terminal_state::TerminalFeatures;
+use tuicr::terminal_state::{TerminalFeatures, TerminalSession};
 use tuicr::theme::resolve_theme_with_config;
 use tuicr::vcs::{DiffWhitespaceMode, GitBackendPreference};
 use tuicr::{config, handler, profile, ui, update};
@@ -599,6 +600,15 @@ fn main() -> anyhow::Result<()> {
                     }
 
                     dispatch_action(&mut app, action);
+                    if let Some(target) = app.take_pending_editor_target() {
+                        match run_editor_from_tui(&mut terminal, &target) {
+                            Ok(Ok(())) => {
+                                app.set_message(format!("Opened {}", target.path.display()));
+                            }
+                            Ok(Err(err)) => app.set_error(err.to_string()),
+                            Err(err) => app.set_error(format!("Failed to restore terminal: {err}")),
+                        }
+                    }
                 }
                 Event::Mouse(mouse_event) => handle_mouse_event(&mut app, mouse_event),
                 Event::Paste(text) => {
@@ -660,4 +670,14 @@ fn dispatch_action(app: &mut App, action: Action) {
             FocusedPanel::CommitSelector => handle_commit_selector_action(app, action),
         },
     }
+}
+
+fn run_editor_from_tui<W: Write>(
+    terminal: &mut TerminalSession<W>,
+    target: &EditorTarget,
+) -> anyhow::Result<Result<(), EditorError>> {
+    let suspension = terminal.suspend()?;
+    let editor_result = tuicr::editor::run_editor(target);
+    suspension.resume()?;
+    Ok(editor_result)
 }

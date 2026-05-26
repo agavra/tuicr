@@ -22,6 +22,7 @@ Full reference. Press `?` inside tuicr for an in-app version of this list.
 | `/` | Search within diff |
 | `n` / `N` | Next / previous search match |
 | `Enter` | Expand or collapse hidden context between hunks |
+| `e` | Open focused file in `$EDITOR` |
 | `zt` | Scroll cursor to top of screen |
 | `zz` | Center cursor on screen |
 | `zb` | Scroll cursor to bottom of screen |
@@ -32,6 +33,7 @@ Full reference. Press `?` inside tuicr for an in-app version of this list.
 |-----|--------|
 | `Space` | Toggle expand directory |
 | `Enter` | Expand directory / jump to file in diff |
+| `e` | Open selected file in `$EDITOR` |
 | `o` | Expand all directories |
 | `O` | Collapse all directories |
 

@@ -214,6 +214,7 @@ A first-session cheatsheet. Press `?` inside tuicr for the full reference.
 | `g` / `G` | Top / bottom |
 | `{` / `}` | Previous / next file |
 | `[` / `]` | Previous / next hunk |
+| `e` | Open focused file in `$EDITOR` |
 | `/` | Search |
 | `c` / `C` | Add line / file comment |
 | `v` / `V` | Visual mode (range comment) |

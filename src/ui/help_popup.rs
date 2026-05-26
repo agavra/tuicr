@@ -114,6 +114,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  e         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Open focused file in $EDITOR"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  S-Enter   ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),

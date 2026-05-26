@@ -35,6 +35,7 @@ pub enum Action {
 
     // Review actions
     ToggleReviewed,
+    OpenInEditor,
     AddLineComment,
     AddFileComment,
     EditComment,
@@ -189,6 +190,7 @@ fn map_normal_mode(key: KeyEvent, leader_key: char) -> Action {
 
         // Review actions
         (KeyCode::Char('r'), KeyModifiers::NONE) => Action::ToggleReviewed,
+        (KeyCode::Char('e'), KeyModifiers::NONE) => Action::OpenInEditor,
         (KeyCode::Char('c'), KeyModifiers::NONE) => Action::AddLineComment,
         (KeyCode::Char('C'), _) => Action::AddFileComment,
         (KeyCode::Char('i'), KeyModifiers::NONE) => Action::EditComment,
@@ -447,6 +449,21 @@ mod tests {
     fn should_map_lowercase_g_to_go_to_top_in_normal_mode() {
         let action = map_normal_mode(key(KeyCode::Char('g')), DEFAULT_LEADER_KEY);
         assert_eq!(action, Action::GoToTop);
+    }
+
+    #[test]
+    fn should_map_lowercase_e_to_open_editor_in_normal_mode() {
+        let action = map_normal_mode(key(KeyCode::Char('e')), DEFAULT_LEADER_KEY);
+        assert_eq!(action, Action::OpenInEditor);
+    }
+
+    #[test]
+    fn should_keep_ctrl_e_as_scroll_down_in_normal_mode() {
+        let action = map_normal_mode(
+            KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL),
+            DEFAULT_LEADER_KEY,
+        );
+        assert_eq!(action, Action::ScrollViewDown(1));
     }
 
     #[test]

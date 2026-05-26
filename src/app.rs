@@ -6,6 +6,7 @@ use chrono::Utc;
 use ratatui::style::Color;
 
 use crate::config::CommentTypeConfig;
+use crate::editor::EditorTarget;
 use crate::error::{Result, TuicrError};
 use crate::forge::context::{ContextProvider, ForgeContextProvider, VcsContextProvider};
 use crate::forge::selector::PullRequestsTab;
@@ -871,6 +872,7 @@ pub struct App {
     pub(crate) ephemeral_session_paths: HashSet<PathBuf>,
     pub diff_files: Vec<DiffFile>,
     pub diff_source: DiffSource,
+    pub pending_editor_target: Option<EditorTarget>,
 
     pub input_mode: InputMode,
     pub focused_panel: FocusedPanel,
@@ -1734,6 +1736,7 @@ impl App {
             ephemeral_session_paths: HashSet::new(),
             diff_files,
             diff_source,
+            pending_editor_target: None,
             input_mode,
             focused_panel: FocusedPanel::Diff,
             diff_view_mode: DiffViewMode::Unified,
@@ -3944,6 +3947,93 @@ impl App {
 
     pub fn current_file_path(&self) -> Option<&PathBuf> {
         self.current_file().map(|f| f.display_path())
+    }
+
+    /// Takes the queued editor target after action dispatch.
+    ///
+    /// The main event loop consumes this after leaving raw mode and the
+    /// alternate screen,
+    /// because `App` does not own terminal state.
+    pub fn take_pending_editor_target(&mut self) -> Option<EditorTarget> {
+        self.pending_editor_target.take()
+    }
+
+    /// Resolves the currently focused UI item into an editor target.
+    ///
+    /// The resolved target is queued on `pending_editor_target` so the main
+    /// event loop can perform the terminal handoff.
+    /// Invalid focus states are reported through the status bar instead.
+    pub fn queue_editor_for_focused_item(&mut self) {
+        match self.focused_panel {
+            FocusedPanel::FileList => match self.get_selected_tree_item() {
+                Some(FileTreeItem::File { file_idx, .. }) => {
+                    self.queue_editor_for_file_idx(file_idx, None)
+                }
+                Some(FileTreeItem::Directory { .. }) => {
+                    self.set_warning("Select a file to open in editor");
+                }
+                None => self.set_warning("No file selected"),
+            },
+            FocusedPanel::Diff => {
+                let annotation = self.line_annotations.get(self.diff_state.cursor_line);
+                let file_idx = match annotation {
+                    Some(
+                        AnnotatedLine::Expander { gap_id, .. }
+                        | AnnotatedLine::HiddenLines { gap_id, .. }
+                        | AnnotatedLine::ExpandedContext { gap_id, .. },
+                    ) => gap_id.file_idx,
+                    Some(annotation) => {
+                        annotation_file_idx(annotation).unwrap_or(self.diff_state.current_file_idx)
+                    }
+                    None => self.diff_state.current_file_idx,
+                };
+                let line = match annotation {
+                    Some(AnnotatedLine::ExpandedContext { gap_id, line_idx }) => self
+                        .get_expanded_line(gap_id, *line_idx)
+                        .and_then(|line| line.new_lineno.or(line.old_lineno)),
+                    _ => self.get_line_at_cursor().map(|(line, _side)| line),
+                };
+                self.queue_editor_for_file_idx(file_idx, line);
+            }
+            FocusedPanel::Comments | FocusedPanel::CommitSelector => {
+                self.set_warning("Focus a file or diff line to open in editor");
+            }
+        }
+    }
+
+    fn queue_editor_for_file_idx(&mut self, file_idx: usize, line: Option<u32>) {
+        let Some(file) = self.diff_files.get(file_idx) else {
+            self.set_warning("No file selected");
+            return;
+        };
+        if file.is_commit_message {
+            self.set_warning("Commit message has no local file to open");
+            return;
+        }
+
+        let display_path = file.display_path().clone();
+        // PR mode uses a synthetic forge root when there is no local checkout
+        // to hand to an editor.
+        if !self.vcs_info.root_path.is_absolute() {
+            self.set_warning(format!(
+                "Cannot open {}: no local checkout",
+                display_path.display()
+            ));
+            return;
+        }
+
+        let path = self.vcs_info.root_path.join(&display_path);
+        // Deleted files and remote-only PR files have diff rows,
+        // but no worktree file the external editor can open.
+        if !path.exists() {
+            self.set_warning(format!(
+                "Cannot open {}: file does not exist",
+                path.display()
+            ));
+            return;
+        }
+
+        self.pending_editor_target = Some(EditorTarget { path, line });
     }
 
     pub fn toggle_reviewed(&mut self) {
@@ -14260,6 +14350,7 @@ mod single_file_view_tests {
     use super::*;
     use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin};
     use crate::vcs::traits::{VcsBackend, VcsInfo, VcsType};
+    use std::fs;
     use std::path::PathBuf;
 
     struct StubVcs(VcsInfo);
@@ -14328,8 +14419,12 @@ mod single_file_view_tests {
     }
 
     fn app_with(files: Vec<DiffFile>) -> App {
+        app_with_root(PathBuf::from("/tmp"), files)
+    }
+
+    fn app_with_root(root_path: PathBuf, files: Vec<DiffFile>) -> App {
         let vcs_info = VcsInfo {
-            root_path: PathBuf::from("/tmp"),
+            root_path,
             head_commit: "head".into(),
             branch_name: Some("main".into()),
             vcs_type: VcsType::Git,
@@ -14355,6 +14450,76 @@ mod single_file_view_tests {
             None,
         )
         .expect("build app")
+    }
+
+    #[test]
+    fn editor_target_uses_selected_file_list_row() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("main.rs");
+        fs::write(&path, "fn main() {}\n").expect("write file");
+
+        let mut app = app_with_root(
+            dir.path().to_path_buf(),
+            vec![file("main.rs", vec![hunk(1, 1)])],
+        );
+        app.focused_panel = FocusedPanel::FileList;
+        app.queue_editor_for_focused_item();
+
+        let target = app.take_pending_editor_target().expect("editor target");
+        assert_eq!(target.path, path);
+        assert_eq!(target.line, None);
+    }
+
+    #[test]
+    fn editor_target_uses_diff_cursor_line() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("main.rs");
+        fs::write(&path, "line 1\nline 2\nline 3\n").expect("write file");
+
+        let mut app = app_with_root(
+            dir.path().to_path_buf(),
+            vec![file("main.rs", vec![hunk(1, 3)])],
+        );
+        app.focused_panel = FocusedPanel::Diff;
+        app.diff_state.cursor_line = app
+            .line_annotations
+            .iter()
+            .position(|annotation| {
+                matches!(
+                    annotation,
+                    AnnotatedLine::DiffLine {
+                        new_lineno: Some(2),
+                        ..
+                    }
+                )
+            })
+            .expect("diff line annotation");
+        app.queue_editor_for_focused_item();
+
+        let target = app.take_pending_editor_target().expect("editor target");
+        assert_eq!(target.path, path);
+        assert_eq!(target.line, Some(2));
+    }
+
+    #[test]
+    fn editor_target_warns_for_missing_local_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut app = app_with_root(
+            dir.path().to_path_buf(),
+            vec![file("missing.rs", vec![hunk(1, 1)])],
+        );
+        app.focused_panel = FocusedPanel::Diff;
+
+        app.queue_editor_for_focused_item();
+
+        assert!(app.take_pending_editor_target().is_none());
+        assert!(
+            app.message
+                .as_ref()
+                .expect("warning")
+                .content
+                .contains("file does not exist")
+        );
     }
 
     #[test]
