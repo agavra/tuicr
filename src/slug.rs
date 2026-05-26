@@ -11,8 +11,14 @@
 //!
 //! Where `<anchor>` is either a sanitized branch/bookmark name (no `/`) or
 //! `~<short-sha>` for detached / anonymous heads, and `<source>` is one of the
-//! diff-source variants (`worktree`, `staged`, `unstaged`,
-//! `staged-and-unstaged`, `pristine`, `commits/<base>..<head>`, etc.).
+//! diff-source variants (`worktree/<head>`, `staged/<head>`,
+//! `unstaged/<head>`, `staged-and-unstaged/<head>`, `pristine`,
+//! `commits/<base>..<head>`, etc.).
+//!
+//! The "live" working-tree sources (`worktree`, `staged`, `unstaged`,
+//! `staged-and-unstaged`) embed the short SHA of the current HEAD so that a
+//! new commit on the same branch produces a fresh session instead of
+//! resurrecting stale comments tied to the previous HEAD.
 #![allow(dead_code)]
 
 use std::fmt;
@@ -60,10 +66,12 @@ pub enum SlugAnchor {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SlugSource {
-    Worktree,
-    Staged,
-    Unstaged,
-    StagedAndUnstaged,
+    /// Live working-tree diff. Carries the short SHA of HEAD so committing
+    /// produces a new slug (and therefore a new persisted session).
+    Worktree(String),
+    Staged(String),
+    Unstaged(String),
+    StagedAndUnstaged(String),
     Pristine,
     Commits(CommitRange),
     WorktreeAndCommits(CommitRange),
@@ -122,10 +130,10 @@ impl fmt::Display for SlugAnchor {
 impl fmt::Display for SlugSource {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            SlugSource::Worktree => f.write_str("worktree"),
-            SlugSource::Staged => f.write_str("staged"),
-            SlugSource::Unstaged => f.write_str("unstaged"),
-            SlugSource::StagedAndUnstaged => f.write_str("staged-and-unstaged"),
+            SlugSource::Worktree(head) => write!(f, "worktree/{head}"),
+            SlugSource::Staged(head) => write!(f, "staged/{head}"),
+            SlugSource::Unstaged(head) => write!(f, "unstaged/{head}"),
+            SlugSource::StagedAndUnstaged(head) => write!(f, "staged-and-unstaged/{head}"),
             SlugSource::Pristine => f.write_str("pristine"),
             SlugSource::Commits(r) => write!(f, "commits/{}..{}", r.base, r.head),
             SlugSource::WorktreeAndCommits(r) => {
@@ -236,24 +244,46 @@ fn parse_local(s: &str) -> Result<LocalSlug, SlugParseError> {
 }
 
 fn parse_source(s: &str) -> Result<SlugSource, SlugParseError> {
-    match s {
-        "worktree" => Ok(SlugSource::Worktree),
-        "staged" => Ok(SlugSource::Staged),
-        "unstaged" => Ok(SlugSource::Unstaged),
-        "staged-and-unstaged" => Ok(SlugSource::StagedAndUnstaged),
-        "pristine" => Ok(SlugSource::Pristine),
-        _ => {
-            if let Some(range) = s.strip_prefix("commits/") {
-                Ok(SlugSource::Commits(parse_range(range)?))
-            } else if let Some(range) = s.strip_prefix("worktree-and-commits/") {
-                Ok(SlugSource::WorktreeAndCommits(parse_range(range)?))
-            } else if let Some(range) = s.strip_prefix("staged-and-unstaged-and-commits/") {
-                Ok(SlugSource::StagedUnstagedAndCommits(parse_range(range)?))
-            } else {
-                Err(SlugParseError::UnknownSource(s.to_string()))
-            }
-        }
+    // The compound `*-and-commits/<range>` sources must be matched before the
+    // simple `worktree/<head>` / `staged-and-unstaged/<head>` variants because
+    // their prefixes overlap (e.g. `staged-and-unstaged-and-commits/` starts
+    // with `staged-and-unstaged/`).
+    if let Some(range) = s.strip_prefix("commits/") {
+        return Ok(SlugSource::Commits(parse_range(range)?));
     }
+    if let Some(range) = s.strip_prefix("worktree-and-commits/") {
+        return Ok(SlugSource::WorktreeAndCommits(parse_range(range)?));
+    }
+    if let Some(range) = s.strip_prefix("staged-and-unstaged-and-commits/") {
+        return Ok(SlugSource::StagedUnstagedAndCommits(parse_range(range)?));
+    }
+    if s == "pristine" {
+        return Ok(SlugSource::Pristine);
+    }
+    if let Some(head) = s.strip_prefix("worktree/") {
+        return live_source(head, s, SlugSource::Worktree);
+    }
+    if let Some(head) = s.strip_prefix("staged-and-unstaged/") {
+        return live_source(head, s, SlugSource::StagedAndUnstaged);
+    }
+    if let Some(head) = s.strip_prefix("staged/") {
+        return live_source(head, s, SlugSource::Staged);
+    }
+    if let Some(head) = s.strip_prefix("unstaged/") {
+        return live_source(head, s, SlugSource::Unstaged);
+    }
+    Err(SlugParseError::UnknownSource(s.to_string()))
+}
+
+fn live_source(
+    head: &str,
+    full: &str,
+    ctor: fn(String) -> SlugSource,
+) -> Result<SlugSource, SlugParseError> {
+    if head.is_empty() || head.contains('/') {
+        return Err(SlugParseError::UnknownSource(full.to_string()));
+    }
+    Ok(ctor(head.to_string()))
 }
 
 fn parse_range(s: &str) -> Result<CommitRange, SlugParseError> {
@@ -380,7 +410,7 @@ pub fn build_local_slug(
         Some(name) => SlugAnchor::Branch(sanitize_ref(name)),
         None => SlugAnchor::Anonymous(short_sha(head_commit)),
     };
-    let source = build_source(diff_source, commit_range)?;
+    let source = build_source(diff_source, head_commit, commit_range)?;
     Ok(LocalSlug {
         owner,
         repo,
@@ -391,13 +421,15 @@ pub fn build_local_slug(
 
 fn build_source(
     diff_source: SessionDiffSource,
+    head_commit: &str,
     commit_range: Option<&[String]>,
 ) -> Result<SlugSource, SlugDeriveError> {
+    let live_head = || live_head_token(head_commit);
     match diff_source {
-        SessionDiffSource::WorkingTree => Ok(SlugSource::Worktree),
-        SessionDiffSource::Staged => Ok(SlugSource::Staged),
-        SessionDiffSource::Unstaged => Ok(SlugSource::Unstaged),
-        SessionDiffSource::StagedAndUnstaged => Ok(SlugSource::StagedAndUnstaged),
+        SessionDiffSource::WorkingTree => Ok(SlugSource::Worktree(live_head())),
+        SessionDiffSource::Staged => Ok(SlugSource::Staged(live_head())),
+        SessionDiffSource::Unstaged => Ok(SlugSource::Unstaged(live_head())),
+        SessionDiffSource::StagedAndUnstaged => Ok(SlugSource::StagedAndUnstaged(live_head())),
         SessionDiffSource::Pristine => Ok(SlugSource::Pristine),
         SessionDiffSource::CommitRange => {
             Ok(SlugSource::Commits(range_from(commit_range, diff_source)?))
@@ -410,6 +442,18 @@ fn build_source(
             range_from(commit_range, diff_source)?,
         )),
         SessionDiffSource::PullRequest => Err(SlugDeriveError::PullRequestNotLocal),
+    }
+}
+
+/// Token used in the slug source segment to identify HEAD for live diff
+/// sources. Short SHA when available; `none` for an unborn HEAD (empty
+/// commit) so the slug remains well-formed.
+fn live_head_token(head_commit: &str) -> String {
+    let short = short_sha(head_commit);
+    if short.is_empty() {
+        "none".to_string()
+    } else {
+        short
     }
 }
 
@@ -440,9 +484,9 @@ mod tests {
             owner: Some("agavra".to_string()),
             repo: "tuicr".to_string(),
             anchor: SlugAnchor::Branch("main".to_string()),
-            source: SlugSource::Worktree,
+            source: SlugSource::Worktree("abc1234".to_string()),
         };
-        assert_eq!(slug.to_string(), "agavra/tuicr@main/worktree");
+        assert_eq!(slug.to_string(), "agavra/tuicr@main/worktree/abc1234");
     }
 
     #[test]
@@ -451,9 +495,9 @@ mod tests {
             owner: None,
             repo: "tuicr".to_string(),
             anchor: SlugAnchor::Branch("main".to_string()),
-            source: SlugSource::Worktree,
+            source: SlugSource::Worktree("abc1234".to_string()),
         };
-        assert_eq!(slug.to_string(), "tuicr@main/worktree");
+        assert_eq!(slug.to_string(), "tuicr@main/worktree/abc1234");
     }
 
     #[test]
@@ -462,9 +506,9 @@ mod tests {
             owner: Some("agavra".to_string()),
             repo: "tuicr".to_string(),
             anchor: SlugAnchor::Anonymous("abc1234".to_string()),
-            source: SlugSource::Worktree,
+            source: SlugSource::Worktree("abc1234".to_string()),
         };
-        assert_eq!(slug.to_string(), "agavra/tuicr@~abc1234/worktree");
+        assert_eq!(slug.to_string(), "agavra/tuicr@~abc1234/worktree/abc1234");
     }
 
     #[test]
@@ -504,16 +548,16 @@ mod tests {
 
     #[test]
     fn should_roundtrip_local_slug_variants() {
-        assert_roundtrip("agavra/tuicr@main/worktree");
-        assert_roundtrip("agavra/tuicr@main/staged");
-        assert_roundtrip("agavra/tuicr@main/unstaged");
-        assert_roundtrip("agavra/tuicr@feature-login/staged-and-unstaged");
+        assert_roundtrip("agavra/tuicr@main/worktree/abc1234");
+        assert_roundtrip("agavra/tuicr@main/staged/abc1234");
+        assert_roundtrip("agavra/tuicr@main/unstaged/abc1234");
+        assert_roundtrip("agavra/tuicr@feature-login/staged-and-unstaged/abc1234");
         assert_roundtrip("agavra/tuicr@main/pristine");
-        assert_roundtrip("agavra/tuicr@~abc1234/worktree");
+        assert_roundtrip("agavra/tuicr@~abc1234/worktree/abc1234");
         assert_roundtrip("agavra/tuicr@main/commits/abc1234..def5678");
         assert_roundtrip("agavra/tuicr@main/worktree-and-commits/abc1234..def5678");
         assert_roundtrip("agavra/tuicr@main/staged-and-unstaged-and-commits/abc1234..def5678");
-        assert_roundtrip("tuicr@main/worktree");
+        assert_roundtrip("tuicr@main/worktree/abc1234");
     }
 
     #[test]
@@ -548,7 +592,7 @@ mod tests {
 
     #[test]
     fn should_reject_local_slug_without_at_separator() {
-        assert!("agavra/tuicr/worktree".parse::<Slug>().is_err());
+        assert!("agavra/tuicr/worktree/abc1234".parse::<Slug>().is_err());
     }
 
     #[test]
@@ -559,12 +603,27 @@ mod tests {
 
     #[test]
     fn should_reject_empty_anchor() {
-        assert!("agavra/tuicr@/worktree".parse::<Slug>().is_err());
+        assert!("agavra/tuicr@/worktree/abc1234".parse::<Slug>().is_err());
     }
 
     #[test]
     fn should_reject_empty_anonymous_anchor() {
-        assert!("agavra/tuicr@~/worktree".parse::<Slug>().is_err());
+        assert!("agavra/tuicr@~/worktree/abc1234".parse::<Slug>().is_err());
+    }
+
+    #[test]
+    fn should_reject_live_source_without_head() {
+        // Bare `worktree` (no head segment) is no longer a valid slug — every
+        // live diff source must encode the HEAD it was opened against.
+        assert!("agavra/tuicr@main/worktree".parse::<Slug>().is_err());
+        assert!("agavra/tuicr@main/staged".parse::<Slug>().is_err());
+        assert!("agavra/tuicr@main/unstaged".parse::<Slug>().is_err());
+        assert!(
+            "agavra/tuicr@main/staged-and-unstaged"
+                .parse::<Slug>()
+                .is_err()
+        );
+        assert!("agavra/tuicr@main/worktree/".parse::<Slug>().is_err());
     }
 
     #[test]
@@ -667,7 +726,7 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(slug.to_string(), "agavra/tuicr@main/worktree");
+        assert_eq!(slug.to_string(), "agavra/tuicr@main/worktree/abcdef0");
     }
 
     #[test]
@@ -680,7 +739,10 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(slug.to_string(), "agavra/tuicr@feature-login/worktree");
+        assert_eq!(
+            slug.to_string(),
+            "agavra/tuicr@feature-login/worktree/abcdef0"
+        );
     }
 
     #[test]
@@ -693,7 +755,47 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(slug.to_string(), "agavra/tuicr@~abcdef0/worktree");
+        assert_eq!(slug.to_string(), "agavra/tuicr@~abcdef0/worktree/abcdef0");
+    }
+
+    #[test]
+    fn should_change_slug_when_head_advances_for_live_source() {
+        // Regression for #378: two `tuicr -w` runs on the same branch but
+        // different HEADs must produce distinct slugs so the persisted
+        // session from the previous HEAD does not leak its comments into
+        // the new run.
+        let before = build_local_slug(
+            (Some("agavra".to_string()), "tuicr".to_string()),
+            Some("main"),
+            "abcdef0123",
+            SessionDiffSource::WorkingTree,
+            None,
+        )
+        .unwrap();
+        let after = build_local_slug(
+            (Some("agavra".to_string()), "tuicr".to_string()),
+            Some("main"),
+            "9999999aaa",
+            SessionDiffSource::WorkingTree,
+            None,
+        )
+        .unwrap();
+        assert_ne!(before.to_string(), after.to_string());
+        assert_eq!(before.to_string(), "agavra/tuicr@main/worktree/abcdef0");
+        assert_eq!(after.to_string(), "agavra/tuicr@main/worktree/9999999");
+    }
+
+    #[test]
+    fn should_use_none_token_for_unborn_head_in_live_source() {
+        let slug = build_local_slug(
+            (None, "tuicr".to_string()),
+            Some("main"),
+            "",
+            SessionDiffSource::WorkingTree,
+            None,
+        )
+        .unwrap();
+        assert_eq!(slug.to_string(), "tuicr@main/worktree/none");
     }
 
     #[test]

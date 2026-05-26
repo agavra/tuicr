@@ -994,7 +994,7 @@ mod tests {
     }
 
     #[test]
-    fn should_load_session_by_matching_context() {
+    fn should_load_session_when_head_matches_on_branched_worktree() {
         let _g = with_test_reviews_dir();
         let repo = make_repo();
         let session = make_local_session(
@@ -1009,13 +1009,43 @@ mod tests {
         let (_, loaded) = load_latest_session_for_context(
             &repo,
             Some("main"),
-            "new-head",
+            "abc1234",
             SessionDiffSource::WorkingTree,
             None,
         )
         .unwrap()
-        .expect("session should be found regardless of head_commit on a branched session");
+        .expect("session for current head should load");
         assert_eq!(loaded.id, session.id);
+    }
+
+    #[test]
+    fn should_not_load_worktree_session_after_head_advances() {
+        // Regression for #378. A `tuicr -w` session is keyed by (branch, head)
+        // so that committing on the same branch starts a fresh session
+        // instead of resurrecting comments tied to the previous HEAD.
+        let _g = with_test_reviews_dir();
+        let repo = make_repo();
+        let session = make_local_session(
+            repo.clone(),
+            "abc1234",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
+            None,
+        );
+        save_session(&session).unwrap();
+
+        let loaded = load_latest_session_for_context(
+            &repo,
+            Some("main"),
+            "new-head",
+            SessionDiffSource::WorkingTree,
+            None,
+        )
+        .unwrap();
+        assert!(
+            loaded.is_none(),
+            "advancing HEAD must yield a fresh session, not the previous one"
+        );
     }
 
     #[test]
@@ -1099,16 +1129,19 @@ mod tests {
         fs::create_dir_all(&repo_a).unwrap();
         fs::create_dir_all(&repo_b).unwrap();
 
+        // Same branch *and* same HEAD in both checkouts: this is the
+        // collision the manifest's canonical_repo_path must break, since
+        // the slug itself is identical.
         let session_a = make_local_session(
             repo_a.clone(),
-            "head-a",
+            "head-x",
             Some("main"),
             SessionDiffSource::WorkingTree,
             None,
         );
         let session_b = make_local_session(
             repo_b.clone(),
-            "head-b",
+            "head-x",
             Some("main"),
             SessionDiffSource::WorkingTree,
             None,
@@ -1116,8 +1149,8 @@ mod tests {
         save_session(&session_a).unwrap();
         save_session(&session_b).unwrap();
 
-        // Same slug for both (no remote, fallback to dir name) but
-        // canonical_repo_path disambiguates.
+        // Same slug for both (no remote, fallback to dir name; same HEAD)
+        // but canonical_repo_path disambiguates.
         let slug = slug_for_session(&session_a).unwrap();
         let slug_b = slug_for_session(&session_b).unwrap();
         assert_eq!(slug.to_string(), slug_b.to_string());
@@ -1125,7 +1158,7 @@ mod tests {
         let (_, loaded_a) = load_latest_session_for_context(
             &repo_a,
             Some("main"),
-            "head-a",
+            "head-x",
             SessionDiffSource::WorkingTree,
             None,
         )
@@ -1136,7 +1169,7 @@ mod tests {
         let (_, loaded_b) = load_latest_session_for_context(
             &repo_b,
             Some("main"),
-            "head-b",
+            "head-x",
             SessionDiffSource::WorkingTree,
             None,
         )
