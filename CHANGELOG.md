@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.16.1] - 2026-05-26
+
+### Bug Fixes
+
+- **vcs:** Detect reftable repos and fall back to CLI backend (#366)
+- Use macos-15-intel runner for x86_64-apple-darwin builds (#362)
+- Clipboard copy silently drops content on Linux (#372)
+- Replace deprecated flake output attributes (#374)
+- Include HEAD SHA in live diff source slugs (#378) (#380)
+
+### Features
+
+- Deterministic slug-addressed sessions for agent discovery (#339)
+- **forge:** Resolve canonical (fork-parent) repo for PR ops (#347)
+- Route mouse horizontal scroll directly to the diff viewport (#367)
+- Clicking anywhere on a panel sets focus (#371)
+
+### Performance
+
+- **startup:** Verify change status via cheap path probe (#346)
+- **ui:** Skip span allocation for off-screen diff lines (#365)
+
+### Refactor
+
+- **cli:** Migrate argument parsing to clap (#349)
 ## [0.16.0] - 2026-05-21
 
 ### Bug Fixes
