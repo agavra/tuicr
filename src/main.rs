@@ -4,18 +4,10 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use crossterm::{
-    event::{
-        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-        Event, KeyEventKind, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
-        PushKeyboardEnhancementFlags,
-    },
+    event::{self, Event, KeyEventKind},
     execute, queue,
-    terminal::{
-        BeginSynchronizedUpdate, EndSynchronizedUpdate, EnterAlternateScreen, LeaveAlternateScreen,
-        disable_raw_mode, enable_raw_mode, supports_keyboard_enhancement,
-    },
+    terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate, supports_keyboard_enhancement},
 };
-use ratatui::{Terminal, backend::CrosstermBackend};
 
 use tuicr::app::{self, App, AppStartupOptions, FocusedPanel, InputMode};
 use tuicr::cli::parse_cli_args;
@@ -27,6 +19,7 @@ use tuicr::handler::{
     handle_submit_resolver_action, handle_visual_action,
 };
 use tuicr::input::{Action, map_key_to_action, map_target_filter_mode};
+use tuicr::terminal_state::TerminalFeatures;
 use tuicr::theme::resolve_theme_with_config;
 use tuicr::vcs::{DiffWhitespaceMode, GitBackendPreference};
 use tuicr::{config, handler, profile, ui, update};
@@ -42,11 +35,7 @@ fn main() -> anyhow::Result<()> {
     // Setup panic hook to restore terminal on panic
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
-        let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
-        let _ = execute!(io::stdout(), DisableBracketedPaste);
-        let _ = execute!(io::stdout(), DisableMouseCapture);
-        let _ = disable_raw_mode();
-        let _ = execute!(io::stdout(), LeaveAlternateScreen);
+        tuicr::terminal_state::restore_stdio_best_effort();
         original_hook(panic_info);
     }));
 
@@ -235,47 +224,21 @@ fn main() -> anyhow::Result<()> {
         eprintln!("tuicr-session: {slug}");
     }
 
-    // Setup terminal
     // When --stdout is used, render TUI to /dev/tty so stdout is free for export output
-    enable_raw_mode()?;
-    let mut tty_output: Box<dyn Write> = if cli_args.output_to_stdout {
+    let tty_output: Box<dyn Write> = if cli_args.output_to_stdout {
         Box::new(File::options().write(true).open("/dev/tty")?)
     } else {
         Box::new(io::stdout())
     };
-    execute!(tty_output, EnterAlternateScreen)?;
     let mouse_enabled = config_outcome
         .config
         .as_ref()
         .and_then(|cfg| cfg.mouse)
         .unwrap_or(true);
-    if mouse_enabled {
-        execute!(tty_output, EnableMouseCapture)?;
-    }
-
-    // Bracketed paste so multi-line / control-char pastes arrive as a single
-    // Event::Paste, instead of each character driving Normal-mode actions
-    // (Enter submitting, ':' opening command mode, etc.) mid-paste.
-    execute!(tty_output, EnableBracketedPaste)?;
-
-    // Enable keyboard enhancement for better modifier key detection (e.g., Alt+Enter)
-    // This is supported by modern terminals like Kitty, iTerm2, WezTerm, etc.
-    if keyboard_enhancement_supported {
-        // REPORT_EVENT_TYPES distinguishes Press from Repeat from Release so
-        // the two-press file walk (j/k at file boundary) can require an
-        // actual key release between the two presses. Without it terminals
-        // emit Press for every auto-repeat tick and held-j would walk past
-        // file boundaries.
-        let _ = execute!(
-            tty_output,
-            PushKeyboardEnhancementFlags(
-                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-                    | KeyboardEnhancementFlags::REPORT_EVENT_TYPES,
-            )
-        );
-    }
-    let backend = CrosstermBackend::new(tty_output);
-    let mut terminal = Terminal::new(backend)?;
+    let mut terminal = TerminalFeatures::new()
+        .mouse_enabled(mouse_enabled)
+        .keyboard_enhancements_supported(keyboard_enhancement_supported)
+        .enter(tty_output)?;
 
     // Apply config-driven defaults
     if let Some(ref cfg) = config_outcome.config {
@@ -661,14 +624,7 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    // Restore terminal
-    let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
-    let _ = execute!(terminal.backend_mut(), DisableBracketedPaste);
-    if mouse_enabled {
-        let _ = execute!(terminal.backend_mut(), DisableMouseCapture);
-    }
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    terminal.restore()?;
 
     if let Err(e) = app.cleanup_empty_ephemeral_sessions() {
         eprintln!("Warning: failed to clean up empty review session: {e}");
