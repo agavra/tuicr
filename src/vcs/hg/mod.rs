@@ -9,7 +9,10 @@ use crate::error::{Result, TuicrError};
 use crate::model::{DiffFile, DiffLine, FileStatus, LineOrigin};
 use crate::syntax::SyntaxHighlighter;
 use crate::vcs::diff_parser::{self, DiffFormat};
-use crate::vcs::traits::{CommitInfo, DiffWhitespaceMode, VcsBackend, VcsInfo, VcsType};
+use crate::vcs::traits::{
+    CommitInfo, DiffWhitespaceMode, ResolvedRevisionRange, RevisionDiffTarget, VcsBackend, VcsInfo,
+    VcsType,
+};
 use crate::vcs::{BATCH_BOUNDARY, apply_container_full_file_highlight, parse_batched_files};
 
 /// Parse an hg description into (summary, optional body).
@@ -175,7 +178,7 @@ impl VcsBackend for HgBackend {
         Ok(content.lines().count() as u32)
     }
 
-    fn resolve_revisions(&self, revisions: &str) -> Result<Vec<String>> {
+    fn resolve_revision_range(&self, revisions: &str) -> Result<ResolvedRevisionRange<'static>> {
         // Use hg log to resolve the revset to commit hashes.
         // hg log outputs newest first; we reverse so oldest is first.
         let output = run_hg_command(
@@ -196,7 +199,10 @@ impl VcsBackend for HgBackend {
 
         // hg log outputs newest first; reverse so oldest is first
         commit_ids.reverse();
-        Ok(commit_ids)
+        Ok(ResolvedRevisionRange::from_owned_commit_ids(
+            commit_ids,
+            RevisionDiffTarget::CommitList,
+        ))
     }
 
     fn get_recent_commits(&self, offset: usize, limit: usize) -> Result<Vec<CommitInfo>> {
@@ -260,9 +266,10 @@ impl VcsBackend for HgBackend {
 
     fn get_commit_range_diff(
         &self,
-        commit_ids: &[String],
+        revision_range: &ResolvedRevisionRange<'_>,
         highlighter: &SyntaxHighlighter,
     ) -> Result<Vec<DiffFile>> {
+        let commit_ids = &revision_range.commit_ids;
         if commit_ids.is_empty() {
             return Err(TuicrError::NoChanges);
         }
@@ -494,6 +501,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vcs::RevisionDiffTarget;
     use std::fs;
 
     /// Check if hg command is available
@@ -808,7 +816,13 @@ mod tests {
 
         // Get diff for the last two commits (Second and Third)
         let commit_ids = vec![commits[1].id.clone(), commits[0].id.clone()];
-        let diff_result = backend.get_commit_range_diff(&commit_ids, &SyntaxHighlighter::default());
+        let diff_result = backend.get_commit_range_diff(
+            &ResolvedRevisionRange::from_owned_commit_ids(
+                commit_ids,
+                RevisionDiffTarget::CommitList,
+            ),
+            &SyntaxHighlighter::default(),
+        );
 
         // Note: Sapling (Meta's hg fork) may fail with "id_dag_snapshot()" error
         // in certain temporary directory configurations. Skip the test in that case.

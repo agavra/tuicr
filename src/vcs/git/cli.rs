@@ -13,13 +13,14 @@ use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin, LineSid
 use crate::syntax::SyntaxHighlighter;
 use crate::vcs::diff_parser::{self, DiffFormat};
 use crate::vcs::{
-    ChangeKind, CommitInfo, DiffWhitespaceMode, VcsBackend, VcsChangeStatus, VcsInfo,
+    ChangeKind, CommitInfo, DiffWhitespaceMode, ResolvedRevisionRange, RevisionDiffTarget,
+    VcsBackend, VcsChangeStatus, VcsInfo,
 };
 use crate::vcs::{container_file_paths, enhance_with_full_file_highlight, tabify};
 
 use super::{
-    GitRepoMode, git_bool_config_enabled, git_command_error, git_fsmonitor_config_enabled,
-    run_git_command,
+    GitRepoMode, RevisionExpression, git_bool_config_enabled, git_command_error,
+    git_fsmonitor_config_enabled, run_git_command,
 };
 
 // Untracked files larger than this are shown in the file list but their
@@ -318,41 +319,29 @@ impl VcsBackend for GitCliBackend {
         Ok(parse_commit_records(&output, &branch_tip_names))
     }
 
-    fn resolve_revisions(&self, revisions: &str) -> Result<Vec<String>> {
-        let commit_ids = if revisions.contains("..") {
-            let output = run_git_command(
-                &self.root_path,
-                &["rev-list", "--topo-order", "--reverse", revisions],
-            )?;
-            output
-                .lines()
-                .filter(|line| !line.is_empty())
-                .map(str::to_string)
-                .collect()
-        } else {
-            let revision = format!("{revisions}^{{commit}}");
-            let output = run_git_command(&self.root_path, &["rev-parse", "--verify", &revision])?;
-            vec![output.trim().to_string()]
-        };
-
-        if commit_ids.is_empty() {
-            return Err(TuicrError::NoChanges);
-        }
-
-        Ok(commit_ids)
+    fn resolve_revision_range(&self, revisions: &str) -> Result<ResolvedRevisionRange<'static>> {
+        resolve_revision_range_cli(&self.root_path, revisions)
     }
 
     fn get_commit_range_diff(
         &self,
-        commit_ids: &[String],
+        revision_range: &ResolvedRevisionRange<'_>,
         highlighter: &SyntaxHighlighter,
     ) -> Result<Vec<DiffFile>> {
-        if commit_ids.is_empty() {
+        if revision_range.commit_ids.is_empty() {
             return Err(TuicrError::NoChanges);
         }
 
-        let base_rev = parent_rev_or_empty(&self.root_path, &commit_ids[0]);
-        let newest_rev = commit_ids.last().unwrap();
+        let (base_rev, newest_rev) = match &revision_range.diff_target {
+            RevisionDiffTarget::CommitList => (
+                parent_rev_or_empty(&self.root_path, &revision_range.commit_ids[0]),
+                revision_range.commit_ids.last().unwrap().clone(),
+            ),
+            RevisionDiffTarget::Explicit { base, head } => (
+                base.clone().unwrap_or_else(|| EMPTY_TREE_OID.to_string()),
+                head.clone(),
+            ),
+        };
         self.get_cli_diff(
             vec![
                 "diff".into(),
@@ -364,7 +353,7 @@ impl VcsBackend for GitCliBackend {
             ],
             false,
             GitContentSource::Revision(&base_rev),
-            GitContentSource::Revision(newest_rev),
+            GitContentSource::Revision(&newest_rev),
             highlighter,
         )
     }
@@ -1086,6 +1075,88 @@ fn parent_rev_or_empty(workdir: &Path, commit_id: &str) -> String {
         .unwrap_or_else(|_| EMPTY_TREE_OID.to_string())
 }
 
+fn resolve_revision_range_cli(
+    workdir: &Path,
+    revisions: &str,
+) -> Result<ResolvedRevisionRange<'static>> {
+    match RevisionExpression::parse(revisions)? {
+        RevisionExpression::Single(revision) => {
+            // `HEAD`
+            let head = resolve_commit_id_cli(workdir, revision)?;
+            let base = parent_rev(workdir, &head)?;
+            Ok(ResolvedRevisionRange::from_owned_commit_ids(
+                vec![head.clone()],
+                RevisionDiffTarget::Explicit { base, head },
+            ))
+        }
+        RevisionExpression::Range { base, head } => {
+            // `A..B`, `A..`, or `..B`
+            let base = resolve_commit_id_cli(workdir, base)?;
+            let head = resolve_commit_id_cli(workdir, head)?;
+            let commit_ids = rev_list_range(workdir, &base, &head)?;
+            Ok(ResolvedRevisionRange::from_owned_commit_ids(
+                commit_ids,
+                RevisionDiffTarget::Explicit {
+                    base: Some(base),
+                    head,
+                },
+            ))
+        }
+        RevisionExpression::MergeBaseRange { left, right } => {
+            // `A...B`
+            let left = resolve_commit_id_cli(workdir, left)?;
+            let right = resolve_commit_id_cli(workdir, right)?;
+            let base = run_git_command(workdir, &["merge-base", &left, &right])?
+                .trim()
+                .to_string();
+            let commit_ids = rev_list_range(workdir, &base, &right)?;
+            Ok(ResolvedRevisionRange::from_owned_commit_ids(
+                commit_ids,
+                RevisionDiffTarget::Explicit {
+                    base: Some(base),
+                    head: right,
+                },
+            ))
+        }
+    }
+}
+
+fn resolve_commit_id_cli(workdir: &Path, revision: &str) -> Result<String> {
+    let revision = format!("{revision}^{{commit}}");
+    Ok(
+        run_git_command(workdir, &["rev-parse", "--verify", &revision])?
+            .trim()
+            .to_string(),
+    )
+}
+
+// Single-revision reviews diff the commit against its first parent.
+// Root commits have no parent,
+// so callers represent the old side as the empty tree with None.
+fn parent_rev(workdir: &Path, commit_id: &str) -> Result<Option<String>> {
+    let parent_spec = format!("{commit_id}^");
+    match run_git_command(workdir, &["rev-parse", &parent_spec]) {
+        Ok(rev) => Ok(Some(rev.trim().to_string())),
+        Err(_) => Ok(None),
+    }
+}
+
+fn rev_list_range(workdir: &Path, base: &str, head: &str) -> Result<Vec<String>> {
+    let revset = format!("{base}..{head}");
+    let output = run_git_command(workdir, &["rev-list", "--topo-order", "--reverse", &revset])?;
+    let commit_ids: Vec<String> = output
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect();
+
+    if commit_ids.is_empty() {
+        return Err(TuicrError::NoChanges);
+    }
+
+    Ok(commit_ids)
+}
+
 fn run_git_command_strings(workdir: &Path, args: Vec<String>) -> Result<String> {
     run_git_command_args(workdir, args.iter().map(String::as_str))
 }
@@ -1221,6 +1292,54 @@ mod tests {
         (temp_dir, cli_backend, repo, vec![first_id, second_id])
     }
 
+    fn setup_merge_range_repo() -> (
+        tempfile::TempDir,
+        GitCliBackend,
+        git2::Repository,
+        String,
+        String,
+    ) {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let workdir = temp_dir.path();
+
+        git(workdir, &["init"]);
+        git(workdir, &["config", "user.email", "test@example.com"]);
+        git(workdir, &["config", "user.name", "Test User"]);
+        git(workdir, &["config", "commit.gpgsign", "false"]);
+        write_file(workdir, "shared.txt", "base\n");
+        git(workdir, &["add", "."]);
+        git(workdir, &["commit", "-m", "base"]);
+        let base_id = run_git_command(workdir, &["rev-parse", "HEAD"])
+            .expect("failed to resolve base commit")
+            .trim()
+            .to_string();
+
+        git(workdir, &["switch", "-c", "side"]);
+        write_file(workdir, "side.txt", "side\n");
+        git(workdir, &["add", "."]);
+        git(workdir, &["commit", "-m", "side"]);
+
+        git(workdir, &["switch", "-c", "trunk", &base_id]);
+        write_file(workdir, "shared.txt", "base\ntrunk-only\n");
+        git(workdir, &["add", "."]);
+        git(workdir, &["commit", "-m", "trunk only"]);
+        let left_id = run_git_command(workdir, &["rev-parse", "HEAD"])
+            .expect("failed to resolve left commit")
+            .trim()
+            .to_string();
+
+        git(workdir, &["merge", "--no-ff", "side", "-m", "merge side"]);
+        let right_id = run_git_command(workdir, &["rev-parse", "HEAD"])
+            .expect("failed to resolve right commit")
+            .trim()
+            .to_string();
+
+        let cli_backend = GitCliBackend::discover_from(workdir, DiffWhitespaceMode::Normal)
+            .expect("failed to discover cli backend");
+        let repo = git2::Repository::open(workdir).expect("failed to open git2 repo");
+        (temp_dir, cli_backend, repo, left_id, right_id)
+    }
+
     #[test]
     fn parses_runtime_flags_from_single_config_read() {
         let output = "core.untrackedcache true\ncore.fsmonitor .git/hooks/fsmonitor-watchman\n";
@@ -1266,10 +1385,10 @@ mod tests {
         let revset = format!("{}..{}", ids[0], ids[1]);
 
         let resolved = backend
-            .resolve_revisions(&revset)
+            .resolve_revision_range(&revset)
             .expect("failed to resolve revisions");
 
-        assert_eq!(resolved, vec![ids[1].clone()]);
+        assert_eq!(resolved.commit_ids.as_ref(), &[ids[1].clone()]);
     }
 
     #[test]
@@ -1277,7 +1396,13 @@ mod tests {
         let (_temp_dir, backend, ids) = setup_sparse_index_repo();
 
         let files = backend
-            .get_commit_range_diff(&[ids[1].clone()], &SyntaxHighlighter::default())
+            .get_commit_range_diff(
+                &ResolvedRevisionRange::from_owned_commit_ids(
+                    vec![ids[1].clone()],
+                    RevisionDiffTarget::CommitList,
+                ),
+                &SyntaxHighlighter::default(),
+            )
             .expect("failed to get sparse commit range diff");
 
         assert_eq!(files.len(), 1);
@@ -1413,13 +1538,22 @@ mod tests {
         assert_eq!(
             summarize_files(
                 cli_backend
-                    .get_commit_range_diff(&[ids[1].clone()], &highlighter)
+                    .get_commit_range_diff(
+                        &ResolvedRevisionRange::from_owned_commit_ids(
+                            vec![ids[1].clone()],
+                            RevisionDiffTarget::CommitList,
+                        ),
+                        &highlighter
+                    )
                     .unwrap()
             ),
             summarize_files(
                 diff::get_commit_range_diff(
                     &repo,
-                    &[ids[1].clone()],
+                    &ResolvedRevisionRange::from_owned_commit_ids(
+                        vec![ids[1].clone()],
+                        RevisionDiffTarget::CommitList,
+                    ),
                     DiffWhitespaceMode::Normal,
                     &highlighter,
                 )
@@ -1458,8 +1592,8 @@ mod tests {
 
         let revset = format!("{}..{}", ids[0], ids[1]);
         assert_eq!(
-            cli_backend.resolve_revisions(&revset).unwrap(),
-            repository::resolve_revisions(&repo, &revset).unwrap()
+            cli_backend.resolve_revision_range(&revset).unwrap(),
+            repository::resolve_revision_range(&repo, &revset).unwrap()
         );
 
         let cli_commit_info = cli_backend.get_commits_info(&ids).unwrap();
@@ -1473,6 +1607,64 @@ mod tests {
                 .iter()
                 .map(|commit| (&commit.id, &commit.summary, &commit.body))
                 .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn commit_range_with_merge_excludes_changes_already_in_left_ref() {
+        // A range whose head is a merge commit must diff the requested
+        // endpoints, not the first selected commit's parent.
+        // Otherwise changes already present in the left ref appear in review.
+        let (_temp_dir, cli_backend, repo, left_id, right_id) = setup_merge_range_repo();
+        let highlighter = SyntaxHighlighter::default();
+        let revisions = format!("{left_id}..{right_id}");
+
+        let cli_range = cli_backend
+            .resolve_revision_range(&revisions)
+            .expect("failed to resolve cli revisions");
+        assert_eq!(
+            cli_range.diff_target,
+            RevisionDiffTarget::Explicit {
+                base: Some(left_id.clone()),
+                head: right_id.clone(),
+            }
+        );
+        let cli_files = cli_backend
+            .get_commit_range_diff(&cli_range, &highlighter)
+            .expect("failed to get cli range diff");
+
+        let libgit2_range =
+            repository::resolve_revision_range(&repo, &revisions).expect("failed to resolve range");
+        assert_eq!(
+            libgit2_range.diff_target,
+            RevisionDiffTarget::Explicit {
+                base: Some(left_id),
+                head: right_id,
+            }
+        );
+        let libgit2_files = diff::get_commit_range_diff(
+            &repo,
+            &libgit2_range,
+            DiffWhitespaceMode::Normal,
+            &highlighter,
+        )
+        .expect("failed to get libgit2 range diff");
+
+        assert_eq!(
+            summarize_files(cli_files),
+            vec![(
+                Some(PathBuf::from("side.txt")),
+                Some(PathBuf::from("side.txt")),
+                FileStatus::Added,
+            )]
+        );
+        assert_eq!(
+            summarize_files(libgit2_files),
+            vec![(
+                Some(PathBuf::from("side.txt")),
+                Some(PathBuf::from("side.txt")),
+                FileStatus::Added,
+            )]
         );
     }
 

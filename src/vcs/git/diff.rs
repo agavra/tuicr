@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 use crate::error::{Result, TuicrError};
 use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin};
 use crate::syntax::{SyntaxHighlighter, needs_full_file_highlight};
-use crate::vcs::traits::{ChangeKind, DiffWhitespaceMode};
+use crate::vcs::traits::{
+    ChangeKind, DiffWhitespaceMode, ResolvedRevisionRange, RevisionDiffTarget,
+};
 use crate::vcs::{enhance_with_full_file_highlight, tabify};
 
 pub fn get_working_tree_diff(
@@ -128,10 +130,31 @@ pub fn get_unstaged_diff(
 /// The diff compares the oldest commit's parent to the newest commit.
 pub fn get_commit_range_diff(
     repo: &Repository,
-    commit_ids: &[String],
+    revision_range: &ResolvedRevisionRange<'_>,
     whitespace_mode: DiffWhitespaceMode,
     highlighter: &SyntaxHighlighter,
 ) -> Result<Vec<DiffFile>> {
+    let (old_tree, new_tree) = match &revision_range.diff_target {
+        RevisionDiffTarget::CommitList => {
+            commit_list_range_trees(repo, &revision_range.commit_ids)?
+        }
+        RevisionDiffTarget::Explicit { base, head } => {
+            let old_tree = match base {
+                Some(base) => Some(tree_for_commit(repo, base)?),
+                None => None,
+            };
+            let new_tree = tree_for_commit(repo, head)?;
+            (old_tree, new_tree)
+        }
+    };
+
+    diff_commit_trees(repo, old_tree, new_tree, whitespace_mode, highlighter)
+}
+
+fn commit_list_range_trees<'repo>(
+    repo: &'repo Repository,
+    commit_ids: &[String],
+) -> Result<(Option<git2::Tree<'repo>>, git2::Tree<'repo>)> {
     if commit_ids.is_empty() {
         return Err(TuicrError::NoChanges);
     }
@@ -148,8 +171,23 @@ pub fn get_commit_range_diff(
         None
     };
 
-    let new_tree = newest_commit.tree()?;
+    Ok((old_tree, newest_commit.tree()?))
+}
 
+// Explicit revision ranges carry commit IDs for old/new endpoints,
+// but libgit2 diffs require the endpoint trees.
+fn tree_for_commit<'repo>(repo: &'repo Repository, commit_id: &str) -> Result<git2::Tree<'repo>> {
+    let oid = git2::Oid::from_str(commit_id)?;
+    Ok(repo.find_commit(oid)?.tree()?)
+}
+
+fn diff_commit_trees(
+    repo: &Repository,
+    old_tree: Option<git2::Tree<'_>>,
+    new_tree: git2::Tree<'_>,
+    whitespace_mode: DiffWhitespaceMode,
+    highlighter: &SyntaxHighlighter,
+) -> Result<Vec<DiffFile>> {
     let mut opts = diff_options(whitespace_mode);
 
     let diff = repo.diff_tree_to_tree(old_tree.as_ref(), Some(&new_tree), Some(&mut opts))?;

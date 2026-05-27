@@ -14,13 +14,61 @@ use crate::process::{CommandOutputError, CommandOutputErrorKind, run_command_out
 use crate::syntax::SyntaxHighlighter;
 
 use super::traits::{
-    ChangeKind, CommitInfo, DiffWhitespaceMode, VcsBackend, VcsChangeStatus, VcsInfo,
+    ChangeKind, CommitInfo, DiffWhitespaceMode, ResolvedRevisionRange, VcsBackend, VcsChangeStatus,
+    VcsInfo,
 };
 use cli::GitCliBackend;
 pub use libgit2::Libgit2Backend;
 
 // Re-exported for UI/app gap calculations.
 pub use context::calculate_gap;
+
+/// RevisionExpression is Git's parsed view of a user-supplied revision string.
+///
+/// Accepted forms are:
+/// `REV` for a single commit, such as `HEAD`;
+/// `A..B`, `A..`, or `..B` for a two-dot range; and
+/// `A...B` for a merge-base range.
+pub(super) enum RevisionExpression<'a> {
+    /// A single commit expression, for example `HEAD`.
+    Single(&'a str),
+
+    /// A two-dot range.
+    ///
+    /// `A..B` is represented as `base = "A"` and `head = "B"`.
+    /// `A..` is represented as `base = "A"` and `head = "HEAD"`.
+    /// `..B` is represented as `base = "HEAD"` and `head = "B"`.
+    Range { base: &'a str, head: &'a str },
+
+    /// A three-dot range, for example `A...B`.
+    MergeBaseRange { left: &'a str, right: &'a str },
+}
+
+impl<'a> RevisionExpression<'a> {
+    /// Parse Git revision syntax accepted by tuicr's `-r` option.
+    ///
+    /// This accepts `REV`, `A..B`, `A..`, `..B`, and `A...B`.
+    /// Open-ended two-dot ranges are normalized to use `HEAD` for the
+    /// missing endpoint.
+    pub(super) fn parse(revisions: &'a str) -> Result<Self> {
+        if let Some((left, right)) = revisions.split_once("...") {
+            if left.is_empty() || right.is_empty() {
+                return Err(TuicrError::VcsCommand(
+                    "Invalid revision range: missing endpoint".into(),
+                ));
+            }
+            return Ok(Self::MergeBaseRange { left, right });
+        }
+
+        if let Some((base, head)) = revisions.split_once("..") {
+            let base = if base.is_empty() { "HEAD" } else { base };
+            let head = if head.is_empty() { "HEAD" } else { head };
+            return Ok(Self::Range { base, head });
+        }
+
+        Ok(Self::Single(revisions))
+    }
+}
 
 /// Top-level Git backend.
 ///
@@ -280,21 +328,21 @@ impl VcsBackend for GitBackend {
         }
     }
 
-    fn resolve_revisions(&self, revisions: &str) -> Result<Vec<String>> {
+    fn resolve_revision_range(&self, revisions: &str) -> Result<ResolvedRevisionRange<'static>> {
         match self {
-            Self::Libgit2(backend) => backend.resolve_revisions(revisions),
-            Self::Cli(backend) => backend.resolve_revisions(revisions),
+            Self::Libgit2(backend) => backend.resolve_revision_range(revisions),
+            Self::Cli(backend) => backend.resolve_revision_range(revisions),
         }
     }
 
     fn get_commit_range_diff(
         &self,
-        commit_ids: &[String],
+        revision_range: &ResolvedRevisionRange<'_>,
         highlighter: &SyntaxHighlighter,
     ) -> Result<Vec<DiffFile>> {
         match self {
-            Self::Libgit2(backend) => backend.get_commit_range_diff(commit_ids, highlighter),
-            Self::Cli(backend) => backend.get_commit_range_diff(commit_ids, highlighter),
+            Self::Libgit2(backend) => backend.get_commit_range_diff(revision_range, highlighter),
+            Self::Cli(backend) => backend.get_commit_range_diff(revision_range, highlighter),
         }
     }
 

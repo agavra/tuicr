@@ -3,6 +3,9 @@ use git2::{BranchType, Oid, Repository};
 use std::collections::HashMap;
 
 use crate::error::{Result, TuicrError};
+use crate::vcs::{ResolvedRevisionRange, RevisionDiffTarget};
+
+use super::RevisionExpression;
 
 #[derive(Debug, Clone)]
 pub struct CommitInfo {
@@ -153,50 +156,91 @@ pub fn get_commits_info(repo: &Repository, ids: &[String]) -> Result<Vec<CommitI
     Ok(commits)
 }
 
-/// Resolve a git revision range expression to a list of commit IDs (oldest first).
+/// Resolve a Git revision expression into selected commits and diff endpoints.
 ///
-/// Supports both single revisions ("HEAD~3") and ranges ("main..feature").
-/// For a range A..B, walks from B back to (but not including) A.
-/// For a single revision, returns just that commit.
-pub fn resolve_revisions(repo: &Repository, revisions: &str) -> Result<Vec<String>> {
-    // Try parsing as a range first (e.g., "A..B")
-    let revspec = repo.revparse(revisions)?;
-
-    let mut commit_ids = if revspec.mode().contains(git2::RevparseMode::RANGE) {
-        // Range: walk from `to` back, stopping before `from`
-        let from = revspec.from().ok_or_else(|| {
-            TuicrError::VcsCommand("Invalid revision range: missing 'from'".into())
-        })?;
-        let to = revspec
-            .to()
-            .ok_or_else(|| TuicrError::VcsCommand("Invalid revision range: missing 'to'".into()))?;
-
-        let mut revwalk = repo.revwalk()?;
-        revwalk.push(to.id())?;
-        revwalk.hide(from.id())?;
-        revwalk.set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)?;
-
-        let mut ids = Vec::new();
-        for oid in revwalk {
-            ids.push(oid?.to_string());
+/// This preserves the distinction between commits selected for review metadata
+/// and the old/new trees that Git would compare for the original expression.
+pub fn resolve_revision_range(
+    repo: &Repository,
+    revisions: &str,
+) -> Result<ResolvedRevisionRange<'static>> {
+    match RevisionExpression::parse(revisions)? {
+        RevisionExpression::Single(revision) => {
+            // `HEAD`
+            let head = resolve_commit_id(repo, revision)?;
+            let base = first_parent_id(repo, &head)?;
+            Ok(ResolvedRevisionRange::from_owned_commit_ids(
+                vec![head.clone()],
+                RevisionDiffTarget::Explicit { base, head },
+            ))
         }
-        ids
-    } else {
-        // Single revision
-        let obj = revspec
-            .from()
-            .ok_or_else(|| TuicrError::VcsCommand("Invalid revision expression".into()))?;
-        let commit = obj
-            .peel_to_commit()
-            .map_err(|e| TuicrError::VcsCommand(format!("Not a commit: {}", e)))?;
-        vec![commit.id().to_string()]
-    };
+        RevisionExpression::Range { base, head } => {
+            // `A..B`, `A..`, or `..B`
+            let base = resolve_commit_id(repo, base)?;
+            let head = resolve_commit_id(repo, head)?;
+            let commit_ids = revwalk_range(repo, &base, &head)?;
+            Ok(ResolvedRevisionRange::from_owned_commit_ids(
+                commit_ids,
+                RevisionDiffTarget::Explicit {
+                    base: Some(base),
+                    head,
+                },
+            ))
+        }
+        RevisionExpression::MergeBaseRange { left, right } => {
+            // `A...B`
+            let left = resolve_commit_id(repo, left)?;
+            let right = resolve_commit_id(repo, right)?;
+            let base = repo
+                .merge_base(Oid::from_str(&left)?, Oid::from_str(&right)?)?
+                .to_string();
+            let commit_ids = revwalk_range(repo, &base, &right)?;
+            Ok(ResolvedRevisionRange::from_owned_commit_ids(
+                commit_ids,
+                RevisionDiffTarget::Explicit {
+                    base: Some(base),
+                    head: right,
+                },
+            ))
+        }
+    }
+}
+
+fn resolve_commit_id(repo: &Repository, revision: &str) -> Result<String> {
+    let revision = format!("{revision}^{{commit}}");
+    let obj = repo.revparse_single(&revision)?;
+    let commit = obj
+        .peel_to_commit()
+        .map_err(|e| TuicrError::VcsCommand(format!("Not a commit: {e}")))?;
+    Ok(commit.id().to_string())
+}
+
+// Single-revision reviews diff the commit against its first parent.
+// Root commits have no parent,
+// so callers represent the old side as the empty tree with None.
+fn first_parent_id(repo: &Repository, commit_id: &str) -> Result<Option<String>> {
+    let commit = repo.find_commit(Oid::from_str(commit_id)?)?;
+    if commit.parent_count() == 0 {
+        return Ok(None);
+    }
+    Ok(Some(commit.parent(0)?.id().to_string()))
+}
+
+fn revwalk_range(repo: &Repository, base: &str, head: &str) -> Result<Vec<String>> {
+    let mut revwalk = repo.revwalk()?;
+    revwalk.push(Oid::from_str(head)?)?;
+    revwalk.hide(Oid::from_str(base)?)?;
+    revwalk.set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)?;
+
+    let mut commit_ids = Vec::new();
+    for oid in revwalk {
+        commit_ids.push(oid?.to_string());
+    }
 
     if commit_ids.is_empty() {
         return Err(TuicrError::NoChanges);
     }
 
-    // revwalk outputs newest first; reverse so oldest is first
     commit_ids.reverse();
     Ok(commit_ids)
 }

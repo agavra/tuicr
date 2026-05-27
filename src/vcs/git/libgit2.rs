@@ -8,7 +8,7 @@ use crate::syntax::SyntaxHighlighter;
 
 use super::{context, diff, repository, staging};
 use crate::vcs::traits::{
-    ChangeKind, CommitInfo, DiffWhitespaceMode, VcsBackend, VcsInfo, VcsType,
+    ChangeKind, CommitInfo, DiffWhitespaceMode, ResolvedRevisionRange, VcsBackend, VcsInfo, VcsType,
 };
 
 /// Git backend implementation using the git2/libgit2 library.
@@ -158,16 +158,21 @@ impl VcsBackend for Libgit2Backend {
             .collect())
     }
 
-    fn resolve_revisions(&self, revisions: &str) -> Result<Vec<String>> {
-        repository::resolve_revisions(&self.repo, revisions)
+    fn resolve_revision_range(&self, revisions: &str) -> Result<ResolvedRevisionRange<'static>> {
+        repository::resolve_revision_range(&self.repo, revisions)
     }
 
     fn get_commit_range_diff(
         &self,
-        commit_ids: &[String],
+        revision_range: &ResolvedRevisionRange<'_>,
         highlighter: &SyntaxHighlighter,
     ) -> Result<Vec<DiffFile>> {
-        diff::get_commit_range_diff(&self.repo, commit_ids, self.whitespace_mode, highlighter)
+        diff::get_commit_range_diff(
+            &self.repo,
+            revision_range,
+            self.whitespace_mode,
+            highlighter,
+        )
     }
 
     fn get_commits_info(&self, ids: &[String]) -> Result<Vec<CommitInfo>> {

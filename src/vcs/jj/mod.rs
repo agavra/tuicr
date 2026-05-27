@@ -11,7 +11,10 @@ use crate::error::{Result, TuicrError};
 use crate::model::{DiffFile, DiffLine, FileStatus, LineOrigin};
 use crate::syntax::SyntaxHighlighter;
 use crate::vcs::diff_parser::{self, DiffFormat};
-use crate::vcs::traits::{CommitInfo, DiffWhitespaceMode, VcsBackend, VcsInfo, VcsType};
+use crate::vcs::traits::{
+    CommitInfo, DiffWhitespaceMode, ResolvedRevisionRange, RevisionDiffTarget, VcsBackend, VcsInfo,
+    VcsType,
+};
 use crate::vcs::{BATCH_BOUNDARY, apply_container_full_file_highlight, parse_batched_files};
 
 /// Parse a jj description into (summary, optional body).
@@ -225,7 +228,7 @@ impl VcsBackend for JjBackend {
         Ok(content.lines().count() as u32)
     }
 
-    fn resolve_revisions(&self, revisions: &str) -> Result<Vec<String>> {
+    fn resolve_revision_range(&self, revisions: &str) -> Result<ResolvedRevisionRange<'static>> {
         // Use jj log to resolve the revisions to commit IDs, reverse-chronological by default.
         // We reverse the result so the oldest commit is first (matching get_commit_range_diff expectations).
         let output = run_jj_command(
@@ -253,7 +256,10 @@ impl VcsBackend for JjBackend {
 
         // jj log outputs newest first; reverse so oldest is first
         commit_ids.reverse();
-        Ok(commit_ids)
+        Ok(ResolvedRevisionRange::from_owned_commit_ids(
+            commit_ids,
+            RevisionDiffTarget::CommitList,
+        ))
     }
 
     fn get_recent_commits(&self, offset: usize, limit: usize) -> Result<Vec<CommitInfo>> {
@@ -317,9 +323,10 @@ impl VcsBackend for JjBackend {
 
     fn get_commit_range_diff(
         &self,
-        commit_ids: &[String],
+        revision_range: &ResolvedRevisionRange<'_>,
         highlighter: &SyntaxHighlighter,
     ) -> Result<Vec<DiffFile>> {
+        let commit_ids = &revision_range.commit_ids;
         if commit_ids.is_empty() {
             return Err(TuicrError::NoChanges);
         }
@@ -489,6 +496,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vcs::RevisionDiffTarget;
     use std::fs;
 
     /// Check if jj command is available
@@ -834,7 +842,13 @@ mod tests {
 
             let commit_ids = vec![oldest.id.clone(), newest.id.clone()];
             let diff = backend
-                .get_commit_range_diff(&commit_ids, &SyntaxHighlighter::default())
+                .get_commit_range_diff(
+                    &ResolvedRevisionRange::from_owned_commit_ids(
+                        commit_ids,
+                        RevisionDiffTarget::CommitList,
+                    ),
+                    &SyntaxHighlighter::default(),
+                )
                 .expect("Failed to get commit range diff");
 
             // Should have changes
