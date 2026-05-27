@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 use crate::error::Result;
@@ -68,6 +69,39 @@ pub struct CommitInfo {
     pub body: Option<String>,
     pub author: String,
     pub time: DateTime<Utc>,
+}
+
+/// ResolvedRevisionRange is the VCS boundary's parsed form of a user-provided
+/// revision expression.
+///
+/// It preserves the knowledge gained while resolving the expression so callers
+/// do not need to keep passing the raw revision string through lower layers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedRevisionRange<'a> {
+    /// Commit IDs selected by the expression, oldest first.
+    pub commit_ids: Cow<'a, [String]>,
+}
+
+impl<'a> ResolvedRevisionRange<'a> {
+    /// Build a range from commit IDs already owned by the caller.
+    ///
+    /// This is used by selection and reload paths that already store the
+    /// selected commits in application state.
+    pub fn from_commit_ids(commit_ids: &'a [String]) -> Self {
+        Self {
+            commit_ids: Cow::Borrowed(commit_ids),
+        }
+    }
+
+    /// Build a range from commit IDs produced while resolving a revision.
+    ///
+    /// This is used at VCS adapter boundaries,
+    /// where there is no longer-lived caller-owned slice to borrow from.
+    pub fn from_owned_commit_ids(commit_ids: Vec<String>) -> Self {
+        Self {
+            commit_ids: Cow::Owned(commit_ids),
+        }
+    }
 }
 
 /// Cheap repository change summary used by selection UIs before loading full diffs.
@@ -171,6 +205,14 @@ pub trait VcsBackend: Send {
     fn resolve_revisions(&self, _revisions: &str) -> Result<Vec<String>> {
         Err(crate::error::TuicrError::UnsupportedOperation(
             "Revset resolution not supported for this VCS".into(),
+        ))
+    }
+
+    /// Resolve a revisions expression into the VCS boundary's parsed range.
+    /// Returns error if not supported (default).
+    fn resolve_revision_range(&self, revisions: &str) -> Result<ResolvedRevisionRange<'static>> {
+        Ok(ResolvedRevisionRange::from_owned_commit_ids(
+            self.resolve_revisions(revisions)?,
         ))
     }
 

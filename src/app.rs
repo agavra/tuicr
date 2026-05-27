@@ -24,7 +24,7 @@ use crate::vcs::git::calculate_gap;
 use crate::vcs::traits::VcsType;
 use crate::vcs::{
     ChangeKind, CommitInfo, DiffWhitespaceMode, FileBackend, GitBackendPreference, PrNoopVcs,
-    VcsBackend, VcsChangeStatus, VcsInfo, detect_vcs,
+    ResolvedRevisionRange, VcsBackend, VcsChangeStatus, VcsInfo, detect_vcs,
 };
 
 const VISIBLE_COMMIT_COUNT: usize = 10;
@@ -1494,14 +1494,15 @@ impl App {
         //   3. -w only: working tree directly (skip commit selector)
         //   4. neither: commit selection UI
         if let Some(revisions) = options.revisions {
-            let commit_ids = crate::profile::time_with(
+            let revision_range = crate::profile::time_with(
                 "startup.resolve_revisions",
-                || vcs.resolve_revisions(revisions),
+                || vcs.resolve_revision_range(revisions),
                 |result| match result {
-                    Ok(ids) => format!("commits={}", ids.len()),
+                    Ok(range) => format!("commits={}", range.commit_ids.len()),
                     Err(e) => format!("error={e}"),
                 },
             )?;
+            let commit_ids = revision_range.commit_ids.to_vec();
 
             if options.working_tree {
                 // Combined: commit range + staged/unstaged changes
@@ -1581,7 +1582,7 @@ impl App {
             let diff_files = Self::get_commit_range_diff_with_ignore(
                 vcs.as_ref(),
                 &vcs_info.root_path,
-                &commit_ids,
+                &revision_range,
                 highlighter,
                 options.path_filter,
             )?;
@@ -3554,13 +3555,13 @@ impl App {
     fn get_commit_range_diff_with_ignore(
         vcs: &dyn VcsBackend,
         repo_root: &Path,
-        commit_ids: &[String],
+        revision_range: &ResolvedRevisionRange<'_>,
         highlighter: &SyntaxHighlighter,
         path_filter: Option<&str>,
     ) -> Result<Vec<DiffFile>> {
         let diff_files = crate::profile::time_with(
             "diff.load_commit_range",
-            || vcs.get_commit_range_diff(commit_ids, highlighter),
+            || vcs.get_commit_range_diff(revision_range.commit_ids.as_ref(), highlighter),
             profile_diff_result,
         )?;
         let diff_files = Self::filter_ignored_diff_files(repo_root, diff_files);
@@ -3863,7 +3864,7 @@ impl App {
             DiffSource::CommitRange(commit_ids) => Self::get_commit_range_diff_with_ignore(
                 self.vcs.as_ref(),
                 &self.vcs_info.root_path,
-                commit_ids,
+                &ResolvedRevisionRange::from_commit_ids(commit_ids),
                 highlighter,
                 self.path_filter.as_deref(),
             )?,
@@ -8457,7 +8458,7 @@ impl App {
         let diff_files = Self::get_commit_range_diff_with_ignore(
             self.vcs.as_ref(),
             &self.vcs_info.root_path,
-            &selected_ids,
+            &ResolvedRevisionRange::from_commit_ids(&selected_ids),
             highlighter,
             self.path_filter.as_deref(),
         )?;
@@ -8646,7 +8647,7 @@ impl App {
             match Self::get_commit_range_diff_with_ignore(
                 self.vcs.as_ref(),
                 &self.vcs_info.root_path,
-                &selected_ids,
+                &ResolvedRevisionRange::from_commit_ids(&selected_ids),
                 highlighter,
                 self.path_filter.as_deref(),
             ) {
