@@ -159,7 +159,7 @@ impl GitBackend {
         Self::discover_from(&cwd, preference, whitespace_mode)
     }
 
-    fn discover_from(
+    pub(crate) fn discover_from(
         cwd: &Path,
         preference: GitBackendPreference,
         whitespace_mode: DiffWhitespaceMode,

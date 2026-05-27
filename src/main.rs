@@ -187,6 +187,7 @@ fn main() -> anyhow::Result<()> {
                 diff_whitespace_mode,
                 commit_selection,
                 pr_target: cli_args.pr_target.as_deref(),
+                session_target: cli_args.session_target.as_deref(),
                 repo_url_override: cli_args
                     .repo_url
                     .as_deref()

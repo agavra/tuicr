@@ -347,6 +347,34 @@ pub fn detect_vcs(
     Err(TuicrError::NotARepository)
 }
 
+/// Detect the VCS for an explicit root path. Used when reopening a saved
+/// session whose checkout may differ from the process cwd.
+pub fn detect_vcs_at(
+    root_path: &Path,
+    git_backend_preference: GitBackendPreference,
+    whitespace_mode: DiffWhitespaceMode,
+) -> Result<Box<dyn VcsBackend>> {
+    if root_path.join(".jj").exists()
+        && let Ok(backend) = JjBackend::from_path(root_path.to_path_buf(), whitespace_mode)
+    {
+        return Ok(Box::new(backend));
+    }
+
+    if let Ok(backend) =
+        GitBackend::discover_from(root_path, git_backend_preference, whitespace_mode)
+    {
+        return Ok(Box::new(backend));
+    }
+
+    if root_path.join(".hg").exists()
+        && let Ok(backend) = HgBackend::from_path(root_path.to_path_buf(), whitespace_mode)
+    {
+        return Ok(Box::new(backend));
+    }
+
+    Err(TuicrError::NotARepository)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -32,6 +32,8 @@ pub struct CliArgs {
     pub pr_target: Option<String>,
     /// Override the GitHub repo used for PR operations.
     pub repo_url: Option<String>,
+    /// Force-open a saved session by JSON path or exact slug.
+    pub session_target: Option<String>,
     /// Non-interactive review session operation.
     pub review_command: Option<ReviewCommand>,
     /// Update the installed tuicr binary and exit.
@@ -122,6 +124,15 @@ struct TuiOptions {
     /// Skip checking for updates on startup.
     #[arg(long = "no-update-check", action = ArgAction::SetTrue)]
     no_update_check: bool,
+
+    /// Force-open a saved review session by JSON path or exact slug.
+    #[arg(
+        long = "session",
+        value_name = "PATH_OR_SLUG",
+        value_parser = non_empty_path,
+        conflicts_with_all = ["path_filter", "working_tree", "file_path", "all_files"],
+    )]
+    session_target: Option<String>,
 
     /// Override the GitHub repo for PR operations (HTTPS, SCP-style SSH,
     /// or ssh:// URLs accepted).
@@ -318,6 +329,7 @@ impl From<Cli> for CliArgs {
             all_files: options.all_files,
             pr_target,
             repo_url: options.repo_url,
+            session_target: options.session_target,
             review_command,
             update_command,
             update_version,
@@ -337,6 +349,7 @@ impl TuiOptions {
             || self.file_path.is_some()
             || self.all_files
             || self.repo_url.is_some()
+            || self.session_target.is_some()
     }
 
     fn merge(self, later: TuiOptions) -> Self {
@@ -351,24 +364,41 @@ impl TuiOptions {
             file_path: later.file_path.or(self.file_path),
             all_files: self.all_files || later.all_files,
             repo_url: later.repo_url.or(self.repo_url),
+            session_target: later.session_target.or(self.session_target),
         }
     }
 }
 
 impl Cli {
     fn try_into_args(self) -> std::result::Result<CliArgs, clap::Error> {
-        match (
-            self.tui_options.has_any_explicit_value(),
-            self.non_tui_command_name(),
-        ) {
-            (true, Some(command_name)) => Err(clap::Error::raw(
+        if self.tui_options.has_any_explicit_value()
+            && let Some(command_name) = self.non_tui_command_name()
+        {
+            return Err(clap::Error::raw(
                 clap::error::ErrorKind::ArgumentConflict,
                 format!(
                     "TUI options cannot be used with `tuicr {command_name}`; run `tuicr {command_name} --help` for command options"
                 ),
-            )),
-            _ => Ok(self.into()),
+            ));
         }
+
+        let args: CliArgs = self.into();
+        if args.session_target.is_some()
+            && let Some(option) = args
+                .path_filter
+                .as_ref()
+                .map(|_| "--path")
+                .or_else(|| args.working_tree.then_some("--working-tree"))
+                .or_else(|| args.file_path.as_ref().map(|_| "--file"))
+                .or_else(|| args.all_files.then_some("--all-files"))
+        {
+            return Err(clap::Error::raw(
+                clap::error::ErrorKind::ArgumentConflict,
+                format!("--session cannot be combined with {option}"),
+            ));
+        }
+
+        Ok(args)
     }
 
     fn non_tui_command_name(&self) -> Option<&'static str> {
@@ -716,6 +746,78 @@ mod tests {
         let err =
             parse_for_test(&["tuicr", "--theme", "dark", "update"]).expect_err("parse should fail");
         assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn should_parse_session_target() {
+        let parsed = parse_for_test(&["tuicr", "--session", "sessions/abc.json"])
+            .expect("parse should succeed");
+        assert_eq!(parsed.session_target, Some("sessions/abc.json".to_string()));
+    }
+
+    #[test]
+    fn should_parse_session_combined_with_revisions() {
+        let parsed = parse_for_test(&["tuicr", "--session", "sessions/abc.json", "-r", "HEAD~1.."])
+            .expect("parse should succeed");
+        assert_eq!(parsed.session_target, Some("sessions/abc.json".to_string()));
+        assert_eq!(parsed.revisions, Some("HEAD~1..".to_string()));
+    }
+
+    #[test]
+    fn should_parse_session_target_with_explicit_tui_subcommand() {
+        let parsed = parse_for_test(&["tuicr", "tui", "--session", "sessions/abc.json"])
+            .expect("parse should succeed");
+        assert_eq!(parsed.session_target, Some("sessions/abc.json".to_string()));
+    }
+
+    #[test]
+    fn should_reject_session_conflicts_split_across_tui_scopes() {
+        let cases: &[&[&str]] = &[
+            &["tuicr", "--session", "session.json", "tui", "--path", "src"],
+            &["tuicr", "--path", "src", "tui", "--session", "session.json"],
+            &[
+                "tuicr",
+                "--session",
+                "session.json",
+                "tui",
+                "--working-tree",
+            ],
+            &[
+                "tuicr",
+                "--working-tree",
+                "tui",
+                "--session",
+                "session.json",
+            ],
+            &[
+                "tuicr",
+                "--session",
+                "session.json",
+                "tui",
+                "--file",
+                "file.rs",
+            ],
+            &[
+                "tuicr",
+                "--file",
+                "file.rs",
+                "tui",
+                "--session",
+                "session.json",
+            ],
+            &["tuicr", "--session", "session.json", "tui", "--all-files"],
+            &["tuicr", "--all-files", "tui", "--session", "session.json"],
+        ];
+
+        for args in cases {
+            let error = parse_for_test(args).expect_err("split selectors should conflict");
+            assert_eq!(
+                error.kind(),
+                ErrorKind::ArgumentConflict,
+                "arguments: {}",
+                args.join(" ")
+            );
+        }
     }
 
     #[test]

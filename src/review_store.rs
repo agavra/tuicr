@@ -426,4 +426,38 @@ mod tests {
         let listed = store.list_sessions_for_repo(&repo).unwrap();
         assert_eq!(listed[0].comment_count, 1);
     }
+
+    #[test]
+    fn should_update_explicit_session_file_outside_reviews_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let reviews_dir = temp.path().join("reviews");
+        let store = ReviewStore::with_reviews_dir(reviews_dir);
+        let session = test_session(repo.clone());
+        let session_path = temp.path().join("external-session.json");
+        std::fs::write(
+            &session_path,
+            serde_json::to_string_pretty(&session).unwrap(),
+        )
+        .unwrap();
+        let session_ref = SessionRef::from_path(session_path);
+
+        let comment = store
+            .add_comment(
+                &session_ref,
+                AddCommentRequest {
+                    target: CommentTarget::Review,
+                    content: "keep the explicit session in sync".to_string(),
+                    comment_type: CommentType::from_id("note"),
+                    author: crate::model::comment::DEFAULT_AUTHOR.to_string(),
+                    commit_id: None,
+                },
+            )
+            .unwrap();
+
+        let loaded = store.get_review(&session_ref).unwrap();
+        assert_eq!(loaded.review_comments, vec![comment]);
+        assert!(store.list_sessions_for_repo(&repo).unwrap().is_empty());
+    }
 }
