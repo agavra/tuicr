@@ -114,13 +114,6 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
-                "  e         ",
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("Open focused file in $EDITOR"),
-        ]),
-        Line::from(vec![
-            Span::styled(
                 "  S-Enter   ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
@@ -551,6 +544,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
             Span::raw(
                 "Reload diff files and comments (in PR mode: refetch PR; may switch session)",
             ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :edit     ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Open focused file in $EDITOR"),
         ]),
         Line::from(vec![
             Span::styled(

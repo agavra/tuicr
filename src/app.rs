@@ -14471,6 +14471,28 @@ mod single_file_view_tests {
     }
 
     #[test]
+    fn edit_command_uses_selected_file_list_row() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("main.rs");
+        fs::write(&path, "fn main() {}\n").expect("write file");
+
+        let mut app = app_with_root(
+            dir.path().to_path_buf(),
+            vec![file("main.rs", vec![hunk(1, 1)])],
+        );
+        app.focused_panel = FocusedPanel::FileList;
+        app.enter_command_mode();
+        app.command_buffer = "edit".to_string();
+
+        crate::handler::handle_command_action(&mut app, crate::input::Action::SubmitInput);
+
+        let target = app.take_pending_editor_target().expect("editor target");
+        assert_eq!(target.path, path);
+        assert_eq!(target.line, None);
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
     fn editor_target_uses_diff_cursor_line() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("main.rs");

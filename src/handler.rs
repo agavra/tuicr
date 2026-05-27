@@ -26,6 +26,7 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     CommandSpec::new(&["w", "write"], CommandKind::Write),
     CommandSpec::new(&["x", "wq"], CommandKind::WriteQuit),
     CommandSpec::new(&["e", "reload"], CommandKind::Reload),
+    CommandSpec::new(&["edit"], CommandKind::Edit),
     CommandSpec::new(&["clip", "export"], CommandKind::Export),
     CommandSpec::new(
         &["clear"],
@@ -99,6 +100,7 @@ enum CommandKind {
     Write,
     WriteQuit,
     Reload,
+    Edit,
     Export,
     Clear(ClearScope),
     Version,
@@ -729,6 +731,10 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
             reload_review(app);
             CommandAfterDispatch::ExitCommandMode
         }
+        CommandKind::Edit => {
+            app.queue_editor_for_focused_item();
+            CommandAfterDispatch::ExitCommandMode
+        }
         CommandKind::Export => {
             handle_export(app);
             CommandAfterDispatch::ExitCommandMode
@@ -1248,7 +1254,6 @@ pub fn handle_file_list_action(app: &mut App, action: Action) {
                 app.set_warning("Select a file to toggle reviewed");
             }
         }
-        Action::OpenInEditor => app.queue_editor_for_focused_item(),
         _ => handle_shared_normal_action(app, action),
     }
 }
@@ -1353,7 +1358,6 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
         Action::NextHunk => app.next_hunk(),
         Action::PrevHunk => app.prev_hunk(),
         Action::ToggleReviewed => app.toggle_reviewed(),
-        Action::OpenInEditor => app.queue_editor_for_focused_item(),
         Action::ToggleFocus => {
             let has_selector = app.has_inline_commit_selector();
             let has_comments = app.has_comment_navigator_items();
