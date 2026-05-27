@@ -4505,13 +4505,15 @@ impl App {
     }
 
     pub fn center_cursor(&mut self) {
+        // Use viewport_height (physical rows, stable) rather than visible_line_count
+        // (changes after each render when word wrap is on) so repeated zz presses
+        // are idempotent.
         let viewport = self.diff_state.viewport_height.max(1);
-        let half_viewport = viewport / 2;
         let max_scroll = self.max_scroll_offset();
         self.diff_state.scroll_offset = self
             .diff_state
             .cursor_line
-            .saturating_sub(half_viewport)
+            .saturating_sub(viewport / 2)
             .min(max_scroll);
     }
 
@@ -4526,13 +4528,20 @@ impl App {
     }
 
     pub fn cursor_to_bottom(&mut self) {
-        let visible_lines = self.diff_state.effective_visible_lines();
+        // Use viewport_height for the same reason as center_cursor: stable across
+        // renders, so repeated zb presses are idempotent.
+        let viewport = self.diff_state.viewport_height.max(1);
         let scroll_margin = self.diff_state.effective_scroll_margin(self.scroll_offset);
         let max_scroll = self.max_scroll_offset();
+        // Cap so the last navigable line (max_cursor_line) is the furthest down
+        // the viewport ever shows. Using total_lines would include the trailing
+        // Spacing separator, leaving one blank row below the cursor.
+        let no_empty_space = (self.max_cursor_line() + 1).saturating_sub(viewport);
         self.diff_state.scroll_offset = self
             .diff_state
             .cursor_line
-            .saturating_sub(visible_lines.saturating_sub(1 + scroll_margin))
+            .saturating_sub(viewport.saturating_sub(1 + scroll_margin))
+            .min(no_empty_space)
             .min(max_scroll);
     }
 
@@ -5130,11 +5139,11 @@ impl App {
         if let Some(file_idx) = annotation_file_idx(&self.line_annotations[idx]) {
             self.diff_state.current_file_idx = file_idx;
         }
-        let viewport = self.diff_state.viewport_height.max(1);
+        let visible = self.diff_state.effective_visible_lines();
         if idx < self.diff_state.scroll_offset {
             self.diff_state.scroll_offset = idx;
-        } else if idx >= self.diff_state.scroll_offset + viewport {
-            self.diff_state.scroll_offset = idx + 1 - viewport;
+        } else if idx >= self.diff_state.scroll_offset + visible {
+            self.diff_state.scroll_offset = idx + 1 - visible;
         }
     }
 
@@ -5401,11 +5410,22 @@ impl App {
     }
 
     pub fn jump_to_bottom(&mut self) {
-        let max_line = self.max_cursor_line();
-        self.diff_state.cursor_line = max_line;
-        // Position so the last navigable line is at the bottom of the viewport
-        let viewport = self.diff_state.viewport_height.max(1);
-        self.diff_state.scroll_offset = (max_line + 1).saturating_sub(viewport);
+        self.diff_state.cursor_line = self.max_cursor_line();
+        // shift-G lands on the last actual diff-content line, not on the
+        // EOF-gap expand controls that sit between the last hunk and Spacing.
+        while self.diff_state.cursor_line > 0
+            && matches!(
+                self.line_annotations.get(self.diff_state.cursor_line),
+                Some(AnnotatedLine::Expander { .. }) | Some(AnnotatedLine::HiddenLines { .. })
+            )
+        {
+            self.diff_state.cursor_line -= 1;
+        }
+        let cursor = self.diff_state.cursor_line;
+        let visible = self.diff_state.effective_visible_lines();
+        self.diff_state.scroll_offset = (cursor + 1)
+            .saturating_sub(visible)
+            .min(self.max_scroll_offset());
         self.update_current_file_from_cursor();
     }
 
@@ -5587,7 +5607,12 @@ impl App {
     }
 
     fn file_render_height(&self, file_idx: usize, file: &DiffFile) -> usize {
-        let header_lines = 3; // FileHeaderBorder + FileHeader + FileHeaderBorder
+        // Unified: 3-line box (border + name + border). SBS: single ═══ line.
+        let header_lines = if self.diff_view_mode == DiffViewMode::Unified {
+            3
+        } else {
+            1
+        };
         if self.session.is_file_reviewed(file.display_path()) {
             return header_lines;
         }
@@ -8737,6 +8762,23 @@ impl App {
         self.expanded_top.remove(&gap_id);
         self.expanded_bottom.remove(&gap_id);
         self.rebuild_annotations();
+        let max = self.max_cursor_line();
+        if self.diff_state.cursor_line > max {
+            // Land on the last control annotation for this gap so the cursor
+            // stays at the fold location rather than jumping to an unrelated line.
+            let gap_bottom = self
+                .line_annotations
+                .iter()
+                .rposition(|a| match a {
+                    AnnotatedLine::Expander { gap_id: gid, .. }
+                    | AnnotatedLine::HiddenLines { gap_id: gid, .. } => gid == &gap_id,
+                    _ => false,
+                })
+                .unwrap_or(max)
+                .min(max);
+            self.diff_state.cursor_line = gap_bottom;
+            self.ensure_cursor_visible();
+        }
     }
 
     /// Clear all expanded gaps (called when reloading diffs)
@@ -8839,16 +8881,21 @@ impl App {
             }
             let path = file.display_path();
 
-            // File header box (only when shown — same gate as the renderer).
-            // The trailing Spacing from the previous file provides the
-            // blank line above, so no extra Spacing is needed here.
+            // File header: unified mode uses a 3-line box (border+name+border),
+            // side-by-side uses a single ═══ header line.
+            // The annotation count must match the renderer's visual line count.
             if !self.is_single_file_view {
-                self.line_annotations
-                    .push(AnnotatedLine::FileHeaderBorder { file_idx });
-                self.line_annotations
-                    .push(AnnotatedLine::FileHeader { file_idx });
-                self.line_annotations
-                    .push(AnnotatedLine::FileHeaderBorder { file_idx });
+                if self.diff_view_mode == DiffViewMode::Unified {
+                    self.line_annotations
+                        .push(AnnotatedLine::FileHeaderBorder { file_idx });
+                    self.line_annotations
+                        .push(AnnotatedLine::FileHeader { file_idx });
+                    self.line_annotations
+                        .push(AnnotatedLine::FileHeaderBorder { file_idx });
+                } else {
+                    self.line_annotations
+                        .push(AnnotatedLine::FileHeader { file_idx });
+                }
             }
 
             // If reviewed, skip all content for this file. Single-file
