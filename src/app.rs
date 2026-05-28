@@ -34,7 +34,6 @@ pub const STAGED_SELECTION_ID: &str = "__tuicr_staged__";
 pub const UNSTAGED_SELECTION_ID: &str = "__tuicr_unstaged__";
 pub const GAP_EXPAND_BATCH: usize = 20;
 
-
 /// Create a forge backend for the given repository.
 /// Routes to the GitHub backend (via `gh`) or the GitLab backend (via `glab`)
 /// based on `repo.kind`.
@@ -50,9 +49,7 @@ fn create_forge_backend(
         }
         ForgeKind::GitLab => {
             use crate::forge::gitlab::GitLabGlabBackend;
-            Box::new(
-                GitLabGlabBackend::new(Some(repo.clone())).with_local_checkout(local_checkout),
-            )
+            Box::new(GitLabGlabBackend::new(Some(repo.clone())).with_local_checkout(local_checkout))
         }
     }
 }
@@ -795,7 +792,7 @@ pub enum PrRangeReloadEvent {
 }
 
 /// Snapshot of the submit state needed to lock the matching local comments
-/// after the background `gh api .../reviews` call returns. Captured at spawn
+/// after the background `gh api .../reviews` call returns. Captured at
 /// time and stashed on `App::pr_submit_state` so the in-flight spinner has
 /// something to render and the result handler can flip lifecycle state on
 /// every comment that was sent.
@@ -5712,6 +5709,23 @@ impl App {
         for comment in &self.session.review_comments {
             height += Self::comment_display_lines(comment, self.diff_state.viewport_width);
         }
+        // Review-level remote threads (line: None) — must mirror the filter
+        // in `rebuild_annotations` or scroll offsets fall out of sync.
+        {
+            use crate::forge::remote_comments::{PrCommentsVisibility, thread_display_lines};
+            let visibility = self.session.remote_comments_visibility;
+            if !matches!(visibility, PrCommentsVisibility::Hide) {
+                for thread in &self.forge_review_threads {
+                    if thread.line.is_some() {
+                        continue;
+                    }
+                    if visibility.render_decision(thread).is_none() {
+                        continue;
+                    }
+                    height += thread_display_lines(thread);
+                }
+            }
+        }
         if self.input_mode == InputMode::Comment
             && self.comment_is_review_level
             && self.editing_comment_id.is_none()
@@ -8981,9 +8995,7 @@ impl App {
 
         // Emit annotation entries for remote review-level threads (line: None).
         {
-            use crate::forge::remote_comments::{
-                thread_display_lines, PrCommentsVisibility,
-            };
+            use crate::forge::remote_comments::{PrCommentsVisibility, thread_display_lines};
             let visibility = self.session.remote_comments_visibility;
             if !matches!(visibility, PrCommentsVisibility::Hide) {
                 for (thread_idx, thread) in self.forge_review_threads.iter().enumerate() {
@@ -14002,6 +14014,7 @@ mod submit_flow_tests {
                 counterpart_line: None,
                 start_line: None,
                 start_side: None,
+                old_path: None,
                 body: "x".to_string(),
                 comment_id: (*id).to_string(),
             })

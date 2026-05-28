@@ -182,10 +182,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                     let indicator = cursor_indicator(line_idx, current_line_idx);
                     comment_line.spans.insert(
                         0,
-                        Span::styled(
-                            indicator,
-                            styles::current_line_indicator_style(&app.theme),
-                        ),
+                        Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
                     );
                     lines.push(comment_line);
                     line_idx += 1;

@@ -12,7 +12,7 @@ use std::path::PathBuf;
 
 use crate::config::ForgeConfig;
 use crate::model::comment::Comment;
-use crate::model::{DiffFile, LineRange, LineSide};
+use crate::model::{DiffFile, FileStatus, LineRange, LineSide};
 
 /// Which forge review event a `:submit*` command corresponds to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,6 +91,11 @@ pub struct InlineComment {
     /// Multi-line range start. `None` for single-line comments.
     pub start_line: Option<u32>,
     pub start_side: Option<GhSide>,
+    /// Old (base-side) path when the file was renamed. `None` for unchanged
+    /// names; consumers should fall back to `path` for both sides. GitLab
+    /// positions need both `old_path` and `new_path`; GitHub uses only
+    /// `path`.
+    pub old_path: Option<PathBuf>,
     pub body: String,
     /// Source `Comment.id` this inline was derived from. Used after a
     /// successful submit to flip the comment's lifecycle state. INTERNAL —
@@ -199,13 +204,14 @@ pub fn map_comment(
         };
     }
 
+    let old_path = renamed_old_path(file);
     match anchor {
         CommentAnchor::FileLevel => match file.first_valid_line(LineSide::New) {
             Some(line) => {
                 // Use find_line_with_counterpart so context lines include both
                 // new_line and old_line in the GitLab position object.
-                let counterpart_line = find_line_with_counterpart(file, line, LineSide::New)
-                    .and_then(|(_, cp)| cp);
+                let counterpart_line =
+                    find_line_with_counterpart(file, line, LineSide::New).and_then(|(_, cp)| cp);
                 MappedComment::Inline(InlineComment {
                     path,
                     line,
@@ -213,6 +219,7 @@ pub fn map_comment(
                     counterpart_line,
                     start_line: None,
                     start_side: None,
+                    old_path,
                     body: build_inline_body(comment, true, config),
                     comment_id: comment.id.clone(),
                 })
@@ -231,26 +238,37 @@ pub fn map_comment(
                 reason: UnmappableReason::MixedSideRange,
             },
         },
-        CommentAnchor::Line { line, side } => {
-            match find_line_with_counterpart(file, line, side) {
-                None => MappedComment::Unmappable {
-                    comment: comment.clone(),
-                    file: path,
-                    reason: UnmappableReason::LineNotInDiff,
-                },
-                Some((primary_line, counterpart_line)) => MappedComment::Inline(InlineComment {
-                    path,
-                    line: primary_line,
-                    side: side.into(),
-                    counterpart_line,
-                    start_line: None,
-                    start_side: None,
-                    body: build_inline_body(comment, false, config),
-                    comment_id: comment.id.clone(),
-                }),
-            }
-        }
+        CommentAnchor::Line { line, side } => match find_line_with_counterpart(file, line, side) {
+            None => MappedComment::Unmappable {
+                comment: comment.clone(),
+                file: path,
+                reason: UnmappableReason::LineNotInDiff,
+            },
+            Some((primary_line, counterpart_line)) => MappedComment::Inline(InlineComment {
+                path,
+                line: primary_line,
+                side: side.into(),
+                counterpart_line,
+                start_line: None,
+                start_side: None,
+                old_path,
+                body: build_inline_body(comment, false, config),
+                comment_id: comment.id.clone(),
+            }),
+        },
     }
+}
+
+/// Old (base-side) path for a renamed/copied file when it differs from the
+/// display path. `None` for unchanged paths so downstream consumers know to
+/// fall back to `path` for both sides of the GitLab position payload.
+fn renamed_old_path(file: &DiffFile) -> Option<PathBuf> {
+    if !matches!(file.status, FileStatus::Renamed | FileStatus::Copied) {
+        return None;
+    }
+    let old = file.old_path.as_ref()?;
+    let new = file.new_path.as_ref()?;
+    if old == new { None } else { Some(old.clone()) }
 }
 
 /// True when `line` appears on `side` somewhere in the file's hunks.
@@ -261,7 +279,11 @@ fn line_present_on_side(file: &DiffFile, line: u32, side: LineSide) -> bool {
 /// Find `line` on `side` and return `(line, counterpart)` where `counterpart`
 /// is the line number on the opposite side for context lines (`None` for
 /// purely added/deleted lines).
-fn find_line_with_counterpart(file: &DiffFile, line: u32, side: LineSide) -> Option<(u32, Option<u32>)> {
+fn find_line_with_counterpart(
+    file: &DiffFile,
+    line: u32,
+    side: LineSide,
+) -> Option<(u32, Option<u32>)> {
     for hunk in &file.hunks {
         for dl in &hunk.lines {
             let candidate = match side {
@@ -313,6 +335,7 @@ fn map_range(
         };
     }
 
+    let old_path = renamed_old_path(file);
     if range.is_single() {
         return MappedComment::Inline(InlineComment {
             path,
@@ -321,6 +344,7 @@ fn map_range(
             counterpart_line: None,
             start_line: None,
             start_side: None,
+            old_path,
             body: build_inline_body(comment, false, config),
             comment_id: comment.id.clone(),
         });
@@ -333,6 +357,7 @@ fn map_range(
         counterpart_line: None,
         start_line: Some(range.start),
         start_side: Some(side.into()),
+        old_path,
         body: build_inline_body(comment, false, config),
         comment_id: comment.id.clone(),
     })

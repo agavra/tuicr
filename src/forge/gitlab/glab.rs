@@ -43,8 +43,12 @@ pub struct SystemGlabRunner;
 
 impl GlabCommandRunner for SystemGlabRunner {
     fn run(&self, args: &[String]) -> GlabCommandResult<String> {
-        run_command_output("glab", None, args.iter().map(|arg| OsStr::new(arg.as_str())))
-            .map_err(GlabCommandError::from)
+        run_command_output(
+            "glab",
+            None,
+            args.iter().map(|arg| OsStr::new(arg.as_str())),
+        )
+        .map_err(GlabCommandError::from)
     }
 
     fn run_with_stdin(&self, args: &[String], stdin: &str) -> GlabCommandResult<String> {
@@ -327,7 +331,11 @@ where
                     "[GLAB_DEBUG] list_review_threads page={page}: {received} discussions, {positional} with position\n"
                 ));
             }
-            all.extend(discussions.into_iter().filter_map(|d| d.into_review_thread()));
+            all.extend(
+                discussions
+                    .into_iter()
+                    .filter_map(|d| d.into_review_thread()),
+            );
             if received < 100 {
                 break;
             }
@@ -413,7 +421,15 @@ where
         }
 
         for comment in request.comments {
-            let path = comment.path.to_string_lossy().replace('\\', "/");
+            let new_path = comment.path.to_string_lossy().replace('\\', "/");
+            // GitLab positions need both old_path and new_path. Renamed files
+            // set comment.old_path to the base-side path; otherwise both
+            // sides share the display path.
+            let old_path = comment
+                .old_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_else(|| new_path.clone());
 
             // Build the position object with integer line numbers.
             // For context lines (unchanged), GitLab requires BOTH old_line and
@@ -425,8 +441,8 @@ where
                 "base_sha": pr.base_sha,
                 "start_sha": start_sha,
                 "head_sha": pr.head_sha,
-                "old_path": path,
-                "new_path": path,
+                "old_path": old_path,
+                "new_path": new_path,
             });
             match comment.side {
                 GhSide::Right => {
@@ -441,6 +457,18 @@ where
                         position["new_line"] = serde_json::Value::Number(new_line.into());
                     }
                 }
+            }
+            // Multi-line range comments need an explicit `line_range` so
+            // GitLab anchors the discussion across the full selection
+            // instead of collapsing to the end line.
+            if let Some(start_line) = comment.start_line {
+                let start_side = comment.start_side.unwrap_or(comment.side);
+                let start_endpoint = gl_range_endpoint(&new_path, start_side, start_line);
+                let end_endpoint = gl_range_endpoint(&new_path, comment.side, comment.line);
+                position["line_range"] = serde_json::json!({
+                    "start": start_endpoint,
+                    "end": end_endpoint,
+                });
             }
             let body_json = serde_json::to_string(&serde_json::json!({
                 "body": comment.body,
@@ -465,8 +493,8 @@ where
 
             if std::env::var("TUICR_GLAB_DEBUG").is_ok() {
                 let host = &pr.repository.host;
-                let project_encoded = format!("{}/{}", pr.repository.owner, pr.repository.name)
-                    .replace('/', "%2F");
+                let project_encoded =
+                    format!("{}/{}", pr.repository.owner, pr.repository.name).replace('/', "%2F");
                 let url = format!(
                     "https://{host}/api/v4/projects/{project_encoded}/merge_requests/{}/discussions",
                     pr.number
@@ -495,10 +523,7 @@ where
         }
 
         if request.event == SubmitEvent::Approve {
-            let endpoint = format!(
-                "projects/{}/merge_requests/{}/approve",
-                project, pr.number,
-            );
+            let endpoint = format!("projects/{}/merge_requests/{}/approve", project, pr.number,);
             let mut args = vec![
                 "api".to_string(),
                 endpoint,
@@ -839,13 +864,32 @@ fn gl_line_code(file_path: &str, old_line: u32, new_line: u32) -> String {
     format!("{hash}_{old_line}_{new_line}")
 }
 
+/// Build one endpoint of a GitLab `line_range` position entry.
+///
+/// GitLab expects each endpoint to carry the `type` ("new" / "old"), the
+/// integer line number on that side, and the `line_code` so the server can
+/// anchor the range without re-walking the diff.
+fn gl_range_endpoint(new_path: &str, side: GhSide, line: u32) -> serde_json::Value {
+    match side {
+        GhSide::Right => serde_json::json!({
+            "type": "new",
+            "new_line": line,
+            "line_code": gl_line_code(new_path, 0, line),
+        }),
+        GhSide::Left => serde_json::json!({
+            "type": "old",
+            "old_line": line,
+            "line_code": gl_line_code(new_path, line, 0),
+        }),
+    }
+}
+
 fn map_create_notes_error(error: GlabCommandError, host: &str) -> TuicrError {
     if let GlabCommandError::Failed { ref stderr, .. } = error
         && looks_like_permission_failure(stderr)
     {
         return TuicrError::Forge(
-            "Cannot submit review: GitLab token lacks merge request write permission."
-                .to_string(),
+            "Cannot submit review: GitLab token lacks merge request write permission.".to_string(),
         );
     }
     map_glab_error(error, host)
@@ -965,9 +1009,10 @@ mod tests {
             path: "src/lib.rs".into(),
             line: 15,
             side: GhSide::Right,
-                counterpart_line: None,
+            counterpart_line: None,
             start_line: None,
             start_side: None,
+            old_path: None,
             body: "nice work".to_string(),
             comment_id: "c1".to_string(),
         };
@@ -986,7 +1031,10 @@ mod tests {
         assert_eq!(calls.len(), 1);
         let (args, stdin) = &calls[0];
         // Must use --input - for JSON body
-        assert!(args.contains(&"--input".to_string()), "expected --input flag");
+        assert!(
+            args.contains(&"--input".to_string()),
+            "expected --input flag"
+        );
         assert!(args.contains(&"-".to_string()), "expected - stdin flag");
         assert!(
             args.contains(&"Content-Type: application/json".to_string()),
@@ -1022,9 +1070,10 @@ mod tests {
             path: "src/main.rs".into(),
             line: 7,
             side: GhSide::Left,
-                counterpart_line: None,
+            counterpart_line: None,
             start_line: None,
             start_side: None,
+            old_path: None,
             body: "old code".to_string(),
             comment_id: "c2".to_string(),
         };
@@ -1050,10 +1099,92 @@ mod tests {
         );
         // new_line should be absent (not set)
         assert!(
-            position.get("new_line").is_none()
-                || position["new_line"] == serde_json::Value::Null,
+            position.get("new_line").is_none() || position["new_line"] == serde_json::Value::Null,
             "new_line should be absent for Left-side comment"
         );
+    }
+
+    #[test]
+    fn should_send_line_range_for_multi_line_range_comment() {
+        // Visual/range comments must carry GitLab's `line_range` so the
+        // discussion anchors to the full selection instead of collapsing to
+        // the end line.
+        let repo = ForgeRepository::gitlab("gitlab.com", "owner", "repo");
+        let pr = make_pr_details(repo.clone());
+        let inline = InlineComment {
+            path: "src/lib.rs".into(),
+            line: 30,
+            side: GhSide::Right,
+            counterpart_line: None,
+            start_line: Some(25),
+            start_side: Some(GhSide::Right),
+            old_path: None,
+            body: "range comment".to_string(),
+            comment_id: "c-range".to_string(),
+        };
+        let response = r#"{"id":"disc-range","individual_note":false}"#.to_string();
+        let runner = RecordingRunner::new_with_responses(vec![response]);
+        let backend = GitLabGlabBackend::with_runner(Some(repo), runner);
+        let request = CreateReviewRequest {
+            event: crate::forge::submit::SubmitEvent::Comment,
+            commit_id: "headsha1",
+            body: "",
+            comments: &[inline],
+        };
+        backend.create_review(&pr, request).unwrap();
+        let calls = backend.runner.calls.borrow();
+        let (_, stdin) = &calls[0];
+        let body: serde_json::Value = serde_json::from_str(stdin.as_ref().unwrap()).unwrap();
+        let position = &body["position"];
+        assert_eq!(position["line_range"]["start"]["type"], "new");
+        assert_eq!(
+            position["line_range"]["start"]["new_line"],
+            serde_json::Value::Number(25.into())
+        );
+        assert_eq!(position["line_range"]["end"]["type"], "new");
+        assert_eq!(
+            position["line_range"]["end"]["new_line"],
+            serde_json::Value::Number(30.into())
+        );
+        // line_code is required by GitLab to anchor the endpoint.
+        assert!(position["line_range"]["start"]["line_code"].is_string());
+        assert!(position["line_range"]["end"]["line_code"].is_string());
+    }
+
+    #[test]
+    fn should_send_distinct_old_and_new_path_for_renamed_file() {
+        // Renamed files carry different old_path and new_path. GitLab needs
+        // both to anchor a position; collapsing them to the same string
+        // breaks comments on renamed files.
+        let repo = ForgeRepository::gitlab("gitlab.com", "owner", "repo");
+        let pr = make_pr_details(repo.clone());
+        let inline = InlineComment {
+            path: "src/new_name.rs".into(),
+            line: 5,
+            side: GhSide::Right,
+            counterpart_line: None,
+            start_line: None,
+            start_side: None,
+            old_path: Some("src/old_name.rs".into()),
+            body: "renamed file comment".to_string(),
+            comment_id: "c-rename".to_string(),
+        };
+        let response = r#"{"id":"disc-rename","individual_note":false}"#.to_string();
+        let runner = RecordingRunner::new_with_responses(vec![response]);
+        let backend = GitLabGlabBackend::with_runner(Some(repo), runner);
+        let request = CreateReviewRequest {
+            event: crate::forge::submit::SubmitEvent::Comment,
+            commit_id: "headsha1",
+            body: "",
+            comments: &[inline],
+        };
+        backend.create_review(&pr, request).unwrap();
+        let calls = backend.runner.calls.borrow();
+        let (_, stdin) = &calls[0];
+        let body: serde_json::Value = serde_json::from_str(stdin.as_ref().unwrap()).unwrap();
+        let position = &body["position"];
+        assert_eq!(position["old_path"], "src/old_name.rs");
+        assert_eq!(position["new_path"], "src/new_name.rs");
     }
 
     #[test]
@@ -1070,6 +1201,7 @@ mod tests {
             counterpart_line: Some(18), // old_lineno for this context line
             start_line: None,
             start_side: None,
+            old_path: None,
             body: "context comment".to_string(),
             comment_id: "c3".to_string(),
         };
@@ -1113,8 +1245,7 @@ mod tests {
 
     #[test]
     fn should_parse_gitlab_self_hosted_https() {
-        let repo =
-            parse_gitlab_remote_url("https://gitlab.example.com/owner/repo.git").unwrap();
+        let repo = parse_gitlab_remote_url("https://gitlab.example.com/owner/repo.git").unwrap();
         assert_eq!(
             repo,
             ForgeRepository::gitlab("gitlab.example.com", "owner", "repo")
@@ -1129,8 +1260,7 @@ mod tests {
 
     #[test]
     fn should_parse_gitlab_nested_group_remote_url() {
-        let repo =
-            parse_gitlab_remote_url("git@gitlab.com:technosylva/ai/synapse.git").unwrap();
+        let repo = parse_gitlab_remote_url("git@gitlab.com:technosylva/ai/synapse.git").unwrap();
         assert_eq!(repo.owner, "technosylva/ai");
         assert_eq!(repo.name, "synapse");
         assert_eq!(repo.slug(), "technosylva/ai/synapse");
@@ -1138,10 +1268,9 @@ mod tests {
 
     #[test]
     fn should_parse_gitlab_mr_url_target() {
-        let target = parse_pull_request_target_gitlab(
-            "https://gitlab.com/owner/repo/-/merge_requests/42",
-        )
-        .unwrap();
+        let target =
+            parse_pull_request_target_gitlab("https://gitlab.com/owner/repo/-/merge_requests/42")
+                .unwrap();
         assert_eq!(target.number, 42);
         let repo = target.repository.unwrap();
         assert_eq!(repo.host, "gitlab.com");

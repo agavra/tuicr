@@ -73,8 +73,10 @@ pub fn detect_gitlab_repository(repo_root: &Path) -> Option<ForgeRepository> {
 
 /// Detect the forge repository for the local checkout at `repo_root`.
 ///
-/// Tries GitHub (host must contain "github") first, then GitLab (host must
-/// contain "gitlab"). Returns `None` when no recognized remote is found.
+/// Tries GitLab first (host must contain "gitlab"); falls back to GitHub,
+/// which accepts any host so GitHub Enterprise remotes whose hostname does
+/// not literally contain "github" are still detected. Returns `None` when
+/// no remote can be parsed.
 pub fn detect_forge_repository(repo_root: &Path) -> Option<ForgeRepository> {
     let repo = Repository::discover(repo_root).ok()?;
     let mut all_urls: Vec<String> = Vec::new();
@@ -94,20 +96,19 @@ pub fn detect_forge_repository(repo_root: &Path) -> Option<ForgeRepository> {
         }
     }
 
-    // Try GitHub first (filter to hosts containing "github").
-    for url in &all_urls {
-        if let Some(parsed) = parse_github_remote_url(url)
-            && parsed.host.contains("github")
-        {
-            return Some(parsed);
-        }
-    }
-    // Then try GitLab (parse_gitlab_remote_url already filters by "gitlab" host).
+    // GitLab parser already filters to "gitlab" hosts, so trying it first
+    // won't claim GitHub Enterprise remotes.
     for url in &all_urls {
         if let Some(parsed) = parse_gitlab_remote_url(url) {
             return Some(parsed);
         }
     }
+    // GitHub fallback accepts any host (covers github.com and GHE hosts
+    // whose hostname does not literally contain "github").
+    for url in &all_urls {
+        if let Some(parsed) = parse_github_remote_url(url) {
+            return Some(parsed);
+        }
+    }
     None
 }
-

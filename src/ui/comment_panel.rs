@@ -594,7 +594,6 @@ mod tests {
             0,
             None,
             false,
-            
             80,
         );
 
@@ -622,7 +621,6 @@ mod tests {
             cursor_pos,
             None,
             false,
-            
             80,
         );
 
@@ -649,7 +647,6 @@ mod tests {
             cursor_pos,
             None,
             false,
-            
             80,
         );
 
@@ -677,7 +674,6 @@ mod tests {
             cursor_pos,
             None,
             false,
-            
             80,
         );
 
@@ -704,7 +700,6 @@ mod tests {
             cursor_pos,
             None,
             false,
-            
             80,
         );
 
@@ -732,7 +727,6 @@ mod tests {
             cursor_pos,
             None,
             false,
-            
             80,
         );
 

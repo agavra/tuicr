@@ -1639,9 +1639,10 @@ Match host github-work
             path: PathBuf::from("src/lib.rs"),
             line,
             side: GhSide::Right,
-                counterpart_line: None,
+            counterpart_line: None,
             start_line: None,
             start_side: None,
+            old_path: None,
             body: body.to_string(),
             comment_id: format!("cid-{line}"),
         }
