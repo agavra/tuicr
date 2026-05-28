@@ -1600,7 +1600,7 @@ mod remote_comments_snapshot_tests {
         );
     }
 
-    // Revision diffs with `wrap = true` render boxed file headers without a
+    // Revision diffs with `wrap = true` render the file-header rule without a
     // cursor gutter. The right-edge fill overlay must measure that exact row:
     // treating it like guttered diff content truncated `README.md [M]` to
     // `README` in `tuicr -r HEAD`.
@@ -1612,7 +1612,7 @@ mod remote_comments_snapshot_tests {
         let body = body_text(&draw_unified_diff(&mut app));
 
         assert!(
-            body.contains("║ README.md [M] "),
+            body.contains("═══ README.md [M] "),
             "expected full README.md file header in:\n{body}"
         );
     }
