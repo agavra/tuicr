@@ -607,15 +607,21 @@ fn parse_url_target(target: &str) -> Option<PullRequestTarget> {
     let owner = parts.next()?;
     let repo = parts.next()?;
     let segment = parts.next()?;
-    let number = if segment == "pull" {
+    let (number, repository) = if segment == "pull" {
         // GitHub: /<owner>/<repo>/pull/<n>
-        parts.next()?.parse::<u64>().ok()?
+        (
+            parts.next()?.parse::<u64>().ok()?,
+            ForgeRepository::github(host, owner, strip_git_suffix(repo)),
+        )
     } else if segment == "-" {
         // GitLab: /<owner>/<repo>/-/merge_requests/<n>
         if parts.next()? != "merge_requests" {
             return None;
         }
-        parts.next()?.parse::<u64>().ok()?
+        (
+            parts.next()?.parse::<u64>().ok()?,
+            ForgeRepository::gitlab(host, owner, strip_git_suffix(repo)),
+        )
     } else {
         return None;
     };
@@ -624,9 +630,7 @@ fn parse_url_target(target: &str) -> Option<PullRequestTarget> {
     }
 
     Some(PullRequestTarget::with_repository(
-        forge_repo_from_host(host, owner, strip_git_suffix(repo)),
-        number,
-        target,
+        repository, number, target,
     ))
 }
 
@@ -1172,6 +1176,18 @@ index 1111111..2222222 100644
         let target = parse_pull_request_target("https://github.com/agavra/tuicr/pull/125").unwrap();
         assert_eq!(target.number, 125);
         assert_eq!(target.repository.unwrap(), repo());
+    }
+
+    #[test]
+    fn parses_enterprise_pull_url_as_github_even_when_host_contains_gitlab() {
+        let target =
+            parse_pull_request_target("https://gitlab.ghe.company.com/agavra/tuicr/pull/125")
+                .unwrap();
+        let repository = target.repository.unwrap();
+        assert_eq!(target.number, 125);
+        assert_eq!(repository.kind, crate::forge::traits::ForgeKind::GitHub);
+        assert_eq!(repository.host, "gitlab.ghe.company.com");
+        assert_eq!(repository.slug(), "agavra/tuicr");
     }
 
     #[test]

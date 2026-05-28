@@ -7808,9 +7808,11 @@ impl App {
                     return;
                 }
                 let mut had_error = false;
+                let mut threads_loaded = false;
                 match threads {
                     Ok(t) => {
                         self.forge_review_threads = t;
+                        threads_loaded = true;
                     }
                     Err(e) => {
                         self.forge_review_threads = Vec::new();
@@ -7824,16 +7826,19 @@ impl App {
                     }
                     Err(e) => {
                         self.forge_review_summaries = Vec::new();
+                        had_error = true;
                         // Only surface the summary error if the threads call
                         // succeeded — otherwise the user already got a
                         // warning for the broader failure.
-                        if !had_error {
+                        if threads_loaded {
                             self.set_warning(format!("Failed to load remote reviews: {e}"));
                         }
                     }
                 }
-                self.prune_locked_comments();
-                let _ = self.save_current_session_merging_external();
+                if !had_error {
+                    self.prune_locked_comments();
+                    let _ = self.save_current_session_merging_external();
+                }
                 self.rebuild_annotations();
             }
         }
@@ -13563,6 +13568,34 @@ mod submit_flow_tests {
         review.line_comments.entry(line).or_default().push(comment);
     }
 
+    fn deliver_matching_pr_threads_event(
+        app: &mut App,
+        threads: std::result::Result<
+            Vec<crate::forge::remote_comments::RemoteReviewThread>,
+            String,
+        >,
+        summaries: std::result::Result<
+            Vec<crate::forge::remote_comments::RemoteReviewSummary>,
+            String,
+        >,
+    ) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.pr_threads_rx = Some(rx);
+        app.forge_review_threads_loading = true;
+        let pr_key = match &app.diff_source {
+            DiffSource::PullRequest(pr) => pr.key.clone(),
+            _ => panic!("expected PR mode"),
+        };
+        tx.send(PrThreadsEvent::Done {
+            repository: pr_key.repository,
+            pr_number: pr_key.number,
+            head_sha: pr_key.head_sha,
+            threads,
+            summaries,
+        })
+        .unwrap();
+    }
+
     #[test]
     fn should_use_subset_head_sha_as_commit_id_when_inline_selector_is_strict_subset() {
         // Regression for HTTP 422 when reviewing a subset of commits: the
@@ -14193,6 +14226,49 @@ mod submit_flow_tests {
         let surviving = review.line_comments.get(&12).unwrap();
         assert_eq!(surviving.len(), 1);
         assert_eq!(surviving[0].id, unlocked_id);
+    }
+
+    #[test]
+    fn should_keep_locked_line_comments_when_remote_thread_refetch_fails() {
+        let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+        let mut line_locked = line_comment(LineSide::New, Some(11), None);
+        line_locked.lifecycle_state = CommentLifecycleState::Submitted;
+        add_line_comment(&mut app, "src/lib.rs", 11, line_locked);
+
+        deliver_matching_pr_threads_event(
+            &mut app,
+            Err("network unavailable".to_string()),
+            Ok(Vec::new()),
+        );
+
+        app.poll_pr_threads_events();
+
+        let review = app.session.files.get(&PathBuf::from("src/lib.rs")).unwrap();
+        let saved = review.line_comments.get(&11).unwrap();
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].lifecycle_state, CommentLifecycleState::Submitted);
+    }
+
+    #[test]
+    fn should_keep_locked_review_comments_when_remote_summary_refetch_fails() {
+        let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+        let mut review_locked = Comment::new("summary".to_string(), CommentType::Note, None);
+        review_locked.lifecycle_state = CommentLifecycleState::Submitted;
+        app.session.review_comments.push(review_locked);
+
+        deliver_matching_pr_threads_event(
+            &mut app,
+            Ok(Vec::new()),
+            Err("graphql unavailable".to_string()),
+        );
+
+        app.poll_pr_threads_events();
+
+        assert_eq!(app.session.review_comments.len(), 1);
+        assert_eq!(
+            app.session.review_comments[0].lifecycle_state,
+            CommentLifecycleState::Submitted
+        );
     }
 
     #[test]
