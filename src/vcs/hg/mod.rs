@@ -667,7 +667,7 @@ mod tests {
 
         assert!(matches!(
             backend.get_working_tree_with_commits_diff(
-                &[whitespace_commit.id.clone()],
+                std::slice::from_ref(&whitespace_commit.id),
                 &SyntaxHighlighter::default()
             ),
             Err(TuicrError::NoChanges)
@@ -677,7 +677,7 @@ mod tests {
             .expect("Failed to write non-whitespace edit");
         let files = backend
             .get_working_tree_with_commits_diff(
-                &[whitespace_commit.id.clone()],
+                std::slice::from_ref(&whitespace_commit.id),
                 &SyntaxHighlighter::default(),
             )
             .expect("non-whitespace edit should still produce a diff");
