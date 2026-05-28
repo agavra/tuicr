@@ -1,0 +1,151 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Syntax theme for the built-in tokyo-night-day tuicr theme. Colors are drawn
+  from the folke/tokyonight.nvim "day" palette so syntax tokens stay in-family
+  with the chrome. Tokens that would be too washed-out on the #e1e2e7
+  background (comments, strings) snap to the palette's nearest darker member:
+    comment  #848cb5 -> dark5  #68709a
+    string   #587539 (green) -> green1 #387068
+  Functions stay on `blue` #2e7de9 (the palette's function color and its
+  darkest true blue; the only darker blues are the cyan family, which would
+  collide with types = cyan #007197).
+-->
+<plist version="1.0">
+<dict>
+  <key>name</key>
+  <string>Tokyo Night Day</string>
+  <key>settings</key>
+  <array>
+    <dict>
+      <key>settings</key>
+      <dict>
+        <key>foreground</key>
+        <string>#3760bf</string>
+        <key>background</key>
+        <string>#e1e2e7</string>
+        <key>caret</key>
+        <string>#b15c00</string>
+        <key>selection</key>
+        <string>#c4c8da</string>
+        <key>lineHighlight</key>
+        <string>#c4c8da</string>
+      </dict>
+    </dict>
+    <dict>
+      <key>name</key>
+      <string>Comment</string>
+      <key>scope</key>
+      <string>comment, punctuation.definition.comment, comment.line.documentation, comment.block.documentation</string>
+      <key>settings</key>
+      <dict>
+        <key>foreground</key>
+        <string>#68709a</string>
+        <key>fontStyle</key>
+        <string>italic</string>
+      </dict>
+    </dict>
+    <dict>
+      <key>name</key>
+      <string>Keyword and storage</string>
+      <key>scope</key>
+      <string>keyword, keyword.control, keyword.operator, storage, storage.modifier</string>
+      <key>settings</key>
+      <dict>
+        <key>foreground</key>
+        <string>#7847bd</string>
+      </dict>
+    </dict>
+    <dict>
+      <key>name</key>
+      <string>String</string>
+      <key>scope</key>
+      <string>string, string.quoted, string.template, constant.character, punctuation.definition.string</string>
+      <key>settings</key>
+      <dict>
+        <key>foreground</key>
+        <string>#387068</string>
+      </dict>
+    </dict>
+    <dict>
+      <key>name</key>
+      <string>Constant and number</string>
+      <key>scope</key>
+      <string>constant, constant.numeric, constant.language, support.constant</string>
+      <key>settings</key>
+      <dict>
+        <key>foreground</key>
+        <string>#b15c00</string>
+      </dict>
+    </dict>
+    <dict>
+      <key>name</key>
+      <string>Function and method names</string>
+      <key>scope</key>
+      <string>entity.name.function, support.function, meta.function-call, variable.function, meta.function.call entity.name.function, entity.name.function.call</string>
+      <key>settings</key>
+      <dict>
+        <key>foreground</key>
+        <string>#2e7de9</string>
+      </dict>
+    </dict>
+    <dict>
+      <key>name</key>
+      <string>Types</string>
+      <key>scope</key>
+      <string>entity.name.type, support.type, storage.type, entity.name.class, support.class</string>
+      <key>settings</key>
+      <dict>
+        <key>foreground</key>
+        <string>#007197</string>
+      </dict>
+    </dict>
+    <dict>
+      <key>name</key>
+      <string>Variables and parameters</string>
+      <key>scope</key>
+      <string>variable, variable.parameter, variable.other, support.variable</string>
+      <key>settings</key>
+      <dict>
+        <key>foreground</key>
+        <string>#3760bf</string>
+      </dict>
+    </dict>
+    <dict>
+      <key>name</key>
+      <string>Tags and entity names</string>
+      <key>scope</key>
+      <string>entity.name.tag, entity.other.attribute-name, meta.tag</string>
+      <key>settings</key>
+      <dict>
+        <key>foreground</key>
+        <string>#2e7de9</string>
+      </dict>
+    </dict>
+    <dict>
+      <key>name</key>
+      <string>Punctuation and operators</string>
+      <key>scope</key>
+      <string>punctuation, meta.brace, keyword.operator.delimiter</string>
+      <key>settings</key>
+      <dict>
+        <key>foreground</key>
+        <string>#6172b0</string>
+      </dict>
+    </dict>
+    <dict>
+      <key>name</key>
+      <string>Invalid</string>
+      <key>scope</key>
+      <string>invalid, invalid.illegal</string>
+      <key>settings</key>
+      <dict>
+        <key>foreground</key>
+        <string>#e1e2e7</string>
+        <key>background</key>
+        <string>#f52a65</string>
+      </dict>
+    </dict>
+  </array>
+</dict>
+</plist>

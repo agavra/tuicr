@@ -927,8 +927,10 @@ impl Theme {
             syntax_add_bg: Color::Rgb(216, 230, 236), // #d8e6ec
             syntax_del_bg: Color::Rgb(245, 213, 217), // #f5d5d9
 
-            // Light syntect base with muted blue feel, matching the storm sibling's choice of a base16 family
-            syntax_theme: SyntaxThemeSource::Embedded(EmbeddedThemeName::Base16OceanLight),
+            // Bundled tmTheme drawn from the tokyo-night-day palette. The
+            // previous Base16 Ocean Light pick washed out comments, strings,
+            // and method names on the #e1e2e7 background.
+            syntax_theme: SyntaxThemeSource::Custom(Box::new(tokyo_night_day_syntax_theme())),
 
             file_added: green,
             file_modified: yellow,
@@ -1236,6 +1238,12 @@ struct GruvboxFlavor {
 
 fn rgb(r: u8, g: u8, b: u8) -> Color {
     Color::Rgb(r, g, b)
+}
+
+fn tokyo_night_day_syntax_theme() -> syntect::highlighting::Theme {
+    const BYTES: &[u8] = include_bytes!("tokyo-night-day.tmTheme");
+    ThemeSet::load_from_reader(&mut std::io::Cursor::new(BYTES))
+        .expect("bundled tokyo-night-day.tmTheme must parse")
 }
 
 fn blend(base: Color, accent: Color, accent_percent: u8) -> Color {
@@ -2802,5 +2810,11 @@ mode_bg = "#82aaff"
     fn should_return_accent_for_non_rgb_blend_inputs() {
         let accent = Color::Rgb(100, 110, 120);
         assert_eq!(blend(Color::Reset, accent, 50), accent);
+    }
+
+    #[test]
+    fn should_use_bundled_syntax_theme_for_tokyo_night_day() {
+        let theme = Theme::tokyo_night_day();
+        assert!(theme.uses_custom_syntax_theme());
     }
 }
