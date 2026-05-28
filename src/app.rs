@@ -4647,13 +4647,15 @@ impl App {
     }
 
     pub fn center_cursor(&mut self) {
+        // Use viewport_height (physical rows, stable) rather than visible_line_count
+        // (changes after each render when word wrap is on) so repeated zz presses
+        // are idempotent.
         let viewport = self.diff_state.viewport_height.max(1);
-        let half_viewport = viewport / 2;
         let max_scroll = self.max_scroll_offset();
         self.diff_state.scroll_offset = self
             .diff_state
             .cursor_line
-            .saturating_sub(half_viewport)
+            .saturating_sub(viewport / 2)
             .min(max_scroll);
     }
 
@@ -4668,13 +4670,20 @@ impl App {
     }
 
     pub fn cursor_to_bottom(&mut self) {
-        let visible_lines = self.diff_state.effective_visible_lines();
+        // Use viewport_height for the same reason as center_cursor: stable across
+        // renders, so repeated zb presses are idempotent.
+        let viewport = self.diff_state.viewport_height.max(1);
         let scroll_margin = self.diff_state.effective_scroll_margin(self.scroll_offset);
         let max_scroll = self.max_scroll_offset();
+        // Cap so the last navigable line (max_cursor_line) is the furthest down
+        // the viewport ever shows. Using total_lines would include the trailing
+        // Spacing separator, leaving one blank row below the cursor.
+        let no_empty_space = (self.max_cursor_line() + 1).saturating_sub(viewport);
         self.diff_state.scroll_offset = self
             .diff_state
             .cursor_line
-            .saturating_sub(visible_lines.saturating_sub(1 + scroll_margin))
+            .saturating_sub(viewport.saturating_sub(1 + scroll_margin))
+            .min(no_empty_space)
             .min(max_scroll);
     }
 
@@ -5272,11 +5281,11 @@ impl App {
         if let Some(file_idx) = annotation_file_idx(&self.line_annotations[idx]) {
             self.diff_state.current_file_idx = file_idx;
         }
-        let viewport = self.diff_state.viewport_height.max(1);
+        let visible = self.diff_state.effective_visible_lines();
         if idx < self.diff_state.scroll_offset {
             self.diff_state.scroll_offset = idx;
-        } else if idx >= self.diff_state.scroll_offset + viewport {
-            self.diff_state.scroll_offset = idx + 1 - viewport;
+        } else if idx >= self.diff_state.scroll_offset + visible {
+            self.diff_state.scroll_offset = idx + 1 - visible;
         }
     }
 
@@ -5543,11 +5552,22 @@ impl App {
     }
 
     pub fn jump_to_bottom(&mut self) {
-        let max_line = self.max_cursor_line();
-        self.diff_state.cursor_line = max_line;
-        // Position so the last navigable line is at the bottom of the viewport
-        let viewport = self.diff_state.viewport_height.max(1);
-        self.diff_state.scroll_offset = (max_line + 1).saturating_sub(viewport);
+        self.diff_state.cursor_line = self.max_cursor_line();
+        // shift-G lands on the last actual diff-content line, not on the
+        // EOF-gap expand controls that sit between the last hunk and Spacing.
+        while self.diff_state.cursor_line > 0
+            && matches!(
+                self.line_annotations.get(self.diff_state.cursor_line),
+                Some(AnnotatedLine::Expander { .. }) | Some(AnnotatedLine::HiddenLines { .. })
+            )
+        {
+            self.diff_state.cursor_line -= 1;
+        }
+        let cursor = self.diff_state.cursor_line;
+        let visible = self.diff_state.effective_visible_lines();
+        self.diff_state.scroll_offset = (cursor + 1)
+            .saturating_sub(visible)
+            .min(self.max_scroll_offset());
         self.update_current_file_from_cursor();
     }
 
@@ -5729,7 +5749,12 @@ impl App {
     }
 
     fn file_render_height(&self, file_idx: usize, file: &DiffFile) -> usize {
-        let header_lines = 3; // FileHeaderBorder + FileHeader + FileHeaderBorder
+        // Unified: 3-line box (border + name + border). SBS: single ═══ line.
+        let header_lines = if self.diff_view_mode == DiffViewMode::Unified {
+            3
+        } else {
+            1
+        };
         if self.session.is_file_reviewed(file.display_path()) {
             return header_lines;
         }
@@ -8881,6 +8906,23 @@ impl App {
         self.expanded_top.remove(&gap_id);
         self.expanded_bottom.remove(&gap_id);
         self.rebuild_annotations();
+        let max = self.max_cursor_line();
+        if self.diff_state.cursor_line > max {
+            // Land on the last control annotation for this gap so the cursor
+            // stays at the fold location rather than jumping to an unrelated line.
+            let gap_bottom = self
+                .line_annotations
+                .iter()
+                .rposition(|a| match a {
+                    AnnotatedLine::Expander { gap_id: gid, .. }
+                    | AnnotatedLine::HiddenLines { gap_id: gid, .. } => gid == &gap_id,
+                    _ => false,
+                })
+                .unwrap_or(max)
+                .min(max);
+            self.diff_state.cursor_line = gap_bottom;
+            self.ensure_cursor_visible();
+        }
     }
 
     /// Clear all expanded gaps (called when reloading diffs)
@@ -8983,16 +9025,21 @@ impl App {
             }
             let path = file.display_path();
 
-            // File header box (only when shown — same gate as the renderer).
-            // The trailing Spacing from the previous file provides the
-            // blank line above, so no extra Spacing is needed here.
+            // File header: unified mode uses a 3-line box (border+name+border),
+            // side-by-side uses a single ═══ header line.
+            // The annotation count must match the renderer's visual line count.
             if !self.is_single_file_view {
-                self.line_annotations
-                    .push(AnnotatedLine::FileHeaderBorder { file_idx });
-                self.line_annotations
-                    .push(AnnotatedLine::FileHeader { file_idx });
-                self.line_annotations
-                    .push(AnnotatedLine::FileHeaderBorder { file_idx });
+                if self.diff_view_mode == DiffViewMode::Unified {
+                    self.line_annotations
+                        .push(AnnotatedLine::FileHeaderBorder { file_idx });
+                    self.line_annotations
+                        .push(AnnotatedLine::FileHeader { file_idx });
+                    self.line_annotations
+                        .push(AnnotatedLine::FileHeaderBorder { file_idx });
+                } else {
+                    self.line_annotations
+                        .push(AnnotatedLine::FileHeader { file_idx });
+                }
             }
 
             // If reviewed, skip all content for this file. Single-file
@@ -11800,6 +11847,311 @@ mod scroll_behavior_tests {
         };
         let margin = state.effective_scroll_margin(0);
         assert_eq!(margin, 0, "margin should be 0 when scroll_offset is 0");
+    }
+
+    /// Build a test App with `n_files` files, each containing `n_lines` context
+    /// lines, in the given view mode. Used to test multi-file navigation and
+    /// annotation-count invariants.
+    fn build_multifile_scroll_app(
+        n_files: usize,
+        n_lines: usize,
+        viewport: usize,
+        mode: DiffViewMode,
+    ) -> App {
+        let files: Vec<DiffFile> = (0..n_files)
+            .map(|i| {
+                let lines: Vec<DiffLine> = (1..=n_lines)
+                    .map(|j| DiffLine {
+                        origin: crate::model::LineOrigin::Context,
+                        content: format!("file {i} line {j}"),
+                        old_lineno: Some(j as u32),
+                        new_lineno: Some(j as u32),
+                        highlighted_spans: None,
+                    })
+                    .collect();
+                let hunk = DiffHunk {
+                    header: "@@ -1,N +1,N @@".to_string(),
+                    lines,
+                    old_start: 1,
+                    old_count: n_lines as u32,
+                    new_start: 1,
+                    new_count: n_lines as u32,
+                };
+                DiffFile {
+                    old_path: None,
+                    new_path: Some(PathBuf::from(format!("file{i}.rs"))),
+                    status: FileStatus::Modified,
+                    hunks: vec![hunk],
+                    is_binary: false,
+                    is_too_large: false,
+                    is_commit_message: false,
+                    content_hash: i as u64,
+                }
+            })
+            .collect();
+
+        let vcs_info = VcsInfo {
+            root_path: PathBuf::from("/tmp"),
+            head_commit: "abc".to_string(),
+            branch_name: Some("main".to_string()),
+            vcs_type: VcsType::Git,
+        };
+        let session = ReviewSession::new(
+            vcs_info.root_path.clone(),
+            vcs_info.head_commit.clone(),
+            vcs_info.branch_name.clone(),
+            SessionDiffSource::WorkingTree,
+        );
+
+        let mut app = App::build(
+            Box::new(DummyVcs {
+                info: vcs_info.clone(),
+            }),
+            vcs_info,
+            Theme::dark(),
+            None,
+            false,
+            files,
+            session,
+            DiffSource::WorkingTree,
+            InputMode::Normal,
+            Vec::new(),
+            None,
+            None,
+        )
+        .expect("failed to build test app");
+
+        app.diff_state.viewport_height = viewport;
+        app.diff_state.visible_line_count = viewport;
+
+        if mode != DiffViewMode::Unified {
+            app.diff_view_mode = mode;
+            app.rebuild_annotations();
+        }
+
+        app
+    }
+
+    // --- Annotation count invariants ---
+    // These guard the rule that annotation_count == visual_line_count per file
+    // header. Violating it shifts cursor_indicator's line_idx vs cursor_line,
+    // causing cursor to appear on the wrong row or j/k to overshoot.
+
+    #[test]
+    fn file_header_annotations_unified_has_borders() {
+        let app = build_multifile_scroll_app(2, 5, 20, DiffViewMode::Unified);
+        let borders = app
+            .line_annotations
+            .iter()
+            .filter(|a| matches!(a, AnnotatedLine::FileHeaderBorder { .. }))
+            .count();
+        // 2 borders (top + bottom) × 2 files
+        assert_eq!(
+            borders, 4,
+            "unified: 2 FileHeaderBorder annotations per file"
+        );
+    }
+
+    #[test]
+    fn file_header_annotations_sbs_has_no_borders() {
+        let app = build_multifile_scroll_app(2, 5, 20, DiffViewMode::SideBySide);
+        let borders = app
+            .line_annotations
+            .iter()
+            .filter(|a| matches!(a, AnnotatedLine::FileHeaderBorder { .. }))
+            .count();
+        assert_eq!(
+            borders, 0,
+            "SBS: no FileHeaderBorder annotations (1 visual line per header)"
+        );
+        let headers = app
+            .line_annotations
+            .iter()
+            .filter(|a| matches!(a, AnnotatedLine::FileHeader { .. }))
+            .count();
+        assert_eq!(headers, 2, "SBS: exactly 1 FileHeader annotation per file");
+    }
+
+    // --- zz / zb stability across render frames ---
+    // The real-world bug: center_cursor / cursor_to_bottom used
+    // effective_visible_lines() (which returns visible_line_count, set during
+    // the render pass) instead of viewport_height (physical rows, stable).
+    // visible_line_count can differ from viewport_height when word-wrap is on
+    // because wrapped lines consume more rows than raw annotation count.
+    // Simulating that: set visible_line_count to a value different from
+    // viewport_height between calls to mimic two consecutive render frames.
+    //
+    // Old code: scroll = f(visible_line_count). If that changes frame-to-frame,
+    // scroll drifts on repeated zz/zb presses.
+    // New code: scroll = f(viewport_height). viewport_height is set once per
+    // physical resize event, so it is stable across render frames.
+
+    #[test]
+    fn zz_stable_when_visible_count_diverges_from_viewport() {
+        let mut app = build_scroll_app(40, 20, 5);
+        app.diff_state.cursor_line = app.max_cursor_line();
+
+        // Frame 1: word-wrap made content taller → visible_line_count < viewport
+        app.diff_state.visible_line_count = 18;
+        app.center_cursor();
+        let scroll1 = app.diff_state.scroll_offset;
+
+        // Frame 2: scroll changed, render recalculates visible_line_count
+        app.diff_state.visible_line_count = 20;
+        app.center_cursor();
+        assert_eq!(
+            app.diff_state.scroll_offset, scroll1,
+            "zz must not drift when visible_line_count changes between frames"
+        );
+    }
+
+    #[test]
+    fn zb_stable_when_visible_count_diverges_from_viewport() {
+        let mut app = build_scroll_app(40, 20, 5);
+        app.diff_state.cursor_line = app.max_cursor_line();
+
+        app.diff_state.visible_line_count = 18;
+        app.cursor_to_bottom();
+        let scroll1 = app.diff_state.scroll_offset;
+
+        app.diff_state.visible_line_count = 20;
+        app.cursor_to_bottom();
+        assert_eq!(
+            app.diff_state.scroll_offset, scroll1,
+            "zb must not drift when visible_line_count changes between frames"
+        );
+    }
+
+    // --- zb trailing-row correctness ---
+    // Guards against the off-by-one where the no_empty_space cap used
+    // total_lines() instead of max_cursor_line()+1, which left the trailing
+    // Spacing annotation as the last visible viewport row.
+
+    #[test]
+    fn zb_no_trailing_spacing_row() {
+        let mut app = build_scroll_app(40, 20, 5);
+        let last = app.max_cursor_line();
+        app.diff_state.cursor_line = last;
+        app.cursor_to_bottom();
+        let bottom_row = app.diff_state.scroll_offset + app.diff_state.viewport_height - 1;
+        let annotation = app.line_annotations.get(bottom_row);
+        assert!(
+            !matches!(annotation, Some(AnnotatedLine::Spacing)),
+            "Spacing must not be the last visible row after zb; bottom_row={bottom_row}, annotation={annotation:?}"
+        );
+    }
+
+    // --- total_lines consistency ---
+    // total_lines() must always equal line_annotations.len(). Any mismatch
+    // means scroll offsets and cursor positions address wrong annotations.
+
+    #[test]
+    fn total_lines_equals_annotation_count_unified() {
+        let app = build_multifile_scroll_app(2, 5, 20, DiffViewMode::Unified);
+        assert_eq!(
+            app.total_lines(),
+            app.line_annotations.len(),
+            "unified: total_lines() must equal annotation count"
+        );
+    }
+
+    #[test]
+    fn total_lines_equals_annotation_count_sbs() {
+        let app = build_multifile_scroll_app(2, 5, 20, DiffViewMode::SideBySide);
+        assert_eq!(
+            app.total_lines(),
+            app.line_annotations.len(),
+            "SBS: total_lines() must equal annotation count"
+        );
+    }
+
+    // --- Decoration invariant ---
+    // After every cursor_down/cursor_up, the cursor must not rest on a
+    // decoration (Spacing, FileHeader, FileHeaderBorder).
+    // Note: skip_decoration_forward still works correctly regardless of how
+    // many decoration annotations are pushed, so these tests do NOT catch the
+    // original 3-vs-1 SBS header annotation bug directly. They guard future
+    // regressions where skip_decoration_forward is removed or narrowed.
+
+    fn is_decoration_annotation(a: &AnnotatedLine) -> bool {
+        matches!(
+            a,
+            AnnotatedLine::Spacing
+                | AnnotatedLine::FileHeader { .. }
+                | AnnotatedLine::FileHeaderBorder { .. }
+        )
+    }
+
+    #[test]
+    fn cursor_never_lands_on_decoration_unified() {
+        let mut app = build_multifile_scroll_app(3, 10, 30, DiffViewMode::Unified);
+        let max = app.max_cursor_line();
+        app.diff_state.cursor_line = 0;
+
+        // Walk down to end
+        loop {
+            let ann = &app.line_annotations[app.diff_state.cursor_line];
+            assert!(
+                !is_decoration_annotation(ann),
+                "cursor at {} is a decoration after cursor_down: {:?}",
+                app.diff_state.cursor_line,
+                ann
+            );
+            if app.diff_state.cursor_line == max {
+                break;
+            }
+            app.cursor_down(1);
+        }
+
+        // Walk back up to start
+        loop {
+            let ann = &app.line_annotations[app.diff_state.cursor_line];
+            assert!(
+                !is_decoration_annotation(ann),
+                "cursor at {} is a decoration after cursor_up: {:?}",
+                app.diff_state.cursor_line,
+                ann
+            );
+            if app.diff_state.cursor_line == 0 {
+                break;
+            }
+            app.cursor_up(1);
+        }
+    }
+
+    #[test]
+    fn cursor_never_lands_on_decoration_sbs() {
+        let mut app = build_multifile_scroll_app(3, 10, 30, DiffViewMode::SideBySide);
+        let max = app.max_cursor_line();
+        app.diff_state.cursor_line = 0;
+
+        loop {
+            let ann = &app.line_annotations[app.diff_state.cursor_line];
+            assert!(
+                !is_decoration_annotation(ann),
+                "cursor at {} is a decoration after cursor_down: {:?}",
+                app.diff_state.cursor_line,
+                ann
+            );
+            if app.diff_state.cursor_line == max {
+                break;
+            }
+            app.cursor_down(1);
+        }
+
+        loop {
+            let ann = &app.line_annotations[app.diff_state.cursor_line];
+            assert!(
+                !is_decoration_annotation(ann),
+                "cursor at {} is a decoration after cursor_up: {:?}",
+                app.diff_state.cursor_line,
+                ann
+            );
+            if app.diff_state.cursor_line == 0 {
+                break;
+            }
+            app.cursor_up(1);
+        }
     }
 }
 
