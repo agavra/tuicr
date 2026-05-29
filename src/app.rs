@@ -51,6 +51,10 @@ fn create_forge_backend(
             use crate::forge::gitlab::GitLabGlabBackend;
             Box::new(GitLabGlabBackend::new(Some(repo.clone())).with_local_checkout(local_checkout))
         }
+        ForgeKind::Bitbucket => {
+            use crate::forge::bitbucket::BitbucketBktBackend;
+            Box::new(BitbucketBktBackend::new(Some(repo.clone())).with_local_checkout(local_checkout))
+        }
     }
 }
 
@@ -2252,20 +2256,13 @@ impl App {
         false
     }
 
-    /// Detect a GitHub forge repository from the local checkout, if any.
+        /// Detect a forge repository from the local checkout, if any.
     /// Lazily called during startup — running this synchronously is fine
     /// because it only reads local config, never the network.
+    /// Tries GitHub first (existing), then Bitbucket.
     fn detect_forge_repository(&mut self) {
-        // `--repo-url` short-circuits detection: the user has told us
-        // exactly which repo to target, so skip both the local-remote
-        // probe and the `gh api` parent lookup that runs on PR-tab entry.
-        if let Some(override_repo) = self.repo_url_override.clone() {
-            self.forge_repository = Some(override_repo.clone());
-            self.pr_tab = PullRequestsTab::new(Some(override_repo));
-            self.canonical_resolved = true;
-            return;
-        }
-        let repo = crate::forge::detect_forge_repository(&self.vcs_info.root_path);
+        let repo = crate::forge::detect_github_repository(&self.vcs_info.root_path)
+            .or_else(|| crate::forge::detect_bitbucket_repository(&self.vcs_info.root_path));
         self.forge_repository = repo.clone();
         self.pr_tab = PullRequestsTab::new(repo);
     }
@@ -2560,6 +2557,9 @@ impl App {
     }
 
     /// Direct-entry PR open: `tuicr pr <target>`.
+    ///
+    /// Detects the forge backend (GitHub or Bitbucket) from the target or
+    /// local checkout, then opens the PR and prepares review state.
     pub fn new_from_pr_target(
         theme: Theme,
         comment_type_configs: Option<Vec<CommentTypeConfig>>,
@@ -2605,7 +2605,7 @@ impl App {
                 None
             }
         });
-        let target_repo = parsed
+        let _target_repo = parsed
             .repository
             .clone()
             .or_else(|| repo_url_override.clone())
@@ -2619,24 +2619,15 @@ impl App {
                 )
             })?;
 
-        // Use the local checkout for `.tuicrignore` only when it matches the
-        // PR's target repository — using a foreign repo's checkout would
-        // mis-filter the PR diff.
-        let local_checkout_for_target = local_repo_root.as_deref().and_then(|root| {
-            let detected = crate::forge::detect_forge_repository(root)?;
-            if detected == target_repo {
-                Some(root.to_path_buf())
-            } else {
-                None
-            }
-        });
+        // Try GitHub parse first, then Bitbucket.
+        let (parsed, backend, target_repo, local_checkout) =
+            Self::resolve_pr_target(target, local_repo_root.as_deref(), &theme)?;
 
-        let backend = create_forge_backend(&target_repo, local_checkout_for_target.clone());
         let highlighter = theme.syntax_highlighter();
         let mut opened = open_pull_request(
             backend.as_ref(),
             parsed,
-            local_checkout_for_target.as_deref(),
+            local_checkout.as_deref(),
             highlighter,
         )?;
 
@@ -2650,12 +2641,8 @@ impl App {
             branch_name: Some(opened.details.head_ref_name.clone()),
             vcs_type: VcsType::File,
         };
-        // FileBackend acts as a no-op VCS placeholder; PR context expansion
-        // routes through the forge backend, not the VCS box.
         let vcs: Box<dyn VcsBackend> = Box::new(PrNoopVcs::new(vcs_info.clone()));
 
-        // Snapshot the PR details before consuming `opened` so we can kick
-        // off the remote-thread fetch after `Self::build` returns.
         let details_for_threads = opened.details.clone();
         let mut app = Self::build(
             vcs,
@@ -2686,10 +2673,175 @@ impl App {
             let reason = pr.read_only_reason().unwrap_or("read only");
             app.set_warning(format!("This PR is {reason} — review is read-only"));
         }
-        // Spawn thread-fetch on startup; the main event loop will drain
-        // the receiver via `poll_pr_threads_events` once it begins.
-        app.spawn_pr_threads_fetch(&details_for_threads, local_checkout_for_target);
+        app.spawn_pr_threads_fetch(&details_for_threads, local_checkout);
         Ok(app)
+    }
+
+    /// Resolve a PR target string to a parsed target, forge backend, and
+    /// local checkout path. Tries GitHub first, then Bitbucket.
+    fn resolve_pr_target(
+        target: &str,
+        local_repo_root: Option<&Path>,
+        theme: &Theme,
+    ) -> Result<(
+        crate::forge::traits::PullRequestTarget,
+        Box<dyn ForgeBackend>,
+        ForgeRepository,
+        Option<PathBuf>,
+    )> {
+        // Try GitHub first, fall through to Bitbucket if resolution fails.
+        if let Ok(parsed) = crate::forge::github::gh::parse_pull_request_target(target) {
+            if let Ok(result) = Self::resolve_github_pr(parsed, local_repo_root, theme) {
+                return Ok(result);
+            }
+        }
+        // Try Bitbucket.
+        if let Some(parsed) = Self::parse_bitbucket_target(target) {
+            return Self::resolve_bitbucket_pr(parsed, local_repo_root, theme);
+        }
+        Err(TuicrError::Forge(
+            "Malformed pull request target. \
+             Use <number>, <owner>/<repo>#<number>, or a full PR URL.".to_string(),
+        ))
+    }
+
+    /// Parse a Bitbucket-specific PR target string.
+    /// Supports: `<number>`, `<workspace>/<repo>#<number>`, `<host>/<workspace>/<repo>#<number>`.
+    fn parse_bitbucket_target(target: &str) -> Option<crate::forge::traits::PullRequestTarget> {
+        let trimmed = target.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        // Numeric target.
+        if trimmed.chars().all(|ch| ch.is_ascii_digit()) {
+            let number = trimmed.parse::<u64>().ok()?;
+            if number == 0 {
+                return None;
+            }
+            return Some(crate::forge::traits::PullRequestTarget::number(number, trimmed));
+        }
+        // owner/repo#N or host/owner/repo#N.
+        let (repo_part, number_part) = trimmed.split_once('#')?;
+        let number = number_part.parse::<u64>().ok()?;
+        if number == 0 {
+            return None;
+        }
+        let parts: Vec<&str> = repo_part
+            .split('/')
+            .filter(|p| !p.is_empty())
+            .collect();
+        let repo = match parts.as_slice() {
+            [owner, repo] => ForgeRepository::bitbucket(
+                "bitbucket.org".to_string(),
+                owner.to_string(),
+                repo.strip_suffix(".git").unwrap_or(repo),
+            ),
+            [host, owner, repo] => ForgeRepository::bitbucket(
+                host.to_string(),
+                owner.to_string(),
+                repo.strip_suffix(".git").unwrap_or(repo),
+            ),
+            _ => return None,
+        };
+        Some(crate::forge::traits::PullRequestTarget::with_repository(
+            repo, number, trimmed,
+        ))
+    }
+
+    /// Resolve a GitHub PR target.
+    fn resolve_github_pr(
+        parsed: crate::forge::traits::PullRequestTarget,
+        local_repo_root: Option<&Path>,
+        _theme: &Theme,
+    ) -> Result<(
+        crate::forge::traits::PullRequestTarget,
+        Box<dyn ForgeBackend>,
+        ForgeRepository,
+        Option<PathBuf>,
+    )> {
+        use crate::forge::github::gh::GitHubGhBackend;
+        let local_repo_root = local_repo_root.map(PathBuf::from);
+        let default_repo = local_repo_root
+            .as_deref()
+            .and_then(crate::forge::detect_github_repository);
+        let target_repo = parsed
+            .repository
+            .clone()
+            .or_else(|| default_repo.clone())
+            .ok_or_else(|| {
+                TuicrError::Forge(
+                    "tuicr pr <number> requires a local GitHub remote. \
+                     Use owner/repo#N or a full PR URL outside a checkout."
+                        .to_string(),
+                )
+            })?;
+
+        let local_checkout_for_target = local_repo_root.as_deref().and_then(|root| {
+            let detected = crate::forge::detect_github_repository(root)?;
+            if detected == target_repo {
+                Some(root.to_path_buf())
+            } else {
+                None
+            }
+        });
+
+        let backend = Box::new(
+            GitHubGhBackend::new(Some(target_repo.clone()))
+                .with_local_checkout(local_checkout_for_target.clone()),
+        );
+        Ok((parsed, backend, target_repo, local_checkout_for_target))
+    }
+
+    /// Resolve a Bitbucket PR target.
+    fn resolve_bitbucket_pr(
+        parsed: crate::forge::traits::PullRequestTarget,
+        local_repo_root: Option<&Path>,
+        _theme: &Theme,
+    ) -> Result<(
+        crate::forge::traits::PullRequestTarget,
+        Box<dyn ForgeBackend>,
+        ForgeRepository,
+        Option<PathBuf>,
+    )> {
+        use crate::forge::bitbucket::BitbucketBktBackend;
+        let local_repo_root = local_repo_root.map(PathBuf::from);
+        let default_repo = local_repo_root
+            .as_deref()
+            .and_then(crate::forge::detect_bitbucket_repository);
+        let target_repo = parsed
+            .repository
+            .clone()
+            .or_else(|| default_repo.clone())
+            .ok_or_else(|| {
+                TuicrError::Forge(
+                    "tuicr pr <number> requires a local Bitbucket remote. \
+                     Use workspace/repo#N or a full PR URL outside a checkout."
+                        .to_string(),
+                )
+            })?;
+
+        let local_checkout_for_target = local_repo_root.as_deref().and_then(|root| {
+            let detected = crate::forge::detect_bitbucket_repository(root)?;
+            if detected == target_repo {
+                Some(root.to_path_buf())
+            } else {
+                None
+            }
+        });
+
+        let backend = Box::new(
+            BitbucketBktBackend::new(Some(target_repo.clone()))
+                .with_local_checkout(local_checkout_for_target.clone()),
+        );
+        Ok((parsed, backend, target_repo, local_checkout_for_target))
+    }
+
+    /// Create the appropriate forge backend for a repository based on its kind.
+    fn make_forge_backend(
+        repository: ForgeRepository,
+        local_checkout: Option<PathBuf>,
+    ) -> Box<dyn ForgeBackend> {
+        create_forge_backend(&repository, local_checkout)
     }
 
     /// Re-enter PR mode after we've already opened a PR via the selector.
@@ -3033,7 +3185,7 @@ impl App {
         let head_sha = current.key.head_sha.clone();
         let base_sha = current.base_sha.clone();
         std::thread::spawn(move || {
-            let backend = create_forge_backend(&repository, local_checkout);
+            let backend = Self::make_forge_backend(repository.clone(), local_checkout);
             let details = crate::forge::traits::PullRequestDetails {
                 repository: repository.clone(),
                 number: pr_number,
@@ -3181,7 +3333,7 @@ impl App {
         let repository = current.key.repository.clone();
         let pr_number = current.key.number;
         std::thread::spawn(move || {
-            let backend = create_forge_backend(&repository, local_checkout);
+            let backend = Self::make_forge_backend(repository.clone(), local_checkout);
             let target =
                 PullRequestTarget::with_repository(repository, pr_number, pr_number.to_string());
             let outcome = fetch_pr_data(backend.as_ref(), target).map_err(|e| e.to_string());
@@ -3252,7 +3404,10 @@ impl App {
             let _ = self.save_current_session_merging_external();
             let details_for_threads = opened.details.clone();
             Self::load_or_apply_pr_session(&mut opened);
-            let backend = create_forge_backend(&request.repository, local_checkout.clone());
+            let backend = Self::make_forge_backend(
+                request.repository.clone(),
+                local_checkout.clone(),
+            );
             self.enter_pr_diff_mode(backend, opened)?;
             self.spawn_pr_threads_fetch(&details_for_threads, local_checkout);
             self.set_message("Reloaded PR at new head — switched to fresh session".to_string());
@@ -3290,7 +3445,10 @@ impl App {
             .forge_backend
             .as_deref()
             .and_then(|backend| backend.local_checkout_path());
-        let backend = create_forge_backend(&current.key.repository, local_checkout.clone());
+        let backend = Self::make_forge_backend(
+            current.key.repository.clone(),
+            local_checkout.clone(),
+        );
         self.reload_pull_request_with_backend(backend, local_checkout)
     }
 
@@ -7248,7 +7406,7 @@ impl App {
         let commit_id = state.commit_id.clone();
 
         std::thread::spawn(move || {
-            let backend = create_forge_backend(&repository, local_checkout);
+            let backend = Self::make_forge_backend(repository.clone(), local_checkout);
             // Need PR details for repo/owner routing; refetch lightly via
             // the same target the user opened with.
             let target = PullRequestTarget::with_repository(
@@ -7347,6 +7505,7 @@ impl App {
             DiffSource::PullRequest(pr) => match pr.key.repository.kind {
                 crate::forge::traits::ForgeKind::GitHub => "GitHub",
                 crate::forge::traits::ForgeKind::GitLab => "GitLab",
+                crate::forge::traits::ForgeKind::Bitbucket => "Bitbucket",
             },
             _ => "forge",
         };
@@ -7610,7 +7769,7 @@ impl App {
         self.pr_load_rx = Some(rx);
 
         std::thread::spawn(move || {
-            // Canonical resolution (fork parent lookup) is GitHub-only.
+            // canonical resolution (fork parent lookup) is GitHub-only
             let canonical = if skip_resolution || origin.kind != ForgeKind::GitHub {
                 override_repo.unwrap_or(origin)
             } else {
@@ -7745,7 +7904,7 @@ impl App {
         let pr_number = summary.number;
         let thread_local_checkout = local_checkout.clone();
         std::thread::spawn(move || {
-            let backend = create_forge_backend(&summary_repo, thread_local_checkout);
+            let backend = Self::make_forge_backend(summary_repo.clone(), thread_local_checkout);
             let target =
                 PullRequestTarget::with_repository(summary_repo, pr_number, pr_number.to_string());
             let outcome = fetch_pr_data(backend.as_ref(), target).map_err(|e| e.to_string());
@@ -7856,8 +8015,8 @@ impl App {
         let head_sha = details.head_sha.clone();
 
         std::thread::spawn(move || {
-            let backend = create_forge_backend(&repository, local_checkout);
-            let threads = backend
+            let backend = Self::make_forge_backend(repository.clone(), local_checkout);
+            let result = backend
                 .list_review_threads(&details_clone)
                 .map_err(|e| e.to_string());
             let summaries = backend
@@ -7867,7 +8026,7 @@ impl App {
                 repository,
                 pr_number,
                 head_sha,
-                threads,
+                threads: result,
                 summaries,
             });
         });

@@ -235,6 +235,7 @@ pub fn format_remote_thread_lines(
     theme: &Theme,
     thread: &crate::forge::remote_comments::RemoteReviewThread,
     muted: bool,
+    forge_label: &str,
 ) -> Vec<Line<'static>> {
     let (badge_fg, border_fg, body_fg) = if muted {
         (theme.fg_dim, theme.fg_dim, theme.fg_dim)
@@ -265,7 +266,7 @@ pub fn format_remote_thread_lines(
     while let Some(comment) = iter.next() {
         let author = comment.author.as_deref().unwrap_or("unknown");
         if is_first {
-            let mut badge_text = format!("[github @{author}");
+            let mut badge_text = format!("[{forge_label} @{author}");
             if thread.is_resolved {
                 badge_text.push_str(" resolved");
             } else if thread.is_outdated {

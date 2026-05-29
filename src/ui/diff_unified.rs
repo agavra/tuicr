@@ -176,8 +176,11 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                 let Some(muted) = visibility.render_decision(thread) else {
                     continue;
                 };
+                let forge_label = app.forge_repository.as_ref()
+                    .map(|r| match r.kind { crate::forge::traits::ForgeKind::Bitbucket => "bitbucket", _ => "github" })
+                    .unwrap_or("github");
                 let thread_lines =
-                    comment_panel::format_remote_thread_lines(&app.theme, thread, muted);
+                    comment_panel::format_remote_thread_lines(&app.theme, thread, muted, forge_label);
                 for mut comment_line in thread_lines {
                     let indicator = cursor_indicator(line_idx, current_line_idx);
                     comment_line.spans.insert(
@@ -1277,7 +1280,10 @@ fn render_remote_threads_for_anchor(
 
         // Render the entire thread as one fused box so it reads as a
         // single discussion unit.
-        let thread_lines = comment_panel::format_remote_thread_lines(&app.theme, thread, muted);
+        let forge_label = app.forge_repository.as_ref()
+            .map(|r| match r.kind { crate::forge::traits::ForgeKind::Bitbucket => "bitbucket", _ => "github" })
+            .unwrap_or("github");
+        let thread_lines = comment_panel::format_remote_thread_lines(&app.theme, thread, muted, forge_label);
         let box_top_row = *line_idx;
         for mut comment_line in thread_lines {
             let indicator = cursor_indicator(*line_idx, current_line_idx);

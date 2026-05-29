@@ -110,6 +110,7 @@ impl fmt::Display for PrSlug {
         let kind = match self.forge {
             ForgeKind::GitHub => "gh",
             ForgeKind::GitLab => "gl",
+            ForgeKind::Bitbucket => "bkt",
         };
         write!(
             f,

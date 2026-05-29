@@ -19,7 +19,7 @@
 - Review tracking at file or hunk granularity, persisted across sessions.
 - Three export targets: push a real PR review to GitHub, copy structured markdown to your
   clipboard, or pipe to stdout.
-- Works with git, jj, and mercurial. Reviews uncommitted changes, commit ranges, or any GitHub PR.
+- Works with git, jj, and mercurial. Reviews uncommitted changes, commit ranges, or any GitHub/Bitbucket PR.
 
 ## Install
 
@@ -62,14 +62,25 @@ tuicr                       # Pick from a commit selector
 tuicr tui                   # Same TUI, explicit subcommand
 tuicr -w                    # Uncommitted changes (skip selector)
 tuicr -r main..HEAD         # Commit range
-tuicr pr 125                # GitHub PR
-tuicr tui pr 125            # GitHub PR via explicit TUI subcommand
+tuicr pr 125                # GitHub or Bitbucket PR (auto-detected)
+tuicr tui pr 125            # PR via explicit TUI subcommand
 tuicr --stdout              # Pipe the review to stdout
 tuicr review list           # List saved local review sessions
 ```
 
 Inside tuicr, navigate with `j`/`k`, press `c` to comment, then `y` to copy the review or
-`:submit` to push it to GitHub. Auto-detects git, jj, or mercurial.
+`:submit` to push it to GitHub/Bitbucket. Auto-detects git, jj, or mercurial.
+
+## Forge CLIs
+
+tuicr shells out to forge-specific CLIs for PR operations:
+
+| Forge | CLI | Install |
+|-------|-----|---------|
+| GitHub | [`gh`](https://cli.github.com/) | `brew install gh` then `gh auth login` |
+| Bitbucket | [`bkt`](https://github.com/avivsinai/bitbucket-cli) | See repo README, then `bkt auth login` |
+
+The forge is auto-detected from your `origin` remote URL. No configuration needed.
 
 ## How it compares
 
@@ -99,7 +110,14 @@ When you're done reviewing, send your comments wherever the work continues.
 
 `:submit` opens a picker for Comment, Approve, Request changes, or Draft. Inline comments land
 on the right lines as a real PR review; review-level comments become the review summary.
-Requires `gh` authenticated to the repo.
+Requires [`gh`](https://cli.github.com/) authenticated to the repo.
+
+### To Bitbucket
+
+`:submit` posts comments individually and optionally approves the PR.
+Requires [`bkt`](https://github.com/avivsinai/bitbucket-cli) authenticated via `bkt auth login`.
+Bitbucket comments are posted sequentially (not atomically like GitHub reviews).
+Request Changes is not supported (no Bitbucket equivalent).
 
 ### To your coding agent
 

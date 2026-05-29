@@ -225,8 +225,11 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                 let Some(muted) = visibility.render_decision(thread) else {
                     continue;
                 };
+                let forge_label = ctx.app.forge_repository.as_ref()
+                    .map(|r| match r.kind { crate::forge::traits::ForgeKind::Bitbucket => "bitbucket", _ => "github" })
+                    .unwrap_or("github");
                 let thread_lines =
-                    comment_panel::format_remote_thread_lines(&app.theme, thread, muted);
+                    comment_panel::format_remote_thread_lines(&app.theme, thread, muted, forge_label);
                 for mut comment_line in thread_lines {
                     let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
                     comment_line.spans.insert(
@@ -1362,7 +1365,10 @@ fn add_remote_threads_to_line(
         if !matches_side {
             continue;
         }
-        let thread_lines = comment_panel::format_remote_thread_lines(ctx.theme, thread, muted);
+        let forge_label = ctx.app.forge_repository.as_ref()
+            .map(|r| match r.kind { crate::forge::traits::ForgeKind::Bitbucket => "bitbucket", _ => "github" })
+            .unwrap_or("github");
+        let thread_lines = comment_panel::format_remote_thread_lines(ctx.theme, thread, muted, forge_label);
         let box_top_row = line_idx;
         for mut comment_line in thread_lines {
             let indicator = cursor_indicator(line_idx, ctx.current_line_idx);

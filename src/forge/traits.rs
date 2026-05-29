@@ -12,6 +12,7 @@ use crate::model::{DiffLine, FileStatus};
 pub enum ForgeKind {
     GitHub,
     GitLab,
+    Bitbucket,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,15 +50,29 @@ impl ForgeRepository {
         }
     }
 
+    pub fn bitbucket(
+        host: impl Into<String>,
+        owner: impl Into<String>,
+        name: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind: ForgeKind::Bitbucket,
+            host: host.into(),
+            owner: owner.into(),
+            name: name.into(),
+        }
+    }
+
     pub fn slug(&self) -> String {
         format!("{}/{}", self.owner, self.name)
     }
 
     pub fn display_name(&self) -> String {
-        if self.host == "github.com" || self.host == "gitlab.com" {
-            self.slug()
-        } else {
-            format!("{}/{}", self.host, self.slug())
+        match self.kind {
+            ForgeKind::GitHub if self.host == "github.com" => self.slug(),
+            ForgeKind::GitLab if self.host == "gitlab.com" => self.slug(),
+            ForgeKind::Bitbucket if self.host == "bitbucket.org" => self.slug(),
+            _ => format!("{}/{}", self.host, self.slug()),
         }
     }
 }

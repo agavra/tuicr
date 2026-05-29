@@ -21,8 +21,12 @@ pub fn render_submit_action_picker(frame: &mut Frame, app: &App) {
     let area = centered_rect(40, 50, modal_anchor(app, frame.area()));
     frame.render_widget(Clear, area);
 
+    let forge_name = app.forge_repository.as_ref()
+        .map(|r| match r.kind { crate::forge::traits::ForgeKind::Bitbucket => "Bitbucket", _ => "GitHub" })
+        .unwrap_or("GitHub");
+
     let block = Block::default()
-        .title(" Submit review to GitHub? ")
+        .title(format!(" Submit review to {forge_name}? "))
         .title_alignment(Alignment::Center)
         .borders(Borders::ALL)
         .style(styles::popup_style(theme))
@@ -130,9 +134,13 @@ pub fn render_submit_confirm(frame: &mut Frame, app: &App) {
 
     frame.render_widget(Clear, area);
 
+    let forge_name = app.forge_repository.as_ref()
+        .map(|r| match r.kind { crate::forge::traits::ForgeKind::Bitbucket => "Bitbucket", _ => "GitHub" })
+        .unwrap_or("GitHub");
+
     let title = match state.event {
-        SubmitEvent::Draft => " Push pending GitHub review? ".to_string(),
-        _ => " Submit review to GitHub? ".to_string(),
+        SubmitEvent::Draft => format!(" Push pending {forge_name} review? "),
+        _ => format!(" Submit review to {forge_name}? "),
     };
 
     let block = Block::default()

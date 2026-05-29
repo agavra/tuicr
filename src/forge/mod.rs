@@ -5,6 +5,7 @@
 //! instead of shelling out to forge-specific tools directly.
 #![allow(dead_code)]
 
+pub mod bitbucket;
 pub mod canonical;
 pub mod context;
 pub mod github;
@@ -32,6 +33,7 @@ pub fn detect_github_repository(repo_root: &Path) -> Option<ForgeRepository> {
     if let Ok(remote) = repo.find_remote("origin")
         && let Some(url) = remote.url()
         && let Some(parsed) = parse_github_remote_url(url)
+        && !is_known_non_github_host(&parsed.host)
     {
         return Some(parsed);
     }
@@ -40,6 +42,36 @@ pub fn detect_github_repository(repo_root: &Path) -> Option<ForgeRepository> {
         if let Ok(remote) = repo.find_remote(name)
             && let Some(url) = remote.url()
             && let Some(parsed) = parse_github_remote_url(url)
+            && !is_known_non_github_host(&parsed.host)
+        {
+            return Some(parsed);
+        }
+    }
+    None
+}
+
+/// Hosts that parse as valid git remotes but aren't GitHub/GHE.
+fn is_known_non_github_host(host: &str) -> bool {
+    host == "bitbucket.org" || host.ends_with(".bitbucket.org")
+}
+
+/// Try to detect a Bitbucket forge repository for the local checkout at `repo_root`.
+///
+/// Looks at the `origin` remote first, then falls back to any remote whose URL
+/// parses as a Bitbucket host. Returns `None` when no Bitbucket remote is configured.
+pub fn detect_bitbucket_repository(repo_root: &Path) -> Option<ForgeRepository> {
+    let repo = Repository::discover(repo_root).ok()?;
+    if let Ok(remote) = repo.find_remote("origin")
+        && let Some(url) = remote.url()
+        && let Some(parsed) = crate::forge::bitbucket::parse_bitbucket_remote_url(url)
+    {
+        return Some(parsed);
+    }
+    let remotes = repo.remotes().ok()?;
+    for name in remotes.iter().flatten() {
+        if let Ok(remote) = repo.find_remote(name)
+            && let Some(url) = remote.url()
+            && let Some(parsed) = crate::forge::bitbucket::parse_bitbucket_remote_url(url)
         {
             return Some(parsed);
         }
