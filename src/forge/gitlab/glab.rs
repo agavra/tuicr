@@ -185,8 +185,22 @@ where
             .map_err(|err| map_glab_error(err, host))
     }
 
-    /// Extra args to select a specific GitLab instance when not using gitlab.com.
-    fn hostname_args(repo: &ForgeRepository) -> Vec<String> {
+    /// Build the value for `glab`'s `--repo` flag. For non-default hosts we
+    /// pass a full URL so `glab mr <subcommand>` resolves the right instance —
+    /// those subcommands don't accept a `--hostname` flag, but `--repo` does
+    /// accept `OWNER/REPO`, the full URL, or a git URL.
+    fn repo_arg(repo: &ForgeRepository) -> String {
+        if repo.host == DEFAULT_GITLAB_HOST {
+            repo.slug()
+        } else {
+            format!("https://{}/{}", repo.host, repo.slug())
+        }
+    }
+
+    /// Extra args to select a specific GitLab instance for `glab api` calls.
+    /// Only `glab api` (and `glab auth`) accept `--hostname`; the `mr`
+    /// subcommands don't, so use `repo_arg` for those.
+    fn api_hostname_args(repo: &ForgeRepository) -> Vec<String> {
         if repo.host != DEFAULT_GITLAB_HOST {
             vec!["--hostname".to_string(), repo.host.clone()]
         } else {
@@ -202,17 +216,16 @@ where
     fn list_pull_requests(&self, query: PullRequestListQuery) -> Result<PagedPullRequests> {
         let page_size = query.page_size.max(1);
         let requested = query.already_loaded + page_size + 1;
-        let mut args = vec![
+        let args = vec![
             "mr".to_string(),
             "list".to_string(),
             "--repo".to_string(),
-            query.repository.slug(),
+            Self::repo_arg(&query.repository),
             "--output".to_string(),
             "json".to_string(),
             "--limit".to_string(),
             requested.to_string(),
         ];
-        args.extend(Self::hostname_args(&query.repository));
         let output = self.run_glab(args, &query.repository.host)?;
         let rows: Vec<GlabMrSummary> = serde_json::from_str(&output)?;
         let has_more = rows.len() > query.already_loaded + page_size;
@@ -232,31 +245,29 @@ where
 
     fn get_pull_request(&self, target: PullRequestTarget) -> Result<PullRequestDetails> {
         let repository = self.resolve_repository(&target)?;
-        let mut args = vec![
+        let args = vec![
             "mr".to_string(),
             "view".to_string(),
             target.number.to_string(),
             "--repo".to_string(),
-            repository.slug(),
+            Self::repo_arg(&repository),
             "--output".to_string(),
             "json".to_string(),
         ];
-        args.extend(Self::hostname_args(&repository));
         let output = self.run_glab(args, &repository.host)?;
         let mr: GlabMrDetails = serde_json::from_str(&output)?;
         mr.into_details(&repository)
     }
 
     fn get_pull_request_diff(&self, pr: &PullRequestDetails) -> Result<String> {
-        let mut args = vec![
+        let args = vec![
             "mr".to_string(),
             "diff".to_string(),
             pr.number.to_string(),
             "--repo".to_string(),
-            pr.repository.slug(),
+            Self::repo_arg(&pr.repository),
             "--color=never".to_string(),
         ];
-        args.extend(Self::hostname_args(&pr.repository));
         let raw = self.run_glab(args, &pr.repository.host)?;
         Ok(inject_git_diff_headers(&raw))
     }
@@ -274,7 +285,7 @@ where
                 project, pr.number, page,
             );
             let mut args = vec!["api".to_string()];
-            args.extend(Self::hostname_args(&pr.repository));
+            args.extend(Self::api_hostname_args(&pr.repository));
             args.push(endpoint);
             let output = self.run_glab(args, &pr.repository.host)?;
             let rows: Vec<GlabCommit> = serde_json::from_str(&output)?;
@@ -312,7 +323,7 @@ where
                 project, pr.number, page,
             );
             let mut args = vec!["api".to_string()];
-            args.extend(Self::hostname_args(&pr.repository));
+            args.extend(Self::api_hostname_args(&pr.repository));
             args.push(endpoint);
             let output = self.run_glab(args, &pr.repository.host)?;
             if std::env::var("TUICR_GLAB_DEBUG").is_ok() {
@@ -414,7 +425,7 @@ where
                 "--input".to_string(),
                 "-".to_string(),
             ];
-            args.extend(Self::hostname_args(&pr.repository));
+            args.extend(Self::api_hostname_args(&pr.repository));
             self.runner
                 .run_with_stdin(&args, &body_json)
                 .map_err(|err| map_create_notes_error(err, &pr.repository.host))?;
@@ -489,7 +500,7 @@ where
                 "--input".to_string(),
                 "-".to_string(),
             ];
-            args.extend(Self::hostname_args(&pr.repository));
+            args.extend(Self::api_hostname_args(&pr.repository));
 
             if std::env::var("TUICR_GLAB_DEBUG").is_ok() {
                 let host = &pr.repository.host;
@@ -530,7 +541,7 @@ where
                 "--method".to_string(),
                 "POST".to_string(),
             ];
-            args.extend(Self::hostname_args(&pr.repository));
+            args.extend(Self::api_hostname_args(&pr.repository));
             self.run_glab(args, &pr.repository.host)?;
         }
 
@@ -562,7 +573,7 @@ where
             request.sha(),
         );
         let mut args = vec!["api".to_string()];
-        args.extend(Self::hostname_args(&request.repository));
+        args.extend(Self::api_hostname_args(&request.repository));
         args.push(endpoint);
         self.run_glab(args, &request.repository.host)
     }
@@ -611,8 +622,10 @@ pub fn parse_pull_request_target_gitlab(input: &str) -> Result<PullRequestTarget
 ///
 /// Handles SCP-like (`git@gitlab.com:owner/repo.git`), HTTPS
 /// (`https://gitlab.com/owner/repo.git`), and SSH scheme
-/// (`ssh://git@gitlab.com/owner/repo.git`). Only returns `Some` when
-/// the resolved host contains "gitlab" — GitHub remotes are ignored here.
+/// (`ssh://git@gitlab.com/owner/repo.git`). Returns `Some` when the host
+/// looks like GitLab — either its name contains "gitlab", or it has been
+/// configured as a GitLab host in `glab`'s config file (self-hosted
+/// instances such as `git.example.com`).
 pub fn parse_gitlab_remote_url(remote_url: &str) -> Option<ForgeRepository> {
     let trimmed = trim_url_suffix(remote_url.trim());
     if trimmed.is_empty() {
@@ -621,7 +634,7 @@ pub fn parse_gitlab_remote_url(remote_url: &str) -> Option<ForgeRepository> {
 
     if let Some((host, path)) = parse_scp_like_remote(trimmed) {
         let resolved = resolve_ssh_hostname(host);
-        if !resolved.contains("gitlab") {
+        if !is_gitlab_host(&resolved) {
             return None;
         }
         return gitlab_repository_from_path(&resolved, path);
@@ -633,10 +646,36 @@ pub fn parse_gitlab_remote_url(remote_url: &str) -> Option<ForgeRepository> {
         .map(|(_, rest)| rest)
         .unwrap_or(without_scheme);
     let (host, path) = without_user.split_once('/')?;
-    if !host.contains("gitlab") {
+    if !is_gitlab_host(host) {
         return None;
     }
     gitlab_repository_from_path(host, path)
+}
+
+/// Returns `true` when `host` looks like a GitLab instance: either its name
+/// contains "gitlab" (covers `gitlab.com` and most public deployments) or
+/// matches the default host `glab` is configured against (covers self-hosted
+/// instances with custom domains like `git.example.com`).
+fn is_gitlab_host(host: &str) -> bool {
+    if host.contains("gitlab") {
+        return true;
+    }
+
+    glab_default_host().is_some_and(|known| known.eq_ignore_ascii_case(host))
+}
+
+/// Read the default host configured in `glab` via `glab config get host`.
+/// Used to recognize self-hosted GitLab instances whose domain doesn't
+/// contain the substring "gitlab". Returns `None` when `glab` is missing,
+/// the command fails, or no host is configured.
+fn glab_default_host() -> Option<String> {
+    let output = run_command_output("glab", None, ["config", "get", "host"]).ok()?;
+    let host = output.trim();
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.to_string())
+    }
 }
 
 fn parse_numeric_target(target: &str) -> Option<PullRequestTarget> {
@@ -1256,6 +1295,24 @@ mod tests {
     fn should_ignore_github_remote_url() {
         assert!(parse_gitlab_remote_url("https://github.com/owner/repo.git").is_none());
         assert!(parse_gitlab_remote_url("git@github.com:owner/repo.git").is_none());
+    }
+
+    #[test]
+    fn repo_arg_uses_full_url_for_non_default_host() {
+        let repo = ForgeRepository::gitlab("git.example.com", "group/team", "project");
+        assert_eq!(
+            GitLabGlabBackend::<SystemGlabRunner>::repo_arg(&repo),
+            "https://git.example.com/group/team/project"
+        );
+    }
+
+    #[test]
+    fn repo_arg_uses_slug_for_default_host() {
+        let repo = ForgeRepository::gitlab("gitlab.com", "owner", "repo");
+        assert_eq!(
+            GitLabGlabBackend::<SystemGlabRunner>::repo_arg(&repo),
+            "owner/repo"
+        );
     }
 
     #[test]
