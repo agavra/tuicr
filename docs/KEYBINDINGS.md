@@ -128,14 +128,17 @@ In command mode,
 | `?` | Toggle help |
 | `q` | Quick quit |
 
-## Commit selection (startup)
+## Commit selection / review target selector
 
 | Key | Action |
 |-----|--------|
+| `Tab` / `Shift-Tab` | Switch between Local and Pull Requests tabs |
 | `j` / `k` | Move selection |
-| `Space` | Toggle commit selection |
-| `Enter` | Confirm and load diff |
-| `q` / `Esc` | Quit |
+| `Space` | Toggle local commit selection |
+| `Enter` | Confirm local commit range, open PR, or load more PRs |
+| `/` | Filter currently loaded PR rows locally |
+| `r` | In Pull Requests tab, toggle all open PRs / PRs requesting your review |
+| `q` / `Esc` | Quit / return |
 
 ## Inline commit selector
 

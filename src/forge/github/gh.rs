@@ -7,7 +7,7 @@ use crate::forge::remote_comments::{RemoteReviewSummary, RemoteReviewThread};
 use crate::forge::traits::{
     ForgeBackend, ForgeFileLinesRequest, ForgeRepository, GhCreateReviewResponse,
     PagedPullRequests, PullRequestCommit, PullRequestDetails, PullRequestListQuery,
-    PullRequestTarget,
+    PullRequestListScope, PullRequestTarget,
 };
 use crate::model::{DiffLine, LineOrigin};
 use crate::process::{
@@ -202,21 +202,23 @@ where
     fn list_pull_requests(&self, query: PullRequestListQuery) -> Result<PagedPullRequests> {
         let page_size = query.page_size.max(1);
         let requested = query.already_loaded + page_size + 1;
-        let output = self.run_gh(
-            vec![
-                "pr".to_string(),
-                "list".to_string(),
-                "--repo".to_string(),
-                gh_repo_arg(&query.repository),
-                "--state".to_string(),
-                "open".to_string(),
-                "--limit".to_string(),
-                requested.to_string(),
-                "--json".to_string(),
-                PR_LIST_JSON_FIELDS.to_string(),
-            ],
-            &query.repository.host,
-        )?;
+        let mut args = vec![
+            "pr".to_string(),
+            "list".to_string(),
+            "--repo".to_string(),
+            gh_repo_arg(&query.repository),
+            "--state".to_string(),
+            "open".to_string(),
+            "--limit".to_string(),
+            requested.to_string(),
+            "--json".to_string(),
+            PR_LIST_JSON_FIELDS.to_string(),
+        ];
+        if query.scope == PullRequestListScope::ReviewRequested {
+            args.push("--search".to_string());
+            args.push("review-requested:@me".to_string());
+        }
+        let output = self.run_gh(args, &query.repository.host)?;
         let rows: Vec<GhPullRequestSummary> = serde_json::from_str(&output)?;
         let has_more = rows.len() > query.already_loaded + page_size;
         let pull_requests = rows
@@ -1404,6 +1406,38 @@ Match host github-work
     }
 
     #[test]
+    fn list_pull_requests_can_filter_to_review_requested() {
+        let runner = FakeGhRunner::default();
+        let backend = GitHubGhBackend::with_runner(None, runner);
+        backend
+            .list_pull_requests(PullRequestListQuery::first_page_with_scope(
+                repo(),
+                1,
+                PullRequestListScope::ReviewRequested,
+            ))
+            .unwrap();
+
+        let calls = backend.runner.calls.borrow();
+        assert_eq!(
+            calls[0],
+            vec![
+                "pr",
+                "list",
+                "--repo",
+                "agavra/tuicr",
+                "--state",
+                "open",
+                "--limit",
+                "2",
+                "--json",
+                PR_LIST_JSON_FIELDS,
+                "--search",
+                "review-requested:@me",
+            ]
+        );
+    }
+
+    #[test]
     fn list_pull_requests_can_load_next_slice() {
         let runner = FakeGhRunner::default();
         let backend = GitHubGhBackend::with_runner(None, runner);
@@ -1412,6 +1446,7 @@ Match host github-work
                 repository: repo(),
                 already_loaded: 1,
                 page_size: 1,
+                scope: PullRequestListScope::Open,
             })
             .unwrap();
 

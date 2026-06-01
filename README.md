@@ -216,6 +216,7 @@ A first-session cheatsheet. Press `?` inside tuicr for the full reference.
 | `{` / `}` | Previous / next file |
 | `[` / `]` | Previous / next hunk |
 | `/` | Search |
+| `r` in PR selector | Toggle "review requested from me" PR list scope |
 | `c` / `C` | Add line / file comment |
 | `v` / `V` | Visual mode (range comment) |
 | `r` | Toggle file reviewed |

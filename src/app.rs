@@ -7582,10 +7582,10 @@ impl App {
     /// Entry-point hook called when the PR tab becomes visible.
     /// Triggers the first network call lazily.
     fn on_target_tab_entered(&mut self) {
-        if let Some(repo) = self.pr_tab.start_initial_load() {
+        if let Some((repo, scope)) = self.pr_tab.start_initial_load() {
             let override_repo = self.repo_url_override.clone();
             let skip_resolution = self.canonical_resolved;
-            self.spawn_pr_initial_load(repo, override_repo, skip_resolution);
+            self.spawn_pr_initial_load(repo, override_repo, skip_resolution, scope);
         }
     }
 
@@ -7602,6 +7602,7 @@ impl App {
         origin: ForgeRepository,
         override_repo: Option<ForgeRepository>,
         skip_resolution: bool,
+        scope: crate::forge::traits::PullRequestListScope,
     ) {
         use crate::forge::selector::PR_PAGE_SIZE;
         use crate::forge::traits::{ForgeKind, PullRequestListQuery};
@@ -7620,7 +7621,8 @@ impl App {
                 resolve_canonical_repository(&origin, override_repo.as_ref(), &runner)
             };
             let backend = create_forge_backend(&canonical, None);
-            let query = PullRequestListQuery::first_page(canonical.clone(), PR_PAGE_SIZE);
+            let query =
+                PullRequestListQuery::first_page_with_scope(canonical.clone(), PR_PAGE_SIZE, scope);
             let result = backend
                 .list_pull_requests(query)
                 .map(|page| (page.pull_requests, page.has_more))
@@ -7630,7 +7632,12 @@ impl App {
     }
 
     /// Spawn a background thread that fetches the next page of PRs.
-    fn spawn_pr_load_more(&mut self, repository: ForgeRepository, already_loaded: usize) {
+    fn spawn_pr_load_more(
+        &mut self,
+        repository: ForgeRepository,
+        scope: crate::forge::traits::PullRequestListScope,
+        already_loaded: usize,
+    ) {
         use crate::forge::selector::PR_PAGE_SIZE;
         use crate::forge::traits::PullRequestListQuery;
 
@@ -7643,6 +7650,7 @@ impl App {
                 repository,
                 already_loaded,
                 page_size: PR_PAGE_SIZE,
+                scope,
             };
             let result = backend
                 .list_pull_requests(query)
@@ -7698,6 +7706,24 @@ impl App {
             .ensure_cursor_visible(self.pr_list_viewport_height);
     }
 
+    pub fn toggle_pr_review_requested_filter(&mut self) {
+        let Some(repository) = self.pr_tab.repository().cloned() else {
+            return;
+        };
+        if repository.kind != crate::forge::traits::ForgeKind::GitHub {
+            self.set_warning("Review-requested PR filter is only supported for GitHub");
+            return;
+        }
+        let Some((repo, scope)) = self.pr_tab.toggle_scope_and_start_reload() else {
+            return;
+        };
+        self.pr_filter_draft = None;
+        let override_repo = self.repo_url_override.clone();
+        let skip_resolution = self.canonical_resolved;
+        self.spawn_pr_initial_load(repo, override_repo, skip_resolution, scope);
+        self.set_message(format!("PR list: {}", scope.label()));
+    }
+
     /// Handle Enter on the PR tab. Returns true when the action was handled
     /// (load more triggered, PR open kicked off, error surfaced, etc).
     pub fn pr_tab_select(&mut self) -> bool {
@@ -7708,8 +7734,8 @@ impl App {
             return true;
         }
         if self.pr_tab.cursor_on_load_more() {
-            if let Some((repo, already)) = self.pr_tab.start_load_more() {
-                self.spawn_pr_load_more(repo, already);
+            if let Some((repo, scope, already)) = self.pr_tab.start_load_more() {
+                self.spawn_pr_load_more(repo, scope, already);
             }
             return true;
         }

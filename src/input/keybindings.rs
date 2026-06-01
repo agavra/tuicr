@@ -101,6 +101,8 @@ pub enum Action {
     TargetSelectorTabPrev,
     /// Begin editing the local filter inside the PR tab (`/`).
     BeginTargetFilter,
+    /// Toggle PR tab between all open PRs and PRs awaiting your review (`r`).
+    TogglePrReviewRequestedFilter,
 
     // Submit resolver
     /// Move resolver cursor down (`j` / Down).
@@ -389,6 +391,7 @@ fn map_commit_select_mode(key: KeyEvent) -> Action {
         (KeyCode::Tab, KeyModifiers::NONE) => Action::TargetSelectorTabNext,
         (KeyCode::BackTab, _) => Action::TargetSelectorTabPrev,
         (KeyCode::Char('/'), _) => Action::BeginTargetFilter,
+        (KeyCode::Char('r'), KeyModifiers::NONE) => Action::TogglePrReviewRequestedFilter,
         _ => Action::None,
     }
 }
@@ -621,6 +624,14 @@ mod tests {
         let action = map_commit_select_mode(key(KeyCode::Char('/')));
         // then
         assert_eq!(action, Action::BeginTargetFilter);
+    }
+
+    #[test]
+    fn should_map_r_to_review_requested_filter_in_commit_select_mode() {
+        // given / when
+        let action = map_commit_select_mode(key(KeyCode::Char('r')));
+        // then
+        assert_eq!(action, Action::TogglePrReviewRequestedFilter);
     }
 
     #[test]

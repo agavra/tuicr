@@ -258,6 +258,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  r         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Toggle PRs requesting your review"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  Esc/q     ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),

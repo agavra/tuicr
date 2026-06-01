@@ -91,19 +91,52 @@ impl PullRequestTarget {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PullRequestListScope {
+    #[default]
+    Open,
+    ReviewRequested,
+}
+
+impl PullRequestListScope {
+    pub fn toggled(self) -> Self {
+        match self {
+            Self::Open => Self::ReviewRequested,
+            Self::ReviewRequested => Self::Open,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Open => "all",
+            Self::ReviewRequested => "requested",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PullRequestListQuery {
     pub repository: ForgeRepository,
     pub already_loaded: usize,
     pub page_size: usize,
+    pub scope: PullRequestListScope,
 }
 
 impl PullRequestListQuery {
     pub fn first_page(repository: ForgeRepository, page_size: usize) -> Self {
+        Self::first_page_with_scope(repository, page_size, PullRequestListScope::Open)
+    }
+
+    pub fn first_page_with_scope(
+        repository: ForgeRepository,
+        page_size: usize,
+        scope: PullRequestListScope,
+    ) -> Self {
         Self {
             repository,
             already_loaded: 0,
             page_size,
+            scope,
         }
     }
 }

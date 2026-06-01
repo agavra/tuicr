@@ -6,7 +6,7 @@
 //! from this state; no I/O happens here.
 #![allow(dead_code)]
 
-use crate::forge::traits::{ForgeRepository, PullRequestSummary};
+use crate::forge::traits::{ForgeRepository, PullRequestListScope, PullRequestSummary};
 
 pub const PR_PAGE_SIZE: usize = 30;
 
@@ -24,9 +24,11 @@ pub enum PullRequestsTab {
     },
     Idle {
         repository: ForgeRepository,
+        scope: PullRequestListScope,
     },
     Loading {
         repository: ForgeRepository,
+        scope: PullRequestListScope,
     },
     Loaded {
         repository: ForgeRepository,
@@ -34,11 +36,13 @@ pub enum PullRequestsTab {
         has_more: bool,
         loading_more: bool,
         filter: String,
+        scope: PullRequestListScope,
         cursor: usize,
         scroll_offset: usize,
     },
     Error {
         repository: Option<ForgeRepository>,
+        scope: PullRequestListScope,
         message: String,
     },
 }
@@ -55,6 +59,7 @@ pub struct PrTabView<'a> {
     /// after the data rows.
     pub has_load_more: bool,
     pub filter: &'a str,
+    pub scope: PullRequestListScope,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,7 +80,10 @@ pub struct PrRow<'a> {
 impl PullRequestsTab {
     pub fn new(repository: Option<ForgeRepository>) -> Self {
         match repository {
-            Some(repo) => PullRequestsTab::Idle { repository: repo },
+            Some(repo) => PullRequestsTab::Idle {
+                repository: repo,
+                scope: PullRequestListScope::Open,
+            },
             None => PullRequestsTab::Disabled {
                 reason: "No GitHub remote on this repo".to_string(),
             },
@@ -89,6 +97,16 @@ impl PullRequestsTab {
             PullRequestsTab::Loaded { repository, .. } => Some(repository),
             PullRequestsTab::Error { repository, .. } => repository.as_ref(),
             PullRequestsTab::Disabled { .. } => None,
+        }
+    }
+
+    pub fn scope(&self) -> PullRequestListScope {
+        match self {
+            PullRequestsTab::Idle { scope, .. }
+            | PullRequestsTab::Loading { scope, .. }
+            | PullRequestsTab::Loaded { scope, .. }
+            | PullRequestsTab::Error { scope, .. } => *scope,
+            PullRequestsTab::Disabled { .. } => PullRequestListScope::Open,
         }
     }
 
@@ -111,34 +129,51 @@ impl PullRequestsTab {
     }
 
     /// Begin the initial fetch. Only meaningful from `Idle`.
-    pub fn start_initial_load(&mut self) -> Option<ForgeRepository> {
-        if let PullRequestsTab::Idle { repository } = self {
+    pub fn start_initial_load(&mut self) -> Option<(ForgeRepository, PullRequestListScope)> {
+        if let PullRequestsTab::Idle { repository, scope } = self {
             let repo = repository.clone();
+            let scope = *scope;
             *self = PullRequestsTab::Loading {
                 repository: repo.clone(),
+                scope,
             };
-            Some(repo)
+            Some((repo, scope))
         } else {
             None
         }
     }
 
     /// Begin a "load more" fetch. Only meaningful when `Loaded` with `has_more`.
-    pub fn start_load_more(&mut self) -> Option<(ForgeRepository, usize)> {
+    pub fn start_load_more(&mut self) -> Option<(ForgeRepository, PullRequestListScope, usize)> {
         if let PullRequestsTab::Loaded {
             repository,
             rows,
             has_more,
             loading_more,
+            scope,
             ..
         } = self
             && *has_more
             && !*loading_more
         {
             *loading_more = true;
-            return Some((repository.clone(), rows.len()));
+            return Some((repository.clone(), *scope, rows.len()));
         }
         None
+    }
+
+    /// Toggle between all open PRs and PRs awaiting the current user's review,
+    /// then transition to `Loading` so the caller can refetch page 1.
+    pub fn toggle_scope_and_start_reload(
+        &mut self,
+    ) -> Option<(ForgeRepository, PullRequestListScope)> {
+        let repository = self.repository()?.clone();
+        let next_scope = self.scope().toggled();
+        *self = PullRequestsTab::Loading {
+            repository: repository.clone(),
+            scope: next_scope,
+        };
+        Some((repository, next_scope))
     }
 
     /// Promote the in-flight `Loading` tab to a (possibly different)
@@ -147,7 +182,7 @@ impl PullRequestsTab {
     /// background thread resolved a fork's parent. No-op when not in
     /// `Loading` or when the canonical matches the existing repository.
     pub fn apply_canonical(&mut self, canonical: ForgeRepository) {
-        if let PullRequestsTab::Loading { repository } = self
+        if let PullRequestsTab::Loading { repository, .. } = self
             && *repository != canonical
         {
             *repository = canonical;
@@ -156,8 +191,8 @@ impl PullRequestsTab {
 
     /// Apply the result of the initial load.
     pub fn apply_initial_load(&mut self, result: Result<(Vec<PullRequestSummary>, bool), String>) {
-        let repository = match self {
-            PullRequestsTab::Loading { repository } => repository.clone(),
+        let (repository, scope) = match self {
+            PullRequestsTab::Loading { repository, scope } => (repository.clone(), *scope),
             _ => return,
         };
         match result {
@@ -168,6 +203,7 @@ impl PullRequestsTab {
                     has_more,
                     loading_more: false,
                     filter: String::new(),
+                    scope,
                     cursor: 0,
                     scroll_offset: 0,
                 };
@@ -175,6 +211,7 @@ impl PullRequestsTab {
             Err(message) => {
                 *self = PullRequestsTab::Error {
                     repository: Some(repository),
+                    scope,
                     message,
                 };
             }
@@ -184,9 +221,11 @@ impl PullRequestsTab {
     /// Apply the result of a load-more fetch. Appends rows.
     pub fn apply_load_more(&mut self, result: Result<(Vec<PullRequestSummary>, bool), String>) {
         if let PullRequestsTab::Loaded {
+            repository,
             rows,
             has_more,
             loading_more,
+            scope,
             ..
         } = self
         {
@@ -200,9 +239,11 @@ impl PullRequestsTab {
                     // Don't tear down the loaded list on a load-more failure;
                     // surface the message and clear the busy flag so the user
                     // can try again.
-                    let repository = self.repository().cloned();
+                    let repository = Some(repository.clone());
+                    let scope = *scope;
                     *self = PullRequestsTab::Error {
                         repository,
+                        scope,
                         message,
                     };
                 }
@@ -347,28 +388,32 @@ impl PullRequestsTab {
                 scroll_offset: 0,
                 has_load_more: false,
                 filter: "",
+                scope: PullRequestListScope::Open,
             },
-            PullRequestsTab::Idle { .. } => PrTabView {
+            PullRequestsTab::Idle { scope, .. } => PrTabView {
                 status: PrTabStatus::Idle,
                 rows: Vec::new(),
                 cursor: 0,
                 scroll_offset: 0,
                 has_load_more: false,
                 filter: "",
+                scope: *scope,
             },
-            PullRequestsTab::Loading { .. } => PrTabView {
+            PullRequestsTab::Loading { scope, .. } => PrTabView {
                 status: PrTabStatus::Loading,
                 rows: Vec::new(),
                 cursor: 0,
                 scroll_offset: 0,
                 has_load_more: false,
                 filter: "",
+                scope: *scope,
             },
             PullRequestsTab::Loaded {
                 rows,
                 has_more,
                 loading_more,
                 filter,
+                scope,
                 cursor,
                 scroll_offset,
                 ..
@@ -390,15 +435,17 @@ impl PullRequestsTab {
                     scroll_offset: *scroll_offset,
                     has_load_more: *has_more && filter.is_empty(),
                     filter: filter.as_str(),
+                    scope: *scope,
                 }
             }
-            PullRequestsTab::Error { message, .. } => PrTabView {
+            PullRequestsTab::Error { message, scope, .. } => PrTabView {
                 status: PrTabStatus::Error(message.as_str()),
                 rows: Vec::new(),
                 cursor: 0,
                 scroll_offset: 0,
                 has_load_more: false,
                 filter: "",
+                scope: *scope,
             },
         }
     }
@@ -491,7 +538,7 @@ mod tests {
         // when
         let requested = tab.start_initial_load();
         // then
-        assert_eq!(requested.unwrap(), repo());
+        assert_eq!(requested.unwrap(), (repo(), PullRequestListScope::Open));
         assert!(matches!(tab, PullRequestsTab::Loading { .. }));
         assert!(tab.is_loading());
     }
@@ -644,7 +691,7 @@ mod tests {
         // when
         tab.apply_canonical(other);
         // then — still Idle on the original repo (no silent promotion)
-        if let PullRequestsTab::Idle { repository } = &tab {
+        if let PullRequestsTab::Idle { repository, .. } = &tab {
             assert_eq!(repository, &repo());
         } else {
             panic!("expected Idle state");
@@ -662,5 +709,38 @@ mod tests {
         tab.apply_load_more(Err("net down".to_string()));
         // then — moves into Error but the original rows can be re-fetched
         assert!(matches!(tab, PullRequestsTab::Error { .. }));
+    }
+
+    #[test]
+    fn should_toggle_scope_and_reload_from_page_one() {
+        // given
+        let mut tab = PullRequestsTab::new(Some(repo()));
+        tab.start_initial_load();
+        tab.apply_initial_load(Ok((vec![pr(1, "a", "a", "h", "m")], true)));
+        tab.set_filter("a".to_string());
+        // when
+        let request = tab.toggle_scope_and_start_reload();
+        // then
+        assert_eq!(
+            request.unwrap(),
+            (repo(), PullRequestListScope::ReviewRequested)
+        );
+        assert!(matches!(tab.view().status, PrTabStatus::Loading));
+        assert_eq!(tab.view().scope, PullRequestListScope::ReviewRequested);
+    }
+
+    #[test]
+    fn should_preserve_scope_for_load_more() {
+        // given
+        let mut tab = PullRequestsTab::new(Some(repo()));
+        tab.toggle_scope_and_start_reload();
+        tab.apply_initial_load(Ok((vec![pr(1, "a", "a", "h", "m")], true)));
+        // when
+        let request = tab.start_load_more();
+        // then
+        assert_eq!(
+            request.unwrap(),
+            (repo(), PullRequestListScope::ReviewRequested, 1)
+        );
     }
 }

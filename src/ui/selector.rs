@@ -8,6 +8,7 @@ use ratatui::{
 
 use crate::app::{App, TargetTab};
 use crate::forge::selector::{PrTabStatus, PrTabView};
+use crate::forge::traits::PullRequestListScope;
 use crate::ui::commit_row::{
     CURSOR_GLYPH, CommitRowSpec, format_relative_short, render_commit_row,
 };
@@ -125,7 +126,10 @@ fn pr_status_hint_span(app: &App, strip_bg: ratatui::style::Color) -> (Span<'sta
     let base = Style::default().bg(strip_bg).fg(theme.fg_secondary);
     let (content, style) = match &view.status {
         PrTabStatus::Disabled(reason) => (format!("{reason} — Shift-Tab to go back "), base),
-        PrTabStatus::Idle => (" waiting… ".to_string(), base),
+        PrTabStatus::Idle => {
+            let prefix = pr_scope_prefix(view.scope);
+            (format!(" {prefix}waiting… "), base)
+        }
         PrTabStatus::Loading => {
             let glyph = pr_open_spinner_glyph(std::time::Duration::from_millis(
                 std::time::SystemTime::now()
@@ -133,7 +137,8 @@ fn pr_status_hint_span(app: &App, strip_bg: ratatui::style::Color) -> (Span<'sta
                     .map(|d| d.as_millis() as u64)
                     .unwrap_or(0),
             ));
-            (format!("{glyph} loading… "), base)
+            let prefix = pr_scope_prefix(view.scope);
+            (format!("{glyph} {prefix}loading… "), base)
         }
         PrTabStatus::LoadingMore => {
             let glyph = pr_open_spinner_glyph(std::time::Duration::from_millis(
@@ -142,14 +147,15 @@ fn pr_status_hint_span(app: &App, strip_bg: ratatui::style::Color) -> (Span<'sta
                     .map(|d| d.as_millis() as u64)
                     .unwrap_or(0),
             ));
-            (format!("{glyph} loading more… "), base)
+            let prefix = pr_scope_prefix(view.scope);
+            (format!("{glyph} {prefix}loading more… "), base)
         }
         PrTabStatus::Error(msg) => (
             format!("error \u{00b7} {msg} "),
             styles::error_inline_style(theme).bg(strip_bg),
         ),
         PrTabStatus::Ready => {
-            let mut s = format!("{} loaded", view.rows.len());
+            let mut s = format!("{}{} loaded", pr_scope_prefix(view.scope), view.rows.len());
             if !view.filter.is_empty() {
                 s.push_str(&format!(" \u{00b7} /{}", view.filter));
             }
@@ -159,6 +165,13 @@ fn pr_status_hint_span(app: &App, strip_bg: ratatui::style::Color) -> (Span<'sta
     };
     let width = content.len();
     (Span::styled(content, style), width)
+}
+
+fn pr_scope_prefix(scope: PullRequestListScope) -> &'static str {
+    match scope {
+        PullRequestListScope::Open => "",
+        PullRequestListScope::ReviewRequested => "requested · ",
+    }
 }
 
 fn render_local_target_tab(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -408,8 +421,11 @@ fn render_target_selector_footer(frame: &mut Frame, app: &App, area: Rect) {
                     .to_string()
             }
             TargetTab::PullRequests => {
-                "   j/k navigate \u{00b7} \u{21b5} open \u{00b7} / filter \u{00b7} esc/q back"
-                    .to_string()
+                let scope_hint = match app.pr_tab.scope() {
+                    PullRequestListScope::Open => "r requested",
+                    PullRequestListScope::ReviewRequested => "r all PRs",
+                };
+                format!("   j/k navigate · ↵ open · {scope_hint} · / filter · esc/q back")
             }
         }
     };
@@ -740,6 +756,31 @@ mod selector_render_snapshot_tests {
         assert!(
             strip.contains("3 loaded"),
             "expected '3 loaded' in tab strip, got: {strip:?}"
+        );
+    }
+
+    #[test]
+    fn should_show_requested_scope_in_tab_strip_status_slot() {
+        // given
+        let mut app = make_app(vec![commit(0)]);
+        app.forge_repository = Some(repo());
+        let mut tab = PullRequestsTab::new(Some(repo()));
+        tab.toggle_scope_and_start_reload();
+        tab.apply_initial_load(Ok((vec![pr(1, "alpha", "a")], false)));
+        app.pr_tab = tab;
+        app.target_tab = crate::app::TargetTab::PullRequests;
+        // when
+        let buffer = draw(&mut app);
+        // then
+        let strip = row_text(&buffer, TAB_STRIP_ROW);
+        assert!(
+            strip.contains("requested · 1 loaded"),
+            "expected requested scope in tab strip, got: {strip:?}"
+        );
+        let footer = row_text(&buffer, buffer.area.height - 1);
+        assert!(
+            footer.contains("r all PRs"),
+            "expected footer toggle hint, got: {footer:?}"
         );
     }
 

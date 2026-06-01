@@ -1137,6 +1137,9 @@ fn handle_pr_target_action(app: &mut App, action: Action) {
         Action::BeginTargetFilter => {
             app.begin_pr_filter();
         }
+        Action::TogglePrReviewRequestedFilter => {
+            app.toggle_pr_review_requested_filter();
+        }
         _ => {}
     }
 }
