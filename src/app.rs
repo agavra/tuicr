@@ -7707,13 +7707,6 @@ impl App {
     }
 
     pub fn toggle_pr_review_requested_filter(&mut self) {
-        let Some(repository) = self.pr_tab.repository().cloned() else {
-            return;
-        };
-        if repository.kind != crate::forge::traits::ForgeKind::GitHub {
-            self.set_warning("Review-requested PR filter is only supported for GitHub");
-            return;
-        }
         let Some((repo, scope)) = self.pr_tab.toggle_scope_and_start_reload() else {
             return;
         };

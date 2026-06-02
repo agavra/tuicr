@@ -9,7 +9,7 @@ use crate::forge::remote_comments::RemoteReviewThread;
 use crate::forge::traits::{
     ForgeBackend, ForgeFileLinesRequest, ForgeRepository, GhCreateReviewResponse,
     PagedPullRequests, PullRequestCommit, PullRequestDetails, PullRequestListQuery,
-    PullRequestTarget,
+    PullRequestListScope, PullRequestTarget,
 };
 use crate::model::{DiffLine, LineOrigin};
 use crate::process::{
@@ -216,7 +216,7 @@ where
     fn list_pull_requests(&self, query: PullRequestListQuery) -> Result<PagedPullRequests> {
         let page_size = query.page_size.max(1);
         let requested = query.already_loaded + page_size + 1;
-        let args = vec![
+        let mut args = vec![
             "mr".to_string(),
             "list".to_string(),
             "--repo".to_string(),
@@ -226,6 +226,9 @@ where
             "--limit".to_string(),
             requested.to_string(),
         ];
+        if query.scope == PullRequestListScope::ReviewRequested {
+            args.push("--reviewer=@me".to_string());
+        }
         let output = self.run_glab(args, &query.repository.host)?;
         let rows: Vec<GlabMrSummary> = serde_json::from_str(&output)?;
         let has_more = rows.len() > query.already_loaded + page_size;
@@ -976,7 +979,10 @@ mod tests {
 
     use super::*;
     use crate::forge::submit::{GhSide, InlineComment};
-    use crate::forge::traits::{CreateReviewRequest, ForgeRepository, PullRequestDetails};
+    use crate::forge::traits::{
+        CreateReviewRequest, ForgeRepository, PullRequestDetails, PullRequestListQuery,
+        PullRequestListScope,
+    };
 
     /// Mock runner that records (args, stdin) calls.
     struct RecordingRunner {
@@ -1017,6 +1023,37 @@ mod tests {
                 .unwrap_or_default();
             Ok(resp)
         }
+    }
+
+    #[test]
+    fn list_pull_requests_can_filter_to_review_requested() {
+        let repo = ForgeRepository::gitlab("gitlab.com", "owner", "repo");
+        let runner = RecordingRunner::new_with_responses(vec!["[]".to_string()]);
+        let backend = GitLabGlabBackend::with_runner(None, runner);
+
+        backend
+            .list_pull_requests(PullRequestListQuery::first_page_with_scope(
+                repo,
+                1,
+                PullRequestListScope::ReviewRequested,
+            ))
+            .unwrap();
+
+        let calls = backend.runner.calls.borrow();
+        assert_eq!(
+            calls[0].0,
+            vec![
+                "mr",
+                "list",
+                "--repo",
+                "owner/repo",
+                "--output",
+                "json",
+                "--limit",
+                "2",
+                "--reviewer=@me",
+            ]
+        );
     }
 
     fn make_pr_details(repo: ForgeRepository) -> PullRequestDetails {
