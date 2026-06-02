@@ -135,25 +135,55 @@ pub(crate) fn delete_session_if_empty_in_dir(path: &Path, reviews_dir: &Path) ->
             return Ok(false);
         }
 
-        let slug = slug_for_session(&session)?.to_string();
-        let relative = path
-            .strip_prefix(reviews_dir)
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|_| path.to_path_buf());
-
-        let mut manifest = manifest::load_manifest(reviews_dir).unwrap_or_default();
-        if let Some(bucket) = manifest.entries.get_mut(&slug) {
-            bucket.retain(|entry| entry.path != relative);
-            if bucket.is_empty() {
-                manifest.entries.remove(&slug);
-            }
-            manifest::save_manifest(reviews_dir, &manifest)?;
-        }
-
-        fs::remove_file(path)?;
-
+        remove_session_at(path, reviews_dir, &session)?;
         Ok(true)
     })
+}
+
+/// Delete a session file and its manifest entry unconditionally. Returns
+/// `false` when there was no file to remove.
+///
+/// Unlike [`delete_session_if_empty`], this discards a session even when it
+/// has reviewed-file markers. It backs the "discard reviewed-only state on
+/// quit" path, where the session carries no comments worth keeping.
+pub(crate) fn delete_session(path: &Path) -> Result<bool> {
+    let reviews_dir = get_reviews_dir()?;
+    delete_session_in_dir(path, &reviews_dir)
+}
+
+pub(crate) fn delete_session_in_dir(path: &Path, reviews_dir: &Path) -> Result<bool> {
+    maybe_migrate(reviews_dir)?;
+    with_reviews_dir_lock(reviews_dir, || {
+        if !path.exists() {
+            return Ok(false);
+        }
+        let session = load_session(path)?;
+        remove_session_at(path, reviews_dir, &session)?;
+        Ok(true)
+    })
+}
+
+/// Remove `path` and prune its manifest entry. The caller must already hold
+/// the reviews-dir lock and have loaded `session` from `path`.
+fn remove_session_at(path: &Path, reviews_dir: &Path, session: &ReviewSession) -> Result<()> {
+    let slug = slug_for_session(session)?.to_string();
+    let relative = path
+        .strip_prefix(reviews_dir)
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|_| path.to_path_buf());
+
+    let mut manifest = manifest::load_manifest(reviews_dir).unwrap_or_default();
+    if let Some(bucket) = manifest.entries.get_mut(&slug) {
+        bucket.retain(|entry| entry.path != relative);
+        if bucket.is_empty() {
+            manifest.entries.remove(&slug);
+        }
+        manifest::save_manifest(reviews_dir, &manifest)?;
+    }
+
+    fs::remove_file(path)?;
+
+    Ok(())
 }
 
 pub(crate) fn mark_session_active(session: &ReviewSession, path: &Path) -> Result<()> {
@@ -809,6 +839,41 @@ mod tests {
         )
         .unwrap();
         assert!(sessions.is_none());
+    }
+
+    #[test]
+    fn should_delete_reviewed_only_session_unconditionally() {
+        let _g = with_test_reviews_dir();
+        let repo = make_repo();
+        let mut session = make_local_session(
+            repo.clone(),
+            "abc1234",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
+            None,
+        );
+        // Mark the file reviewed: `delete_session_if_empty` would refuse this,
+        // but `delete_session` discards it anyway.
+        session
+            .get_file_mut(&PathBuf::from("src/main.rs"))
+            .unwrap()
+            .reviewed = true;
+        let path = save_session(&session).unwrap();
+        assert!(path.exists());
+
+        assert!(!delete_session_if_empty(&path).unwrap());
+        assert!(path.exists(), "reviewed session must survive empty-delete");
+
+        assert!(delete_session(&path).unwrap());
+        assert!(!path.exists(), "reviewed-only session should be discarded");
+    }
+
+    #[test]
+    fn should_report_false_when_deleting_missing_session() {
+        let _g = with_test_reviews_dir();
+        let reviews_dir = get_reviews_dir().unwrap();
+        let missing = reviews_dir.join("does-not-exist.json");
+        assert!(!delete_session(&missing).unwrap());
     }
 
     #[test]

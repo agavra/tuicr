@@ -1988,6 +1988,28 @@ impl App {
         crate::persistence::storage::clear_active_session_for_pid()
     }
 
+    /// Discard this session's persisted state and quit.
+    ///
+    /// Used when the only unsaved change is reviewed-file markers (no
+    /// comments): rather than forcing `:q!`, we drop the persisted session so
+    /// reopening starts clean, then quit. Reviewed markers are persisted
+    /// eagerly, so the on-disk file is removed too.
+    pub fn discard_session_and_quit(&mut self) {
+        let path = self
+            .session_path
+            .clone()
+            .or_else(|| crate::persistence::storage::session_path(&self.session).ok());
+        if let Some(path) = path {
+            let _ = crate::persistence::storage::delete_session(&path);
+            self.ephemeral_session_paths.remove(&path);
+            if self.session_path.as_ref() == Some(&path) {
+                self.session_file_state = None;
+            }
+        }
+        self.dirty = false;
+        self.should_quit = true;
+    }
+
     pub fn save_current_session_merging_external(&mut self) -> Result<PathBuf> {
         let identity = self.session.clone();
         let current = self.session.clone();
@@ -11041,6 +11063,62 @@ index 1111111..2222222 100644
         // then
         assert_eq!(app.forge_repository.as_ref(), Some(&canonical));
         assert!(app.canonical_resolved);
+    }
+
+    #[test]
+    fn should_quit_on_q_when_only_reviewed_files_dirty() {
+        // given: a session dirtied only by a reviewed-file marker (no comments)
+        let mut app = build_app();
+        let path = PathBuf::from("src/main.rs");
+        app.session.add_file(path.clone(), FileStatus::Modified, 0);
+        app.session.get_file_mut(&path).unwrap().reviewed = true;
+        app.dirty = true;
+        assert!(!app.session.has_comments());
+        app.command_buffer = "q".to_string();
+
+        // when
+        crate::handler::handle_command_action(&mut app, crate::input::Action::SubmitInput);
+
+        // then: `:q` discards the reviewed-only state and quits, no `:q!` needed
+        assert!(app.should_quit);
+        assert!(!app.dirty);
+        assert!(
+            !matches!(
+                app.message.as_ref().map(|m| &m.message_type),
+                Some(MessageType::Error)
+            ),
+            "should not surface a no-write error"
+        );
+    }
+
+    #[test]
+    fn should_block_q_when_unsaved_comments_exist() {
+        // given: a session with an unsaved comment
+        let mut app = build_app();
+        let path = PathBuf::from("src/main.rs");
+        app.session.add_file(path.clone(), FileStatus::Modified, 0);
+        app.session
+            .get_file_mut(&path)
+            .unwrap()
+            .add_file_comment(crate::model::Comment::new(
+                "needs work".to_string(),
+                crate::model::CommentType::Note,
+                None,
+            ));
+        app.dirty = true;
+        assert!(app.session.has_comments());
+        app.command_buffer = "q".to_string();
+
+        // when
+        crate::handler::handle_command_action(&mut app, crate::input::Action::SubmitInput);
+
+        // then: the guard still requires `:q!`
+        assert!(!app.should_quit);
+        assert!(app.dirty);
+        assert_eq!(
+            app.message.as_ref().map(|m| m.message_type.clone()),
+            Some(MessageType::Error)
+        );
     }
 
     #[test]

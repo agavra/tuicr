@@ -687,8 +687,12 @@ impl CompletionResult {
 fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
     match kind {
         CommandKind::Quit => {
-            if app.dirty {
+            if app.dirty && app.session.has_comments() {
                 app.set_error("No write since last change (add ! to override)");
+            } else if app.dirty {
+                // Dirty from reviewed-file markers only: discard the state and
+                // quit instead of requiring `:q!`.
+                app.discard_session_and_quit();
             } else {
                 app.should_quit = true;
             }
@@ -1336,9 +1340,13 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
 
     match action {
         Action::Quit => {
-            if app.dirty && !app.quit_warned {
+            if app.dirty && app.session.has_comments() && !app.quit_warned {
                 app.set_sticky_warning("Unsaved changes. Press q again to quit.");
                 app.quit_warned = true;
+            } else if app.dirty && !app.session.has_comments() {
+                // Dirty from reviewed-file markers only: discard the state and
+                // quit instead of warning about unsaved changes.
+                app.discard_session_and_quit();
             } else {
                 app.should_quit = true;
             }

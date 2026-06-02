@@ -120,7 +120,7 @@ In command mode,
 | `:clearc` | Clear comments without clearing reviewed marks |
 | `:version` | Show tuicr version |
 | `:update` | Check for updates |
-| `:q` | Quit (warns if unsaved) |
+| `:q` | Quit (warns on unsaved comments; discards review-only state) |
 | `:q!` | Force quit |
 | `:x` / `:wq` | Save and quit (prompts to copy if comments exist) |
 | `ZZ` | Save and quit |
