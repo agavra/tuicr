@@ -15,23 +15,50 @@ session path, and last-seen timestamp. `tuicr review list` also includes an
 `active` boolean so agents can select the live session without guessing from
 timestamps.
 
-Session arguments accept either:
+Session arguments accept any of:
 
-- a slug from `tuicr review list`
-- a direct path to a session JSON file
+- a local slug from `tuicr review list`
+- a PR slug, e.g. `gh:slatedb/slatedb/pr/1745` (PR slugs resolve without `--repo`)
+- an absolute or relative path to a session JSON file (anything ending in
+  `.json` or that exists on disk is treated as a direct path)
 
 ## Commands
 
 ```bash
-tuicr review list --repo .
+tuicr review list --repo .                            # checkout + its repo's PR sessions
+tuicr review list --repo slatedb/slatedb              # all sessions for a forge repo
+tuicr review list --all                               # every session across all repos
 tuicr review comments --session agavra/tuicr@main/worktree
+tuicr review comments --session gh:slatedb/slatedb/pr/1745
 ```
-
-`--repo` defaults to the current directory and is only used when resolving a
-session slug. Direct session JSON paths do not need a repo.
 
 All `tuicr review` commands emit JSON by default. Timestamps are RFC3339 strings
 so callers can parse them without locale-specific handling.
+
+## The `--repo` selector
+
+`--repo` is a repo selector, not just a path. It accepts:
+
+- a checkout path (default `.`) — matches that checkout's local sessions and,
+  via its `origin` remote, any PR sessions for the same repo
+- a forge coordinate: `owner/repo`, `host/owner/repo`, `forge:host/owner/repo`,
+  or a repo / PR URL — matches local and PR sessions by `owner/repo`
+
+This is how PR sessions become discoverable. PR review sessions are keyed by
+forge coordinates rather than a local checkout, so naming the repo — either by
+standing in its checkout or passing `--repo slatedb/slatedb` — surfaces them.
+`list` emits a usable slug for each; pass a PR slug to `--session` to read or
+annotate it (no `--repo` needed, since PR slugs are self-contained).
+
+```bash
+# from anywhere:
+tuicr review list --repo slatedb/slatedb
+#   -> [ ..., { "slug": "gh:slatedb/slatedb/pr/1745", "kind": "pr", ... } ]
+tuicr review comments --session gh:slatedb/slatedb/pr/1745
+```
+
+`--repo` for `add` / `comments` is only consulted when resolving a *local*
+slug; PR slugs and JSON paths ignore it.
 
 ## Add Comments
 
@@ -111,6 +138,7 @@ Target types:
 [
   {
     "slug": "agavra/tuicr@main/worktree",
+    "kind": "local",
     "path": "/Users/alice/Library/Application Support/tuicr/reviews/sessions/9f6c1b3e09a54e2a.json",
     "updated_at": "2026-05-22T17:20:00Z",
     "comment_count": 1,
@@ -118,6 +146,25 @@ Target types:
     "file_count": 3,
     "anchor": "main",
     "active": true
+  }
+]
+```
+
+With `--all`, PR sessions appear alongside local ones with `"kind": "pr"` and a
+PR slug:
+
+```json
+[
+  {
+    "slug": "gh:slatedb/slatedb/pr/1745",
+    "kind": "pr",
+    "path": "/Users/alice/Library/Application Support/tuicr/reviews/sessions/172e168db0d525e5.json",
+    "updated_at": "2026-05-22T17:20:00Z",
+    "comment_count": 0,
+    "reviewed_count": 0,
+    "file_count": 12,
+    "anchor": "pr/1745",
+    "active": false
   }
 ]
 ```

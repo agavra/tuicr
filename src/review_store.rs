@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 
 use crate::error::{Result, TuicrError};
 use crate::model::{Comment, CommentType, LineRange, LineSide, ReviewSession};
+use crate::persistence::manifest::{ManifestEntry, ManifestKind};
 use crate::persistence::storage;
 
 /// File-backed access to persisted tuicr review sessions.
@@ -26,32 +27,41 @@ impl ReviewStore {
         }
     }
 
-    /// List persisted local sessions for a checkout.
+    /// List persisted sessions for a repo selector — a checkout path or a
+    /// forge coordinate like `owner/repo`. A checkout path matches its own
+    /// local sessions and, via its `origin` remote, any PR sessions for the
+    /// same repo; a coordinate matches local and PR sessions by `owner/repo`.
     pub fn list_sessions_for_repo(
         &self,
-        repo_path: impl AsRef<Path>,
+        selector: impl AsRef<Path>,
     ) -> Result<Vec<SessionSummary>> {
         let reviews_dir = self.reviews_dir()?;
-        let entries =
-            storage::list_local_sessions_for_repo_in_dir(&reviews_dir, repo_path.as_ref())?;
+        let entries = storage::list_sessions_for_selector_in_dir(&reviews_dir, selector.as_ref())?;
         let active_paths = storage::active_session_paths_in_dir(&reviews_dir)?;
         Ok(entries
             .into_iter()
-            .map(|(slug, entry)| {
-                let path = reviews_dir.join(entry.path);
-                let active = active_paths.contains(&storage::normalize_path_for_comparison(&path));
-                SessionSummary {
-                    session_ref: SessionRef::from_path(path),
-                    slug,
-                    updated_at: entry.updated_at,
-                    comment_count: entry.display.comment_count,
-                    reviewed_count: entry.display.reviewed_count,
-                    file_count: entry.display.file_count,
-                    anchor: entry.display.anchor,
-                    active,
-                }
-            })
+            .map(|(slug, entry)| summary_from_entry(&reviews_dir, &active_paths, slug, entry))
             .collect())
+    }
+
+    /// List every persisted session, local and PR, newest first. Backs
+    /// `tuicr review list --all` for when the caller does not know the repo.
+    pub fn list_all_sessions(&self) -> Result<Vec<SessionSummary>> {
+        let reviews_dir = self.reviews_dir()?;
+        let entries = storage::list_all_sessions_in_dir(&reviews_dir)?;
+        let active_paths = storage::active_session_paths_in_dir(&reviews_dir)?;
+        Ok(entries
+            .into_iter()
+            .map(|(slug, entry)| summary_from_entry(&reviews_dir, &active_paths, slug, entry))
+            .collect())
+    }
+
+    /// Resolve a PR session to its [`SessionRef`] from a PR slug
+    /// (`gh:owner/repo/pr/<n>`). Returns `None` when no PR session is
+    /// persisted for that slug.
+    pub fn resolve_pr_session(&self, slug: &str) -> Result<Option<SessionRef>> {
+        let reviews_dir = self.reviews_dir()?;
+        Ok(storage::pr_session_path_in_dir(&reviews_dir, slug)?.map(SessionRef::from_path))
     }
 
     /// Load a persisted review session.
@@ -87,6 +97,33 @@ impl ReviewStore {
     }
 }
 
+/// Build a [`SessionSummary`] from a manifest entry, resolving its absolute
+/// path and active state. Shared by the per-repo and `--all` listings.
+fn summary_from_entry(
+    reviews_dir: &Path,
+    active_paths: &std::collections::HashSet<PathBuf>,
+    slug: String,
+    entry: ManifestEntry,
+) -> SessionSummary {
+    let path = reviews_dir.join(entry.path);
+    let active = active_paths.contains(&storage::normalize_path_for_comparison(&path));
+    let kind = match entry.kind {
+        ManifestKind::Local => SessionKind::Local,
+        ManifestKind::Pr { .. } => SessionKind::Pr,
+    };
+    SessionSummary {
+        session_ref: SessionRef::from_path(path),
+        slug,
+        kind,
+        updated_at: entry.updated_at,
+        comment_count: entry.display.comment_count,
+        reviewed_count: entry.display.reviewed_count,
+        file_count: entry.display.file_count,
+        anchor: entry.display.anchor,
+        active,
+    }
+}
+
 /// Opaque reference to a persisted review session.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SessionRef {
@@ -103,11 +140,28 @@ impl SessionRef {
     }
 }
 
+/// Whether a persisted session tracks a local checkout or a forge PR.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionKind {
+    Local,
+    Pr,
+}
+
+impl SessionKind {
+    pub fn id(self) -> &'static str {
+        match self {
+            SessionKind::Local => "local",
+            SessionKind::Pr => "pr",
+        }
+    }
+}
+
 /// Lightweight metadata for a persisted session.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionSummary {
     pub session_ref: SessionRef,
     pub slug: String,
+    pub kind: SessionKind,
     pub updated_at: DateTime<Utc>,
     pub comment_count: usize,
     pub reviewed_count: usize,

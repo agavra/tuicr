@@ -171,16 +171,23 @@ struct PrCommand {
 /// Non-interactive review session commands.
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
 pub enum ReviewCommand {
-    /// List persisted review sessions for a checkout.
+    /// List persisted review sessions for a checkout or forge repo.
     List {
-        /// Checkout whose local sessions should be listed.
-        #[arg(long, value_name = "PATH", default_value = ".")]
+        /// Repo selector: a checkout path, or a forge coordinate like
+        /// `owner/repo`, `host/owner/repo`, or a repo/PR URL. A path also
+        /// surfaces PR sessions for that checkout's origin repo.
+        #[arg(long, value_name = "PATH|OWNER/REPO", default_value = ".")]
         repo: PathBuf,
+
+        /// List every persisted session (local and PR), ignoring --repo.
+        #[arg(long)]
+        all: bool,
     },
 
     /// Add a local draft comment to a persisted session.
     Add {
-        /// Session slug from `tuicr review list`, or path to a session JSON file.
+        /// Session slug from `tuicr review list` (local or PR), or path to a
+        /// session JSON file.
         #[arg(long, value_name = "SESSION")]
         session: String,
 
@@ -188,8 +195,9 @@ pub enum ReviewCommand {
         #[arg(long, value_name = "JSON|@FILE|-")]
         input: Option<String>,
 
-        /// Checkout used to resolve a session slug.
-        #[arg(long, value_name = "PATH", default_value = ".")]
+        /// Repo selector used to resolve a local session slug (path or
+        /// `owner/repo`). PR slugs and JSON paths resolve without it.
+        #[arg(long, value_name = "PATH|OWNER/REPO", default_value = ".")]
         repo: PathBuf,
 
         /// Comment classification.
@@ -232,12 +240,14 @@ pub enum ReviewCommand {
     /// Print comments stored in a persisted session.
     #[command(alias = "get")]
     Comments {
-        /// Session slug from `tuicr review list`, or path to a session JSON file.
+        /// Session slug from `tuicr review list` (local or PR), or path to a
+        /// session JSON file.
         #[arg(long, value_name = "SESSION")]
         session: String,
 
-        /// Checkout used to resolve a session slug.
-        #[arg(long, value_name = "PATH", default_value = ".")]
+        /// Repo selector used to resolve a local session slug (path or
+        /// `owner/repo`). PR slugs and JSON paths resolve without it.
+        #[arg(long, value_name = "PATH|OWNER/REPO", default_value = ".")]
         repo: PathBuf,
     },
 }
@@ -778,6 +788,33 @@ mod tests {
             parsed.review_command,
             Some(ReviewCommand::List {
                 repo: PathBuf::from("/tmp/repo"),
+                all: false,
+            })
+        );
+    }
+
+    #[test]
+    fn should_parse_review_list_all_flag() {
+        let parsed =
+            parse_for_test(&["tuicr", "review", "list", "--all"]).expect("parse should succeed");
+        assert_eq!(
+            parsed.review_command,
+            Some(ReviewCommand::List {
+                repo: PathBuf::from("."),
+                all: true,
+            })
+        );
+    }
+
+    #[test]
+    fn should_parse_review_list_by_coordinate() {
+        let parsed = parse_for_test(&["tuicr", "review", "list", "--repo", "slatedb/slatedb"])
+            .expect("parse should succeed");
+        assert_eq!(
+            parsed.review_command,
+            Some(ReviewCommand::List {
+                repo: PathBuf::from("slatedb/slatedb"),
+                all: false,
             })
         );
     }

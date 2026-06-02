@@ -326,6 +326,91 @@ impl From<&PrSessionKey> for Slug {
     }
 }
 
+// ----- Repository coordinate -----
+
+/// The repository half of a session identity: `owner/repo`, with the owner
+/// optional for local checkouts that have no `origin` remote.
+///
+/// This is the unit `tuicr review list --repo` matches on. Because every slug
+/// — local or PR — carries the same coordinate, one selector pulls in both a
+/// checkout's local sessions and the forge PR sessions for the same repo.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoCoordinate {
+    pub owner: Option<String>,
+    pub repo: String,
+}
+
+impl RepoCoordinate {
+    /// The coordinate a slug belongs to.
+    pub fn from_slug(slug: &Slug) -> Self {
+        match slug {
+            Slug::Local(local) => Self {
+                owner: local.owner.clone(),
+                repo: local.repo.clone(),
+            },
+            Slug::Pr(pr) => Self {
+                owner: Some(pr.owner.clone()),
+                repo: pr.repo.clone(),
+            },
+        }
+    }
+
+    /// The coordinate of a local checkout, from its `origin` remote (falling
+    /// back to the directory name with no owner).
+    pub fn from_repo_path(repo_path: &Path) -> Option<Self> {
+        let (owner, repo) = resolve_owner_repo(repo_path).ok()?;
+        Some(Self { owner, repo })
+    }
+
+    /// Parse a user-supplied repo selector: `owner/repo`, `host/owner/repo`,
+    /// `forge:host/owner/repo`, or an HTTPS / SSH / SCP URL. The last two path
+    /// segments become `owner/repo` (so nested GitLab subgroups degrade
+    /// gracefully); a lone segment yields a repo with no owner. A trailing
+    /// `.git` is stripped.
+    pub fn parse(input: &str) -> Option<Self> {
+        let trimmed = input.trim();
+        let without_forge = trimmed.strip_prefix("forge:").unwrap_or(trimmed);
+        let without_scheme = without_forge
+            .split_once("://")
+            .map(|(_, rest)| rest)
+            .unwrap_or(without_forge);
+        // SCP-style `git@host:owner/repo`: drop the user, treat `:` as a sep.
+        let normalized = match without_scheme.split_once('@') {
+            Some((_, rest)) => rest.replacen(':', "/", 1),
+            None => without_scheme.to_string(),
+        };
+        let segments: Vec<&str> = normalized
+            .trim_matches('/')
+            .split('/')
+            .filter(|seg| !seg.is_empty())
+            .collect();
+        let repo_raw = segments.last()?;
+        let repo = repo_raw.strip_suffix(".git").unwrap_or(repo_raw);
+        if repo.is_empty() {
+            return None;
+        }
+        let owner = (segments.len() >= 2).then(|| segments[segments.len() - 2].to_string());
+        Some(Self {
+            owner,
+            repo: repo.to_string(),
+        })
+    }
+
+    /// Whether `candidate` belongs to the repo this coordinate names. Repo
+    /// names compare case-insensitively; owners are compared only when both
+    /// sides have one, so a checkout without a remote still matches an
+    /// `owner/repo` selector by repo name.
+    pub fn matches(&self, candidate: &RepoCoordinate) -> bool {
+        if !self.repo.eq_ignore_ascii_case(&candidate.repo) {
+            return false;
+        }
+        match (self.owner.as_deref(), candidate.owner.as_deref()) {
+            (Some(target), Some(actual)) => target.eq_ignore_ascii_case(actual),
+            _ => true,
+        }
+    }
+}
+
 // ----- Derivation from local session inputs -----
 
 #[derive(Debug, thiserror::Error)]
@@ -846,5 +931,86 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, SlugDeriveError::PullRequestNotLocal));
+    }
+
+    // ---------- RepoCoordinate ----------
+
+    fn coord(owner: Option<&str>, repo: &str) -> RepoCoordinate {
+        RepoCoordinate {
+            owner: owner.map(str::to_string),
+            repo: repo.to_string(),
+        }
+    }
+
+    #[test]
+    fn should_parse_repo_coordinate_forms() {
+        for input in [
+            "slatedb/slatedb",
+            "github.com/slatedb/slatedb",
+            "forge:github.com/slatedb/slatedb",
+            "https://github.com/slatedb/slatedb.git",
+            "git@github.com:slatedb/slatedb.git",
+            "ssh://git@github.com/slatedb/slatedb",
+        ] {
+            assert_eq!(
+                RepoCoordinate::parse(input),
+                Some(coord(Some("slatedb"), "slatedb")),
+                "parsing {input}"
+            );
+        }
+    }
+
+    #[test]
+    fn should_parse_bare_repo_name_without_owner() {
+        assert_eq!(
+            RepoCoordinate::parse("slatedb"),
+            Some(coord(None, "slatedb"))
+        );
+    }
+
+    #[test]
+    fn should_take_last_two_segments_for_nested_groups() {
+        assert_eq!(
+            RepoCoordinate::parse("gitlab.com/org/team/svc"),
+            Some(coord(Some("team"), "svc"))
+        );
+    }
+
+    #[test]
+    fn should_reject_empty_repo_coordinate() {
+        assert_eq!(RepoCoordinate::parse(""), None);
+        assert_eq!(RepoCoordinate::parse("forge:"), None);
+    }
+
+    #[test]
+    fn should_derive_coordinate_from_local_and_pr_slugs() {
+        let local: Slug = "agavra/tuicr@main/worktree/abc1234".parse().unwrap();
+        assert_eq!(
+            RepoCoordinate::from_slug(&local),
+            coord(Some("agavra"), "tuicr")
+        );
+        let pr: Slug = "gh:slatedb/slatedb/pr/1745".parse().unwrap();
+        assert_eq!(
+            RepoCoordinate::from_slug(&pr),
+            coord(Some("slatedb"), "slatedb")
+        );
+    }
+
+    #[test]
+    fn should_match_coordinate_case_insensitively() {
+        assert!(coord(Some("SlateDB"), "SlateDB").matches(&coord(Some("slatedb"), "slatedb")));
+    }
+
+    #[test]
+    fn should_match_when_either_side_has_no_owner() {
+        // A no-remote checkout (no owner) still matches an owner/repo selector.
+        assert!(coord(Some("slatedb"), "slatedb").matches(&coord(None, "slatedb")));
+        assert!(coord(None, "slatedb").matches(&coord(Some("slatedb"), "slatedb")));
+    }
+
+    #[test]
+    fn should_not_match_different_owner_or_repo() {
+        assert!(!coord(Some("a"), "repo").matches(&coord(Some("b"), "repo")));
+        assert!(!coord(Some("a"), "repo").matches(&coord(Some("a"), "other")));
     }
 }

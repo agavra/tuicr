@@ -37,7 +37,7 @@ use crate::model::review::SessionDiffSource;
 use crate::persistence::manifest::{
     self, MANIFEST_FILENAME, ManifestEntry, ManifestKind, SESSIONS_DIRNAME,
 };
-use crate::slug::{self, Slug};
+use crate::slug::{self, RepoCoordinate, Slug};
 
 const STORAGE_LOCK_FILENAME: &str = ".tuicr.lock";
 const STORAGE_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
@@ -510,24 +510,105 @@ pub fn load_latest_session_for_context(
     Ok(Some((full_path, session)))
 }
 
-pub(crate) fn list_local_sessions_for_repo_in_dir(
+pub(crate) fn list_sessions_for_selector_in_dir(
     reviews_dir: &Path,
-    repo_path: &Path,
+    selector: &Path,
 ) -> Result<Vec<(String, ManifestEntry)>> {
     maybe_migrate(reviews_dir)?;
 
     let manifest = manifest::load_manifest(reviews_dir).unwrap_or_default();
-    let canonical = fs::canonicalize(repo_path).unwrap_or_else(|_| repo_path.to_path_buf());
+    let target = RepoSelector::resolve(selector);
     let mut entries: Vec<_> = manifest
         .iter()
-        .filter_map(|(slug, entry)| {
-            let matches_repo = matches!(entry.kind, ManifestKind::Local)
-                && entry.canonical_repo_path.as_deref() == Some(canonical.as_path());
-            matches_repo.then(|| (slug.clone(), entry.clone()))
-        })
+        .filter(|(slug, entry)| target.matches(slug, entry))
+        .map(|(slug, entry)| (slug.clone(), entry.clone()))
         .collect();
     entries.sort_by_key(|(_, entry)| Reverse(entry.updated_at));
     Ok(entries)
+}
+
+/// How `tuicr review list --repo <value>` interprets its argument.
+///
+/// A local directory is matched precisely by canonical path (so two checkouts
+/// of the same repo stay separate) and contributes an `owner/repo` coordinate
+/// derived from its `origin` remote. A non-directory value is parsed directly
+/// as a forge coordinate (`owner/repo`, `host/owner/repo`, or a repo/PR URL).
+///
+/// Local sessions match by canonical path when one is known, otherwise by
+/// coordinate. PR sessions have no checkout, so they always match by
+/// `owner/repo` — which is what lets `--repo slatedb/slatedb` (or a slatedb
+/// checkout) surface its PR sessions.
+struct RepoSelector {
+    canonical_path: Option<PathBuf>,
+    coordinate: Option<RepoCoordinate>,
+}
+
+impl RepoSelector {
+    fn resolve(selector: &Path) -> Self {
+        if selector.is_dir() {
+            Self {
+                canonical_path: Some(
+                    fs::canonicalize(selector).unwrap_or_else(|_| selector.to_path_buf()),
+                ),
+                coordinate: RepoCoordinate::from_repo_path(selector),
+            }
+        } else {
+            Self {
+                canonical_path: None,
+                coordinate: RepoCoordinate::parse(&selector.to_string_lossy()),
+            }
+        }
+    }
+
+    fn matches(&self, slug: &str, entry: &ManifestEntry) -> bool {
+        match entry.kind {
+            // A local session is tied to a physical checkout: match it by
+            // canonical path when the selector named one, else by coordinate.
+            ManifestKind::Local => match &self.canonical_path {
+                Some(canonical) => {
+                    entry.canonical_repo_path.as_deref() == Some(canonical.as_path())
+                }
+                None => self.coordinate_matches(slug),
+            },
+            // A PR session has no checkout, so it always matches by coordinate
+            // — this is what surfaces a repo's PR sessions from its checkout.
+            ManifestKind::Pr { .. } => self.coordinate_matches(slug),
+        }
+    }
+
+    fn coordinate_matches(&self, slug: &str) -> bool {
+        let (Some(target), Ok(slug)) = (self.coordinate.as_ref(), slug.parse::<Slug>()) else {
+            return false;
+        };
+        target.matches(&RepoCoordinate::from_slug(&slug))
+    }
+}
+
+/// List every persisted session (local and PR), newest first. Backs
+/// `tuicr review list --all`, which surfaces every session regardless of repo.
+pub(crate) fn list_all_sessions_in_dir(reviews_dir: &Path) -> Result<Vec<(String, ManifestEntry)>> {
+    maybe_migrate(reviews_dir)?;
+
+    let manifest = manifest::load_manifest(reviews_dir).unwrap_or_default();
+    let mut entries: Vec<_> = manifest
+        .iter()
+        .map(|(slug, entry)| (slug.clone(), entry.clone()))
+        .collect();
+    entries.sort_by_key(|(_, entry)| Reverse(entry.updated_at));
+    Ok(entries)
+}
+
+/// Resolve a PR session's on-disk path from its slug, consulting the manifest.
+/// Returns `None` when no PR entry exists for the slug. Unlike
+/// [`load_pr_session`], the caller does not need to know the head SHA: the
+/// manifest holds a single entry per PR slug (the current head's session).
+pub(crate) fn pr_session_path_in_dir(reviews_dir: &Path, slug: &str) -> Result<Option<PathBuf>> {
+    maybe_migrate(reviews_dir)?;
+
+    let manifest = manifest::load_manifest(reviews_dir).unwrap_or_default();
+    Ok(manifest
+        .get_pr(slug)
+        .map(|entry| reviews_dir.join(&entry.path)))
 }
 
 /// Look up the persisted PR session for a key. Returns `None` if no entry
@@ -1300,6 +1381,81 @@ mod tests {
         )
         .unwrap();
         assert!(loaded.is_none());
+    }
+
+    // ---- Repo-coordinate selector ----
+
+    #[test]
+    fn should_find_pr_session_by_repo_coordinate() {
+        let _g = with_test_reviews_dir();
+        let reviews_dir = get_reviews_dir().unwrap();
+        let key = make_pr_key(125, "abcdef0123456789");
+        save_session(&make_pr_session(&key)).unwrap();
+
+        let listed =
+            list_sessions_for_selector_in_dir(&reviews_dir, Path::new("agavra/tuicr")).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].0, "gh:agavra/tuicr/pr/125");
+    }
+
+    #[test]
+    fn should_not_match_pr_session_for_unrelated_coordinate() {
+        let _g = with_test_reviews_dir();
+        let reviews_dir = get_reviews_dir().unwrap();
+        save_session(&make_pr_session(&make_pr_key(125, "abcdef0123456789"))).unwrap();
+
+        let listed =
+            list_sessions_for_selector_in_dir(&reviews_dir, Path::new("other/project")).unwrap();
+        assert!(listed.is_empty());
+    }
+
+    #[test]
+    fn should_match_local_and_pr_sessions_sharing_repo_name_by_coordinate() {
+        let _g = with_test_reviews_dir();
+        let reviews_dir = get_reviews_dir().unwrap();
+
+        // A local checkout whose directory name is the repo name (no origin,
+        // so the local slug carries no owner) plus a PR session for the same
+        // repo. A `--repo agavra/tuicr` coordinate should surface both.
+        let base = std::env::temp_dir().join(format!("tuicr-coord-{}", uuid::Uuid::new_v4()));
+        let local_repo = base.join("tuicr");
+        fs::create_dir_all(&local_repo).unwrap();
+        save_session(&make_local_session(
+            local_repo.clone(),
+            "abc1234",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
+            None,
+        ))
+        .unwrap();
+        save_session(&make_pr_session(&make_pr_key(125, "abcdef0123456789"))).unwrap();
+
+        let listed =
+            list_sessions_for_selector_in_dir(&reviews_dir, Path::new("agavra/tuicr")).unwrap();
+        let slugs: Vec<&str> = listed.iter().map(|(slug, _)| slug.as_str()).collect();
+        assert!(slugs.iter().any(|s| s.starts_with("tuicr@main/worktree")));
+        assert!(slugs.contains(&"gh:agavra/tuicr/pr/125"));
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn should_match_local_session_by_canonical_path_in_path_mode() {
+        let _g = with_test_reviews_dir();
+        let reviews_dir = get_reviews_dir().unwrap();
+        let repo = make_repo();
+        save_session(&make_local_session(
+            repo.clone(),
+            "abc1234",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
+            None,
+        ))
+        .unwrap();
+
+        let listed = list_sessions_for_selector_in_dir(&reviews_dir, &repo).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert!(matches!(listed[0].1.kind, ManifestKind::Local));
     }
 
     // ---- Branch sanitization in slug ----

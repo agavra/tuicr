@@ -39,8 +39,15 @@ If the user's intent is ambiguous, ask which workflow they want.
 2. List persisted sessions:
 
    ```bash
-   tuicr review list --repo /path/to/repo
+   tuicr review list --repo /path/to/repo   # checkout + its repo's PR sessions
+   tuicr review list --repo owner/repo      # all sessions for a forge repo
+   tuicr review list --all                  # every session across all repos
    ```
+
+   `--repo` is a selector: a checkout path also surfaces PR sessions for that
+   checkout's `origin` repo, and a forge coordinate like `owner/repo` matches
+   local and PR sessions by owner/repo. Each row carries a `kind` (`local` or
+   `pr`) and a usable `slug`. Use `--all` when you don't know the repo.
 
 3. Choose the session:
    - If the CLI clearly reports exactly one relevant active session with
@@ -48,6 +55,9 @@ If the user's intent is ambiguous, ask which workflow they want.
    - If multiple sessions are active, or the correct session is not clear, ask
      the user which slug to use.
    - If the user provided a slug or session JSON path, use it directly.
+   - For a PR review, pass the PR slug from the listing (e.g.
+     `gh:owner/repo/pr/N`) to `--session`; it is self-contained and needs no
+     `--repo`.
    - If there is no active session, start or wait for one as described below.
    - Until active-session discovery is formalized as a stable protocol, treat
      `"active": true` as a convenience signal. If slug resolution fails, ask the

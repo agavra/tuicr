@@ -14,6 +14,7 @@ use crate::model::{Comment, CommentType, LineRange, LineSide, ReviewSession};
 use crate::review_store::{
     AddCommentRequest, CommentTarget, ReviewStore, SessionRef, SessionSummary,
 };
+use crate::slug::Slug;
 
 pub fn run(command: ReviewCommand) -> Result<()> {
     let mut stdout = io::stdout();
@@ -22,7 +23,7 @@ pub fn run(command: ReviewCommand) -> Result<()> {
 
 fn run_with_writer(command: ReviewCommand, out: &mut impl Write) -> Result<()> {
     match command {
-        ReviewCommand::List { repo } => list_sessions(&repo, out),
+        ReviewCommand::List { repo, all } => list_sessions(&repo, all, out),
         ReviewCommand::Add {
             session,
             input,
@@ -53,10 +54,14 @@ fn run_with_writer(command: ReviewCommand, out: &mut impl Write) -> Result<()> {
     }
 }
 
-fn list_sessions(repo: &Path, out: &mut impl Write) -> Result<()> {
+fn list_sessions(repo: &Path, all: bool, out: &mut impl Write) -> Result<()> {
     let store = ReviewStore::new();
-    let output: Vec<_> = store
-        .list_sessions_for_repo(repo)?
+    let summaries = if all {
+        store.list_all_sessions()?
+    } else {
+        store.list_sessions_for_repo(repo)?
+    };
+    let output: Vec<_> = summaries
         .into_iter()
         .map(SessionSummaryOutput::from)
         .collect();
@@ -335,6 +340,17 @@ fn resolve_session_ref(store: &ReviewStore, repo: &Path, session: &str) -> Resul
         return Ok(SessionRef::from_path(direct_path));
     }
 
+    // PR sessions are keyed by forge coordinates, not a local checkout, so they
+    // resolve from the manifest by slug rather than the per-repo listing.
+    if matches!(session.parse::<Slug>(), Ok(Slug::Pr(_))) {
+        return match store.resolve_pr_session(session)? {
+            Some(session_ref) => Ok(session_ref),
+            None => Err(TuicrError::InvalidInput(format!(
+                "no PR session found for '{session}'. Run `tuicr review list --all` to see available sessions."
+            ))),
+        };
+    }
+
     let matches: Vec<_> = store
         .list_sessions_for_repo(repo)?
         .into_iter()
@@ -498,6 +514,7 @@ fn lifecycle_id(state: CommentLifecycleState) -> &'static str {
 #[derive(Debug, Serialize)]
 struct SessionSummaryOutput {
     slug: String,
+    kind: &'static str,
     path: String,
     updated_at: String,
     comment_count: usize,
@@ -511,6 +528,7 @@ impl From<SessionSummary> for SessionSummaryOutput {
     fn from(summary: SessionSummary) -> Self {
         Self {
             slug: summary.slug,
+            kind: summary.kind.id(),
             path: summary.session_ref.path().display().to_string(),
             updated_at: summary.updated_at.to_rfc3339(),
             comment_count: summary.comment_count,
@@ -698,6 +716,104 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    fn save_pr_session(store: &ReviewStore) -> SessionRef {
+        use crate::forge::traits::{ForgeRepository, PrSessionKey};
+
+        let key = PrSessionKey::new(
+            ForgeRepository::github("github.com", "slatedb", "slatedb"),
+            1745,
+            "43e3566924690c06a45b2177b4dd2df59a0f09c6".to_string(),
+        );
+        let mut session = ReviewSession::new(
+            PathBuf::from("forge:github.com/slatedb/slatedb"),
+            key.head_sha.clone(),
+            Some("reviews".to_string()),
+            SessionDiffSource::PullRequest,
+        );
+        session.pr_session_key = Some(key);
+        store.save_review(&session).unwrap()
+    }
+
+    #[test]
+    fn should_find_pr_session_by_repo_coordinate() {
+        let temp = tempdir().unwrap();
+        let store = ReviewStore::with_reviews_dir(temp.path().join("reviews"));
+        let session_ref = save_pr_session(&store);
+
+        // A bare repo coordinate surfaces the PR session and emits its slug.
+        let listed = store
+            .list_sessions_for_repo(Path::new("slatedb/slatedb"))
+            .unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].slug, "gh:slatedb/slatedb/pr/1745");
+        assert_eq!(listed[0].kind, crate::review_store::SessionKind::Pr);
+
+        // The emitted slug resolves the same way regardless of --repo.
+        let resolved =
+            resolve_session_ref(&store, Path::new("slatedb/slatedb"), &listed[0].slug).unwrap();
+        assert_eq!(resolved, session_ref);
+    }
+
+    #[test]
+    fn should_match_pr_session_via_forge_repo_path_coordinate() {
+        let temp = tempdir().unwrap();
+        let store = ReviewStore::with_reviews_dir(temp.path().join("reviews"));
+        save_pr_session(&store);
+
+        // The `forge:host/owner/repo` form (as stored on disk) also resolves.
+        let listed = store
+            .list_sessions_for_repo(Path::new("forge:github.com/slatedb/slatedb"))
+            .unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].slug, "gh:slatedb/slatedb/pr/1745");
+    }
+
+    #[test]
+    fn should_not_match_pr_session_for_unrelated_repo() {
+        let temp = tempdir().unwrap();
+        let store = ReviewStore::with_reviews_dir(temp.path().join("reviews"));
+        save_pr_session(&store);
+
+        assert!(
+            store
+                .list_sessions_for_repo(Path::new("other/project"))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn should_list_pr_session_in_list_all() {
+        let temp = tempdir().unwrap();
+        let store = ReviewStore::with_reviews_dir(temp.path().join("reviews"));
+        save_pr_session(&store);
+
+        let all = store.list_all_sessions().unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].slug, "gh:slatedb/slatedb/pr/1745");
+    }
+
+    #[test]
+    fn should_resolve_pr_session_by_slug_without_repo() {
+        let temp = tempdir().unwrap();
+        let store = ReviewStore::with_reviews_dir(temp.path().join("reviews"));
+        let session_ref = save_pr_session(&store);
+
+        // PR slugs are self-contained: `--repo` is irrelevant.
+        let resolved =
+            resolve_session_ref(&store, Path::new("."), "gh:slatedb/slatedb/pr/1745").unwrap();
+        assert_eq!(resolved, session_ref);
+    }
+
+    #[test]
+    fn should_error_for_unknown_pr_slug() {
+        let temp = tempdir().unwrap();
+        let reviews = temp.path().join("reviews");
+        let store = ReviewStore::with_reviews_dir(&reviews);
+        let err = resolve_session_ref(&store, Path::new("."), "gh:nope/nope/pr/9999").unwrap_err();
+        assert!(matches!(err, TuicrError::InvalidInput(_)));
     }
 
     #[test]
