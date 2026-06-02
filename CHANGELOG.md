@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.17.0] - 2026-06-02
+
+### Bug Fixes
+
+- **ui:** Preserve wrapped revision headers (#387)
+- **gitlab:** Use full URL in --repo flag for non-default hosts (#392)
+- **git:** Preserve revision diff endpoints (#395)
+
+### Features
+
+- **vcs:** Add whitespace-ignore diffs (#376)
+- (cosmetic) delta-style box separator between files in multi-file view (#379)
+- Tab unhides the file list, Esc hides it (#373)
+- Gutter-aligned word wrap with continuation marker (#382)
+- **commands:** Add command prompt completion (#386)
+- Open focused file in editor (#377)
+- **theme:** Bundle higher-contrast syntax for tokyo-night-day (#389)
+- Allow :q to quit when only files are marked reviewed (#397)
+
+### Refactor
+
+- **commands:** Add command registry (#375)
 ## [0.16.1] - 2026-05-26
 
 ### Bug Fixes
