@@ -12,7 +12,10 @@ categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 # TUI framework
-ratatui = "0.30"
+# `unstable-rendered-line-info` exposes `Paragraph::line_count`, which we use to
+# measure each line's word-wrapped height with ratatui's own wrapping engine so
+# per-row diff backgrounds/overlays align exactly with the rendered text.
+ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
 crossterm = "0.29"
 
 # Git operations

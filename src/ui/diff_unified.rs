@@ -1087,9 +1087,17 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
 
     let scroll_offset = app.diff_state.scroll_offset;
     let wrap = app.diff_state.wrap_lines;
+    // Word-wrap-accurate visual row count per line, shared by every row-mapping
+    // consumer below so per-row backgrounds and overlays align with the
+    // rendered (word-wrapped) paragraph rather than drifting on prose lines.
+    let row_heights = crate::ui::diff_view::compute_row_heights(
+        &visible_lines_unscrolled,
+        wrap,
+        inner.width as usize,
+    );
     app.diff_state.visible_line_count = populate_row_to_annotation(
         &mut app.diff_row_to_annotation,
-        &line_widths,
+        &row_heights,
         inner.width as usize,
         inner.height as usize,
         wrap,
@@ -1120,9 +1128,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
         frame,
         inner,
         &visible_lines_unscrolled_for_bg,
-        &line_widths,
-        app.diff_state.wrap_lines,
-        inner.width as usize,
+        &row_heights,
         |_idx, line| unified_line_bg_style(line, &app.theme),
     );
 
@@ -1130,6 +1136,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
         inner,
         visible_lines_unscrolled: &visible_lines_unscrolled_for_bg,
         line_widths: &line_widths,
+        row_heights: &row_heights,
         wrap_lines: app.diff_state.wrap_lines,
         viewport_width: inner.width as usize,
         scroll_x,
@@ -1157,9 +1164,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
             frame,
             inner,
             &visible_lines_unscrolled_for_bg,
-            &line_widths,
-            app.diff_state.wrap_lines,
-            inner.width as usize,
+            &row_heights,
             |idx, _line| {
                 is_line_highlighted(app, idx).then(|| Style::default().bg(app.theme.cursor_line_bg))
             },
@@ -1196,21 +1201,10 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
             let viewport_width = inner.width as usize;
 
             if app.diff_state.wrap_lines && viewport_width > 0 {
-                // Calculate how many visual rows the lines before cursor take
-                // Note: line_widths is indexed from 0 and corresponds to visible lines
-                // (i.e., line_widths[0] is the first visible line after scroll)
+                // Sum the word-wrap-accurate heights of the lines before the
+                // cursor so the terminal cursor lands on the right visual row.
                 for i in 0..logical_offset {
-                    if i < line_widths.len() {
-                        let width = line_widths[i];
-                        let rows = if width == 0 {
-                            1
-                        } else {
-                            width.div_ceil(viewport_width)
-                        };
-                        visual_row += rows as u16;
-                    } else {
-                        visual_row += 1;
-                    }
+                    visual_row += row_heights.get(i).copied().unwrap_or(1) as u16;
                 }
             } else {
                 visual_row = logical_offset as u16;

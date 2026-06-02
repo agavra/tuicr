@@ -722,9 +722,15 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
 
     let scroll_offset = app.diff_state.scroll_offset;
     let wrap = app.diff_state.wrap_lines;
+    // Word-wrap-accurate visual row count per line; see `compute_row_heights`.
+    let row_heights = crate::ui::diff_view::compute_row_heights(
+        &visible_lines_unscrolled,
+        wrap,
+        inner.width as usize,
+    );
     app.diff_state.visible_line_count = populate_row_to_annotation(
         &mut app.diff_row_to_annotation,
-        &line_widths,
+        &row_heights,
         inner.width as usize,
         inner.height as usize,
         wrap,
@@ -754,6 +760,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
         inner,
         visible_lines_unscrolled: &visible_lines_unscrolled_for_overlay,
         line_widths: &line_widths,
+        row_heights: &row_heights,
         wrap_lines: app.diff_state.wrap_lines,
         viewport_width: inner.width as usize,
         scroll_x,
@@ -818,17 +825,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
 
             if app.diff_state.wrap_lines && viewport_width > 0 {
                 for i in 0..logical_offset {
-                    if i < line_widths.len() {
-                        let width = line_widths[i];
-                        let rows = if width == 0 {
-                            1
-                        } else {
-                            width.div_ceil(viewport_width)
-                        };
-                        visual_row += rows as u16;
-                    } else {
-                        visual_row += 1;
-                    }
+                    visual_row += row_heights.get(i).copied().unwrap_or(1) as u16;
                 }
             } else {
                 visual_row = logical_offset as u16;

@@ -3,6 +3,7 @@ use ratatui::{
     layout::Rect,
     style::Style,
     text::{Line, Span},
+    widgets::{Paragraph, Wrap},
 };
 
 use crate::app::{
@@ -266,7 +267,7 @@ pub(super) fn scroll_comment_input_into_view(
 /// capacity to avoid per-frame allocations.
 pub(super) fn populate_row_to_annotation(
     out: &mut Vec<usize>,
-    line_widths: &[usize],
+    row_heights: &[usize],
     viewport_width: usize,
     viewport_height: usize,
     wrap: bool,
@@ -277,12 +278,7 @@ pub(super) fn populate_row_to_annotation(
     if wrap && viewport_width > 0 {
         let mut visual_rows_used = 0;
         let mut logical_lines_visible = 0;
-        for (i, &width) in line_widths.iter().enumerate() {
-            let rows_for_line = if width == 0 {
-                1
-            } else {
-                width.div_ceil(viewport_width)
-            };
+        for (i, &rows_for_line) in row_heights.iter().enumerate() {
             if visual_rows_used + rows_for_line > viewport_height {
                 break;
             }
@@ -294,7 +290,7 @@ pub(super) fn populate_row_to_annotation(
         }
         logical_lines_visible.max(1)
     } else {
-        for i in 0..line_widths.len().min(viewport_height) {
+        for i in 0..row_heights.len().min(viewport_height) {
             out.push(scroll_offset + i);
         }
         viewport_height
@@ -512,9 +508,7 @@ pub(super) fn paint_unified_diff_rows_with<F>(
     frame: &mut Frame,
     inner: Rect,
     visible_lines_unscrolled: &[Line],
-    line_widths: &[usize],
-    wrap_lines: bool,
-    viewport_width: usize,
+    row_heights: &[usize],
     style_for: F,
 ) where
     F: Fn(usize, &Line) -> Option<Style>,
@@ -526,16 +520,7 @@ pub(super) fn paint_unified_diff_rows_with<F>(
             break;
         }
 
-        let rows_for_line = if wrap_lines && viewport_width > 0 {
-            let width = line_widths.get(idx).copied().unwrap_or(0);
-            if width == 0 {
-                1
-            } else {
-                width.div_ceil(viewport_width)
-            }
-        } else {
-            1
-        };
+        let rows_for_line = visual_rows_for_line(row_heights, idx);
 
         if let Some(row_style) = style_for(idx, line) {
             for _ in 0..rows_for_line {
@@ -598,6 +583,10 @@ pub(super) struct DiffOverlayPaint<'a> {
     pub inner: Rect,
     pub visible_lines_unscrolled: &'a [Line<'a>],
     pub line_widths: &'a [usize],
+    /// Visual row count per logical line (word-wrap aware); see
+    /// [`compute_row_heights`]. Kept alongside `line_widths`, which is still
+    /// used for content-width math (right-border fill, horizontal scroll).
+    pub row_heights: &'a [usize],
     pub wrap_lines: bool,
     pub viewport_width: usize,
     pub scroll_x: usize,
@@ -649,7 +638,7 @@ pub(super) fn paint_comment_box_right_border(frame: &mut Frame, ctx: &DiffOverla
         if visual_row >= ctx.inner.height as usize {
             break;
         }
-        let rows = visual_rows_for_line(ctx.line_widths, idx, ctx.wrap_lines, ctx.viewport_width);
+        let rows = visual_rows_for_line(ctx.row_heights, idx);
         if let Some(pos) = comment_box_row(line) {
             let fg = line
                 .spans
@@ -748,7 +737,7 @@ pub(super) fn paint_comment_box_bar(frame: &mut Frame, ctx: &DiffOverlayPaint) {
         }
         let logical = ctx.scroll_offset + idx;
         row_visual.push((logical, ctx.inner.y + visual_row as u16));
-        let rows = visual_rows_for_line(ctx.line_widths, idx, ctx.wrap_lines, ctx.viewport_width);
+        let rows = visual_rows_for_line(ctx.row_heights, idx);
         visual_row += rows;
     }
 
@@ -796,7 +785,7 @@ pub(super) fn paint_section_highlight(frame: &mut Frame, ctx: &DiffOverlayPaint)
         if visual_row >= ctx.inner.height as usize {
             break;
         }
-        let rows = visual_rows_for_line(ctx.line_widths, idx, ctx.wrap_lines, ctx.viewport_width);
+        let rows = visual_rows_for_line(ctx.row_heights, idx);
         if is_section_highlight_line(line) {
             for r in 0..rows {
                 if visual_row + r >= ctx.inner.height as usize {
@@ -840,7 +829,7 @@ pub(super) fn paint_file_header_fill(frame: &mut Frame, ctx: &DiffOverlayPaint) 
         if visual_row >= ctx.inner.height as usize {
             break;
         }
-        let rows = visual_rows_for_line(ctx.line_widths, idx, ctx.wrap_lines, ctx.viewport_width);
+        let rows = visual_rows_for_line(ctx.row_heights, idx);
         if is_file_header_line(line) {
             let fg = line
                 .spans
@@ -894,22 +883,39 @@ fn is_file_header_line(line: &Line) -> bool {
         .unwrap_or(false)
 }
 
-fn visual_rows_for_line(
-    line_widths: &[usize],
-    idx: usize,
+/// Number of visual (screen) rows each logical line occupies once rendered.
+///
+/// When wrapping is on this must match the `Paragraph`'s word wrap
+/// (`Wrap { trim: false }`) exactly, so it reuses ratatui's own
+/// [`Paragraph::line_count`]. A plain `div_ceil(width, viewport)` assumes
+/// character packing and *under-counts* prose lines that word-wrap (a word
+/// pushed to the next row leaves the first row short of the viewport width).
+/// That under-count made every per-row background/overlay paint below such a
+/// line drift upward relative to the rendered text.
+///
+/// Computed once per frame and shared by all row-mapping consumers.
+pub(super) fn compute_row_heights(
+    lines: &[Line],
     wrap_lines: bool,
     viewport_width: usize,
-) -> usize {
-    if wrap_lines && viewport_width > 0 {
-        let w = line_widths.get(idx).copied().unwrap_or(0);
-        if w == 0 {
-            1
-        } else {
-            w.div_ceil(viewport_width)
-        }
-    } else {
-        1
+) -> Vec<usize> {
+    if !wrap_lines || viewport_width == 0 {
+        return vec![1; lines.len()];
     }
+    let width = viewport_width as u16;
+    lines
+        .iter()
+        .map(|line| {
+            Paragraph::new(line.clone())
+                .wrap(Wrap { trim: false })
+                .line_count(width)
+                .max(1)
+        })
+        .collect()
+}
+
+fn visual_rows_for_line(row_heights: &[usize], idx: usize) -> usize {
+    row_heights.get(idx).copied().unwrap_or(1)
 }
 
 /// Apply horizontal scroll to a line while preserving the first span (cursor indicator)
@@ -1019,5 +1025,50 @@ mod tests {
         scroll_comment_input_into_view(&mut scroll, Some((8, 10)), Some(9), 10, 100);
         // then: scroll so box_end (10) is visible => scroll = 10 - 10 + 1 = 1
         assert_eq!(scroll, 1);
+    }
+
+    /// Reference height straight from ratatui's renderer — the value
+    /// `compute_row_heights` must reproduce for per-row paints to align.
+    fn rendered_height(line: &Line, width: u16) -> usize {
+        Paragraph::new(line.clone())
+            .wrap(Wrap { trim: false })
+            .line_count(width)
+    }
+
+    #[test]
+    fn should_count_one_row_per_line_when_wrap_disabled() {
+        let lines = vec![Line::from("a".repeat(200)), Line::from("short")];
+        assert_eq!(compute_row_heights(&lines, false, 80), vec![1, 1]);
+    }
+
+    #[test]
+    fn should_match_rendered_height_for_word_wrapped_prose() {
+        // given: a prose line whose words can't be split, so word-wrap takes
+        // more rows than character packing predicts.
+        let line = Line::from(
+            "PR review sessions are keyed by forge coordinates rather than a local checkout",
+        );
+        let width = 20usize;
+
+        // then: our count matches what the Paragraph actually renders...
+        let heights = compute_row_heights(std::slice::from_ref(&line), true, width);
+        assert_eq!(heights[0], rendered_height(&line, width as u16));
+
+        // ...and it exceeds the naive char-packing estimate that caused the
+        // background/marker drift (regression guard).
+        let total_width: usize = line.spans.iter().map(|s| s.content.width()).sum();
+        assert!(
+            heights[0] > total_width.div_ceil(width),
+            "word wrap should take more rows than div_ceil for this prose line: \
+             got {} vs div_ceil {}",
+            heights[0],
+            total_width.div_ceil(width),
+        );
+    }
+
+    #[test]
+    fn should_treat_empty_line_as_one_row() {
+        let lines = vec![Line::from("")];
+        assert_eq!(compute_row_heights(&lines, true, 80), vec![1]);
     }
 }
