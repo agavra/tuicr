@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.17.1] - 2026-06-02
+
+### Bug Fixes
+
+- Make `tuicr review --repo` a repo selector that finds PR sessions (#399) (#400)
+- **ui:** Align diff row backgrounds with word-wrapped text (#401)
 ## [0.17.0] - 2026-06-02
 
 ### Bug Fixes
