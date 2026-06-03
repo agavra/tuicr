@@ -349,6 +349,22 @@ pub struct PullRequestCommit {
     pub timestamp: Option<DateTime<Utc>>,
 }
 
+/// Minimal review metadata used to infer "commits since my last review".
+/// This is separate from displayed review summaries because empty-body
+/// approvals still count as reviews for scoping purposes.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PullRequestReviewMetadata {
+    pub viewer_login: Option<String>,
+    pub reviews: Vec<PullRequestReviewRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullRequestReviewRecord {
+    pub author: Option<String>,
+    pub submitted_at: Option<DateTime<Utc>>,
+    pub commit_oid: Option<String>,
+}
+
 pub trait ForgeBackend {
     fn list_pull_requests(&self, query: PullRequestListQuery) -> Result<PagedPullRequests>;
     fn get_pull_request(&self, target: PullRequestTarget) -> Result<PullRequestDetails>;
@@ -376,6 +392,14 @@ pub trait ForgeBackend {
     /// list scopes the inline commit selector so users can narrow a PR's
     /// cumulative diff down to a contiguous subrange.
     fn list_pull_request_commits(&self, pr: &PullRequestDetails) -> Result<Vec<PullRequestCommit>>;
+    /// Fetch minimal review metadata for commit-scope inference. Backends
+    /// that cannot expose this cheaply can keep the default empty result.
+    fn list_pull_request_review_metadata(
+        &self,
+        _pr: &PullRequestDetails,
+    ) -> Result<PullRequestReviewMetadata> {
+        Ok(PullRequestReviewMetadata::default())
+    }
     /// Fetch the cumulative diff between two commit SHAs that both belong to
     /// `pr`. `start_sha` is the *parent* of the first commit in the
     /// subrange; `end_sha` is the last commit. Implementations may use a
