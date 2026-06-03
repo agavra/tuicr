@@ -223,7 +223,7 @@ where
             Self::repo_arg(&query.repository),
             "--output".to_string(),
             "json".to_string(),
-            "--limit".to_string(),
+            "--per-page".to_string(),
             requested.to_string(),
         ];
         if query.scope == PullRequestListScope::ReviewRequested {
@@ -1049,7 +1049,7 @@ mod tests {
                 "owner/repo",
                 "--output",
                 "json",
-                "--limit",
+                "--per-page",
                 "2",
                 "--reviewer=@me",
             ]
