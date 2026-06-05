@@ -164,14 +164,13 @@ impl GitBackend {
         preference: GitBackendPreference,
         whitespace_mode: DiffWhitespaceMode,
     ) -> Result<Self> {
-        if preference == GitBackendPreference::Cli {
-            return Ok(Self::Cli(GitCliBackend::discover_from(
-                cwd,
-                whitespace_mode,
-            )?));
-        }
+        // libgit2 doesn't support reftable or split index repositories, so we fallback to cli
+        // TODO: remove reftable fallback logic when libgit2 supports it as part of https://github.com/libgit2/libgit2/issues/5352
+        // TODO: remove split index fallback logic when libgit2 supports it as part of https://github.com/libgit2/libgit2/issues/6132
+        let use_cli =
+            preference == GitBackendPreference::Cli || uses_reftable(cwd) || uses_split_index(cwd);
 
-        if uses_reftable(cwd) {
+        if use_cli {
             return Ok(Self::Cli(GitCliBackend::discover_from(
                 cwd,
                 whitespace_mode,
@@ -223,6 +222,13 @@ fn uses_reftable(cwd: &Path) -> bool {
     run_git_command(cwd, &["config", "--get", "extensions.refStorage"])
         .ok()
         .map(|v| v.trim().eq_ignore_ascii_case("reftable"))
+        .unwrap_or(false)
+}
+
+fn uses_split_index(cwd: &Path) -> bool {
+    run_git_command(cwd, &["config", "--get", "core.splitIndex"])
+        .ok()
+        .map(|v| git_bool_config_enabled(&v))
         .unwrap_or(false)
 }
 
@@ -482,6 +488,27 @@ mod tests {
         assert!(
             matches!(backend, GitBackend::Cli(_)),
             "reftable repo should use Git CLI backend, not libgit2"
+        );
+    }
+
+    #[test]
+    fn default_preference_routes_split_index_repo_to_cli() {
+        let temp_dir = tempdir().expect("failed to create temp dir");
+        let root = temp_dir.path();
+        setup_standard_repo(root);
+        run_git_command(root, &["config", "core.splitIndex", "true"])
+            .expect("failed to set splitIndex");
+
+        let backend: GitBackend = GitBackend::discover_from(
+            root,
+            GitBackendPreference::Libgit2,
+            DiffWhitespaceMode::Normal,
+        )
+        .expect("split-index repo should open via CLI fallback");
+
+        assert!(
+            matches!(backend, GitBackend::Cli(_)),
+            "split-index repo should use Git CLI backend, not libgit2"
         );
     }
 
