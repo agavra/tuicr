@@ -191,7 +191,8 @@ fn header_source_chunk(app: &App) -> Option<String> {
         DiffSource::PullRequest(pr) => {
             let slug = pr.key.repository.display_name();
             let trimmed_title = if pr.title.chars().count() > 60 {
-                format!("{}\u{2026}", &pr.title[..59])
+                let truncated: String = pr.title.chars().take(59).collect();
+                format!("{truncated}\u{2026}")
             } else {
                 pr.title.clone()
             };
@@ -763,5 +764,22 @@ mod pr_header_snapshot_tests {
         // then
         let line = row_text(&buffer, 0);
         assert!(!line.contains(" of "), "got: {line:?}");
+    }
+
+    #[test]
+    fn should_not_panic_on_long_multibyte_title() {
+        // regression: a >60-char title whose truncation boundary falls inside a
+        // multibyte character used to panic when the title was sliced by byte index.
+        let mut pr = pr_source(false, false);
+        pr.title =
+            "プルリクエストのタイトルが非常に長くて六十文字を超える場合でも表示が壊れずに正しく切り詰められることを確認するためのテストです"
+                .to_string();
+        let app = build_pr_app(pr);
+        // when — must render without panicking on a non-char-boundary byte slice
+        let buffer = draw_header(&app);
+        // then — the header still renders the PR identifier (reaching this
+        // assertion at all proves the truncation no longer panics)
+        let line = row_text(&buffer, 0);
+        assert!(line.contains("agavra/tuicr#125"), "got: {line:?}");
     }
 }
