@@ -71,6 +71,13 @@ pub fn export_to_clipboard(
 /// terminal-based fallback (tmux/OSC 52) was used, `Ok(false)` if the
 /// platform clipboard handled it.
 pub fn copy_text_to_clipboard(text: &str) -> Result<bool> {
+    // On macOS, pbcopy writes straight to the system pasteboard and works even
+    // inside tmux/SSH. OSC 52 (preferred below) instead relies on the outer
+    // terminal honoring the escape, which Terminal.app does not, so the copy
+    // would only reach the tmux buffer. Prefer pbcopy unconditionally here.
+    if cfg!(target_os = "macos") && try_clipboard_cmd("pbcopy", &[], text) {
+        return Ok(false);
+    }
     if should_prefer_osc52() {
         copy_osc52(text)?;
         return Ok(true);
