@@ -837,6 +837,11 @@ fn parse_scp_like_remote(remote_url: &str) -> Option<(&str, &str)> {
 }
 
 fn resolve_ssh_hostname(alias: &str) -> String {
+    let resolved = read_ssh_hostname(alias);
+    normalize_ssh_transport_host(&resolved).to_string()
+}
+
+fn read_ssh_hostname(alias: &str) -> String {
     let Ok(home) = std::env::var("HOME") else {
         return alias.to_string();
     };
@@ -845,6 +850,18 @@ fn resolve_ssh_hostname(alias: &str) -> String {
         return alias.to_string();
     };
     resolve_ssh_hostname_from_config(alias, &content)
+}
+
+/// Map GitLab's SSH-over-443 transport host back to its API host. Users behind
+/// networks that block port 22 set `Hostname altssh.gitlab.com` for
+/// `gitlab.com` in `~/.ssh/config`; that's correct for transport but
+/// `altssh.gitlab.com` is not the API host.
+fn normalize_ssh_transport_host(host: &str) -> &str {
+    if host.eq_ignore_ascii_case("altssh.gitlab.com") {
+        "gitlab.com"
+    } else {
+        host
+    }
 }
 
 fn resolve_ssh_hostname_from_config(alias: &str, config: &str) -> String {
@@ -1402,6 +1419,23 @@ mod tests {
         let target = parse_pull_request_target_gitlab("123").unwrap();
         assert_eq!(target.number, 123);
         assert!(target.repository.is_none());
+    }
+
+    #[test]
+    fn normalizes_gitlab_ssh_over_443_transport_host() {
+        assert_eq!(
+            normalize_ssh_transport_host("altssh.gitlab.com"),
+            "gitlab.com"
+        );
+        assert_eq!(
+            normalize_ssh_transport_host("AltSSH.GitLab.com"),
+            "gitlab.com"
+        );
+        assert_eq!(normalize_ssh_transport_host("gitlab.com"), "gitlab.com");
+        assert_eq!(
+            normalize_ssh_transport_host("gitlab.example.com"),
+            "gitlab.example.com"
+        );
     }
 
     #[test]

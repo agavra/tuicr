@@ -678,6 +678,11 @@ fn forge_repo_from_host(host: &str, owner: &str, repo: &str) -> ForgeRepository 
 /// a `Host`/`HostName` pair that depends on any of those falls back to
 /// the alias unchanged.
 fn resolve_ssh_hostname(alias: &str) -> String {
+    let resolved = read_ssh_hostname(alias);
+    normalize_ssh_transport_host(&resolved).to_string()
+}
+
+fn read_ssh_hostname(alias: &str) -> String {
     let Ok(home) = std::env::var("HOME") else {
         return alias.to_string();
     };
@@ -686,6 +691,21 @@ fn resolve_ssh_hostname(alias: &str) -> String {
         return alias.to_string();
     };
     resolve_ssh_hostname_from_config(alias, &content)
+}
+
+/// Map GitHub's documented SSH-over-HTTPS transport host back to its API host.
+///
+/// Users behind networks that block port 22 follow GitHub's [SSH-over-443
+/// workaround](https://docs.github.com/en/authentication/troubleshooting-ssh/using-ssh-over-the-https-port)
+/// and set `Hostname ssh.github.com` for `github.com` in `~/.ssh/config`. The
+/// resolved hostname is correct for git transport but `ssh.github.com` is not
+/// a real DNS name for API calls — only `github.com`/`api.github.com` is.
+fn normalize_ssh_transport_host(host: &str) -> &str {
+    if host.eq_ignore_ascii_case("ssh.github.com") {
+        "github.com"
+    } else {
+        host
+    }
 }
 
 fn resolve_ssh_hostname_from_config(alias: &str, config: &str) -> String {
@@ -1357,6 +1377,36 @@ Match host github-work
                 "case: {name}",
             );
         }
+    }
+
+    #[test]
+    fn normalizes_github_ssh_over_443_transport_host() {
+        // `ssh.github.com` is GitHub's documented SSH-over-HTTPS-port transport
+        // host. After resolving ~/.ssh/config it must map back to github.com,
+        // otherwise downstream API calls hit the nonexistent api.ssh.github.com.
+        assert_eq!(normalize_ssh_transport_host("ssh.github.com"), "github.com");
+        assert_eq!(normalize_ssh_transport_host("SSH.GitHub.com"), "github.com");
+        assert_eq!(normalize_ssh_transport_host("github.com"), "github.com");
+        assert_eq!(
+            normalize_ssh_transport_host("github.example.com"),
+            "github.example.com"
+        );
+    }
+
+    #[test]
+    fn parses_scp_url_with_ssh_over_443_hostname_rewrite() {
+        // ~/.ssh/config rewrites github.com -> ssh.github.com:443 for transport.
+        // The forge repository must still report github.com so API calls work.
+        let config = "Host github.com\n    HostName ssh.github.com\n    Port 443\n";
+        let url = "git@github.com:agavra/tuicr.git";
+        let trimmed = trim_url_suffix(url.trim());
+        let (host, path) = parse_scp_like_remote(trimmed).unwrap();
+        let resolved =
+            normalize_ssh_transport_host(&resolve_ssh_hostname_from_config(host, config))
+                .to_string();
+        let repo = repository_from_path(&resolved, path).unwrap();
+        assert_eq!(repo.host, "github.com");
+        assert_eq!(repo.slug(), "agavra/tuicr");
     }
 
     #[test]
