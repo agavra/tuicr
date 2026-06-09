@@ -133,7 +133,8 @@ struct TuiOptions {
 enum Subcmd {
     /// Open the interactive TUI.
     Tui(TuiCommand),
-    /// Review a GitHub pull request.
+    /// Review a GitHub pull request or GitLab merge request.
+    #[command(visible_alias = "mr")]
     Pr(PrCommand),
     /// Inspect or update persisted review sessions.
     Review {
@@ -155,7 +156,8 @@ struct TuiCommand {
 
 #[derive(Subcommand, Debug, Clone)]
 enum TuiSubcmd {
-    /// Review a GitHub pull request in the TUI.
+    /// Review a GitHub pull request or GitLab merge request in the TUI.
+    #[command(visible_alias = "mr")]
     Pr(PrCommand),
 }
 
@@ -646,6 +648,18 @@ mod tests {
     #[test]
     fn should_parse_pr_target_as_bare_number() {
         let parsed = parse_for_test(&["tuicr", "pr", "125"]).expect("parse should succeed");
+        assert_eq!(parsed.pr_target, Some("125".to_string()));
+    }
+
+    #[test]
+    fn should_parse_mr_alias_like_pr() {
+        let parsed = parse_for_test(&["tuicr", "mr", "125"]).expect("parse should succeed");
+        assert_eq!(parsed.pr_target, Some("125".to_string()));
+    }
+
+    #[test]
+    fn should_parse_tui_mr_alias_like_pr() {
+        let parsed = parse_for_test(&["tuicr", "tui", "mr", "125"]).expect("parse should succeed");
         assert_eq!(parsed.pr_target, Some("125".to_string()));
     }
 
