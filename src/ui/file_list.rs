@@ -129,7 +129,7 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
                     if file.is_commit_message {
                         Line::from(vec![
                             Span::styled(format!("{checkbox} "), checkbox_style),
-                            Span::raw("  Commit Message".to_string()),
+                            Span::raw(format!("  {}", path.display())),
                         ])
                     } else {
                         let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");

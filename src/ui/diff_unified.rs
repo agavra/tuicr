@@ -235,7 +235,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
             let indicator = cursor_indicator_spaced(line_idx, current_line_idx);
             let review_mark = if is_reviewed { "✓ " } else { "" };
             let header_text = if file.is_commit_message {
-                format!("═══ {}Commit Message ", review_mark)
+                format!("═══ {}{} ", review_mark, path.display())
             } else if app.is_pristine_mode {
                 // Pristine mode reviews unchanged code; the M/A/D badge would
                 // mislead. Render the header without it.

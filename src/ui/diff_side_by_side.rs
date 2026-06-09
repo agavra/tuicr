@@ -280,7 +280,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
             let indicator = cursor_indicator_spaced(line_idx, ctx.current_line_idx);
             let review_mark = if is_reviewed { "✓ " } else { "" };
             let header_text = if file.is_commit_message {
-                format!("═══ {}Commit Message ", review_mark)
+                format!("═══ {}{} ", review_mark, path.display())
             } else {
                 format!("═══ {}{} [{}] ", review_mark, path.display(), status)
             };

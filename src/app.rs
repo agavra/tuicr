@@ -3397,6 +3397,11 @@ impl App {
     }
 
     /// If we are viewing a single commit, insert a "Commit Message" DiffFile at index 0.
+    ///
+    /// The synthetic path embeds the commit's short id (`Commit Message (<sha>)`)
+    /// so that comments on different commits' messages get distinct session keys
+    /// (the session indexes comments by path) and the exported review records
+    /// which commit each commit-message comment belongs to.
     fn insert_commit_message_if_single(&mut self) {
         self.diff_files.retain(|f| !f.is_commit_message);
 
@@ -3447,7 +3452,10 @@ impl App {
         let content_hash = DiffFile::compute_content_hash(&hunks);
         let commit_msg_file = DiffFile {
             old_path: None,
-            new_path: Some(PathBuf::from("Commit Message")),
+            new_path: Some(PathBuf::from(format!(
+                "Commit Message ({})",
+                commit.short_id
+            ))),
             status: FileStatus::Added,
             hunks,
             is_binary: false,
@@ -5454,7 +5462,7 @@ impl App {
             AnnotatedLine::FileHeader { file_idx } => {
                 let file = self.diff_files.get(*file_idx)?;
                 if file.is_commit_message {
-                    Some("Commit Message".to_string())
+                    Some(file.display_path().display().to_string())
                 } else {
                     Some(format!(
                         "{} [{}]",

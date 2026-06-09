@@ -605,6 +605,57 @@ mod tests {
     }
 
     #[test]
+    fn should_keep_commit_identity_for_commit_message_comments() {
+        // Comments on the messages of different commits must not collapse into
+        // an indistinguishable `Commit Message:N`. The synthetic commit-message
+        // path carries the short id, which keeps each comment attributable to
+        // its commit in the export.
+        let mut session = ReviewSession::new(
+            PathBuf::from("/tmp/test-repo"),
+            "abc1234def".to_string(),
+            Some("main".to_string()),
+            SessionDiffSource::CommitRange,
+        );
+        let first = PathBuf::from("Commit Message (ed50028)");
+        let second = PathBuf::from("Commit Message (c17beb2)");
+        session.add_file(first.clone(), FileStatus::Added, 0);
+        session.add_file(second.clone(), FileStatus::Added, 0);
+        if let Some(review) = session.get_file_mut(&first) {
+            review.add_line_comment(
+                1,
+                Comment::new(
+                    "We do not need this commit".to_string(),
+                    CommentType::Note,
+                    Some(LineSide::New),
+                ),
+            );
+        }
+        if let Some(review) = session.get_file_mut(&second) {
+            review.add_line_comment(
+                6,
+                Comment::new(
+                    "This is wrong".to_string(),
+                    CommentType::Note,
+                    Some(LineSide::New),
+                ),
+            );
+        }
+
+        let diff_source =
+            DiffSource::CommitRange(vec!["ed50028".to_string(), "c17beb2".to_string()]);
+        let markdown = generate_markdown(&session, &diff_source, &comment_types(), true, &[], None);
+
+        assert!(
+            markdown.contains("`Commit Message (ed50028):1`"),
+            "expected first commit's message comment to be attributable in:\n{markdown}"
+        );
+        assert!(
+            markdown.contains("`Commit Message (c17beb2):6`"),
+            "expected second commit's message comment to be attributable in:\n{markdown}"
+        );
+    }
+
+    #[test]
     fn should_use_configured_label_and_definition_in_export() {
         let mut session = ReviewSession::new(
             PathBuf::from("/tmp/test-repo"),
