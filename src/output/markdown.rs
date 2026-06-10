@@ -384,6 +384,7 @@ fn generate_markdown(
         local_section_written = true;
     }
     for (i, (file, line_range, side, comment_type, content)) in all_comments.iter().enumerate() {
+        let number = i + 1;
         let location = match (line_range, side) {
             // Range on deleted side (old lines)
             (Some(range), Some(LineSide::Old)) if range.is_single() => {
@@ -402,14 +403,17 @@ fn generate_markdown(
             // File comment
             (None, _) => format!("`{file}`"),
         };
+        let marker = format!("{number}.");
+        let continuation_indent = " ".repeat(marker.len() + 1);
+        let mut content_lines = content.split('\n').map(|line| line.trim_end_matches('\r'));
+        let first_line = content_lines.next().unwrap_or_default();
         let _ = writeln!(
             md,
-            "{}. **[{}]** {} - {}",
-            i + 1,
-            comment_type,
-            location,
-            content
+            "{marker} **[{comment_type}]** {location} - {first_line}"
         );
+        for line in content_lines {
+            let _ = writeln!(md, "{continuation_indent}{line}");
+        }
     }
 
     // PR-mode-only: include unresolved remote discussions grouped by file.
@@ -712,6 +716,85 @@ mod tests {
         // Should have 2 numbered comments
         assert!(markdown.contains("1. **[SUGGESTION]**"));
         assert!(markdown.contains("2. **[ISSUE]**"));
+    }
+
+    #[test]
+    fn should_indent_multiline_comments_under_single_digit_list_marker() {
+        let mut session = ReviewSession::new(
+            PathBuf::from("/tmp/test-repo"),
+            "abc1234def".to_string(),
+            Some("main".to_string()),
+            SessionDiffSource::WorkingTree,
+        );
+        session.add_file(PathBuf::from("src/main.rs"), FileStatus::Modified, 0);
+        if let Some(review) = session.get_file_mut(&PathBuf::from("src/main.rs")) {
+            review.add_file_comment(Comment::new(
+                "foo\nbar".to_string(),
+                CommentType::Suggestion,
+                None,
+            ));
+        }
+
+        let markdown = generate_markdown(
+            &session,
+            &DiffSource::WorkingTree,
+            &comment_types(),
+            true,
+            &[],
+            None,
+        );
+
+        let expected = "\
+1. **[SUGGESTION]** `src/main.rs` - foo
+   bar";
+
+        assert!(
+            markdown.contains(expected),
+            "expected multiline comment continuation to align under list text:\n{markdown}"
+        );
+    }
+
+    #[test]
+    fn should_indent_multiline_comments_under_double_digit_list_marker() {
+        let mut session = ReviewSession::new(
+            PathBuf::from("/tmp/test-repo"),
+            "abc1234def".to_string(),
+            Some("main".to_string()),
+            SessionDiffSource::WorkingTree,
+        );
+        session.add_file(PathBuf::from("src/main.rs"), FileStatus::Modified, 0);
+        if let Some(review) = session.get_file_mut(&PathBuf::from("src/main.rs")) {
+            for i in 0..9 {
+                review.add_file_comment(Comment::new(
+                    format!("comment {i}"),
+                    CommentType::Note,
+                    None,
+                ));
+            }
+            review.add_file_comment(Comment::new(
+                "foo\nbar".to_string(),
+                CommentType::Suggestion,
+                None,
+            ));
+        }
+
+        let markdown = generate_markdown(
+            &session,
+            &DiffSource::WorkingTree,
+            &comment_types(),
+            true,
+            &[],
+            None,
+        );
+
+        let expected = "\
+10. **[SUGGESTION]** `src/main.rs` - foo
+    bar";
+
+        assert!(
+            markdown.contains(expected),
+            "expected double-digit continuation to align under list text:\n{markdown}"
+        );
     }
 
     #[test]
