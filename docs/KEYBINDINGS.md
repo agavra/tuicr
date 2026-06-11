@@ -144,7 +144,8 @@ In command mode,
 
 Shown at the top of the diff when reviewing multiple commits. Focus it with `<leader>k` or `Tab`.
 When opening a GitHub PR or GitLab MR you have reviewed before, tuicr may preselect only commits
-newer than your latest submitted review; use `Space` / `Enter` here to expand or adjust the range.
+newer than your latest submitted review; commits already covered by that review are marked with
+`✓`. Use `Space` / `Enter` here to expand or adjust the range.
 
 | Key | Action |
 |-----|--------|

@@ -1,7 +1,7 @@
 //! Shared commit-row rendering used by both the fullscreen review-target
 //! selector and the inline commit selector shown above the diff. Keeps the
-//! row layout (cursor arrow, range bar, checkbox, hash, branch chip, summary,
-//! author/date) consistent across surfaces.
+//! row layout (cursor arrow, range bar, checkbox, reviewed marker, hash,
+//! branch chip, summary, author/date) consistent across surfaces.
 
 use chrono::{DateTime, Utc};
 use ratatui::style::Style;
@@ -17,6 +17,8 @@ pub const CURSOR_GLYPH: &str = "\u{25b8}"; // ▸
 pub const RANGE_BAR_GLYPH: &str = "\u{258c}"; // ▌
 pub const SELECTED_BOX_GLYPH: &str = "\u{25a3}"; // ▣
 pub const UNSELECTED_BOX_GLYPH: &str = "\u{25a2}"; // ▢
+pub const REVIEWED_GLYPH: &str = "\u{2713}"; // ✓
+pub const REVIEWED_LABEL: &str = "✓ ";
 
 // Fixed column widths so author/date land at the same x across every row.
 // Branch column gets `[branch_name]` padded to width including brackets and a
@@ -29,6 +31,7 @@ pub struct CommitRowSpec<'a> {
     pub commit: &'a CommitInfo,
     pub is_cursor: bool,
     pub is_selected: bool,
+    pub is_reviewed: bool,
     pub theme: &'a Theme,
 }
 
@@ -43,7 +46,7 @@ pub fn render_commit_row<'a>(spec: &CommitRowSpec<'a>) -> Line<'a> {
         Style::default().fg(theme.fg_primary)
     };
 
-    let mut spans: Vec<Span<'a>> = Vec::with_capacity(10);
+    let mut spans: Vec<Span<'a>> = Vec::with_capacity(11);
     spans.push(Span::styled(
         if spec.is_cursor {
             format!("{CURSOR_GLYPH} ")
@@ -70,6 +73,18 @@ pub fn render_commit_row<'a>(spec: &CommitRowSpec<'a>) -> Line<'a> {
             styles::reviewed_style(theme)
         } else {
             styles::pending_style(theme)
+        },
+    ));
+    spans.push(Span::styled(
+        if spec.is_reviewed {
+            REVIEWED_LABEL.to_string()
+        } else {
+            " ".repeat(REVIEWED_LABEL.chars().count())
+        },
+        if spec.is_reviewed {
+            styles::reviewed_style(theme)
+        } else {
+            row_text_style
         },
     ));
 
@@ -184,6 +199,7 @@ mod tests {
             commit: &c,
             is_cursor: true,
             is_selected: false,
+            is_reviewed: false,
             theme: &theme,
         });
         // then
@@ -201,6 +217,7 @@ mod tests {
             commit: &c,
             is_cursor: false,
             is_selected: true,
+            is_reviewed: false,
             theme: &theme,
         });
         // then
@@ -219,12 +236,31 @@ mod tests {
             commit: &c,
             is_cursor: false,
             is_selected: false,
+            is_reviewed: false,
             theme: &theme,
         });
         // then
         let text = line_text(&line);
         assert!(!text.contains(RANGE_BAR_GLYPH), "got: {text:?}");
         assert!(text.contains(UNSELECTED_BOX_GLYPH), "got: {text:?}");
+    }
+
+    #[test]
+    fn should_render_reviewed_marker_when_commit_was_already_reviewed() {
+        // given
+        let theme = Theme::dark();
+        let c = commit("abc1234", "Add feature", None);
+        // when
+        let line = render_commit_row(&CommitRowSpec {
+            commit: &c,
+            is_cursor: false,
+            is_selected: false,
+            is_reviewed: true,
+            theme: &theme,
+        });
+        // then
+        let text = line_text(&line);
+        assert!(text.contains(REVIEWED_LABEL), "got: {text:?}");
     }
 
     #[test]
@@ -237,6 +273,7 @@ mod tests {
             commit: &c,
             is_cursor: false,
             is_selected: false,
+            is_reviewed: false,
             theme: &theme,
         });
         // then
@@ -256,6 +293,7 @@ mod tests {
             commit: &c,
             is_cursor: false,
             is_selected: false,
+            is_reviewed: false,
             theme: &theme,
         });
         // then

@@ -175,7 +175,7 @@ PR review (`tuicr pr <target>` or `tuicr tui pr <target>`) is the only feature i
 - `get_pull_request` — details for a `PullRequestTarget` (resolves to `PullRequestDetails`).
 - `get_pull_request_diff` — the cumulative PR diff as a unified-diff string.
 - `list_pull_request_commits` — commits on the PR for the inline subset selector.
-- `list_pull_request_review_metadata` — best-effort viewer login + review commit OIDs used to preselect commits since the viewer's latest submitted review.
+- `list_pull_request_review_metadata` — best-effort viewer login + review commit OIDs used to preselect commits since the viewer's latest submitted review and mark already-reviewed commits in the inline selector.
   GitHub uses review metadata; GitLab combines `/user`, MR diff versions, approvals, and discussions.
 - `get_pull_request_commit_range_diff` — cumulative diff for a contiguous subrange (`start_sha` is the parent of the first selected commit; `end_sha` is the last).
 - `list_review_threads` — existing GitHub comments + resolved/outdated state.
