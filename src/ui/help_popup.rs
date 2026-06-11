@@ -575,17 +575,17 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
-                "  :set wrap ",
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("Enable line wrap in diff view"),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "  :set wrap!",
+                "  :wrap     ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("Toggle line wrap in diff view"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :help     ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Open this help screen"),
         ]),
         Line::from(vec![
             Span::styled(
