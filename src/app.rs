@@ -457,6 +457,34 @@ pub fn find_source_line(
     }
 }
 
+/// True for rendered lines the cursor should never rest on — spacing between
+/// files and file header rows.
+fn is_decoration(annotation: &AnnotatedLine) -> bool {
+    matches!(
+        annotation,
+        AnnotatedLine::Spacing | AnnotatedLine::FileHeader { .. }
+    )
+}
+
+/// Walk `start` forward (capped at `max_line`) to the nearest non-decoration
+/// annotation so scroll and jump motions land on actionable content.
+fn skip_decoration_forward(annotations: &[AnnotatedLine], start: usize, max_line: usize) -> usize {
+    let mut line = start;
+    while line < max_line && annotations.get(line).is_some_and(is_decoration) {
+        line += 1;
+    }
+    line
+}
+
+/// Walk `start` backward to the nearest non-decoration annotation.
+fn skip_decoration_backward(annotations: &[AnnotatedLine], start: usize) -> usize {
+    let mut line = start;
+    while line > 0 && annotations.get(line).is_some_and(is_decoration) {
+        line -= 1;
+    }
+    line
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputMode {
     Normal,
@@ -4434,6 +4462,11 @@ impl App {
         let max_line = self.max_cursor_line();
         let max_scroll = self.max_scroll_offset();
         self.diff_state.cursor_line = (self.diff_state.cursor_line + lines).min(max_line);
+        self.diff_state.cursor_line = skip_decoration_forward(
+            &self.line_annotations,
+            self.diff_state.cursor_line,
+            max_line,
+        );
         self.diff_state.scroll_offset = (self.diff_state.scroll_offset + lines).min(max_scroll);
         self.ensure_cursor_visible();
         self.update_current_file_from_cursor();
@@ -4442,6 +4475,8 @@ impl App {
     pub fn scroll_up(&mut self, lines: usize) {
         // For half-page/page scrolling, move both cursor and scroll
         self.diff_state.cursor_line = self.diff_state.cursor_line.saturating_sub(lines);
+        self.diff_state.cursor_line =
+            skip_decoration_backward(&self.line_annotations, self.diff_state.cursor_line);
         self.diff_state.scroll_offset = self.diff_state.scroll_offset.saturating_sub(lines);
         self.ensure_cursor_visible();
         self.update_current_file_from_cursor();
@@ -5640,6 +5675,11 @@ impl App {
             self.up_released_since_arm = false;
             self.diff_state.current_file_idx = idx;
             self.diff_state.cursor_line = self.calculate_file_scroll_offset(idx);
+            self.diff_state.cursor_line = skip_decoration_forward(
+                &self.line_annotations,
+                self.diff_state.cursor_line,
+                self.line_annotations.len().saturating_sub(1),
+            );
             let max_scroll = self.max_scroll_offset();
             self.diff_state.scroll_offset = self.diff_state.cursor_line.min(max_scroll);
 
@@ -12143,6 +12183,66 @@ mod scroll_behavior_tests {
         };
         let margin = state.effective_scroll_margin(0);
         assert_eq!(margin, 0, "margin should be 0 when scroll_offset is 0");
+    }
+}
+
+#[cfg(test)]
+mod decoration_skip_tests {
+    use super::*;
+
+    fn diff_line(file_idx: usize, new_lineno: u32) -> AnnotatedLine {
+        AnnotatedLine::DiffLine {
+            file_idx,
+            hunk_idx: 0,
+            line_idx: 0,
+            old_lineno: None,
+            new_lineno: Some(new_lineno),
+        }
+    }
+
+    /// Two files: header, content, spacing, header, content.
+    fn fixture() -> Vec<AnnotatedLine> {
+        vec![
+            AnnotatedLine::FileHeader { file_idx: 0 }, // 0
+            diff_line(0, 1),                           // 1
+            AnnotatedLine::Spacing,                    // 2
+            AnnotatedLine::FileHeader { file_idx: 1 }, // 3
+            diff_line(1, 1),                           // 4
+        ]
+    }
+
+    #[test]
+    fn forward_skips_spacing_and_header_to_next_content_line() {
+        let annotations = fixture();
+        assert_eq!(skip_decoration_forward(&annotations, 2, 4), 4);
+    }
+
+    #[test]
+    fn forward_keeps_position_on_content_line() {
+        let annotations = fixture();
+        assert_eq!(skip_decoration_forward(&annotations, 1, 4), 1);
+    }
+
+    #[test]
+    fn forward_clamps_at_max_line_even_on_decoration() {
+        let annotations = vec![
+            diff_line(0, 1),                           // 0
+            AnnotatedLine::Spacing,                    // 1
+            AnnotatedLine::FileHeader { file_idx: 1 }, // 2
+        ];
+        assert_eq!(skip_decoration_forward(&annotations, 1, 2), 2);
+    }
+
+    #[test]
+    fn backward_skips_header_and_spacing_to_previous_content_line() {
+        let annotations = fixture();
+        assert_eq!(skip_decoration_backward(&annotations, 3), 1);
+    }
+
+    #[test]
+    fn backward_stops_at_zero_when_top_is_decoration() {
+        let annotations = fixture();
+        assert_eq!(skip_decoration_backward(&annotations, 0), 0);
     }
 }
 
