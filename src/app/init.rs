@@ -583,6 +583,7 @@ impl App {
             diff_inner_area: None,
             commit_list_inner_area: None,
             diff_row_to_annotation: Vec::new(),
+            gutter_sel_ranges: HashMap::new(),
             expanded_dirs: HashSet::new(),
             expanded_top: HashMap::new(),
             expanded_bottom: HashMap::new(),

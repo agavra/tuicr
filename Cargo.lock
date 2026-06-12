@@ -2907,6 +2907,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "two-face",
+ "unicode-segmentation",
  "unicode-width",
  "ureq",
  "uuid",

@@ -128,6 +128,10 @@ pub struct AppConfig {
     pub initial_commit_selection: Option<String>,
     pub ignore_whitespace: Option<bool>,
     pub wrap: Option<bool>,
+    /// How wrapped diff lines render: "flow" (ratatui word wrap, continuation
+    /// rows start at column 0) or "gutter" (continuation rows keep the
+    /// line-number gutter with a wrap marker). Defaults to "flow".
+    pub wrap_style: Option<String>,
     pub relative_line_numbers: Option<bool>,
     pub export_legend: Option<bool>,
     pub cursor_line: Option<bool>,
@@ -197,6 +201,7 @@ const KNOWN_KEYS: &[&str] = &[
     "initial_commit_selection",
     "ignore_whitespace",
     "wrap",
+    "wrap_style",
     "relative_line_numbers",
     "export_legend",
     "cursor_line",
@@ -438,6 +443,7 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         ),
         ignore_whitespace: read_bool(table, "ignore_whitespace", &mut warnings),
         wrap: read_bool(table, "wrap", &mut warnings),
+        wrap_style: read_enum(table, "wrap_style", &["flow", "gutter"], &mut warnings),
         export_legend: read_bool(table, "export_legend", &mut warnings),
         cursor_line: read_bool(table, "cursor_line", &mut warnings),
         search_highlight: read_bool(table, "search_highlight", &mut warnings),
@@ -812,6 +818,39 @@ mod tests {
             Some("libgit2")
         );
         assert!(libgit2.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_parse_wrap_style_option() {
+        let gutter = parse_config("wrap_style = \"gutter\"\n");
+        assert_eq!(
+            gutter
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.wrap_style.as_deref()),
+            Some("gutter")
+        );
+        assert!(gutter.warnings.is_empty());
+
+        let flow = parse_config("wrap_style = \"flow\"\n");
+        assert_eq!(
+            flow.config
+                .as_ref()
+                .and_then(|cfg| cfg.wrap_style.as_deref()),
+            Some("flow")
+        );
+        assert!(flow.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_warn_and_ignore_invalid_wrap_style_option() {
+        let outcome = parse_config("wrap_style = \"hanging\"\n");
+        assert_eq!(outcome.config, Some(AppConfig::default()));
+        assert_eq!(outcome.warnings.len(), 1);
+        assert_eq!(
+            outcome.warnings[0],
+            "Warning: Config key 'wrap_style' must be \"flow\" or \"gutter\"; got \"hanging\", ignoring"
+        );
     }
 
     #[test]

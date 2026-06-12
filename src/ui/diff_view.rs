@@ -404,6 +404,13 @@ pub(super) fn populate_row_to_annotation(
         let mut logical_lines_visible = 0;
         for (i, &rows_for_line) in row_heights.iter().enumerate() {
             if visual_rows_used + rows_for_line > viewport_height {
+                // The boundary line is partially visible: its top rows fill
+                // the rest of the viewport. Map them so clicks there land on
+                // the line instead of a dead zone (it stays excluded from
+                // `logical_lines_visible` so scroll math is unchanged).
+                for _ in visual_rows_used..viewport_height {
+                    out.push(scroll_offset + i);
+                }
                 break;
             }
             for _ in 0..rows_for_line {
@@ -513,8 +520,8 @@ fn paint_annotation_group(
     }
 
     for which_row in 0..group_height {
-        let row_char_start = which_row * paint.geom.content_width;
-        let row_char_end = row_char_start + paint.geom.content_width;
+        let (row_char_start, row_char_end) =
+            app.sel_row_char_range(ann_idx, which_row, paint.geom.content_width, total_chars);
         let isect_lo = lo.max(row_char_start);
         let isect_hi = hi.min(row_char_end);
         if isect_hi <= isect_lo {
@@ -541,12 +548,50 @@ fn paint_annotation_group(
     }
 }
 
-pub(super) fn is_line_highlighted(app: &App, viewport_idx: usize) -> bool {
+/// Map an absolute rendered line index to its `line_annotations` index,
+/// adjusting for the inline comment input box, which may occupy more or
+/// fewer rendered rows than the annotation entries it replaces. Returns
+/// `None` for rendered rows inside the box that have no annotation entry.
+pub(super) fn annotation_idx_for_rendered_line(app: &App, abs_idx: usize) -> Option<usize> {
+    map_rendered_to_annotation(abs_idx, app.comment_input_annotation_offset)
+}
+
+/// Core math behind [`annotation_idx_for_rendered_line`]: `box_offset` is
+/// `(box_start, box_len, replaced)` for an open comment input box.
+fn map_rendered_to_annotation(
+    abs_idx: usize,
+    box_offset: Option<(usize, usize, usize)>,
+) -> Option<usize> {
+    let Some((box_start, box_len, replaced)) = box_offset else {
+        return Some(abs_idx);
+    };
+    if abs_idx < box_start {
+        Some(abs_idx)
+    } else if abs_idx < box_start + box_len {
+        // Inside the comment input box - only the portion that maps to
+        // annotation entries being replaced (edited comment lines)
+        let offset_in_box = abs_idx - box_start;
+        if offset_in_box < replaced {
+            Some(box_start + offset_in_box)
+        } else {
+            None
+        }
+    } else {
+        // After the box: shift by the difference between rendered and annotation counts
+        // box_len > replaced: input box added extra lines → shift back
+        // box_len < replaced: input box is shorter → shift forward
+        Some(abs_idx + replaced - box_len)
+    }
+}
+
+pub(super) fn is_line_highlighted(app: &App, viewport_idx: usize, scroll_offset: usize) -> bool {
     if !app.cursor_line_highlight {
         return false;
     }
 
-    let abs_idx = viewport_idx + app.diff_state.scroll_offset;
+    // The caller passes the frame's own offset, so a catch-up applied
+    // after the window was built cannot shift the highlight.
+    let abs_idx = viewport_idx + scroll_offset;
 
     // Cursor line
     if abs_idx == app.diff_state.cursor_line {
@@ -559,30 +604,9 @@ pub(super) fn is_line_highlighted(app: &App, viewport_idx: usize) -> bool {
         return false;
     };
 
-    // Adjust the annotation index to account for the comment input box, which
-    // may have a different line count than what line_annotations expects.
-    let annotation_idx =
-        if let Some((box_start, box_len, replaced)) = app.comment_input_annotation_offset {
-            if abs_idx < box_start {
-                abs_idx
-            } else if abs_idx < box_start + box_len {
-                // Inside the comment input box - only highlight the portion that
-                // maps to annotation entries being replaced (edited comment lines)
-                let offset_in_box = abs_idx - box_start;
-                if offset_in_box < replaced {
-                    box_start + offset_in_box
-                } else {
-                    return false;
-                }
-            } else {
-                // After the box: shift by the difference between rendered and annotation counts
-                // box_len > replaced: input box added extra lines → shift back
-                // box_len < replaced: input box is shorter → shift forward
-                abs_idx + replaced - box_len
-            }
-        } else {
-            abs_idx
-        };
+    let Some(annotation_idx) = annotation_idx_for_rendered_line(app, abs_idx) else {
+        return false;
+    };
 
     let Some(annotation) = app.line_annotations.get(annotation_idx) else {
         return false;
@@ -638,6 +662,7 @@ pub(super) fn paint_cursor_line_highlight(
     visible_lines_unscrolled: &[Line],
     row_heights: &[usize],
     app: &App,
+    scroll_offset: usize,
 ) {
     if !app.cursor_line_highlight {
         return;
@@ -651,7 +676,7 @@ pub(super) fn paint_cursor_line_highlight(
         inner,
         visible_lines_unscrolled,
         row_heights,
-        |idx, _line| is_line_highlighted(app, idx).then_some(cursor_style),
+        |idx, _line| is_line_highlighted(app, idx, scroll_offset).then_some(cursor_style),
         |row_rect, row_style| match preserve_bg {
             None => buf.set_style(row_rect, row_style),
             Some(keep) => {
@@ -1134,6 +1159,51 @@ pub(super) fn apply_horizontal_scroll(line: Line, scroll_x: usize) -> Line {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn should_map_partially_visible_boundary_line_rows() {
+        // Heights [2, 3, 4] at scroll 5, viewport 7 rows: lines 5 and 6
+        // fit (5 rows), line 7 is the boundary line and only its top two
+        // rows fit. Those rows must map to the line, not a dead zone, and
+        // the line stays excluded from the visible-line count.
+        let mut out = Vec::new();
+        let visible = populate_row_to_annotation(&mut out, &[2, 3, 4], 10, 7, true, 5);
+        assert_eq!(out, vec![5, 5, 6, 6, 6, 7, 7]);
+        assert_eq!(visible, 2);
+    }
+
+    #[test]
+    fn should_map_identity_without_comment_box() {
+        assert_eq!(map_rendered_to_annotation(7, None), Some(7));
+    }
+
+    #[test]
+    fn should_map_identity_before_comment_box() {
+        // box at rendered rows 5..9 (len 4), replacing 2 annotation entries
+        assert_eq!(map_rendered_to_annotation(4, Some((5, 4, 2))), Some(4));
+    }
+
+    #[test]
+    fn should_map_replaced_rows_inside_comment_box() {
+        // first `replaced` rows of the box map to the edited annotation entries
+        assert_eq!(map_rendered_to_annotation(5, Some((5, 4, 2))), Some(5));
+        assert_eq!(map_rendered_to_annotation(6, Some((5, 4, 2))), Some(6));
+    }
+
+    #[test]
+    fn should_return_none_for_extra_rows_inside_comment_box() {
+        // rows of the box beyond `replaced` have no annotation entry
+        assert_eq!(map_rendered_to_annotation(7, Some((5, 4, 2))), None);
+        assert_eq!(map_rendered_to_annotation(8, Some((5, 4, 2))), None);
+    }
+
+    #[test]
+    fn should_shift_rows_after_comment_box() {
+        // after the box: rendered idx 9 maps back by (box_len - replaced) = 2
+        assert_eq!(map_rendered_to_annotation(9, Some((5, 4, 2))), Some(7));
+        // box shorter than replaced shifts forward instead
+        assert_eq!(map_rendered_to_annotation(9, Some((5, 1, 3))), Some(11));
+    }
 
     #[test]
     fn should_not_scroll_when_comment_box_already_visible() {
