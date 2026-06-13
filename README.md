@@ -1,6 +1,6 @@
 # tuicr
 
-**A code review TUI with vim keybindings. Export to GitHub or clipboard.**
+**A code review TUI with vim keybindings. Export to GitHub, GitLab, or clipboard.**
 
 [![Crates.io](https://img.shields.io/crates/v/tuicr)](https://crates.io/crates/tuicr)
 [![License](https://img.shields.io/crates/l/tuicr)](./LICENSE)
@@ -17,9 +17,10 @@
 - PR-style comments at the line, range, file, and review level, with classifications like
   `issue`, `suggestion`, `note`, and `praise`.
 - Review tracking at file or hunk granularity, persisted across sessions.
-- Three export targets: push a real PR review to GitHub, copy structured markdown to your
+- Three export targets: push a real review to GitHub or GitLab, copy structured markdown to your
   clipboard, or pipe to stdout.
-- Works with git, jj, and mercurial. Reviews uncommitted changes, commit ranges, or any GitHub PR.
+- Works with git, jj, and mercurial. Reviews uncommitted changes, commit ranges, or any GitHub PR
+  or GitLab MR.
 
 ## Install
 
@@ -63,6 +64,7 @@ tuicr tui                   # Same TUI, explicit subcommand
 tuicr -w                    # Uncommitted changes (skip selector)
 tuicr -r main..HEAD         # Commit range
 tuicr pr 125                # GitHub PR
+tuicr mr 125                # GitLab MR
 tuicr tui pr 125            # GitHub PR via explicit TUI subcommand
 tuicr --stdout              # Pipe the review to stdout
 tuicr review list           # List saved local review sessions
@@ -79,6 +81,7 @@ Inside tuicr, navigate with `j`/`k`, press `c` to comment, then `y` to copy the 
 | Write comments in the TUI | ✅ | ✅ | ✅ | ❌ | ❌ |
 | Vim keybindings | ✅ | ❌ | partial¹ | ❌ | ❌ |
 | Push inline review to GitHub | ✅ | ❌ | ❌ | partial² | ❌ |
+| Push inline review to GitLab | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Agent-ready markdown export | ✅ | via CLI skill | ❌ | ❌ | ❌ |
 | git | ✅ | ✅ | ✅ | ❌ | ✅ |
 | jj | ✅ | ✅ | ✅ | ❌ | ❌ |
@@ -98,8 +101,15 @@ When you're done reviewing, send your comments wherever the work continues.
 ### To GitHub
 
 `:submit` opens a picker for Comment, Approve, Request changes, or Draft. Inline comments land
-on the right lines as a real PR review; review-level comments become the review summary.
+on the right lines as a real PR review. Review-level comments become the review summary.
 Requires `gh` authenticated to the repo.
+
+### To GitLab
+
+`:submit` offers Comment or Approve on a GitLab MR. Inline comments post as discussion notes.
+Review-level comments become the summary. Requires `glab` authenticated to the host. tuicr submits
+only Comment and Approve to GitLab. Request changes and Draft are GitHub-only here. See
+[docs/GITLAB.md](docs/GITLAB.md) for setup, self-hosted instances, and troubleshooting.
 
 ### To your coding agent
 
