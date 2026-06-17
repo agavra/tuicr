@@ -392,17 +392,12 @@ where
         request: CreateReviewRequest<'_>,
     ) -> Result<GhCreateReviewResponse> {
         match request.event {
-            SubmitEvent::RequestChanges => {
-                return Err(TuicrError::UnsupportedOperation(
-                    "GitLab does not support request-changes reviews".to_string(),
-                ));
-            }
+            SubmitEvent::Comment | SubmitEvent::Approve | SubmitEvent::RequestChanges => {}
             SubmitEvent::Draft => {
                 return Err(TuicrError::UnsupportedOperation(
                     "GitLab does not support draft reviews".to_string(),
                 ));
             }
-            SubmitEvent::Comment | SubmitEvent::Approve => {}
         }
 
         let project = gl_project_path(&pr.repository.owner, &pr.repository.name);
@@ -548,15 +543,40 @@ where
             self.run_glab(args, &pr.repository.host)?;
         }
 
+        if request.event == SubmitEvent::RequestChanges {
+            let full_path = format!("{}/{}", pr.repository.owner, pr.repository.name);
+            let query = "mutation($projectPath: ID!, $iid: String!) { \
+                mergeRequestRequestChanges(input: { projectPath: $projectPath, iid: $iid }) { errors } }";
+            let mut args = vec![
+                "api".to_string(),
+                "graphql".to_string(),
+                "-f".to_string(),
+                format!("query={query}"),
+                "-f".to_string(),
+                format!("projectPath={full_path}"),
+                "-f".to_string(),
+                format!("iid={}", pr.number),
+            ];
+            args.extend(Self::api_hostname_args(&pr.repository));
+            let output = self.run_glab(args, &pr.repository.host)?;
+            check_graphql_errors(&output, "mergeRequestRequestChanges")?;
+        }
+
         let id = first_discussion_id
             .as_deref()
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(0);
 
+        let state = if request.event == SubmitEvent::RequestChanges {
+            "CHANGES_REQUESTED"
+        } else {
+            "COMMENTED"
+        };
+
         Ok(GhCreateReviewResponse {
             id,
             html_url: pr.url.clone(),
-            state: "COMMENTED".to_string(),
+            state: state.to_string(),
         })
     }
 }
@@ -943,6 +963,54 @@ fn gl_range_endpoint(new_path: &str, side: GhSide, line: u32) -> serde_json::Val
     }
 }
 
+/// Inspect a `glab api graphql` response for logical errors.
+///
+/// GraphQL returns HTTP 200 even when a mutation fails, so a successful exit
+/// status is not enough. The response body must be parsed. Errors surface
+/// either at the top level (`errors`) or inside the mutation payload
+/// (`data.<mutation>.errors`). A non-empty array in either place is a failure.
+fn check_graphql_errors(output: &str, mutation: &str) -> Result<()> {
+    let value: serde_json::Value = match serde_json::from_str(output) {
+        Ok(value) => value,
+        Err(_) => return Ok(()),
+    };
+
+    // Payload errors (`data.<mutation>.errors`) are `[String!]`. Top-level
+    // GraphQL errors are objects carrying a `message` field. Prefer that
+    // message; fall back to the raw value so nothing is silently dropped.
+    let collect = |array: Option<&serde_json::Value>| -> Vec<String> {
+        array
+            .and_then(|v| v.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .map(|item| {
+                        if let Some(s) = item.as_str() {
+                            s.to_string()
+                        } else if let Some(message) = item.get("message").and_then(|m| m.as_str()) {
+                            message.to_string()
+                        } else {
+                            item.to_string()
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+
+    let mut messages = collect(value.get("errors"));
+    messages.extend(collect(value.pointer(&format!("/data/{mutation}/errors"))));
+
+    if messages.is_empty() {
+        Ok(())
+    } else {
+        Err(TuicrError::Forge(format!(
+            "GitLab request-changes failed: {}",
+            messages.join(", ")
+        )))
+    }
+}
+
 fn map_create_notes_error(error: GlabCommandError, host: &str) -> TuicrError {
     if let GlabCommandError::Failed { ref stderr, .. } = error
         && looks_like_permission_failure(stderr)
@@ -1321,6 +1389,206 @@ mod tests {
             position["old_line"],
             serde_json::Value::Number(18.into()),
             "old_line must be the counterpart for context lines"
+        );
+    }
+
+    #[test]
+    fn should_call_approve_endpoint_for_approve() {
+        let repo = ForgeRepository::gitlab("gitlab.com", "owner", "repo");
+        let pr = make_pr_details(repo.clone());
+        let inline = InlineComment {
+            path: "src/lib.rs".into(),
+            line: 15,
+            side: GhSide::Right,
+            counterpart_line: None,
+            start_line: None,
+            start_side: None,
+            old_path: None,
+            body: "looks good".to_string(),
+            comment_id: "c-approve".to_string(),
+        };
+        let runner = RecordingRunner::new_with_responses(vec![
+            r#"{"id":"disc-approve","individual_note":false}"#.to_string(),
+            String::new(),
+        ]);
+        let backend = GitLabGlabBackend::with_runner(Some(repo), runner);
+        let request = CreateReviewRequest {
+            event: crate::forge::submit::SubmitEvent::Approve,
+            commit_id: "headsha1",
+            body: "",
+            comments: &[inline],
+        };
+        let response = backend.create_review(&pr, request).unwrap();
+        assert_eq!(response.state, "COMMENTED");
+
+        let calls = backend.runner.calls.borrow();
+        // Discussion POST, then the approve call.
+        assert_eq!(calls.len(), 2);
+        let approve_args = &calls[1].0;
+        assert!(
+            approve_args
+                .iter()
+                .any(|a| a == "projects/owner%2Frepo/merge_requests/42/approve"),
+            "expected approve endpoint, got {approve_args:?}"
+        );
+    }
+
+    #[test]
+    fn should_post_comments_then_request_changes_mutation() {
+        let repo = ForgeRepository::gitlab("gitlab.com", "owner", "repo");
+        let pr = make_pr_details(repo.clone());
+        let inline = InlineComment {
+            path: "src/lib.rs".into(),
+            line: 15,
+            side: GhSide::Right,
+            counterpart_line: None,
+            start_line: None,
+            start_side: None,
+            old_path: None,
+            body: "please change this".to_string(),
+            comment_id: "c-rc".to_string(),
+        };
+        let runner = RecordingRunner::new_with_responses(vec![
+            // body note POST
+            r#"{"id":1}"#.to_string(),
+            // discussion POST
+            r#"{"id":"disc-rc","individual_note":false}"#.to_string(),
+            // graphql mutation
+            r#"{"data":{"mergeRequestRequestChanges":{"errors":[]}}}"#.to_string(),
+        ]);
+        let backend = GitLabGlabBackend::with_runner(Some(repo), runner);
+        let request = CreateReviewRequest {
+            event: crate::forge::submit::SubmitEvent::RequestChanges,
+            commit_id: "headsha1",
+            body: "overall please address the comments",
+            comments: &[inline],
+        };
+        let response = backend.create_review(&pr, request).unwrap();
+        assert_eq!(response.state, "CHANGES_REQUESTED");
+
+        let calls = backend.runner.calls.borrow();
+        // body note POST, discussion POST, graphql mutation
+        assert_eq!(calls.len(), 3);
+
+        // Body note posted to the notes endpoint.
+        assert!(
+            calls[0]
+                .0
+                .iter()
+                .any(|a| a == "projects/owner%2Frepo/merge_requests/42/notes"),
+            "expected body note endpoint, got {:?}",
+            calls[0].0
+        );
+        // Inline comment posted as a discussion.
+        assert!(
+            calls[1]
+                .0
+                .iter()
+                .any(|a| a == "projects/owner%2Frepo/merge_requests/42/discussions"),
+            "expected discussion endpoint, got {:?}",
+            calls[1].0
+        );
+
+        // Final call is the graphql request-changes mutation.
+        let graphql_args = &calls[2].0;
+        assert_eq!(graphql_args[0], "api");
+        assert_eq!(graphql_args[1], "graphql");
+        assert!(
+            graphql_args
+                .iter()
+                .any(|a| a.contains("mergeRequestRequestChanges")),
+            "expected mergeRequestRequestChanges in query, got {graphql_args:?}"
+        );
+        // projectPath must be the un-encoded full path.
+        assert!(
+            graphql_args.iter().any(|a| a == "projectPath=owner/repo"),
+            "expected un-encoded projectPath, got {graphql_args:?}"
+        );
+        // iid is the MR number, passed as a raw string field.
+        assert!(
+            graphql_args.iter().any(|a| a == "iid=42"),
+            "expected iid=42, got {graphql_args:?}"
+        );
+    }
+
+    #[test]
+    fn should_error_when_request_changes_mutation_returns_errors() {
+        let repo = ForgeRepository::gitlab("gitlab.com", "owner", "repo");
+        let pr = make_pr_details(repo.clone());
+        let inline = InlineComment {
+            path: "src/lib.rs".into(),
+            line: 15,
+            side: GhSide::Right,
+            counterpart_line: None,
+            start_line: None,
+            start_side: None,
+            old_path: None,
+            body: "please change this".to_string(),
+            comment_id: "c-rc-err".to_string(),
+        };
+        let runner = RecordingRunner::new_with_responses(vec![
+            r#"{"id":"disc-rc","individual_note":false}"#.to_string(),
+            r#"{"data":{"mergeRequestRequestChanges":{"errors":["You are not a reviewer"]}}}"#
+                .to_string(),
+        ]);
+        let backend = GitLabGlabBackend::with_runner(Some(repo), runner);
+        let request = CreateReviewRequest {
+            event: crate::forge::submit::SubmitEvent::RequestChanges,
+            commit_id: "headsha1",
+            body: "",
+            comments: &[inline],
+        };
+        let err = backend.create_review(&pr, request).unwrap_err();
+        match err {
+            TuicrError::Forge(msg) => {
+                assert!(
+                    msg.contains("You are not a reviewer"),
+                    "expected reviewer error message, got {msg}"
+                );
+            }
+            other => panic!("expected TuicrError::Forge, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn check_graphql_errors_extracts_message_from_top_level_error_objects() {
+        // Top-level GraphQL errors are objects with a `message`, not strings.
+        let output = r#"{"errors":[{"message":"Authentication required"}]}"#;
+        let err = check_graphql_errors(output, "mergeRequestRequestChanges").unwrap_err();
+        match err {
+            TuicrError::Forge(msg) => assert!(
+                msg.contains("Authentication required") && !msg.contains('{'),
+                "expected clean message, got {msg}"
+            ),
+            other => panic!("expected TuicrError::Forge, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn check_graphql_errors_ok_on_empty_errors_and_non_json() {
+        // Empty payload-error array is success.
+        check_graphql_errors(r#"{"data":{"m":{"errors":[]}}}"#, "m").unwrap();
+        // Non-JSON output is treated as success; run_glab already fails on a
+        // non-zero exit before this helper runs.
+        check_graphql_errors("not json", "m").unwrap();
+    }
+
+    #[test]
+    fn should_still_reject_draft_on_gitlab() {
+        let repo = ForgeRepository::gitlab("gitlab.com", "owner", "repo");
+        let pr = make_pr_details(repo.clone());
+        let runner = RecordingRunner::new_with_responses(vec![]);
+        let backend = GitLabGlabBackend::with_runner(Some(repo), runner);
+        let request = CreateReviewRequest {
+            event: crate::forge::submit::SubmitEvent::Draft,
+            commit_id: "headsha1",
+            body: "",
+            comments: &[],
+        };
+        let err = backend.create_review(&pr, request).unwrap_err();
+        assert!(
+            matches!(err, TuicrError::UnsupportedOperation(_)),
+            "expected UnsupportedOperation for draft, got {err:?}"
         );
     }
 

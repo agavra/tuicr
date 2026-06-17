@@ -106,10 +106,10 @@ Requires `gh` authenticated to the repo.
 
 ### To GitLab
 
-`:submit` offers Comment or Approve on a GitLab MR. Inline comments post as discussion notes.
-Review-level comments become the summary. Requires `glab` authenticated to the host. tuicr submits
-only Comment and Approve to GitLab. Request changes and Draft are GitHub-only here. See
-[docs/GITLAB.md](docs/GITLAB.md) for setup, self-hosted instances, and troubleshooting.
+`:submit` offers Comment, Approve, or Request changes on a GitLab MR. Inline comments post as
+discussion notes. Review-level comments become the summary. Requires `glab` authenticated to the
+host. Request changes needs your account to be an assigned reviewer. Only Draft is GitHub-only
+here. See [docs/GITLAB.md](docs/GITLAB.md) for setup, self-hosted instances, and troubleshooting.
 
 ### To your coding agent
 

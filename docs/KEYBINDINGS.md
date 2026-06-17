@@ -128,7 +128,7 @@ In command mode,
 | `?` | Toggle help |
 | `q` | Quick quit |
 
-`request-changes` and `draft` apply to GitHub only. tuicr submits `comment` and `approve` to
+`draft` applies to GitHub only. `comment`, `approve`, and `request-changes` work on both GitHub and
 GitLab MRs.
 
 ## Commit selection / review target selector
