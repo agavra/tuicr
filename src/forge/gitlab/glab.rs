@@ -392,13 +392,16 @@ where
         request: CreateReviewRequest<'_>,
     ) -> Result<GhCreateReviewResponse> {
         match request.event {
-            SubmitEvent::Comment | SubmitEvent::Approve | SubmitEvent::RequestChanges => {}
-            SubmitEvent::Draft => {
-                return Err(TuicrError::UnsupportedOperation(
-                    "GitLab does not support draft reviews".to_string(),
-                ));
-            }
+            SubmitEvent::Comment
+            | SubmitEvent::Approve
+            | SubmitEvent::RequestChanges
+            | SubmitEvent::Draft => {}
         }
+
+        // Draft submissions create GitLab draft notes (the pending-review
+        // primitive) and stop short of publishing, mirroring GitHub's pending
+        // review. The author publishes from the GitLab "Submit review" UI.
+        let is_draft = request.event == SubmitEvent::Draft;
 
         let project = gl_project_path(&pr.repository.owner, &pr.repository.name);
         let start_sha = pr
@@ -411,8 +414,19 @@ where
 
         // Post the overall review body as a general MR note (if non-empty).
         if !request.body.is_empty() {
-            let endpoint = format!("projects/{}/merge_requests/{}/notes", project, pr.number);
-            let body_json = serde_json::to_string(&serde_json::json!({ "body": request.body }))?;
+            let endpoint = if is_draft {
+                format!(
+                    "projects/{}/merge_requests/{}/draft_notes",
+                    project, pr.number
+                )
+            } else {
+                format!("projects/{}/merge_requests/{}/notes", project, pr.number)
+            };
+            let body_json = if is_draft {
+                serde_json::to_string(&serde_json::json!({ "note": request.body }))?
+            } else {
+                serde_json::to_string(&serde_json::json!({ "body": request.body }))?
+            };
             let mut args = vec![
                 "api".to_string(),
                 endpoint,
@@ -479,15 +493,29 @@ where
                     "end": end_endpoint,
                 });
             }
-            let body_json = serde_json::to_string(&serde_json::json!({
-                "body": comment.body,
-                "position": position,
-            }))?;
+            let body_json = if is_draft {
+                serde_json::to_string(&serde_json::json!({
+                    "note": comment.body,
+                    "position": position,
+                }))?
+            } else {
+                serde_json::to_string(&serde_json::json!({
+                    "body": comment.body,
+                    "position": position,
+                }))?
+            };
 
-            let endpoint = format!(
-                "projects/{}/merge_requests/{}/discussions",
-                project, pr.number,
-            );
+            let endpoint = if is_draft {
+                format!(
+                    "projects/{}/merge_requests/{}/draft_notes",
+                    project, pr.number,
+                )
+            } else {
+                format!(
+                    "projects/{}/merge_requests/{}/discussions",
+                    project, pr.number,
+                )
+            };
             let mut args = vec![
                 "api".to_string(),
                 endpoint,
@@ -504,8 +532,13 @@ where
                 let host = &pr.repository.host;
                 let project_encoded =
                     format!("{}/{}", pr.repository.owner, pr.repository.name).replace('/', "%2F");
+                let endpoint_label = if is_draft {
+                    "draft_notes"
+                } else {
+                    "discussions"
+                };
                 let url = format!(
-                    "https://{host}/api/v4/projects/{project_encoded}/merge_requests/{}/discussions",
+                    "https://{host}/api/v4/projects/{project_encoded}/merge_requests/{}/{endpoint_label}",
                     pr.number
                 );
                 glab_debug_log(&format!(
@@ -523,11 +556,17 @@ where
                 glab_debug_log(&format!("[GLAB_DEBUG] glab response: {output}\n"));
             }
 
+            // Discussions return a string `id`; draft_notes return a numeric
+            // one. Capture either so the success message reports a real id.
             if first_discussion_id.is_none()
                 && let Ok(value) = serde_json::from_str::<serde_json::Value>(&output)
-                && let Some(id) = value.get("id").and_then(|v| v.as_str())
+                && let Some(id) = value.get("id").and_then(|v| {
+                    v.as_str()
+                        .map(str::to_string)
+                        .or_else(|| v.as_u64().map(|n| n.to_string()))
+                })
             {
-                first_discussion_id = Some(id.to_string());
+                first_discussion_id = Some(id);
             }
         }
 
@@ -569,6 +608,8 @@ where
 
         let state = if request.event == SubmitEvent::RequestChanges {
             "CHANGES_REQUESTED"
+        } else if is_draft {
+            "PENDING"
         } else {
             "COMMENTED"
         };
@@ -1574,22 +1615,168 @@ mod tests {
     }
 
     #[test]
-    fn should_still_reject_draft_on_gitlab() {
+    fn should_post_draft_notes_for_draft_submission() {
+        // `:submit draft` on GitLab must create draft notes (the pending-review
+        // primitive) for both the body and inline comments, mirroring GitHub's
+        // pending review. No discussion, approve, or GraphQL call should fire.
         let repo = ForgeRepository::gitlab("gitlab.com", "owner", "repo");
         let pr = make_pr_details(repo.clone());
-        let runner = RecordingRunner::new_with_responses(vec![]);
+        let inline = InlineComment {
+            path: "src/lib.rs".into(),
+            line: 15,
+            side: GhSide::Right,
+            counterpart_line: Some(12),
+            start_line: None,
+            start_side: None,
+            old_path: None,
+            body: "inline draft".to_string(),
+            comment_id: "c1".to_string(),
+        };
+        let runner = RecordingRunner::new_with_responses(vec![
+            r#"{"id":10}"#.to_string(),
+            r#"{"id":22}"#.to_string(),
+        ]);
         let backend = GitLabGlabBackend::with_runner(Some(repo), runner);
         let request = CreateReviewRequest {
             event: crate::forge::submit::SubmitEvent::Draft,
             commit_id: "headsha1",
-            body: "",
-            comments: &[],
+            body: "overall draft",
+            comments: &[inline],
         };
-        let err = backend.create_review(&pr, request).unwrap_err();
+        let response = backend.create_review(&pr, request).unwrap();
+        assert_eq!(response.state, "PENDING");
+        // draft_notes return a numeric `id`. The id is captured from the first
+        // inline note (matching the discussion path), so it must be parsed from
+        // the inline response (22), not left at 0.
+        assert_eq!(response.id, 22, "inline draft note id should be reported");
+
+        let calls = backend.runner.calls.borrow();
+        assert_eq!(calls.len(), 2, "expected one body note and one inline note");
+
+        // Every call must target a draft_notes endpoint; none may publish or
+        // fall back to discussions/approve/graphql.
+        for (args, _) in calls.iter() {
+            let endpoint = &args[1];
+            assert!(
+                endpoint.ends_with("/draft_notes"),
+                "expected draft_notes endpoint, got {endpoint}"
+            );
+            assert!(
+                !endpoint.contains("discussions"),
+                "draft path must not hit discussions"
+            );
+            assert!(
+                !args.iter().any(|a| a.contains("approve") || a == "graphql"),
+                "draft path must not approve or run graphql"
+            );
+        }
+
+        // Body note: { "note": <body> }, no position.
+        let (_, body_stdin) = &calls[0];
+        let body: serde_json::Value = serde_json::from_str(body_stdin.as_ref().unwrap()).unwrap();
+        assert_eq!(body["note"], "overall draft");
         assert!(
-            matches!(err, TuicrError::UnsupportedOperation(_)),
-            "expected UnsupportedOperation for draft, got {err:?}"
+            body.get("body").is_none(),
+            "draft must use `note`, not `body`"
         );
+        assert!(body.get("position").is_none(), "body note has no position");
+
+        // Inline note: `note` + position carrying the expected line numbers.
+        let (_, inline_stdin) = &calls[1];
+        let inline: serde_json::Value =
+            serde_json::from_str(inline_stdin.as_ref().unwrap()).unwrap();
+        assert_eq!(inline["note"], "inline draft");
+        assert!(
+            inline.get("body").is_none(),
+            "inline draft must use `note`, not `body`"
+        );
+        let position = &inline["position"];
+        assert_eq!(position["new_line"], serde_json::Value::Number(15.into()));
+        assert_eq!(position["old_line"], serde_json::Value::Number(12.into()));
+    }
+
+    #[test]
+    fn should_not_publish_draft_notes() {
+        // Draft submissions stop at creating draft notes. Publishing is left to
+        // the GitLab web UI, so no call may touch bulk_publish or /publish.
+        let repo = ForgeRepository::gitlab("gitlab.com", "owner", "repo");
+        let pr = make_pr_details(repo.clone());
+        let inline = InlineComment {
+            path: "src/lib.rs".into(),
+            line: 15,
+            side: GhSide::Right,
+            counterpart_line: None,
+            start_line: None,
+            start_side: None,
+            old_path: None,
+            body: "inline draft".to_string(),
+            comment_id: "c1".to_string(),
+        };
+        let runner = RecordingRunner::new_with_responses(vec![
+            r#"{"id":1}"#.to_string(),
+            r#"{"id":2}"#.to_string(),
+        ]);
+        let backend = GitLabGlabBackend::with_runner(Some(repo), runner);
+        let request = CreateReviewRequest {
+            event: crate::forge::submit::SubmitEvent::Draft,
+            commit_id: "headsha1",
+            body: "overall draft",
+            comments: &[inline],
+        };
+        backend.create_review(&pr, request).unwrap();
+
+        let calls = backend.runner.calls.borrow();
+        for (args, _) in calls.iter() {
+            assert!(
+                !args
+                    .iter()
+                    .any(|a| a.contains("bulk_publish") || a.contains("/publish")),
+                "draft path must not publish"
+            );
+        }
+    }
+
+    #[test]
+    fn should_post_comment_submission_to_notes_and_discussions() {
+        // Guard against the draft branching regressing the default Comment path:
+        // body goes to `/notes`, inline comments to `/discussions`.
+        let repo = ForgeRepository::gitlab("gitlab.com", "owner", "repo");
+        let pr = make_pr_details(repo.clone());
+        let inline = InlineComment {
+            path: "src/lib.rs".into(),
+            line: 15,
+            side: GhSide::Right,
+            counterpart_line: None,
+            start_line: None,
+            start_side: None,
+            old_path: None,
+            body: "inline comment".to_string(),
+            comment_id: "c1".to_string(),
+        };
+        let runner = RecordingRunner::new_with_responses(vec![
+            String::new(),
+            r#"{"id":"disc-abc"}"#.to_string(),
+        ]);
+        let backend = GitLabGlabBackend::with_runner(Some(repo), runner);
+        let request = CreateReviewRequest {
+            event: crate::forge::submit::SubmitEvent::Comment,
+            commit_id: "headsha1",
+            body: "overall comment",
+            comments: &[inline],
+        };
+        let response = backend.create_review(&pr, request).unwrap();
+        assert_eq!(response.state, "COMMENTED");
+
+        let calls = backend.runner.calls.borrow();
+        assert_eq!(calls.len(), 2);
+        assert!(calls[0].0[1].ends_with("/notes"));
+        assert!(calls[1].0[1].ends_with("/discussions"));
+        for (args, _) in calls.iter() {
+            assert!(
+                !args.iter().any(|a| a.contains("draft_notes")),
+                "comment path must not hit draft_notes"
+            );
+        }
     }
 
     #[test]

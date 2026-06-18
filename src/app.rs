@@ -7387,6 +7387,18 @@ impl App {
         self.finish_pr_submit(in_flight, result);
     }
 
+    /// Human-readable name of the forge backing the current PR/MR review.
+    /// Used to keep submit messaging accurate across GitHub and GitLab.
+    pub fn forge_display_name(&self) -> &'static str {
+        match &self.diff_source {
+            DiffSource::PullRequest(pr) => match pr.key.repository.kind {
+                crate::forge::traits::ForgeKind::GitHub => "GitHub",
+                crate::forge::traits::ForgeKind::GitLab => "GitLab",
+            },
+            _ => "forge",
+        }
+    }
+
     /// Apply the create-review result on the main thread. On success: flip
     /// each included `Comment` to `Submitted` (or `PushedDraft` for the
     /// draft event), stamp `remote_review_id`, save the session again, and
@@ -7414,13 +7426,7 @@ impl App {
 
         let inline_count = in_flight.mappable.len();
         let summary_count = in_flight.moved_to_summary_count;
-        let forge_name = match &self.diff_source {
-            DiffSource::PullRequest(pr) => match pr.key.repository.kind {
-                crate::forge::traits::ForgeKind::GitHub => "GitHub",
-                crate::forge::traits::ForgeKind::GitLab => "GitLab",
-            },
-            _ => "forge",
-        };
+        let forge_name = self.forge_display_name();
         let message = match in_flight.event {
             SubmitEvent::Draft => {
                 let pr_url = match &self.diff_source {
