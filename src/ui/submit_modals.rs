@@ -130,9 +130,10 @@ pub fn render_submit_confirm(frame: &mut Frame, app: &App) {
 
     frame.render_widget(Clear, area);
 
+    let forge = app.forge_display_name();
     let title = match state.event {
-        SubmitEvent::Draft => " Push pending GitHub review? ".to_string(),
-        _ => " Submit review to GitHub? ".to_string(),
+        SubmitEvent::Draft => format!(" Push pending {forge} review? "),
+        _ => format!(" Submit review to {forge}? "),
     };
 
     let block = Block::default()
@@ -187,7 +188,7 @@ pub fn render_submit_confirm(frame: &mut Frame, app: &App) {
             Style::default().fg(theme.pending),
         )));
         lines.push(Line::from(Span::styled(
-            "Some comments may appear outdated on GitHub.",
+            format!("Some comments may appear outdated on {forge}."),
             Style::default().fg(theme.pending),
         )));
     }
@@ -195,11 +196,11 @@ pub fn render_submit_confirm(frame: &mut Frame, app: &App) {
     if matches!(state.event, SubmitEvent::Draft) {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "This will create a pending GitHub review.",
+            format!("This will create a pending {forge} review."),
             Style::default().fg(theme.fg_secondary),
         )));
         lines.push(Line::from(Span::styled(
-            "It will not publish until you finish it in GitHub.",
+            format!("It will not publish until you finish it in {forge}."),
             Style::default().fg(theme.fg_secondary),
         )));
     }
@@ -339,6 +340,10 @@ mod tests {
     }
 
     fn make_pr_app() -> App {
+        make_pr_app_for(ForgeRepository::github("github.com", "agavra", "tuicr"))
+    }
+
+    fn make_pr_app_for(repo: ForgeRepository) -> App {
         let vcs_info = VcsInfo {
             root_path: PathBuf::from("/tmp"),
             head_commit: "abcdef0123".to_string(),
@@ -352,11 +357,7 @@ mod tests {
             SessionDiffSource::PullRequest,
         );
         let pr_source = PullRequestDiffSource {
-            key: PrSessionKey::new(
-                ForgeRepository::github("github.com", "agavra", "tuicr"),
-                125,
-                "abcdef0123".to_string(),
-            ),
+            key: PrSessionKey::new(repo, 125, "abcdef0123".to_string()),
             base_sha: "0000".to_string(),
             title: "test".to_string(),
             url: "https://example".to_string(),
@@ -604,6 +605,28 @@ mod tests {
         assert!(!text.contains("Event: "), "draft body: {text}");
         assert!(text.contains("[y]"));
         assert!(text.contains("push draft"));
+    }
+
+    #[test]
+    fn confirm_uses_gitlab_label_for_gitlab_draft() {
+        let mut app = make_pr_app_for(ForgeRepository::gitlab("gitlab.com", "owner", "repo"));
+        app.submit_state = Some(SubmitState {
+            event: SubmitEvent::Draft,
+            mappable: vec![inline(11)],
+            unmappable: Vec::new(),
+            resolver_choices: Vec::new(),
+            resolver_cursor: 0,
+            commit_id: "abcdef0123".to_string(),
+            skip_confirm: false,
+        });
+        let buffer = draw_confirm(&app);
+        let text = buffer_text(&buffer);
+        assert!(
+            text.contains("Push pending GitLab review?"),
+            "gitlab draft title: {text}"
+        );
+        assert!(text.contains("finish it in GitLab"), "gitlab body: {text}");
+        assert!(!text.contains("GitHub"), "must not mention GitHub: {text}");
     }
 
     #[test]
