@@ -8507,9 +8507,12 @@ impl App {
     }
 
     fn confirm_commit_selection_inner(&mut self) -> Result<()> {
-        let Some((start, end)) = self.commit_selection_range else {
-            self.set_message("Select at least one commit");
-            return Ok(());
+        let (start, end) = match self.commit_selection_range {
+            Some(range) => range,
+            None => {
+                let cursor = self.commit_list_cursor;
+                (cursor, cursor)
+            }
         };
 
         // Collect selected entries in order from oldest to newest (end..start).
