@@ -1539,10 +1539,9 @@ mod remote_comments_side_by_side_snapshot_tests {
     use crate::model::{
         DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin, ReviewSession, SessionDiffSource,
     };
-    use crate::syntax::SyntaxHighlighter;
     use crate::theme::Theme;
     use crate::ui::render;
-    use crate::vcs::traits::{VcsBackend, VcsChangeStatus, VcsInfo, VcsType};
+    use crate::vcs::traits::{DiffWithJobs, VcsBackend, VcsChangeStatus, VcsInfo, VcsType};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
@@ -1556,10 +1555,7 @@ mod remote_comments_side_by_side_snapshot_tests {
         fn info(&self) -> &VcsInfo {
             &self.info
         }
-        fn get_working_tree_diff(
-            &self,
-            _highlighter: &SyntaxHighlighter,
-        ) -> TuicrResult<Vec<DiffFile>> {
+        fn get_working_tree_diff(&self) -> TuicrResult<DiffWithJobs> {
             Err(TuicrError::NoChanges)
         }
         fn fetch_context_lines(
@@ -1683,7 +1679,7 @@ mod remote_comments_side_by_side_snapshot_tests {
             Theme::dark(),
             None,
             false,
-            vec![sample_diff_file()],
+            (vec![sample_diff_file()], Vec::new()),
             session,
             DiffSource::PullRequest(Box::new(pr)),
             InputMode::Normal,

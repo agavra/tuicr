@@ -19,15 +19,15 @@ use crate::forge::traits::{
     ForgeBackend, PrSessionKey, PullRequestCommit, PullRequestDetails, PullRequestTarget,
 };
 use crate::model::{DiffFile, ReviewSession, SessionDiffSource};
-use crate::syntax::SyntaxHighlighter;
 use crate::tuicrignore;
+use crate::vcs::DiffWithJobs;
 use crate::vcs::diff_parser::{DiffFormat, parse_unified_diff};
 
 /// Everything the App needs to enter PR review mode.
 #[derive(Debug)]
 pub struct OpenedPullRequest {
     pub details: PullRequestDetails,
-    pub diff_files: Vec<DiffFile>,
+    pub diff: DiffWithJobs,
     pub session: ReviewSession,
     pub key: PrSessionKey,
     /// PR commits in newest-first display order. Empty when the forge
@@ -45,10 +45,9 @@ pub fn open_pull_request(
     backend: &dyn ForgeBackend,
     target: PullRequestTarget,
     local_checkout: Option<&Path>,
-    highlighter: &SyntaxHighlighter,
 ) -> Result<OpenedPullRequest> {
     let (details, patch, commits) = fetch_pr_data(backend, target)?;
-    prepare_open_pr(details, &patch, commits, local_checkout, highlighter)
+    prepare_open_pr(details, &patch, commits, local_checkout)
 }
 
 /// Network-only half of the PR open path: fetch PR metadata, the raw
@@ -71,17 +70,16 @@ pub fn fetch_pr_data(
 }
 
 /// CPU-only half of the PR open path: parse the patch, apply
-/// `.tuicrignore`, and build the session. Runs on the main thread because
-/// `SyntaxHighlighter` is not trivially `Send`-cloneable.
+/// `.tuicrignore`, and build the session. Highlighting is deferred to the
+/// streaming worker via the returned `DiffWithJobs`.
 pub fn prepare_open_pr(
     details: PullRequestDetails,
     patch: &str,
     commits: Vec<PullRequestCommit>,
     local_checkout: Option<&Path>,
-    highlighter: &SyntaxHighlighter,
 ) -> Result<OpenedPullRequest> {
-    let parsed = match parse_unified_diff(patch, DiffFormat::GitStyle, highlighter) {
-        Ok(files) => files,
+    let parsed = match parse_unified_diff(patch, DiffFormat::GitStyle) {
+        Ok(diff) => diff,
         Err(TuicrError::NoChanges) => {
             return Err(TuicrError::Forge(format!(
                 "Pull request #{} has no file changes",
@@ -91,13 +89,13 @@ pub fn prepare_open_pr(
         Err(e) => return Err(e),
     };
 
-    let diff_files = match local_checkout {
+    let diff = match local_checkout {
         Some(root) => tuicrignore::filter_diff_files(root, parsed),
         None => parsed,
     };
 
     let key = PrSessionKey::from_details(&details);
-    let session = build_session(&details, &key, &diff_files);
+    let session = build_session(&details, &key, &diff.0);
     // Forge returns commits oldest-first; the inline selector renders
     // newest-first so reverse here once.
     let mut commits = commits;
@@ -105,7 +103,7 @@ pub fn prepare_open_pr(
 
     Ok(OpenedPullRequest {
         details,
-        diff_files,
+        diff,
         session,
         key,
         commits,
@@ -252,11 +250,10 @@ index 1111111..2222222 100644
             calls: RefCell::new(Vec::new()),
         };
         let target = PullRequestTarget::with_repository(repo(), 125, "125");
-        let highlighter = SyntaxHighlighter::default();
         // when
-        let opened = open_pull_request(&backend, target, None, &highlighter).unwrap();
+        let opened = open_pull_request(&backend, target, None).unwrap();
         // then
-        assert_eq!(opened.diff_files.len(), 1);
+        assert_eq!(opened.diff.0.len(), 1);
         assert_eq!(opened.key.head_sha, "abcdef0123456789");
         assert_eq!(opened.key.number, 125);
         assert_eq!(opened.session.diff_source, SessionDiffSource::PullRequest);
@@ -319,13 +316,13 @@ rename to new_name.rs
             calls: RefCell::new(Vec::new()),
         };
         let target = PullRequestTarget::with_repository(repo(), 125, "125");
-        let highlighter = SyntaxHighlighter::default();
         // when
-        let opened = open_pull_request(&backend, target, None, &highlighter).unwrap();
+        let opened = open_pull_request(&backend, target, None).unwrap();
         // then — all four files are recognized with correct statuses
-        assert_eq!(opened.diff_files.len(), 4);
+        assert_eq!(opened.diff.0.len(), 4);
         let statuses: Vec<(String, crate::model::FileStatus)> = opened
-            .diff_files
+            .diff
+            .0
             .iter()
             .map(|f| (f.display_path().to_string_lossy().into_owned(), f.status))
             .collect();
@@ -358,9 +355,8 @@ rename to new_name.rs
             calls: RefCell::new(Vec::new()),
         };
         let target = PullRequestTarget::with_repository(repo(), 125, "125");
-        let highlighter = SyntaxHighlighter::default();
         // when
-        let err = open_pull_request(&backend, target, None, &highlighter).unwrap_err();
+        let err = open_pull_request(&backend, target, None).unwrap_err();
         // then
         let msg = err.to_string();
         assert!(

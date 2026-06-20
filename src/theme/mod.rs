@@ -25,7 +25,7 @@ pub enum SyntaxThemeSource {
 /// Complete color theme for the application
 pub struct Theme {
     /// Cached syntax highlighter (lazily initialized)
-    highlighter: OnceLock<SyntaxHighlighter>,
+    highlighter: OnceLock<std::sync::Arc<SyntaxHighlighter>>,
 
     // Base colors
     pub panel_bg: Color,
@@ -2274,15 +2274,23 @@ pub fn resolve_theme_with_config(
 impl Theme {
     /// Get the syntax highlighter for this theme (lazily initialized, cached)
     pub fn syntax_highlighter(&self) -> &SyntaxHighlighter {
-        self.highlighter.get_or_init(|| match &self.syntax_theme {
-            SyntaxThemeSource::Embedded(theme) => {
-                SyntaxHighlighter::new(*theme, self.syntax_add_bg, self.syntax_del_bg)
-            }
-            SyntaxThemeSource::Custom(theme) => SyntaxHighlighter::with_theme(
-                *theme.clone(),
-                self.syntax_add_bg,
-                self.syntax_del_bg,
-            ),
+        self.syntax_highlighter_arc().as_ref()
+    }
+
+    /// Same as `syntax_highlighter`, but yields an `Arc` clone that can be
+    /// moved into the highlight worker thread.
+    pub fn syntax_highlighter_arc(&self) -> &std::sync::Arc<SyntaxHighlighter> {
+        self.highlighter.get_or_init(|| {
+            std::sync::Arc::new(match &self.syntax_theme {
+                SyntaxThemeSource::Embedded(theme) => {
+                    SyntaxHighlighter::new(*theme, self.syntax_add_bg, self.syntax_del_bg)
+                }
+                SyntaxThemeSource::Custom(theme) => SyntaxHighlighter::with_theme(
+                    *theme.clone(),
+                    self.syntax_add_bg,
+                    self.syntax_del_bg,
+                ),
+            })
         })
     }
 

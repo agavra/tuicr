@@ -293,10 +293,9 @@ mod tests {
     use crate::model::ReviewSession;
     use crate::model::comment::{Comment, CommentType};
     use crate::model::diff_types::FileStatus;
-    use crate::model::{DiffFile, DiffLine, SessionDiffSource};
-    use crate::syntax::SyntaxHighlighter;
+    use crate::model::{DiffLine, SessionDiffSource};
     use crate::theme::Theme;
-    use crate::vcs::traits::{VcsBackend, VcsChangeStatus, VcsInfo, VcsType};
+    use crate::vcs::traits::{DiffWithJobs, VcsBackend, VcsChangeStatus, VcsInfo, VcsType};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
@@ -310,7 +309,7 @@ mod tests {
         fn info(&self) -> &VcsInfo {
             &self.info
         }
-        fn get_working_tree_diff(&self, _h: &SyntaxHighlighter) -> TuicrResult<Vec<DiffFile>> {
+        fn get_working_tree_diff(&self) -> TuicrResult<DiffWithJobs> {
             Err(TuicrError::NoChanges)
         }
         fn fetch_context_lines(
@@ -375,7 +374,7 @@ mod tests {
             Theme::dark(),
             None,
             false,
-            Vec::new(),
+            (Vec::new(), Vec::new()),
             session,
             DiffSource::PullRequest(Box::new(pr_source)),
             InputMode::Normal,

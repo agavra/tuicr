@@ -12,10 +12,9 @@
 use std::path::Path;
 
 use crate::error::{Result, TuicrError};
-use crate::model::{DiffFile, DiffLine, FileStatus};
-use crate::syntax::SyntaxHighlighter;
+use crate::model::{DiffLine, FileStatus};
 
-use super::traits::{VcsBackend, VcsInfo};
+use super::traits::{DiffWithJobs, VcsBackend, VcsInfo};
 
 pub struct PrNoopVcs {
     info: VcsInfo,
@@ -32,7 +31,7 @@ impl VcsBackend for PrNoopVcs {
         &self.info
     }
 
-    fn get_working_tree_diff(&self, _highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+    fn get_working_tree_diff(&self) -> Result<DiffWithJobs> {
         Err(TuicrError::UnsupportedOperation(
             "PR mode does not read from the local working tree".to_string(),
         ))
@@ -96,9 +95,7 @@ mod tests {
         // given
         let vcs = PrNoopVcs::new(info());
         // when
-        let err = vcs
-            .get_working_tree_diff(&SyntaxHighlighter::default())
-            .unwrap_err();
+        let err = vcs.get_working_tree_diff().unwrap_err();
         // then
         assert!(
             err.to_string()

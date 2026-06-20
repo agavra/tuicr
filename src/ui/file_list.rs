@@ -67,20 +67,16 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
     }
     let scroll_x = app.file_list_state.scroll_x;
 
-    // When diff panel is focused, sync file list selection to current file
-    // But preserve the current offset to not interfere with manual scrolling
-    if app.focused_panel == FocusedPanel::Diff {
+    // Skip when the user has wheel-scrolled the file list independently;
+    // see App::manual_file_list_scroll.
+    if app.focused_panel == FocusedPanel::Diff && !app.manual_file_list_scroll {
         let current_file_idx = app.diff_state.current_file_idx;
         for (tree_idx, item) in visible_items.iter().enumerate() {
             if let FileTreeItem::File { file_idx, .. } = item
                 && *file_idx == current_file_idx
             {
                 if app.file_list_state.selected() != tree_idx {
-                    // Save current offset before changing selection
-                    let current_offset = app.file_list_state.list_state.offset();
                     app.file_list_state.select(tree_idx);
-                    // Restore offset to prevent auto-scrolling
-                    *app.file_list_state.list_state.offset_mut() = current_offset;
                 }
                 break;
             }

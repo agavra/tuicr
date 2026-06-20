@@ -3,12 +3,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Once;
 
 use crate::error::{Result, TuicrError};
-use crate::model::{DiffFile, DiffLine, FileStatus};
-use crate::syntax::SyntaxHighlighter;
+use crate::model::{DiffLine, FileStatus};
 
 use super::{context, diff, repository, staging};
 use crate::vcs::traits::{
-    ChangeKind, CommitInfo, DiffWhitespaceMode, ResolvedRevisionRange, VcsBackend, VcsInfo, VcsType,
+    ChangeKind, CommitInfo, DiffWhitespaceMode, DiffWithJobs, ResolvedRevisionRange, VcsBackend,
+    VcsInfo, VcsType,
 };
 
 /// Git backend implementation using the git2/libgit2 library.
@@ -99,16 +99,16 @@ impl VcsBackend for Libgit2Backend {
         false
     }
 
-    fn get_working_tree_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
-        diff::get_working_tree_diff(&self.repo, self.whitespace_mode, highlighter)
+    fn get_working_tree_diff(&self) -> Result<DiffWithJobs> {
+        diff::get_working_tree_diff(&self.repo, self.whitespace_mode)
     }
 
-    fn get_staged_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
-        diff::get_staged_diff(&self.repo, self.whitespace_mode, highlighter)
+    fn get_staged_diff(&self) -> Result<DiffWithJobs> {
+        diff::get_staged_diff(&self.repo, self.whitespace_mode)
     }
 
-    fn get_unstaged_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
-        diff::get_unstaged_diff(&self.repo, self.whitespace_mode, highlighter)
+    fn get_unstaged_diff(&self) -> Result<DiffWithJobs> {
+        diff::get_unstaged_diff(&self.repo, self.whitespace_mode)
     }
 
     fn list_changed_paths(&self, kind: ChangeKind) -> Result<Vec<PathBuf>> {
@@ -165,14 +165,8 @@ impl VcsBackend for Libgit2Backend {
     fn get_commit_range_diff(
         &self,
         revision_range: &ResolvedRevisionRange<'_>,
-        highlighter: &SyntaxHighlighter,
-    ) -> Result<Vec<DiffFile>> {
-        diff::get_commit_range_diff(
-            &self.repo,
-            revision_range,
-            self.whitespace_mode,
-            highlighter,
-        )
+    ) -> Result<DiffWithJobs> {
+        diff::get_commit_range_diff(&self.repo, revision_range, self.whitespace_mode)
     }
 
     fn get_commits_info(&self, ids: &[String]) -> Result<Vec<CommitInfo>> {
@@ -191,17 +185,8 @@ impl VcsBackend for Libgit2Backend {
             .collect())
     }
 
-    fn get_working_tree_with_commits_diff(
-        &self,
-        commit_ids: &[String],
-        highlighter: &SyntaxHighlighter,
-    ) -> Result<Vec<DiffFile>> {
-        diff::get_working_tree_with_commits_diff(
-            &self.repo,
-            commit_ids,
-            self.whitespace_mode,
-            highlighter,
-        )
+    fn get_working_tree_with_commits_diff(&self, commit_ids: &[String]) -> Result<DiffWithJobs> {
+        diff::get_working_tree_with_commits_diff(&self.repo, commit_ids, self.whitespace_mode)
     }
 
     fn stage_file(&self, path: &Path) -> Result<()> {

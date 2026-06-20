@@ -29,6 +29,18 @@ use tuicr::{config, handler, profile, ui, update};
 const CTRL_C_EXIT_TIMEOUT: Duration = Duration::from_secs(2);
 /// Hide the file list by default on narrow terminals.
 const MIN_WIDTH_FOR_FILE_LIST: u16 = 100;
+/// Idle event-poll cadence: long enough to keep CPU usage trivial while no
+/// input or background highlight results are pending.
+const IDLE_POLL_TIMEOUT: Duration = Duration::from_millis(100);
+/// Poll cadence while the highlight worker is still streaming results.
+/// ~30 ms keeps perceived latency between worker emit and on-screen update
+/// under one frame; CPU cost of the extra wakeups is negligible.
+const STREAMING_POLL_TIMEOUT: Duration = Duration::from_millis(30);
+/// Cap on events drained per tick. Holding j or wheel-scrolling fast queues
+/// events faster than the per-event render can consume them; processing the
+/// batch and rendering once kills perceived input lag. A cap keeps a paste
+/// or stuck-key from monopolising the loop for too long before redraw.
+const MAX_EVENTS_PER_TICK: usize = 64;
 
 fn main() -> anyhow::Result<()> {
     profile::init_from_env();
@@ -299,7 +311,7 @@ fn main() -> anyhow::Result<()> {
     let mut pending_ctrl_c: Option<Instant> = None;
 
     // Main loop
-    loop {
+    'main: loop {
         // Check for update result (non-blocking)
         if let Some(ref rx) = update_rx
             && let Ok(
@@ -327,6 +339,10 @@ fn main() -> anyhow::Result<()> {
         app.poll_pr_submit_events();
         app.poll_persisted_session_changes();
 
+        // Drain any streaming highlight results before rendering so newly
+        // arrived spans land on screen this frame.
+        app.drain_highlight_updates();
+
         // Render. Bracket the frame in a synchronized-output pair
         // (CSI ?2026h/l) so terminals (and zellij) buffer the whole repaint
         // and present it atomically. Without this, scrolling over a slow link
@@ -338,315 +354,343 @@ fn main() -> anyhow::Result<()> {
         })?;
         execute!(terminal.backend_mut(), EndSynchronizedUpdate)?;
 
-        // Handle events
-        if event::poll(Duration::from_millis(100))? {
-            let event = event::read()?;
-            // Down/Up Release flips the `*_released_since_arm` flag so the
-            // primed two-press file walk in single-file view requires a
-            // deliberate release + press; held-key auto-repeat (Repeat
-            // events) never satisfies the gate. Terminals without kitty
-            // REPORT_EVENT_TYPES support never emit Release, in which case
-            // `supports_keyboard_enhancement` is false and `cursor_down` /
-            // `cursor_up` skip the gate entirely.
-            if let Event::Key(key) = &event
-                && key.kind == KeyEventKind::Release
-            {
-                if matches!(
-                    key.code,
-                    crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Char('j')
-                ) {
-                    app.down_released_since_arm = true;
-                }
-                if matches!(
-                    key.code,
-                    crossterm::event::KeyCode::Up | crossterm::event::KeyCode::Char('k')
-                ) {
-                    app.up_released_since_arm = true;
-                }
-            }
-            match event {
-                Event::Key(key)
-                    if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) =>
+        // Shorter poll while highlight work is in flight keeps streaming
+        // latency under one frame; longer poll when idle to avoid wakeups.
+        let poll_timeout = if app.highlight_streaming() {
+            STREAMING_POLL_TIMEOUT
+        } else {
+            IDLE_POLL_TIMEOUT
+        };
+
+        // Drain queued events before redrawing; see MAX_EVENTS_PER_TICK.
+        if event::poll(poll_timeout)? {
+            for _ in 0..MAX_EVENTS_PER_TICK {
+                let event = event::read()?;
+                // Down/Up Release flips the `*_released_since_arm` flag so the
+                // primed two-press file walk in single-file view requires a
+                // deliberate release + press; held-key auto-repeat (Repeat
+                // events) never satisfies the gate. Terminals without kitty
+                // REPORT_EVENT_TYPES support never emit Release, in which case
+                // `supports_keyboard_enhancement` is false and `cursor_down` /
+                // `cursor_up` skip the gate entirely.
+                if let Event::Key(key) = &event
+                    && key.kind == KeyEventKind::Release
                 {
-                    // Handle Ctrl+C twice to exit (works across all input modes)
-                    // In Comment mode, first Ctrl+C also cancels the comment
-                    if key.code == crossterm::event::KeyCode::Char('c')
-                        && key
-                            .modifiers
-                            .contains(crossterm::event::KeyModifiers::CONTROL)
+                    if matches!(
+                        key.code,
+                        crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Char('j')
+                    ) {
+                        app.down_released_since_arm = true;
+                    }
+                    if matches!(
+                        key.code,
+                        crossterm::event::KeyCode::Up | crossterm::event::KeyCode::Char('k')
+                    ) {
+                        app.up_released_since_arm = true;
+                    }
+                }
+                match event {
+                    Event::Key(key)
+                        if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) =>
                     {
-                        // If in comment mode, cancel the comment first
-                        if app.input_mode == InputMode::Comment {
-                            app.exit_comment_mode();
-                        }
-
-                        if let Some(first_press) = pending_ctrl_c
-                            && first_press.elapsed() < CTRL_C_EXIT_TIMEOUT
+                        // Handle Ctrl+C twice to exit (works across all input modes)
+                        // In Comment mode, first Ctrl+C also cancels the comment
+                        if key.code == crossterm::event::KeyCode::Char('c')
+                            && key
+                                .modifiers
+                                .contains(crossterm::event::KeyModifiers::CONTROL)
                         {
-                            // Second Ctrl+C within timeout - exit immediately
-                            app.should_quit = true;
-                            continue;
-                        }
-                        // First Ctrl+C (or timeout expired) - show warning and start timer
-                        pending_ctrl_c = Some(Instant::now());
-                        app.set_message("Press Ctrl+C again to exit");
-                        continue;
-                    }
+                            // If in comment mode, cancel the comment first
+                            if app.input_mode == InputMode::Comment {
+                                app.exit_comment_mode();
+                            }
 
-                    // Any other key clears the pending Ctrl+C state and message
-                    if pending_ctrl_c.is_some() {
-                        pending_ctrl_c = None;
-                        app.message = None;
-                    }
-
-                    // Handle pending z command for zz/zt/zb viewport positioning
-                    if pending_z {
-                        pending_z = false;
-                        match key.code {
-                            crossterm::event::KeyCode::Char('z') => {
-                                app.center_cursor();
-                                continue;
-                            }
-                            crossterm::event::KeyCode::Char('t') => {
-                                app.cursor_to_top();
-                                continue;
-                            }
-                            crossterm::event::KeyCode::Char('b') => {
-                                app.cursor_to_bottom();
-                                continue;
-                            }
-                            _ => {} // Fall through to normal handling
-                        }
-                    }
-
-                    // Handle pending Z command for ZZ (export+quit) / ZQ (quit)
-                    if pending_shift_z {
-                        pending_shift_z = false;
-                        match key.code {
-                            crossterm::event::KeyCode::Char('Z') => {
-                                // ZZ: save session, export, and quit (same as :wq)
-                                let _ = app.save_current_session_merging_external();
-                                if app.session.has_comments() {
-                                    handler::handle_export_and_quit(&mut app);
-                                } else {
-                                    app.should_quit = true;
-                                }
-                                continue;
-                            }
-                            crossterm::event::KeyCode::Char('Q') => {
-                                // ZQ: quit without exporting (same as q)
+                            if let Some(first_press) = pending_ctrl_c
+                                && first_press.elapsed() < CTRL_C_EXIT_TIMEOUT
+                            {
+                                // Second Ctrl+C within timeout - exit immediately
                                 app.should_quit = true;
-                                continue;
+                                continue 'main;
                             }
-                            _ => {} // Fall through to normal handling
+                            // First Ctrl+C (or timeout expired) - show warning and start timer
+                            pending_ctrl_c = Some(Instant::now());
+                            app.set_message("Press Ctrl+C again to exit");
+                            continue 'main;
                         }
-                    }
 
-                    // Handle pending d command for dd delete comment
-                    if pending_d {
-                        pending_d = false;
-                        if key.code == crossterm::event::KeyCode::Char('d') {
-                            if app.cursor_on_locked_comment() {
-                                app.set_message(
-                                    "Comment already pushed to GitHub — read only in tuicr",
-                                );
-                            } else if !app.delete_comment_at_cursor() {
-                                if app.cursor_on_remote_thread() {
-                                    app.set_message("GitHub comment — read only in tuicr");
-                                } else {
-                                    app.set_message("No comment at cursor");
-                                }
-                            }
-                            continue;
+                        // Any other key clears the pending Ctrl+C state and message
+                        if pending_ctrl_c.is_some() {
+                            pending_ctrl_c = None;
+                            app.message = None;
                         }
-                        // Otherwise fall through to normal handling
-                    }
 
-                    // Handle pending leader command for panel focus, file list toggle, and review comments.
-                    if pending_leader {
-                        pending_leader = false;
-                        match key.code {
-                            crossterm::event::KeyCode::Char('e') => {
-                                app.toggle_file_list();
-                                continue;
-                            }
-                            crossterm::event::KeyCode::Char('h') => {
-                                if app.show_file_list {
-                                    app.focused_panel = app::FocusedPanel::FileList;
+                        // Handle pending z command for zz/zt/zb viewport positioning
+                        if pending_z {
+                            pending_z = false;
+                            match key.code {
+                                crossterm::event::KeyCode::Char('z') => {
+                                    app.center_cursor();
+                                    continue 'main;
                                 }
-                                continue;
-                            }
-                            crossterm::event::KeyCode::Char('l') => {
-                                app.focused_panel = app::FocusedPanel::Diff;
-                                continue;
-                            }
-                            crossterm::event::KeyCode::Char('k') => {
-                                if app.focused_panel == app::FocusedPanel::Comments {
-                                    app.focused_panel = app::FocusedPanel::FileList;
-                                } else if app.has_inline_commit_selector() {
-                                    app.focused_panel = app::FocusedPanel::CommitSelector;
+                                crossterm::event::KeyCode::Char('t') => {
+                                    app.cursor_to_top();
+                                    continue 'main;
                                 }
-                                continue;
+                                crossterm::event::KeyCode::Char('b') => {
+                                    app.cursor_to_bottom();
+                                    continue 'main;
+                                }
+                                _ => {} // Fall through to normal handling
                             }
-                            crossterm::event::KeyCode::Char('j') => {
-                                if app.focused_panel == app::FocusedPanel::FileList
-                                    && app.has_comment_navigator_items()
-                                {
-                                    app.focused_panel = app::FocusedPanel::Comments;
-                                } else {
+                        }
+
+                        // Handle pending Z command for ZZ (export+quit) / ZQ (quit)
+                        if pending_shift_z {
+                            pending_shift_z = false;
+                            match key.code {
+                                crossterm::event::KeyCode::Char('Z') => {
+                                    // ZZ: save session, export, and quit (same as :wq)
+                                    let _ = app.save_current_session_merging_external();
+                                    if app.session.has_comments() {
+                                        handler::handle_export_and_quit(&mut app);
+                                    } else {
+                                        app.should_quit = true;
+                                    }
+                                    continue 'main;
+                                }
+                                crossterm::event::KeyCode::Char('Q') => {
+                                    // ZQ: quit without exporting (same as q)
+                                    app.should_quit = true;
+                                    continue 'main;
+                                }
+                                _ => {} // Fall through to normal handling
+                            }
+                        }
+
+                        // Handle pending d command for dd delete comment
+                        if pending_d {
+                            pending_d = false;
+                            if key.code == crossterm::event::KeyCode::Char('d') {
+                                if app.cursor_on_locked_comment() {
+                                    app.set_message(
+                                        "Comment already pushed to GitHub — read only in tuicr",
+                                    );
+                                } else if !app.delete_comment_at_cursor() {
+                                    if app.cursor_on_remote_thread() {
+                                        app.set_message("GitHub comment — read only in tuicr");
+                                    } else {
+                                        app.set_message("No comment at cursor");
+                                    }
+                                }
+                                continue 'main;
+                            }
+                            // Otherwise fall through to normal handling
+                        }
+
+                        // Handle pending leader command for panel focus, file list toggle, and review comments.
+                        if pending_leader {
+                            pending_leader = false;
+                            match key.code {
+                                crossterm::event::KeyCode::Char('e') => {
+                                    app.toggle_file_list();
+                                    continue 'main;
+                                }
+                                crossterm::event::KeyCode::Char('h') => {
+                                    if app.show_file_list {
+                                        app.focused_panel = app::FocusedPanel::FileList;
+                                    }
+                                    continue 'main;
+                                }
+                                crossterm::event::KeyCode::Char('l') => {
                                     app.focused_panel = app::FocusedPanel::Diff;
+                                    continue 'main;
                                 }
-                                continue;
+                                crossterm::event::KeyCode::Char('k') => {
+                                    if app.focused_panel == app::FocusedPanel::Comments {
+                                        app.focused_panel = app::FocusedPanel::FileList;
+                                    } else if app.has_inline_commit_selector() {
+                                        app.focused_panel = app::FocusedPanel::CommitSelector;
+                                    }
+                                    continue 'main;
+                                }
+                                crossterm::event::KeyCode::Char('j') => {
+                                    if app.focused_panel == app::FocusedPanel::FileList
+                                        && app.has_comment_navigator_items()
+                                    {
+                                        app.focused_panel = app::FocusedPanel::Comments;
+                                    } else {
+                                        app.focused_panel = app::FocusedPanel::Diff;
+                                    }
+                                    continue 'main;
+                                }
+                                crossterm::event::KeyCode::Char('c') => {
+                                    app.enter_review_comment_mode();
+                                    continue 'main;
+                                }
+                                crossterm::event::KeyCode::Char('f') => {
+                                    app.toggle_single_file_view();
+                                    continue 'main;
+                                }
+                                _ => {}
                             }
-                            crossterm::event::KeyCode::Char('c') => {
-                                app.enter_review_comment_mode();
-                                continue;
-                            }
-                            crossterm::event::KeyCode::Char('f') => {
-                                app.toggle_single_file_view();
-                                continue;
-                            }
-                            _ => {}
+                            // Otherwise fall through to normal handling
                         }
-                        // Otherwise fall through to normal handling
-                    }
 
-                    // Editing the PR-tab filter is a sub-state of CommitSelect;
-                    // route through the filter-specific key map so typed
-                    // characters update the filter buffer rather than driving
-                    // commit-list navigation.
-                    let mut action =
-                        if app.input_mode == InputMode::CommitSelect && app.pr_filter_editing() {
+                        // Editing the PR-tab filter is a sub-state of CommitSelect;
+                        // route through the filter-specific key map so typed
+                        // characters update the filter buffer rather than driving
+                        // commit-list navigation.
+                        let mut action = if app.input_mode == InputMode::CommitSelect
+                            && app.pr_filter_editing()
+                        {
                             map_target_filter_mode(key)
                         } else {
                             map_key_to_action(key, app.input_mode, app.leader_key)
                         };
 
-                    // Handle pending command setters (these work in any mode)
-                    match action {
-                        Action::PendingZCommand => {
-                            pending_z = true;
-                            app.pending_count = None;
-                            continue;
-                        }
-                        Action::PendingShiftZCommand => {
-                            pending_shift_z = true;
-                            app.pending_count = None;
-                            continue;
-                        }
-                        Action::PendingDCommand => {
-                            pending_d = true;
-                            app.pending_count = None;
-                            continue;
-                        }
-                        Action::PendingLeaderCommand => {
-                            pending_leader = true;
-                            app.pending_count = None;
-                            continue;
-                        }
-                        _ => {}
-                    }
-
-                    // Vim-style {count}{motion} (Normal mode only): digits accumulate
-                    // into `pending_count`, then a following motion either scales its
-                    // inner count parameter or is dispatched repeatedly. `{count}G`
-                    // jumps to source line `count` (already existing behaviour).
-                    if app.input_mode == InputMode::Normal {
+                        // Handle pending command setters (these work in any mode)
                         match action {
-                            Action::Digit(d) => {
-                                let n = app.pending_count.unwrap_or(0);
-                                app.pending_count = Some(
-                                    (n.saturating_mul(10).saturating_add(d as usize)).min(999_999),
-                                );
-                                continue;
-                            }
-                            Action::GoToBottom if app.pending_count.is_some() => {
-                                let count = app.pending_count.unwrap().max(1);
+                            Action::PendingZCommand => {
+                                pending_z = true;
                                 app.pending_count = None;
-                                app.go_to_source_line(count as u32, tuicr::model::LineSide::New);
-                                continue;
+                                continue 'main;
                             }
-                            _ => {
-                                if let Some(count) = app.pending_count.take() {
-                                    let count = count.max(1);
-                                    match &mut action {
-                                        Action::CursorDown(n)
-                                        | Action::CursorUp(n)
-                                        | Action::ScrollLeft(n)
-                                        | Action::ScrollRight(n)
-                                        | Action::ScrollViewDown(n)
-                                        | Action::ScrollViewUp(n) => {
-                                            *n = n.saturating_mul(count);
-                                        }
-                                        Action::NextFile
-                                        | Action::PrevFile
-                                        | Action::NextHunk
-                                        | Action::PrevHunk => {
-                                            // Dispatch `count - 1` extra times; the
-                                            // last one runs through normal dispatch
-                                            // below.
-                                            for _ in 1..count {
-                                                dispatch_action(&mut app, action.clone());
+                            Action::PendingShiftZCommand => {
+                                pending_shift_z = true;
+                                app.pending_count = None;
+                                continue 'main;
+                            }
+                            Action::PendingDCommand => {
+                                pending_d = true;
+                                app.pending_count = None;
+                                continue 'main;
+                            }
+                            Action::PendingLeaderCommand => {
+                                pending_leader = true;
+                                app.pending_count = None;
+                                continue 'main;
+                            }
+                            _ => {}
+                        }
+
+                        // Vim-style {count}{motion} (Normal mode only): digits accumulate
+                        // into `pending_count`, then a following motion either scales its
+                        // inner count parameter or is dispatched repeatedly. `{count}G`
+                        // jumps to source line `count` (already existing behaviour).
+                        if app.input_mode == InputMode::Normal {
+                            match action {
+                                Action::Digit(d) => {
+                                    let n = app.pending_count.unwrap_or(0);
+                                    app.pending_count = Some(
+                                        (n.saturating_mul(10).saturating_add(d as usize))
+                                            .min(999_999),
+                                    );
+                                    continue 'main;
+                                }
+                                Action::GoToBottom if app.pending_count.is_some() => {
+                                    let count = app.pending_count.unwrap().max(1);
+                                    app.pending_count = None;
+                                    app.go_to_source_line(
+                                        count as u32,
+                                        tuicr::model::LineSide::New,
+                                    );
+                                    continue 'main;
+                                }
+                                _ => {
+                                    if let Some(count) = app.pending_count.take() {
+                                        let count = count.max(1);
+                                        match &mut action {
+                                            Action::CursorDown(n)
+                                            | Action::CursorUp(n)
+                                            | Action::ScrollLeft(n)
+                                            | Action::ScrollRight(n)
+                                            | Action::ScrollViewDown(n)
+                                            | Action::ScrollViewUp(n) => {
+                                                *n = n.saturating_mul(count);
+                                            }
+                                            Action::NextFile
+                                            | Action::PrevFile
+                                            | Action::NextHunk
+                                            | Action::PrevHunk => {
+                                                // Dispatch `count - 1` extra times; the
+                                                // last one runs through normal dispatch
+                                                // below.
+                                                for _ in 1..count {
+                                                    dispatch_action(&mut app, action.clone());
+                                                }
+                                            }
+                                            _ => {
+                                                // Count silently discarded for non-motion
+                                                // actions (mode changes, edits, etc.).
                                             }
                                         }
-                                        _ => {
-                                            // Count silently discarded for non-motion
-                                            // actions (mode changes, edits, etc.).
-                                        }
                                     }
                                 }
                             }
                         }
-                    }
 
-                    dispatch_action(&mut app, action);
-                    if let Some(target) = app.take_pending_editor_target() {
-                        match run_editor_from_tui(&mut terminal, &target) {
-                            Ok(Ok(())) => {
-                                if app.diff_source.includes_worktree_changes() {
-                                    match app.reload_diff_files() {
-                                        Ok((count, invalidated)) => {
-                                            let invalidated_suffix = if invalidated > 0 {
-                                                format!(", {invalidated} changed since last review")
-                                            } else {
-                                                String::new()
-                                            };
-                                            app.set_message(format!(
-                                                "Opened {} and reloaded {count} files{invalidated_suffix}",
-                                                target.path.display()
-                                            ));
+                        dispatch_action(&mut app, action);
+                        if let Some(target) = app.take_pending_editor_target() {
+                            match run_editor_from_tui(&mut terminal, &target) {
+                                Ok(Ok(())) => {
+                                    if app.diff_source.includes_worktree_changes() {
+                                        match app.reload_diff_files() {
+                                            Ok((count, invalidated)) => {
+                                                let invalidated_suffix = if invalidated > 0 {
+                                                    format!(
+                                                        ", {invalidated} changed since last review"
+                                                    )
+                                                } else {
+                                                    String::new()
+                                                };
+                                                app.set_message(format!(
+                                                    "Opened {} and reloaded {count} files{invalidated_suffix}",
+                                                    target.path.display()
+                                                ));
+                                            }
+                                            Err(err) => {
+                                                app.set_error(format!(
+                                                    "Reload after editor failed: {err}"
+                                                ));
+                                            }
                                         }
-                                        Err(err) => {
-                                            app.set_error(format!(
-                                                "Reload after editor failed: {err}"
-                                            ));
-                                        }
+                                    } else {
+                                        app.set_message(format!(
+                                            "Opened {}",
+                                            target.path.display()
+                                        ));
                                     }
-                                } else {
-                                    app.set_message(format!("Opened {}", target.path.display()));
+                                }
+                                Ok(Err(err)) => app.set_error(err.to_string()),
+                                Err(err) => {
+                                    app.set_error(format!("Failed to restore terminal: {err}"))
                                 }
                             }
-                            Ok(Err(err)) => app.set_error(err.to_string()),
-                            Err(err) => app.set_error(format!("Failed to restore terminal: {err}")),
+                            // Editor took over the terminal; force a redraw
+                            // before reading any further queued events.
+                            continue 'main;
                         }
                     }
-                }
-                Event::Mouse(mouse_event) => handle_mouse_event(&mut app, mouse_event),
-                Event::Paste(text) => {
-                    // Bracketed-paste payload — route to whichever handler is
-                    // currently accepting text input. Other modes ignore.
-                    let action = Action::Paste(text);
-                    match app.input_mode {
-                        InputMode::Comment => handle_comment_action(&mut app, action),
-                        InputMode::Command => handle_command_action(&mut app, action),
-                        InputMode::Search => handle_search_action(&mut app, action),
-                        InputMode::CommitSelect if app.pr_filter_editing() => {
-                            handle_commit_select_action(&mut app, action)
+                    Event::Mouse(mouse_event) => handle_mouse_event(&mut app, mouse_event),
+                    Event::Paste(text) => {
+                        // Bracketed-paste payload — route to whichever handler is
+                        // currently accepting text input. Other modes ignore.
+                        let action = Action::Paste(text);
+                        match app.input_mode {
+                            InputMode::Comment => handle_comment_action(&mut app, action),
+                            InputMode::Command => handle_command_action(&mut app, action),
+                            InputMode::Search => handle_search_action(&mut app, action),
+                            InputMode::CommitSelect if app.pr_filter_editing() => {
+                                handle_commit_select_action(&mut app, action)
+                            }
+                            _ => {}
                         }
-                        _ => {}
                     }
+                    _ => {}
                 }
-                _ => {}
+                if app.should_quit || !event::poll(Duration::ZERO)? {
+                    break;
+                }
             }
         }
 
