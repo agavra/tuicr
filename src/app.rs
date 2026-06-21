@@ -9128,6 +9128,7 @@ impl App {
                 | DiffSource::StagedAndUnstaged
                 | DiffSource::StagedUnstagedAndCommits(_)
                 | DiffSource::CommitRange(_)
+                | DiffSource::PullRequest(_)
         )
     }
 
@@ -9137,14 +9138,32 @@ impl App {
             return;
         }
         if let Some(file) = self.diff_files.get(file_idx) {
-            let path = file.display_path().clone();
+            let old_path = file.old_path.clone();
+            let new_path = file.new_path.clone();
             let status = file.status;
-            let ref_commit = self.ref_commit().map(|s| s.to_string());
-            if let Ok(count) = self
-                .vcs
-                .file_line_count(&path, status, ref_commit.as_deref())
+
+            let count = if let (DiffSource::PullRequest(pr), Some(backend)) =
+                (&self.diff_source, self.forge_backend.as_ref())
             {
-                self.file_line_count_cache.insert(file_idx, count);
+                let provider = ForgeContextProvider {
+                    forge: backend.as_ref(),
+                    repository: pr.key.repository.clone(),
+                    base_sha: pr.base_sha.clone(),
+                    head_sha: pr.key.head_sha.clone(),
+                };
+                provider
+                    .file_line_count(old_path.as_ref(), new_path.as_ref(), status)
+                    .ok()
+            } else {
+                let path = new_path.or(old_path).unwrap_or_default();
+                let ref_commit = self.ref_commit().map(|s| s.to_string());
+                self.vcs
+                    .file_line_count(&path, status, ref_commit.as_deref())
+                    .ok()
+            };
+
+            if let Some(c) = count {
+                self.file_line_count_cache.insert(file_idx, c);
             }
         }
     }

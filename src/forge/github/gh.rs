@@ -415,6 +415,19 @@ where
         ))
     }
 
+    fn file_line_count(&self, request: ForgeFileLinesRequest) -> Result<u32> {
+        let local_content = self
+            .local_checkout
+            .as_deref()
+            .and_then(|root| read_blob_with_repo(root, request.sha(), request.path.as_path()));
+        let content = if let Some(content) = local_content {
+            content
+        } else {
+            self.fetch_file_via_api(&request)?
+        };
+        Ok(content.lines().count() as u32)
+    }
+
     fn create_review(
         &self,
         pr: &PullRequestDetails,
@@ -538,15 +551,16 @@ fn slice_to_diff_lines(content: &str, start_line: u32, end_line: u32) -> Vec<Dif
     let mut result = Vec::new();
     for line_num in start_line..=end_line {
         let idx = (line_num - 1) as usize;
-        if idx < lines.len() {
-            result.push(DiffLine {
-                origin: LineOrigin::Context,
-                content: lines[idx].to_string(),
-                old_lineno: Some(line_num),
-                new_lineno: Some(line_num),
-                highlighted_spans: None,
-            });
+        if idx >= lines.len() {
+            break;
         }
+        result.push(DiffLine {
+            origin: LineOrigin::Context,
+            content: lines[idx].to_string(),
+            old_lineno: Some(line_num),
+            new_lineno: Some(line_num),
+            highlighted_spans: None,
+        });
     }
     result
 }

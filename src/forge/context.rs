@@ -32,6 +32,15 @@ pub trait ContextProvider {
         start_line: u32,
         end_line: u32,
     ) -> Result<Vec<DiffLine>>;
+
+    /// Return the total number of lines in the file at the revision used by
+    /// this provider. Returns `Ok(0)` when the file cannot be found.
+    fn file_line_count(
+        &self,
+        old_path: Option<&PathBuf>,
+        new_path: Option<&PathBuf>,
+        file_status: FileStatus,
+    ) -> Result<u32>;
 }
 
 /// Adapter over a `VcsBackend`. Picks the appropriate display path (new on
@@ -64,6 +73,20 @@ impl ContextProvider for VcsContextProvider<'_> {
             start_line,
             end_line,
         )
+    }
+
+    fn file_line_count(
+        &self,
+        old_path: Option<&PathBuf>,
+        new_path: Option<&PathBuf>,
+        file_status: FileStatus,
+    ) -> Result<u32> {
+        let path: &Path = match new_path.or(old_path) {
+            Some(p) => p.as_path(),
+            None => return Ok(0),
+        };
+        self.vcs
+            .file_line_count(path, file_status, self.ref_commit.as_deref())
     }
 }
 
@@ -118,6 +141,29 @@ impl ContextProvider for ForgeContextProvider<'_> {
             end_line,
         };
         self.forge.fetch_file_lines(request)
+    }
+
+    fn file_line_count(
+        &self,
+        old_path: Option<&PathBuf>,
+        new_path: Option<&PathBuf>,
+        file_status: FileStatus,
+    ) -> Result<u32> {
+        let side = ForgeFileLinesRequest::side_for_status(file_status);
+        let Some(path) = ForgeFileLinesRequest::path_for_side(side, old_path, new_path) else {
+            return Ok(0);
+        };
+        let request = ForgeFileLinesRequest {
+            repository: self.repository.clone(),
+            base_sha: self.base_sha.clone(),
+            head_sha: self.head_sha.clone(),
+            path,
+            status: file_status,
+            side,
+            start_line: 0,
+            end_line: 0,
+        };
+        self.forge.file_line_count(request)
     }
 }
 
