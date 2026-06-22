@@ -951,6 +951,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                     | DiffSource::StagedAndUnstaged
                     | DiffSource::StagedUnstagedAndCommits(_)
                     | DiffSource::CommitRange(_)
+                    | DiffSource::PullRequest(_)
             )
             && let Some(last_hunk) = file.hunks.last()
         {

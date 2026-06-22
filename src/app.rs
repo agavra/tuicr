@@ -2063,25 +2063,45 @@ impl App {
         }
     }
 
-    pub fn poll_persisted_session_changes(&mut self) {
+    /// Returns `true` if visible state changed (external comments merged or a
+    /// warning was raised) so the main loop can schedule a redraw without an
+    /// input event.
+    pub fn poll_persisted_session_changes(&mut self) -> bool {
         let Some(interval) = self.review_watch_interval else {
-            return;
+            return false;
         };
         let now = Instant::now();
         if now < self.next_review_watch_at {
-            return;
+            return false;
         }
         self.next_review_watch_at = now + interval;
 
         // Do not mutate the session while the user is composing or editing a
         // comment. The next poll after the editor closes will merge changes.
         if self.input_mode == InputMode::Comment {
-            return;
+            return false;
         }
 
-        if let Err(err) = self.reload_persisted_session_if_changed(false) {
-            self.set_warning(format!("Review reload failed: {err}"));
+        match self.reload_persisted_session_if_changed(false) {
+            Ok(0) => false,
+            Ok(_) => true,
+            Err(err) => {
+                self.set_warning(format!("Review reload failed: {err}"));
+                true
+            }
         }
+    }
+
+    /// True while any forge background fetch (PR list/open/reload/threads/
+    /// submit) is in flight. Used by the main loop to keep redrawing so
+    /// spinners animate and results land without waiting for input.
+    pub fn has_pending_pr_work(&self) -> bool {
+        self.pr_load_rx.is_some()
+            || self.pr_open_rx.is_some()
+            || self.pr_reload_rx.is_some()
+            || self.pr_range_reload_rx.is_some()
+            || self.pr_threads_rx.is_some()
+            || self.pr_submit_rx.is_some()
     }
 
     pub fn reload_persisted_session_if_changed(&mut self, force: bool) -> Result<usize> {
@@ -4340,7 +4360,9 @@ impl App {
         });
     }
 
-    pub fn clear_expired_message(&mut self) {
+    /// Returns `true` if a message was cleared so the main loop can
+    /// schedule a redraw.
+    pub fn clear_expired_message(&mut self) -> bool {
         let expired = self
             .message
             .as_ref()
@@ -4349,6 +4371,7 @@ impl App {
         if expired {
             self.message = None;
         }
+        expired
     }
 
     pub fn cursor_down(&mut self, lines: usize) {
@@ -8507,9 +8530,12 @@ impl App {
     }
 
     fn confirm_commit_selection_inner(&mut self) -> Result<()> {
-        let Some((start, end)) = self.commit_selection_range else {
-            self.set_message("Select at least one commit");
-            return Ok(());
+        let (start, end) = match self.commit_selection_range {
+            Some(range) => range,
+            None => {
+                let cursor = self.commit_list_cursor;
+                (cursor, cursor)
+            }
         };
 
         // Collect selected entries in order from oldest to newest (end..start).
@@ -9125,6 +9151,7 @@ impl App {
                 | DiffSource::StagedAndUnstaged
                 | DiffSource::StagedUnstagedAndCommits(_)
                 | DiffSource::CommitRange(_)
+                | DiffSource::PullRequest(_)
         )
     }
 
@@ -9134,14 +9161,32 @@ impl App {
             return;
         }
         if let Some(file) = self.diff_files.get(file_idx) {
-            let path = file.display_path().clone();
+            let old_path = file.old_path.clone();
+            let new_path = file.new_path.clone();
             let status = file.status;
-            let ref_commit = self.ref_commit().map(|s| s.to_string());
-            if let Ok(count) = self
-                .vcs
-                .file_line_count(&path, status, ref_commit.as_deref())
+
+            let count = if let (DiffSource::PullRequest(pr), Some(backend)) =
+                (&self.diff_source, self.forge_backend.as_ref())
             {
-                self.file_line_count_cache.insert(file_idx, count);
+                let provider = ForgeContextProvider {
+                    forge: backend.as_ref(),
+                    repository: pr.key.repository.clone(),
+                    base_sha: pr.base_sha.clone(),
+                    head_sha: pr.key.head_sha.clone(),
+                };
+                provider
+                    .file_line_count(old_path.as_ref(), new_path.as_ref(), status)
+                    .ok()
+            } else {
+                let path = new_path.or(old_path).unwrap_or_default();
+                let ref_commit = self.ref_commit().map(|s| s.to_string());
+                self.vcs
+                    .file_line_count(&path, status, ref_commit.as_deref())
+                    .ok()
+            };
+
+            if let Some(c) = count {
+                self.file_line_count_cache.insert(file_idx, c);
             }
         }
     }

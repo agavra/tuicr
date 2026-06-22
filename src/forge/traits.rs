@@ -357,6 +357,12 @@ pub trait ForgeBackend {
     /// Implementations may optimize by reading from a local checkout when
     /// available; the trait does not require that path.
     fn fetch_file_lines(&self, request: ForgeFileLinesRequest) -> Result<Vec<DiffLine>>;
+    /// Return the total number of lines in a file at the revision described by
+    /// `request`. The `start_line` and `end_line` fields of the request are
+    /// ignored. Default returns `Ok(0)`; real forge backends override this.
+    fn file_line_count(&self, _request: ForgeFileLinesRequest) -> Result<u32> {
+        Ok(0)
+    }
     /// Fetch existing review discussions for a PR, including their resolved
     /// and outdated state. Implementations should return all threads in
     /// posted order; filtering by visibility happens in the App.

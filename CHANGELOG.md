@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.18.0] - 2026-06-20
+
+### Bug Fixes
+
+- Map SSH-over-443 transport hosts back to api host (#412)
+- **clipboard:** Copy to system clipboard inside tmux on macOS (#413)
+- **markdown:** Indent multiline comments (#417)
+
+### Documentation
+
+- Document GitLab merge request support (#419)
+
+### Features
+
+- **cli:** Add 'mr' as an alias for the 'pr' subcommand (#416)
+- Tab cycle through comments, comment auto-follow, cursor decoration-skip (#385)
+- **gitlab:** Support request-changes reviews on merge requests (#421)
+- **gitlab:** Support draft reviews on merge requests (#422)
+- Default to cursor commit when no range selected (#424)
+
+### Review
+
+- Attribute commit-message comments to their commit (#414)
 ## [0.17.1] - 2026-06-02
 
 ### Bug Fixes
