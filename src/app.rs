@@ -1115,6 +1115,12 @@ pub struct App {
     /// Symmetric inverse of [`down_released_since_arm`] for the prev-file
     /// walk gate.
     pub up_released_since_arm: bool,
+    /// When true, `h`/`l` in the file list run gitui-style tree
+    /// navigation (expand/collapse/descend/ascend) once the panel is
+    /// at its horizontal scroll boundary. Defaults to false so `h`/`l`
+    /// stay as plain horizontal scroll, matching vim's character
+    /// navigation; users opt in via `arrow_tree_navigation = true`.
+    pub arrow_tree_navigation: bool,
     pub cursor_line_highlight: bool,
     pub leader_key: char,
     pub scroll_offset: usize,
@@ -1220,6 +1226,13 @@ impl FileListState {
     pub fn scroll_right(&mut self, cols: usize) {
         let max_scroll_x = self.max_content_width.saturating_sub(self.viewport_width);
         self.scroll_x = (self.scroll_x.saturating_add(cols)).min(max_scroll_x);
+    }
+
+    /// True when the rightmost column of the rendered file list is
+    /// already visible. The tree-nav fallthrough on `l` triggers here.
+    pub fn at_max_scroll_x(&self) -> bool {
+        let max_scroll_x = self.max_content_width.saturating_sub(self.viewport_width);
+        self.scroll_x >= max_scroll_x
     }
 }
 
@@ -1886,6 +1899,7 @@ impl App {
             primed_walk_prev: false,
             down_released_since_arm: false,
             up_released_since_arm: false,
+            arrow_tree_navigation: false,
             cursor_line_highlight: true,
             leader_key: crate::config::DEFAULT_LEADER_KEY,
             scroll_offset: 0,
@@ -5738,6 +5752,19 @@ impl App {
         self.update_current_file_from_cursor();
     }
 
+    /// Browse-as-you-go: when `arrow_tree_navigation` is on, moving the
+    /// file-list cursor to a file scrolls the diff to that file's header
+    /// without changing focus. Folders are a no-op so the user can still
+    /// arrow past collapsed entries while reading the diff.
+    pub fn auto_jump_to_selected_file_if_enabled(&mut self) {
+        if !self.arrow_tree_navigation {
+            return;
+        }
+        if let Some(FileTreeItem::File { file_idx, .. }) = self.get_selected_tree_item() {
+            self.jump_to_file(file_idx);
+        }
+    }
+
     pub fn next_file(&mut self) {
         let visible_items = self.build_visible_items();
         let current_file_idx = self.diff_state.current_file_idx;
@@ -8944,6 +8971,70 @@ impl App {
         } else {
             self.expanded_dirs.insert(dir_path.to_string());
         }
+    }
+
+    /// Select the parent directory of the current tree selection. Returns
+    /// `true` if a parent existed and was selected; `false` at the root.
+    /// Walks up from the current item's path to the nearest visible
+    /// `Directory` entry in the rendered tree.
+    pub fn file_list_select_parent(&mut self) -> bool {
+        use std::path::Path;
+
+        let item = match self.get_selected_tree_item() {
+            Some(i) => i,
+            None => return false,
+        };
+        let child_path = match &item {
+            FileTreeItem::Directory { path, .. } => path.clone(),
+            FileTreeItem::File { file_idx, .. } => match self.diff_files.get(*file_idx) {
+                Some(file) => file.display_path().display().to_string(),
+                None => return false,
+            },
+        };
+        let parent = match Path::new(&child_path).parent() {
+            Some(p) if !p.as_os_str().is_empty() => p.to_string_lossy().to_string(),
+            _ => return false,
+        };
+        let visible = self.build_visible_items();
+        for (idx, entry) in visible.iter().enumerate() {
+            if let FileTreeItem::Directory { path, .. } = entry
+                && *path == parent
+            {
+                self.file_list_state.select(idx);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Select the next visible `Directory` entry below the current
+    /// selection, skipping over any intervening files. Returns `true`
+    /// if a folder was found and selected.
+    pub fn file_list_select_next_folder(&mut self) -> bool {
+        let visible = self.build_visible_items();
+        let start = self.file_list_state.selected() + 1;
+        for (offset, entry) in visible.iter().skip(start).enumerate() {
+            if matches!(entry, FileTreeItem::Directory { .. }) {
+                self.file_list_state.select(start + offset);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Select the previous visible `Directory` entry above the current
+    /// selection, skipping over any intervening files. Returns `true`
+    /// if a folder was found and selected.
+    pub fn file_list_select_prev_folder(&mut self) -> bool {
+        let visible = self.build_visible_items();
+        let current = self.file_list_state.selected();
+        for idx in (0..current).rev() {
+            if matches!(visible.get(idx), Some(FileTreeItem::Directory { .. })) {
+                self.file_list_state.select(idx);
+                return true;
+            }
+        }
+        false
     }
 
     /// Get the line boundaries (start_line, end_line) of a gap.
@@ -15484,5 +15575,37 @@ mod single_file_view_tests {
         assert_eq!(app.effective_file_height(1, other), 0);
         let current = &app.diff_files[0].clone();
         assert!(app.effective_file_height(0, current) > 0);
+    }
+
+    #[test]
+    fn file_list_select_parent_jumps_from_file_to_containing_dir() {
+        let files = vec![file("src/a.rs", vec![hunk(1, 3)])];
+        let mut app = app_with(files);
+        app.expanded_dirs.insert("src".to_string());
+        // Visible: [Directory("src"), File("src/a.rs")] -- select the file.
+        app.file_list_state.select(1);
+        assert!(matches!(
+            app.get_selected_tree_item(),
+            Some(FileTreeItem::File { .. })
+        ));
+
+        let walked = app.file_list_select_parent();
+
+        assert!(walked);
+        assert!(matches!(
+            app.get_selected_tree_item(),
+            Some(FileTreeItem::Directory { path, .. }) if path == "src"
+        ));
+    }
+
+    #[test]
+    fn file_list_select_parent_at_root_returns_false() {
+        let files = vec![file("root.rs", vec![hunk(1, 3)])];
+        let mut app = app_with(files);
+        app.file_list_state.select(0);
+
+        let walked = app.file_list_select_parent();
+
+        assert!(!walked);
     }
 }

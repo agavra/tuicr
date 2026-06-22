@@ -63,6 +63,12 @@ pub struct AppConfig {
     /// used as the "viewer" identity for per-author coloring in the comment
     /// pane. Defaults to `"user"` when unset.
     pub username: Option<String>,
+    /// When true, `h` and `l` in the file list also drive gitui-style
+    /// tree navigation at the scroll boundary: expand / collapse folders
+    /// and descend / ascend the tree. Defaults to false so `h` / `l`
+    /// stay as plain horizontal scroll, matching vim's character
+    /// navigation. Set to true to opt in.
+    pub arrow_tree_navigation: Option<bool>,
     /// `[forge]` section settings. Always present; `None` means "no override"
     /// and downstream code should treat it as `ForgeConfig::default()`.
     pub forge: Option<ForgeConfig>,
@@ -90,6 +96,7 @@ const KNOWN_KEYS: &[&str] = &[
     "no_update_check",
     "single_file_view",
     "username",
+    "arrow_tree_navigation",
     "forge",
 ];
 
@@ -299,6 +306,7 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         no_update_check: read_bool(table, "no_update_check", &mut warnings),
         single_file_view: read_bool(table, "single_file_view", &mut warnings),
         username: read_string(table, "username", &mut warnings),
+        arrow_tree_navigation: read_bool(table, "arrow_tree_navigation", &mut warnings),
         forge: table
             .get("forge")
             .and_then(|v| parse_forge(v, &mut warnings)),
