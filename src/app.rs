@@ -2063,25 +2063,45 @@ impl App {
         }
     }
 
-    pub fn poll_persisted_session_changes(&mut self) {
+    /// Returns `true` if visible state changed (external comments merged or a
+    /// warning was raised) so the main loop can schedule a redraw without an
+    /// input event.
+    pub fn poll_persisted_session_changes(&mut self) -> bool {
         let Some(interval) = self.review_watch_interval else {
-            return;
+            return false;
         };
         let now = Instant::now();
         if now < self.next_review_watch_at {
-            return;
+            return false;
         }
         self.next_review_watch_at = now + interval;
 
         // Do not mutate the session while the user is composing or editing a
         // comment. The next poll after the editor closes will merge changes.
         if self.input_mode == InputMode::Comment {
-            return;
+            return false;
         }
 
-        if let Err(err) = self.reload_persisted_session_if_changed(false) {
-            self.set_warning(format!("Review reload failed: {err}"));
+        match self.reload_persisted_session_if_changed(false) {
+            Ok(0) => false,
+            Ok(_) => true,
+            Err(err) => {
+                self.set_warning(format!("Review reload failed: {err}"));
+                true
+            }
         }
+    }
+
+    /// True while any forge background fetch (PR list/open/reload/threads/
+    /// submit) is in flight. Used by the main loop to keep redrawing so
+    /// spinners animate and results land without waiting for input.
+    pub fn has_pending_pr_work(&self) -> bool {
+        self.pr_load_rx.is_some()
+            || self.pr_open_rx.is_some()
+            || self.pr_reload_rx.is_some()
+            || self.pr_range_reload_rx.is_some()
+            || self.pr_threads_rx.is_some()
+            || self.pr_submit_rx.is_some()
     }
 
     pub fn reload_persisted_session_if_changed(&mut self, force: bool) -> Result<usize> {
@@ -4340,7 +4360,9 @@ impl App {
         });
     }
 
-    pub fn clear_expired_message(&mut self) {
+    /// Returns `true` if a message was cleared so the main loop can
+    /// schedule a redraw.
+    pub fn clear_expired_message(&mut self) -> bool {
         let expired = self
             .message
             .as_ref()
@@ -4349,6 +4371,7 @@ impl App {
         if expired {
             self.message = None;
         }
+        expired
     }
 
     pub fn cursor_down(&mut self, lines: usize) {
