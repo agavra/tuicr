@@ -314,6 +314,8 @@ fn map_comment_mode(key: KeyEvent) -> Action {
         (KeyCode::Backspace, KeyModifiers::NONE) => Action::DeleteChar,
         (KeyCode::Char('w'), KeyModifiers::CONTROL) => Action::DeleteWord,
         (KeyCode::Char('u'), KeyModifiers::CONTROL) => Action::ClearLine,
+        (KeyCode::Char('b'), KeyModifiers::ALT) => Action::TextCursorWordLeft,
+        (KeyCode::Char('f'), KeyModifiers::ALT) => Action::TextCursorWordRight,
         (KeyCode::Char(c), _) => Action::InsertChar(c),
         _ => Action::None,
     }
