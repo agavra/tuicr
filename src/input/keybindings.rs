@@ -39,6 +39,8 @@ pub enum Action {
     AddLineComment,
     AddFileComment,
     EditComment,
+    /// Edit the comment at cursor with the text cursor at end (vim `A`).
+    EditCommentAtEnd,
     PendingDCommand,
     SearchNext,
     SearchPrev,
@@ -196,6 +198,7 @@ fn map_normal_mode(key: KeyEvent, leader_key: char) -> Action {
         (KeyCode::Char('c'), KeyModifiers::NONE) => Action::AddLineComment,
         (KeyCode::Char('C'), _) => Action::AddFileComment,
         (KeyCode::Char('i'), KeyModifiers::NONE) => Action::EditComment,
+        (KeyCode::Char('A'), _) => Action::EditCommentAtEnd,
         (KeyCode::Char('d'), KeyModifiers::NONE) => Action::PendingDCommand,
         (KeyCode::Char('v') | KeyCode::Char('V'), _) => Action::EnterVisualMode,
         (KeyCode::Char('y'), KeyModifiers::NONE) => Action::ExportToClipboard,
@@ -454,6 +457,18 @@ mod tests {
                 "digit key '{c}' should map to Digit({d})"
             );
         }
+    }
+
+    #[test]
+    fn should_map_i_and_shift_a_to_edit_comment_actions() {
+        assert_eq!(
+            map_normal_mode(key(KeyCode::Char('i')), DEFAULT_LEADER_KEY),
+            Action::EditComment
+        );
+        assert_eq!(
+            map_normal_mode(key_shift('A'), DEFAULT_LEADER_KEY),
+            Action::EditCommentAtEnd
+        );
     }
 
     #[test]

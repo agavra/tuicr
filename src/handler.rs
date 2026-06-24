@@ -1316,6 +1316,21 @@ pub fn handle_comment_navigator_action(app: &mut App, action: Action) {
     }
 }
 
+/// Enter edit mode for the comment under the cursor, placing the text cursor at
+/// the end (vim `A` / non-vim default) or beginning (vim `i`). Surfaces the
+/// right message when the comment is read-only or absent.
+fn edit_comment_at_cursor(app: &mut App, cursor_at_end: bool) {
+    if app.cursor_on_locked_comment() {
+        app.set_message("Comment already pushed to GitHub — read only in tuicr");
+    } else if !app.enter_edit_mode(cursor_at_end) {
+        if app.cursor_on_remote_thread() {
+            app.set_message("GitHub comment — read only in tuicr");
+        } else {
+            app.set_message("No comment at cursor");
+        }
+    }
+}
+
 /// Handle actions when diff panel is focused
 pub fn handle_diff_action(app: &mut App, action: Action) {
     match action {
@@ -1465,16 +1480,11 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
             }
         }
         Action::AddFileComment => app.enter_comment_mode(true, None),
-        Action::EditComment if app.cursor_on_locked_comment() => {
-            app.set_message("Comment already pushed to GitHub — read only in tuicr");
-        }
-        Action::EditComment if !app.enter_edit_mode() => {
-            if app.cursor_on_remote_thread() {
-                app.set_message("GitHub comment — read only in tuicr");
-            } else {
-                app.set_message("No comment at cursor");
-            }
-        }
+        // `i` edits the comment at cursor. In vim mode the text cursor starts at
+        // the beginning; otherwise (and for `A`) it starts at the end.
+        Action::EditComment => edit_comment_at_cursor(app, !app.comment_vim_enabled),
+        // `A` (vim only) edits with the text cursor at end-of-line.
+        Action::EditCommentAtEnd if app.comment_vim_enabled => edit_comment_at_cursor(app, true),
         Action::ExportToClipboard => handle_export(app),
         Action::SearchNext => {
             app.search_next_in_diff();

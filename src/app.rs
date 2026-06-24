@@ -6570,10 +6570,109 @@ impl App {
         self.set_message(msg);
     }
 
-    /// Enter edit mode for the comment at the current cursor position
-    /// Returns true if a comment was found and edit mode entered
-    pub fn enter_edit_mode(&mut self) -> bool {
+    /// True if two annotation rows belong to the same rendered comment.
+    /// `AnnotatedLine` is not `Eq`, so compare the identifying fields.
+    fn same_comment(a: &AnnotatedLine, b: &AnnotatedLine) -> bool {
+        use AnnotatedLine::{FileComment, LineComment, ReviewComment};
+        match (a, b) {
+            (ReviewComment { comment_idx: x }, ReviewComment { comment_idx: y }) => x == y,
+            (
+                FileComment {
+                    file_idx: f1,
+                    comment_idx: c1,
+                },
+                FileComment {
+                    file_idx: f2,
+                    comment_idx: c2,
+                },
+            ) => f1 == f2 && c1 == c2,
+            (
+                LineComment {
+                    file_idx: f1,
+                    line: l1,
+                    side: s1,
+                    comment_idx: c1,
+                },
+                LineComment {
+                    file_idx: f2,
+                    line: l2,
+                    side: s2,
+                    comment_idx: c2,
+                },
+            ) => f1 == f2 && l1 == l2 && s1 == s2 && c1 == c2,
+            _ => false,
+        }
+    }
+
+    /// First annotation row of the comment rendered at `cursor_line` (or
+    /// `cursor_line` itself when it isn't on a comment).
+    fn comment_block_start(&self, cursor_line: usize) -> usize {
+        let Some(cur) = self.line_annotations.get(cursor_line) else {
+            return cursor_line;
+        };
+        let mut start = cursor_line;
+        while start > 0
+            && self
+                .line_annotations
+                .get(start - 1)
+                .is_some_and(|prev| Self::same_comment(prev, cur))
+        {
+            start -= 1;
+        }
+        start
+    }
+
+    /// Byte offset in the loaded `comment_buffer` for the start
+    /// (`cursor_at_end == false`) or end of the comment line the diff cursor is
+    /// on. The comment's block begins at annotation row `block_start` (row 0 =
+    /// top border, then one row per wrapped segment, then the bottom border).
+    fn comment_current_line_cursor(&self, block_start: usize, cursor_at_end: bool) -> usize {
+        let content = &self.comment_buffer;
+        let content_area = self.diff_state.viewport_width.saturating_sub(10);
+        // Visual content row under the cursor (skip the top border at row 0).
+        let visual_target = self
+            .diff_state
+            .cursor_line
+            .saturating_sub(block_start)
+            .saturating_sub(1);
+
+        let mut visual = 0usize;
+        let mut byte = 0usize;
+        let mut line_start = 0usize;
+        let mut line_len = 0usize;
+        for line in content.split('\n') {
+            line_start = byte;
+            line_len = line.len();
+            let segs = crate::ui::comment_panel::wrap_segments(line, content_area)
+                .len()
+                .max(1);
+            if visual_target < visual + segs {
+                return if cursor_at_end {
+                    line_start + line_len
+                } else {
+                    line_start
+                };
+            }
+            visual += segs;
+            byte += line.len() + 1;
+        }
+        // Cursor on the bottom border or past the content: use the last line.
+        if cursor_at_end {
+            line_start + line_len
+        } else {
+            line_start
+        }
+    }
+
+    /// Enter edit mode for the comment at the current cursor position.
+    /// `cursor_at_end` places the text cursor at the end of the current comment
+    /// line (vim `A` / the default non-vim behavior); otherwise at its start
+    /// (vim `i`). Returns true if a comment was found and edit mode entered.
+    pub fn enter_edit_mode(&mut self, cursor_at_end: bool) -> bool {
         let location = self.find_comment_at_cursor();
+        // First annotation row of the comment under the cursor, so we can place
+        // the text cursor on the line the diff cursor is actually pointing at.
+        let block_start = self.comment_block_start(self.diff_state.cursor_line);
 
         match location {
             Some(CommentLocation::Review { index }) => {
@@ -6581,7 +6680,8 @@ impl App {
                     self.input_mode = InputMode::Comment;
                     self.diff_state.scroll_x = 0;
                     self.comment_buffer = comment.content.clone();
-                    self.comment_cursor = self.comment_buffer.len();
+                    self.comment_cursor =
+                        self.comment_current_line_cursor(block_start, cursor_at_end);
                     self.comment_type = comment.comment_type.clone();
                     self.comment_is_review_level = true;
                     self.comment_is_file_level = false;
@@ -6597,7 +6697,8 @@ impl App {
                     self.input_mode = InputMode::Comment;
                     self.diff_state.scroll_x = 0;
                     self.comment_buffer = comment.content.clone();
-                    self.comment_cursor = self.comment_buffer.len();
+                    self.comment_cursor =
+                        self.comment_current_line_cursor(block_start, cursor_at_end);
                     self.comment_type = comment.comment_type.clone();
                     self.comment_is_review_level = false;
                     self.comment_is_file_level = true;
@@ -6624,7 +6725,8 @@ impl App {
                                 self.input_mode = InputMode::Comment;
                                 self.diff_state.scroll_x = 0;
                                 self.comment_buffer = comment.content.clone();
-                                self.comment_cursor = self.comment_buffer.len();
+                                self.comment_cursor =
+                                    self.comment_current_line_cursor(block_start, cursor_at_end);
                                 self.comment_type = comment.comment_type.clone();
                                 self.comment_is_review_level = false;
                                 self.comment_is_file_level = false;
@@ -10720,6 +10822,49 @@ mod target_selector_tests {
         app.comment_vim_insert_soft_tab();
         assert_eq!(app.comment_buffer, "  ");
         assert_eq!(app.comment_cursor, 2);
+    }
+
+    #[test]
+    fn comment_block_start_finds_first_row_of_comment() {
+        let mut app = build_app();
+        app.line_annotations = vec![
+            AnnotatedLine::ReviewComment { comment_idx: 0 },
+            AnnotatedLine::ReviewComment { comment_idx: 1 },
+            AnnotatedLine::ReviewComment { comment_idx: 1 },
+            AnnotatedLine::ReviewComment { comment_idx: 1 },
+            AnnotatedLine::ReviewComment { comment_idx: 2 },
+        ];
+        assert_eq!(app.comment_block_start(3), 1);
+        assert_eq!(app.comment_block_start(1), 1);
+        assert_eq!(app.comment_block_start(0), 0);
+        assert_eq!(app.comment_block_start(4), 4);
+    }
+
+    #[test]
+    fn comment_current_line_cursor_targets_the_cursor_line() {
+        let mut app = build_app();
+        app.comment_buffer = "alpha\nbravo\ncharlie".to_string();
+        app.diff_state.viewport_width = 200; // wide => no wrapping
+        let block_start = 10;
+
+        // 2nd content line "bravo" (block_start + top-border + 1): start 6, end 11.
+        app.diff_state.cursor_line = block_start + 2;
+        assert_eq!(app.comment_current_line_cursor(block_start, false), 6);
+        assert_eq!(app.comment_current_line_cursor(block_start, true), 11);
+
+        // 1st content line "alpha": start 0, end 5.
+        app.diff_state.cursor_line = block_start + 1;
+        assert_eq!(app.comment_current_line_cursor(block_start, false), 0);
+        assert_eq!(app.comment_current_line_cursor(block_start, true), 5);
+
+        // Top border row maps to the first line.
+        app.diff_state.cursor_line = block_start;
+        assert_eq!(app.comment_current_line_cursor(block_start, false), 0);
+
+        // Bottom border / beyond maps to the last line "charlie": start 12, end 19.
+        app.diff_state.cursor_line = block_start + 99;
+        assert_eq!(app.comment_current_line_cursor(block_start, false), 12);
+        assert_eq!(app.comment_current_line_cursor(block_start, true), 19);
     }
 
     #[test]
