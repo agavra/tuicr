@@ -49,24 +49,40 @@ pub(crate) fn wrap_segments(text: &str, content_area: usize) -> Vec<&str> {
     segments
 }
 
-/// Push spans for a text segment containing the cursor. The cursor is rendered
-/// as a styled span on the character at the split point, or a trailing space
-/// when the cursor is at end-of-segment.
-fn push_cursor_spans(
-    spans: &mut Vec<Span<'static>>,
-    before: &str,
-    after: &str,
-    cursor_style: Style,
-) {
-    spans.push(Span::raw(before.to_string()));
-    // Cursor at end-of-segment: no trailing space so the line stays within
-    // bounds. The terminal cursor (set_cursor_position) handles the visible
-    // position without needing an extra styled space.
-    let mut chars = after.chars();
-    if let Some(cursor_char) = chars.next() {
-        spans.push(Span::styled(cursor_char.to_string(), cursor_style));
-        spans.push(Span::raw(chars.as_str().to_string()));
+/// Emit spans covering `line_text[start..end)` using the per-line markdown
+/// highlight `runs` (concatenation of run text equals `line_text`). Falls back
+/// to a single unstyled span when highlighting is unavailable. Offsets are byte
+/// positions; callers pass char-boundary offsets (segment/cursor boundaries).
+fn highlighted_window_spans(
+    runs: Option<&[(Style, String)]>,
+    line_text: &str,
+    start: usize,
+    end: usize,
+) -> Vec<Span<'static>> {
+    if start >= end {
+        return Vec::new();
     }
+    let Some(runs) = runs else {
+        return vec![Span::raw(line_text[start..end].to_string())];
+    };
+    let mut out = Vec::new();
+    let mut run_start = 0usize;
+    for (style, text) in runs {
+        let run_end = run_start + text.len();
+        let lo = start.max(run_start);
+        let hi = end.min(run_end);
+        if lo < hi {
+            out.push(Span::styled(
+                text[lo - run_start..hi - run_start].to_string(),
+                *style,
+            ));
+        }
+        run_start = run_end;
+        if run_start >= end {
+            break;
+        }
+    }
+    out
 }
 
 /// Information about where the cursor should be positioned within comment input
@@ -171,6 +187,12 @@ pub fn format_comment_input_lines(
         // cursor_column is already BORDER_PREFIX_WIDTH (cursor at start of content)
     } else {
         let buffer_lines: Vec<&str> = buffer.split('\n').collect();
+        // Markdown-highlight the in-progress text; colors come from the active
+        // syntect theme (same engine/theme as diff code highlighting).
+        let owned_lines: Vec<String> = buffer_lines.iter().map(|s| s.to_string()).collect();
+        let highlighted = theme
+            .syntax_highlighter()
+            .highlight_markdown_lines(&owned_lines);
         let mut byte_offset = 0;
         // Tracks how many visual lines have been pushed so far (not counting the header).
         let mut total_visual_lines: usize = 0;
@@ -198,17 +220,44 @@ pub fn format_comment_input_lines(
                     && (cursor_pos < seg_end || is_last_seg);
 
                 let mut line_spans = vec![Span::styled(BORDER_PREFIX, border_style)];
+                let line_runs = highlighted.get(line_idx).and_then(|o| o.as_deref());
+                let seg_end_in_line = seg_byte_start + seg.len();
 
                 if cursor_in_seg {
                     let cursor_pos_in_seg = (cursor_pos - seg_start).min(seg.len());
                     let (before, after) = seg.split_at(cursor_pos_in_seg);
+                    let cursor_in_line = seg_byte_start + cursor_pos_in_seg;
 
                     // Track cursor position for IME
                     cursor_line_offset = 1 + total_visual_lines;
                     cursor_column = BORDER_PREFIX_WIDTH as u16 + before.width() as u16;
-                    push_cursor_spans(&mut line_spans, before, after, cursor_style);
+
+                    // before-cursor text, highlighted
+                    line_spans.extend(highlighted_window_spans(
+                        line_runs,
+                        text,
+                        seg_byte_start,
+                        cursor_in_line,
+                    ));
+                    // Cursor char gets the cursor style; the rest stays highlighted.
+                    // No trailing cell at end-of-segment — the terminal cursor
+                    // (set_cursor_position) handles that position.
+                    if let Some(cursor_char) = after.chars().next() {
+                        line_spans.push(Span::styled(cursor_char.to_string(), cursor_style));
+                        line_spans.extend(highlighted_window_spans(
+                            line_runs,
+                            text,
+                            cursor_in_line + cursor_char.len_utf8(),
+                            seg_end_in_line,
+                        ));
+                    }
                 } else {
-                    line_spans.push(Span::raw(seg.to_string()));
+                    line_spans.extend(highlighted_window_spans(
+                        line_runs,
+                        text,
+                        seg_byte_start,
+                        seg_end_in_line,
+                    ));
                 }
 
                 result.push(Line::from(line_spans));
@@ -369,6 +418,36 @@ pub fn format_remote_review_summary_lines(
 /// resulting badge reads `[TYPE @name]`, mirroring the `[github @author]`
 /// format used for remote PR threads. `None` keeps the existing neutral
 /// `[TYPE]` badge and theme border.
+/// Render `content` as markdown-highlighted, border-prefixed, pre-wrapped lines
+/// (no cursor). Colors come from the active syntect theme. Used for displayed
+/// comment bodies; the editor box does its own variant with cursor handling.
+fn markdown_body_lines(
+    theme: &Theme,
+    content: &str,
+    content_area: usize,
+    border_style: Style,
+) -> Vec<Line<'static>> {
+    let lines: Vec<&str> = content.split('\n').collect();
+    let owned: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
+    // Highlight all lines together so multi-line constructs (e.g. fenced code)
+    // carry state across lines.
+    let highlighted = theme.syntax_highlighter().highlight_markdown_lines(&owned);
+
+    let mut out = Vec::new();
+    for (idx, text) in lines.iter().enumerate() {
+        let runs = highlighted.get(idx).and_then(|o| o.as_deref());
+        let mut seg_start = 0usize;
+        for seg in wrap_segments(text, content_area) {
+            let seg_end = seg_start + seg.len();
+            let mut spans = vec![Span::styled(BORDER_PREFIX, border_style)];
+            spans.extend(highlighted_window_spans(runs, text, seg_start, seg_end));
+            out.push(Line::from(spans));
+            seg_start = seg_end;
+        }
+    }
+    out
+}
+
 pub fn format_comment_lines(
     theme: &Theme,
     comment_type: CommentTypePresentation,
@@ -402,8 +481,6 @@ pub fn format_comment_lines(
     // one so the terminal cursor at end-of-segment stays clear of the border.
     let content_area = width.saturating_sub(BORDER_PREFIX_WIDTH + 2);
 
-    let content_lines: Vec<&str> = content.split('\n').collect();
-
     let mut result = Vec::new();
 
     let top_corner = if line_range.is_some() { '├' } else { '╭' };
@@ -420,15 +497,13 @@ pub fn format_comment_lines(
         Span::styled("─".repeat(top_fill), border_style),
     ]));
 
-    // Content lines — pre-wrap at content_area so ratatui never wraps them
-    for line in &content_lines {
-        for seg in wrap_segments(line, content_area) {
-            result.push(Line::from(vec![
-                Span::styled(BORDER_PREFIX, border_style),
-                Span::raw(seg.to_string()),
-            ]));
-        }
-    }
+    // Content lines — markdown-highlighted, pre-wrapped at content_area.
+    result.extend(markdown_body_lines(
+        theme,
+        content,
+        content_area,
+        border_style,
+    ));
 
     // Bottom border — "    ╰" = 5 chars, fill to width
     result.push(Line::from(vec![Span::styled(
@@ -752,5 +827,100 @@ mod tests {
         assert_eq!(cursor_info.line_offset, 1);
         // "a" = 1 display width, "좋" = 2 display width, total = 3
         assert_eq!(cursor_info.column, 7 + 3);
+    }
+
+    // -- markdown highlighting tests --
+
+    /// Reconstruct the buffer text from the rendered content lines: drop the
+    /// header (first) and footer (last) lines, skip each line's BORDER_PREFIX
+    /// span, concatenate the rest, and join visual lines with '\n'. With a wide
+    /// width (no wrapping) each logical line is one visual line, so this must
+    /// equal the original buffer regardless of how content is split into spans.
+    fn reconstruct(lines: &[Line<'static>]) -> String {
+        lines[1..lines.len() - 1]
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .skip(1) // BORDER_PREFIX
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn render_md(buffer: &str, cursor: usize) -> Vec<Line<'static>> {
+        let theme = test_theme();
+        format_comment_input_lines(
+            &theme,
+            CommentTypePresentation {
+                label: "NOTE".to_string(),
+                color: Color::Blue,
+            },
+            buffer,
+            cursor,
+            None,
+            false,
+            80,
+            None,
+        )
+        .0
+    }
+
+    #[test]
+    fn markdown_render_preserves_all_text() {
+        let buffer = "# Title\n**bold** and `code`\n- item";
+        // cursor in the middle of the bold span
+        let lines = render_md(buffer, 11);
+        assert_eq!(reconstruct(&lines), buffer);
+    }
+
+    #[test]
+    fn markdown_render_preserves_multibyte_text() {
+        let buffer = "# 世界\n**bold** 좋아";
+        for cursor in [0, buffer.find('世').unwrap(), buffer.len()] {
+            let lines = render_md(buffer, cursor);
+            assert_eq!(reconstruct(&lines), buffer, "cursor={cursor}");
+        }
+    }
+
+    #[test]
+    fn displayed_comment_is_markdown_highlighted_and_preserves_text() {
+        let theme = test_theme();
+        let content = "# Heading\n**bold** and `code`\n- item";
+        let lines = format_comment_lines(
+            &theme,
+            CommentTypePresentation {
+                label: "NOTE".to_string(),
+                color: Color::Blue,
+            },
+            content,
+            None,
+            80,
+            None,
+        );
+        // Header + footer wrap the body; reconstruct must round-trip the text.
+        assert_eq!(reconstruct(&lines), content);
+        // The inline-code line should be split into multiple styled runs.
+        let code_line = &lines[2]; // header, heading, **this**
+        assert!(
+            code_line.spans.len() - 1 > 1,
+            "expected displayed markdown to be highlighted into multiple spans"
+        );
+    }
+
+    #[test]
+    fn markdown_highlighting_splits_line_into_runs() {
+        // An inline-code line should yield multiple styled content spans (proof
+        // the markdown grammar resolved and coloring is applied), not one raw
+        // span. Cursor at end so no cursor cell splits the line artificially.
+        let buffer = "plain `code` plain";
+        let lines = render_md(buffer, buffer.len());
+        let content_spans = lines[1].spans.len() - 1; // minus BORDER_PREFIX
+        assert!(
+            content_spans > 1,
+            "expected markdown highlighting to split the line, got {content_spans} span(s)"
+        );
     }
 }

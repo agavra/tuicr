@@ -100,8 +100,6 @@ impl SyntaxHighlighter {
         file_path: &Path,
         lines: &[String],
     ) -> Option<HighlightedLines> {
-        use syntect::easy::HighlightLines;
-
         // Get syntax definition
         let syntax = self.get_syntax(file_path).or_else(|| {
             lines
@@ -109,10 +107,32 @@ impl SyntaxHighlighter {
                 .and_then(|line| self.syntax_set.find_syntax_by_first_line(line))
         })?;
 
-        // Create highlighter
+        Some(self.highlight_lines_with(syntax, lines))
+    }
+
+    /// Highlight `lines` as Markdown, for the in-progress review comment box.
+    /// Colors come from the active syntect theme, matching code highlighting.
+    pub(crate) fn highlight_markdown_lines(&self, lines: &[String]) -> HighlightedLines {
+        let syntax = self
+            .syntax_set
+            .find_syntax_by_extension("md")
+            .or_else(|| self.syntax_set.find_syntax_by_name("Markdown"))
+            .unwrap_or_else(|| self.syntax_set.find_syntax_plain_text());
+        self.highlight_lines_with(syntax, lines)
+    }
+
+    /// Run syntect line-by-line against a resolved syntax, converting to
+    /// ratatui spans. Shared by file and markdown highlighting.
+    fn highlight_lines_with(
+        &self,
+        syntax: &syntect::parsing::SyntaxReference,
+        lines: &[String],
+    ) -> HighlightedLines {
+        use syntect::easy::HighlightLines;
+
         let mut highlighter = HighlightLines::new(syntax, &self.theme);
 
-        Some(Self::collect_line_highlights(lines, |line| {
+        Self::collect_line_highlights(lines, |line| {
             // Highlight failures are scoped to the single line; other lines still keep highlighting.
             highlighter
                 .highlight_line(&format!("{}\n", line), &self.syntax_set)
@@ -137,7 +157,7 @@ impl SyntaxHighlighter {
                     }
                     spans
                 })
-        }))
+        })
     }
 
     fn collect_line_highlights<F>(lines: &[String], mut highlight_line: F) -> HighlightedLines
