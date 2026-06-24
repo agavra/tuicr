@@ -18,6 +18,11 @@ categories = ["command-line-utilities", "development-tools"]
 ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
 crossterm = "0.29"
 
+# Vim-style modal editing engine for the review comment box (opt-in via
+# `comment_vim`). Used as the editing model + input engine only; we keep our
+# own rendering, so its widget/clipboard/syntax features are disabled.
+edtui = { version = "0.11", default-features = false }
+
 # Git operations
 git2 = { version = "0.20", default-features = false }
 

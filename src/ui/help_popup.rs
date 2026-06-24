@@ -516,6 +516,17 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
             ),
             Span::raw("Cancel"),
         ]),
+        Line::from(vec![
+            Span::styled(
+                "  comment_vim",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(if app.comment_vim_enabled {
+                "Vim modal editing ON (Esc:normal i/a:insert hjkl dd/ciw/x u; :w save :q cancel)"
+            } else {
+                "Set comment_vim=true (or :vim) for vim modal editing"
+            }),
+        ]),
         Line::from(""),
         Line::from(Span::styled(
             "Commands",

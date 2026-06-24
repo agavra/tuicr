@@ -39,6 +39,9 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     CommandSpec::new(&["set wrap"], CommandKind::SetWrap),
     CommandSpec::new(&["set wrap!"], CommandKind::ToggleWrap),
     CommandSpec::new(&["wrap"], CommandKind::ToggleWrap),
+    CommandSpec::new(&["vim", "set vim!"], CommandKind::ToggleVim),
+    CommandSpec::new(&["set vim"], CommandKind::SetVim(true)),
+    CommandSpec::new(&["novim", "set novim"], CommandKind::SetVim(false)),
     CommandSpec::new(&["set commits"], CommandKind::SetCommitsVisible(true)),
     CommandSpec::new(&["set nocommits"], CommandKind::SetCommitsVisible(false)),
     CommandSpec::new(&["set commits!"], CommandKind::ToggleCommits),
@@ -110,6 +113,8 @@ enum CommandKind {
     Update,
     SetWrap,
     ToggleWrap,
+    ToggleVim,
+    SetVim(bool),
     SetCommitsVisible(bool),
     ToggleCommits,
     Diff,
@@ -771,6 +776,14 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
         }
         CommandKind::ToggleWrap => {
             app.toggle_diff_wrap();
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::ToggleVim => {
+            app.toggle_comment_vim();
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::SetVim(enabled) => {
+            app.set_comment_vim(enabled);
             CommandAfterDispatch::ExitCommandMode
         }
         CommandKind::SetCommitsVisible(visible) => {

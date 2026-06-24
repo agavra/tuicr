@@ -50,6 +50,12 @@ pub struct AppConfig {
     pub export_legend: Option<bool>,
     pub cursor_line: Option<bool>,
     pub mouse: Option<bool>,
+    /// Enable vim-style modal editing in the review comment text box. When
+    /// unset/false the comment box uses the default emacs/readline bindings.
+    pub comment_vim: Option<bool>,
+    /// Number of spaces inserted by Tab while typing in the vim comment box.
+    /// Defaults to 4 (matching diff tab expansion).
+    pub comment_tab_width: Option<usize>,
     pub leader: Option<char>,
     pub transparent_background: Option<bool>,
     pub scroll_offset: Option<usize>,
@@ -83,6 +89,8 @@ const KNOWN_KEYS: &[&str] = &[
     "export_legend",
     "cursor_line",
     "mouse",
+    "comment_vim",
+    "comment_tab_width",
     "leader",
     "transparent_background",
     "scroll_offset",
@@ -292,6 +300,8 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         export_legend: read_bool(table, "export_legend", &mut warnings),
         cursor_line: read_bool(table, "cursor_line", &mut warnings),
         mouse: read_bool(table, "mouse", &mut warnings),
+        comment_vim: read_bool(table, "comment_vim", &mut warnings),
+        comment_tab_width: read_usize(table, "comment_tab_width", &mut warnings),
         leader: read_leader(table, &mut warnings),
         transparent_background: read_bool(table, "transparent_background", &mut warnings),
         scroll_offset: read_usize(table, "scroll_offset", &mut warnings),

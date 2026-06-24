@@ -190,6 +190,7 @@ ignore_whitespace = false    # ignore all whitespace in local VCS diffs
 appearance = "system"        # or "dark" / "light"
 mouse = true
 leader = ";"                  # configurable prefix for leader shortcuts
+comment_vim = false           # vim modal editing in the review comment box
 review_watch_interval_ms = 1000 # set to 0 to disable persisted-review polling
 
 [[comment_types]]

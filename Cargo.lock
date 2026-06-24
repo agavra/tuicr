@@ -635,10 +635,42 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
 
 [[package]]
+name = "edtui"
+version = "0.11.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d4941adefb4c21c4a8a5bece220a24dc28d1cbb5d1e5875be4a575d5d1da172a"
+dependencies = [
+ "crossterm",
+ "edtui-jagged",
+ "enum_dispatch",
+ "ratatui-core",
+ "ratatui-widgets",
+ "unicode-width",
+]
+
+[[package]]
+name = "edtui-jagged"
+version = "0.1.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c6818b2d6b8b3da52f7491b6331e27d45ae34e5baaffeb1edfde43911fe63dd6"
+
+[[package]]
 name = "either"
 version = "1.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "91622ff5e7162018101f2fea40d6ebf4a78bbe5a49736a2020649edf9693679e"
+
+[[package]]
+name = "enum_dispatch"
+version = "0.3.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aa18ce2bc66555b3218614519ac839ddb759a7d6720732f979ef8d13be147ecd"
+dependencies = [
+ "once_cell",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.118",
+]
 
 [[package]]
 name = "equivalent"
@@ -2706,6 +2738,7 @@ dependencies = [
  "clap",
  "crossterm",
  "directories",
+ "edtui",
  "git2",
  "ignore",
  "ratatui",

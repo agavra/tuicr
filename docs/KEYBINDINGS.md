@@ -91,6 +91,15 @@ Shown below the file tree when local comments or visible remote PR threads exist
 | `Ctrl-u` | Clear line |
 | `Esc` / `Ctrl-c` | Cancel |
 
+With `comment_vim = true` the box uses [`edtui`](https://github.com/preiter93/edtui)
+modal editing (Normal/Insert/Visual: `hjkl`, `w`/`b`/`e`, `dd`/`D`/`ciw`/`x`,
+`u`/`Ctrl-r`, visual `v`+`y`/`d`/`p`). From Normal mode `:w` (or `Enter` twice)
+saves and `:q` (or `Esc`/`q` twice) cancels — the first press arms the action
+and the header shows a confirm hint. `Tab` cycles the comment type in Normal
+mode and inserts `comment_tab_width` spaces (default 4) in Insert mode; `Ctrl-s`
+also saves. Operator+motion combos like
+`dw`/`cw` aren't supported (edtui limitation).
+
 ## Commands
 
 In command mode,
@@ -105,6 +114,7 @@ In command mode,
 | `:edit` | Open focused file in `$EDITOR` |
 | `:clip` (`:export`) | Copy review to clipboard |
 | `:diff` | Toggle diff view (unified / side-by-side) |
+| `:vim` / `:novim` (`:set vim` / `:set novim`) | Enable/toggle/disable vim modal editing in the comment box (overrides `comment_vim`) |
 | `:commits` | Select commits to review |
 | `:submit` | Open submit picker (Comment / Approve / Request changes / Draft) |
 | `:submit comment` | Submit a Comment review |

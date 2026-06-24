@@ -101,6 +101,7 @@ pub fn format_comment_input_lines(
     line_range: Option<LineRange>,
     is_editing: bool,
     width: usize,
+    vim_mode: Option<(&str, bool)>,
 ) -> (Vec<Line<'static>>, CommentCursorInfo) {
     let type_style = styles::comment_type_style(theme, comment_type.color);
     let border_style = styles::comment_border_style(theme, comment_type.color);
@@ -132,20 +133,31 @@ pub fn format_comment_input_lines(
     let top_corner = if line_range.is_some() { '├' } else { '╭' };
     let top_prefix = format!("    {top_corner}── ");
 
-    // Top border with type label and hints
-    result.push(Line::from(vec![
+    // Top border with type label and hints. In vim mode the hints describe the
+    // modal bindings and a `[MODE]` tag is shown after the type label.
+    let hint = match vim_mode {
+        Some(_) => "(Tab/S-Tab:type i:insert Esc:normal :w save :q cancel)".to_string(),
+        None => format!("(Tab/S-Tab:type Enter:save {newline_hint}:newline Esc:cancel)"),
+    };
+    let mut header_spans = vec![
         Span::styled(top_prefix, border_style),
-        Span::styled(format!("{} ", action), styles::dim_style(theme)),
+        Span::styled(format!("{action} "), styles::dim_style(theme)),
         Span::styled(format!("[{}] ", comment_type.label), type_style),
-        Span::styled(line_info, styles::dim_style(theme)),
-        Span::styled(
-            format!(
-                "(Tab/S-Tab:type Enter:save {}:newline Esc:cancel)",
-                newline_hint
-            ),
-            styles::dim_style(theme),
-        ),
-    ]));
+    ];
+    if let Some((mode, warn)) = vim_mode {
+        // The cancel-confirm hint is painted red to flag the destructive action.
+        let mode_style = if warn {
+            Style::default()
+                .fg(theme.comment_issue)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            type_style
+        };
+        header_spans.push(Span::styled(format!("[{mode}] "), mode_style));
+    }
+    header_spans.push(Span::styled(line_info, styles::dim_style(theme)));
+    header_spans.push(Span::styled(hint, styles::dim_style(theme)));
+    result.push(Line::from(header_spans));
 
     // Content lines with cursor
     if buffer.is_empty() {
@@ -595,6 +607,7 @@ mod tests {
             None,
             false,
             80,
+            None,
         );
 
         // then
@@ -622,6 +635,7 @@ mod tests {
             None,
             false,
             80,
+            None,
         );
 
         // then
@@ -648,6 +662,7 @@ mod tests {
             None,
             false,
             80,
+            None,
         );
 
         // then
@@ -675,6 +690,7 @@ mod tests {
             None,
             false,
             80,
+            None,
         );
 
         // then
@@ -701,6 +717,7 @@ mod tests {
             None,
             false,
             80,
+            None,
         );
 
         // then
@@ -728,6 +745,7 @@ mod tests {
             None,
             false,
             80,
+            None,
         );
 
         // then
