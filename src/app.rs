@@ -2673,10 +2673,10 @@ impl App {
     /// Materialize a PR session from an already-opened PR. Reattaches the
     /// most recent persisted session for the same head SHA when present so
     /// reviewed markers and local comments survive a reopen.
-    fn load_or_apply_pr_session(opened: &mut crate::forge::pr_open::OpenedPullRequest) {
+    fn load_or_apply_pr_session(opened: &mut crate::forge::pr_open::OpenedPullRequest) -> bool {
         let key = opened.key.clone();
         let Ok(Some((_path, mut persisted))) = crate::persistence::load_pr_session(&key) else {
-            return;
+            return false;
         };
 
         // Re-register diff files against the loaded session so any new files
@@ -2693,6 +2693,38 @@ impl App {
         persisted.diff_source = SessionDiffSource::PullRequest;
         persisted.updated_at = chrono::Utc::now();
         opened.session = persisted;
+        true
+    }
+
+    fn carry_forward_reviewed_state(
+        previous: &ReviewSession,
+        next: &mut ReviewSession,
+        diff_files: &[DiffFile],
+    ) {
+        for file in diff_files {
+            let path = file.display_path();
+            let Some(previous_review) = previous.files.get(path) else {
+                continue;
+            };
+            if previous_review.content_hash != Some(file.content_hash) {
+                continue;
+            }
+            let Some(next_review) = next.files.get_mut(path) else {
+                continue;
+            };
+
+            next_review.reviewed = previous_review.reviewed;
+            if !previous_review.reviewed_hunks.is_empty() {
+                let valid_hunks: HashSet<_> = file.hunk_review_keys().into_iter().collect();
+                next_review.reviewed_hunks.extend(
+                    previous_review
+                        .reviewed_hunks
+                        .iter()
+                        .filter(|key| valid_hunks.contains(*key))
+                        .cloned(),
+                );
+            }
+        }
     }
 
     fn is_strict_commit_selection(range: Option<(usize, usize)>, total: usize) -> bool {
@@ -3465,9 +3497,17 @@ impl App {
 
         let head_changed = opened.details.head_sha != request.head_sha;
         if head_changed {
+            let previous_session = self.session.clone();
             let _ = self.save_current_session_merging_external();
             let details_for_threads = opened.details.clone();
-            Self::load_or_apply_pr_session(&mut opened);
+            let loaded_existing_session = Self::load_or_apply_pr_session(&mut opened);
+            if !loaded_existing_session {
+                Self::carry_forward_reviewed_state(
+                    &previous_session,
+                    &mut opened.session,
+                    &opened.diff_files,
+                );
+            }
             let backend = create_forge_backend(&request.repository, local_checkout.clone());
             let previous_message = self.message.clone();
             self.enter_pr_diff_mode(backend, opened)?;
@@ -3549,9 +3589,17 @@ impl App {
         let head_changed = opened.details.head_sha != current.key.head_sha;
         if head_changed {
             // Save the old-head session before switching so drafts persist.
+            let previous_session = self.session.clone();
             let _ = self.save_current_session_merging_external();
             let details_for_threads = opened.details.clone();
-            Self::load_or_apply_pr_session(&mut opened);
+            let loaded_existing_session = Self::load_or_apply_pr_session(&mut opened);
+            if !loaded_existing_session {
+                Self::carry_forward_reviewed_state(
+                    &previous_session,
+                    &mut opened.session,
+                    &opened.diff_files,
+                );
+            }
             self.enter_pr_diff_mode(backend, opened)?;
             // Fetch threads against the new head; old-head threads stay
             // tied to the old session and are dropped here.
@@ -11525,6 +11573,26 @@ index 1111111..2222222 100644
 "#
     }
 
+    fn two_file_patch(changed_replacement: &str) -> String {
+        format!(
+            r#"diff --git a/src/stable.rs b/src/stable.rs
+index 1111111..2222222 100644
+--- a/src/stable.rs
++++ b/src/stable.rs
+@@ -1 +1 @@
+-old stable
++new stable
+diff --git a/src/changed.rs b/src/changed.rs
+index 3333333..4444444 100644
+--- a/src/changed.rs
++++ b/src/changed.rs
+@@ -1 +1 @@
+-old changed
++{changed_replacement}
+"#
+        )
+    }
+
     #[test]
     fn should_populate_inline_selector_when_pr_has_multiple_commits() {
         // given a PR open path where the forge returns 3 commits
@@ -11797,6 +11865,57 @@ index 1111111..2222222 100644
         }
         // and the session changed (new session, not the old one)
         assert_ne!(app.session.id, old_session_id);
+    }
+
+    #[test]
+    fn should_carry_reviewed_marks_for_unchanged_files_when_pr_head_advances() {
+        // given an app already in PR mode with two reviewed files at head A
+        let mut app = build_app();
+        let summary = sample_pr(424242, "head-a");
+        let mut details_a = test_pr_details(424242, "head-a");
+        details_a.head_sha = "aaaaaaaaaaaaaaaa".to_string();
+        let backend_a = Box::new(FakeForgeBackend::open_pr_details(
+            details_a.clone(),
+            two_file_patch("new changed"),
+        ));
+        app.open_pr_with_backend(&summary, backend_a, None).unwrap();
+        let stable_path = PathBuf::from("src/stable.rs");
+        let changed_path = PathBuf::from("src/changed.rs");
+        app.session.get_file_mut(&stable_path).unwrap().reviewed = true;
+        app.session.get_file_mut(&changed_path).unwrap().reviewed = true;
+        app.session
+            .get_file_mut(&stable_path)
+            .unwrap()
+            .add_file_comment(Comment::new(
+                "old-head draft".to_string(),
+                CommentType::Note,
+                None,
+            ));
+
+        // when the PR advances and only one file's diff content changes
+        let mut details_b = details_a.clone();
+        details_b.head_sha = "bbbbbbbbbbbbbbbb".to_string();
+        let backend_b = Box::new(FakeForgeBackend::open_pr_details(
+            details_b,
+            two_file_patch("newer changed"),
+        ));
+        let head_changed = app
+            .reload_pull_request_with_backend(backend_b, None)
+            .unwrap();
+
+        // then unchanged files stay reviewed, changed files reopen, and
+        // old-head comments stay with the old session.
+        assert!(head_changed);
+        assert!(app.session.is_file_reviewed(&stable_path));
+        assert!(!app.session.is_file_reviewed(&changed_path));
+        assert!(
+            app.session
+                .files
+                .get(&stable_path)
+                .unwrap()
+                .file_comments
+                .is_empty()
+        );
     }
 
     #[test]
