@@ -389,6 +389,34 @@ where
         Ok(all)
     }
 
+    fn list_pull_request_review_metadata(
+        &self,
+        pr: &PullRequestDetails,
+    ) -> Result<crate::forge::traits::PullRequestReviewMetadata> {
+        let mut all = crate::forge::traits::PullRequestReviewMetadata::default();
+        let mut cursor: Option<String> = None;
+        for _ in 0..100 {
+            let args = self.build_review_metadata_args(pr, cursor.as_deref());
+            let output = self.run_gh(args, &pr.repository.host)?;
+            let parsed = super::review_metadata::parse_graphql_page(&output)?;
+            if all.viewer_login.is_none() {
+                all.viewer_login = parsed.metadata.viewer_login;
+            }
+            all.reviews.extend(parsed.metadata.reviews);
+            let Some(page_info) = parsed.page_info else {
+                break;
+            };
+            if !page_info.has_next_page {
+                break;
+            }
+            let Some(end_cursor) = page_info.end_cursor else {
+                break;
+            };
+            cursor = Some(end_cursor);
+        }
+        Ok(all)
+    }
+
     fn fetch_file_lines(&self, request: ForgeFileLinesRequest) -> Result<Vec<DiffLine>> {
         if request.start_line == 0 || request.start_line > request.end_line {
             return Ok(Vec::new());
@@ -485,6 +513,14 @@ where
         cursor: Option<&str>,
     ) -> Vec<String> {
         self.build_graphql_args(pr, &build_reviews_query(cursor), cursor)
+    }
+
+    fn build_review_metadata_args(
+        &self,
+        pr: &PullRequestDetails,
+        cursor: Option<&str>,
+    ) -> Vec<String> {
+        self.build_graphql_args(pr, &super::review_metadata::build_query(cursor), cursor)
     }
 
     fn build_graphql_args(
@@ -1035,6 +1071,9 @@ index 1111111..2222222 100644
                         .unwrap_or("");
                     if query.contains("reviewThreads(") {
                         Ok(REVIEW_THREADS_JSON.to_string())
+                    } else if query.contains("viewer { login }") && query.contains("commit { oid }")
+                    {
+                        Ok(REVIEW_METADATA_JSON.to_string())
                     } else if query.contains("reviews(") {
                         Ok(REVIEW_SUMMARIES_JSON.to_string())
                     } else {
@@ -1159,6 +1198,31 @@ index 1111111..2222222 100644
                                 "author": { "login": "alice" },
                                 "submittedAt": "2026-05-12T18:30:00Z",
                                 "url": "https://example.com/r/1"
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+    }"##;
+
+    const REVIEW_METADATA_JSON: &str = r##"{
+        "data": {
+            "viewer": { "login": "ronen-hoffer" },
+            "repository": {
+                "pullRequest": {
+                    "reviews": {
+                        "pageInfo": { "hasNextPage": false, "endCursor": null },
+                        "nodes": [
+                            {
+                                "author": { "login": "alice" },
+                                "submittedAt": "2026-05-12T18:30:00Z",
+                                "commit": { "oid": "aaaaaaa1111111111111111111111111111aaaa" }
+                            },
+                            {
+                                "author": { "login": "ronen-hoffer" },
+                                "submittedAt": "2026-05-13T09:00:00Z",
+                                "commit": { "oid": "bbbbbbb2222222222222222222222222222bbbb" }
                             }
                         ]
                     }
@@ -1666,6 +1730,38 @@ Match host github-work
             .expect("expected a reviews graphql call");
         assert!(summaries_call.iter().any(|a| a == "owner=agavra"));
         assert!(summaries_call.iter().any(|a| a == "number=125"));
+    }
+
+    #[test]
+    fn should_list_pull_request_review_metadata_via_graphql_api_call() {
+        // given
+        let runner = FakeGhRunner::default();
+        let backend = GitHubGhBackend::with_runner(Some(repo()), runner);
+        let details = backend
+            .get_pull_request(parse_pull_request_target("125").unwrap())
+            .unwrap();
+        // when
+        let metadata = backend.list_pull_request_review_metadata(&details).unwrap();
+        // then
+        assert_eq!(metadata.viewer_login.as_deref(), Some("ronen-hoffer"));
+        assert_eq!(metadata.reviews.len(), 2);
+        assert_eq!(metadata.reviews[1].author.as_deref(), Some("ronen-hoffer"));
+        assert_eq!(
+            metadata.reviews[1].commit_oid.as_deref(),
+            Some("bbbbbbb2222222222222222222222222222bbbb")
+        );
+        // and — the query requests viewer login and review commit oids.
+        let calls = backend.runner.calls.borrow();
+        let metadata_call = calls
+            .iter()
+            .find(|args| {
+                args.first().map(String::as_str) == Some("api")
+                    && args.iter().any(|a| a.contains("viewer { login }"))
+                    && args.iter().any(|a| a.contains("commit { oid }"))
+            })
+            .expect("expected review metadata graphql call");
+        assert!(metadata_call.iter().any(|a| a == "owner=agavra"));
+        assert!(metadata_call.iter().any(|a| a == "number=125"));
     }
 
     #[test]

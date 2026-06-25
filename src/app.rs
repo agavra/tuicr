@@ -380,6 +380,52 @@ pub fn pr_commit_to_commit_info(commit: &crate::forge::traits::PullRequestCommit
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SinceLastReviewSelection {
+    range: Option<(usize, usize)>,
+    reviewed_index: usize,
+    message: String,
+}
+
+fn commits_since_last_review_selection(
+    commits_newest_first: &[crate::forge::traits::PullRequestCommit],
+    review_metadata: &crate::forge::traits::PullRequestReviewMetadata,
+) -> Option<SinceLastReviewSelection> {
+    let viewer = review_metadata.viewer_login.as_deref()?;
+    let last_review = review_metadata
+        .reviews
+        .iter()
+        .filter(|review| {
+            review
+                .author
+                .as_deref()
+                .is_some_and(|author| author.eq_ignore_ascii_case(viewer))
+        })
+        .filter(|review| review.submitted_at.is_some() && review.commit_oid.is_some())
+        .max_by(|a, b| a.submitted_at.cmp(&b.submitted_at))?;
+
+    let reviewed_commit = last_review.commit_oid.as_deref()?;
+    let reviewed_index = commits_newest_first
+        .iter()
+        .position(|commit| commit.oid == reviewed_commit)?;
+
+    if reviewed_index == 0 {
+        return Some(SinceLastReviewSelection {
+            range: None,
+            reviewed_index,
+            message: "No commits since your last review".to_string(),
+        });
+    }
+
+    let count = reviewed_index;
+    let noun = if count == 1 { "commit" } else { "commits" };
+    Some(SinceLastReviewSelection {
+        range: Some((0, reviewed_index - 1)),
+        reviewed_index,
+        message: format!("Showing {count} {noun} since your last review — press Enter to see all"),
+    })
+}
+
 pub fn annotation_file_idx(annotation: &AnnotatedLine) -> Option<usize> {
     match annotation {
         AnnotatedLine::FileHeader { file_idx }
@@ -751,6 +797,7 @@ pub enum PrOpenEvent {
                 crate::forge::traits::PullRequestDetails,
                 String,
                 Vec<crate::forge::traits::PullRequestCommit>,
+                crate::forge::traits::PullRequestReviewMetadata,
             ),
             String,
         >,
@@ -790,6 +837,7 @@ pub enum PrReloadEvent {
                 crate::forge::traits::PullRequestDetails,
                 String,
                 Vec<crate::forge::traits::PullRequestCommit>,
+                crate::forge::traits::PullRequestReviewMetadata,
             ),
             String,
         >,
@@ -1195,6 +1243,10 @@ pub struct App {
     /// Empty outside PR mode. Used as the source of truth for resolving a
     /// `commit_selection_range` back to (start_sha, end_sha) when toggling.
     pub pr_commits: Vec<crate::forge::traits::PullRequestCommit>,
+    /// Index in `pr_commits`/`review_commits` of the newest commit covered
+    /// by the viewer's latest submitted review. Commits at this index and
+    /// older get a reviewed marker in the inline selector.
+    pub pr_last_reviewed_commit_index: Option<usize>,
     /// In-flight range re-fetch driven by toggling commits in the inline
     /// selector while in PR mode. Drives a spinner in the status bar.
     pub pr_range_reload_state: Option<PrRangeReloadRequest>,
@@ -1942,6 +1994,7 @@ impl App {
             pending_count: None,
             review_commits: Vec::new(),
             pr_commits: Vec::new(),
+            pr_last_reviewed_commit_index: None,
             pr_range_reload_state: None,
             pr_range_reload_rx: None,
             show_commit_selector: false,
@@ -2648,6 +2701,67 @@ impl App {
         })
     }
 
+    fn apply_pr_commit_selector(
+        &mut self,
+        commits: Vec<crate::forge::traits::PullRequestCommit>,
+        review_metadata: crate::forge::traits::PullRequestReviewMetadata,
+    ) -> Option<String> {
+        self.pr_last_reviewed_commit_index = None;
+        if commits.len() <= 1 {
+            return None;
+        }
+
+        let since_last_review = commits_since_last_review_selection(&commits, &review_metadata);
+        self.set_pr_last_reviewed_commit_from_metadata(&commits, &review_metadata);
+
+        self.pr_commits = commits.clone();
+        let mapped: Vec<CommitInfo> = commits.iter().map(pr_commit_to_commit_info).collect();
+        self.range_diff_files = Some(self.diff_files.clone());
+        self.commit_list = mapped.clone();
+        self.commit_list_cursor = 0;
+        self.commit_list_scroll_offset = 0;
+        self.visible_commit_count = mapped.len();
+        self.has_more_commit = false;
+        self.show_commit_selector = true;
+
+        let mut range = (0, mapped.len() - 1);
+        let mut auto_scoped_since_last_review = false;
+        let mut since_last_review_message = None;
+        // Restore any persisted range scoped to this head SHA. If the
+        // restored range exceeds the current commit count (e.g., the PR
+        // was rebased), fall back to "all". Only auto-scope to commits
+        // since last review when no explicit per-session range exists.
+        if let Some(persisted) = self.session.commit_selection_range
+            && persisted.1 < mapped.len()
+            && persisted.0 <= persisted.1
+        {
+            range = persisted;
+        } else if self.session.commit_selection_range.is_none()
+            && let Some(selection) = since_last_review.as_ref()
+        {
+            if let Some(selected_range) = selection.range {
+                range = selected_range;
+                auto_scoped_since_last_review = true;
+            }
+            since_last_review_message = Some(selection.message.clone());
+        }
+
+        self.commit_selection_range = Some(range);
+        self.review_commits = mapped;
+
+        if let Some(message) = since_last_review_message {
+            if auto_scoped_since_last_review
+                && Self::is_strict_commit_selection(Some(range), self.pr_commits.len())
+            {
+                self.focused_panel = FocusedPanel::CommitSelector;
+                self.commit_list_cursor = self.pr_commits.len().saturating_sub(1);
+                self.commit_list_scroll_offset = self.commit_list_cursor.saturating_sub(5);
+            }
+            return Some(message);
+        }
+        None
+    }
+
     fn register_diff_files(
         session: &mut ReviewSession,
         diff_files: &[DiffFile],
@@ -2760,6 +2874,8 @@ impl App {
         // Snapshot the PR details before consuming `opened` so we can kick
         // off the remote-thread fetch after `Self::build` returns.
         let details_for_threads = opened.details.clone();
+        let commits_for_selector = opened.commits.clone();
+        let review_metadata = opened.review_metadata.clone();
         let mut app = Self::build(
             vcs,
             vcs_info,
@@ -2783,11 +2899,22 @@ impl App {
         // the user came straight from CLI into PR diff mode).
         app.canonical_resolved = true;
         app.current_pr_head = Some(details_for_threads.head_sha.clone());
+        let since_last_review_message =
+            app.apply_pr_commit_selector(commits_for_selector, review_metadata);
+        if matches!(&app.diff_source, DiffSource::PullRequest(_))
+            && let Some(range) = app.commit_selection_range
+            && !app.pr_commits.is_empty()
+            && (range.0 > 0 || range.1 + 1 < app.pr_commits.len())
+        {
+            app.spawn_pr_range_reload();
+        }
         if let DiffSource::PullRequest(pr) = &app.diff_source.clone()
             && pr.is_read_only()
         {
             let reason = pr.read_only_reason().unwrap_or("read only");
             app.set_warning(format!("This PR is {reason} — review is read-only"));
+        } else if let Some(message) = since_last_review_message {
+            app.set_message(message);
         }
         // Spawn thread-fetch on startup; the main event loop will drain
         // the receiver via `poll_pr_threads_events` once it begins.
@@ -2808,6 +2935,7 @@ impl App {
             session,
             key,
             commits,
+            review_metadata,
         } = opened;
 
         // Save the current session before transitioning so local-mode work
@@ -2847,6 +2975,7 @@ impl App {
         self.commit_selection_range = None;
         self.review_commits.clear();
         self.pr_commits.clear();
+        self.pr_last_reviewed_commit_index = None;
         self.show_commit_selector = false;
         self.range_diff_files = None;
         self.saved_inline_selection = None;
@@ -2857,29 +2986,7 @@ impl App {
         // match the local-mode UX. We mirror `commit_list` and
         // `review_commits` into shared App state so the existing
         // inline_commit_selector renderer Just Works.
-        if commits.len() > 1 {
-            self.pr_commits = commits.clone();
-            let mapped: Vec<CommitInfo> = commits.iter().map(pr_commit_to_commit_info).collect();
-            self.range_diff_files = Some(self.diff_files.clone());
-            self.commit_list = mapped.clone();
-            self.commit_list_cursor = 0;
-            self.commit_list_scroll_offset = 0;
-            self.visible_commit_count = mapped.len();
-            self.has_more_commit = false;
-            self.show_commit_selector = true;
-            let mut range = (0, mapped.len() - 1);
-            // Restore any persisted range scoped to this head SHA. If the
-            // restored range exceeds the current commit count (e.g., the PR
-            // was rebased), fall back to "all".
-            if let Some(persisted) = self.session.commit_selection_range
-                && persisted.1 < mapped.len()
-                && persisted.0 <= persisted.1
-            {
-                range = persisted;
-            }
-            self.commit_selection_range = Some(range);
-            self.review_commits = mapped;
-        }
+        let since_last_review_message = self.apply_pr_commit_selector(commits, review_metadata);
 
         // Ensure session has all files registered after the swap. A strict
         // selector range is a filtered view, not a new review scope.
@@ -2893,6 +3000,8 @@ impl App {
 
         if let Some(reason) = read_only_reason {
             self.set_warning(format!("This PR is {reason} — review is read-only"));
+        } else if let Some(message) = since_last_review_message {
+            self.set_message(message);
         }
 
         // If the restored selection is a strict subset, fire an initial
@@ -3317,8 +3426,10 @@ impl App {
             return;
         }
         match result {
-            Ok((details, patch, commits)) => {
-                if let Err(e) = self.finish_pr_reload(details, patch, commits, &request) {
+            Ok((details, patch, commits, review_metadata)) => {
+                if let Err(e) =
+                    self.finish_pr_reload(details, patch, commits, review_metadata, &request)
+                {
                     self.set_error(format!("Reload failed: {e}"));
                 }
             }
@@ -3333,6 +3444,7 @@ impl App {
         details: crate::forge::traits::PullRequestDetails,
         patch: String,
         commits: Vec<crate::forge::traits::PullRequestCommit>,
+        review_metadata: crate::forge::traits::PullRequestReviewMetadata,
         request: &PrReloadRequest,
     ) -> Result<()> {
         use crate::forge::pr_open::prepare_open_pr;
@@ -3346,6 +3458,7 @@ impl App {
             details,
             &patch,
             commits,
+            review_metadata,
             local_checkout.as_deref(),
             highlighter,
         )?;
@@ -3356,10 +3469,17 @@ impl App {
             let details_for_threads = opened.details.clone();
             Self::load_or_apply_pr_session(&mut opened);
             let backend = create_forge_backend(&request.repository, local_checkout.clone());
+            let previous_message = self.message.clone();
             self.enter_pr_diff_mode(backend, opened)?;
             self.spawn_pr_threads_fetch(&details_for_threads, local_checkout);
-            self.set_message("Reloaded PR at new head — switched to fresh session".to_string());
+            if self.message == previous_message {
+                self.set_message("Reloaded PR at new head — switched to fresh session".to_string());
+            }
         } else {
+            self.set_pr_last_reviewed_commit_from_metadata(
+                &opened.commits,
+                &opened.review_metadata,
+            );
             self.diff_files = opened.diff_files;
             self.clear_expanded_gaps();
             for file in &self.diff_files {
@@ -3439,6 +3559,10 @@ impl App {
         } else {
             // Same head: re-parse the diff to pick up any side-channel
             // changes (rare), but keep the session intact.
+            self.set_pr_last_reviewed_commit_from_metadata(
+                &opened.commits,
+                &opened.review_metadata,
+            );
             self.diff_files = opened.diff_files;
             self.clear_expanded_gaps();
             for file in &self.diff_files {
@@ -7781,6 +7905,9 @@ impl App {
                 response.id, inline_count, summary_count,
             ),
         };
+        if in_flight.event != SubmitEvent::Draft {
+            self.mark_pr_commits_reviewed_through(&in_flight.head_sha_snapshot);
+        }
         self.set_message(message);
 
         // Refetch remote threads so the just-submitted comments appear immediately.
@@ -8211,8 +8338,10 @@ impl App {
                     return;
                 }
                 match result {
-                    Ok((details, patch, commits)) => {
-                        if let Err(e) = self.finish_pr_open(details, patch, commits, &request) {
+                    Ok((details, patch, commits, review_metadata)) => {
+                        if let Err(e) =
+                            self.finish_pr_open(details, patch, commits, review_metadata, &request)
+                        {
                             self.set_error(format!(
                                 "Failed to open PR #{}: {}",
                                 request.pr_number, e
@@ -8236,6 +8365,7 @@ impl App {
         details: crate::forge::traits::PullRequestDetails,
         patch: String,
         commits: Vec<crate::forge::traits::PullRequestCommit>,
+        review_metadata: crate::forge::traits::PullRequestReviewMetadata,
         request: &PrOpenRequest,
     ) -> Result<()> {
         use crate::forge::pr_open::prepare_open_pr;
@@ -8246,20 +8376,24 @@ impl App {
             details.clone(),
             &patch,
             commits,
+            review_metadata,
             local_checkout.as_deref(),
             highlighter,
         )?;
         Self::load_or_apply_pr_session(&mut opened);
         let backend = create_forge_backend(&request.repository, local_checkout.clone());
+        let previous_message = self.message.clone();
         self.enter_pr_diff_mode(backend, opened)?;
         // Kick the remote-thread fetch off on a fresh background thread.
         // The diff view is already up; threads fade in once they land.
         self.spawn_pr_threads_fetch(&details, local_checkout);
-        self.set_message(format!(
-            "Opened PR {}#{}",
-            request.repository.display_name(),
-            request.pr_number,
-        ));
+        if self.message == previous_message {
+            self.set_message(format!(
+                "Opened PR {}#{}",
+                request.repository.display_name(),
+                request.pr_number,
+            ));
+        }
         Ok(())
     }
 
@@ -8752,6 +8886,41 @@ impl App {
         }
     }
 
+    fn set_pr_last_reviewed_commit_from_metadata(
+        &mut self,
+        commits: &[crate::forge::traits::PullRequestCommit],
+        review_metadata: &crate::forge::traits::PullRequestReviewMetadata,
+    ) {
+        self.pr_last_reviewed_commit_index = if commits.len() > 1 {
+            commits_since_last_review_selection(commits, review_metadata)
+                .map(|selection| selection.reviewed_index)
+        } else {
+            None
+        };
+    }
+
+    fn mark_pr_commits_reviewed_through(&mut self, commit_id: &str) {
+        if !matches!(&self.diff_source, DiffSource::PullRequest(_)) {
+            return;
+        }
+        if let Some(index) = self
+            .pr_commits
+            .iter()
+            .position(|commit| commit.oid == commit_id)
+        {
+            self.pr_last_reviewed_commit_index = Some(index);
+        }
+    }
+
+    /// Check if a PR commit is covered by the viewer's latest submitted review.
+    pub fn is_commit_reviewed_by_viewer(&self, index: usize) -> bool {
+        matches!(&self.diff_source, DiffSource::PullRequest(_))
+            && index < self.review_commits.len()
+            && self
+                .pr_last_reviewed_commit_index
+                .is_some_and(|reviewed_index| index >= reviewed_index)
+    }
+
     /// Cycle inline commit selector to the next individual commit (`)` key).
     /// all → last, i → i+1, last → all
     pub fn cycle_commit_next(&mut self) {
@@ -8943,6 +9112,8 @@ impl App {
         self.file_list_state = FileListState::default();
 
         // Set up inline commit selector for multi-commit reviews (newest-first display order)
+        self.pr_commits.clear();
+        self.pr_last_reviewed_commit_index = None;
         self.review_commits = selected_commits.iter().rev().cloned().collect();
         self.range_diff_files = Some(self.diff_files.clone());
         self.commit_list = self.review_commits.clone();
@@ -9143,6 +9314,8 @@ impl App {
         self.file_list_state = FileListState::default();
 
         // Set up inline commit selector (newest-first display order)
+        self.pr_commits.clear();
+        self.pr_last_reviewed_commit_index = None;
         self.review_commits = selected_commits.into_iter().rev().collect();
         self.range_diff_files = Some(self.diff_files.clone());
         self.commit_list = self.review_commits.clone();
@@ -10680,7 +10853,9 @@ mod commit_selection_tests {
 mod target_selector_tests {
     use super::*;
     use crate::forge::selector::PullRequestsTab;
-    use crate::forge::traits::PullRequestSummary;
+    use crate::forge::traits::{
+        PullRequestReviewMetadata, PullRequestReviewRecord, PullRequestSummary,
+    };
     use crate::model::FileStatus;
     use crate::vcs::traits::{VcsChangeStatus, VcsType};
 
@@ -10971,6 +11146,7 @@ mod target_selector_tests {
         details: crate::forge::traits::PullRequestDetails,
         patch: String,
         commits: Vec<crate::forge::traits::PullRequestCommit>,
+        review_metadata: PullRequestReviewMetadata,
         range_patch: Option<String>,
     }
 
@@ -10983,6 +11159,7 @@ mod target_selector_tests {
                 details,
                 patch,
                 commits: Vec::new(),
+                review_metadata: PullRequestReviewMetadata::default(),
                 range_patch: None,
             }
         }
@@ -11024,6 +11201,12 @@ mod target_selector_tests {
             _pr: &crate::forge::traits::PullRequestDetails,
         ) -> Result<Vec<crate::forge::traits::PullRequestCommit>> {
             Ok(self.commits.clone())
+        }
+        fn list_pull_request_review_metadata(
+            &self,
+            _pr: &crate::forge::traits::PullRequestDetails,
+        ) -> Result<PullRequestReviewMetadata> {
+            Ok(self.review_metadata.clone())
         }
         fn get_pull_request_commit_range_diff(
             &self,
@@ -11199,6 +11382,122 @@ mod target_selector_tests {
             author: "Alice".to_string(),
             timestamp: None,
         }
+    }
+
+    fn review_record(author: &str, oid: &str, submitted_at: &str) -> PullRequestReviewRecord {
+        PullRequestReviewRecord {
+            author: Some(author.to_string()),
+            submitted_at: Some(submitted_at.parse().unwrap()),
+            commit_oid: Some(oid.to_string()),
+        }
+    }
+
+    fn review_metadata(reviews: Vec<PullRequestReviewRecord>) -> PullRequestReviewMetadata {
+        PullRequestReviewMetadata {
+            viewer_login: Some("ronen-hoffer".to_string()),
+            reviews,
+        }
+    }
+
+    #[test]
+    fn should_select_commits_since_viewers_last_review() {
+        let commits = vec![
+            sample_pr_commit("c3", "third"),
+            sample_pr_commit("c2", "second"),
+            sample_pr_commit("c1", "first"),
+        ];
+        let metadata = review_metadata(vec![
+            review_record("ronen-hoffer", "c1", "2026-06-01T10:00:00Z"),
+            review_record("alice", "c3", "2026-06-02T10:00:00Z"),
+            review_record("ronen-hoffer", "c2", "2026-06-03T10:00:00Z"),
+        ]);
+
+        let selection = commits_since_last_review_selection(&commits, &metadata).unwrap();
+
+        assert_eq!(selection.range, Some((0, 0)));
+        assert_eq!(selection.reviewed_index, 1);
+        assert_eq!(
+            selection.message,
+            "Showing 1 commit since your last review — press Enter to see all"
+        );
+    }
+
+    #[test]
+    fn should_report_no_new_commits_when_viewers_last_review_is_at_head() {
+        let commits = vec![
+            sample_pr_commit("c3", "third"),
+            sample_pr_commit("c2", "second"),
+        ];
+        let metadata = review_metadata(vec![review_record(
+            "ronen-hoffer",
+            "c3",
+            "2026-06-03T10:00:00Z",
+        )]);
+
+        let selection = commits_since_last_review_selection(&commits, &metadata).unwrap();
+
+        assert_eq!(selection.range, None);
+        assert_eq!(selection.reviewed_index, 0);
+        assert_eq!(selection.message, "No commits since your last review");
+    }
+
+    #[test]
+    fn should_skip_since_last_review_selection_when_commit_is_missing() {
+        let commits = vec![sample_pr_commit("c3", "third")];
+        let metadata = review_metadata(vec![review_record(
+            "ronen-hoffer",
+            "gone",
+            "2026-06-03T10:00:00Z",
+        )]);
+
+        assert!(commits_since_last_review_selection(&commits, &metadata).is_none());
+    }
+
+    #[test]
+    fn should_preserve_persisted_commit_range_over_since_last_review_default() {
+        let mut app = build_app();
+        app.session.commit_selection_range = Some((1, 1));
+        let commits = vec![
+            sample_pr_commit("c3", "third"),
+            sample_pr_commit("c2", "second"),
+            sample_pr_commit("c1", "first"),
+        ];
+        let metadata = review_metadata(vec![review_record(
+            "ronen-hoffer",
+            "c2",
+            "2026-06-03T10:00:00Z",
+        )]);
+
+        let message = app.apply_pr_commit_selector(commits, metadata);
+
+        assert_eq!(app.commit_selection_range, Some((1, 1)));
+        assert_eq!(app.pr_last_reviewed_commit_index, Some(1));
+        assert!(message.is_none());
+        assert_eq!(app.focused_panel, FocusedPanel::Diff);
+    }
+
+    #[test]
+    fn should_mark_pr_commits_covered_by_viewers_last_review() {
+        let mut app = build_app();
+        app.diff_source = DiffSource::PullRequest(Box::new(PullRequestDiffSource::from_details(
+            &test_pr_details(42, "reviewed"),
+        )));
+        let commits = vec![
+            sample_pr_commit("c3", "third"),
+            sample_pr_commit("c2", "second"),
+            sample_pr_commit("c1", "first"),
+        ];
+        let metadata = review_metadata(vec![review_record(
+            "ronen-hoffer",
+            "c2",
+            "2026-06-03T10:00:00Z",
+        )]);
+
+        app.apply_pr_commit_selector(commits, metadata);
+
+        assert!(!app.is_commit_reviewed_by_viewer(0));
+        assert!(app.is_commit_reviewed_by_viewer(1));
+        assert!(app.is_commit_reviewed_by_viewer(2));
     }
 
     fn two_hunk_patch() -> &'static str {
@@ -15096,6 +15395,57 @@ mod submit_flow_tests {
             html_url: html_url.to_string(),
             state: state.to_string(),
         }
+    }
+
+    fn pr_commit(oid: &str) -> crate::forge::traits::PullRequestCommit {
+        crate::forge::traits::PullRequestCommit {
+            oid: oid.to_string(),
+            short_oid: oid.chars().take(7).collect(),
+            summary: oid.to_string(),
+            author: "me".to_string(),
+            timestamp: None,
+        }
+    }
+
+    #[test]
+    fn should_mark_reviewed_commits_after_successful_submit() {
+        let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+        app.pr_commits = vec![
+            pr_commit("abcdef0123"),
+            pr_commit("deadbeef02"),
+            pr_commit("facecafe01"),
+        ];
+        app.review_commits = app
+            .pr_commits
+            .iter()
+            .map(pr_commit_to_commit_info)
+            .collect();
+        let in_flight = make_in_flight(SubmitEvent::Comment, &[], "deadbeef02", 0);
+        let response = make_response(123, "https://example.com/r", "COMMENTED");
+
+        app.finish_pr_submit(in_flight, Ok(response));
+
+        assert!(!app.is_commit_reviewed_by_viewer(0));
+        assert!(app.is_commit_reviewed_by_viewer(1));
+        assert!(app.is_commit_reviewed_by_viewer(2));
+    }
+
+    #[test]
+    fn should_not_mark_reviewed_commits_after_draft_submit() {
+        let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+        app.pr_commits = vec![pr_commit("abcdef0123"), pr_commit("deadbeef02")];
+        app.review_commits = app
+            .pr_commits
+            .iter()
+            .map(pr_commit_to_commit_info)
+            .collect();
+        let in_flight = make_in_flight(SubmitEvent::Draft, &[], "abcdef0123", 0);
+        let response = make_response(123, "https://example.com/r", "PENDING");
+
+        app.finish_pr_submit(in_flight, Ok(response));
+
+        assert!(!app.is_commit_reviewed_by_viewer(0));
+        assert!(!app.is_commit_reviewed_by_viewer(1));
     }
 
     #[test]

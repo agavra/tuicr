@@ -124,12 +124,34 @@ pub struct GlabDiffRefs {
     pub start_sha: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 pub struct GlabUser {
     #[serde(default)]
     pub username: String,
     #[serde(default)]
     pub name: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GlabMrVersion {
+    #[serde(default)]
+    pub head_commit_sha: String,
+    #[serde(default)]
+    pub created_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct GlabApprovalState {
+    #[serde(default)]
+    pub approved_by: Vec<GlabApprovedBy>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct GlabApprovedBy {
+    #[serde(default)]
+    pub user: GlabUser,
+    #[serde(default)]
+    pub approved_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -272,6 +294,8 @@ pub struct GlabNote {
     #[serde(default)]
     pub created_at: Option<DateTime<Utc>>,
     #[serde(default)]
+    pub commit_id: Option<String>,
+    #[serde(default)]
     pub position: Option<GlabNotePosition>,
     #[serde(default)]
     pub resolved: bool,
@@ -291,6 +315,8 @@ pub struct GlabNoteAuthor {
 pub struct GlabNotePosition {
     #[serde(default)]
     pub position_type: String,
+    #[serde(default)]
+    pub head_sha: Option<String>,
     pub new_path: Option<String>,
     pub new_line: Option<u32>,
     pub old_path: Option<String>,
@@ -382,8 +408,10 @@ mod tests {
                     name: "Bob".to_string(),
                 },
                 created_at: None,
+                commit_id: None,
                 position: Some(GlabNotePosition {
                     position_type: "text".to_string(),
+                    head_sha: None,
                     new_path: Some("src/lib.rs".to_string()),
                     new_line: Some(42),
                     old_path: None,
@@ -414,6 +442,7 @@ mod tests {
                 body: "general comment".to_string(),
                 author: GlabNoteAuthor::default(),
                 created_at: None,
+                commit_id: None,
                 position: None,
                 resolved: false,
                 system: false,
@@ -435,6 +464,7 @@ mod tests {
                     name: "Alice".to_string(),
                 },
                 created_at: None,
+                commit_id: None,
                 position: None,
                 resolved: false,
                 system: false,
@@ -460,6 +490,7 @@ mod tests {
                 body: "requested review from @bob".to_string(),
                 author: GlabNoteAuthor::default(),
                 created_at: None,
+                commit_id: None,
                 position: None,
                 resolved: false,
                 system: true,

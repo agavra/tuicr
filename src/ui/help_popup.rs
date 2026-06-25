@@ -187,6 +187,9 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
             Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
         )),
         Line::from(""),
+        Line::from(Span::raw(
+            "  ✓ marks commits covered by your latest submitted review.",
+        )),
         Line::from(vec![
             Span::styled(
                 "  j/k       ",

@@ -193,6 +193,7 @@ fn render_local_target_tab(frame: &mut Frame, app: &mut App, area: Rect) {
                 commit,
                 is_cursor: i == app.commit_list_cursor,
                 is_selected: app.is_commit_selected(i),
+                is_reviewed: false,
                 theme: &app.theme,
             })
         })

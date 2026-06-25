@@ -2,6 +2,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use chrono::{DateTime, Utc};
 use sha1::{Digest, Sha1};
 
 use crate::error::{Result, TuicrError};
@@ -9,14 +10,17 @@ use crate::forge::remote_comments::RemoteReviewThread;
 use crate::forge::traits::{
     ForgeBackend, ForgeFileLinesRequest, ForgeRepository, GhCreateReviewResponse,
     PagedPullRequests, PullRequestCommit, PullRequestDetails, PullRequestListQuery,
-    PullRequestListScope, PullRequestTarget,
+    PullRequestListScope, PullRequestReviewMetadata, PullRequestReviewRecord, PullRequestTarget,
 };
 use crate::model::{DiffLine, LineOrigin};
 use crate::process::{
     CommandOutputError, CommandOutputErrorKind, run_command_output, run_command_output_with_stdin,
 };
 
-use super::models::{GlabCommit, GlabDiscussion, GlabMrDetails, GlabMrSummary};
+use super::models::{
+    GlabApprovalState, GlabCommit, GlabDiscussion, GlabMrDetails, GlabMrSummary, GlabMrVersion,
+    GlabUser,
+};
 use crate::forge::submit::{GhSide, SubmitEvent};
 use crate::forge::traits::CreateReviewRequest;
 
@@ -132,6 +136,29 @@ fn gl_encode_file_path(path: &str) -> String {
         .replace('?', "%3F")
 }
 
+fn non_empty(value: &str) -> Option<String> {
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+fn version_head_at(versions: &[GlabMrVersion], submitted_at: &DateTime<Utc>) -> Option<String> {
+    versions
+        .iter()
+        .filter_map(|version| {
+            let created_at = version.created_at.as_ref()?;
+            if created_at <= submitted_at && !version.head_commit_sha.is_empty() {
+                Some((created_at, version.head_commit_sha.as_str()))
+            } else {
+                None
+            }
+        })
+        .max_by(|(a, _), (b, _)| a.cmp(b))
+        .map(|(_, sha)| sha.to_string())
+}
+
 #[derive(Debug, Clone)]
 pub struct GitLabGlabBackend<R = SystemGlabRunner> {
     default_repository: Option<ForgeRepository>,
@@ -206,6 +233,112 @@ where
         } else {
             vec![]
         }
+    }
+
+    fn run_api(&self, repo: &ForgeRepository, endpoint: String) -> Result<String> {
+        let mut args = vec!["api".to_string()];
+        args.extend(Self::api_hostname_args(repo));
+        args.push(endpoint);
+        self.run_glab(args, &repo.host)
+    }
+
+    fn current_username(&self, repo: &ForgeRepository) -> Result<Option<String>> {
+        let output = self.run_api(repo, "user".to_string())?;
+        let user: GlabUser = serde_json::from_str(&output)?;
+        Ok(non_empty(&user.username))
+    }
+
+    fn list_mr_versions(&self, pr: &PullRequestDetails) -> Result<Vec<GlabMrVersion>> {
+        let project = gl_project_path(&pr.repository.owner, &pr.repository.name);
+        let mut versions = Vec::new();
+        for page in 1..=100 {
+            let endpoint = format!(
+                "projects/{}/merge_requests/{}/versions?per_page=100&page={}",
+                project, pr.number, page,
+            );
+            let output = self.run_api(&pr.repository, endpoint)?;
+            let rows: Vec<GlabMrVersion> = serde_json::from_str(&output)?;
+            let received = rows.len();
+            versions.extend(rows);
+            if received < 100 {
+                break;
+            }
+        }
+        Ok(versions)
+    }
+
+    fn list_mr_approval_records(
+        &self,
+        pr: &PullRequestDetails,
+        versions: &[GlabMrVersion],
+    ) -> Result<Vec<PullRequestReviewRecord>> {
+        let project = gl_project_path(&pr.repository.owner, &pr.repository.name);
+        let endpoint = format!(
+            "projects/{}/merge_requests/{}/approvals",
+            project, pr.number
+        );
+        let output = self.run_api(&pr.repository, endpoint)?;
+        let approvals: GlabApprovalState = serde_json::from_str(&output)?;
+        Ok(approvals
+            .approved_by
+            .into_iter()
+            .map(|approval| {
+                let commit_oid = approval
+                    .approved_at
+                    .as_ref()
+                    .and_then(|approved_at| version_head_at(versions, approved_at));
+                PullRequestReviewRecord {
+                    author: non_empty(&approval.user.username),
+                    submitted_at: approval.approved_at,
+                    commit_oid,
+                }
+            })
+            .collect())
+    }
+
+    fn list_mr_discussion_review_records(
+        &self,
+        pr: &PullRequestDetails,
+        versions: &[GlabMrVersion],
+    ) -> Result<Vec<PullRequestReviewRecord>> {
+        let project = gl_project_path(&pr.repository.owner, &pr.repository.name);
+        let mut records = Vec::new();
+        for page in 1..=100 {
+            let endpoint = format!(
+                "projects/{}/merge_requests/{}/discussions?per_page=100&page={}",
+                project, pr.number, page,
+            );
+            let output = self.run_api(&pr.repository, endpoint)?;
+            let discussions: Vec<GlabDiscussion> = serde_json::from_str(&output)?;
+            let received = discussions.len();
+            for discussion in discussions {
+                for note in discussion.notes {
+                    if note.system {
+                        continue;
+                    }
+                    let commit_oid = note
+                        .position
+                        .as_ref()
+                        .and_then(|position| position.head_sha.as_deref())
+                        .and_then(non_empty)
+                        .or_else(|| note.commit_id.as_deref().and_then(non_empty))
+                        .or_else(|| {
+                            note.created_at
+                                .as_ref()
+                                .and_then(|created_at| version_head_at(versions, created_at))
+                        });
+                    records.push(PullRequestReviewRecord {
+                        author: non_empty(&note.author.username),
+                        submitted_at: note.created_at,
+                        commit_oid,
+                    });
+                }
+            }
+            if received < 100 {
+                break;
+            }
+        }
+        Ok(records)
     }
 }
 
@@ -299,6 +432,25 @@ where
             }
         }
         Ok(commits)
+    }
+
+    fn list_pull_request_review_metadata(
+        &self,
+        pr: &PullRequestDetails,
+    ) -> Result<PullRequestReviewMetadata> {
+        let viewer_login = self.current_username(&pr.repository).unwrap_or_default();
+        let versions = self.list_mr_versions(pr).unwrap_or_default();
+        let mut reviews = self
+            .list_mr_approval_records(pr, &versions)
+            .unwrap_or_default();
+        reviews.extend(
+            self.list_mr_discussion_review_records(pr, &versions)
+                .unwrap_or_default(),
+        );
+        Ok(PullRequestReviewMetadata {
+            viewer_login,
+            reviews,
+        })
     }
 
     fn get_pull_request_commit_range_diff(
@@ -1194,6 +1346,104 @@ mod tests {
                 "--reviewer=@me",
             ]
         );
+    }
+
+    #[test]
+    fn should_list_pull_request_review_metadata_for_gitlab() {
+        let repo = ForgeRepository::gitlab("gitlab.com", "owner", "repo");
+        let pr = make_pr_details(repo.clone());
+        let runner = RecordingRunner::new_with_responses(vec![
+            r#"{ "username": "ronen-hoffer", "name": "Ronen" }"#.to_string(),
+            r#"[
+                {
+                    "head_commit_sha": "ccccccc3333333333333333333333333333cccc",
+                    "created_at": "2026-06-03T09:00:00Z"
+                },
+                {
+                    "head_commit_sha": "bbbbbbb2222222222222222222222222222bbbb",
+                    "created_at": "2026-06-02T09:00:00Z"
+                }
+            ]"#
+            .to_string(),
+            r#"{
+                "approved_by": [
+                    {
+                        "user": { "username": "ronen-hoffer", "name": "Ronen" },
+                        "approved_at": "2026-06-02T12:00:00Z"
+                    }
+                ]
+            }"#
+            .to_string(),
+            r#"[
+                {
+                    "id": "disc-1",
+                    "individual_note": false,
+                    "notes": [
+                        {
+                            "id": 100,
+                            "type": "DiffNote",
+                            "body": "left a comment",
+                            "author": { "username": "alice", "name": "Alice" },
+                            "created_at": "2026-06-01T10:00:00Z",
+                            "system": false,
+                            "position": {
+                                "position_type": "text",
+                                "head_sha": "aaaaaaa1111111111111111111111111111aaaa",
+                                "new_path": "src/lib.rs",
+                                "new_line": 12
+                            }
+                        },
+                        {
+                            "id": 101,
+                            "type": "DiffNote",
+                            "body": "my latest comment",
+                            "author": { "username": "ronen-hoffer", "name": "Ronen" },
+                            "created_at": "2026-06-03T10:00:00Z",
+                            "system": false,
+                            "commit_id": "ccccccc3333333333333333333333333333cccc",
+                            "position": {
+                                "position_type": "text",
+                                "head_sha": "ccccccc3333333333333333333333333333cccc",
+                                "new_path": "src/lib.rs",
+                                "new_line": 18
+                            }
+                        }
+                    ]
+                }
+            ]"#
+            .to_string(),
+        ]);
+        let backend = GitLabGlabBackend::with_runner(Some(repo), runner);
+
+        let metadata = backend.list_pull_request_review_metadata(&pr).unwrap();
+
+        assert_eq!(metadata.viewer_login.as_deref(), Some("ronen-hoffer"));
+        assert_eq!(metadata.reviews.len(), 3);
+        assert_eq!(
+            metadata.reviews[0].commit_oid.as_deref(),
+            Some("bbbbbbb2222222222222222222222222222bbbb")
+        );
+        assert_eq!(metadata.reviews[2].author.as_deref(), Some("ronen-hoffer"));
+        assert_eq!(
+            metadata.reviews[2].commit_oid.as_deref(),
+            Some("ccccccc3333333333333333333333333333cccc")
+        );
+
+        let calls = backend.runner.calls.borrow();
+        assert!(calls.iter().any(|(args, _)| args == &["api", "user"]));
+        assert!(calls.iter().any(|(args, _)| {
+            args.iter()
+                .any(|arg| arg.contains("/versions?per_page=100&page=1"))
+        }));
+        assert!(
+            calls
+                .iter()
+                .any(|(args, _)| args.iter().any(|arg| arg.contains("/approvals")))
+        );
+        assert!(calls.iter().any(|(args, _)| {
+            args.iter()
+                .any(|arg| arg.contains("/discussions?per_page=100&page=1"))
+        }));
     }
 
     fn make_pr_details(repo: ForgeRepository) -> PullRequestDetails {
