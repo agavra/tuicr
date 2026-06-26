@@ -96,8 +96,20 @@ pub fn copy_text_to_clipboard(text: &str) -> Result<bool> {
 
 /// Try xclip (X11) then wl-copy (Wayland). Returns true if either succeeds.
 fn try_copy_via_subprocess(text: &str) -> bool {
-    try_clipboard_cmd("xclip", &["-selection", "clipboard"], text)
-        || try_clipboard_cmd("wl-copy", &[], text)
+    let session = std::env::var("XDG_SESSION_TYPE");
+    if session.is_err() {
+        // Session not specified
+        return false;
+    }
+    let session = session.unwrap();
+    if session == "wayland" {
+        try_clipboard_cmd("wl-copy", &[], text)
+    } else if session == "x11" {
+        try_clipboard_cmd("xclip", &["-selection", "clipboard"], text)
+    } else {
+        // Session type unsupported
+        false
+    }
 }
 
 /// Try copying via a CLI tool that forks into the background and holds
