@@ -750,6 +750,25 @@ fn handle_comment_vim_key(app: &mut App, key: crossterm::event::KeyEvent) -> boo
         return true;
     }
 
+    // Alt+Enter (Option+Enter) accepts (save) and Alt+Esc discards (cancel)
+    // directly, in any mode — no double-press. Alt is the one modified Enter/Esc
+    // that reaches the app across terminals, including browser/web terminals
+    // like zellij web (where Shift/Cmd+Enter get stripped or grabbed). Plain
+    // Enter still inserts a newline in Insert mode, so Alt+Enter is free here.
+    if key.modifiers.contains(KeyModifiers::ALT) {
+        match key.code {
+            KeyCode::Enter => {
+                app.save_comment();
+                return true;
+            }
+            KeyCode::Esc => {
+                app.exit_comment_mode();
+                return true;
+            }
+            _ => {}
+        }
+    }
+
     let normal = app.comment_vim_in_normal_mode();
 
     // In Normal mode a first plain Enter/Esc arms a confirm (header shows the

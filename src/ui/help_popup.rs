@@ -525,7 +525,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw(if app.comment_vim_enabled {
-                "Vim modal editing ON (Esc:normal i/a:insert hjkl dd/ciw/x u; :w save :q cancel)"
+                "Vim ON (i/a:insert Esc:normal hjkl dd/ciw/x u; S-Enter:save S-Esc:discard :w/:q)"
             } else {
                 "Set comment_vim=true (or :vim) for vim modal editing"
             }),
