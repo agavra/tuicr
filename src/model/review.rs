@@ -153,6 +153,12 @@ impl ReviewSession {
         self.files.values().filter(|f| f.reviewed).count()
     }
 
+    pub fn has_reviewed_state(&self) -> bool {
+        self.files
+            .values()
+            .any(|file| file.reviewed || !file.reviewed_hunks.is_empty())
+    }
+
     /// Registers a file in the session. Returns true if the file was previously
     /// reviewed but its content changed, causing reviewed status to be reset.
     pub fn add_file(&mut self, path: PathBuf, status: FileStatus, content_hash: u64) -> bool {
