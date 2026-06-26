@@ -1,0 +1,21 @@
+diff --git a/src/stable.rs b/src/stable.rs
+index 1111111..2222222 100644
+--- a/src/stable.rs
++++ b/src/stable.rs
+@@ -1 +1 @@
+-old stable
++new stable
+diff --git a/src/changed.rs b/src/changed.rs
+index 3333333..4444444 100644
+--- a/src/changed.rs
++++ b/src/changed.rs
+@@ -1 +1 @@
+-old changed
++new changed
+diff --git a/src/added.rs b/src/added.rs
+new file mode 100644
+index 0000000..5555555
+--- /dev/null
++++ b/src/added.rs
+@@ -0,0 +1 @@
++new added

@@ -131,7 +131,7 @@ pub(crate) fn delete_session_if_empty_in_dir(path: &Path, reviews_dir: &Path) ->
         }
 
         let session = load_session(path)?;
-        if session.has_comments() || session.reviewed_count() > 0 {
+        if session.has_comments() || session.has_reviewed_state() {
             return Ok(false);
         }
 
@@ -1036,6 +1036,28 @@ mod tests {
             .get_file_mut(&PathBuf::from("src/main.rs"))
             .unwrap()
             .reviewed = true;
+        let path = save_session(&session).unwrap();
+
+        assert!(!delete_session_if_empty(&path).unwrap());
+
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn should_keep_session_with_reviewed_hunks_when_deleting_if_empty() {
+        let _g = with_test_reviews_dir();
+        let repo = make_repo();
+        let mut session = make_local_session(
+            repo,
+            "abc1234",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
+            None,
+        );
+        session
+            .get_file_mut(&PathBuf::from("src/main.rs"))
+            .unwrap()
+            .toggle_hunk_reviewed("stable-hunk".to_string());
         let path = save_session(&session).unwrap();
 
         assert!(!delete_session_if_empty(&path).unwrap());
