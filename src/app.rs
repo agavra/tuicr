@@ -12,6 +12,7 @@ use crate::error::{Result, TuicrError};
 use crate::forge::context::{ContextProvider, ForgeContextProvider, VcsContextProvider};
 use crate::forge::selector::PullRequestsTab;
 use crate::forge::traits::{ForgeBackend, ForgeRepository};
+use crate::model::review::FileReview;
 use crate::model::{
     ClearScope, Comment, CommentType, DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin,
     LineRange, LineSide, ReviewSession, SessionDiffSource,
@@ -2673,10 +2674,30 @@ impl App {
     /// Materialize a PR session from an already-opened PR. Reattaches the
     /// most recent persisted session for the same head SHA when present so
     /// reviewed markers and local comments survive a reopen.
-    fn load_or_apply_pr_session(opened: &mut crate::forge::pr_open::OpenedPullRequest) {
+    fn load_pr_session_for_opened(
+        opened: &crate::forge::pr_open::OpenedPullRequest,
+    ) -> Result<Option<ReviewSession>> {
         let key = opened.key.clone();
-        let Ok(Some((_path, mut persisted))) = crate::persistence::load_pr_session(&key) else {
-            return;
+        let mut persisted = match crate::persistence::load_pr_session(&key)? {
+            Some((_path, persisted)) if persisted.pr_session_key.as_ref() == Some(&key) => {
+                persisted
+            }
+            _ => {
+                let path = crate::persistence::storage::session_path(&opened.session)?;
+                if !path.exists() {
+                    return Ok(None);
+                }
+                let persisted = crate::persistence::storage::load_session(&path).map_err(|e| {
+                    TuicrError::CorruptedSession(format!(
+                        "failed to load PR session {}: {e}",
+                        path.display()
+                    ))
+                })?;
+                if persisted.pr_session_key.as_ref() != Some(&key) {
+                    return Ok(None);
+                }
+                persisted
+            }
         };
 
         // Re-register diff files against the loaded session so any new files
@@ -2689,10 +2710,132 @@ impl App {
             opened.commits.len(),
         );
         Self::register_diff_files(&mut persisted, &opened.diff_files, preserve_hunks);
-        persisted.pr_session_key = Some(key);
-        persisted.diff_source = SessionDiffSource::PullRequest;
-        persisted.updated_at = chrono::Utc::now();
-        opened.session = persisted;
+        Ok(Some(ReviewSession {
+            pr_session_key: Some(key),
+            diff_source: SessionDiffSource::PullRequest,
+            updated_at: chrono::Utc::now(),
+            ..persisted
+        }))
+    }
+
+    fn opened_pr_with_persisted_session(
+        opened: crate::forge::pr_open::OpenedPullRequest,
+    ) -> Result<crate::forge::pr_open::OpenedPullRequest> {
+        match Self::load_pr_session_for_opened(&opened)? {
+            Some(session) => Ok(crate::forge::pr_open::OpenedPullRequest { session, ..opened }),
+            None => Ok(opened),
+        }
+    }
+
+    fn opened_pr_with_new_head_session(
+        &mut self,
+        opened: crate::forge::pr_open::OpenedPullRequest,
+    ) -> Result<crate::forge::pr_open::OpenedPullRequest> {
+        self.save_current_session_merging_external()?;
+        let previous_session = self.session.clone();
+        let session = match Self::load_pr_session_for_opened(&opened)? {
+            Some(session) => session,
+            None => Self::reviewed_state_carried_forward(
+                &previous_session,
+                opened.session.clone(),
+                &opened.diff_files,
+            ),
+        };
+        Ok(crate::forge::pr_open::OpenedPullRequest { session, ..opened })
+    }
+
+    fn reviewed_state_carried_forward(
+        previous: &ReviewSession,
+        next: ReviewSession,
+        diff_files: &[DiffFile],
+    ) -> ReviewSession {
+        let file_by_path: HashMap<_, _> = diff_files
+            .iter()
+            .map(|file| (file.display_path().clone(), file))
+            .collect();
+        let files = next
+            .files
+            .into_iter()
+            .map(|(path, review)| {
+                Self::file_review_carried_forward(path, review, previous, &file_by_path)
+            })
+            .collect();
+        let review_comments = previous
+            .review_comments
+            .iter()
+            .filter(|comment| !comment.is_locked())
+            .cloned()
+            .collect();
+
+        ReviewSession {
+            files,
+            review_comments,
+            ..next
+        }
+    }
+
+    fn file_review_carried_forward(
+        path: PathBuf,
+        review: FileReview,
+        previous: &ReviewSession,
+        file_by_path: &HashMap<PathBuf, &DiffFile>,
+    ) -> (PathBuf, FileReview) {
+        let Some(file) = file_by_path.get(&path) else {
+            return (path, review);
+        };
+        let Some(previous_review) = previous.files.get(&path) else {
+            return (path, review);
+        };
+
+        let unchanged_file = previous_review.content_hash == Some(file.content_hash);
+        let valid_hunks: HashSet<_> = file.hunk_review_keys().into_iter().collect();
+        let reviewed_hunks = previous_review
+            .reviewed_hunks
+            .iter()
+            .filter(|key| valid_hunks.contains(*key))
+            .cloned()
+            .collect();
+        let (file_comments, line_comments) = if unchanged_file {
+            (
+                previous_review
+                    .file_comments
+                    .iter()
+                    .filter(|comment| !comment.is_locked())
+                    .cloned()
+                    .collect(),
+                Self::line_draft_comments_carried_forward(previous_review),
+            )
+        } else {
+            (review.file_comments, review.line_comments)
+        };
+
+        (
+            path,
+            FileReview {
+                reviewed: unchanged_file && previous_review.reviewed,
+                reviewed_hunks,
+                file_comments,
+                line_comments,
+                ..review
+            },
+        )
+    }
+
+    fn line_draft_comments_carried_forward(
+        previous_review: &FileReview,
+    ) -> HashMap<u32, Vec<Comment>> {
+        previous_review
+            .line_comments
+            .iter()
+            .filter_map(|(line, comments)| {
+                let drafts: Vec<_> = comments
+                    .iter()
+                    .filter(|comment| !comment.is_locked())
+                    .cloned()
+                    .collect();
+                (!drafts.is_empty()).then_some((*line, drafts))
+            })
+            .collect()
     }
 
     fn is_strict_commit_selection(range: Option<(usize, usize)>, total: usize) -> bool {
@@ -2850,14 +2993,13 @@ impl App {
 
         let backend = create_forge_backend(&target_repo, local_checkout_for_target.clone());
         let highlighter = theme.syntax_highlighter();
-        let mut opened = open_pull_request(
+        let opened = open_pull_request(
             backend.as_ref(),
             parsed,
             local_checkout_for_target.as_deref(),
             highlighter,
         )?;
-
-        Self::load_or_apply_pr_session(&mut opened);
+        let opened = Self::opened_pr_with_persisted_session(opened)?;
 
         let pr_source = PullRequestDiffSource::from_details(&opened.details);
         let diff_source = DiffSource::PullRequest(Box::new(pr_source));
@@ -2940,7 +3082,7 @@ impl App {
 
         // Save the current session before transitioning so local-mode work
         // isn't lost.
-        let _ = self.save_current_session_merging_external();
+        self.save_current_session_merging_external()?;
 
         let pr_source = PullRequestDiffSource::from_details(&details);
         let read_only_reason = pr_source.read_only_reason();
@@ -3454,7 +3596,7 @@ impl App {
             .as_deref()
             .and_then(|backend| backend.local_checkout_path());
         let highlighter = self.theme.syntax_highlighter();
-        let mut opened = prepare_open_pr(
+        let opened = prepare_open_pr(
             details,
             &patch,
             commits,
@@ -3465,15 +3607,14 @@ impl App {
 
         let head_changed = opened.details.head_sha != request.head_sha;
         if head_changed {
-            let _ = self.save_current_session_merging_external();
             let details_for_threads = opened.details.clone();
-            Self::load_or_apply_pr_session(&mut opened);
+            let opened = self.opened_pr_with_new_head_session(opened)?;
             let backend = create_forge_backend(&request.repository, local_checkout.clone());
             let previous_message = self.message.clone();
             self.enter_pr_diff_mode(backend, opened)?;
             self.spawn_pr_threads_fetch(&details_for_threads, local_checkout);
             if self.message == previous_message {
-                self.set_message("Reloaded PR at new head — switched to fresh session".to_string());
+                self.set_message("Reloaded PR at new head".to_string());
             }
         } else {
             self.set_pr_last_reviewed_commit_from_metadata(
@@ -3539,7 +3680,7 @@ impl App {
             current.key.number.to_string(),
         );
         let highlighter = self.theme.syntax_highlighter();
-        let mut opened = open_pull_request(
+        let opened = open_pull_request(
             backend.as_ref(),
             target,
             local_checkout.as_deref(),
@@ -3549,9 +3690,8 @@ impl App {
         let head_changed = opened.details.head_sha != current.key.head_sha;
         if head_changed {
             // Save the old-head session before switching so drafts persist.
-            let _ = self.save_current_session_merging_external();
             let details_for_threads = opened.details.clone();
-            Self::load_or_apply_pr_session(&mut opened);
+            let opened = self.opened_pr_with_new_head_session(opened)?;
             self.enter_pr_diff_mode(backend, opened)?;
             // Fetch threads against the new head; old-head threads stay
             // tied to the old session and are dropped here.
@@ -8372,7 +8512,7 @@ impl App {
 
         let local_checkout = Some(self.vcs_info.root_path.clone());
         let highlighter = self.theme.syntax_highlighter();
-        let mut opened = prepare_open_pr(
+        let opened = prepare_open_pr(
             details.clone(),
             &patch,
             commits,
@@ -8380,7 +8520,7 @@ impl App {
             local_checkout.as_deref(),
             highlighter,
         )?;
-        Self::load_or_apply_pr_session(&mut opened);
+        let opened = Self::opened_pr_with_persisted_session(opened)?;
         let backend = create_forge_backend(&request.repository, local_checkout.clone());
         let previous_message = self.message.clone();
         self.enter_pr_diff_mode(backend, opened)?;
@@ -8594,13 +8734,13 @@ impl App {
             summary.number.to_string(),
         );
         let highlighter = self.theme.syntax_highlighter();
-        let mut opened = open_pull_request(
+        let opened = open_pull_request(
             backend.as_ref(),
             target,
             local_checkout.as_deref(),
             highlighter,
         )?;
-        Self::load_or_apply_pr_session(&mut opened);
+        let opened = Self::opened_pr_with_persisted_session(opened)?;
         // Sync thread + summary fetch — tests assert on
         // `app.forge_review_threads`/`forge_review_summaries` immediately
         // after this returns.
@@ -10859,6 +10999,24 @@ mod target_selector_tests {
     use crate::model::FileStatus;
     use crate::vcs::traits::{VcsChangeStatus, VcsType};
 
+    struct TestReviewsDir {
+        _dir: tempfile::TempDir,
+    }
+
+    impl TestReviewsDir {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().expect("failed to create test reviews dir");
+            crate::persistence::storage::set_test_reviews_dir(Some(dir.path().to_path_buf()));
+            Self { _dir: dir }
+        }
+    }
+
+    impl Drop for TestReviewsDir {
+        fn drop(&mut self) {
+            crate::persistence::storage::set_test_reviews_dir(None);
+        }
+    }
+
     struct DummyVcs {
         info: VcsInfo,
         commits: Vec<CommitInfo>,
@@ -11501,28 +11659,54 @@ mod target_selector_tests {
     }
 
     fn two_hunk_patch() -> &'static str {
-        r#"diff --git a/src/lib.rs b/src/lib.rs
-index 1111111..2222222 100644
---- a/src/lib.rs
-+++ b/src/lib.rs
-@@ -1 +1 @@
--old one
-+new one
-@@ -10 +10 @@
--old two
-+new two
-"#
+        include_str!("../tests/fixtures/pr_refresh/two_hunk.patch")
     }
 
     fn first_hunk_patch() -> &'static str {
-        r#"diff --git a/src/lib.rs b/src/lib.rs
-index 1111111..2222222 100644
---- a/src/lib.rs
-+++ b/src/lib.rs
-@@ -1 +1 @@
--old one
-+new one
-"#
+        include_str!("../tests/fixtures/pr_refresh/first_hunk.patch")
+    }
+
+    fn two_file_patch(changed_replacement: &str) -> String {
+        match changed_replacement {
+            "new changed" => {
+                include_str!("../tests/fixtures/pr_refresh/two_file_new_changed.patch")
+            }
+            "newer changed" => {
+                include_str!("../tests/fixtures/pr_refresh/two_file_newer_changed.patch")
+            }
+            _ => panic!("unexpected two-file patch replacement: {changed_replacement}"),
+        }
+        .to_string()
+    }
+
+    fn two_file_plus_added_patch() -> String {
+        include_str!("../tests/fixtures/pr_refresh/two_file_plus_added.patch").to_string()
+    }
+
+    fn two_hunk_pr_patch(second_replacement: &str) -> String {
+        match second_replacement {
+            "new second" => {
+                include_str!("../tests/fixtures/pr_refresh/two_hunk_pr_new_second.patch")
+            }
+            "newer second" => {
+                include_str!("../tests/fixtures/pr_refresh/two_hunk_pr_newer_second.patch")
+            }
+            _ => panic!("unexpected two-hunk PR patch replacement: {second_replacement}"),
+        }
+        .to_string()
+    }
+
+    fn write_session_file_without_manifest(session: &ReviewSession) {
+        let path = crate::persistence::storage::session_path(session).unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let json = serde_json::to_vec_pretty(session).unwrap();
+        std::fs::write(path, json).unwrap();
+    }
+
+    fn write_corrupt_session_file(session: &ReviewSession) {
+        let path = crate::persistence::storage::session_path(session).unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"not json").unwrap();
     }
 
     #[test]
@@ -11797,6 +11981,805 @@ index 1111111..2222222 100644
         }
         // and the session changed (new session, not the old one)
         assert_ne!(app.session.id, old_session_id);
+    }
+
+    #[test]
+    fn should_load_persisted_pr_session_when_reopening_same_head() {
+        // given a saved PR session for the same PR head
+        let _reviews = TestReviewsDir::new();
+        let mut app = build_app();
+        let summary = sample_pr(424246, "persisted");
+        let mut details = test_pr_details(424246, "persisted");
+        details.head_sha = "aaaaaaaaaaaaaaaa".to_string();
+        let stable_path = PathBuf::from("src/stable.rs");
+        let backend = Box::new(FakeForgeBackend::open_pr_details(
+            details.clone(),
+            two_file_patch("new changed"),
+        ));
+        app.open_pr_with_backend(&summary, backend, None).unwrap();
+        app.session.get_file_mut(&stable_path).unwrap().reviewed = true;
+        app.session
+            .get_file_mut(&stable_path)
+            .unwrap()
+            .add_file_comment(Comment::new(
+                "persisted draft".to_string(),
+                CommentType::Note,
+                None,
+            ));
+        crate::persistence::save_session(&app.session).unwrap();
+
+        // when the same PR head is opened again
+        let mut reopened = build_app();
+        let backend = Box::new(FakeForgeBackend::open_pr_details(
+            details,
+            two_file_patch("new changed"),
+        ));
+        reopened
+            .open_pr_with_backend(&summary, backend, None)
+            .unwrap();
+
+        // then the persisted session branch reattaches reviewed state and drafts.
+        let stable_review = reopened.session.files.get(&stable_path).unwrap();
+        assert!(stable_review.reviewed);
+        assert_eq!(stable_review.file_comments.len(), 1);
+        assert_eq!(stable_review.file_comments[0].content, "persisted draft");
+    }
+
+    #[test]
+    fn should_keep_saved_pr_session_through_quit_reopen_and_same_head_reload() {
+        // given a saved PR session with all files reviewed and local comments
+        let _reviews = TestReviewsDir::new();
+        let mut app = build_app();
+        let summary = sample_pr(424255, "quit-reopen");
+        let mut details = test_pr_details(424255, "quit-reopen");
+        details.head_sha = "aaaaaaaaaaaaaaaa".to_string();
+        let stable_path = PathBuf::from("src/stable.rs");
+        let changed_path = PathBuf::from("src/changed.rs");
+        let backend = Box::new(FakeForgeBackend::open_pr_details(
+            details.clone(),
+            two_file_patch("new changed"),
+        ));
+        app.open_pr_with_backend(&summary, backend, None).unwrap();
+        app.session.get_file_mut(&stable_path).unwrap().reviewed = true;
+        app.session.get_file_mut(&changed_path).unwrap().reviewed = true;
+        app.session
+            .get_file_mut(&stable_path)
+            .unwrap()
+            .add_file_comment(Comment::new(
+                "persisted file draft".to_string(),
+                CommentType::Note,
+                None,
+            ));
+        app.session
+            .get_file_mut(&changed_path)
+            .unwrap()
+            .add_line_comment(
+                1,
+                Comment::new("persisted line draft".to_string(), CommentType::Issue, None),
+            );
+        app.save_current_session_merging_external().unwrap();
+
+        // and normal quit cleanup runs for the ephemeral session path
+        assert_eq!(app.cleanup_empty_ephemeral_sessions().unwrap(), 0);
+
+        // when the same PR head is opened again and reloaded with :e
+        let mut reopened = build_app();
+        let backend = Box::new(FakeForgeBackend::open_pr_details(
+            details.clone(),
+            two_file_patch("new changed"),
+        ));
+        reopened
+            .open_pr_with_backend(&summary, backend, None)
+            .unwrap();
+        let backend = Box::new(FakeForgeBackend::open_pr_details(
+            details,
+            two_file_patch("new changed"),
+        ));
+        let head_changed = reopened
+            .reload_pull_request_with_backend(backend, None)
+            .unwrap();
+
+        // then reviewed state and comments survive the full flow.
+        assert!(!head_changed);
+        assert!(reopened.session.is_file_reviewed(&stable_path));
+        assert!(reopened.session.is_file_reviewed(&changed_path));
+        let stable_review = reopened.session.files.get(&stable_path).unwrap();
+        assert_eq!(stable_review.file_comments.len(), 1);
+        assert_eq!(
+            stable_review.file_comments[0].content,
+            "persisted file draft"
+        );
+        let changed_review = reopened.session.files.get(&changed_path).unwrap();
+        assert_eq!(changed_review.line_comments[&1].len(), 1);
+        assert_eq!(
+            changed_review.line_comments[&1][0].content,
+            "persisted line draft"
+        );
+    }
+
+    #[test]
+    fn should_use_persisted_new_head_session_instead_of_carrying_old_head_state() {
+        // given an old-head PR session with reviewed state
+        let _reviews = TestReviewsDir::new();
+        let mut app = build_app();
+        let summary = sample_pr(424247, "head-a");
+        let mut details_a = test_pr_details(424247, "head-a");
+        details_a.head_sha = "aaaaaaaaaaaaaaaa".to_string();
+        let stable_path = PathBuf::from("src/stable.rs");
+        let changed_path = PathBuf::from("src/changed.rs");
+        let backend_a = Box::new(FakeForgeBackend::open_pr_details(
+            details_a.clone(),
+            two_file_patch("new changed"),
+        ));
+        app.open_pr_with_backend(&summary, backend_a, None).unwrap();
+        app.session.get_file_mut(&stable_path).unwrap().reviewed = true;
+
+        // and a previously saved session file already exists for the new head
+        let mut details_b = details_a.clone();
+        details_b.head_sha = "bbbbbbbbbbbbbbbb".to_string();
+        let highlighter = app.theme.syntax_highlighter();
+        let opened_b = crate::forge::pr_open::prepare_open_pr(
+            details_b.clone(),
+            &two_file_patch("newer changed"),
+            Vec::new(),
+            PullRequestReviewMetadata::default(),
+            None,
+            highlighter,
+        )
+        .unwrap();
+        let mut persisted_b = opened_b.session.clone();
+        persisted_b.get_file_mut(&changed_path).unwrap().reviewed = true;
+        persisted_b
+            .get_file_mut(&changed_path)
+            .unwrap()
+            .add_file_comment(Comment::new(
+                "new-head draft".to_string(),
+                CommentType::Note,
+                None,
+            ));
+        write_session_file_without_manifest(&persisted_b);
+
+        // when the PR reload advances to that head
+        let backend_b = Box::new(FakeForgeBackend::open_pr_details(
+            details_b,
+            two_file_patch("newer changed"),
+        ));
+        let head_changed = app
+            .reload_pull_request_with_backend(backend_b, None)
+            .unwrap();
+
+        // then the exact new-head session file wins over old-head carry-forward,
+        // even when the manifest points at the old head.
+        assert!(head_changed);
+        assert!(!app.session.is_file_reviewed(&stable_path));
+        assert!(app.session.is_file_reviewed(&changed_path));
+        let changed_review = app.session.files.get(&changed_path).unwrap();
+        assert_eq!(changed_review.file_comments.len(), 1);
+        assert_eq!(changed_review.file_comments[0].content, "new-head draft");
+    }
+
+    #[test]
+    fn should_error_on_corrupt_exact_session_file_when_reopening_pr() {
+        // given a corrupt session file at the opened PR head's deterministic path
+        let _reviews = TestReviewsDir::new();
+        let mut details = test_pr_details(424250, "corrupt");
+        details.head_sha = "aaaaaaaaaaaaaaaa".to_string();
+        let theme = Theme::default();
+        let highlighter = theme.syntax_highlighter();
+        let opened = crate::forge::pr_open::prepare_open_pr(
+            details.clone(),
+            &two_file_patch("new changed"),
+            Vec::new(),
+            PullRequestReviewMetadata::default(),
+            None,
+            highlighter,
+        )
+        .unwrap();
+        write_corrupt_session_file(&opened.session);
+
+        // when the PR is opened at that head
+        let mut app = build_app();
+        let summary = sample_pr(424250, "corrupt");
+        let backend = Box::new(FakeForgeBackend::open_pr_details(
+            details,
+            two_file_patch("new changed"),
+        ));
+        let err = app
+            .open_pr_with_backend(&summary, backend, None)
+            .unwrap_err();
+
+        // then the corrupt persisted file blocks opening instead of being
+        // silently overwritten by a fresh session.
+        assert!(
+            err.to_string().contains("failed to load PR session"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn should_keep_old_head_session_when_new_head_session_file_is_corrupt() {
+        // given reviewed state at the old PR head
+        let _reviews = TestReviewsDir::new();
+        let mut app = build_app();
+        let summary = sample_pr(424251, "head-a");
+        let mut details_a = test_pr_details(424251, "head-a");
+        details_a.head_sha = "aaaaaaaaaaaaaaaa".to_string();
+        let stable_path = PathBuf::from("src/stable.rs");
+        let changed_path = PathBuf::from("src/changed.rs");
+        let backend_a = Box::new(FakeForgeBackend::open_pr_details(
+            details_a.clone(),
+            two_file_patch("new changed"),
+        ));
+        app.open_pr_with_backend(&summary, backend_a, None).unwrap();
+        app.session.get_file_mut(&stable_path).unwrap().reviewed = true;
+        app.session.get_file_mut(&changed_path).unwrap().reviewed = true;
+
+        // and the deterministic file for the new head is corrupt
+        let mut details_b = details_a.clone();
+        details_b.head_sha = "bbbbbbbbbbbbbbbb".to_string();
+        let highlighter = app.theme.syntax_highlighter();
+        let opened_b = crate::forge::pr_open::prepare_open_pr(
+            details_b.clone(),
+            &two_file_patch("newer changed"),
+            Vec::new(),
+            PullRequestReviewMetadata::default(),
+            None,
+            highlighter,
+        )
+        .unwrap();
+        write_corrupt_session_file(&opened_b.session);
+
+        // when the PR reload advances to that head
+        let backend_b = Box::new(FakeForgeBackend::open_pr_details(
+            details_b,
+            two_file_patch("newer changed"),
+        ));
+        let err = app
+            .reload_pull_request_with_backend(backend_b, None)
+            .unwrap_err();
+
+        // then reload fails safely and keeps the old-head session in memory.
+        assert!(
+            err.to_string().contains("failed to load PR session"),
+            "got: {err}"
+        );
+        assert!(app.session.is_file_reviewed(&stable_path));
+        assert!(app.session.is_file_reviewed(&changed_path));
+    }
+
+    #[test]
+    fn should_keep_old_head_session_when_saving_before_head_switch_fails() {
+        // given reviewed state at the old PR head
+        let _reviews = TestReviewsDir::new();
+        let mut app = build_app();
+        let summary = sample_pr(424254, "head-a");
+        let mut details_a = test_pr_details(424254, "head-a");
+        details_a.head_sha = "aaaaaaaaaaaaaaaa".to_string();
+        let stable_path = PathBuf::from("src/stable.rs");
+        let backend_a = Box::new(FakeForgeBackend::open_pr_details(
+            details_a.clone(),
+            two_file_patch("new changed"),
+        ));
+        app.open_pr_with_backend(&summary, backend_a, None).unwrap();
+        app.session.get_file_mut(&stable_path).unwrap().reviewed = true;
+
+        // and the review storage root has become unusable.
+        let blocked_dir = tempfile::tempdir().unwrap();
+        let blocked_root = blocked_dir.path().join("reviews-file");
+        std::fs::write(&blocked_root, b"not a directory").unwrap();
+        crate::persistence::storage::set_test_reviews_dir(Some(blocked_root));
+
+        // when reload tries to advance to a new head
+        let mut details_b = details_a.clone();
+        details_b.head_sha = "bbbbbbbbbbbbbbbb".to_string();
+        let backend_b = Box::new(FakeForgeBackend::open_pr_details(
+            details_b,
+            two_file_patch("newer changed"),
+        ));
+        let err = app
+            .reload_pull_request_with_backend(backend_b, None)
+            .unwrap_err();
+
+        // then the save failure aborts before switching away from head A.
+        assert!(matches!(err, TuicrError::Io(_)), "got: {err}");
+        assert!(app.session.is_file_reviewed(&stable_path));
+        if let DiffSource::PullRequest(pr) = &app.diff_source {
+            assert_eq!(pr.key.head_sha, "aaaaaaaaaaaaaaaa");
+        } else {
+            panic!("expected PullRequest diff source");
+        }
+    }
+
+    #[test]
+    fn should_ignore_exact_session_file_when_pr_session_key_does_not_match() {
+        // given a session file at the opened PR head's deterministic path but
+        // with a mismatched embedded PR key
+        let _reviews = TestReviewsDir::new();
+        let mut details = test_pr_details(424249, "mismatch");
+        details.head_sha = "aaaaaaaaaaaaaaaa".to_string();
+        let theme = Theme::default();
+        let highlighter = theme.syntax_highlighter();
+        let opened = crate::forge::pr_open::prepare_open_pr(
+            details.clone(),
+            &two_file_patch("new changed"),
+            Vec::new(),
+            PullRequestReviewMetadata::default(),
+            None,
+            highlighter,
+        )
+        .unwrap();
+        let stable_path = PathBuf::from("src/stable.rs");
+        let mut mismatched = opened.session.clone();
+        mismatched.pr_session_key = Some(crate::forge::traits::PrSessionKey::new(
+            details.repository.clone(),
+            details.number,
+            "bbbbbbbbbbbbbbbb".to_string(),
+        ));
+        mismatched.get_file_mut(&stable_path).unwrap().reviewed = true;
+        mismatched
+            .get_file_mut(&stable_path)
+            .unwrap()
+            .add_file_comment(Comment::new(
+                "wrong-head draft".to_string(),
+                CommentType::Note,
+                None,
+            ));
+        let path = crate::persistence::storage::session_path(&opened.session).unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, serde_json::to_vec_pretty(&mismatched).unwrap()).unwrap();
+
+        // when the PR is opened at the original head
+        let mut app = build_app();
+        let summary = sample_pr(424249, "mismatch");
+        let backend = Box::new(FakeForgeBackend::open_pr_details(
+            details,
+            two_file_patch("new changed"),
+        ));
+        app.open_pr_with_backend(&summary, backend, None).unwrap();
+
+        // then the mismatched file is rejected and the fresh session is used.
+        let stable_review = app.session.files.get(&stable_path).unwrap();
+        assert!(!stable_review.reviewed);
+        assert!(stable_review.file_comments.is_empty());
+    }
+
+    #[test]
+    fn should_ignore_manifest_session_when_pr_session_key_does_not_match() {
+        // given a manifest entry for the requested PR head whose session file
+        // contains a mismatched embedded key
+        let _reviews = TestReviewsDir::new();
+        let mut app = build_app();
+        let summary = sample_pr(424252, "manifest-mismatch");
+        let mut details = test_pr_details(424252, "manifest-mismatch");
+        details.head_sha = "aaaaaaaaaaaaaaaa".to_string();
+        let stable_path = PathBuf::from("src/stable.rs");
+        let backend = Box::new(FakeForgeBackend::open_pr_details(
+            details.clone(),
+            two_file_patch("new changed"),
+        ));
+        app.open_pr_with_backend(&summary, backend, None).unwrap();
+        let saved_path = crate::persistence::save_session(&app.session).unwrap();
+
+        let mut mismatched = app.session.clone();
+        mismatched.pr_session_key = Some(crate::forge::traits::PrSessionKey::new(
+            details.repository.clone(),
+            details.number,
+            "bbbbbbbbbbbbbbbb".to_string(),
+        ));
+        mismatched.get_file_mut(&stable_path).unwrap().reviewed = true;
+        mismatched
+            .get_file_mut(&stable_path)
+            .unwrap()
+            .add_file_comment(Comment::new(
+                "wrong-manifest draft".to_string(),
+                CommentType::Note,
+                None,
+            ));
+        std::fs::write(saved_path, serde_json::to_vec_pretty(&mismatched).unwrap()).unwrap();
+
+        // when the PR is opened at the original head
+        let mut reopened = build_app();
+        let backend = Box::new(FakeForgeBackend::open_pr_details(
+            details,
+            two_file_patch("new changed"),
+        ));
+        reopened
+            .open_pr_with_backend(&summary, backend, None)
+            .unwrap();
+
+        // then the manifest-loaded mismatch is rejected too.
+        let stable_review = reopened.session.files.get(&stable_path).unwrap();
+        assert!(!stable_review.reviewed);
+        assert!(stable_review.file_comments.is_empty());
+    }
+
+    #[test]
+    fn should_leave_next_session_unchanged_when_carry_forward_has_no_matching_file() {
+        // given a next session whose file is missing from the previous session
+        // and from the supplied diff file list
+        let mut app = build_app();
+        let summary = sample_pr(424248, "head-a");
+        let mut details = test_pr_details(424248, "head-a");
+        details.head_sha = "aaaaaaaaaaaaaaaa".to_string();
+        let stable_path = PathBuf::from("src/stable.rs");
+        let backend = Box::new(FakeForgeBackend::open_pr_details(
+            details,
+            two_file_patch("new changed"),
+        ));
+        app.open_pr_with_backend(&summary, backend, None).unwrap();
+        let previous = ReviewSession::new(
+            PathBuf::from("/tmp/previous"),
+            "old".to_string(),
+            None,
+            SessionDiffSource::PullRequest,
+        );
+        let mut next = app.session.clone();
+        next.get_file_mut(&stable_path).unwrap().reviewed = true;
+
+        // when carry-forward has no matching previous file or diff file
+        let carried_without_previous =
+            App::reviewed_state_carried_forward(&previous, next.clone(), &app.diff_files);
+        let carried_without_diff =
+            App::reviewed_state_carried_forward(&previous, next.clone(), &[]);
+
+        // then it keeps the fresh next-session state untouched.
+        assert!(carried_without_previous.is_file_reviewed(&stable_path));
+        assert!(carried_without_diff.is_file_reviewed(&stable_path));
+
+        // and old reviewed state does not leak in when the fresh next session
+        // has no matching rendered diff file.
+        let mut previous_with_reviewed_file = previous;
+        previous_with_reviewed_file.files.insert(
+            stable_path.clone(),
+            crate::model::review::FileReview::new(stable_path.clone(), FileStatus::Modified, 1),
+        );
+        previous_with_reviewed_file
+            .get_file_mut(&stable_path)
+            .unwrap()
+            .reviewed = true;
+        let mut fresh_next = next;
+        fresh_next.get_file_mut(&stable_path).unwrap().reviewed = false;
+        let carried_without_diff =
+            App::reviewed_state_carried_forward(&previous_with_reviewed_file, fresh_next, &[]);
+        assert!(!carried_without_diff.is_file_reviewed(&stable_path));
+    }
+
+    #[test]
+    fn should_carry_draft_comments_for_unchanged_files_when_pr_head_advances() {
+        // given an app already in PR mode with reviewed files and draft comments
+        let _reviews = TestReviewsDir::new();
+        let mut app = build_app();
+        let summary = sample_pr(424256, "head-a");
+        let mut details_a = test_pr_details(424256, "head-a");
+        details_a.head_sha = "aaaaaaaaaaaaaaaa".to_string();
+        let stable_path = PathBuf::from("src/stable.rs");
+        let changed_path = PathBuf::from("src/changed.rs");
+        let backend_a = Box::new(FakeForgeBackend::open_pr_details(
+            details_a.clone(),
+            two_file_patch("new changed"),
+        ));
+        app.open_pr_with_backend(&summary, backend_a, None).unwrap();
+        app.session.get_file_mut(&stable_path).unwrap().reviewed = true;
+        app.session.get_file_mut(&changed_path).unwrap().reviewed = true;
+        app.session.review_comments.push(Comment::new(
+            "review-level draft".to_string(),
+            CommentType::Note,
+            None,
+        ));
+        app.session
+            .get_file_mut(&stable_path)
+            .unwrap()
+            .add_file_comment(Comment::new(
+                "stable file draft".to_string(),
+                CommentType::Note,
+                None,
+            ));
+        app.session
+            .get_file_mut(&changed_path)
+            .unwrap()
+            .add_line_comment(
+                1,
+                Comment::new("changed line draft".to_string(), CommentType::Issue, None),
+            );
+        app.save_current_session_merging_external().unwrap();
+
+        // when a normal new commit adds another file without changing either
+        // previously reviewed file
+        let mut details_b = details_a.clone();
+        details_b.head_sha = "bbbbbbbbbbbbbbbb".to_string();
+        let backend_b = Box::new(FakeForgeBackend::open_pr_details(
+            details_b,
+            two_file_plus_added_patch(),
+        ));
+        let head_changed = app
+            .reload_pull_request_with_backend(backend_b, None)
+            .unwrap();
+
+        // then reviewed markers and comments on the unchanged review scope survive.
+        assert!(head_changed);
+        assert!(app.session.is_file_reviewed(&stable_path));
+        assert!(app.session.is_file_reviewed(&changed_path));
+        assert_eq!(app.session.review_comments.len(), 1);
+        assert_eq!(app.session.review_comments[0].content, "review-level draft");
+        let stable_review = app.session.files.get(&stable_path).unwrap();
+        assert_eq!(stable_review.file_comments.len(), 1);
+        assert_eq!(stable_review.file_comments[0].content, "stable file draft");
+        let changed_review = app.session.files.get(&changed_path).unwrap();
+        assert_eq!(changed_review.line_comments[&1].len(), 1);
+        assert_eq!(
+            changed_review.line_comments[&1][0].content,
+            "changed line draft"
+        );
+    }
+
+    #[test]
+    fn should_carry_reviewed_marks_for_unchanged_files_when_pr_head_advances() {
+        // given an app already in PR mode with two reviewed files at head A
+        let mut app = build_app();
+        let summary = sample_pr(424242, "head-a");
+        let mut details_a = test_pr_details(424242, "head-a");
+        details_a.head_sha = "aaaaaaaaaaaaaaaa".to_string();
+        let backend_a = Box::new(FakeForgeBackend::open_pr_details(
+            details_a.clone(),
+            two_file_patch("new changed"),
+        ));
+        app.open_pr_with_backend(&summary, backend_a, None).unwrap();
+        let stable_path = PathBuf::from("src/stable.rs");
+        let changed_path = PathBuf::from("src/changed.rs");
+        app.session.get_file_mut(&stable_path).unwrap().reviewed = true;
+        app.session.get_file_mut(&changed_path).unwrap().reviewed = true;
+        app.session
+            .get_file_mut(&stable_path)
+            .unwrap()
+            .add_file_comment(Comment::new(
+                "old-head draft".to_string(),
+                CommentType::Note,
+                None,
+            ));
+        app.session
+            .get_file_mut(&changed_path)
+            .unwrap()
+            .add_file_comment(Comment::new(
+                "changed-file draft".to_string(),
+                CommentType::Issue,
+                None,
+            ));
+
+        // when the PR advances and only one file's diff content changes
+        let mut details_b = details_a.clone();
+        details_b.head_sha = "bbbbbbbbbbbbbbbb".to_string();
+        let backend_b = Box::new(FakeForgeBackend::open_pr_details(
+            details_b,
+            two_file_patch("newer changed"),
+        ));
+        let head_changed = app
+            .reload_pull_request_with_backend(backend_b, None)
+            .unwrap();
+
+        // then unchanged files stay reviewed, changed files reopen, and
+        // draft comments on unchanged files move to the new head.
+        assert!(head_changed);
+        assert!(app.session.is_file_reviewed(&stable_path));
+        assert!(!app.session.is_file_reviewed(&changed_path));
+        let stable_review = app.session.files.get(&stable_path).unwrap();
+        assert_eq!(stable_review.file_comments.len(), 1);
+        assert_eq!(stable_review.file_comments[0].content, "old-head draft");
+        let changed_review = app.session.files.get(&changed_path).unwrap();
+        assert!(changed_review.file_comments.is_empty());
+    }
+
+    #[test]
+    fn should_build_new_head_session_by_carrying_only_unchanged_reviewed_state() {
+        // given an old-head PR session with reviewed file and hunk marks
+        let mut app = build_app();
+        let summary = sample_pr(424243, "head-a");
+        let mut details_a = test_pr_details(424243, "head-a");
+        details_a.head_sha = "aaaaaaaaaaaaaaaa".to_string();
+        let backend_a = Box::new(FakeForgeBackend::open_pr_details(
+            details_a.clone(),
+            two_file_patch("new changed"),
+        ));
+        app.open_pr_with_backend(&summary, backend_a, None).unwrap();
+        let stable_path = PathBuf::from("src/stable.rs");
+        let changed_path = PathBuf::from("src/changed.rs");
+        let stable_key = app
+            .diff_files
+            .iter()
+            .find(|file| file.display_path() == &stable_path)
+            .and_then(|file| file.hunk_review_key(0))
+            .unwrap();
+        let changed_key = app
+            .diff_files
+            .iter()
+            .find(|file| file.display_path() == &changed_path)
+            .and_then(|file| file.hunk_review_key(0))
+            .unwrap();
+        app.session.get_file_mut(&stable_path).unwrap().reviewed = true;
+        app.session.get_file_mut(&changed_path).unwrap().reviewed = true;
+        app.session
+            .get_file_mut(&stable_path)
+            .unwrap()
+            .toggle_hunk_reviewed(stable_key.clone());
+        app.session
+            .get_file_mut(&changed_path)
+            .unwrap()
+            .toggle_hunk_reviewed(changed_key);
+        let previous = app.session.clone();
+
+        // when a new-head session is built and only one file's diff changes
+        let mut details_b = details_a.clone();
+        details_b.head_sha = "bbbbbbbbbbbbbbbb".to_string();
+        let highlighter = app.theme.syntax_highlighter();
+        let opened = crate::forge::pr_open::prepare_open_pr(
+            details_b,
+            &two_file_patch("newer changed"),
+            Vec::new(),
+            PullRequestReviewMetadata::default(),
+            None,
+            highlighter,
+        )
+        .unwrap();
+        let next = App::reviewed_state_carried_forward(
+            &previous,
+            opened.session.clone(),
+            &opened.diff_files,
+        );
+
+        // then unchanged files carry reviewed state and changed files reopen.
+        assert!(next.is_file_reviewed(&stable_path));
+        assert!(next.is_hunk_reviewed(&stable_path, &stable_key));
+        assert!(!next.is_file_reviewed(&changed_path));
+        assert!(
+            next.files
+                .get(&changed_path)
+                .unwrap()
+                .reviewed_hunks
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn should_carry_unchanged_hunk_marks_inside_changed_file_when_pr_head_advances() {
+        // given a reviewed file with two reviewed hunks at the old PR head
+        let mut app = build_app();
+        let summary = sample_pr(424244, "head-a");
+        let mut details_a = test_pr_details(424244, "head-a");
+        details_a.head_sha = "aaaaaaaaaaaaaaaa".to_string();
+        let backend_a = Box::new(FakeForgeBackend::open_pr_details(
+            details_a.clone(),
+            two_hunk_pr_patch("new second"),
+        ));
+        app.open_pr_with_backend(&summary, backend_a, None).unwrap();
+        let path = PathBuf::from("src/multi.rs");
+        let first_key = app.diff_files[0].hunk_review_key(0).unwrap();
+        let second_key = app.diff_files[0].hunk_review_key(1).unwrap();
+        app.session.get_file_mut(&path).unwrap().reviewed = true;
+        app.session
+            .get_file_mut(&path)
+            .unwrap()
+            .toggle_hunk_reviewed(first_key.clone());
+        app.session
+            .get_file_mut(&path)
+            .unwrap()
+            .toggle_hunk_reviewed(second_key.clone());
+        let previous = app.session.clone();
+
+        // when the PR head changes only the second hunk in that file
+        let mut details_b = details_a.clone();
+        details_b.head_sha = "bbbbbbbbbbbbbbbb".to_string();
+        let highlighter = app.theme.syntax_highlighter();
+        let opened = crate::forge::pr_open::prepare_open_pr(
+            details_b,
+            &two_hunk_pr_patch("newer second"),
+            Vec::new(),
+            PullRequestReviewMetadata::default(),
+            None,
+            highlighter,
+        )
+        .unwrap();
+        let new_first_key = opened.diff_files[0].hunk_review_key(0).unwrap();
+        let new_second_key = opened.diff_files[0].hunk_review_key(1).unwrap();
+        let next = App::reviewed_state_carried_forward(
+            &previous,
+            opened.session.clone(),
+            &opened.diff_files,
+        );
+
+        // then only the unchanged hunk stays reviewed; the file and changed
+        // hunk reopen.
+        assert_eq!(first_key, new_first_key);
+        assert_ne!(second_key, new_second_key);
+        assert!(!next.is_file_reviewed(&path));
+        assert!(next.is_hunk_reviewed(&path, &new_first_key));
+        assert!(!next.is_hunk_reviewed(&path, &new_second_key));
+    }
+
+    #[test]
+    fn should_carry_reviewed_state_through_finish_pr_reload_when_head_advances() {
+        // given an app already in PR mode with reviewed state at head A
+        let mut app = build_app();
+        let summary = sample_pr(424245, "head-a");
+        let mut details_a = test_pr_details(424245, "head-a");
+        details_a.head_sha = "aaaaaaaaaaaaaaaa".to_string();
+        let backend_a = Box::new(FakeForgeBackend::open_pr_details(
+            details_a.clone(),
+            two_file_patch("new changed"),
+        ));
+        app.open_pr_with_backend(&summary, backend_a, None).unwrap();
+        let stable_path = PathBuf::from("src/stable.rs");
+        let changed_path = PathBuf::from("src/changed.rs");
+        app.session.get_file_mut(&stable_path).unwrap().reviewed = true;
+        app.session.get_file_mut(&changed_path).unwrap().reviewed = true;
+        let request = PrReloadRequest {
+            repository: details_a.repository.clone(),
+            pr_number: details_a.number,
+            head_sha: details_a.head_sha.clone(),
+            started_at: Instant::now(),
+            anchor: None,
+        };
+
+        // when the async reload finish path applies head B
+        let mut details_b = details_a.clone();
+        details_b.head_sha = "bbbbbbbbbbbbbbbb".to_string();
+        app.finish_pr_reload(
+            details_b,
+            two_file_patch("newer changed"),
+            Vec::new(),
+            PullRequestReviewMetadata::default(),
+            &request,
+        )
+        .unwrap();
+
+        // then it uses the same carry-forward rules as synchronous reload.
+        assert!(app.session.is_file_reviewed(&stable_path));
+        assert!(!app.session.is_file_reviewed(&changed_path));
+    }
+
+    #[test]
+    fn should_keep_reviewed_state_through_finish_pr_reload_when_head_unchanged() {
+        // given an app in PR mode with reviewed file and hunk state
+        let mut app = build_app();
+        let summary = sample_pr(424253, "same-finish");
+        let mut details = test_pr_details(424253, "same-finish");
+        details.head_sha = "aaaaaaaaaaaaaaaa".to_string();
+        let backend = Box::new(FakeForgeBackend::open_pr_details(
+            details.clone(),
+            two_file_patch("new changed"),
+        ));
+        app.open_pr_with_backend(&summary, backend, None).unwrap();
+        let stable_path = PathBuf::from("src/stable.rs");
+        let stable_key = app
+            .diff_files
+            .iter()
+            .find(|file| file.display_path() == &stable_path)
+            .and_then(|file| file.hunk_review_key(0))
+            .unwrap();
+        app.session.get_file_mut(&stable_path).unwrap().reviewed = true;
+        app.session
+            .get_file_mut(&stable_path)
+            .unwrap()
+            .toggle_hunk_reviewed(stable_key.clone());
+        let request = PrReloadRequest {
+            repository: details.repository.clone(),
+            pr_number: details.number,
+            head_sha: details.head_sha.clone(),
+            started_at: Instant::now(),
+            anchor: None,
+        };
+
+        // when the async reload finish path refreshes the same head
+        app.finish_pr_reload(
+            details,
+            two_file_patch("new changed"),
+            Vec::new(),
+            PullRequestReviewMetadata::default(),
+            &request,
+        )
+        .unwrap();
+
+        // then reviewed file and hunk markers are preserved.
+        assert!(app.session.is_file_reviewed(&stable_path));
+        assert!(app.session.is_hunk_reviewed(&stable_path, &stable_key));
     }
 
     #[test]

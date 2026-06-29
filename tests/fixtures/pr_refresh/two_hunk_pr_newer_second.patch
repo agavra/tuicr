@@ -1,0 +1,10 @@
+diff --git a/src/multi.rs b/src/multi.rs
+index 1111111..2222222 100644
+--- a/src/multi.rs
++++ b/src/multi.rs
+@@ -1 +1 @@
+-old first
++new first
+@@ -10 +10 @@
+-old second
++newer second
