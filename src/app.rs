@@ -6135,8 +6135,16 @@ impl App {
             map
         };
 
+        // Commit-selection filter — must mirror rebuild_annotations and
+        // both renderers exactly, or total_lines() disagrees with
+        // line_annotations.len() and scroll/cursor math drifts.
+        let commit_set = self.selected_commit_set();
+
         if let Some(review) = self.session.files.get(path) {
             for comment in &review.file_comments {
+                if !Self::comment_visible_with(comment, commit_set.as_ref()) {
+                    continue;
+                }
                 comment_lines +=
                     Self::comment_display_lines(comment, self.diff_state.viewport_width);
             }
@@ -6186,7 +6194,12 @@ impl App {
                                     && let Some(comments) = line_comments.get(&old_ln)
                                 {
                                     for comment in comments {
-                                        if comment.side == Some(LineSide::Old) {
+                                        if comment.side == Some(LineSide::Old)
+                                            && Self::comment_visible_with(
+                                                comment,
+                                                commit_set.as_ref(),
+                                            )
+                                        {
                                             comment_lines += Self::comment_display_lines(
                                                 comment,
                                                 self.diff_state.viewport_width,
@@ -6199,7 +6212,12 @@ impl App {
                                     && let Some(comments) = line_comments.get(&new_ln)
                                 {
                                     for comment in comments {
-                                        if comment.side != Some(LineSide::Old) {
+                                        if comment.side != Some(LineSide::Old)
+                                            && Self::comment_visible_with(
+                                                comment,
+                                                commit_set.as_ref(),
+                                            )
+                                        {
                                             comment_lines += Self::comment_display_lines(
                                                 comment,
                                                 self.diff_state.viewport_width,
@@ -6241,7 +6259,12 @@ impl App {
                                         && let Some(comments) = line_comments.get(&new_ln)
                                     {
                                         for comment in comments {
-                                            if comment.side != Some(LineSide::Old) {
+                                            if comment.side != Some(LineSide::Old)
+                                                && Self::comment_visible_with(
+                                                    comment,
+                                                    commit_set.as_ref(),
+                                                )
+                                            {
                                                 comment_lines += Self::comment_display_lines(
                                                     comment,
                                                     self.diff_state.viewport_width,
@@ -6288,7 +6311,12 @@ impl App {
                                                 && let Some(comments) = line_comments.get(&old_ln)
                                             {
                                                 for comment in comments {
-                                                    if comment.side == Some(LineSide::Old) {
+                                                    if comment.side == Some(LineSide::Old)
+                                                        && Self::comment_visible_with(
+                                                            comment,
+                                                            commit_set.as_ref(),
+                                                        )
+                                                    {
                                                         comment_lines +=
                                                             Self::comment_display_lines(
                                                                 comment,
@@ -6304,7 +6332,12 @@ impl App {
                                                 && let Some(comments) = line_comments.get(&new_ln)
                                             {
                                                 for comment in comments {
-                                                    if comment.side != Some(LineSide::Old) {
+                                                    if comment.side != Some(LineSide::Old)
+                                                        && Self::comment_visible_with(
+                                                            comment,
+                                                            commit_set.as_ref(),
+                                                        )
+                                                    {
                                                         comment_lines +=
                                                             Self::comment_display_lines(
                                                                 comment,
@@ -6344,7 +6377,12 @@ impl App {
                                         && let Some(comments) = line_comments.get(&new_ln)
                                     {
                                         for comment in comments {
-                                            if comment.side != Some(LineSide::Old) {
+                                            if comment.side != Some(LineSide::Old)
+                                                && Self::comment_visible_with(
+                                                    comment,
+                                                    commit_set.as_ref(),
+                                                )
+                                            {
                                                 comment_lines += Self::comment_display_lines(
                                                     comment,
                                                     self.diff_state.viewport_width,
@@ -6581,6 +6619,7 @@ impl App {
 
     fn find_comment_at_cursor(&self) -> Option<CommentLocation> {
         let target = self.diff_state.cursor_line;
+        let commit_set = self.selected_commit_set();
         match self.line_annotations.get(target) {
             Some(AnnotatedLine::ReviewComment { comment_idx }) => Some(CommentLocation::Review {
                 index: *comment_idx,
@@ -6590,6 +6629,18 @@ impl App {
                 comment_idx,
             }) => {
                 let path = self.diff_files.get(*file_idx)?.display_path().clone();
+                // Guard against stale annotations from an async commit-selection
+                // reload: if the comment is no longer visible under the current
+                // selection, treat the cursor as not on a comment.
+                let visible = self
+                    .session
+                    .files
+                    .get(&path)
+                    .and_then(|r| r.file_comments.get(*comment_idx))
+                    .is_some_and(|c| Self::comment_visible_with(c, commit_set.as_ref()));
+                if !visible {
+                    return None;
+                }
                 Some(CommentLocation::File {
                     path,
                     index: *comment_idx,
@@ -6602,6 +6653,16 @@ impl App {
                 comment_idx,
             }) => {
                 let path = self.diff_files.get(*file_idx)?.display_path().clone();
+                let visible = self
+                    .session
+                    .files
+                    .get(&path)
+                    .and_then(|r| r.line_comments.get(line))
+                    .and_then(|c| c.get(*comment_idx))
+                    .is_some_and(|c| Self::comment_visible_with(c, commit_set.as_ref()));
+                if !visible {
+                    return None;
+                }
                 Some(CommentLocation::Line {
                     path,
                     line: *line,
@@ -6646,28 +6707,21 @@ impl App {
                 if let Some(review) = self.session.get_file_mut(&path)
                     && let Some(comments) = review.line_comments.get_mut(&line)
                 {
-                    // Find the actual index by counting comments with matching side
-                    let mut side_idx = 0;
-                    let mut actual_idx = None;
-                    for (i, comment) in comments.iter().enumerate() {
-                        let comment_side = comment.side.unwrap_or(LineSide::New);
+                    // `comment_idx` from the annotation is the absolute index
+                    // into the stored Vec (see `push_comments`), so delete
+                    // directly — no side-filtered re-count.
+                    if index < comments.len() {
+                        let comment_side = comments[index].side.unwrap_or(LineSide::New);
                         if comment_side == side {
-                            if side_idx == index {
-                                actual_idx = Some(i);
-                                break;
+                            comments.remove(index);
+                            if comments.is_empty() {
+                                review.line_comments.remove(&line);
                             }
-                            side_idx += 1;
+                            self.dirty = true;
+                            self.set_message(format!("Comment on line {line} deleted"));
+                            self.rebuild_annotations();
+                            return true;
                         }
-                    }
-                    if let Some(idx) = actual_idx {
-                        comments.remove(idx);
-                        if comments.is_empty() {
-                            review.line_comments.remove(&line);
-                        }
-                        self.dirty = true;
-                        self.set_message(format!("Comment on line {line} deleted"));
-                        self.rebuild_annotations();
-                        return true;
                     }
                 }
             }
@@ -6840,26 +6894,23 @@ impl App {
                 if let Some(review) = self.session.files.get(&path)
                     && let Some(comments) = review.line_comments.get(&line)
                 {
-                    // Find the actual comment by counting comments with matching side
-                    let mut side_idx = 0;
-                    for comment in comments.iter() {
-                        let comment_side = comment.side.unwrap_or(LineSide::New);
-                        if comment_side == side {
-                            if side_idx == index {
-                                self.input_mode = InputMode::Comment;
-                                self.diff_state.scroll_x = 0;
-                                self.comment_buffer = comment.content.clone();
-                                self.comment_cursor =
-                                    self.comment_current_line_cursor(block_start, cursor_at_end);
-                                self.comment_type = comment.comment_type.clone();
-                                self.comment_is_review_level = false;
-                                self.comment_is_file_level = false;
-                                self.comment_line = Some((line, side));
-                                self.editing_comment_id = Some(comment.id.clone());
-                                return true;
-                            }
-                            side_idx += 1;
-                        }
+                    // `comment_idx` from the annotation is the absolute index
+                    // into the stored Vec (see `push_comments`); look it up
+                    // directly, verifying the side matches.
+                    if let Some(comment) = comments.get(index)
+                        && comment.side.unwrap_or(LineSide::New) == side
+                    {
+                        self.input_mode = InputMode::Comment;
+                        self.diff_state.scroll_x = 0;
+                        self.comment_buffer = comment.content.clone();
+                        self.comment_cursor =
+                            self.comment_current_line_cursor(block_start, cursor_at_end);
+                        self.comment_type = comment.comment_type.clone();
+                        self.comment_is_review_level = false;
+                        self.comment_is_file_level = false;
+                        self.comment_line = Some((line, side));
+                        self.editing_comment_id = Some(comment.id.clone());
+                        return true;
                     }
                 }
             }
@@ -7276,6 +7327,7 @@ impl App {
                 content,
                 comment_type: self.comment_type.clone(),
                 author: self.username.clone(),
+                commit_id: None,
             };
             message = match add_comment_to_session(&mut self.session, request) {
                 Ok(_) => "Review comment added".to_string(),
@@ -7311,6 +7363,7 @@ impl App {
                 content,
                 comment_type: self.comment_type.clone(),
                 author: self.username.clone(),
+                commit_id: self.commit_id_for_new_comment(),
             };
             message = match add_comment_to_session(&mut self.session, request) {
                 Ok(_) => success_message,
@@ -7496,7 +7549,7 @@ impl App {
                 continue;
             };
             for comment in &review.file_comments {
-                if comment.is_locked() {
+                if comment.is_locked() || !self.comment_visible(comment) {
                     continue;
                 }
                 total_local_drafts += 1;
@@ -7510,7 +7563,7 @@ impl App {
             keys.sort();
             for key in keys {
                 for comment in &review.line_comments[key] {
-                    if comment.is_locked() {
+                    if comment.is_locked() || !self.comment_visible(comment) {
                         continue;
                     }
                     total_local_drafts += 1;
@@ -8886,6 +8939,70 @@ impl App {
         }
     }
 
+    /// The set of commit SHAs currently selected in the inline commit
+    /// selector. `None` when there is no selector / no selection (working
+    /// tree, staged, etc.) — in that case every comment is visible. When
+    /// the full range is selected the set contains every commit SHA, so
+    /// all comments (including single-commit-scoped ones) show. When a
+    /// strict subset is selected, only comments whose `commit_id` is in
+    /// the set (or `None`) are visible.
+    fn selected_commit_set(&self) -> Option<std::collections::HashSet<String>> {
+        let (start, end) = self.commit_selection_range?;
+        if start > end || self.review_commits.is_empty() {
+            return Some(std::collections::HashSet::new());
+        }
+        let end = end.min(self.review_commits.len().saturating_sub(1));
+        let set: std::collections::HashSet<String> = (start..=end)
+            .filter_map(|i| self.review_commits.get(i))
+            .filter(|c| !Self::is_special_commit(c))
+            .map(|c| c.id.clone())
+            .collect();
+        Some(set)
+    }
+
+    /// Whether a comment should be visible given the current commit
+    /// selection. A comment with `commit_id == None` (legacy or made
+    /// against the full cumulative diff) is always visible. Otherwise it
+    /// is visible only when its commit is in the selected set.
+    ///
+    /// Allocates the commit set on every call. Callers in hot paths
+    /// (per-comment-per-frame renderers, height calculation) should
+    /// compute [`selected_commit_set`] once and use
+    /// [`comment_visible_with`] instead.
+    pub fn comment_visible(&self, comment: &crate::model::Comment) -> bool {
+        Self::comment_visible_with(comment, self.selected_commit_set().as_ref())
+    }
+
+    /// Pure visibility check against a precomputed commit set — no
+    /// allocation. `set == None` means "no selector", so every comment
+    /// is visible. This is the shared predicate all filtering sites
+    /// should converge on so height math and rendering never drift.
+    pub fn comment_visible_with(
+        comment: &crate::model::Comment,
+        commit_set: Option<&std::collections::HashSet<String>>,
+    ) -> bool {
+        match (&comment.commit_id, commit_set) {
+            (None, _) => true,
+            (Some(_), None) => true,
+            (Some(sha), Some(set)) => set.contains(sha),
+        }
+    }
+
+    /// The single commit SHA to stamp on a *new* comment, when the inline
+    /// selector shows exactly one commit. `None` otherwise (full range,
+    /// multi-commit subset, or no selector) — those comments get
+    /// `commit_id = None` so they stay visible across selections.
+    fn commit_id_for_new_comment(&self) -> Option<String> {
+        let (start, end) = self.commit_selection_range?;
+        if start != end {
+            return None;
+        }
+        self.review_commits
+            .get(start)
+            .filter(|c| !Self::is_special_commit(c))
+            .map(|c| c.id.clone())
+    }
+
     fn set_pr_last_reviewed_commit_from_metadata(
         &mut self,
         commits: &[crate::forge::traits::PullRequestCommit],
@@ -9703,6 +9820,9 @@ impl App {
         // suppressed don't appear in this map at all, so no annotations
         // are emitted for them.
         let remote_index = self.build_remote_thread_index();
+        // Commit-selection filter: comments scoped to a commit outside the
+        // current inline selection are hidden. `None` => no selector, show all.
+        let commit_set = self.selected_commit_set();
 
         // The review-comments header is omitted in single-file view (see
         // the matching guard in `src/ui/diff_unified.rs`), so the
@@ -9773,6 +9893,9 @@ impl App {
             // File comments
             if let Some(review) = self.session.files.get(path) {
                 for (comment_idx, comment) in review.file_comments.iter().enumerate() {
+                    if !Self::comment_visible_with(comment, commit_set.as_ref()) {
+                        continue;
+                    }
                     let comment_lines =
                         Self::comment_display_lines(comment, self.diff_state.viewport_width);
                     for _ in 0..comment_lines {
@@ -9896,6 +10019,7 @@ impl App {
                                 &self.forge_review_threads,
                                 &remote_index,
                                 self.diff_state.viewport_width,
+                                commit_set.as_ref(),
                             );
                         }
                         DiffViewMode::SideBySide => {
@@ -9909,6 +10033,7 @@ impl App {
                                 &self.forge_review_threads,
                                 &remote_index,
                                 self.diff_state.viewport_width,
+                                commit_set.as_ref(),
                             );
                         }
                     }
@@ -9981,6 +10106,7 @@ impl App {
         line_comments: &std::collections::HashMap<u32, Vec<crate::model::Comment>>,
         side: LineSide,
         viewport_width: usize,
+        commit_set: Option<&std::collections::HashSet<String>>,
     ) {
         let Some(ln) = line_no else {
             return;
@@ -9995,6 +10121,12 @@ impl App {
                 comment.side == Some(side) || (side == LineSide::New && comment.side.is_none());
 
             if !matches_side {
+                continue;
+            }
+
+            // Hide comments scoped to a commit outside the current selection.
+            // Uses the shared predicate so height math and rendering agree.
+            if !Self::comment_visible_with(comment, commit_set) {
                 continue;
             }
 
@@ -10079,6 +10211,7 @@ impl App {
         remote_threads: &[crate::forge::remote_comments::RemoteReviewThread],
         remote_index: &RemoteThreadIndex,
         viewport_width: usize,
+        commit_set: Option<&std::collections::HashSet<String>>,
     ) {
         for (line_idx, diff_line) in lines.iter().enumerate() {
             annotations.push(AnnotatedLine::DiffLine {
@@ -10098,6 +10231,7 @@ impl App {
                     line_comments,
                     LineSide::Old,
                     viewport_width,
+                    commit_set,
                 );
                 Self::push_remote_threads(
                     annotations,
@@ -10118,6 +10252,7 @@ impl App {
                     line_comments,
                     LineSide::New,
                     viewport_width,
+                    commit_set,
                 );
                 Self::push_remote_threads(
                     annotations,
@@ -10143,6 +10278,7 @@ impl App {
         remote_threads: &[crate::forge::remote_comments::RemoteReviewThread],
         remote_index: &RemoteThreadIndex,
         viewport_width: usize,
+        commit_set: Option<&std::collections::HashSet<String>>,
     ) {
         let mut i = 0;
         while i < lines.len() {
@@ -10166,6 +10302,7 @@ impl App {
                         line_comments,
                         LineSide::New,
                         viewport_width,
+                        commit_set,
                     );
                     if let Some(new_ln) = diff_line.new_lineno {
                         Self::push_remote_threads(
@@ -10231,6 +10368,7 @@ impl App {
                             line_comments,
                             LineSide::Old,
                             viewport_width,
+                            commit_set,
                         );
                         if let Some(old_ln) = old_lineno {
                             Self::push_remote_threads(
@@ -10249,6 +10387,7 @@ impl App {
                             line_comments,
                             LineSide::New,
                             viewport_width,
+                            commit_set,
                         );
                         if let Some(new_ln) = new_lineno {
                             Self::push_remote_threads(
@@ -10281,6 +10420,7 @@ impl App {
                         line_comments,
                         LineSide::New,
                         viewport_width,
+                        commit_set,
                     );
                     if let Some(new_ln) = diff_line.new_lineno {
                         Self::push_remote_threads(
@@ -10846,6 +10986,311 @@ mod commit_selection_tests {
         app.toggle_commit_selection();
 
         assert_eq!(app.commit_selection_range, Some((1, 1)));
+    }
+}
+
+#[cfg(test)]
+mod commit_scoped_comment_tests {
+    use super::*;
+    use crate::model::{CommentType, LineSide};
+    use crate::vcs::traits::{CommitInfo, VcsType};
+
+    struct DummyVcs {
+        info: VcsInfo,
+    }
+
+    impl VcsBackend for DummyVcs {
+        fn info(&self) -> &VcsInfo {
+            &self.info
+        }
+        fn get_working_tree_diff(&self, _highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+            Err(TuicrError::NoChanges)
+        }
+        fn fetch_context_lines(
+            &self,
+            _file_path: &Path,
+            _file_status: crate::model::FileStatus,
+            _ref_commit: Option<&str>,
+            _start_line: u32,
+            _end_line: u32,
+        ) -> Result<Vec<DiffLine>> {
+            Ok(Vec::new())
+        }
+        fn file_line_count(
+            &self,
+            _file_path: &Path,
+            _file_status: crate::model::FileStatus,
+            _ref_commit: Option<&str>,
+        ) -> Result<u32> {
+            Ok(0)
+        }
+    }
+
+    fn build_app_with_review_commits(commits: Vec<CommitInfo>) -> App {
+        let vcs_info = VcsInfo {
+            root_path: PathBuf::from("/tmp"),
+            head_commit: "head".to_string(),
+            branch_name: Some("main".to_string()),
+            vcs_type: VcsType::Git,
+        };
+        let session = ReviewSession::new(
+            vcs_info.root_path.clone(),
+            vcs_info.head_commit.clone(),
+            vcs_info.branch_name.clone(),
+            SessionDiffSource::WorkingTree,
+        );
+        let mut app = App::build(
+            Box::new(DummyVcs {
+                info: vcs_info.clone(),
+            }),
+            vcs_info,
+            Theme::dark(),
+            None,
+            false,
+            Vec::new(),
+            session,
+            DiffSource::WorkingTree,
+            InputMode::Normal,
+            Vec::new(),
+            None,
+            None,
+        )
+        .expect("failed to build test app");
+        app.review_commits = commits;
+        app
+    }
+
+    fn commit(id: &str) -> CommitInfo {
+        CommitInfo {
+            id: id.to_string(),
+            short_id: id.to_string(),
+            branch_name: None,
+            summary: format!("commit {id}"),
+            body: None,
+            author: "tester".to_string(),
+            time: Utc::now(),
+        }
+    }
+
+    fn line_comment(content: &str, commit_id: Option<&str>) -> crate::model::Comment {
+        let mut c =
+            crate::model::Comment::new(content.to_string(), CommentType::Note, Some(LineSide::New));
+        c.commit_id = commit_id.map(|s| s.to_string());
+        c
+    }
+
+    #[test]
+    fn legacy_comment_with_no_commit_id_is_always_visible() {
+        let mut app = build_app_with_review_commits(vec![commit("aaa"), commit("bbb")]);
+        app.commit_selection_range = Some((0, 0)); // only "aaa" selected
+        let comment = line_comment("old comment", None);
+        assert!(
+            app.comment_visible(&comment),
+            "legacy comment with commit_id=None must be visible regardless of selection"
+        );
+    }
+
+    #[test]
+    fn comment_scoped_to_selected_commit_is_visible() {
+        let mut app = build_app_with_review_commits(vec![commit("aaa"), commit("bbb")]);
+        app.commit_selection_range = Some((0, 0)); // only "aaa" selected
+        let comment = line_comment("on aaa", Some("aaa"));
+        assert!(
+            app.comment_visible(&comment),
+            "comment scoped to the selected commit must be visible"
+        );
+    }
+
+    #[test]
+    fn comment_scoped_to_unselected_commit_is_hidden() {
+        let mut app = build_app_with_review_commits(vec![commit("aaa"), commit("bbb")]);
+        app.commit_selection_range = Some((0, 0)); // only "aaa" selected
+        let comment = line_comment("on bbb", Some("bbb"));
+        assert!(
+            !app.comment_visible(&comment),
+            "comment scoped to a commit outside the selection must be hidden"
+        );
+    }
+
+    #[test]
+    fn full_range_shows_all_commit_scoped_comments() {
+        let mut app = build_app_with_review_commits(vec![commit("aaa"), commit("bbb")]);
+        app.commit_selection_range = Some((0, 1)); // full range
+        assert!(
+            app.comment_visible(&line_comment("on aaa", Some("aaa"))),
+            "full range includes commit aaa"
+        );
+        assert!(
+            app.comment_visible(&line_comment("on bbb", Some("bbb"))),
+            "full range includes commit bbb"
+        );
+    }
+
+    #[test]
+    fn no_selector_shows_all_comments() {
+        let app = build_app_with_review_commits(vec![commit("aaa"), commit("bbb")]);
+        // commit_selection_range is None by default
+        assert!(
+            app.comment_visible(&line_comment("on aaa", Some("aaa"))),
+            "no selector => all comments visible"
+        );
+        assert!(
+            app.comment_visible(&line_comment("on bbb", Some("bbb"))),
+            "no selector => all comments visible"
+        );
+    }
+
+    #[test]
+    fn commit_id_for_new_comment_is_none_without_selector() {
+        let app = build_app_with_review_commits(vec![commit("aaa"), commit("bbb")]);
+        assert_eq!(
+            app.commit_id_for_new_comment(),
+            None,
+            "no selector => no commit_id stamp"
+        );
+    }
+
+    #[test]
+    fn commit_id_for_new_comment_is_none_for_full_range() {
+        let mut app = build_app_with_review_commits(vec![commit("aaa"), commit("bbb")]);
+        app.commit_selection_range = Some((0, 1));
+        assert_eq!(
+            app.commit_id_for_new_comment(),
+            None,
+            "full range => no commit_id stamp (comment is against cumulative diff)"
+        );
+    }
+
+    #[test]
+    fn commit_id_for_new_comment_is_none_for_multi_commit_subset() {
+        let mut app =
+            build_app_with_review_commits(vec![commit("aaa"), commit("bbb"), commit("ccc")]);
+        app.commit_selection_range = Some((0, 1)); // 2 of 3 commits
+        assert_eq!(
+            app.commit_id_for_new_comment(),
+            None,
+            "multi-commit subset => no commit_id stamp"
+        );
+    }
+
+    #[test]
+    fn commit_id_for_new_comment_is_sha_for_single_commit() {
+        let mut app = build_app_with_review_commits(vec![commit("aaa"), commit("bbb")]);
+        app.commit_selection_range = Some((1, 1)); // only "bbb"
+        assert_eq!(
+            app.commit_id_for_new_comment(),
+            Some("bbb".to_string()),
+            "single commit selection stamps that commit's SHA"
+        );
+    }
+
+    #[test]
+    fn add_comment_to_session_stamps_commit_id_when_provided() {
+        use crate::review_store::{AddCommentRequest, CommentTarget, add_comment_to_session};
+        use std::path::PathBuf;
+
+        let mut session = ReviewSession::new(
+            PathBuf::from("/repo"),
+            "head".to_string(),
+            Some("main".to_string()),
+            SessionDiffSource::WorkingTree,
+        );
+        session.add_file(
+            PathBuf::from("src/lib.rs"),
+            crate::model::FileStatus::Modified,
+            0,
+        );
+
+        let comment = add_comment_to_session(
+            &mut session,
+            AddCommentRequest {
+                target: CommentTarget::Line {
+                    path: PathBuf::from("src/lib.rs"),
+                    line: 10,
+                    side: LineSide::New,
+                },
+                content: "scoped note".to_string(),
+                comment_type: CommentType::Note,
+                author: "user".to_string(),
+                commit_id: Some("abc123".to_string()),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            comment.commit_id,
+            Some("abc123".to_string()),
+            "add_comment_to_session must stamp the provided commit_id"
+        );
+        let stored = &session
+            .files
+            .get(&PathBuf::from("src/lib.rs"))
+            .unwrap()
+            .line_comments
+            .get(&10)
+            .unwrap()[0];
+        assert_eq!(stored.commit_id, Some("abc123".to_string()));
+    }
+
+    #[test]
+    fn add_comment_to_session_leaves_commit_id_none_when_not_provided() {
+        use crate::review_store::{AddCommentRequest, CommentTarget, add_comment_to_session};
+        use std::path::PathBuf;
+
+        let mut session = ReviewSession::new(
+            PathBuf::from("/repo"),
+            "head".to_string(),
+            Some("main".to_string()),
+            SessionDiffSource::WorkingTree,
+        );
+        session.add_file(
+            PathBuf::from("src/lib.rs"),
+            crate::model::FileStatus::Modified,
+            0,
+        );
+
+        let comment = add_comment_to_session(
+            &mut session,
+            AddCommentRequest {
+                target: CommentTarget::Line {
+                    path: PathBuf::from("src/lib.rs"),
+                    line: 10,
+                    side: LineSide::New,
+                },
+                content: "unscoped note".to_string(),
+                comment_type: CommentType::Note,
+                author: "user".to_string(),
+                commit_id: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            comment.commit_id, None,
+            "commit_id must stay None when not provided"
+        );
+    }
+
+    #[test]
+    fn legacy_session_json_deserializes_comment_without_commit_id() {
+        let json = r#"{
+            "id": "test-id",
+            "content": "old comment",
+            "comment_type": "note",
+            "created_at": "2024-01-01T00:00:00Z",
+            "line_context": null,
+            "side": null,
+            "line_range": null,
+            "author": "user",
+            "lifecycle_state": "local_draft",
+            "remote_review_id": null,
+            "remote_comment_id": null
+        }"#;
+        let comment: crate::model::Comment = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            comment.commit_id, None,
+            "legacy JSON without commit_id must deserialize as None"
+        );
     }
 }
 
@@ -14475,6 +14920,60 @@ mod expand_gap_tests {
         app.rebuild_annotations();
 
         assert_eq!(app.total_lines(), app.line_annotations.len());
+    }
+
+    #[test]
+    fn total_lines_must_match_annotations_when_commit_scoped_comment_is_hidden() {
+        // Regression: file_render_body_height counted all comments unconditionally
+        // while rebuild_annotations and the renderers filtered commit-hidden ones,
+        // so total_lines() exceeded line_annotations.len() and scroll math drifted.
+        let files = vec![make_file_with_hunks("a.rs", vec![make_hunk(1, 5)])];
+        let mut app = build_app_with_files(files, 5);
+        app.sync_viewport_width(80);
+
+        // Add a line comment scoped to commit "aaa" on line 1.
+        let mut comment = Comment::new(
+            "scoped to aaa".to_string(),
+            CommentType::Note,
+            Some(LineSide::New),
+        );
+        comment.commit_id = Some("aaa".to_string());
+        app.session
+            .files
+            .get_mut(&PathBuf::from("a.rs"))
+            .unwrap()
+            .add_line_comment(1, comment);
+
+        // Select a different commit "bbb" so the comment is hidden.
+        app.review_commits = vec![
+            crate::vcs::traits::CommitInfo {
+                id: "aaa".to_string(),
+                short_id: "aaa".to_string(),
+                branch_name: None,
+                summary: "commit aaa".to_string(),
+                body: None,
+                author: "tester".to_string(),
+                time: chrono::Utc::now(),
+            },
+            crate::vcs::traits::CommitInfo {
+                id: "bbb".to_string(),
+                short_id: "bbb".to_string(),
+                branch_name: None,
+                summary: "commit bbb".to_string(),
+                body: None,
+                author: "tester".to_string(),
+                time: chrono::Utc::now(),
+            },
+        ];
+        app.commit_selection_range = Some((1, 1)); // only "bbb"
+
+        app.rebuild_annotations();
+
+        assert_eq!(
+            app.total_lines(),
+            app.line_annotations.len(),
+            "total_lines must match annotations when a commit-scoped comment is filtered out"
+        );
     }
 
     #[test]

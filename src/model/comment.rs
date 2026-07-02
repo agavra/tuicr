@@ -172,6 +172,15 @@ pub struct Comment {
     /// inline comments; review-level / summary comments don't get one.
     #[serde(default)]
     pub remote_comment_id: Option<String>,
+    /// The commit SHA this comment was made against, when it was created
+    /// while the inline commit selector showed exactly one commit. `None`
+    /// for review-level comments, for comments made against the full
+    /// cumulative diff (all commits selected), and for legacy session JSON
+    /// predating this field. Filtering by the active commit selection hides
+    /// comments whose `commit_id` does not intersect the selection; `None`
+    /// comments are always shown.
+    #[serde(default)]
+    pub commit_id: Option<String>,
 }
 
 impl Comment {
@@ -188,6 +197,7 @@ impl Comment {
             lifecycle_state: CommentLifecycleState::default(),
             remote_review_id: None,
             remote_comment_id: None,
+            commit_id: None,
         }
     }
 
@@ -210,6 +220,7 @@ impl Comment {
             lifecycle_state: CommentLifecycleState::default(),
             remote_review_id: None,
             remote_comment_id: None,
+            commit_id: None,
         }
     }
 
@@ -218,6 +229,15 @@ impl Comment {
     /// the existing `Comment::new` call sites can stay untouched.
     pub fn with_author(mut self, author: impl Into<String>) -> Self {
         self.author = author.into();
+        self
+    }
+
+    /// Builder: set `commit_id` and return self. Called by
+    /// `App::save_comment` when the inline commit selector shows exactly
+    /// one commit, so the comment is scoped to that commit and hidden when
+    /// a different commit (or subset) is selected.
+    pub fn with_commit_id(mut self, commit_id: impl Into<String>) -> Self {
+        self.commit_id = Some(commit_id.into());
         self
     }
 

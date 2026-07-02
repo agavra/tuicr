@@ -288,6 +288,9 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
         // Show file-level comments right after the header
         if let Some(review) = app.session.files.get(path) {
             for comment in &review.file_comments {
+                if !app.comment_visible(comment) {
+                    continue;
+                }
                 // Skip rendering this comment if it's being edited
                 let is_being_edited =
                     app.editing_comment_id.as_ref() == Some(&comment.id) && is_file_comment_mode;
@@ -643,7 +646,9 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
 
                         if let Some(comments) = line_comments.get(&old_ln) {
                             for comment in comments {
-                                if comment.side == Some(LineSide::Old) {
+                                if comment.side == Some(LineSide::Old)
+                                    && app.comment_visible(comment)
+                                {
                                     // Skip if this comment is being edited
                                     let is_being_edited = is_line_comment_mode
                                         && app.editing_comment_id.as_ref() == Some(&comment.id);
@@ -808,7 +813,9 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
 
                         if let Some(comments) = line_comments.get(&new_ln) {
                             for comment in comments {
-                                if comment.side != Some(LineSide::Old) {
+                                if comment.side != Some(LineSide::Old)
+                                    && app.comment_visible(comment)
+                                {
                                     // Skip if this comment is being edited
                                     let is_being_edited = is_line_comment_mode
                                         && app.editing_comment_id.as_ref() == Some(&comment.id);

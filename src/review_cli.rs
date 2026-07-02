@@ -100,6 +100,7 @@ fn add_comment(
             content: request_parts.content,
             comment_type,
             author,
+            commit_id: None,
         },
     )?;
     let output = CommentOutput::from_target(&target, &comment);
@@ -846,6 +847,7 @@ mod tests {
                     content: "check this".to_string(),
                     comment_type: CommentType::Issue,
                     author: crate::model::comment::DEFAULT_AUTHOR.to_string(),
+                    commit_id: None,
                 },
             )
             .unwrap();

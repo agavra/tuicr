@@ -180,6 +180,11 @@ pub struct AddCommentRequest {
     /// picking a sensible default (`Comment::DEFAULT_AUTHOR`) when none is
     /// supplied.
     pub author: String,
+    /// Commit SHA to stamp on the comment when it was created while the
+    /// inline commit selector showed exactly one commit. `None` for
+    /// review-level comments and full-range selections. Library callers
+    /// (the `review add` CLI) leave this `None`.
+    pub commit_id: Option<String>,
 }
 
 /// Where a new local draft comment should be attached.
@@ -216,6 +221,7 @@ pub fn add_comment_to_session(
     }
 
     let author = request.author;
+    let commit_id = request.commit_id;
     let comment = match request.target {
         CommentTarget::Review => {
             let comment = Comment::new(content, request.comment_type, None).with_author(author);
@@ -224,21 +230,31 @@ pub fn add_comment_to_session(
         }
         CommentTarget::File { path } => {
             let review = file_review_mut(session, &path)?;
-            let comment = Comment::new(content, request.comment_type, None).with_author(author);
+            let mut comment = Comment::new(content, request.comment_type, None).with_author(author);
+            if let Some(sha) = &commit_id {
+                comment = comment.with_commit_id(sha.clone());
+            }
             review.add_file_comment(comment.clone());
             comment
         }
         CommentTarget::Line { path, line, side } => {
             let review = file_review_mut(session, &path)?;
-            let comment =
+            let mut comment =
                 Comment::new(content, request.comment_type, Some(side)).with_author(author);
+            if let Some(sha) = &commit_id {
+                comment = comment.with_commit_id(sha.clone());
+            }
             review.add_line_comment(line, comment.clone());
             comment
         }
         CommentTarget::LineRange { path, range, side } => {
             let review = file_review_mut(session, &path)?;
-            let comment = Comment::new_with_range(content, request.comment_type, Some(side), range)
-                .with_author(author);
+            let mut comment =
+                Comment::new_with_range(content, request.comment_type, Some(side), range)
+                    .with_author(author);
+            if let Some(sha) = &commit_id {
+                comment = comment.with_commit_id(sha.clone());
+            }
             review.add_line_comment(range.end, comment.clone());
             comment
         }
@@ -284,6 +300,7 @@ mod tests {
                 content: "looks good".to_string(),
                 comment_type: CommentType::Praise,
                 author: crate::model::comment::DEFAULT_AUTHOR.to_string(),
+                commit_id: None,
             },
         )
         .unwrap();
@@ -304,6 +321,7 @@ mod tests {
                 content: "file note".to_string(),
                 comment_type: CommentType::Note,
                 author: crate::model::comment::DEFAULT_AUTHOR.to_string(),
+                commit_id: None,
             },
         )
         .unwrap();
@@ -328,6 +346,7 @@ mod tests {
                 content: "range note".to_string(),
                 comment_type: CommentType::Suggestion,
                 author: crate::model::comment::DEFAULT_AUTHOR.to_string(),
+                commit_id: None,
             },
         )
         .unwrap();
@@ -349,6 +368,7 @@ mod tests {
                 content: "note".to_string(),
                 comment_type: CommentType::Note,
                 author: crate::model::comment::DEFAULT_AUTHOR.to_string(),
+                commit_id: None,
             },
         )
         .unwrap_err();
@@ -394,6 +414,7 @@ mod tests {
                     content: "line note".to_string(),
                     comment_type: CommentType::Note,
                     author: crate::model::comment::DEFAULT_AUTHOR.to_string(),
+                    commit_id: None,
                 },
             )
             .unwrap();

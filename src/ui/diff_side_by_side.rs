@@ -329,6 +329,9 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
         // Show file-level comments
         if let Some(review) = app.session.files.get(path) {
             for comment in &review.file_comments {
+                if !app.comment_visible(comment) {
+                    continue;
+                }
                 // Skip rendering this comment if it's being edited
                 let is_being_edited =
                     app.editing_comment_id.as_ref() == Some(&comment.id) && is_file_comment_mode;
@@ -1410,8 +1413,9 @@ fn add_comments_to_line(
     if let Some(comments) = line_comments.get(&line_num) {
         for comment in comments {
             let comment_side = comment.side.unwrap_or(LineSide::New);
-            if (side == LineSide::Old && comment_side == LineSide::Old)
-                || (side == LineSide::New && comment_side != LineSide::Old)
+            if ((side == LineSide::Old && comment_side == LineSide::Old)
+                || (side == LineSide::New && comment_side != LineSide::Old))
+                && ctx.app.comment_visible(comment)
             {
                 // Check if this comment is being edited
                 let is_being_edited =

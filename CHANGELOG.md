@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Bug Fixes
+
+- **comments:** Associate comments with their commit when reviewing per-commit, preventing comments from one commit bleeding into another commit's diff view
+
 ## [0.18.0] - 2026-06-20
 
 ### Bug Fixes

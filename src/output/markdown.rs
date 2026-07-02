@@ -11,9 +11,16 @@ use crate::forge::remote_comments::{
     PrCommentsVisibility, RemoteReviewThread, filter_threads, group_threads_by_path,
 };
 use crate::model::{CommentType, LineRange, LineSide, ReviewSession};
-
-/// (file_path, line_range, side, comment_type, content)
-type CommentEntry<'a> = (String, Option<LineRange>, Option<LineSide>, String, &'a str);
+use crate::slug::short_sha;
+/// (file_path, line_range, side, comment_type, content, commit_id)
+type CommentEntry<'a> = (
+    String,
+    Option<LineRange>,
+    Option<LineSide>,
+    String,
+    &'a str,
+    Option<&'a str>,
+);
 
 /// Generate markdown content from the review session.
 /// Returns the markdown string or an error if there are no comments.
@@ -346,6 +353,7 @@ fn generate_markdown(
             None,
             export_comment_type_label(&comment.comment_type, comment_types),
             &comment.content,
+            None,
         ));
     }
 
@@ -364,6 +372,7 @@ fn generate_markdown(
                 None,
                 export_comment_type_label(&comment.comment_type, comment_types),
                 &comment.content,
+                comment.commit_id.as_deref(),
             ));
         }
 
@@ -383,6 +392,7 @@ fn generate_markdown(
                     comment.side,
                     export_comment_type_label(&comment.comment_type, comment_types),
                     &comment.content,
+                    comment.commit_id.as_deref(),
                 ));
             }
         }
@@ -395,7 +405,9 @@ fn generate_markdown(
         let _ = writeln!(md);
         local_section_written = true;
     }
-    for (i, (file, line_range, side, comment_type, content)) in all_comments.iter().enumerate() {
+    for (i, (file, line_range, side, comment_type, content, commit_id)) in
+        all_comments.iter().enumerate()
+    {
         let number = i + 1;
         let location = match (line_range, side) {
             // Range on deleted side (old lines)
@@ -415,13 +427,19 @@ fn generate_markdown(
             // File comment
             (None, _) => format!("`{file}`"),
         };
+        // Append the commit short SHA so the LLM knows which commit the
+        // comment was made against — crucial for per-commit reviews.
+        let commit_suffix = match commit_id {
+            Some(sha) => format!(" (commit {})", short_sha(sha)),
+            None => String::new(),
+        };
         let marker = format!("{number}.");
         let continuation_indent = " ".repeat(marker.len() + 1);
         let mut content_lines = content.split('\n').map(|line| line.trim_end_matches('\r'));
         let first_line = content_lines.next().unwrap_or_default();
         let _ = writeln!(
             md,
-            "{marker} **[{comment_type}]** {location} - {first_line}"
+            "{marker} **[{comment_type}]** {location}{commit_suffix} - {first_line}"
         );
         for line in content_lines {
             let _ = writeln!(md, "{continuation_indent}{line}");
@@ -852,6 +870,57 @@ mod tests {
         assert!(markdown.contains(
             "`Review Comment (scope: selected commit range)` - High-level concern across commits"
         ));
+    }
+
+    #[test]
+    fn should_include_commit_sha_in_export_for_commit_scoped_comments() {
+        let mut session = create_test_session();
+        // Add a line comment scoped to commit abc1234567890
+        if let Some(review) = session.get_file_mut(&PathBuf::from("src/main.rs")) {
+            review.add_line_comment(
+                10,
+                Comment::new(
+                    "Wrong variable name".to_string(),
+                    CommentType::Issue,
+                    Some(LineSide::New),
+                )
+                .with_commit_id("abc1234567890"),
+            );
+        }
+
+        let markdown = generate_markdown(
+            &session,
+            &DiffSource::CommitRange(vec!["abc1234567890".to_string()]),
+            &comment_types(),
+            true,
+            &[],
+            None,
+        );
+
+        assert!(
+            markdown.contains("`src/main.rs:10` (commit abc1234) - Wrong variable name"),
+            "commit-scoped comment must include the short SHA in the export; got:\n{markdown}"
+        );
+    }
+
+    #[test]
+    fn should_omit_commit_suffix_for_unscoped_comments() {
+        let session = create_test_session();
+
+        let markdown = generate_markdown(
+            &session,
+            &DiffSource::WorkingTree,
+            &comment_types(),
+            true,
+            &[],
+            None,
+        );
+
+        // Existing comments have commit_id = None — no (commit ...) suffix
+        assert!(
+            !markdown.contains("(commit "),
+            "unscoped comments must not have a commit suffix; got:\n{markdown}"
+        );
     }
 
     #[test]

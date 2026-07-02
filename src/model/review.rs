@@ -541,6 +541,75 @@ mod tests {
     }
 
     #[test]
+    fn should_round_trip_comment_commit_id_on_session() {
+        // given a session with a file comment and a line comment both scoped
+        // to a single commit
+        use crate::model::comment::LineSide;
+        let mut session = test_session();
+        session.add_file(PathBuf::from("src/lib.rs"), FileStatus::Modified, SOME_HASH);
+        let file_comment = Comment::new(
+            "file note on commit aaa".to_string(),
+            CommentType::Note,
+            None,
+        )
+        .with_commit_id("aaa111");
+        let line_comment = Comment::new(
+            "line note on commit bbb".to_string(),
+            CommentType::Issue,
+            Some(LineSide::New),
+        )
+        .with_commit_id("bbb222");
+        let review = session.get_file_mut(&PathBuf::from("src/lib.rs")).unwrap();
+        review.add_file_comment(file_comment.clone());
+        review.add_line_comment(42, line_comment.clone());
+
+        // when serialized and restored
+        let json = serde_json::to_string(&session).unwrap();
+        let restored: ReviewSession = serde_json::from_str(&json).unwrap();
+
+        // then the commit_id survives the round trip
+        let r = restored.files.get(&PathBuf::from("src/lib.rs")).unwrap();
+        assert_eq!(r.file_comments.len(), 1);
+        assert_eq!(
+            r.file_comments[0].commit_id,
+            Some("aaa111".to_string()),
+            "file comment commit_id must round-trip"
+        );
+        let line = r.line_comments.get(&42).unwrap();
+        assert_eq!(line.len(), 1);
+        assert_eq!(
+            line[0].commit_id,
+            Some("bbb222".to_string()),
+            "line comment commit_id must round-trip"
+        );
+    }
+
+    #[test]
+    fn should_default_commit_id_to_none_for_legacy_comment_json() {
+        // given a comment JSON saved before commit_id existed
+        let json = r#"{
+            "id": "legacy-id",
+            "content": "old note",
+            "comment_type": "note",
+            "created_at": "2024-01-01T00:00:00Z",
+            "line_context": null,
+            "side": null,
+            "line_range": null,
+            "author": "user",
+            "lifecycle_state": "local_draft",
+            "remote_review_id": null,
+            "remote_comment_id": null
+        }"#;
+        // when
+        let comment: Comment = serde_json::from_str(json).unwrap();
+        // then
+        assert_eq!(
+            comment.commit_id, None,
+            "comment JSON without commit_id must default to None"
+        );
+    }
+
+    #[test]
     fn should_default_commit_selection_range_to_none_for_legacy_session() {
         // given a session JSON saved before commit_selection_range existed
         // when
