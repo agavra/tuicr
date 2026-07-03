@@ -7,7 +7,7 @@
 //! rebuilt by walking the reviews directory.
 #![allow(dead_code)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -191,14 +191,30 @@ pub fn entry_from_session(
         None
     };
 
-    let comment_count = session.review_comments.len()
-        + session
-            .files
+    let comment_count = if session.diff_source == SessionDiffSource::PerCommitRange {
+        session
+            .per_commit_reviews
             .values()
-            .map(|f| f.comment_count())
-            .sum::<usize>();
+            .map(|review| review.comment_count())
+            .sum::<usize>()
+    } else {
+        session.review_comments.len()
+            + session
+                .files
+                .values()
+                .map(|f| f.comment_count())
+                .sum::<usize>()
+    };
     let reviewed_count = session.reviewed_count();
-    let file_count = session.files.len();
+    let file_count = if session.diff_source == SessionDiffSource::PerCommitRange {
+        let mut paths = HashSet::new();
+        for review in session.per_commit_reviews.values() {
+            paths.extend(review.files.keys().cloned());
+        }
+        paths.len()
+    } else {
+        session.files.len()
+    };
 
     ManifestEntry {
         path: relative_path,
@@ -269,6 +285,7 @@ pub fn diff_source_label(diff_source: SessionDiffSource) -> &'static str {
         SessionDiffSource::Unstaged => "unstaged",
         SessionDiffSource::StagedAndUnstaged => "staged-and-unstaged",
         SessionDiffSource::CommitRange => "commits",
+        SessionDiffSource::PerCommitRange => "per-commit",
         SessionDiffSource::WorkingTreeAndCommits => "worktree-and-commits",
         SessionDiffSource::StagedUnstagedAndCommits => "staged-and-unstaged-and-commits",
         SessionDiffSource::PullRequest => "pr",
@@ -279,7 +296,8 @@ pub fn diff_source_label(diff_source: SessionDiffSource) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::FileStatus;
+    use crate::model::review::FileReview;
+    use crate::model::{Comment, CommentType, CommitReview, FileStatus};
     use std::path::PathBuf;
 
     fn entry(updated_at: DateTime<Utc>, anchor: &str) -> ManifestEntry {
@@ -560,6 +578,82 @@ mod tests {
         assert_eq!(entry.display.reviewed_count, 1);
         assert_eq!(entry.display.comment_count, 0);
         assert_eq!(entry.display.anchor, "main");
+    }
+
+    #[test]
+    fn should_extract_metadata_from_per_commit_session() {
+        let mut session = ReviewSession::new(
+            PathBuf::from("/tmp/test-repo"),
+            "bbb111122223333444455556666777788889999".to_string(),
+            Some("main".to_string()),
+            SessionDiffSource::PerCommitRange,
+        );
+
+        let mut first = CommitReview::new(
+            "aaa111122223333444455556666777788889999".to_string(),
+            "aaa1111".to_string(),
+            "First".to_string(),
+            None,
+            "Alice".to_string(),
+            Utc::now(),
+        );
+        first.review_comments.push(Comment::new(
+            "Review first".to_string(),
+            CommentType::Issue,
+            None,
+        ));
+        first.files.insert(
+            PathBuf::from("src/a.rs"),
+            FileReview::new(PathBuf::from("src/a.rs"), FileStatus::Modified, 0),
+        );
+
+        let mut second = CommitReview::new(
+            "bbb111122223333444455556666777788889999".to_string(),
+            "bbb1111".to_string(),
+            "Second".to_string(),
+            None,
+            "Bob".to_string(),
+            Utc::now(),
+        );
+        second.files.insert(
+            PathBuf::from("src/a.rs"),
+            FileReview::new(PathBuf::from("src/a.rs"), FileStatus::Modified, 0),
+        );
+        second.files.insert(
+            PathBuf::from("src/b.rs"),
+            FileReview::new(PathBuf::from("src/b.rs"), FileStatus::Modified, 0),
+        );
+        second
+            .files
+            .get_mut(&PathBuf::from("src/b.rs"))
+            .unwrap()
+            .reviewed = true;
+        second
+            .files
+            .get_mut(&PathBuf::from("src/a.rs"))
+            .unwrap()
+            .add_file_comment(Comment::new(
+                "Review second".to_string(),
+                CommentType::Suggestion,
+                None,
+            ));
+
+        session
+            .per_commit_reviews
+            .insert(first.commit_id.clone(), first);
+        session
+            .per_commit_reviews
+            .insert(second.commit_id.clone(), second);
+
+        let entry = entry_from_session(
+            &session,
+            PathBuf::from("local/abcd/foo/bar/main/per-commit.json"),
+            "main".to_string(),
+        );
+
+        assert_eq!(entry.display.comment_count, 2);
+        assert_eq!(entry.display.reviewed_count, 1);
+        assert_eq!(entry.display.file_count, 2);
     }
 
     #[test]

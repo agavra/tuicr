@@ -157,6 +157,7 @@ fn main() -> anyhow::Result<()> {
             cli_args.output_to_stdout,
             AppStartupOptions {
                 revisions: cli_args.revisions.as_deref(),
+                per_commit: cli_args.per_commit,
                 working_tree: cli_args.working_tree,
                 path_filter: cli_args.path_filter.as_deref(),
                 file_path: cli_args.file_path.as_deref(),

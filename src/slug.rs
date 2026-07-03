@@ -74,6 +74,7 @@ pub enum SlugSource {
     StagedAndUnstaged(String),
     Pristine,
     Commits(CommitRange),
+    PerCommitRange(CommitRange),
     WorktreeAndCommits(CommitRange),
     StagedUnstagedAndCommits(CommitRange),
 }
@@ -137,6 +138,9 @@ impl fmt::Display for SlugSource {
             SlugSource::StagedAndUnstaged(head) => write!(f, "staged-and-unstaged/{head}"),
             SlugSource::Pristine => f.write_str("pristine"),
             SlugSource::Commits(r) => write!(f, "commits/{}..{}", r.base, r.head),
+            SlugSource::PerCommitRange(r) => {
+                write!(f, "per-commit/{}..{}", r.base, r.head)
+            }
             SlugSource::WorktreeAndCommits(r) => {
                 write!(f, "worktree-and-commits/{}..{}", r.base, r.head)
             }
@@ -252,6 +256,9 @@ fn parse_source(s: &str) -> Result<SlugSource, SlugParseError> {
     // with `staged-and-unstaged/`).
     if let Some(range) = s.strip_prefix("commits/") {
         return Ok(SlugSource::Commits(parse_range(range)?));
+    }
+    if let Some(range) = s.strip_prefix("per-commit/") {
+        return Ok(SlugSource::PerCommitRange(parse_range(range)?));
     }
     if let Some(range) = s.strip_prefix("worktree-and-commits/") {
         return Ok(SlugSource::WorktreeAndCommits(parse_range(range)?));
@@ -521,6 +528,10 @@ fn build_source(
         SessionDiffSource::CommitRange => {
             Ok(SlugSource::Commits(range_from(commit_range, diff_source)?))
         }
+        SessionDiffSource::PerCommitRange => Ok(SlugSource::PerCommitRange(range_from(
+            commit_range,
+            diff_source,
+        )?)),
         SessionDiffSource::WorkingTreeAndCommits => Ok(SlugSource::WorktreeAndCommits(range_from(
             commit_range,
             diff_source,

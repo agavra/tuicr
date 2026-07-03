@@ -10,7 +10,7 @@ use crate::error::{Result, TuicrError};
 use crate::forge::remote_comments::{
     PrCommentsVisibility, RemoteReviewThread, filter_threads, group_threads_by_path,
 };
-use crate::model::{CommentType, LineRange, LineSide, ReviewSession};
+use crate::model::{Comment, CommentType, CommitReview, LineRange, LineSide, ReviewSession};
 
 /// (file_path, line_range, side, comment_type, content)
 type CommentEntry<'a> = (String, Option<LineRange>, Option<LineSide>, String, &'a str);
@@ -204,6 +204,7 @@ fn review_scope_label(diff_source: &DiffSource) -> String {
         DiffSource::Staged => "staged changes".to_string(),
         DiffSource::Unstaged => "unstaged changes".to_string(),
         DiffSource::CommitRange(_) => "selected commit range".to_string(),
+        DiffSource::PerCommitRange(_) => "current commit in per-commit review".to_string(),
         DiffSource::StagedUnstagedAndCommits(_) => {
             "selected commit range + staged/unstaged changes".to_string()
         }
@@ -265,6 +266,15 @@ fn generate_markdown(
                 let short_ids: Vec<&str> = commits.iter().map(|c| &c[..7.min(c.len())]).collect();
                 let _ = writeln!(md, "Reviewing commits: {}", short_ids.join(", "));
             }
+            let _ = writeln!(md);
+        }
+        DiffSource::PerCommitRange(commits) => {
+            let short_ids: Vec<&str> = commits.iter().map(|c| &c[..7.min(c.len())]).collect();
+            let _ = writeln!(
+                md,
+                "Reviewing commits individually: {}",
+                short_ids.join(", ")
+            );
             let _ = writeln!(md);
         }
         DiffSource::StagedUnstagedAndCommits(commits) => {
@@ -333,6 +343,11 @@ fn generate_markdown(
     if let Some(notes) = &session.session_notes {
         let _ = writeln!(md, "Summary: {notes}");
         let _ = writeln!(md);
+    }
+
+    if matches!(diff_source, DiffSource::PerCommitRange(_)) {
+        write_per_commit_comments(&mut md, session, diff_source, comment_types);
+        return md;
     }
 
     // Collect all comments into a flat list
@@ -475,8 +490,212 @@ fn generate_markdown(
     md
 }
 
+fn write_per_commit_comments(
+    md: &mut String,
+    session: &ReviewSession,
+    diff_source: &DiffSource,
+    comment_types: &[CommentTypeDefinition],
+) {
+    let mut ordered_ids = match &session.commit_range {
+        Some(ids) => ids.clone(),
+        None => match diff_source {
+            DiffSource::PerCommitRange(ids) => ids.clone(),
+            _ => Vec::new(),
+        },
+    };
+    if ordered_ids.is_empty() {
+        ordered_ids = session.per_commit_reviews.keys().cloned().collect();
+        ordered_ids.sort();
+    }
+
+    let commented: Vec<(&String, &CommitReview)> = ordered_ids
+        .iter()
+        .filter_map(|id| {
+            session
+                .per_commit_reviews
+                .get(id)
+                .map(|review| (id, review))
+        })
+        .filter(|(_, review)| review.has_comments())
+        .collect();
+
+    if commented.is_empty() {
+        return;
+    }
+
+    let _ = writeln!(md, "## Local tuicr Comments");
+    let _ = writeln!(md);
+
+    let mut next_number = 1usize;
+    for (_commit_id, review) in commented {
+        let _ = writeln!(md, "### Commit {} - {}", review.short_id, review.summary);
+        let _ = writeln!(md);
+        if !review.author.is_empty() {
+            let _ = writeln!(md, "Author: {}", review.author);
+        }
+        let message = commit_message_text(review);
+        let fence = markdown_fence_for(&message);
+        let _ = writeln!(md, "Commit message:");
+        let _ = writeln!(md);
+        let _ = writeln!(md, "{fence}text");
+        let _ = writeln!(md, "{message}");
+        let _ = writeln!(md, "{fence}");
+        let _ = writeln!(md);
+
+        for (location, line_range, side, comment_type, content) in
+            collect_per_commit_entries(review, comment_types)
+        {
+            let formatted_location = format_comment_location(&location, line_range, side);
+            let _ = writeln!(
+                md,
+                "{}. **[{}]** {} - {}",
+                next_number, comment_type, formatted_location, content
+            );
+            next_number += 1;
+        }
+        let _ = writeln!(md);
+    }
+}
+
+fn collect_per_commit_entries<'a>(
+    review: &'a CommitReview,
+    comment_types: &[CommentTypeDefinition],
+) -> Vec<CommentEntry<'a>> {
+    let mut entries = Vec::new();
+    for comment in &review.review_comments {
+        entries.push((
+            "commit".to_string(),
+            None,
+            None,
+            export_comment_type_label(&comment.comment_type, comment_types),
+            comment.content.as_str(),
+        ));
+    }
+
+    let mut files: Vec<_> = review.files.iter().collect();
+    files.sort_by_key(|(path, _)| {
+        if path.as_path() == std::path::Path::new("Commit Message") {
+            String::new()
+        } else {
+            path.to_string_lossy().to_string()
+        }
+    });
+
+    for (path, file_review) in files {
+        let path_str = if path.as_path() == std::path::Path::new("Commit Message") {
+            "commit message".to_string()
+        } else {
+            path.display().to_string()
+        };
+
+        for comment in &file_review.file_comments {
+            entries.push((
+                path_str.clone(),
+                None,
+                None,
+                export_comment_type_label(&comment.comment_type, comment_types),
+                comment.content.as_str(),
+            ));
+        }
+
+        let mut line_comments: Vec<_> = file_review.line_comments.iter().collect();
+        line_comments.sort_by_key(|(line, _)| *line);
+        for (line, comments) in line_comments {
+            for comment in comments {
+                entries.push(per_commit_line_entry(
+                    &path_str,
+                    *line,
+                    comment,
+                    comment_types,
+                ));
+            }
+        }
+    }
+
+    entries
+}
+
+fn per_commit_line_entry<'a>(
+    path: &str,
+    line: u32,
+    comment: &'a Comment,
+    comment_types: &[CommentTypeDefinition],
+) -> CommentEntry<'a> {
+    let line_range = comment.line_range.or_else(|| Some(LineRange::single(line)));
+    (
+        path.to_string(),
+        line_range,
+        comment.side,
+        export_comment_type_label(&comment.comment_type, comment_types),
+        comment.content.as_str(),
+    )
+}
+
+fn format_comment_location(
+    file: &str,
+    line_range: Option<LineRange>,
+    side: Option<LineSide>,
+) -> String {
+    match (line_range, side) {
+        (Some(range), Some(LineSide::Old)) if range.is_single() => {
+            format!("`{}:~{}`", file, range.start)
+        }
+        (Some(range), Some(LineSide::Old)) => {
+            format!("`{}:~{}-~{}`", file, range.start, range.end)
+        }
+        (Some(range), _) if range.is_single() => {
+            format!("`{}:{}`", file, range.start)
+        }
+        (Some(range), _) => {
+            format!("`{}:{}-{}`", file, range.start, range.end)
+        }
+        (None, _) => format!("`{file}`"),
+    }
+}
+
+fn commit_message_text(review: &CommitReview) -> String {
+    match review.body.as_deref() {
+        Some(body) if !body.trim().is_empty() => {
+            format!("{}\n\n{}", review.summary, body)
+        }
+        _ => review.summary.clone(),
+    }
+}
+
+fn markdown_fence_for(text: &str) -> String {
+    let longest = text
+        .split('`')
+        .fold((0usize, 0usize), |(best, current), segment| {
+            if segment.is_empty() {
+                (best.max(current + 1), current + 1)
+            } else {
+                (best.max(current), 0)
+            }
+        })
+        .0;
+    "`".repeat(longest.max(3) + 1)
+}
+
 fn collect_used_comment_type_ids(session: &ReviewSession) -> HashSet<String> {
     let mut ids = HashSet::new();
+    if session.diff_source == crate::model::SessionDiffSource::PerCommitRange {
+        for review in session.per_commit_reviews.values() {
+            for c in &review.review_comments {
+                ids.insert(c.comment_type.id().to_string());
+            }
+            for file in review.files.values() {
+                for c in &file.file_comments {
+                    ids.insert(c.comment_type.id().to_string());
+                }
+                for comments in file.line_comments.values() {
+                    for c in comments {
+                        ids.insert(c.comment_type.id().to_string());
+                    }
+                }
+            }
+        }
+        return ids;
+    }
     for c in &session.review_comments {
         ids.insert(c.comment_type.id().to_string());
     }
@@ -511,7 +730,10 @@ fn export_comment_type_label(
 mod tests {
     use super::*;
     use crate::app::CommentTypeDefinition;
-    use crate::model::{Comment, CommentType, FileStatus, LineRange, LineSide, SessionDiffSource};
+    use crate::model::review::FileReview;
+    use crate::model::{
+        Comment, CommentType, CommitReview, FileStatus, LineRange, LineSide, SessionDiffSource,
+    };
     use std::path::PathBuf;
 
     fn comment_types() -> Vec<CommentTypeDefinition> {
@@ -938,6 +1160,216 @@ mod tests {
 
         // then
         assert!(markdown.contains("Reviewing commit: abc1234"));
+    }
+
+    #[test]
+    fn should_export_per_commit_comments_grouped_by_commit() {
+        let mut session = ReviewSession::new(
+            PathBuf::from("/tmp/test-repo"),
+            "newest".to_string(),
+            Some("main".to_string()),
+            SessionDiffSource::PerCommitRange,
+        );
+        let oldest = "aaa111122223333444455556666777788889999".to_string();
+        let newest = "bbb111122223333444455556666777788889999".to_string();
+        session.commit_range = Some(vec![oldest.clone(), newest.clone()]);
+
+        let mut first = CommitReview::new(
+            oldest.clone(),
+            "aaa1111".to_string(),
+            "Prepare API".to_string(),
+            Some("Explain the new shape.".to_string()),
+            "Alice".to_string(),
+            chrono::Utc::now(),
+        );
+        first.review_comments.push(Comment::new(
+            "Commit mixes refactor and behavior".to_string(),
+            CommentType::Issue,
+            None,
+        ));
+        let mut msg_review = FileReview::new(PathBuf::from("Commit Message"), FileStatus::Added, 0);
+        msg_review.add_line_comment(
+            1,
+            Comment::new(
+                "Subject should be imperative".to_string(),
+                CommentType::Suggestion,
+                Some(LineSide::New),
+            ),
+        );
+        first
+            .files
+            .insert(PathBuf::from("Commit Message"), msg_review);
+        session.per_commit_reviews.insert(oldest.clone(), first);
+
+        let mut second = CommitReview::new(
+            newest.clone(),
+            "bbb1111".to_string(),
+            "Wire API".to_string(),
+            None,
+            "Bob".to_string(),
+            chrono::Utc::now(),
+        );
+        let mut file_review = FileReview::new(PathBuf::from("src/lib.rs"), FileStatus::Modified, 0);
+        file_review.add_line_comment(
+            42,
+            Comment::new(
+                "Handle the empty input case".to_string(),
+                CommentType::Issue,
+                Some(LineSide::New),
+            ),
+        );
+        second
+            .files
+            .insert(PathBuf::from("src/lib.rs"), file_review);
+        session.per_commit_reviews.insert(newest.clone(), second);
+
+        let markdown = generate_export_content(
+            &session,
+            &DiffSource::PerCommitRange(vec![oldest, newest]),
+            &comment_types(),
+            true,
+            &[],
+            None,
+        )
+        .unwrap();
+
+        let first_pos = markdown.find("### Commit aaa1111").unwrap();
+        let second_pos = markdown.find("### Commit bbb1111").unwrap();
+        assert!(first_pos < second_pos, "{markdown}");
+        assert!(markdown.contains("1. **[ISSUE]** `commit` - Commit mixes refactor"));
+        assert!(
+            markdown
+                .contains("2. **[SUGGESTION]** `commit message:1` - Subject should be imperative")
+        );
+        assert!(markdown.contains("3. **[ISSUE]** `src/lib.rs:42` - Handle the empty input case"));
+    }
+
+    #[test]
+    fn should_skip_uncommented_commits_in_per_commit_export() {
+        let mut session = ReviewSession::new(
+            PathBuf::from("/tmp/test-repo"),
+            "bbb111122223333444455556666777788889999".to_string(),
+            Some("main".to_string()),
+            SessionDiffSource::PerCommitRange,
+        );
+        let commented = "aaa111122223333444455556666777788889999".to_string();
+        let quiet = "bbb111122223333444455556666777788889999".to_string();
+        session.commit_range = Some(vec![commented.clone(), quiet.clone()]);
+
+        let mut review = CommitReview::new(
+            commented.clone(),
+            "aaa1111".to_string(),
+            "Reviewed commit".to_string(),
+            None,
+            "Alice".to_string(),
+            chrono::Utc::now(),
+        );
+        review.review_comments.push(Comment::new(
+            "This belongs to the reviewed commit".to_string(),
+            CommentType::Issue,
+            None,
+        ));
+        session.per_commit_reviews.insert(commented.clone(), review);
+        session.per_commit_reviews.insert(
+            quiet.clone(),
+            CommitReview::new(
+                quiet.clone(),
+                "bbb1111".to_string(),
+                "Quiet commit".to_string(),
+                None,
+                "Bob".to_string(),
+                chrono::Utc::now(),
+            ),
+        );
+
+        let markdown = generate_export_content(
+            &session,
+            &DiffSource::PerCommitRange(vec![commented, quiet]),
+            &comment_types(),
+            true,
+            &[],
+            None,
+        )
+        .unwrap();
+
+        assert!(markdown.contains("### Commit aaa1111 - Reviewed commit"));
+        assert!(!markdown.contains("### Commit bbb1111 - Quiet commit"));
+    }
+
+    #[test]
+    fn should_use_safe_fence_for_per_commit_messages_with_backticks() {
+        let mut session = ReviewSession::new(
+            PathBuf::from("/tmp/test-repo"),
+            "aaa111122223333444455556666777788889999".to_string(),
+            Some("main".to_string()),
+            SessionDiffSource::PerCommitRange,
+        );
+        let commit_id = "aaa111122223333444455556666777788889999".to_string();
+        session.commit_range = Some(vec![commit_id.clone()]);
+
+        let mut review = CommitReview::new(
+            commit_id.clone(),
+            "aaa1111".to_string(),
+            "Document fence handling".to_string(),
+            Some("Example:\n```\ncode\n```".to_string()),
+            "Alice".to_string(),
+            chrono::Utc::now(),
+        );
+        review.review_comments.push(Comment::new(
+            "Fence should remain readable".to_string(),
+            CommentType::Note,
+            None,
+        ));
+        session.per_commit_reviews.insert(commit_id.clone(), review);
+
+        let markdown = generate_export_content(
+            &session,
+            &DiffSource::PerCommitRange(vec![commit_id]),
+            &comment_types(),
+            true,
+            &[],
+            None,
+        )
+        .unwrap();
+
+        assert!(
+            markdown
+                .contains("````text\nDocument fence handling\n\nExample:\n```\ncode\n```\n````")
+        );
+    }
+
+    #[test]
+    fn should_fail_per_commit_export_when_no_commit_has_comments() {
+        let mut session = ReviewSession::new(
+            PathBuf::from("/tmp/test-repo"),
+            "aaa111122223333444455556666777788889999".to_string(),
+            Some("main".to_string()),
+            SessionDiffSource::PerCommitRange,
+        );
+        let commit_id = "aaa111122223333444455556666777788889999".to_string();
+        session.commit_range = Some(vec![commit_id.clone()]);
+        session.per_commit_reviews.insert(
+            commit_id.clone(),
+            CommitReview::new(
+                commit_id.clone(),
+                "aaa1111".to_string(),
+                "No comments".to_string(),
+                None,
+                "Alice".to_string(),
+                chrono::Utc::now(),
+            ),
+        );
+
+        let result = generate_export_content(
+            &session,
+            &DiffSource::PerCommitRange(vec![commit_id]),
+            &comment_types(),
+            true,
+            &[],
+            None,
+        );
+
+        assert!(matches!(result, Err(TuicrError::NoComments)));
     }
 
     #[test]

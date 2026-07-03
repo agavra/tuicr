@@ -13,8 +13,8 @@ use crate::forge::context::{ContextProvider, ForgeContextProvider, VcsContextPro
 use crate::forge::selector::PullRequestsTab;
 use crate::forge::traits::{ForgeBackend, ForgeRepository};
 use crate::model::{
-    ClearScope, Comment, CommentType, DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin,
-    LineRange, LineSide, ReviewSession, SessionDiffSource,
+    ClearScope, Comment, CommentType, CommitReview, DiffFile, DiffHunk, DiffLine, FileStatus,
+    LineOrigin, LineRange, LineSide, ReviewSession, SessionDiffSource,
 };
 use crate::persistence::load_latest_session_for_context;
 use crate::review_store::{AddCommentRequest, CommentTarget, add_comment_to_session};
@@ -577,6 +577,7 @@ pub enum DiffSource {
     Unstaged,
     StagedAndUnstaged,
     CommitRange(Vec<String>),
+    PerCommitRange(Vec<String>),
     StagedUnstagedAndCommits(Vec<String>),
     /// Remote PR review. Carries identity + base/head SHAs needed for
     /// context expansion and status bar labels.
@@ -981,9 +982,18 @@ struct StoredComment {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum StoredCommentLocation {
-    Review,
-    File { path: PathBuf },
-    Line { path: PathBuf, line: u32 },
+    Review {
+        commit_id: Option<String>,
+    },
+    File {
+        commit_id: Option<String>,
+        path: PathBuf,
+    },
+    Line {
+        commit_id: Option<String>,
+        path: PathBuf,
+        line: u32,
+    },
 }
 
 /// Pending "press again to confirm" state for the vim comment box. A first
@@ -1160,6 +1170,11 @@ pub struct App {
     pub pending_confirm: Option<ConfirmAction>,
     pub supports_keyboard_enhancement: bool,
     pub show_file_list: bool,
+    /// `true` when `--commits -r <range>` is active. The existing flat
+    /// session fields mirror one active commit; the full review lives in
+    /// `ReviewSession::per_commit_reviews`.
+    pub is_per_commit_mode: bool,
+    pub active_per_commit_id: Option<String>,
     /// `true` when the session was opened via `--all-files`. Drives the
     /// `PRISTINE · N files` chip in the status bar and prevents that chip
     /// from showing in the regular `--file <dir>` directory mode.
@@ -1450,6 +1465,7 @@ enum CommentLocation {
 
 pub struct AppStartupOptions<'a> {
     pub revisions: Option<&'a str>,
+    pub per_commit: bool,
     pub working_tree: bool,
     pub path_filter: Option<&'a str>,
     pub file_path: Option<&'a str>,
@@ -1610,6 +1626,83 @@ impl App {
                 },
             )?;
             let commit_ids = revision_range.commit_ids.to_vec();
+
+            if options.per_commit {
+                let review_commits = crate::profile::time_with(
+                    "startup.selected_commit_info",
+                    || vcs.get_commits_info(&commit_ids),
+                    profile_commit_result,
+                )?;
+                if review_commits.is_empty() {
+                    return Err(TuicrError::NoChanges);
+                }
+
+                let mut session =
+                    Self::load_or_create_per_commit_range_session(&vcs_info, &commit_ids);
+                Self::ensure_per_commit_reviews(&mut session, &review_commits);
+                let active_index = Self::single_commit_selection_index(
+                    session.commit_selection_range,
+                    review_commits.len(),
+                )
+                .unwrap_or(0);
+                let active_commit_id = review_commits[active_index].id.clone();
+                let active_ids = vec![active_commit_id.clone()];
+                let active_range = ResolvedRevisionRange::from_commit_ids(
+                    &active_ids,
+                    RevisionDiffTarget::CommitList,
+                );
+                let diff_files = match Self::get_commit_range_diff_with_ignore(
+                    vcs.as_ref(),
+                    &vcs_info.root_path,
+                    &active_range,
+                    highlighter,
+                    options.path_filter,
+                ) {
+                    Ok(files) => files,
+                    Err(TuicrError::NoChanges) => Vec::new(),
+                    Err(e) => return Err(e),
+                };
+
+                Self::load_commit_review_into_flat_session(&mut session, &active_commit_id);
+                session.commit_selection_range = Some((active_index, active_index));
+
+                let mut app = Self::build(
+                    vcs,
+                    vcs_info,
+                    theme,
+                    comment_type_configs.clone(),
+                    output_to_stdout,
+                    diff_files,
+                    session,
+                    DiffSource::PerCommitRange(commit_ids),
+                    InputMode::Normal,
+                    Vec::new(),
+                    options.path_filter,
+                    options.repo_url_override.clone(),
+                )?;
+
+                app.is_per_commit_mode = true;
+                app.active_per_commit_id = Some(active_commit_id);
+                app.range_diff_files = None;
+                app.commit_list = review_commits.clone();
+                app.commit_list_cursor = active_index;
+                app.commit_selection_range = Some((active_index, active_index));
+                app.commit_list_scroll_offset = 0;
+                app.visible_commit_count = review_commits.len();
+                app.has_more_commit = false;
+                app.show_commit_selector = review_commits.len() > 1;
+                app.commit_diff_cache.clear();
+                app.review_commits = review_commits;
+                app.insert_commit_message_if_single();
+                app.sort_files_by_directory(true);
+                app.expand_all_dirs();
+                app.populate_file_line_count_cache();
+                app.rebuild_annotations();
+                app.sync_active_per_commit_review();
+                app.persisted_session_snapshot = app.session.clone();
+
+                return Ok(app);
+            }
 
             if options.working_tree {
                 // Combined: commit range + staged/unstaged changes
@@ -1964,6 +2057,8 @@ impl App {
             pending_confirm: None,
             supports_keyboard_enhancement: false,
             show_file_list: true,
+            is_per_commit_mode: false,
+            active_per_commit_id: None,
             is_pristine_mode: false,
             is_single_file_view: false,
             primed_walk_next: false,
@@ -2056,6 +2151,10 @@ impl App {
         self.session_path = Some(path.clone());
         self.session_file_state = SessionFileState::from_path(&path).ok();
         self.dirty = false;
+        self.load_active_per_commit_review();
+        if self.is_per_commit_mode {
+            self.persisted_session_snapshot = self.session.clone();
+        }
     }
 
     pub fn ensure_ephemeral_session_file(&mut self) -> Result<Option<PathBuf>> {
@@ -2124,6 +2223,7 @@ impl App {
     }
 
     pub fn save_current_session_merging_external(&mut self) -> Result<PathBuf> {
+        self.sync_active_per_commit_review();
         let identity = self.session.clone();
         let current = self.session.clone();
         let base = self.persisted_session_snapshot.clone();
@@ -2190,6 +2290,7 @@ impl App {
     }
 
     pub fn reload_persisted_session_if_changed(&mut self, force: bool) -> Result<usize> {
+        self.sync_active_per_commit_review();
         let path = match self.session_path.clone() {
             Some(path) => path,
             None => match crate::persistence::storage::session_path(&self.session) {
@@ -2220,6 +2321,7 @@ impl App {
         );
         self.persisted_session_snapshot = latest;
         self.session_file_state = Some(state);
+        self.load_active_per_commit_review();
         if changed > 0 {
             self.rebuild_annotations();
         }
@@ -2234,20 +2336,57 @@ impl App {
     ) -> usize {
         let mut changed = 0;
 
-        for (path, latest_review) in &latest.files {
-            if !current.files.contains_key(path) {
-                current.files.insert(path.clone(), latest_review.clone());
-                changed += latest_review.comment_count();
-                continue;
-            }
+        if current.diff_source == SessionDiffSource::PerCommitRange {
+            for (commit_id, latest_review) in &latest.per_commit_reviews {
+                if !current.per_commit_reviews.contains_key(commit_id) {
+                    current
+                        .per_commit_reviews
+                        .insert(commit_id.clone(), latest_review.clone());
+                    changed += latest_review.comment_count();
+                    continue;
+                }
 
-            let base_reviewed = base.files.get(path).map(|review| review.reviewed);
-            if let Some(current_review) = current.files.get_mut(path)
-                && Some(current_review.reviewed) == base_reviewed
-                && current_review.reviewed != latest_review.reviewed
-            {
-                current_review.reviewed = latest_review.reviewed;
-                changed += 1;
+                let Some(current_commit) = current.per_commit_reviews.get_mut(commit_id) else {
+                    continue;
+                };
+                let base_commit = base.per_commit_reviews.get(commit_id);
+                for (path, latest_file) in &latest_review.files {
+                    if !current_commit.files.contains_key(path) {
+                        current_commit
+                            .files
+                            .insert(path.clone(), latest_file.clone());
+                        changed += latest_file.comment_count();
+                        continue;
+                    }
+
+                    let base_reviewed = base_commit
+                        .and_then(|commit| commit.files.get(path))
+                        .map(|review| review.reviewed);
+                    if let Some(current_file) = current_commit.files.get_mut(path)
+                        && Some(current_file.reviewed) == base_reviewed
+                        && current_file.reviewed != latest_file.reviewed
+                    {
+                        current_file.reviewed = latest_file.reviewed;
+                        changed += 1;
+                    }
+                }
+            }
+        } else {
+            for (path, latest_review) in &latest.files {
+                if !current.files.contains_key(path) {
+                    current.files.insert(path.clone(), latest_review.clone());
+                    changed += latest_review.comment_count();
+                    continue;
+                }
+
+                let base_reviewed = base.files.get(path).map(|review| review.reviewed);
+                if let Some(current_review) = current.files.get_mut(path)
+                    && Some(current_review.reviewed) == base_reviewed
+                    && current_review.reviewed != latest_review.reviewed
+                {
+                    current_review.reviewed = latest_review.reviewed;
+                    changed += 1;
+                }
             }
         }
 
@@ -2296,6 +2435,13 @@ impl App {
     }
 
     fn comment_count(session: &ReviewSession) -> usize {
+        if session.diff_source == SessionDiffSource::PerCommitRange {
+            return session
+                .per_commit_reviews
+                .values()
+                .map(|review| review.comment_count())
+                .sum();
+        }
         session.review_comments.len()
             + session
                 .files
@@ -2306,11 +2452,59 @@ impl App {
 
     fn collect_stored_comments(session: &ReviewSession) -> HashMap<String, StoredComment> {
         let mut comments = HashMap::new();
+        if session.diff_source == SessionDiffSource::PerCommitRange {
+            for (commit_id, commit_review) in &session.per_commit_reviews {
+                for comment in &commit_review.review_comments {
+                    comments.insert(
+                        comment.id.clone(),
+                        StoredComment {
+                            location: StoredCommentLocation::Review {
+                                commit_id: Some(commit_id.clone()),
+                            },
+                            comment: comment.clone(),
+                        },
+                    );
+                }
+
+                for (path, review) in &commit_review.files {
+                    for comment in &review.file_comments {
+                        comments.insert(
+                            comment.id.clone(),
+                            StoredComment {
+                                location: StoredCommentLocation::File {
+                                    commit_id: Some(commit_id.clone()),
+                                    path: path.clone(),
+                                },
+                                comment: comment.clone(),
+                            },
+                        );
+                    }
+
+                    for (line, line_comments) in &review.line_comments {
+                        for comment in line_comments {
+                            comments.insert(
+                                comment.id.clone(),
+                                StoredComment {
+                                    location: StoredCommentLocation::Line {
+                                        commit_id: Some(commit_id.clone()),
+                                        path: path.clone(),
+                                        line: *line,
+                                    },
+                                    comment: comment.clone(),
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+            return comments;
+        }
+
         for comment in &session.review_comments {
             comments.insert(
                 comment.id.clone(),
                 StoredComment {
-                    location: StoredCommentLocation::Review,
+                    location: StoredCommentLocation::Review { commit_id: None },
                     comment: comment.clone(),
                 },
             );
@@ -2321,7 +2515,10 @@ impl App {
                 comments.insert(
                     comment.id.clone(),
                     StoredComment {
-                        location: StoredCommentLocation::File { path: path.clone() },
+                        location: StoredCommentLocation::File {
+                            commit_id: None,
+                            path: path.clone(),
+                        },
                         comment: comment.clone(),
                     },
                 );
@@ -2333,6 +2530,7 @@ impl App {
                         comment.id.clone(),
                         StoredComment {
                             location: StoredCommentLocation::Line {
+                                commit_id: None,
                                 path: path.clone(),
                                 line: *line,
                             },
@@ -2349,16 +2547,42 @@ impl App {
     fn upsert_stored_comment(session: &mut ReviewSession, stored: StoredComment) {
         Self::remove_stored_comment(session, &stored.comment.id);
         match stored.location {
-            StoredCommentLocation::Review => {
-                session.review_comments.push(stored.comment);
+            StoredCommentLocation::Review { commit_id } => {
+                if let Some(commit_id) = commit_id {
+                    if let Some(review) = session.per_commit_reviews.get_mut(&commit_id) {
+                        review.review_comments.push(stored.comment);
+                    }
+                } else {
+                    session.review_comments.push(stored.comment);
+                }
             }
-            StoredCommentLocation::File { path } => {
-                if let Some(review) = session.files.get_mut(&path) {
+            StoredCommentLocation::File { commit_id, path } => {
+                if let Some(commit_id) = commit_id {
+                    if let Some(commit) = session.per_commit_reviews.get_mut(&commit_id)
+                        && let Some(review) = commit.files.get_mut(&path)
+                    {
+                        review.file_comments.push(stored.comment);
+                    }
+                } else if let Some(review) = session.files.get_mut(&path) {
                     review.file_comments.push(stored.comment);
                 }
             }
-            StoredCommentLocation::Line { path, line } => {
-                if let Some(review) = session.files.get_mut(&path) {
+            StoredCommentLocation::Line {
+                commit_id,
+                path,
+                line,
+            } => {
+                if let Some(commit_id) = commit_id {
+                    if let Some(commit) = session.per_commit_reviews.get_mut(&commit_id)
+                        && let Some(review) = commit.files.get_mut(&path)
+                    {
+                        review
+                            .line_comments
+                            .entry(line)
+                            .or_default()
+                            .push(stored.comment);
+                    }
+                } else if let Some(review) = session.files.get_mut(&path) {
                     review
                         .line_comments
                         .entry(line)
@@ -2377,6 +2601,45 @@ impl App {
         {
             session.review_comments.remove(index);
             return true;
+        }
+
+        for commit in session.per_commit_reviews.values_mut() {
+            if let Some(index) = commit
+                .review_comments
+                .iter()
+                .position(|comment| comment.id == id)
+            {
+                commit.review_comments.remove(index);
+                return true;
+            }
+
+            for review in commit.files.values_mut() {
+                if let Some(index) = review
+                    .file_comments
+                    .iter()
+                    .position(|comment| comment.id == id)
+                {
+                    review.file_comments.remove(index);
+                    return true;
+                }
+
+                let mut empty_lines = Vec::new();
+                for (line, comments) in &mut review.line_comments {
+                    if let Some(index) = comments.iter().position(|comment| comment.id == id) {
+                        comments.remove(index);
+                        if comments.is_empty() {
+                            empty_lines.push(*line);
+                        }
+                        for line in empty_lines {
+                            review.line_comments.remove(&line);
+                        }
+                        return true;
+                    }
+                }
+                for line in empty_lines {
+                    review.line_comments.remove(&line);
+                }
+            }
         }
 
         for review in session.files.values_mut() {
@@ -2628,6 +2891,121 @@ impl App {
         session
     }
 
+    fn load_or_create_per_commit_range_session(
+        vcs_info: &VcsInfo,
+        commit_ids: &[String],
+    ) -> ReviewSession {
+        let newest_commit_id = commit_ids.last().unwrap().clone();
+        let loaded = load_latest_session_for_context(
+            &vcs_info.root_path,
+            vcs_info.branch_name.as_deref(),
+            &newest_commit_id,
+            SessionDiffSource::PerCommitRange,
+            Some(commit_ids),
+        )
+        .ok()
+        .and_then(|found| found.map(|(_path, session)| session));
+
+        let mut session = loaded.unwrap_or_else(|| {
+            let mut s = ReviewSession::new(
+                vcs_info.root_path.clone(),
+                newest_commit_id,
+                vcs_info.branch_name.clone(),
+                SessionDiffSource::PerCommitRange,
+            );
+            s.commit_range = Some(commit_ids.to_vec());
+            s
+        });
+
+        session.diff_source = SessionDiffSource::PerCommitRange;
+        if session.commit_range.is_none() {
+            session.commit_range = Some(commit_ids.to_vec());
+            session.updated_at = chrono::Utc::now();
+        }
+        session
+    }
+
+    fn commit_review_from_info(commit: &CommitInfo) -> CommitReview {
+        CommitReview::new(
+            commit.id.clone(),
+            commit.short_id.clone(),
+            commit.summary.clone(),
+            commit.body.clone(),
+            commit.author.clone(),
+            commit.time,
+        )
+    }
+
+    fn ensure_per_commit_reviews(session: &mut ReviewSession, commits: &[CommitInfo]) {
+        for commit in commits {
+            session
+                .per_commit_reviews
+                .entry(commit.id.clone())
+                .and_modify(|review| {
+                    review.short_id = commit.short_id.clone();
+                    review.summary = commit.summary.clone();
+                    review.body = commit.body.clone();
+                    review.author = commit.author.clone();
+                    review.time = commit.time;
+                })
+                .or_insert_with(|| Self::commit_review_from_info(commit));
+        }
+    }
+
+    fn load_commit_review_into_flat_session(session: &mut ReviewSession, commit_id: &str) {
+        if let Some(review) = session.per_commit_reviews.get(commit_id).cloned() {
+            session.review_comments = review.review_comments;
+            session.files = review.files;
+        } else {
+            session.review_comments.clear();
+            session.files.clear();
+        }
+    }
+
+    pub fn sync_active_per_commit_review(&mut self) {
+        if !self.is_per_commit_mode {
+            return;
+        }
+        let Some(commit_id) = self.active_per_commit_id.clone() else {
+            return;
+        };
+        self.session.commit_selection_range = self.per_commit_active_index().map(|idx| (idx, idx));
+        let fallback = self
+            .review_commits
+            .iter()
+            .find(|commit| commit.id == commit_id)
+            .map(Self::commit_review_from_info);
+        let entry_id = commit_id.clone();
+        let review = self
+            .session
+            .per_commit_reviews
+            .entry(commit_id)
+            .or_insert_with(|| {
+                fallback.unwrap_or_else(|| {
+                    CommitReview::new(
+                        entry_id.clone(),
+                        entry_id[..7.min(entry_id.len())].to_string(),
+                        "(unknown commit)".to_string(),
+                        None,
+                        String::new(),
+                        Utc::now(),
+                    )
+                })
+            });
+        review.review_comments = self.session.review_comments.clone();
+        review.files = self.session.files.clone();
+    }
+
+    fn load_active_per_commit_review(&mut self) {
+        if !self.is_per_commit_mode {
+            return;
+        }
+        let Some(commit_id) = self.active_per_commit_id.clone() else {
+            return;
+        };
+        Self::load_commit_review_into_flat_session(&mut self.session, &commit_id);
+    }
+
     fn load_or_create_session(vcs_info: &VcsInfo, diff_source: SessionDiffSource) -> ReviewSession {
         let new_session = || {
             ReviewSession::new(
@@ -2760,6 +3138,15 @@ impl App {
             return Some(message);
         }
         None
+    }
+
+    fn single_commit_selection_index(range: Option<(usize, usize)>, total: usize) -> Option<usize> {
+        let (start, end) = range?;
+        if total > 0 && start == end && end < total {
+            Some(start)
+        } else {
+            None
+        }
     }
 
     fn register_diff_files(
@@ -4079,6 +4466,13 @@ impl App {
     /// Reloads diff files from disk. Returns `(file_count, invalidated_count)` where
     /// `invalidated_count` is the number of previously reviewed files whose content changed.
     pub fn reload_diff_files(&mut self) -> Result<(usize, usize)> {
+        if self.is_per_commit_mode {
+            let idx = self.per_commit_active_index().unwrap_or(0);
+            self.commit_diff_cache.remove(&(idx, idx));
+            self.select_per_commit_index(idx)?;
+            return Ok((self.diff_files.len(), 0));
+        }
+
         let current_path = self.current_file_path().cloned();
         let prev_file_idx = self.diff_state.current_file_idx;
         let prev_cursor_line = self.diff_state.cursor_line;
@@ -4102,6 +4496,7 @@ impl App {
                 highlighter,
                 self.path_filter.as_deref(),
             )?,
+            DiffSource::PerCommitRange(_) => unreachable!("handled by per-commit reload branch"),
             DiffSource::StagedUnstagedAndCommits(commit_ids) => {
                 let ids = commit_ids.clone();
                 Self::get_working_tree_with_commits_diff_with_ignore(
@@ -4362,6 +4757,7 @@ impl App {
                 self.diff_state.current_file_idx = file_idx;
             }
             self.rebuild_annotations();
+            self.sync_active_per_commit_review();
 
             if adjust_cursor {
                 let header_line = self.calculate_file_scroll_offset(file_idx);
@@ -4444,6 +4840,7 @@ impl App {
         let reviewed = review.toggle_hunk_reviewed(key);
         self.dirty = true;
         self.rebuild_annotations();
+        self.sync_active_per_commit_review();
         self.diff_state.current_file_idx = file_idx;
         if let Some(tree_idx) = self.file_idx_to_tree_idx(file_idx) {
             self.file_list_state.select(tree_idx);
@@ -6626,6 +7023,7 @@ impl App {
                 self.dirty = true;
                 self.set_message("Review comment deleted");
                 self.rebuild_annotations();
+                self.sync_active_per_commit_review();
                 return true;
             }
             Some(CommentLocation::File { path, index }) => {
@@ -6634,6 +7032,7 @@ impl App {
                     self.dirty = true;
                     self.set_message("Comment deleted");
                     self.rebuild_annotations();
+                    self.sync_active_per_commit_review();
                     return true;
                 }
             }
@@ -6667,6 +7066,7 @@ impl App {
                         self.dirty = true;
                         self.set_message(format!("Comment on line {line} deleted"));
                         self.rebuild_annotations();
+                        self.sync_active_per_commit_review();
                         return true;
                     }
                 }
@@ -6686,6 +7086,7 @@ impl App {
 
         self.dirty = true;
         self.rebuild_annotations();
+        self.sync_active_per_commit_review();
         let msg = match (cleared, unreviewed) {
             (0, n) => format!("Unreviewed {n} files"),
             (c, 0) => format!("Cleared {c} comments"),
@@ -8049,15 +8450,26 @@ impl App {
         // If we have review commits, restore the inline selector state
         if !self.review_commits.is_empty() {
             self.commit_list = self.review_commits.clone();
-            self.commit_selection_range = self.saved_inline_selection;
-            self.commit_list_cursor = 0;
+            self.commit_selection_range = if self.is_per_commit_mode {
+                let idx = self.per_commit_active_index().unwrap_or(0);
+                Some((idx, idx))
+            } else {
+                self.saved_inline_selection
+            };
+            self.commit_list_cursor = if self.is_per_commit_mode {
+                self.per_commit_active_index().unwrap_or(0)
+            } else {
+                0
+            };
             self.commit_list_scroll_offset = 0;
             self.visible_commit_count = self.review_commits.len();
             self.has_more_commit = false;
             self.saved_inline_selection = None;
 
             // Reload diff for the restored selection
-            if self.commit_selection_range.is_some() {
+            if self.is_per_commit_mode {
+                self.select_per_commit_index(self.commit_list_cursor)?;
+            } else if self.commit_selection_range.is_some() {
                 self.reload_inline_selection()?;
             }
             return Ok(());
@@ -8991,6 +9403,106 @@ impl App {
         }
     }
 
+    pub fn cycle_per_commit_next(&mut self) -> Result<()> {
+        if self.review_commits.is_empty() {
+            return Ok(());
+        }
+        let current = self.per_commit_active_index().unwrap_or(0);
+        let next = (current + 1) % self.review_commits.len();
+        self.select_per_commit_index(next)
+    }
+
+    pub fn cycle_per_commit_prev(&mut self) -> Result<()> {
+        if self.review_commits.is_empty() {
+            return Ok(());
+        }
+        let current = self.per_commit_active_index().unwrap_or(0);
+        let prev = if current == 0 {
+            self.review_commits.len() - 1
+        } else {
+            current - 1
+        };
+        self.select_per_commit_index(prev)
+    }
+
+    fn per_commit_active_index(&self) -> Option<usize> {
+        let id = self.active_per_commit_id.as_ref()?;
+        self.review_commits
+            .iter()
+            .position(|commit| &commit.id == id)
+    }
+
+    pub fn select_per_commit_index(&mut self, index: usize) -> Result<()> {
+        if !self.is_per_commit_mode {
+            return Ok(());
+        }
+        let Some(commit) = self.review_commits.get(index).cloned() else {
+            return Ok(());
+        };
+
+        self.sync_active_per_commit_review();
+        self.active_per_commit_id = Some(commit.id.clone());
+        self.commit_selection_range = Some((index, index));
+        self.session.commit_selection_range = Some((index, index));
+        self.commit_list_cursor = index;
+        if self.commit_list_viewport_height > 0 {
+            if index < self.commit_list_scroll_offset {
+                self.commit_list_scroll_offset = index;
+            } else if index >= self.commit_list_scroll_offset + self.commit_list_viewport_height {
+                self.commit_list_scroll_offset =
+                    index.saturating_sub(self.commit_list_viewport_height - 1);
+            }
+        }
+
+        self.session
+            .per_commit_reviews
+            .entry(commit.id.clone())
+            .or_insert_with(|| Self::commit_review_from_info(&commit));
+        Self::load_commit_review_into_flat_session(&mut self.session, &commit.id);
+
+        let diff_files = if let Some(cached) = self.commit_diff_cache.get(&(index, index)) {
+            cached.clone()
+        } else {
+            let ids = vec![commit.id.clone()];
+            let range =
+                ResolvedRevisionRange::from_commit_ids(&ids, RevisionDiffTarget::CommitList);
+            let highlighter = self.theme.syntax_highlighter();
+            let files = match Self::get_commit_range_diff_with_ignore(
+                self.vcs.as_ref(),
+                &self.vcs_info.root_path,
+                &range,
+                highlighter,
+                self.path_filter.as_deref(),
+            ) {
+                Ok(files) => files,
+                Err(TuicrError::NoChanges) => Vec::new(),
+                Err(e) => return Err(e),
+            };
+            self.commit_diff_cache.insert((index, index), files.clone());
+            files
+        };
+
+        self.diff_files = diff_files;
+        for file in &self.diff_files {
+            self.session.add_diff_file(file);
+        }
+
+        let wrap = self.diff_state.wrap_lines;
+        self.diff_state = DiffState::default();
+        self.diff_state.wrap_lines = wrap;
+        self.file_list_state = FileListState::default();
+        self.expanded_top.clear();
+        self.expanded_bottom.clear();
+        self.insert_commit_message_if_single();
+        self.sort_files_by_directory(true);
+        self.expand_all_dirs();
+        self.populate_file_line_count_cache();
+        self.rebuild_annotations();
+        self.sync_active_per_commit_review();
+        self.set_message(format!("Commit {}: {}", commit.short_id, commit.summary));
+        Ok(())
+    }
+
     pub fn confirm_commit_selection(&mut self) -> Result<()> {
         let selection = match self.commit_selection_range {
             Some((start, end)) => format!(
@@ -9588,6 +10100,11 @@ impl App {
                     commits.last().map(|s| s.as_str())
                 }
             }
+            DiffSource::PerCommitRange(_) => self.active_per_commit_id.as_deref().or_else(|| {
+                self.per_commit_active_index()
+                    .and_then(|idx| self.review_commits.get(idx))
+                    .map(|commit| commit.id.as_str())
+            }),
             _ => None,
         }
     }
@@ -9633,6 +10150,7 @@ impl App {
                 | DiffSource::StagedUnstagedAndCommits(_)
                 | DiffSource::CommitRange(_)
                 | DiffSource::PullRequest(_)
+                | DiffSource::PerCommitRange(_)
         )
     }
 
@@ -15989,6 +16507,99 @@ mod single_file_view_tests {
             None,
         )
         .expect("build app")
+    }
+
+    fn commit_info(id: &str, short_id: &str, summary: &str) -> CommitInfo {
+        CommitInfo {
+            id: id.to_string(),
+            short_id: short_id.to_string(),
+            branch_name: None,
+            summary: summary.to_string(),
+            body: None,
+            author: "reviewer@example.com".to_string(),
+            time: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn per_commit_switching_preserves_comments_per_commit() {
+        let file_a = file("a.rs", vec![hunk(1, 1)]);
+        let file_b = file("b.rs", vec![hunk(10, 1)]);
+        let id_a = "aaa111122223333444455556666777788889999".to_string();
+        let id_b = "bbb111122223333444455556666777788889999".to_string();
+        let commit_a = commit_info(&id_a, "aaa1111", "Prepare API");
+        let commit_b = commit_info(&id_b, "bbb1111", "Wire API");
+
+        let mut app = app_with(vec![file_a.clone()]);
+        app.is_per_commit_mode = true;
+        app.active_per_commit_id = Some(id_a.clone());
+        app.diff_source = DiffSource::PerCommitRange(vec![id_a.clone(), id_b.clone()]);
+        app.review_commits = vec![commit_a, commit_b];
+        app.commit_list = app.review_commits.clone();
+        app.visible_commit_count = app.review_commits.len();
+        app.show_commit_selector = true;
+        app.commit_selection_range = Some((0, 0));
+        app.session.diff_source = SessionDiffSource::PerCommitRange;
+        app.session.commit_range = Some(vec![id_a.clone(), id_b.clone()]);
+        app.commit_diff_cache.insert((0, 0), vec![file_a]);
+        app.commit_diff_cache.insert((1, 1), vec![file_b]);
+
+        app.session.review_comments.push(Comment::new(
+            "Keep this with the first commit".to_string(),
+            CommentType::Issue,
+            None,
+        ));
+
+        app.select_per_commit_index(1)
+            .expect("select second commit");
+        assert_eq!(app.active_per_commit_id.as_deref(), Some(id_b.as_str()));
+        assert_eq!(app.session.commit_selection_range, Some((1, 1)));
+        assert_eq!(
+            app.session
+                .per_commit_reviews
+                .get(&id_a)
+                .expect("first commit review")
+                .review_comments[0]
+                .content,
+            "Keep this with the first commit"
+        );
+        assert!(app.session.review_comments.is_empty());
+        assert!(
+            app.diff_files
+                .first()
+                .is_some_and(|file| file.is_commit_message)
+        );
+        assert_eq!(app.diff_files[0].hunks[0].lines[0].content, "Wire API");
+
+        app.session.review_comments.push(Comment::new(
+            "Keep this with the second commit".to_string(),
+            CommentType::Suggestion,
+            None,
+        ));
+
+        app.select_per_commit_index(0).expect("select first commit");
+        assert_eq!(app.active_per_commit_id.as_deref(), Some(id_a.as_str()));
+        assert_eq!(app.session.commit_selection_range, Some((0, 0)));
+        assert_eq!(app.session.review_comments.len(), 1);
+        assert_eq!(
+            app.session.review_comments[0].content,
+            "Keep this with the first commit"
+        );
+        assert_eq!(
+            app.session
+                .per_commit_reviews
+                .get(&id_b)
+                .expect("second commit review")
+                .review_comments[0]
+                .content,
+            "Keep this with the second commit"
+        );
+        assert!(
+            app.diff_files
+                .first()
+                .is_some_and(|file| file.is_commit_message)
+        );
+        assert_eq!(app.diff_files[0].hunks[0].lines[0].content, "Prepare API");
     }
 
     #[test]

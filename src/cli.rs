@@ -20,6 +20,8 @@ pub struct CliArgs {
     pub no_update_check: bool,
     /// Commit/revision range to review.
     pub revisions: Option<String>,
+    /// Review the selected revision range one commit at a time.
+    pub per_commit: bool,
     /// Skip commit selector and review uncommitted changes directly.
     pub working_tree: bool,
     /// Filter diff to a specific file or directory path.
@@ -63,6 +65,15 @@ struct TuiOptions {
         allow_hyphen_values = true
     )]
     revisions: Option<String>,
+
+    /// Review the selected revision range one commit at a time.
+    #[arg(
+        long = "commits",
+        action = ArgAction::SetTrue,
+        requires = "revisions",
+        conflicts_with = "working_tree",
+    )]
+    per_commit: bool,
 
     /// Color theme to use. Bundled themes resolve first; local themes are
     /// loaded from the config `themes/` directory.
@@ -283,6 +294,7 @@ impl From<Cli> for CliArgs {
             output_to_stdout: options.stdout,
             no_update_check: options.no_update_check,
             revisions: options.revisions,
+            per_commit: options.per_commit,
             working_tree: options.working_tree,
             path_filter: options.path_filter,
             file_path: options.file_path,
@@ -301,6 +313,7 @@ impl TuiOptions {
             || self.stdout
             || self.no_update_check
             || self.revisions.is_some()
+            || self.per_commit
             || self.working_tree
             || self.path_filter.is_some()
             || self.file_path.is_some()
@@ -315,6 +328,7 @@ impl TuiOptions {
             stdout: self.stdout || later.stdout,
             no_update_check: self.no_update_check || later.no_update_check,
             revisions: later.revisions.or(self.revisions),
+            per_commit: self.per_commit || later.per_commit,
             working_tree: self.working_tree || later.working_tree,
             path_filter: later.path_filter.or(self.path_filter),
             file_path: later.file_path.or(self.file_path),
@@ -334,7 +348,21 @@ impl Cli {
                 "TUI options cannot be used with `tuicr review`; run `tuicr review <command> --help` for review CLI options",
             ));
         }
-        Ok(self.into())
+
+        let args: CliArgs = self.into();
+        if args.per_commit && args.pr_target.is_some() {
+            return Err(clap::Error::raw(
+                clap::error::ErrorKind::ArgumentConflict,
+                "`--commits` is only supported for local `-r/--revisions` review, not PR mode",
+            ));
+        }
+        if args.per_commit && args.working_tree {
+            return Err(clap::Error::raw(
+                clap::error::ErrorKind::ArgumentConflict,
+                "`--commits` cannot be combined with `--working-tree`",
+            ));
+        }
+        Ok(args)
     }
 }
 
@@ -584,6 +612,51 @@ mod tests {
             .expect("parse should succeed");
         assert_eq!(parsed.path_filter, Some("src/".to_string()));
         assert_eq!(parsed.revisions, Some("HEAD~3..".to_string()));
+    }
+
+    #[test]
+    fn should_parse_per_commit_review_mode_with_revisions() {
+        let parsed = parse_for_test(&["tuicr", "--commits", "-r", "main..HEAD"])
+            .expect("parse should succeed");
+        assert!(parsed.per_commit);
+        assert_eq!(parsed.revisions, Some("main..HEAD".to_string()));
+    }
+
+    #[test]
+    fn should_parse_explicit_tui_per_commit_review_mode_with_revisions() {
+        let parsed = parse_for_test(&["tuicr", "tui", "--commits", "-r", "main..HEAD"])
+            .expect("parse should succeed");
+        assert!(parsed.per_commit);
+        assert_eq!(parsed.revisions, Some("main..HEAD".to_string()));
+    }
+
+    #[test]
+    fn should_require_revisions_for_per_commit_review_mode() {
+        let err = parse_for_test(&["tuicr", "--commits"]).expect_err("parse should fail");
+        assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn should_reject_per_commit_review_mode_with_working_tree() {
+        for args in [
+            ["tuicr", "--commits", "-w", "-r", "main..HEAD"].as_slice(),
+            ["tuicr", "--commits", "-r", "main..HEAD", "tui", "-w"].as_slice(),
+        ] {
+            let err = parse_for_test(args).expect_err("parse should fail");
+            assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
+        }
+    }
+
+    #[test]
+    fn should_reject_per_commit_review_mode_with_pr_mode() {
+        for args in [
+            ["tuicr", "--commits", "-r", "main..HEAD", "pr", "12"].as_slice(),
+            ["tuicr", "pr", "12", "--commits", "-r", "main..HEAD"].as_slice(),
+            ["tuicr", "tui", "pr", "12", "--commits", "-r", "main..HEAD"].as_slice(),
+        ] {
+            let err = parse_for_test(args).expect_err("parse should fail");
+            assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
+        }
     }
 
     #[test]

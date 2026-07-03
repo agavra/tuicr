@@ -63,6 +63,60 @@ impl FileReview {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommitReview {
+    pub commit_id: String,
+    pub short_id: String,
+    pub summary: String,
+    #[serde(default)]
+    pub body: Option<String>,
+    pub author: String,
+    pub time: DateTime<Utc>,
+    #[serde(default)]
+    pub review_comments: Vec<Comment>,
+    #[serde(default)]
+    pub files: HashMap<PathBuf, FileReview>,
+}
+
+impl CommitReview {
+    pub fn new(
+        commit_id: String,
+        short_id: String,
+        summary: String,
+        body: Option<String>,
+        author: String,
+        time: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            commit_id,
+            short_id,
+            summary,
+            body,
+            author,
+            time,
+            review_comments: Vec::new(),
+            files: HashMap::new(),
+        }
+    }
+
+    pub fn comment_count(&self) -> usize {
+        self.review_comments.len()
+            + self
+                .files
+                .values()
+                .map(|review| review.comment_count())
+                .sum::<usize>()
+    }
+
+    pub fn reviewed_count(&self) -> usize {
+        self.files.values().filter(|f| f.reviewed).count()
+    }
+
+    pub fn has_comments(&self) -> bool {
+        !self.review_comments.is_empty() || self.files.values().any(|f| f.comment_count() > 0)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[derive(Default)]
@@ -73,6 +127,7 @@ pub enum SessionDiffSource {
     Unstaged,
     StagedAndUnstaged,
     CommitRange,
+    PerCommitRange,
     WorkingTreeAndCommits,
     StagedUnstagedAndCommits,
     /// Remote pull request review. Per-PR identity lives in
@@ -108,10 +163,11 @@ pub struct ReviewSession {
     /// unresolved threads.
     #[serde(default)]
     pub remote_comments_visibility: PrCommentsVisibility,
-    /// Persisted inline commit selector range for PR sessions. Indices
-    /// reference the per-head-SHA `pr_commits` list captured at open
-    /// time. `None` means "all commits" (or no selector). Older sessions
-    /// without this field deserialize as `None`.
+    /// Persisted inline commit selector range. PR sessions use indices into
+    /// the per-head-SHA `pr_commits` list captured at open time. Per-commit
+    /// local sessions store the single active commit as `(idx, idx)`.
+    /// `None` means "all commits" (or no selector). Older sessions without
+    /// this field deserialize as `None`.
     #[serde(default)]
     pub commit_selection_range: Option<(usize, usize)>,
     pub created_at: DateTime<Utc>,
@@ -119,6 +175,8 @@ pub struct ReviewSession {
     #[serde(default)]
     pub review_comments: Vec<Comment>,
     pub files: HashMap<PathBuf, FileReview>,
+    #[serde(default)]
+    pub per_commit_reviews: HashMap<String, CommitReview>,
     pub session_notes: Option<String>,
 }
 
@@ -145,11 +203,19 @@ impl ReviewSession {
             updated_at: now,
             review_comments: Vec::new(),
             files: HashMap::new(),
+            per_commit_reviews: HashMap::new(),
             session_notes: None,
         }
     }
 
     pub fn reviewed_count(&self) -> usize {
+        if self.diff_source == SessionDiffSource::PerCommitRange {
+            return self
+                .per_commit_reviews
+                .values()
+                .map(CommitReview::reviewed_count)
+                .sum();
+        }
         self.files.values().filter(|f| f.reviewed).count()
     }
 
@@ -193,6 +259,12 @@ impl ReviewSession {
     }
 
     pub fn has_comments(&self) -> bool {
+        if self.diff_source == SessionDiffSource::PerCommitRange {
+            return self
+                .per_commit_reviews
+                .values()
+                .any(CommitReview::has_comments);
+        }
         !self.review_comments.is_empty() || self.files.values().any(|f| f.comment_count() > 0)
     }
 

@@ -178,6 +178,17 @@ fn header_source_chunk(app: &App) -> Option<String> {
                 }
             }
         }
+        DiffSource::PerCommitRange(commits) => {
+            let total = commits.len();
+            match app.commit_selection_range {
+                Some((idx, idx2)) if idx == idx2 => app
+                    .review_commits
+                    .get(idx)
+                    .map(|commit| format!("commit {}/{} {}", idx + 1, total, commit.short_id))
+                    .or_else(|| Some(format!("per-commit {total} commits"))),
+                _ => Some(format!("per-commit {total} commits")),
+            }
+        }
         DiffSource::StagedUnstagedAndCommits(commits) => {
             if commits.len() == 1 {
                 Some(format!(

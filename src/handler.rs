@@ -337,6 +337,7 @@ fn handle_left_click(app: &mut App, pos: Position) {
 /// Export review: either to clipboard or set pending stdout output based on app.output_to_stdout.
 /// When output_to_stdout is true, stores the content and sets should_quit.
 fn handle_export(app: &mut App) {
+    app.sync_active_per_commit_review();
     let slug = app.session_slug();
     if app.output_to_stdout {
         match generate_export_content(
@@ -1043,6 +1044,7 @@ pub fn handle_confirm_action(app: &mut App, action: Action) {
     match action {
         Action::ConfirmYes => {
             if let Some(app::ConfirmAction::CopyAndQuit) = app.pending_confirm {
+                app.sync_active_per_commit_review();
                 let slug = app.session_slug();
                 if app.output_to_stdout {
                     match generate_export_content(
@@ -1199,6 +1201,12 @@ pub fn handle_commit_selector_action(app: &mut App, action: Action) {
         Action::CursorUp(_) => app.commit_select_up(),
         // Toggle + auto-advance so repeated presses sweep a contiguous run.
         Action::ToggleExpand | Action::ToggleCommitSelect | Action::SelectFile => {
+            if app.is_per_commit_mode {
+                if let Err(e) = app.select_per_commit_index(app.commit_list_cursor) {
+                    app.set_error(format!("Failed to load diff: {e}"));
+                }
+                return;
+            }
             app.toggle_commit_selection_and_advance();
             if matches!(app.diff_source, crate::app::DiffSource::PullRequest(_)) {
                 // PR mode reloads via the forge `compare` API on a
@@ -1500,14 +1508,24 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
             }
         }
         Action::CycleCommitNext if app.has_inline_commit_selector() => {
-            app.cycle_commit_next();
-            if let Err(e) = app.reload_inline_selection() {
+            let result = if app.is_per_commit_mode {
+                app.cycle_per_commit_next()
+            } else {
+                app.cycle_commit_next();
+                app.reload_inline_selection()
+            };
+            if let Err(e) = result {
                 app.set_error(format!("Failed to load diff: {e}"));
             }
         }
         Action::CycleCommitPrev if app.has_inline_commit_selector() => {
-            app.cycle_commit_prev();
-            if let Err(e) = app.reload_inline_selection() {
+            let result = if app.is_per_commit_mode {
+                app.cycle_per_commit_prev()
+            } else {
+                app.cycle_commit_prev();
+                app.reload_inline_selection()
+            };
+            if let Err(e) = result {
                 app.set_error(format!("Failed to load diff: {e}"));
             }
         }
