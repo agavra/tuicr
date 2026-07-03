@@ -63,6 +63,7 @@ tuicr                       # Pick from a commit selector
 tuicr tui                   # Same TUI, explicit subcommand
 tuicr -w                    # Uncommitted changes (skip selector)
 tuicr -r main..HEAD         # Commit range
+tuicr --commits -r main..HEAD  # Review each commit in the range
 tuicr pr 125                # GitHub PR
 tuicr mr 125                # GitLab MR
 tuicr tui pr 125            # GitHub PR via explicit TUI subcommand
@@ -129,6 +130,9 @@ Comment types: ISSUE (problems to fix), SUGGESTION (improvements), NOTE (observa
 3. [NOTE] `src/auth.rs:50-55` - This block could be refactored
 ```
 
+For per-commit reviews (`--commits -r main..HEAD`), export groups local comments under
+each commit and includes the commit message for message-level comments.
+
 Paste it back to any coding agent (Claude, Codex, Cursor, etc).
 
 For an agent-driven workflow where your agent opens tuicr in a tmux split pane, see
@@ -140,6 +144,7 @@ Run with `--stdout` to pipe the markdown to another process:
 
 ```bash
 tuicr --stdout > review.md
+tuicr --commits -r main..HEAD --stdout > review.md
 tuicr --stdout | pbcopy
 ```
 
@@ -229,6 +234,7 @@ A first-session cheatsheet. Press `?` inside tuicr for the full reference.
 | `g` / `G` | Top / bottom |
 | `{` / `}` | Previous / next file |
 | `[` / `]` | Previous / next hunk |
+| `(` / `)` | Previous / next active commit when the inline commit selector is visible |
 | `/` | Search |
 | `c` / `C` | Add line / file comment |
 | `v` / `V` | Visual mode (range comment) |

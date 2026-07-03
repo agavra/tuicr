@@ -19,6 +19,7 @@ Full reference. Press `?` inside tuicr for an in-app version of this list.
 | `{N}{motion}` | Vim-style count prefix — repeats `j` / `k` / `h` / `l` / `{` / `}` / `[` / `]` `N` times |
 | `{` / `}` | Jump to previous / next file |
 | `[` / `]` | Jump to previous / next hunk |
+| `(` / `)` | Jump to previous / next active commit when the inline commit selector is visible |
 | `/` | Search within diff |
 | `n` / `N` | Next / previous search match |
 | `Enter` | Expand or collapse hidden context between hunks |
@@ -153,6 +154,7 @@ GitLab MRs.
 | `j` / `k` | Move selection |
 | `Space` | Toggle local commit selection |
 | `Enter` | Confirm local commit range, open PR, or load more PRs |
+| `(` / `)` | Cycle the active commit in per-commit review mode or cycle the selected aggregate range |
 | `/` | Filter currently loaded PR rows locally |
 | `r` | In Pull Requests tab, toggle all open PRs / PRs requesting your review |
 | `q` / `Esc` | Quit / return |

@@ -65,7 +65,7 @@ src/
 │   ├── mod.rs
 │   ├── comment.rs       # Comment, CommentType (Note/Suggestion/Issue/Praise)
 │   ├── diff_types.rs    # DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin
-│   └── review.rs        # ReviewSession, FileReview (the persisted review state)
+│   └── review.rs        # ReviewSession, CommitReview, FileReview (persisted review state)
 │
 ├── input/
 │   ├── mod.rs
@@ -120,6 +120,7 @@ Repository-managed agent integrations:
 **ReviewSession** (`src/model/review.rs`):
 - Persisted review state with `files: HashMap<PathBuf, FileReview>`
 - Each `FileReview` has: `reviewed: bool`, `reviewed_hunks: BTreeSet<String>`, `file_comments: Vec<Comment>`, `line_comments: HashMap<u32, Vec<Comment>>`
+- Per-commit mode stores one `CommitReview` per commit in `per_commit_reviews`; the active commit is mirrored into the flat `review_comments`/`files` fields so existing render, comment, and navigation code can operate on a single commit at a time.
 
 **ReviewStore** (`src/review_store.rs`):
 - Public library facade for persisted review sessions
@@ -132,14 +133,14 @@ Repository-managed agent integrations:
 
 ### Data Flow
 
-1. **Startup**: Parse CLI args (invalid `--theme` exits non-zero). With no subcommand, or with explicit `tuicr tui`, load config from `$XDG_CONFIG_HOME/tuicr/config.toml` (default `~/.config/tuicr/config.toml`, or `%APPDATA%\tuicr\config.toml` on Windows), ignore unknown config keys with startup warnings, resolve theme precedence (`--theme` > config > dark), then call `App::new()`. Theme selection first checks bundled names, then local theme files from `$XDG_CONFIG_HOME/tuicr/themes/` (default `~/.config/tuicr/themes/`, or `%APPDATA%\tuicr\themes\` on Windows). Local theme files may reference a local `.tmTheme` syntax theme. Some bat-compatible Base16 `.tmTheme` files encode ANSI palette slots as placeholders, and `src/syntax/mod.rs` translates those at render time. `App::new()` calls `detect_vcs()` (Jujutsu first, then Git, then Mercurial), using config `backend = "libgit2"` or `backend = "cli"` for Git. Normal Git repos default to libgit2; sparse checkout repos automatically use the Git CLI backend and show a startup warning when that overrides the default. It filters diff files via repo-root `.tuicrignore`, then enters commit selection mode by default. If staged/unstaged changes exist, the first selection rows are "Staged changes" and/or "Unstaged changes". The Pull Requests tab can toggle between all open PRs and forge PRs/MRs requesting the current user's review with `r`, which refetches page 1 using `gh pr list --search "review-requested:@me"` on GitHub or `glab mr list --reviewer=@me` on GitLab. With `-r/--revisions`, it opens the requested commit range directly. Config `show_file_list = false` hides the file list panel on startup (toggleable with `<leader>e`, where `leader` defaults to `;`). Config `diff_view = "side-by-side"` sets the default diff layout (toggleable with `:diff`). Config `wrap = true` enables line wrapping (toggleable with `:set wrap!`). Config `review_watch_interval_ms = 1000` controls persisted-session polling; set it to `0` to disable.
+1. **Startup**: Parse CLI args (invalid `--theme` exits non-zero). With no subcommand, or with explicit `tuicr tui`, load config from `$XDG_CONFIG_HOME/tuicr/config.toml` (default `~/.config/tuicr/config.toml`, or `%APPDATA%\tuicr\config.toml` on Windows), ignore unknown config keys with startup warnings, resolve theme precedence (`--theme` > config > dark), then call `App::new()`. Theme selection first checks bundled names, then local theme files from `$XDG_CONFIG_HOME/tuicr/themes/` (default `~/.config/tuicr/themes/`, or `%APPDATA%\tuicr\themes\` on Windows). Local theme files may reference a local `.tmTheme` syntax theme. Some bat-compatible Base16 `.tmTheme` files encode ANSI palette slots as placeholders, and `src/syntax/mod.rs` translates those at render time. `App::new()` calls `detect_vcs()` (Jujutsu first, then Git, then Mercurial), using config `backend = "libgit2"` or `backend = "cli"` for Git. Normal Git repos default to libgit2; sparse checkout repos automatically use the Git CLI backend and show a startup warning when that overrides the default. It filters diff files via repo-root `.tuicrignore`, then enters commit selection mode by default. If staged/unstaged changes exist, the first selection rows are "Staged changes" and/or "Unstaged changes". The Pull Requests tab can toggle between all open PRs and forge PRs/MRs requesting the current user's review with `r`, which refetches page 1 using `gh pr list --search "review-requested:@me"` on GitHub or `glab mr list --reviewer=@me` on GitLab. With `-r/--revisions`, it opens the requested aggregate commit range directly; with `--commits -r <range>`, it opens per-commit mode and displays one commit diff at a time, oldest first. Config `show_file_list = false` hides the file list panel on startup (toggleable with `<leader>e`, where `leader` defaults to `;`). Config `diff_view = "side-by-side"` sets the default diff layout (toggleable with `:diff`). Config `wrap = true` enables line wrapping (toggleable with `:set wrap!`). Config `review_watch_interval_ms = 1000` controls persisted-session polling; set it to `0` to disable.
 2. **Render**: `ui::render()` draws the TUI based on `App` state. When rendered comments exist, the left sidebar splits vertically into file tree and comment navigator; the navigator is hidden when there are no rendered comment rows.
 3. **Input**: `crossterm` events → `map_key_to_action` → match on Action in main loop
-4. **Comments**: `App::save_comment()` builds an `AddCommentRequest` and calls `add_comment_to_session()` so TUI and library callers share insertion behavior. The TUI creates a persisted session file as soon as a review session becomes active, so `tuicr review add` can target it immediately. Successful comment submits autosave the session using a locked, atomic write that merges externally added comments first.
-5. **Review CLI**: `tuicr review list|add|comments` exits before TUI startup, uses `ReviewStore`, and always emits JSON; `review list` includes `active: true` for currently open TUI sessions and a `kind` (`local`/`pr`) per session, and `review add --input` accepts JSON literal, `@file`, or stdin payloads. `--repo` is a *selector*: a checkout path (matches its local sessions + PR sessions for its `origin` repo) or a forge coordinate like `owner/repo` / a repo URL (matches local + PR sessions by owner/repo, parsed from each session's slug). PR sessions thus surface by naming the repo; `review list --all` dumps everything. Resolve a PR session with its emitted slug (`gh:owner/repo/pr/N`), which is self-contained and needs no `--repo`.
+4. **Comments**: `App::save_comment()` builds an `AddCommentRequest` and calls `add_comment_to_session()` so TUI and library callers share insertion behavior. The TUI creates a persisted session file as soon as a review session becomes active, so `tuicr review add` can target it immediately. Successful comment submits autosave the session using a locked, atomic write that merges externally added comments first. In per-commit mode, the active flat review is synced into `ReviewSession::per_commit_reviews` before commit switches, saves, reloads, and exports.
+5. **Review CLI**: `tuicr review list|add|comments` exits before TUI startup, uses `ReviewStore`, and always emits JSON; `review list` includes `active: true` for currently open TUI sessions and a `kind` (`local`/`pr`) per session, and `review add --input` accepts JSON literal, `@file`, or stdin payloads. For per-commit sessions, `review add` writes to the persisted active commit and `review comments` includes commit metadata on each emitted comment. `--repo` is a *selector*: a checkout path (matches its local sessions + PR sessions for its `origin` repo) or a forge coordinate like `owner/repo` / a repo URL (matches local + PR sessions by owner/repo, parsed from each session's slug). PR sessions thus surface by naming the repo; `review list --all` dumps everything. Resolve a PR session with its emitted slug (`gh:owner/repo/pr/N`), which is self-contained and needs no `--repo`.
 6. **Persistence**: active TUI sessions, comment submit, and `:w` save the session JSON to `~/.local/share/tuicr/reviews/`; library callers use `ReviewStore`. Open TUI sessions are also recorded in `active_sessions.json` beside `index.json` with pid, slug, path, and last-seen timestamp. TUI-created empty session files are deleted on normal exit if they still contain no comments and no reviewed files.
 7. **Reload diff/session**: `:e` reloads persisted comments/review state, then re-runs VCS diff loading and reapplies `.tuicrignore` filtering to refresh displayed files
-8. **Export**: `:clip` (alias `:export`) calls `export_to_clipboard()`, generating markdown and copying it to the clipboard (or stdout with `--stdout` flag)
+8. **Export**: `:clip` (alias `:export`) calls `export_to_clipboard()`, generating markdown and copying it to the clipboard (or stdout with `--stdout` flag). Per-commit sessions export comments grouped by commit and include commit-message context.
 
 ### Important Implementation Details
 
@@ -270,6 +271,23 @@ Summary: {optional overall notes}
 3. **[NOTE]** `src/utils.rs:15` - Why was this approach chosen?
 ```
 
+Per-commit reviews add one section per reviewed commit:
+
+`````markdown
+## Local tuicr Comments
+
+### Commit abc1234 - Add token validation
+
+Commit message:
+
+````text
+Add token validation
+````
+
+1. **[ISSUE]** `commit message:1` - Subject should be imperative
+2. **[SUGGESTION]** `src/auth.rs:42` - Extract this check
+`````
+
 ### Comment Types
 
 | Type | Meaning | Action Required |
@@ -284,6 +302,8 @@ Summary: {optional overall notes}
 Each comment is numbered and self-contained:
 - `{n}. **[TYPE]** \`{file}:{line}\` - {content}` (line comment)
 - `{n}. **[TYPE]** \`{file}\` - {content}` (file comment)
+- `{n}. **[TYPE]** \`commit message:{line}\` - {content}` (per-commit commit-message comment)
+- `{n}. **[TYPE]** \`commit\` - {content}` (per-commit commit-level comment)
 
 You can reference comments by number (e.g., "Regarding comment #2...").
 

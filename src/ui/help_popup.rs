@@ -183,7 +183,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         )),
         Line::from(""),
         Line::from(Span::styled(
-            "Commit Selector (multi-commit reviews)",
+            "Commit Selector (multi-commit / per-commit reviews)",
             Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
         )),
         Line::from(""),
@@ -209,7 +209,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  (/)       ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Cycle through individual commits"),
+            Span::raw("Cycle active commit or aggregate range"),
         ]),
         Line::from(vec![
             Span::styled(
