@@ -10,7 +10,9 @@ use crate::cli::{LineSideArg, ReviewCommand};
 use crate::config;
 use crate::error::{Result, TuicrError};
 use crate::model::comment::{self, CommentLifecycleState};
-use crate::model::{Comment, CommentType, LineRange, LineSide, ReviewSession};
+use crate::model::{
+    Comment, CommentType, CommitReview, LineRange, LineSide, ReviewSession, SessionDiffSource,
+};
 use crate::review_store::{
     AddCommentRequest, CommentTarget, ReviewStore, SessionRef, SessionSummary,
 };
@@ -419,6 +421,10 @@ fn validate_line(line: u32, name: &str) -> Result<()> {
 }
 
 fn collect_comments(session: &ReviewSession) -> Vec<CommentOutput> {
+    if session.diff_source == SessionDiffSource::PerCommitRange {
+        return collect_per_commit_comments(session);
+    }
+
     let mut comments = Vec::new();
     for comment in &session.review_comments {
         comments.push(CommentOutput::from_parts(
@@ -463,6 +469,83 @@ fn collect_comments(session: &ReviewSession) -> Vec<CommentOutput> {
                     comment.side,
                     comment,
                 ));
+            }
+        }
+    }
+
+    comments
+}
+
+fn collect_per_commit_comments(session: &ReviewSession) -> Vec<CommentOutput> {
+    let mut comments = Vec::new();
+    let mut ordered_ids = session
+        .commit_range
+        .clone()
+        .unwrap_or_else(|| session.per_commit_reviews.keys().cloned().collect());
+    if session.commit_range.is_none() {
+        ordered_ids.sort();
+    }
+
+    for commit_id in ordered_ids {
+        let Some(commit_review) = session.per_commit_reviews.get(&commit_id) else {
+            continue;
+        };
+        for comment in &commit_review.review_comments {
+            comments.push(
+                CommentOutput::from_parts("commit".to_string(), None, None, None, None, comment)
+                    .with_commit(commit_review),
+            );
+        }
+
+        let mut files: Vec<_> = commit_review.files.iter().collect();
+        files.sort_by_key(|(path, _)| {
+            if path.as_path() == Path::new("Commit Message") {
+                String::new()
+            } else {
+                path.to_string_lossy().to_string()
+            }
+        });
+        for (path, review) in files {
+            let path_display = if path.as_path() == Path::new("Commit Message") {
+                "commit message".to_string()
+            } else {
+                path.to_string_lossy().to_string()
+            };
+            for comment in &review.file_comments {
+                comments.push(
+                    CommentOutput::from_parts(
+                        path_display.clone(),
+                        Some(path_display.clone()),
+                        None,
+                        None,
+                        None,
+                        comment,
+                    )
+                    .with_commit(commit_review),
+                );
+            }
+
+            let mut line_comments: Vec<_> = review.line_comments.iter().collect();
+            line_comments.sort_by_key(|(line, _)| *line);
+            for (line, line_comments) in line_comments {
+                for comment in line_comments {
+                    let (start_line, end_line) = comment
+                        .line_range
+                        .map(|range| (range.start, range.end))
+                        .unwrap_or((*line, *line));
+                    let location = line_location(&path_display, start_line, end_line, comment.side);
+                    comments.push(
+                        CommentOutput::from_parts(
+                            location,
+                            Some(path_display.clone()),
+                            Some(start_line),
+                            Some(end_line),
+                            comment.side,
+                            comment,
+                        )
+                        .with_commit(commit_review),
+                    );
+                }
             }
         }
     }
@@ -543,6 +626,12 @@ impl From<SessionSummary> for SessionSummaryOutput {
 #[derive(Debug, Serialize)]
 struct CommentOutput {
     id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    commit_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    commit_short_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    commit_summary: Option<String>,
     location: String,
     path: Option<String>,
     start_line: Option<u32>,
@@ -592,6 +681,9 @@ impl CommentOutput {
     ) -> Self {
         Self {
             id: comment.id.clone(),
+            commit_id: None,
+            commit_short_id: None,
+            commit_summary: None,
             location,
             path,
             start_line,
@@ -603,14 +695,23 @@ impl CommentOutput {
             content: comment.content.clone(),
         }
     }
+
+    fn with_commit(mut self, review: &CommitReview) -> Self {
+        self.commit_id = Some(review.commit_id.clone());
+        self.commit_short_id = Some(review.short_id.clone());
+        self.commit_summary = Some(review.summary.clone());
+        self
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
     use tempfile::tempdir;
 
-    use crate::model::{FileStatus, SessionDiffSource};
+    use crate::model::review::FileReview;
+    use crate::model::{CommitReview, FileStatus, SessionDiffSource};
 
     fn test_session(repo_path: PathBuf) -> ReviewSession {
         let mut session = ReviewSession::new(
@@ -647,6 +748,65 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn should_collect_per_commit_comments_with_commit_metadata() {
+        let first_id = "aaa111122223333444455556666777788889999".to_string();
+        let second_id = "bbb111122223333444455556666777788889999".to_string();
+        let mut session = ReviewSession::new(
+            PathBuf::from("/repo"),
+            second_id.clone(),
+            Some("main".to_string()),
+            SessionDiffSource::PerCommitRange,
+        );
+        session.commit_range = Some(vec![first_id.clone(), second_id.clone()]);
+
+        let mut first = CommitReview::new(
+            first_id.clone(),
+            "aaa1111".to_string(),
+            "First commit".to_string(),
+            None,
+            "Alice".to_string(),
+            Utc::now(),
+        );
+        first.review_comments.push(Comment::new(
+            "Commit-level note".to_string(),
+            CommentType::Note,
+            None,
+        ));
+        session.per_commit_reviews.insert(first_id.clone(), first);
+
+        let mut second = CommitReview::new(
+            second_id.clone(),
+            "bbb1111".to_string(),
+            "Second commit".to_string(),
+            None,
+            "Bob".to_string(),
+            Utc::now(),
+        );
+        let mut msg_review = FileReview::new(PathBuf::from("Commit Message"), FileStatus::Added, 0);
+        msg_review.add_line_comment(
+            1,
+            Comment::new(
+                "Commit message note".to_string(),
+                CommentType::Suggestion,
+                Some(LineSide::New),
+            ),
+        );
+        second
+            .files
+            .insert(PathBuf::from("Commit Message"), msg_review);
+        session.per_commit_reviews.insert(second_id.clone(), second);
+
+        let comments = collect_comments(&session);
+
+        assert_eq!(comments.len(), 2);
+        assert_eq!(comments[0].commit_short_id.as_deref(), Some("aaa1111"));
+        assert_eq!(comments[0].location, "commit");
+        assert_eq!(comments[1].commit_short_id.as_deref(), Some("bbb1111"));
+        assert_eq!(comments[1].commit_summary.as_deref(), Some("Second commit"));
+        assert_eq!(comments[1].location, "commit message:1");
     }
 
     #[test]

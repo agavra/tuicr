@@ -3,7 +3,9 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 
 use crate::error::{Result, TuicrError};
-use crate::model::{Comment, CommentType, LineRange, LineSide, ReviewSession};
+use crate::model::{
+    Comment, CommentType, CommitReview, LineRange, LineSide, ReviewSession, SessionDiffSource,
+};
 use crate::persistence::manifest::{ManifestEntry, ManifestKind};
 use crate::persistence::storage;
 
@@ -78,7 +80,11 @@ impl ReviewStore {
         let reviews_dir = self.reviews_dir()?;
         let (_session, comment) =
             storage::update_session_in_dir(session_ref.path(), &reviews_dir, |session| {
-                add_comment_to_session(session, request)
+                if session.diff_source == SessionDiffSource::PerCommitRange {
+                    add_comment_to_active_per_commit_session(session, request)
+                } else {
+                    add_comment_to_session(session, request)
+                }
             })?;
         Ok(comment)
     }
@@ -248,6 +254,47 @@ pub fn add_comment_to_session(
     Ok(comment)
 }
 
+fn add_comment_to_active_per_commit_session(
+    session: &mut ReviewSession,
+    request: AddCommentRequest,
+) -> Result<Comment> {
+    let commit_id = active_per_commit_id(session)?;
+    let comment = add_comment_to_session(session, request)?;
+    let short_id = commit_id[..7.min(commit_id.len())].to_string();
+    let review = session
+        .per_commit_reviews
+        .entry(commit_id.clone())
+        .or_insert_with(|| {
+            CommitReview::new(
+                commit_id.clone(),
+                short_id,
+                "(unknown commit)".to_string(),
+                None,
+                String::new(),
+                Utc::now(),
+            )
+        });
+    review.review_comments = session.review_comments.clone();
+    review.files = session.files.clone();
+    Ok(comment)
+}
+
+fn active_per_commit_id(session: &ReviewSession) -> Result<String> {
+    let ids = session.commit_range.as_ref().ok_or_else(|| {
+        TuicrError::InvalidInput("per-commit session does not contain a commit range".to_string())
+    })?;
+    let index = match session.commit_selection_range {
+        Some((start, end)) if start == end && end < ids.len() => start,
+        None if ids.len() == 1 => 0,
+        _ => {
+            return Err(TuicrError::InvalidInput(
+                "per-commit session does not have a single active commit".to_string(),
+            ));
+        }
+    };
+    Ok(ids[index].clone())
+}
+
 fn file_review_mut<'a>(
     session: &'a mut ReviewSession,
     path: &Path,
@@ -260,6 +307,7 @@ fn file_review_mut<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::review::FileReview;
     use crate::model::{FileStatus, SessionDiffSource};
 
     fn test_session(repo_path: PathBuf) -> ReviewSession {
@@ -404,5 +452,94 @@ mod tests {
 
         let listed = store.list_sessions_for_repo(&repo).unwrap();
         assert_eq!(listed[0].comment_count, 1);
+    }
+
+    #[test]
+    fn should_add_comment_to_active_commit_in_per_commit_session() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let reviews_dir = temp.path().join("reviews");
+        let store = ReviewStore::with_reviews_dir(reviews_dir);
+
+        let first_id = "aaa111122223333444455556666777788889999".to_string();
+        let second_id = "bbb111122223333444455556666777788889999".to_string();
+        let mut session = ReviewSession::new(
+            repo,
+            second_id.clone(),
+            Some("main".to_string()),
+            SessionDiffSource::PerCommitRange,
+        );
+        session.commit_range = Some(vec![first_id.clone(), second_id.clone()]);
+        session.commit_selection_range = Some((1, 1));
+        session.files.insert(
+            PathBuf::from("src/main.rs"),
+            FileReview::new(PathBuf::from("src/main.rs"), FileStatus::Modified, 0),
+        );
+        session.per_commit_reviews.insert(
+            second_id.clone(),
+            CommitReview::new(
+                second_id.clone(),
+                "bbb1111".to_string(),
+                "Second commit".to_string(),
+                None,
+                "Bob".to_string(),
+                Utc::now(),
+            ),
+        );
+        let session_ref = store.save_review(&session).unwrap();
+
+        store
+            .add_comment(
+                &session_ref,
+                AddCommentRequest {
+                    target: CommentTarget::Line {
+                        path: PathBuf::from("src/main.rs"),
+                        line: 7,
+                        side: LineSide::New,
+                    },
+                    content: "line note".to_string(),
+                    comment_type: CommentType::Note,
+                    author: crate::model::comment::DEFAULT_AUTHOR.to_string(),
+                },
+            )
+            .unwrap();
+
+        let loaded = store.get_review(&session_ref).unwrap();
+        let commit = loaded
+            .per_commit_reviews
+            .get(&second_id)
+            .expect("active commit review");
+        let review = commit.files.get(&PathBuf::from("src/main.rs")).unwrap();
+        assert_eq!(review.line_comments.get(&7).unwrap().len(), 1);
+
+        let listed = store.list_sessions_for_repo(loaded.repo_path).unwrap();
+        assert_eq!(listed[0].comment_count, 1);
+    }
+
+    #[test]
+    fn should_reject_per_commit_comment_without_single_active_commit() {
+        let first_id = "aaa111122223333444455556666777788889999".to_string();
+        let second_id = "bbb111122223333444455556666777788889999".to_string();
+        let mut session = ReviewSession::new(
+            PathBuf::from("/repo"),
+            second_id.clone(),
+            Some("main".to_string()),
+            SessionDiffSource::PerCommitRange,
+        );
+        session.commit_range = Some(vec![first_id, second_id]);
+
+        let err = add_comment_to_active_per_commit_session(
+            &mut session,
+            AddCommentRequest {
+                target: CommentTarget::Review,
+                content: "note".to_string(),
+                comment_type: CommentType::Note,
+                author: crate::model::comment::DEFAULT_AUTHOR.to_string(),
+            },
+        )
+        .unwrap_err();
+
+        assert!(matches!(err, TuicrError::InvalidInput(_)));
     }
 }
