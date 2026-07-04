@@ -1717,13 +1717,32 @@ fn resolve_appearance(appearance: AppearanceArg) -> ThemeArg {
         AppearanceArg::Light => ThemeArg::Light,
         AppearanceArg::Dark => ThemeArg::Dark,
         AppearanceArg::System => {
-            if is_system_dark_mode().unwrap_or(true) {
+            if is_dark_mode().unwrap_or(true) {
                 ThemeArg::Dark
             } else {
                 ThemeArg::Light
             }
         }
     }
+}
+
+fn is_dark_mode() -> Option<bool> {
+    is_terminal_background_dark().or_else(is_system_dark_mode)
+}
+
+#[cfg(not(test))]
+fn is_terminal_background_dark() -> Option<bool> {
+    use terminal_colorsaurus::{QueryOptions, background_color};
+
+    match background_color(QueryOptions::default()) {
+        Ok(color) => Some(color.perceived_lightness() < 0.5),
+        Err(_) => None,
+    }
+}
+
+#[cfg(test)]
+fn is_terminal_background_dark() -> Option<bool> {
+    None
 }
 
 #[cfg(target_os = "macos")]
@@ -2240,7 +2259,7 @@ pub fn resolve_theme_with_config(
             AppearanceArg::Dark => theme_dark,
             AppearanceArg::Light => theme_light,
             AppearanceArg::System => {
-                if is_system_dark_mode().unwrap_or(true) {
+                if is_dark_mode().unwrap_or(true) {
                     theme_dark
                 } else {
                     theme_light
