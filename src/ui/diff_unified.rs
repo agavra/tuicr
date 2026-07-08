@@ -3,7 +3,7 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph},
 };
 use unicode_width::UnicodeWidthStr;
 
@@ -1119,24 +1119,34 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
 
     let scroll_offset = app.diff_state.scroll_offset;
     let wrap = app.diff_state.wrap_lines;
-    // Word-wrap-accurate visual row count per line, shared by every row-mapping
-    // consumer below so per-row backgrounds and overlays align with the
-    // rendered (word-wrapped) paragraph rather than drifting on prose lines.
-    let row_heights = crate::ui::diff_view::compute_row_heights(
-        &visible_lines_unscrolled,
-        wrap,
-        inner.width as usize,
-    );
+    let viewport_width = inner.width as usize;
+    let visible_lines_unscrolled_for_bg = visible_lines_unscrolled.clone();
+    // Single pass: wrap each logical line once, producing both the visual
+    // rows to render and the per-line height used by every row-mapping
+    // consumer below, so the two can't disagree.
+    let (row_heights, wrapped_lines): (Vec<usize>, Option<Vec<Line>>) =
+        if wrap && viewport_width > 0 {
+            let mut heights = Vec::with_capacity(visible_lines_unscrolled_for_bg.len());
+            let mut out: Vec<Line> = Vec::new();
+            for line in &visible_lines_unscrolled_for_bg {
+                let rows = crate::ui::text_utils::wrap_spans(&line.spans, viewport_width);
+                heights.push(rows.len());
+                out.extend(rows.into_iter().map(Line::from));
+            }
+            (heights, Some(out))
+        } else {
+            (vec![1; visible_lines_unscrolled_for_bg.len()], None)
+        };
     app.diff_state.visible_line_count = populate_row_to_annotation(
         &mut app.diff_row_to_annotation,
         &row_heights,
-        inner.width as usize,
+        viewport_width,
         inner.height as usize,
         wrap,
         scroll_offset,
     );
 
-    let max_scroll_x = max_content_width.saturating_sub(inner.width as usize);
+    let max_scroll_x = max_content_width.saturating_sub(viewport_width);
     if app.diff_state.scroll_x > max_scroll_x {
         app.diff_state.scroll_x = max_scroll_x;
     }
@@ -1145,14 +1155,12 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
     }
 
     let scroll_x = app.diff_state.scroll_x;
-    let visible_lines_unscrolled_for_bg = visible_lines_unscrolled.clone();
-    let visible_lines: Vec<Line> = if app.diff_state.wrap_lines {
-        visible_lines_unscrolled
-    } else {
-        visible_lines_unscrolled
+    let visible_lines: Vec<Line> = match wrapped_lines {
+        Some(out) => out,
+        None => visible_lines_unscrolled
             .into_iter()
             .map(|line| apply_horizontal_scroll(line, scroll_x))
-            .collect()
+            .collect(),
     };
 
     // Paint per-visual-row add/del backgrounds across full row width.
@@ -1183,10 +1191,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
     crate::ui::diff_view::paint_section_highlight(frame, &overlay_ctx);
 
     // Keep paragraph bg unset so pre-painted per-row diff backgrounds remain visible.
-    let mut diff = Paragraph::new(visible_lines).style(Style::default().fg(app.theme.fg_primary));
-    if app.diff_state.wrap_lines {
-        diff = diff.wrap(Wrap { trim: false });
-    }
+    let diff = Paragraph::new(visible_lines).style(Style::default().fg(app.theme.fg_primary));
     frame.render_widget(diff, inner);
 
     // Cursor-line bg has to land after the paragraph: spans on +/- lines carry
@@ -1770,6 +1775,60 @@ mod remote_comments_snapshot_tests {
         assert!(
             !body.contains("should be hidden"),
             "review-level thread leaked under Hide:\n{body}"
+        );
+    }
+
+    #[test]
+    fn should_wrap_long_line_in_unified_view_when_wrap_enabled() {
+        let long: String = "x".repeat(200);
+        let hunk = DiffHunk {
+            header: "@@ -0,0 +1,1 @@".to_string(),
+            lines: vec![DiffLine {
+                origin: LineOrigin::Addition,
+                content: long.clone(),
+                old_lineno: None,
+                new_lineno: Some(1),
+                highlighted_spans: None,
+            }],
+            old_start: 0,
+            old_count: 0,
+            new_start: 1,
+            new_count: 1,
+        };
+        let hunks = vec![hunk];
+        let content_hash = DiffFile::compute_content_hash(&hunks);
+        let file = DiffFile {
+            old_path: Some(PathBuf::from("src/lib.rs")),
+            new_path: Some(PathBuf::from("src/lib.rs")),
+            status: FileStatus::Modified,
+            hunks,
+            is_binary: false,
+            is_too_large: false,
+            is_commit_message: false,
+            content_hash,
+        };
+        let mut app = make_revision_app(vec![file]);
+        app.set_diff_wrap(true);
+        app.rebuild_annotations();
+
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| super::render_unified_diff(frame, &mut app, Rect::new(0, 0, 80, 20)))
+            .expect("draw");
+        let body = body_text(terminal.backend().buffer());
+
+        let tail: String = long.chars().rev().take(20).collect::<String>();
+        let tail: String = tail.chars().rev().collect();
+        assert!(
+            body.contains(&tail),
+            "tail of wrapped long line should appear in body:\n{body}"
+        );
+
+        assert!(
+            app.diff_state.visible_line_count > 0 && app.diff_state.visible_line_count < 20,
+            "expected logical visible_line_count 1..20, got {}",
+            app.diff_state.visible_line_count
         );
     }
 }
