@@ -780,14 +780,9 @@ impl App {
         // Use the local checkout for `.tuicrignore` only when it matches the
         // PR's target repository — using a foreign repo's checkout would
         // mis-filter the PR diff.
-        let local_checkout_for_target = local_repo_root.as_deref().and_then(|root| {
-            let detected = crate::forge::detect_forge_repository(root)?;
-            if detected == target_repo {
-                Some(root.to_path_buf())
-            } else {
-                None
-            }
-        });
+        let local_checkout_for_target = local_repo_root
+            .as_deref()
+            .and_then(|root| crate::forge::local_checkout_for_repo(root, &target_repo));
 
         let backend = create_forge_backend(&target_repo, local_checkout_for_target.clone());
         let highlighter = theme.syntax_highlighter();

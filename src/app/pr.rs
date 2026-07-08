@@ -899,7 +899,8 @@ impl App {
     ) -> Result<()> {
         use crate::forge::pr_open::prepare_open_pr;
 
-        let local_checkout = Some(self.vcs_info.root_path.clone());
+        let local_checkout =
+            crate::forge::local_checkout_for_repo(&self.vcs_info.root_path, &request.repository);
         let highlighter = self.theme.syntax_highlighter();
         let opened = prepare_open_pr(
             details.clone(),

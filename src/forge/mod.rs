@@ -15,7 +15,7 @@ pub mod selector;
 pub mod submit;
 pub mod traits;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use git2::Repository;
 
@@ -111,4 +111,56 @@ pub fn detect_forge_repository(repo_root: &Path) -> Option<ForgeRepository> {
         }
     }
     None
+}
+
+/// `root`'s local checkout, but only when its detected remote matches
+/// `target_repo`.
+pub fn local_checkout_for_repo(root: &Path, target_repo: &ForgeRepository) -> Option<PathBuf> {
+    let detected = detect_forge_repository(root)?;
+    (detected == *target_repo).then(|| root.to_path_buf())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn init_repo_with_origin(url: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let repo = Repository::init(dir.path()).expect("init repo");
+        repo.remote("origin", url).expect("add origin");
+        dir
+    }
+
+    #[test]
+    fn detects_github_repository_from_origin() {
+        let dir = init_repo_with_origin("https://github.com/agavra/tuicr");
+        assert_eq!(
+            detect_forge_repository(dir.path()),
+            Some(ForgeRepository::github("github.com", "agavra", "tuicr"))
+        );
+    }
+
+    #[test]
+    fn local_checkout_matches_when_origin_equals_target() {
+        let dir = init_repo_with_origin("https://github.com/agavra/tuicr");
+        let target = ForgeRepository::github("github.com", "agavra", "tuicr");
+        assert_eq!(
+            local_checkout_for_repo(dir.path(), &target),
+            Some(dir.path().to_path_buf())
+        );
+    }
+
+    #[test]
+    fn local_checkout_rejects_mismatched_repo() {
+        let dir = init_repo_with_origin("https://github.com/contributor/tuicr");
+        let target = ForgeRepository::github("github.com", "agavra", "tuicr");
+        assert_eq!(local_checkout_for_repo(dir.path(), &target), None);
+    }
+
+    #[test]
+    fn local_checkout_returns_none_outside_a_repo() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = ForgeRepository::github("github.com", "agavra", "tuicr");
+        assert_eq!(local_checkout_for_repo(dir.path(), &target), None);
+    }
 }
