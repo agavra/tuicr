@@ -195,6 +195,111 @@ fn editor_target_warns_for_missing_local_file() {
     );
 }
 
+struct FakeForgeBackend {
+    local_checkout: Option<PathBuf>,
+}
+
+impl crate::forge::traits::ForgeBackend for FakeForgeBackend {
+    fn list_pull_requests(
+        &self,
+        _query: crate::forge::traits::PullRequestListQuery,
+    ) -> crate::error::Result<crate::forge::traits::PagedPullRequests> {
+        unimplemented!()
+    }
+    fn get_pull_request(
+        &self,
+        _target: crate::forge::traits::PullRequestTarget,
+    ) -> crate::error::Result<crate::forge::traits::PullRequestDetails> {
+        unimplemented!()
+    }
+    fn get_pull_request_diff(
+        &self,
+        _pr: &crate::forge::traits::PullRequestDetails,
+    ) -> crate::error::Result<String> {
+        unimplemented!()
+    }
+    fn fetch_file_lines(
+        &self,
+        _request: crate::forge::traits::ForgeFileLinesRequest,
+    ) -> crate::error::Result<Vec<DiffLine>> {
+        unimplemented!()
+    }
+    fn list_review_threads(
+        &self,
+        _pr: &crate::forge::traits::PullRequestDetails,
+    ) -> crate::error::Result<Vec<crate::forge::remote_comments::RemoteReviewThread>> {
+        unimplemented!()
+    }
+    fn list_pull_request_commits(
+        &self,
+        _pr: &crate::forge::traits::PullRequestDetails,
+    ) -> crate::error::Result<Vec<crate::forge::traits::PullRequestCommit>> {
+        unimplemented!()
+    }
+    fn get_pull_request_commit_range_diff(
+        &self,
+        _pr: &crate::forge::traits::PullRequestDetails,
+        _start_sha: &str,
+        _end_sha: &str,
+    ) -> crate::error::Result<String> {
+        unimplemented!()
+    }
+    fn create_review(
+        &self,
+        _pr: &crate::forge::traits::PullRequestDetails,
+        _request: crate::forge::traits::CreateReviewRequest<'_>,
+    ) -> crate::error::Result<crate::forge::traits::GhCreateReviewResponse> {
+        unimplemented!()
+    }
+    fn local_checkout_path(&self) -> Option<PathBuf> {
+        self.local_checkout.clone()
+    }
+}
+
+#[test]
+fn editor_target_falls_back_to_forge_backend_checkout_in_pr_mode() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("main.rs");
+    fs::write(&path, "fn main() {}\n").expect("write file");
+
+    let mut app = app_with_root(
+        PathBuf::from("forge:github.com/agavra/tuicr"),
+        vec![file("main.rs", vec![hunk(1, 1)])],
+    );
+    app.forge_backend = Some(Box::new(FakeForgeBackend {
+        local_checkout: Some(dir.path().to_path_buf()),
+    }));
+    app.focused_panel = FocusedPanel::FileList;
+
+    app.queue_editor_for_focused_item();
+
+    let target = app.take_pending_editor_target().expect("editor target");
+    assert_eq!(target.path, path);
+}
+
+#[test]
+fn editor_target_warns_when_pr_mode_has_no_matching_checkout() {
+    let mut app = app_with_root(
+        PathBuf::from("forge:github.com/agavra/tuicr"),
+        vec![file("main.rs", vec![hunk(1, 1)])],
+    );
+    app.forge_backend = Some(Box::new(FakeForgeBackend {
+        local_checkout: None,
+    }));
+    app.focused_panel = FocusedPanel::FileList;
+
+    app.queue_editor_for_focused_item();
+
+    assert!(app.take_pending_editor_target().is_none());
+    assert!(
+        app.message
+            .as_ref()
+            .expect("warning")
+            .content
+            .contains("no local checkout")
+    );
+}
+
 #[test]
 fn toggle_preserves_file_position() {
     let files = vec![
