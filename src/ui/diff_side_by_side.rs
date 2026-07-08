@@ -3,14 +3,14 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph},
 };
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{
     App, DiffSource, ExpandDirection, FocusedPanel, GAP_EXPAND_BATCH, GapId, InputMode,
 };
-use crate::model::{FileStatus, LineOrigin, LineRange, LineSide};
+use crate::model::{DiffLine, FileStatus, LineOrigin, LineRange, LineSide};
 use crate::theme::Theme;
 use crate::ui::comment_panel;
 use crate::ui::diff_view::{
@@ -20,8 +20,116 @@ use crate::ui::diff_view::{
     render_hidden_lines, scroll_comment_input_into_view,
 };
 use crate::ui::styles;
-use crate::ui::text_utils::{truncate_or_pad, truncate_or_pad_spans};
+use crate::ui::text_utils::{truncate_or_pad, truncate_or_pad_spans, wrap_spans};
 use crate::vcs::git::calculate_gap;
+
+#[derive(Clone, Default)]
+struct SbsRowMeta {
+    left_content: Vec<Span<'static>>,
+    right_content: Vec<Span<'static>>,
+    left_prefix: Vec<Span<'static>>,
+    right_prefix: Vec<Span<'static>>,
+    left_pad_style: Style,
+    right_pad_style: Style,
+}
+
+fn content_spans_for_diff_line(
+    theme: &Theme,
+    dl: &DiffLine,
+    origin: LineOrigin,
+) -> Vec<Span<'static>> {
+    let base = match origin {
+        LineOrigin::Context => styles::diff_context_style(theme),
+        LineOrigin::Addition => styles::diff_add_style(theme),
+        LineOrigin::Deletion => styles::diff_del_style(theme),
+    };
+    if let Some(ref h) = dl.highlighted_spans {
+        h.iter().map(|(s, t)| Span::styled(t.clone(), *s)).collect()
+    } else {
+        vec![Span::styled(dl.content.clone(), base)]
+    }
+}
+
+fn column_pad_style(theme: &Theme, dl: &DiffLine, origin: LineOrigin) -> Style {
+    match origin {
+        LineOrigin::Context => styles::diff_context_style(theme),
+        LineOrigin::Addition => {
+            if dl.highlighted_spans.is_some() {
+                Style::default().fg(theme.diff_add).bg(theme.syntax_add_bg)
+            } else {
+                styles::diff_add_style(theme)
+            }
+        }
+        LineOrigin::Deletion => {
+            if dl.highlighted_spans.is_some() {
+                Style::default().fg(theme.diff_del).bg(theme.syntax_del_bg)
+            } else {
+                styles::diff_del_style(theme)
+            }
+        }
+    }
+}
+
+fn pad_spans_to_width(
+    mut spans: Vec<Span<'static>>,
+    width: usize,
+    pad_style: Style,
+) -> Vec<Span<'static>> {
+    let cur: usize = spans.iter().map(|s| s.content.width()).sum();
+    if cur < width {
+        spans.push(Span::styled(" ".repeat(width - cur), pad_style));
+    }
+    spans
+}
+
+struct SideSpec {
+    lineno: Option<u32>,
+    marker: &'static str,
+    marker_style: Style,
+}
+
+fn sbs_row_prefixes(
+    theme: &Theme,
+    indicator: &'static str,
+    left: SideSpec,
+    right: SideSpec,
+    lw: usize,
+) -> (Vec<Span<'static>>, Vec<Span<'static>>) {
+    let dim = styles::dim_style(theme);
+    let old_num = left
+        .lineno
+        .map(|n| format!("{n:>lw$}"))
+        .unwrap_or_else(|| " ".repeat(lw));
+    let new_num = right
+        .lineno
+        .map(|n| format!("{n:>lw$}"))
+        .unwrap_or_else(|| " ".repeat(lw));
+
+    let left_prefix = vec![
+        Span::styled(indicator, styles::current_line_indicator_style(theme)),
+        Span::styled(format!("{old_num} "), dim),
+        Span::styled(left.marker.to_string(), left.marker_style),
+    ];
+    let right_prefix = vec![
+        Span::styled(" │ ", dim),
+        Span::styled(format!("{new_num} "), dim),
+        Span::styled(right.marker.to_string(), right.marker_style),
+    ];
+    (left_prefix, right_prefix)
+}
+
+/// Continuation-row prefixes shared by every wrapped line: blank in place of
+/// the line numbers (same width, so columns stay aligned) with the center
+/// divider preserved.
+fn sbs_blank_prefixes(theme: &Theme, lw: usize) -> (Vec<Span<'static>>, Vec<Span<'static>>) {
+    let dim = styles::dim_style(theme);
+    let left = vec![Span::styled(" ".repeat(lw + 3), Style::default())];
+    let right = vec![
+        Span::styled(" │ ", dim),
+        Span::styled(" ".repeat(lw + 2), Style::default()),
+    ];
+    (left, right)
+}
 
 /// Cursor info for the inline comment input box in side-by-side view:
 /// (cursor_logical_line, cursor_column, box_start_line, box_end_line)
@@ -47,6 +155,7 @@ struct SideBySideContext<'a> {
     // RefCell so deeply-nested rendering helpers can push without each
     // intermediate function needing a `&mut Vec` parameter threaded through.
     comment_bars: std::cell::RefCell<Vec<crate::ui::diff_view::CommentBarAnchor>>,
+    sbs_meta: std::cell::RefCell<std::collections::HashMap<usize, SbsRowMeta>>,
     // Only fully build spans for diff lines whose `line_idx` falls in this
     // half-open range; off-screen rows push `Line::default()` placeholders.
     visible_start: usize,
@@ -108,6 +217,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
         editing_comment_id: app.editing_comment_id.as_deref(),
         current_file_idx: app.diff_state.current_file_idx,
         comment_bars: std::cell::RefCell::new(Vec::new()),
+        sbs_meta: std::cell::RefCell::new(std::collections::HashMap::new()),
         visible_start,
         visible_end,
     };
@@ -690,6 +800,10 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
         let mut bars = ctx.comment_bars.borrow_mut();
         std::mem::take(&mut *bars)
     };
+    let sbs_meta = {
+        let mut m = ctx.sbs_meta.borrow_mut();
+        std::mem::take(&mut *m)
+    };
     drop(ctx);
     app.comment_input_annotation_offset = annotation_offset;
 
@@ -726,22 +840,73 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
 
     let scroll_offset = app.diff_state.scroll_offset;
     let wrap = app.diff_state.wrap_lines;
-    // Word-wrap-accurate visual row count per line; see `compute_row_heights`.
-    let row_heights = crate::ui::diff_view::compute_row_heights(
-        &visible_lines_unscrolled,
-        wrap,
-        inner.width as usize,
-    );
+    let viewport_width = inner.width as usize;
+    let visible_lines_unscrolled_for_overlay = visible_lines_unscrolled.clone();
+    // Single pass: wrap each logical line once, producing both the visual
+    // rows to render and the per-line height used by every row-mapping
+    // consumer below, so the two can't disagree.
+    let (row_heights, wrapped_lines): (Vec<usize>, Option<Vec<Line>>) = if wrap && content_width > 0
+    {
+        let mut heights = Vec::with_capacity(visible_lines_unscrolled_for_overlay.len());
+        let mut out: Vec<Line> = Vec::new();
+        let (left_prefix_blank, right_prefix_blank) = sbs_blank_prefixes(&app.theme, lw);
+        for (i, line) in visible_lines_unscrolled_for_overlay.iter().enumerate() {
+            let logical_idx = scroll_offset + i;
+            match sbs_meta.get(&logical_idx) {
+                Some(m) => {
+                    let left_rows = if m.left_content.is_empty() {
+                        vec![Vec::new()]
+                    } else {
+                        wrap_spans(&m.left_content, content_width)
+                    };
+                    let right_rows = if m.right_content.is_empty() {
+                        vec![Vec::new()]
+                    } else {
+                        wrap_spans(&m.right_content, content_width)
+                    };
+                    let n = left_rows.len().max(right_rows.len()).max(1);
+                    heights.push(n);
+                    let empty_row: Vec<Span> = Vec::new();
+                    for k in 0..n {
+                        let left_content_row = left_rows.get(k).unwrap_or(&empty_row).clone();
+                        let right_content_row = right_rows.get(k).unwrap_or(&empty_row).clone();
+                        let left_padded =
+                            pad_spans_to_width(left_content_row, content_width, m.left_pad_style);
+                        let right_padded =
+                            pad_spans_to_width(right_content_row, content_width, m.right_pad_style);
+                        let (left_prefix, right_prefix) = if k == 0 {
+                            (m.left_prefix.clone(), m.right_prefix.clone())
+                        } else {
+                            (left_prefix_blank.clone(), right_prefix_blank.clone())
+                        };
+                        let mut spans = left_prefix;
+                        spans.extend(left_padded);
+                        spans.extend(right_prefix);
+                        spans.extend(right_padded);
+                        out.push(Line::from(spans));
+                    }
+                }
+                None => {
+                    let rows = wrap_spans(&line.spans, viewport_width);
+                    heights.push(rows.len());
+                    out.extend(rows.into_iter().map(Line::from));
+                }
+            }
+        }
+        (heights, Some(out))
+    } else {
+        (vec![1; visible_lines_unscrolled_for_overlay.len()], None)
+    };
     app.diff_state.visible_line_count = populate_row_to_annotation(
         &mut app.diff_row_to_annotation,
         &row_heights,
-        inner.width as usize,
+        viewport_width,
         inner.height as usize,
         wrap,
         scroll_offset,
     );
 
-    let max_scroll_x = max_content_width.saturating_sub(inner.width as usize);
+    let max_scroll_x = max_content_width.saturating_sub(viewport_width);
     if app.diff_state.scroll_x > max_scroll_x {
         app.diff_state.scroll_x = max_scroll_x;
     }
@@ -750,14 +915,12 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
     }
 
     let scroll_x = app.diff_state.scroll_x;
-    let visible_lines_unscrolled_for_overlay = visible_lines_unscrolled.clone();
-    let visible_lines: Vec<Line> = if app.diff_state.wrap_lines {
-        visible_lines_unscrolled
-    } else {
-        visible_lines_unscrolled
+    let visible_lines: Vec<Line> = match wrapped_lines {
+        Some(out) => out,
+        None => visible_lines_unscrolled
             .into_iter()
             .map(|line| apply_horizontal_scroll(line, scroll_x))
-            .collect()
+            .collect(),
     };
 
     let overlay_ctx = crate::ui::diff_view::DiffOverlayPaint {
@@ -776,10 +939,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
     // Section-marker row tint (hunk headers + expand/hidden stubs).
     crate::ui::diff_view::paint_section_highlight(frame, &overlay_ctx);
 
-    let mut diff = Paragraph::new(visible_lines).style(styles::panel_style(&app.theme));
-    if app.diff_state.wrap_lines {
-        diff = diff.wrap(Wrap { trim: false });
-    }
+    let diff = Paragraph::new(visible_lines).style(styles::panel_style(&app.theme));
     frame.render_widget(diff, inner);
 
     paint_cursor_line_highlight(
@@ -856,14 +1016,14 @@ fn render_sbs_expanded_context_line(
     let ec_style = styles::expanded_context_style(theme);
     let line_spans = vec![
         Span::styled(indicator, styles::current_line_indicator_style(theme)),
-        Span::styled(old_line_num, ec_style),
+        Span::styled(old_line_num.clone(), ec_style),
         Span::styled(" ", ec_style),
         Span::styled(
             truncate_or_pad(&expanded_line.content, content_width),
             ec_style,
         ),
         Span::styled(" │ ", styles::dim_style(theme)),
-        Span::styled(new_line_num, ec_style),
+        Span::styled(new_line_num.clone(), ec_style),
         Span::styled(" ", ec_style),
         Span::styled(
             truncate_or_pad(&expanded_line.content, content_width),
@@ -871,6 +1031,30 @@ fn render_sbs_expanded_context_line(
         ),
     ];
     lines.push(Line::from(line_spans));
+
+    let dim = styles::dim_style(theme);
+    let left_prefix = vec![
+        Span::styled(indicator, styles::current_line_indicator_style(theme)),
+        Span::styled(old_line_num, ec_style),
+        Span::styled(" ", ec_style),
+    ];
+    let right_prefix = vec![
+        Span::styled(" │ ", dim),
+        Span::styled(new_line_num, ec_style),
+        Span::styled(" ", ec_style),
+    ];
+    let content = vec![Span::styled(expanded_line.content.clone(), ec_style)];
+    ctx.sbs_meta.borrow_mut().insert(
+        *line_idx,
+        SbsRowMeta {
+            left_content: content.clone(),
+            right_content: content,
+            left_prefix,
+            right_prefix,
+            left_pad_style: ec_style,
+            right_pad_style: ec_style,
+        },
+    );
     *line_idx += 1;
 }
 
@@ -1010,6 +1194,35 @@ fn render_context_line_side_by_side(
         }
 
         lines.push(Line::from(spans));
+
+        let content = content_spans_for_diff_line(ctx.theme, diff_line, LineOrigin::Context);
+        let ctx_style = styles::diff_context_style(ctx.theme);
+        let (lp, rp) = sbs_row_prefixes(
+            ctx.theme,
+            indicator,
+            SideSpec {
+                lineno: diff_line.old_lineno,
+                marker: " ",
+                marker_style: ctx_style,
+            },
+            SideSpec {
+                lineno: diff_line.new_lineno,
+                marker: " ",
+                marker_style: ctx_style,
+            },
+            w,
+        );
+        ctx.sbs_meta.borrow_mut().insert(
+            line_idx,
+            SbsRowMeta {
+                left_content: content.clone(),
+                right_content: content,
+                left_prefix: lp,
+                right_prefix: rp,
+                left_pad_style: ctx_style,
+                right_pad_style: ctx_style,
+            },
+        );
     } else {
         lines.push(Line::default());
     }
@@ -1114,6 +1327,56 @@ fn render_deletion_addition_pair_side_by_side(
             }
 
             lines.push(Line::from(spans));
+
+            let w = ctx.lineno_width;
+            let (left_content, left_pad, left_marker, left_lineno, left_marker_style) =
+                match del_opt {
+                    Some(dl) => (
+                        content_spans_for_diff_line(ctx.theme, dl, LineOrigin::Deletion),
+                        column_pad_style(ctx.theme, dl, LineOrigin::Deletion),
+                        "▌",
+                        dl.old_lineno,
+                        styles::diff_del_style(ctx.theme),
+                    ),
+                    None => (Vec::new(), Style::default(), " ", None, Style::default()),
+                };
+            let (right_content, right_pad, right_marker, right_lineno, right_marker_style) =
+                match add_opt {
+                    Some(al) => (
+                        content_spans_for_diff_line(ctx.theme, al, LineOrigin::Addition),
+                        column_pad_style(ctx.theme, al, LineOrigin::Addition),
+                        "▌",
+                        al.new_lineno,
+                        styles::diff_add_style(ctx.theme),
+                    ),
+                    None => (Vec::new(), Style::default(), " ", None, Style::default()),
+                };
+            let (lp, rp) = sbs_row_prefixes(
+                ctx.theme,
+                indicator,
+                SideSpec {
+                    lineno: left_lineno,
+                    marker: left_marker,
+                    marker_style: left_marker_style,
+                },
+                SideSpec {
+                    lineno: right_lineno,
+                    marker: right_marker,
+                    marker_style: right_marker_style,
+                },
+                w,
+            );
+            ctx.sbs_meta.borrow_mut().insert(
+                line_idx,
+                SbsRowMeta {
+                    left_content,
+                    right_content,
+                    left_prefix: lp,
+                    right_prefix: rp,
+                    left_pad_style: left_pad,
+                    right_pad_style: right_pad,
+                },
+            );
         } else {
             lines.push(Line::default());
         }
@@ -1209,6 +1472,36 @@ fn render_standalone_addition_side_by_side(
         );
 
         lines.push(Line::from(spans));
+
+        let w = ctx.lineno_width;
+        let right_content = content_spans_for_diff_line(ctx.theme, diff_line, LineOrigin::Addition);
+        let right_pad = column_pad_style(ctx.theme, diff_line, LineOrigin::Addition);
+        let (lp, rp) = sbs_row_prefixes(
+            ctx.theme,
+            indicator,
+            SideSpec {
+                lineno: None,
+                marker: " ",
+                marker_style: Style::default(),
+            },
+            SideSpec {
+                lineno: diff_line.new_lineno,
+                marker: "▌",
+                marker_style: styles::diff_add_style(ctx.theme),
+            },
+            w,
+        );
+        ctx.sbs_meta.borrow_mut().insert(
+            line_idx,
+            SbsRowMeta {
+                left_content: Vec::new(),
+                right_content,
+                left_prefix: lp,
+                right_prefix: rp,
+                left_pad_style: Style::default(),
+                right_pad_style: right_pad,
+            },
+        );
     } else {
         lines.push(Line::default());
     }
@@ -1549,6 +1842,7 @@ mod remote_comments_side_by_side_snapshot_tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
     use std::path::{Path, PathBuf};
 
     struct SnapshotVcs {
@@ -1748,6 +2042,208 @@ mod remote_comments_side_by_side_snapshot_tests {
         assert!(
             !body.contains("[github @alice"),
             "remote comment leaked under Hide:\n{body}"
+        );
+    }
+
+    fn diff_file_with_pair(left: &str, right: &str) -> DiffFile {
+        let lines = vec![
+            DiffLine {
+                origin: LineOrigin::Deletion,
+                content: left.to_string(),
+                old_lineno: Some(1),
+                new_lineno: None,
+                highlighted_spans: None,
+            },
+            DiffLine {
+                origin: LineOrigin::Addition,
+                content: right.to_string(),
+                old_lineno: None,
+                new_lineno: Some(1),
+                highlighted_spans: None,
+            },
+        ];
+        let hunks = vec![DiffHunk {
+            header: "@@ -1,1 +1,1 @@".to_string(),
+            lines,
+            old_start: 1,
+            old_count: 1,
+            new_start: 1,
+            new_count: 1,
+        }];
+        let content_hash = DiffFile::compute_content_hash(&hunks);
+        DiffFile {
+            old_path: Some(PathBuf::from("src/lib.rs")),
+            new_path: Some(PathBuf::from("src/lib.rs")),
+            status: FileStatus::Modified,
+            hunks,
+            is_binary: false,
+            is_too_large: false,
+            is_commit_message: false,
+            content_hash,
+        }
+    }
+
+    fn diff_file_with_standalone_deletion(left: &str) -> DiffFile {
+        let lines = vec![DiffLine {
+            origin: LineOrigin::Deletion,
+            content: left.to_string(),
+            old_lineno: Some(1),
+            new_lineno: None,
+            highlighted_spans: None,
+        }];
+        let hunks = vec![DiffHunk {
+            header: "@@ -1,1 +0,0 @@".to_string(),
+            lines,
+            old_start: 1,
+            old_count: 1,
+            new_start: 0,
+            new_count: 0,
+        }];
+        let content_hash = DiffFile::compute_content_hash(&hunks);
+        DiffFile {
+            old_path: Some(PathBuf::from("src/lib.rs")),
+            new_path: Some(PathBuf::from("src/lib.rs")),
+            status: FileStatus::Modified,
+            hunks,
+            is_binary: false,
+            is_too_large: false,
+            is_commit_message: false,
+            content_hash,
+        }
+    }
+
+    fn draw_sbs(app: &mut App, w: u16, h: u16) -> Buffer {
+        let backend = TestBackend::new(w, h);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| super::render_side_by_side_diff(frame, app, Rect::new(0, 0, w, h)))
+            .expect("draw sbs");
+        terminal.backend().buffer().clone()
+    }
+
+    fn char_at(buf: &Buffer, x: u16, y: u16) -> String {
+        buf[(x, y)].symbol().to_string()
+    }
+
+    #[test]
+    fn should_wrap_long_line_in_side_by_side_view_when_wrap_enabled() {
+        let long_left = "L".repeat(200);
+        let mut app = make_pr_app();
+        app.diff_files = vec![diff_file_with_pair(&long_left, "short")];
+        app.set_diff_wrap(true);
+        app.rebuild_annotations();
+
+        let buf = draw_sbs(&mut app, 160, 20);
+
+        let mut rows_with_l = 0u16;
+        for y in 0..buf.area.height {
+            let row: String = (0..buf.area.width).map(|x| char_at(&buf, x, y)).collect();
+            if row.contains("LLLLLLLLLL") {
+                rows_with_l += 1;
+            }
+        }
+        assert!(
+            rows_with_l >= 2,
+            "expected long left content to span >=2 visual rows, got {rows_with_l}"
+        );
+    }
+
+    #[test]
+    fn should_not_wrap_when_wrap_disabled_in_side_by_side() {
+        let long_left = "L".repeat(200);
+        let mut app = make_pr_app();
+        app.diff_files = vec![diff_file_with_pair(&long_left, "short")];
+        app.set_diff_wrap(false);
+        app.rebuild_annotations();
+
+        let buf = draw_sbs(&mut app, 160, 20);
+
+        let rows_with_l: u16 = (0..buf.area.height)
+            .filter(|&y| {
+                (0..buf.area.width)
+                    .map(|x| char_at(&buf, x, y))
+                    .collect::<String>()
+                    .contains("LLLLLLLLLL")
+            })
+            .count() as u16;
+        assert_eq!(
+            rows_with_l, 1,
+            "wrap-off should produce exactly one row of L, got {rows_with_l}"
+        );
+    }
+
+    #[test]
+    fn should_align_divider_on_wrapped_rows_in_side_by_side() {
+        let long_left = "L".repeat(200);
+        let mut app = make_pr_app();
+        app.diff_files = vec![diff_file_with_pair(&long_left, "short")];
+        app.set_diff_wrap(true);
+        app.rebuild_annotations();
+
+        let lw = 1usize;
+        let inner_w = 158usize;
+        let content_width = (inner_w - crate::app::sbs_overhead(lw) as usize) / 2;
+        let divider_x_inner = crate::app::sbs_left_gutter(lw) as usize + content_width;
+        let divider_glyph_x = 1 + divider_x_inner + 1;
+
+        let buf = draw_sbs(&mut app, 160, 20);
+
+        let mut rows_with_l: Vec<u16> = Vec::new();
+        for y in 0..buf.area.height {
+            let row: String = (0..buf.area.width).map(|x| char_at(&buf, x, y)).collect();
+            if row.contains("LLLLLLLLLL") {
+                rows_with_l.push(y);
+            }
+        }
+        assert!(
+            rows_with_l.len() >= 2,
+            "expected ≥2 wrapped rows, got {}",
+            rows_with_l.len()
+        );
+        for y in &rows_with_l {
+            let glyph = char_at(&buf, divider_glyph_x as u16, *y);
+            assert_eq!(
+                glyph, "│",
+                "expected │ at col {divider_glyph_x} on row {y}, got {glyph:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn should_pad_shorter_column_on_wrapped_rows_in_side_by_side() {
+        let long_left = "L".repeat(200);
+        let mut app = make_pr_app();
+        app.diff_files = vec![diff_file_with_standalone_deletion(&long_left)];
+        app.set_diff_wrap(true);
+        app.rebuild_annotations();
+
+        let buf = draw_sbs(&mut app, 160, 20);
+
+        let lw = 1usize;
+        let inner_w = 158usize;
+        let content_width = (inner_w - crate::app::sbs_overhead(lw) as usize) / 2;
+        let divider_glyph_x = 1 + crate::app::sbs_left_gutter(lw) as usize + content_width + 1;
+        let right_content_start = divider_glyph_x + 2 + lw + 1 + 1;
+        let right_content_end = right_content_start + content_width;
+
+        let mut checked = 0;
+        for y in 0..buf.area.height {
+            let row: String = (0..buf.area.width).map(|x| char_at(&buf, x, y)).collect();
+            if !row.contains("LLLLLLLLLL") {
+                continue;
+            }
+            checked += 1;
+            let right: String = (right_content_start..right_content_end)
+                .map(|x| char_at(&buf, x as u16, y))
+                .collect();
+            assert!(
+                right.trim().is_empty(),
+                "right column should be blank on wrapped L row {y}, got {right:?}"
+            );
+        }
+        assert!(
+            checked >= 2,
+            "expected ≥2 wrapped rows to check, got {checked}"
         );
     }
 }
