@@ -813,7 +813,6 @@ impl App {
         use crate::forge::pr_open::fetch_pr_data;
         use crate::forge::traits::PullRequestTarget;
 
-        let local_checkout = Some(self.vcs_info.root_path.clone());
         let request = PrOpenRequest {
             repository: summary.repository.clone(),
             pr_number: summary.number,
@@ -826,9 +825,8 @@ impl App {
 
         let summary_repo = summary.repository.clone();
         let pr_number = summary.number;
-        let thread_local_checkout = local_checkout.clone();
         std::thread::spawn(move || {
-            let backend = create_forge_backend(&summary_repo, thread_local_checkout);
+            let backend = create_forge_backend(&summary_repo, None);
             let target =
                 PullRequestTarget::with_repository(summary_repo, pr_number, pr_number.to_string());
             let outcome = fetch_pr_data(backend.as_ref(), target).map_err(|e| e.to_string());
