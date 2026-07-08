@@ -1260,10 +1260,68 @@ pub fn handle_visual_action(app: &mut App, action: Action) {
 /// Handle actions when file list panel is focused
 pub fn handle_file_list_action(app: &mut App, action: Action) {
     match action {
-        Action::CursorDown(n) => app.file_list_down(n),
-        Action::CursorUp(n) => app.file_list_up(n),
-        Action::ScrollLeft(n) => app.file_list_state.scroll_left(n),
-        Action::ScrollRight(n) => app.file_list_state.scroll_right(n),
+        Action::CursorDown(n) => {
+            app.file_list_down(n);
+            app.auto_jump_to_selected_file_if_enabled();
+        }
+        Action::CursorUp(n) => {
+            app.file_list_up(n);
+            app.auto_jump_to_selected_file_if_enabled();
+        }
+        // h/Left: scroll the file list left while there's hidden content;
+        // at the leftmost column fall through to gitui-style tree nav --
+        // collapse an expanded folder, ascend to the parent, or (at the
+        // top level with no parent) jump to the previous folder above,
+        // skipping over intervening files. When
+        // `arrow_tree_navigation = false`, the fall-through is disabled
+        // and only horizontal scroll remains.
+        Action::ScrollLeft(n) => {
+            if app.file_list_state.scroll_x > 0 {
+                app.file_list_state.scroll_left(n);
+            } else if app.arrow_tree_navigation {
+                match app.get_selected_tree_item() {
+                    Some(FileTreeItem::Directory { ref path, .. })
+                        if app.expanded_dirs.contains(path) =>
+                    {
+                        let path = path.clone();
+                        app.toggle_directory(&path);
+                    }
+                    _ => {
+                        if !app.file_list_select_parent() {
+                            app.file_list_select_prev_folder();
+                        }
+                    }
+                }
+                app.auto_jump_to_selected_file_if_enabled();
+            }
+        }
+        // l/Right: scroll the file list right while there's hidden content;
+        // at the rightmost column fall through to gitui-style tree nav --
+        // expand a collapsed folder, descend into an expanded one, or
+        // (on a file) jump to the next folder below, skipping over
+        // intervening files. When `arrow_tree_navigation = false`, the
+        // fall-through is disabled.
+        Action::ScrollRight(n) => {
+            if !app.file_list_state.at_max_scroll_x() {
+                app.file_list_state.scroll_right(n);
+            } else if app.arrow_tree_navigation {
+                match app.get_selected_tree_item() {
+                    Some(FileTreeItem::Directory { ref path, .. })
+                        if !app.expanded_dirs.contains(path) =>
+                    {
+                        let path = path.clone();
+                        app.toggle_directory(&path);
+                    }
+                    Some(FileTreeItem::Directory { .. }) => {
+                        app.file_list_down(1);
+                    }
+                    _ => {
+                        app.file_list_select_next_folder();
+                    }
+                }
+                app.auto_jump_to_selected_file_if_enabled();
+            }
+        }
         Action::MouseScrollDown(n) => app.file_list_viewport_scroll_down(n),
         Action::MouseScrollUp(n) => app.file_list_viewport_scroll_up(n),
         Action::SelectFile | Action::ToggleExpand => {

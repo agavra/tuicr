@@ -265,6 +265,9 @@ fn main() -> anyhow::Result<()> {
         if cfg.single_file_view == Some(true) && !app.is_single_file_view {
             app.toggle_single_file_view();
         }
+        if let Some(tree_nav) = cfg.arrow_tree_navigation {
+            app.arrow_tree_navigation = tree_nav;
+        }
         if cfg.export_legend == Some(false) {
             app.export_legend = false;
         }

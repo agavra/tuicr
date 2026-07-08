@@ -8,8 +8,18 @@ use std::path::Path;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, FileTreeItem, FocusedPanel};
-use crate::ui::diff_view::apply_horizontal_scroll;
 use crate::ui::styles;
+
+/// Skip `cols` characters from the start of `name`. Used to slide a
+/// row's filename under horizontal scroll while the sticky prefix
+/// (indent, checkbox, status badge) stays at the left edge.
+fn scroll_name(name: &str, cols: usize) -> String {
+    if cols == 0 {
+        name.to_string()
+    } else {
+        name.chars().skip(cols).collect()
+    }
+}
 
 const EXPANDED_GLYPH: &str = "\u{25bc}"; // ▼
 const COLLAPSED_GLYPH: &str = "\u{25b6}"; // ▶
@@ -18,6 +28,13 @@ const UNREVIEWED_BOX: &str = "\u{25a2}"; // ▢
 
 pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focused_panel == FocusedPanel::FileList;
+
+    // Leaving the file list resets its horizontal scroll. Long filenames
+    // come back into view from the start next time the user focuses the
+    // panel; otherwise the panel would appear "stuck" mid-scroll.
+    if !focused {
+        app.file_list_state.scroll_x = 0;
+    }
 
     let title = format!(
         " Files \u{00b7} {}/{} ",
@@ -34,24 +51,29 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
     app.file_list_inner_area = Some(inner);
     let visible_items = app.build_visible_items();
 
+    // Sticky prefix (indent + icon + status badge) stays anchored at
+    // the left edge during horizontal scroll; only the name portion
+    // slides. `max_content_width` therefore tracks the widest name, not
+    // the widest full row, so `scroll_x` maps directly to "chars skipped
+    // from the start of the longest name."
     let max_content_width = visible_items
         .iter()
         .map(|item| match item {
-            FileTreeItem::Directory { path, depth, .. } => {
+            FileTreeItem::Directory { path, .. } => {
                 let dir_name = Path::new(path)
                     .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or(path);
-                depth * 2 + 2 + dir_name.width() + 1
+                dir_name.width() + 1
             }
-            FileTreeItem::File { file_idx, depth } => {
+            FileTreeItem::File { file_idx, .. } => {
                 let file = &app.diff_files[*file_idx];
                 let filename = file
                     .display_path()
                     .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or("?");
-                depth * 2 + 4 + filename.width()
+                filename.width()
             }
         })
         .max()
@@ -61,7 +83,10 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
     app.file_list_state.viewport_height = inner.height as usize;
     app.file_list_state.max_content_width = max_content_width;
 
-    let max_scroll_x = max_content_width.saturating_sub(inner.width as usize);
+    // Cap scroll so at least one column of the longest name stays
+    // visible -- there's no value in scrolling the name entirely off
+    // screen.
+    let max_scroll_x = max_content_width.saturating_sub(1);
     if app.file_list_state.scroll_x > max_scroll_x {
         app.file_list_state.scroll_x = max_scroll_x;
     }
@@ -106,10 +131,11 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
                         .file_name()
                         .and_then(|n| n.to_str())
                         .unwrap_or(path);
+                    let name = format!("{dir_name}/");
                     Line::from(vec![
                         Span::raw(indent),
                         Span::styled(format!("{icon} "), styles::dir_icon_style(&app.theme)),
-                        Span::raw(format!("{dir_name}/")),
+                        Span::raw(scroll_name(&name, scroll_x)),
                     ])
                 }
                 FileTreeItem::File { file_idx, depth } => {
@@ -148,13 +174,13 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
                                 styles::file_status_style(&app.theme, status),
                             ));
                         }
-                        spans.push(Span::raw(filename.to_string()));
+                        spans.push(Span::raw(scroll_name(filename, scroll_x)));
                         Line::from(spans)
                     }
                 }
             };
 
-            ListItem::new(apply_horizontal_scroll(line, scroll_x))
+            ListItem::new(line)
         })
         .collect();
 
