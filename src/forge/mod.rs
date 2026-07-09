@@ -71,14 +71,11 @@ pub fn detect_gitlab_repository(repo_root: &Path) -> Option<ForgeRepository> {
     None
 }
 
-/// Detect the forge repository for the local checkout at `repo_root`.
-///
-/// Tries GitLab first (host must contain "gitlab"); falls back to GitHub,
-/// which accepts any host so GitHub Enterprise remotes whose hostname does
-/// not literally contain "github" are still detected. Returns `None` when
-/// no remote can be parsed.
-pub fn detect_forge_repository(repo_root: &Path) -> Option<ForgeRepository> {
-    let repo = Repository::discover(repo_root).ok()?;
+/// `repo_root`'s remote URLs, `origin` first, then every other remote.
+fn remote_urls(repo_root: &Path) -> Vec<String> {
+    let Ok(repo) = Repository::discover(repo_root) else {
+        return Vec::new();
+    };
     let mut all_urls: Vec<String> = Vec::new();
 
     if let Ok(remote) = repo.find_remote("origin")
@@ -95,6 +92,17 @@ pub fn detect_forge_repository(repo_root: &Path) -> Option<ForgeRepository> {
             }
         }
     }
+    all_urls
+}
+
+/// Detect the forge repository for the local checkout at `repo_root`.
+///
+/// Tries GitLab first (host must contain "gitlab"); falls back to GitHub,
+/// which accepts any host so GitHub Enterprise remotes whose hostname does
+/// not literally contain "github" are still detected. Returns `None` when
+/// no remote can be parsed.
+pub fn detect_forge_repository(repo_root: &Path) -> Option<ForgeRepository> {
+    let all_urls = remote_urls(repo_root);
 
     // GitLab parser already filters to "gitlab" hosts, so trying it first
     // won't claim GitHub Enterprise remotes.
@@ -113,11 +121,14 @@ pub fn detect_forge_repository(repo_root: &Path) -> Option<ForgeRepository> {
     None
 }
 
-/// `root`'s local checkout, but only when its detected remote matches
-/// `target_repo`.
+/// `root`'s local checkout, but only when one of its remotes — not
+/// necessarily `origin` — matches `target_repo`.
 pub fn local_checkout_for_repo(root: &Path, target_repo: &ForgeRepository) -> Option<PathBuf> {
-    let detected = detect_forge_repository(root)?;
-    (detected == *target_repo).then(|| root.to_path_buf())
+    let matches = remote_urls(root).iter().any(|url| {
+        parse_gitlab_remote_url(url).as_ref() == Some(target_repo)
+            || parse_github_remote_url(url).as_ref() == Some(target_repo)
+    });
+    matches.then(|| root.to_path_buf())
 }
 
 #[cfg(test)]
@@ -162,5 +173,19 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let target = ForgeRepository::github("github.com", "agavra", "tuicr");
         assert_eq!(local_checkout_for_repo(dir.path(), &target), None);
+    }
+
+    #[test]
+    fn local_checkout_matches_upstream_remote_in_fork_workflow() {
+        let dir = init_repo_with_origin("https://github.com/contributor/tuicr");
+        let repo = Repository::open(dir.path()).expect("open repo");
+        repo.remote("upstream", "https://github.com/agavra/tuicr")
+            .expect("add upstream");
+
+        let target = ForgeRepository::github("github.com", "agavra", "tuicr");
+        assert_eq!(
+            local_checkout_for_repo(dir.path(), &target),
+            Some(dir.path().to_path_buf())
+        );
     }
 }
