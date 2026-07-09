@@ -85,7 +85,7 @@ pub(crate) fn slice_context_lines(content: &str, start_line: u32, end_line: u32)
         }
         result.push(DiffLine {
             origin: LineOrigin::Context,
-            content: lines[idx].to_string(),
+            content: tabify(lines[idx]),
             old_lineno: Some(line_num),
             new_lineno: Some(line_num),
             highlighted_spans: None,
@@ -404,6 +404,16 @@ mod tests {
                 panic!("Unexpected error: {e:?}");
             }
         }
+    }
+
+    #[test]
+    fn slice_context_lines_expands_tabs() {
+        let content = "fn main() {\n\tprintln!(\"hi\");\n}";
+
+        let lines = slice_context_lines(content, 2, 2);
+
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].content, "    println!(\"hi\");");
     }
 
     fn vue_diff_file(
