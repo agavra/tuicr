@@ -1,0 +1,15 @@
+mod change_status_tests;
+mod commit_scoped_comment_tests;
+mod commit_selection_tests;
+mod decoration_skip_tests;
+mod diff_source_tests;
+mod expand_gap_tests;
+mod find_source_line_tests;
+mod persistence_merge_tests;
+mod scroll_behavior_tests;
+mod scroll_tests;
+mod single_file_view_tests;
+mod submit_flow_tests;
+mod target_selector_tests;
+mod tree_tests;
+mod visual_selection_tests;
