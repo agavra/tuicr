@@ -242,7 +242,8 @@ impl GlabDiscussion {
             // Comment on the new (right) side.
             let path = position.new_path.clone().unwrap_or_default();
             (path, Some(new_line), RemoteCommentSide::Right)
-        } else if let Some(old_line) = position.old_line {
+        } else {
+            let old_line = position.old_line?;
             // Comment on the old (left) side only.
             let path = position
                 .old_path
@@ -250,8 +251,6 @@ impl GlabDiscussion {
                 .or_else(|| position.new_path.clone())
                 .unwrap_or_default();
             (path, Some(old_line), RemoteCommentSide::Left)
-        } else {
-            return None;
         };
 
         if path.is_empty() {
