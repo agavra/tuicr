@@ -6,14 +6,16 @@ use std::process::Command;
 use chrono::{TimeZone, Utc};
 
 use crate::error::{Result, TuicrError};
-use crate::model::{DiffFile, DiffLine, FileStatus, LineOrigin};
+use crate::model::{DiffFile, DiffLine, FileStatus};
 use crate::syntax::SyntaxHighlighter;
 use crate::vcs::diff_parser::{self, DiffFormat};
 use crate::vcs::traits::{
     CommitInfo, DiffWhitespaceMode, ResolvedRevisionRange, RevisionDiffTarget, VcsBackend, VcsInfo,
     VcsType,
 };
-use crate::vcs::{BATCH_BOUNDARY, apply_container_full_file_highlight, parse_batched_files};
+use crate::vcs::{
+    BATCH_BOUNDARY, apply_container_full_file_highlight, parse_batched_files, slice_context_lines,
+};
 
 /// Parse an hg description into (summary, optional body).
 fn parse_hg_description(desc: &str) -> (String, Option<String>) {
@@ -142,23 +144,7 @@ impl VcsBackend for HgBackend {
             std::fs::read_to_string(self.info.root_path.join(file_path))?
         };
 
-        let lines: Vec<&str> = content.lines().collect();
-        let mut result = Vec::new();
-
-        for line_num in start_line..=end_line {
-            let idx = (line_num - 1) as usize;
-            if idx < lines.len() {
-                result.push(DiffLine {
-                    origin: LineOrigin::Context,
-                    content: lines[idx].to_string(),
-                    old_lineno: Some(line_num),
-                    new_lineno: Some(line_num),
-                    highlighted_spans: None,
-                });
-            }
-        }
-
-        Ok(result)
+        Ok(slice_context_lines(&content, start_line, end_line))
     }
 
     fn file_line_count(
@@ -501,6 +487,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::LineOrigin;
     use crate::vcs::RevisionDiffTarget;
     use std::fs;
 

@@ -16,7 +16,9 @@ use crate::vcs::{
     ChangeKind, CommitInfo, DiffWhitespaceMode, ResolvedRevisionRange, RevisionDiffTarget,
     VcsBackend, VcsChangeStatus, VcsInfo,
 };
-use crate::vcs::{container_file_paths, enhance_with_full_file_highlight, tabify};
+use crate::vcs::{
+    container_file_paths, enhance_with_full_file_highlight, slice_context_lines, tabify,
+};
 
 use super::{
     GitRepoMode, RevisionExpression, git_bool_config_enabled, git_command_error,
@@ -269,22 +271,7 @@ impl VcsBackend for GitCliBackend {
         }
 
         let content = self.read_file_content(file_path, file_status, ref_commit)?;
-
-        let lines: Vec<&str> = content.lines().collect();
-        let mut result = Vec::new();
-        for line_num in start_line..=end_line {
-            let idx = (line_num - 1) as usize;
-            if idx < lines.len() {
-                result.push(DiffLine {
-                    origin: LineOrigin::Context,
-                    content: lines[idx].to_string(),
-                    old_lineno: Some(line_num),
-                    new_lineno: Some(line_num),
-                    highlighted_spans: None,
-                });
-            }
-        }
-        Ok(result)
+        Ok(slice_context_lines(&content, start_line, end_line))
     }
 
     fn file_line_count(

@@ -34,7 +34,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Result, TuicrError};
-use crate::model::{DiffFile, LineSide};
+use crate::model::{DiffFile, DiffLine, LineOrigin, LineSide};
 use crate::syntax::{
     HighlightedLines, HighlightedSpans, SyntaxHighlighter, needs_full_file_highlight,
 };
@@ -68,6 +68,30 @@ pub(crate) fn container_file_paths(files: &[DiffFile], side: LineSide) -> Vec<Pa
 /// with the displayed text in side-by-side and unified rendering.
 pub(crate) fn tabify(s: &str) -> String {
     s.replace('\t', "    ")
+}
+
+/// Slice `[start_line, end_line]` (1-indexed, inclusive) into `DiffLine`s.
+pub(crate) fn slice_context_lines(content: &str, start_line: u32, end_line: u32) -> Vec<DiffLine> {
+    if start_line > end_line || start_line == 0 {
+        return Vec::new();
+    }
+
+    let lines: Vec<&str> = content.lines().collect();
+    let mut result = Vec::new();
+    for line_num in start_line..=end_line {
+        let idx = (line_num - 1) as usize;
+        if idx >= lines.len() {
+            break;
+        }
+        result.push(DiffLine {
+            origin: LineOrigin::Context,
+            content: lines[idx].to_string(),
+            old_lineno: Some(line_num),
+            new_lineno: Some(line_num),
+            highlighted_spans: None,
+        });
+    }
+    result
 }
 
 /// Read a file from the working tree, returning `None` on any IO error.

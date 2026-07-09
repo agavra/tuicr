@@ -2,7 +2,8 @@ use git2::Repository;
 use std::path::Path;
 
 use crate::error::{Result, TuicrError};
-use crate::model::{DiffLine, FileStatus, LineOrigin};
+use crate::model::{DiffLine, FileStatus};
+use crate::vcs::slice_context_lines;
 
 /// Fetch context lines from a file for gap expansion.
 ///
@@ -21,24 +22,7 @@ pub fn fetch_context_lines(
     }
 
     let content = read_file_content(repo, file_path, file_status, ref_commit)?;
-
-    let lines: Vec<&str> = content.lines().collect();
-    let mut result = Vec::new();
-
-    for line_num in start_line..=end_line {
-        let idx = (line_num - 1) as usize;
-        if idx < lines.len() {
-            result.push(DiffLine {
-                origin: LineOrigin::Context,
-                content: lines[idx].to_string(),
-                old_lineno: Some(line_num),
-                new_lineno: Some(line_num),
-                highlighted_spans: None,
-            });
-        }
-    }
-
-    Ok(result)
+    Ok(slice_context_lines(&content, start_line, end_line))
 }
 
 /// Get the total number of lines in a file.

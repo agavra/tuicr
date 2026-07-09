@@ -12,10 +12,11 @@ use crate::forge::traits::{
     PagedPullRequests, PullRequestCommit, PullRequestDetails, PullRequestListQuery,
     PullRequestListScope, PullRequestReviewMetadata, PullRequestReviewRecord, PullRequestTarget,
 };
-use crate::model::{DiffLine, LineOrigin};
+use crate::model::DiffLine;
 use crate::process::{
     CommandOutputError, CommandOutputErrorKind, run_command_output, run_command_output_with_stdin,
 };
+use crate::vcs::slice_context_lines;
 
 use super::models::{
     GlabApprovalState, GlabCommit, GlabDiscussion, GlabMrDetails, GlabMrSummary, GlabMrVersion,
@@ -531,7 +532,7 @@ where
             self.fetch_file_via_api(&request)?
         };
 
-        Ok(slice_to_diff_lines(
+        Ok(slice_context_lines(
             &content,
             request.start_line,
             request.end_line,
@@ -806,25 +807,6 @@ where
         args.push(endpoint);
         self.run_glab(args, &request.repository.host)
     }
-}
-
-fn slice_to_diff_lines(content: &str, start_line: u32, end_line: u32) -> Vec<DiffLine> {
-    let lines: Vec<&str> = content.lines().collect();
-    let mut result = Vec::new();
-    for line_num in start_line..=end_line {
-        let idx = (line_num - 1) as usize;
-        if idx >= lines.len() {
-            break;
-        }
-        result.push(DiffLine {
-            origin: LineOrigin::Context,
-            content: lines[idx].to_string(),
-            old_lineno: Some(line_num),
-            new_lineno: Some(line_num),
-            highlighted_spans: None,
-        });
-    }
-    result
 }
 
 /// Parse a pull request target string in GitLab format.

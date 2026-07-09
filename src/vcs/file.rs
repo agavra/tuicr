@@ -8,6 +8,7 @@ use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin};
 use crate::syntax::SyntaxHighlighter;
 
 use super::traits::{VcsBackend, VcsInfo, VcsType};
+use crate::vcs::slice_context_lines;
 
 /// A backend for reviewing files outside of a VCS repository (`--file`)
 /// and for the whole-repo `--all-files` mode.
@@ -329,23 +330,7 @@ impl VcsBackend for FileBackend {
         }
 
         let content = std::fs::read_to_string(&canonical)?;
-        let lines: Vec<&str> = content.lines().collect();
-        let mut result = Vec::new();
-
-        for line_num in start_line..=end_line {
-            let idx = (line_num - 1) as usize;
-            if idx < lines.len() {
-                result.push(DiffLine {
-                    origin: LineOrigin::Context,
-                    content: lines[idx].to_string(),
-                    old_lineno: Some(line_num),
-                    new_lineno: Some(line_num),
-                    highlighted_spans: None,
-                });
-            }
-        }
-
-        Ok(result)
+        Ok(slice_context_lines(&content, start_line, end_line))
     }
 
     fn file_line_count(
