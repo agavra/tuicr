@@ -2,12 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [0.19.0] - 2026-07-09
 
 ### Bug Fixes
 
-- **comments:** Associate comments with their commit when reviewing per-commit, preventing comments from one commit bleeding into another commit's diff view
+- **forge:** Show expand row after last hunk in PR review (#426)
+- **keybinds:** Missing common readline motions (alt-f/b) (#429)
+- Fixed session detection on Linux (#435)
+- **pr:** Preserve reviewed markers on refresh (#437)
+- **comments:** Associate comments with their commit when reviewing per-commit (#442)
+- **ui:** Make word wrap work in side-by-side diff view (#450)
 
+### Features
+
+- **comment:** Opt-in vim modal editing in the review comment box (#430)
+- **comment:** Alt+Enter accepts and Alt+Esc discards in the vim comment box (#440)
+- **ui:** Detect light/dark theme from terminal background (#448)
+
+### Performance
+
+- **main:** Only redraw when state changed (#428)
+
+### Refactor
+
+- **app:** Split app.rs into focused submodules (#456)
 ## [0.18.0] - 2026-06-20
 
 ### Bug Fixes
