@@ -159,7 +159,12 @@ where
 }
 
 fn is_binary_patch_line(line: &str) -> bool {
-    line.contains("Binary") || line.starts_with("GIT binary patch")
+    // A loose `contains("Binary")` also matches an ordinary `@@ ... @@` hunk
+    // header whose context text contains "Binary", so require the real
+    // marker shape instead: real markers always start the line (git's
+    // "Binary files ... differ", hg's "Binary file ... has changed", or
+    // "GIT binary patch"), never a `@@` hunk header.
+    line.starts_with("Binary file") || line.starts_with("GIT binary patch")
 }
 
 fn parse_file_header<'a, I>(
@@ -1021,6 +1026,26 @@ Binary files a/image.png and b/image.png differ
         assert_eq!(files[0].status, FileStatus::Modified);
         assert_eq!(files[0].old_path, Some(PathBuf::from("image.png")));
         assert_eq!(files[0].new_path, Some(PathBuf::from("image.png")));
+    }
+
+    #[test]
+    fn jj_should_not_treat_hunk_context_containing_binary_as_binary_marker() {
+        // Regression test: the hunk-header context text (the enclosing
+        // symbol name that `git diff` appends after the second `@@`) can
+        // contain the substring "Binary" without the file being binary.
+        let diff = r#"diff --git a/f.txt b/f.txt
+index 1111111..2222222 100644
+--- a/f.txt
++++ b/f.txt
+@@ -1,2 +1,3 @@ someBinaryThing(
+ aaa
++bbb
+"#;
+        let files =
+            parse_unified_diff(diff, DiffFormat::GitStyle, &SyntaxHighlighter::default()).unwrap();
+        assert_eq!(files.len(), 1);
+        assert!(!files[0].is_binary);
+        assert_eq!(files[0].hunks.len(), 1);
     }
 
     #[test]
