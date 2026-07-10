@@ -221,6 +221,24 @@ fn comment_vim_command_backspace_past_colon_closes() {
 }
 
 fn build_app_with_commits(commits: Vec<CommitInfo>) -> App {
+    build_app_full(commits, None)
+}
+
+fn build_app_with_comment_types(configs: Vec<crate::config::CommentTypeConfig>) -> App {
+    build_app_full(Vec::new(), Some(configs))
+}
+
+fn comment_type_config(id: &str) -> crate::config::CommentTypeConfig {
+    crate::config::CommentTypeConfig {
+        id: id.to_string(),
+        ..Default::default()
+    }
+}
+
+fn build_app_full(
+    commits: Vec<CommitInfo>,
+    comment_type_configs: Option<Vec<crate::config::CommentTypeConfig>>,
+) -> App {
     let vcs_info = VcsInfo {
         root_path: PathBuf::from("/tmp"),
         head_commit: "head".to_string(),
@@ -241,7 +259,7 @@ fn build_app_with_commits(commits: Vec<CommitInfo>) -> App {
         }),
         vcs_info,
         Theme::dark(),
-        None,
+        comment_type_configs,
         false,
         Vec::new(),
         session,
@@ -255,8 +273,27 @@ fn build_app_with_commits(commits: Vec<CommitInfo>) -> App {
 }
 
 #[test]
-fn should_cycle_comment_type_on_tab_action() {
+fn default_comment_type_is_none_without_config() {
     let mut app = build_app();
+    app.enter_comment_mode(false, None);
+    assert_eq!(app.input_mode, InputMode::Comment);
+    // Out of the box the only type is None — untyped, no prefix.
+    assert!(app.comment_type.is_none());
+    assert_eq!(app.comment_type.id(), "none");
+
+    // With a single type there is nothing to cycle to; stays on None.
+    app.cycle_comment_type();
+    assert!(app.comment_type.is_none());
+}
+
+#[test]
+fn should_cycle_comment_type_on_tab_action() {
+    // Configuring types overrides the None default (first configured type
+    // becomes the default) but None stays available, appended to the cycle.
+    let mut app = build_app_with_comment_types(vec![
+        comment_type_config("note"),
+        comment_type_config("suggestion"),
+    ]);
     app.enter_comment_mode(false, None);
     assert_eq!(app.input_mode, InputMode::Comment);
     assert_eq!(app.comment_type.id(), "note");
@@ -264,12 +301,12 @@ fn should_cycle_comment_type_on_tab_action() {
     app.cycle_comment_type();
     assert_eq!(app.comment_type.id(), "suggestion");
 
+    // None is appended and reachable by cycling.
     app.cycle_comment_type();
-    assert_eq!(app.comment_type.id(), "issue");
+    assert_eq!(app.comment_type.id(), "none");
+    assert!(app.comment_type.is_none());
 
-    app.cycle_comment_type();
-    assert_eq!(app.comment_type.id(), "praise");
-
+    // Wraps back around to the first configured type.
     app.cycle_comment_type();
     assert_eq!(app.comment_type.id(), "note");
 }
@@ -1007,7 +1044,7 @@ fn should_load_persisted_pr_session_when_reopening_same_head() {
         .unwrap()
         .add_file_comment(Comment::new(
             "persisted draft".to_string(),
-            CommentType::Note,
+            CommentType::from_id("note"),
             None,
         ));
     crate::persistence::save_session(&app.session).unwrap();
@@ -1051,7 +1088,7 @@ fn should_keep_saved_pr_session_through_quit_reopen_and_same_head_reload() {
         .unwrap()
         .add_file_comment(Comment::new(
             "persisted file draft".to_string(),
-            CommentType::Note,
+            CommentType::from_id("note"),
             None,
         ));
     app.session
@@ -1059,7 +1096,11 @@ fn should_keep_saved_pr_session_through_quit_reopen_and_same_head_reload() {
         .unwrap()
         .add_line_comment(
             1,
-            Comment::new("persisted line draft".to_string(), CommentType::Issue, None),
+            Comment::new(
+                "persisted line draft".to_string(),
+                CommentType::from_id("issue"),
+                None,
+            ),
         );
     app.save_current_session_merging_external().unwrap();
 
@@ -1138,7 +1179,7 @@ fn should_use_persisted_new_head_session_instead_of_carrying_old_head_state() {
         .unwrap()
         .add_file_comment(Comment::new(
             "new-head draft".to_string(),
-            CommentType::Note,
+            CommentType::from_id("note"),
             None,
         ));
     write_session_file_without_manifest(&persisted_b);
@@ -1325,7 +1366,7 @@ fn should_ignore_exact_session_file_when_pr_session_key_does_not_match() {
         .unwrap()
         .add_file_comment(Comment::new(
             "wrong-head draft".to_string(),
-            CommentType::Note,
+            CommentType::from_id("note"),
             None,
         ));
     let path = crate::persistence::storage::session_path(&opened.session).unwrap();
@@ -1376,7 +1417,7 @@ fn should_ignore_manifest_session_when_pr_session_key_does_not_match() {
         .unwrap()
         .add_file_comment(Comment::new(
             "wrong-manifest draft".to_string(),
-            CommentType::Note,
+            CommentType::from_id("note"),
             None,
         ));
     std::fs::write(saved_path, serde_json::to_vec_pretty(&mismatched).unwrap()).unwrap();
@@ -1466,7 +1507,7 @@ fn should_carry_draft_comments_for_unchanged_files_when_pr_head_advances() {
     app.session.get_file_mut(&changed_path).unwrap().reviewed = true;
     app.session.review_comments.push(Comment::new(
         "review-level draft".to_string(),
-        CommentType::Note,
+        CommentType::from_id("note"),
         None,
     ));
     app.session
@@ -1474,7 +1515,7 @@ fn should_carry_draft_comments_for_unchanged_files_when_pr_head_advances() {
         .unwrap()
         .add_file_comment(Comment::new(
             "stable file draft".to_string(),
-            CommentType::Note,
+            CommentType::from_id("note"),
             None,
         ));
     app.session
@@ -1482,7 +1523,11 @@ fn should_carry_draft_comments_for_unchanged_files_when_pr_head_advances() {
         .unwrap()
         .add_line_comment(
             1,
-            Comment::new("changed line draft".to_string(), CommentType::Issue, None),
+            Comment::new(
+                "changed line draft".to_string(),
+                CommentType::from_id("issue"),
+                None,
+            ),
         );
     app.save_current_session_merging_external().unwrap();
 
@@ -1536,7 +1581,7 @@ fn should_carry_reviewed_marks_for_unchanged_files_when_pr_head_advances() {
         .unwrap()
         .add_file_comment(Comment::new(
             "old-head draft".to_string(),
-            CommentType::Note,
+            CommentType::from_id("note"),
             None,
         ));
     app.session
@@ -1544,7 +1589,7 @@ fn should_carry_reviewed_marks_for_unchanged_files_when_pr_head_advances() {
         .unwrap()
         .add_file_comment(Comment::new(
             "changed-file draft".to_string(),
-            CommentType::Issue,
+            CommentType::from_id("issue"),
             None,
         ));
 
@@ -1947,7 +1992,7 @@ fn should_block_q_when_unsaved_comments_exist() {
         .unwrap()
         .add_file_comment(crate::model::Comment::new(
             "needs work".to_string(),
-            crate::model::CommentType::Note,
+            crate::model::CommentType::from_id("note"),
             None,
         ));
     app.dirty = true;

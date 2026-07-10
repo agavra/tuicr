@@ -18,7 +18,7 @@ fn test_session() -> ReviewSession {
 }
 
 fn comment(id: &str, content: &str) -> Comment {
-    let mut comment = Comment::new(content.to_string(), CommentType::Note, None);
+    let mut comment = Comment::new(content.to_string(), CommentType::from_id("note"), None);
     comment.id = id.to_string();
     comment
 }

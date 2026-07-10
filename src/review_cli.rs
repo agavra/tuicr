@@ -845,7 +845,7 @@ mod tests {
                         side: LineSide::New,
                     },
                     content: "check this".to_string(),
-                    comment_type: CommentType::Issue,
+                    comment_type: CommentType::from_id("issue"),
                     author: crate::model::comment::DEFAULT_AUTHOR.to_string(),
                     commit_id: None,
                 },

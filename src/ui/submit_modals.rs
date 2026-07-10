@@ -489,13 +489,13 @@ mod tests {
             unmappable: vec![
                 unmappable_item(
                     "src/lib.rs",
-                    CommentType::Issue,
+                    CommentType::from_id("issue"),
                     "needs fixing",
                     UnmappableReason::FileLevelNoAnchor,
                 ),
                 unmappable_item(
                     "img.png",
-                    CommentType::Note,
+                    CommentType::from_id("note"),
                     "binary art",
                     UnmappableReason::BinaryFile,
                 ),
@@ -527,7 +527,7 @@ mod tests {
             mappable: Vec::new(),
             unmappable: vec![unmappable_item(
                 "x.rs",
-                CommentType::Note,
+                CommentType::from_id("note"),
                 "n",
                 UnmappableReason::FileLevelNoAnchor,
             )],
@@ -639,13 +639,13 @@ mod tests {
             unmappable: vec![
                 unmappable_item(
                     "a.rs",
-                    CommentType::Note,
+                    CommentType::from_id("note"),
                     "x",
                     UnmappableReason::FileLevelNoAnchor,
                 ),
                 unmappable_item(
                     "b.rs",
-                    CommentType::Note,
+                    CommentType::from_id("note"),
                     "y",
                     UnmappableReason::FileLevelNoAnchor,
                 ),

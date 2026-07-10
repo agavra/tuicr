@@ -154,10 +154,17 @@ fn build_inline_body(comment: &Comment, file_level: bool, config: &ForgeConfig) 
     if !config.comment_type_prefix {
         return comment.content.clone();
     }
-    let prefix = if file_level {
-        format!("[{ty}] File-level: ", ty = comment.comment_type.as_str())
+    // `None` comments carry no `[TYPE]` tag, but file-level ones keep the
+    // `File-level:` marker so the reader still knows where the comment applies.
+    let type_tag = if comment.comment_type.is_none() {
+        String::new()
     } else {
         format!("[{ty}] ", ty = comment.comment_type.as_str())
+    };
+    let prefix = if file_level {
+        format!("{type_tag}File-level: ")
+    } else {
+        type_tag
     };
     format!("{prefix}{body}", body = comment.content)
 }
@@ -453,7 +460,7 @@ pub fn build_review_body(
             if i > 0 {
                 block.push_str("\n\n");
             }
-            if config.comment_type_prefix {
+            if config.comment_type_prefix && !c.comment_type.is_none() {
                 block.push_str(&format!("[{}] ", c.comment_type.as_str()));
             }
             block.push_str(&c.content);
@@ -464,7 +471,7 @@ pub fn build_review_body(
     if !moved_to_summary.is_empty() {
         let mut block = String::from("## Unplaced comments\n");
         for item in moved_to_summary {
-            let prefix = if config.comment_type_prefix {
+            let prefix = if config.comment_type_prefix && !item.comment.comment_type.is_none() {
                 format!("[{}] ", item.comment.comment_type.as_str())
             } else {
                 String::new()
@@ -540,7 +547,11 @@ mod tests {
     }
 
     fn comment_with_line(side: LineSide, new: Option<u32>, old: Option<u32>) -> Comment {
-        let mut c = Comment::new("needs work".to_string(), CommentType::Issue, Some(side));
+        let mut c = Comment::new(
+            "needs work".to_string(),
+            CommentType::from_id("issue"),
+            Some(side),
+        );
         c.line_context = Some(LineContext {
             new_line: new,
             old_line: old,
@@ -550,11 +561,20 @@ mod tests {
     }
 
     fn comment_range(side: LineSide, range: LineRange) -> Comment {
-        Comment::new_with_range("ranged".to_string(), CommentType::Note, Some(side), range)
+        Comment::new_with_range(
+            "ranged".to_string(),
+            CommentType::from_id("note"),
+            Some(side),
+            range,
+        )
     }
 
     fn comment_file_level() -> Comment {
-        Comment::new("module is messy".to_string(), CommentType::Note, None)
+        Comment::new(
+            "module is messy".to_string(),
+            CommentType::from_id("note"),
+            None,
+        )
     }
 
     /// Infer the `CommentAnchor` from a test fixture's `Comment` shape.
@@ -876,7 +896,7 @@ mod tests {
     // build_review_body
 
     fn note(content: &str) -> Comment {
-        Comment::new(content.to_string(), CommentType::Note, None)
+        Comment::new(content.to_string(), CommentType::from_id("note"), None)
     }
 
     #[test]
@@ -895,7 +915,7 @@ mod tests {
     #[test]
     fn should_render_unplaced_comments_section() {
         let item = MovedToSummaryItem {
-            comment: Comment::new("kaboom".to_string(), CommentType::Issue, None),
+            comment: Comment::new("kaboom".to_string(), CommentType::from_id("issue"), None),
             file: PathBuf::from("src/lib.rs"),
         };
         let body = build_review_body(&[], &[item], &default_config());
@@ -907,7 +927,7 @@ mod tests {
     fn should_render_review_level_above_unplaced_section() {
         let review = vec![note("top")];
         let summary = vec![MovedToSummaryItem {
-            comment: Comment::new("middle".to_string(), CommentType::Note, None),
+            comment: Comment::new("middle".to_string(), CommentType::from_id("note"), None),
             file: PathBuf::from("a.rs"),
         }];
         let body = build_review_body(&review, &summary, &default_config());
@@ -924,6 +944,34 @@ mod tests {
         let comments = vec![note("just text")];
         let body = build_review_body(&comments, &[], &cfg);
         assert_eq!(body, "just text");
+    }
+
+    #[test]
+    fn should_omit_type_prefix_for_none_typed_comments_even_when_enabled() {
+        let comments = vec![Comment::new("untyped".to_string(), CommentType::None, None)];
+        let summary = vec![MovedToSummaryItem {
+            comment: Comment::new("also untyped".to_string(), CommentType::None, None),
+            file: PathBuf::from("a.rs"),
+        }];
+        let body = build_review_body(&comments, &summary, &default_config());
+        assert!(!body.contains('['), "no type tag expected on None: {body}");
+        assert!(body.contains("untyped"));
+        assert!(body.contains("- a.rs: also untyped"));
+    }
+
+    #[test]
+    fn build_inline_body_omits_tag_for_none_but_keeps_file_level_marker() {
+        let comment = Comment::new("untyped".to_string(), CommentType::None, None);
+        // Line-level: raw content, no `[TYPE]`.
+        assert_eq!(
+            build_inline_body(&comment, false, &default_config()),
+            "untyped"
+        );
+        // File-level: keep the `File-level:` marker, drop the `[TYPE]`.
+        assert_eq!(
+            build_inline_body(&comment, true, &default_config()),
+            "File-level: untyped"
+        );
     }
 
     // SubmitEvent

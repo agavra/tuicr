@@ -292,12 +292,16 @@ mod tests {
     #[test]
     fn should_clear_review_level_comments() {
         let mut session = test_session();
-        session
-            .review_comments
-            .push(Comment::new("note".to_string(), CommentType::Note, None));
-        session
-            .review_comments
-            .push(Comment::new("issue".to_string(), CommentType::Issue, None));
+        session.review_comments.push(Comment::new(
+            "note".to_string(),
+            CommentType::from_id("note"),
+            None,
+        ));
+        session.review_comments.push(Comment::new(
+            "issue".to_string(),
+            CommentType::from_id("issue"),
+            None,
+        ));
 
         let (cleared, unreviewed) = session.clear_comments(ClearScope::CommentsAndReviewed);
         assert_eq!(cleared, 2);
@@ -311,10 +315,14 @@ mod tests {
         let path = PathBuf::from("src/main.rs");
         session.add_file(path.clone(), FileStatus::Modified, SOME_HASH);
         let file = session.get_file_mut(&path).unwrap();
-        file.add_file_comment(Comment::new("comment".to_string(), CommentType::Note, None));
+        file.add_file_comment(Comment::new(
+            "comment".to_string(),
+            CommentType::from_id("note"),
+            None,
+        ));
         file.add_line_comment(
             10,
-            Comment::new("line".to_string(), CommentType::Note, None),
+            Comment::new("line".to_string(), CommentType::from_id("note"), None),
         );
 
         let (cleared, _) = session.clear_comments(ClearScope::CommentsAndReviewed);
@@ -364,11 +372,17 @@ mod tests {
         session.add_file(path.clone(), FileStatus::Modified, SOME_HASH);
         let file = session.get_file_mut(&path).unwrap();
         file.reviewed = true;
-        file.add_file_comment(Comment::new("comment".to_string(), CommentType::Note, None));
+        file.add_file_comment(Comment::new(
+            "comment".to_string(),
+            CommentType::from_id("note"),
+            None,
+        ));
 
-        session
-            .review_comments
-            .push(Comment::new("review".to_string(), CommentType::Note, None));
+        session.review_comments.push(Comment::new(
+            "review".to_string(),
+            CommentType::from_id("note"),
+            None,
+        ));
 
         let (cleared, unreviewed) = session.clear_comments(ClearScope::CommentsAndReviewed);
         assert_eq!(cleared, 2);
@@ -403,11 +417,17 @@ mod tests {
         session.add_file(path.clone(), FileStatus::Modified, SOME_HASH);
         let file = session.get_file_mut(&path).unwrap();
         file.reviewed = true;
-        file.add_file_comment(Comment::new("comment".to_string(), CommentType::Note, None));
+        file.add_file_comment(Comment::new(
+            "comment".to_string(),
+            CommentType::from_id("note"),
+            None,
+        ));
 
-        session
-            .review_comments
-            .push(Comment::new("review".to_string(), CommentType::Note, None));
+        session.review_comments.push(Comment::new(
+            "review".to_string(),
+            CommentType::from_id("note"),
+            None,
+        ));
 
         let (cleared, unreviewed) = session.clear_comments(ClearScope::CommentsOnly);
         assert_eq!(cleared, 2);
@@ -555,13 +575,13 @@ mod tests {
         session.add_file(PathBuf::from("src/lib.rs"), FileStatus::Modified, SOME_HASH);
         let file_comment = Comment::new(
             "file note on commit aaa".to_string(),
-            CommentType::Note,
+            CommentType::from_id("note"),
             None,
         )
         .with_commit_id("aaa111");
         let line_comment = Comment::new(
             "line note on commit bbb".to_string(),
-            CommentType::Issue,
+            CommentType::from_id("issue"),
             Some(LineSide::New),
         )
         .with_commit_id("bbb222");

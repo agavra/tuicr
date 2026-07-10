@@ -1011,9 +1011,11 @@ mod tests {
             SessionDiffSource::WorkingTree,
             None,
         );
-        session
-            .review_comments
-            .push(Comment::new("keep me".to_string(), CommentType::Note, None));
+        session.review_comments.push(Comment::new(
+            "keep me".to_string(),
+            CommentType::from_id("note"),
+            None,
+        ));
         let path = save_session(&session).unwrap();
 
         assert!(!delete_session_if_empty(&path).unwrap());

@@ -14,8 +14,7 @@
 ## What it does
 
 - GitHub-style continuous diff in the terminal. Scroll through every changed file in one stream.
-- PR-style comments at the line, range, file, and review level, with classifications like
-  `issue`, `suggestion`, `note`, and `praise`.
+- PR-style comments at the line, range, file, and review level. 
 - Review tracking at file or hunk granularity, persisted across sessions.
 - Three export targets: push a real review to GitHub or GitLab, copy structured markdown to your
   clipboard, or pipe to stdout.
@@ -116,17 +115,15 @@ here. See [docs/GITLAB.md](docs/GITLAB.md) for setup, self-hosted instances, and
 
 ### To your coding agent
 
-`y` or `:clip` copies a structured markdown block to your clipboard. Each comment has a number,
-a classification, and a file/line anchor:
+`y` or `:clip` copies a structured markdown block to your clipboard. Each comment has a number
+and a file/line anchor: 
 
 ```markdown
 I reviewed your code and have the following comments. Please address them.
 
-Comment types: ISSUE (problems to fix), SUGGESTION (improvements), NOTE (observations), PRAISE (positive feedback)
-
-1. [SUGGESTION] `src/auth.rs` - Consider adding unit tests
-2. [ISSUE] `src/auth.rs:42` - Magic number should be a named constant
-3. [NOTE] `src/auth.rs:50-55` - This block could be refactored
+1. `src/auth.rs` - Consider adding unit tests
+2. `src/auth.rs:42` - Magic number should be a named constant
+3. `src/auth.rs:50-55` - This block could be refactored
 ```
 
 Paste it back to any coding agent (Claude, Codex, Cursor, etc).
@@ -177,7 +174,7 @@ store.add_comment(
             side: LineSide::New,
         },
         content: "Handle the empty case here.".into(),
-        comment_type: CommentType::Issue,
+        comment_type: CommentType::from_id("issue"),
     },
 )?;
 ```

@@ -300,40 +300,30 @@ fn generate_markdown(
 
     if show_legend {
         let used_ids = collect_used_comment_type_ids(session);
-        let legend = if comment_types.is_empty() {
-            let all = ["NOTE", "SUGGESTION", "ISSUE", "PRAISE"];
-            let filtered: Vec<&str> = if used_ids.is_empty() {
-                all.to_vec()
-            } else {
-                all.iter()
-                    .copied()
-                    .filter(|t| used_ids.contains(&t.to_ascii_lowercase()))
-                    .collect()
-            };
-            filtered.join(", ")
-        } else {
-            let filtered: Vec<_> = comment_types
-                .iter()
-                .filter(|ct| used_ids.is_empty() || used_ids.contains(&ct.id))
-                .collect();
-            filtered
-                .iter()
-                .map(|comment_type| {
-                    let definition = comment_type
-                        .definition
-                        .as_deref()
-                        .unwrap_or(comment_type.id.as_str());
-                    format!(
-                        "{} ({})",
-                        comment_type.label.to_ascii_uppercase(),
-                        definition
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
-        let _ = writeln!(md, "Comment types: {legend}");
-        let _ = writeln!(md);
+        // The typeless `None` default never appears in the legend.
+        let legend = comment_types
+            .iter()
+            .filter(|ct| ct.id != CommentType::NONE_ID)
+            .filter(|ct| used_ids.is_empty() || used_ids.contains(&ct.id))
+            .map(|comment_type| {
+                let definition = comment_type
+                    .definition
+                    .as_deref()
+                    .unwrap_or(comment_type.id.as_str());
+                format!(
+                    "{} ({})",
+                    comment_type.label.to_ascii_uppercase(),
+                    definition
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        // Omit the line entirely when there are no typed comments to document
+        // (e.g. an untyped-only review).
+        if !legend.is_empty() {
+            let _ = writeln!(md, "Comment types: {legend}");
+            let _ = writeln!(md);
+        }
     }
 
     // Session notes/summary
@@ -437,9 +427,15 @@ fn generate_markdown(
         let continuation_indent = " ".repeat(marker.len() + 1);
         let mut content_lines = content.split('\n').map(|line| line.trim_end_matches('\r'));
         let first_line = content_lines.next().unwrap_or_default();
+        // Untyped (`None`) comments export with no `**[TYPE]**` marker.
+        let type_marker = if comment_type.is_empty() {
+            String::new()
+        } else {
+            format!("**[{comment_type}]** ")
+        };
         let _ = writeln!(
             md,
-            "{marker} **[{comment_type}]** {location}{commit_suffix} - {first_line}"
+            "{marker} {type_marker}{location}{commit_suffix} - {first_line}"
         );
         for line in content_lines {
             let _ = writeln!(md, "{continuation_indent}{line}");
@@ -511,10 +507,16 @@ fn collect_used_comment_type_ids(session: &ReviewSession) -> HashSet<String> {
     ids
 }
 
+/// Export label for a comment type. Returns an empty string for
+/// [`CommentType::None`] so the caller omits the `**[TYPE]**` marker.
 fn export_comment_type_label(
     comment_type: &CommentType,
     comment_types: &[CommentTypeDefinition],
 ) -> String {
+    if comment_type.is_none() {
+        return String::new();
+    }
+
     if let Some(definition) = comment_types
         .iter()
         .find(|definition| definition.id == comment_type.id())
@@ -575,14 +577,14 @@ mod tests {
             review.reviewed = true;
             review.add_file_comment(Comment::new(
                 "Consider adding documentation".to_string(),
-                CommentType::Suggestion,
+                CommentType::from_id("suggestion"),
                 None,
             ));
             review.add_line_comment(
                 42,
                 Comment::new(
                     "Magic number should be a constant".to_string(),
-                    CommentType::Issue,
+                    CommentType::from_id("issue"),
                     Some(LineSide::New),
                 ),
             );
@@ -666,7 +668,7 @@ mod tests {
                 1,
                 Comment::new(
                     "We do not need this commit".to_string(),
-                    CommentType::Note,
+                    CommentType::from_id("note"),
                     Some(LineSide::New),
                 ),
             );
@@ -676,7 +678,7 @@ mod tests {
                 6,
                 Comment::new(
                     "This is wrong".to_string(),
-                    CommentType::Note,
+                    CommentType::from_id("note"),
                     Some(LineSide::New),
                 ),
             );
@@ -708,7 +710,7 @@ mod tests {
         if let Some(review) = session.get_file_mut(&PathBuf::from("src/main.rs")) {
             review.add_file_comment(Comment::new(
                 "Needs clarification".to_string(),
-                CommentType::Note,
+                CommentType::from_id("note"),
                 None,
             ));
         }
@@ -760,7 +762,7 @@ mod tests {
         if let Some(review) = session.get_file_mut(&PathBuf::from("src/main.rs")) {
             review.add_file_comment(Comment::new(
                 "foo\nbar".to_string(),
-                CommentType::Suggestion,
+                CommentType::from_id("suggestion"),
                 None,
             ));
         }
@@ -797,13 +799,13 @@ mod tests {
             for i in 0..9 {
                 review.add_file_comment(Comment::new(
                     format!("comment {i}"),
-                    CommentType::Note,
+                    CommentType::from_id("note"),
                     None,
                 ));
             }
             review.add_file_comment(Comment::new(
                 "foo\nbar".to_string(),
-                CommentType::Suggestion,
+                CommentType::from_id("suggestion"),
                 None,
             ));
         }
@@ -832,7 +834,7 @@ mod tests {
         let mut session = create_test_session();
         session.review_comments.push(Comment::new(
             "Please split this into smaller commits".to_string(),
-            CommentType::Note,
+            CommentType::from_id("note"),
             None,
         ));
 
@@ -854,7 +856,7 @@ mod tests {
         let mut session = create_test_session();
         session.review_comments.push(Comment::new(
             "High-level concern across commits".to_string(),
-            CommentType::Issue,
+            CommentType::from_id("issue"),
             None,
         ));
 
@@ -881,7 +883,7 @@ mod tests {
                 10,
                 Comment::new(
                     "Wrong variable name".to_string(),
-                    CommentType::Issue,
+                    CommentType::from_id("issue"),
                     Some(LineSide::New),
                 )
                 .with_commit_id("abc1234567890"),
@@ -1097,7 +1099,7 @@ mod tests {
                 42,
                 Comment::new_with_range(
                     "Single line comment".to_string(),
-                    CommentType::Note,
+                    CommentType::from_id("note"),
                     Some(LineSide::New),
                     range,
                 ),
@@ -1130,7 +1132,7 @@ mod tests {
                 15, // keyed by end line
                 Comment::new_with_range(
                     "Multi-line comment".to_string(),
-                    CommentType::Issue,
+                    CommentType::from_id("issue"),
                     Some(LineSide::New),
                     range,
                 ),
@@ -1163,7 +1165,7 @@ mod tests {
                 25, // keyed by end line
                 Comment::new_with_range(
                     "Deleted lines comment".to_string(),
-                    CommentType::Suggestion,
+                    CommentType::from_id("suggestion"),
                     Some(LineSide::Old),
                     range,
                 ),
@@ -1195,7 +1197,7 @@ mod tests {
                 30,
                 Comment::new_with_range(
                     "Single deleted line".to_string(),
-                    CommentType::Note,
+                    CommentType::from_id("note"),
                     Some(LineSide::Old),
                     range,
                 ),
@@ -1228,7 +1230,7 @@ mod tests {
                 50,
                 Comment::new(
                     "Old style comment".to_string(),
-                    CommentType::Note,
+                    CommentType::from_id("note"),
                     Some(LineSide::New),
                 ),
             );
@@ -1267,7 +1269,7 @@ mod tests {
         if let Some(review) = session.get_file_mut(&PathBuf::from("src/main.rs")) {
             review.add_file_comment(Comment::new(
                 "Great work!".to_string(),
-                CommentType::Praise,
+                CommentType::from_id("praise"),
                 None,
             ));
         }
@@ -1285,6 +1287,60 @@ mod tests {
         assert!(!markdown.contains("NOTE"));
         assert!(!markdown.contains("SUGGESTION"));
         assert!(!markdown.contains("ISSUE"));
+    }
+
+    #[test]
+    fn should_export_none_typed_comments_without_marker_or_legend() {
+        let mut session = ReviewSession::new(
+            PathBuf::from("/tmp/test-repo"),
+            "abc1234def".to_string(),
+            Some("main".to_string()),
+            SessionDiffSource::WorkingTree,
+        );
+        session.add_file(PathBuf::from("src/main.rs"), FileStatus::Modified, 0);
+        if let Some(review) = session.get_file_mut(&PathBuf::from("src/main.rs")) {
+            review.add_line_comment(
+                42,
+                Comment::new(
+                    "plain observation".to_string(),
+                    CommentType::None,
+                    Some(LineSide::New),
+                ),
+            );
+        }
+
+        // Pass the resolved default set (just `None`) to mirror an unconfigured
+        // review.
+        let none_only = vec![CommentTypeDefinition {
+            id: CommentType::NONE_ID.to_string(),
+            label: CommentType::NONE_ID.to_string(),
+            definition: None,
+            color: None,
+        }];
+        let markdown = generate_markdown(
+            &session,
+            &DiffSource::WorkingTree,
+            &none_only,
+            true,
+            &[],
+            None,
+        );
+
+        // No `[TYPE]` marker on the comment and no legend line at all.
+        assert!(
+            !markdown.contains("Comment types:"),
+            "unexpected legend:\n{markdown}"
+        );
+        assert!(
+            !markdown.contains("**["),
+            "unexpected type marker:\n{markdown}"
+        );
+        assert!(
+            !markdown.contains("[NONE]"),
+            "None must not render:\n{markdown}"
+        );
+        assert!(markdown.contains("`src/main.rs:42`"));
+        assert!(markdown.contains("plain observation"));
     }
 
     fn sample_pr_diff_source() -> DiffSource {
@@ -1349,7 +1405,7 @@ mod tests {
                 10,
                 Comment::new(
                     "Local draft".to_string(),
-                    CommentType::Issue,
+                    CommentType::from_id("issue"),
                     Some(LineSide::New),
                 ),
             );
@@ -1423,7 +1479,11 @@ mod tests {
         if let Some(r) = session.get_file_mut(&PathBuf::from("src/lib.rs")) {
             r.add_line_comment(
                 3,
-                Comment::new("Local".to_string(), CommentType::Note, Some(LineSide::New)),
+                Comment::new(
+                    "Local".to_string(),
+                    CommentType::from_id("note"),
+                    Some(LineSide::New),
+                ),
             );
         }
         let threads = vec![sample_remote_thread("a", "alice", "ignored", 5, false)];
@@ -1454,7 +1514,7 @@ mod tests {
         if let Some(review) = session.get_file_mut(&PathBuf::from("src/main.rs")) {
             review.add_file_comment(Comment::new(
                 "Needs clarification".to_string(),
-                CommentType::Note,
+                CommentType::from_id("note"),
                 None,
             ));
         }

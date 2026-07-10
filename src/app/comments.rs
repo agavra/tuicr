@@ -787,8 +787,7 @@ impl App {
         let next_index = (current_index + 1) % self.comment_types.len();
         let next_id = self.comment_types[next_index].id.clone();
         self.comment_type = CommentType::from_id(&next_id);
-        let label = self.comment_type_label(&self.comment_type.clone());
-        self.set_message(format!("Comment type: {label}"));
+        self.announce_comment_type();
     }
 
     pub fn cycle_comment_type_reverse(&mut self) {
@@ -812,7 +811,19 @@ impl App {
             current_index - 1
         };
         self.comment_type = CommentType::from_id(&self.comment_types[prev_index].id);
-        let label = self.comment_type_label(&self.comment_type.clone());
-        self.set_message(format!("Comment type: {label}"));
+        self.announce_comment_type();
+    }
+
+    /// Emit a status message naming the current comment type. `None` has an
+    /// empty label, so fall back to its id (`none`) for legible feedback.
+    fn announce_comment_type(&mut self) {
+        let comment_type = self.comment_type.clone();
+        let label = self.comment_type_label(&comment_type);
+        let display = if label.is_empty() {
+            comment_type.id().to_string()
+        } else {
+            label
+        };
+        self.set_message(format!("Comment type: {display}"));
     }
 }

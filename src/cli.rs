@@ -202,8 +202,9 @@ pub enum ReviewCommand {
         #[arg(long, value_name = "PATH|OWNER/REPO", default_value = ".")]
         repo: PathBuf,
 
-        /// Comment classification.
-        #[arg(long = "type", value_name = "TYPE", default_value = "note", value_parser = non_empty_comment_type)]
+        /// Comment classification. Defaults to `none` (no type, no `[TYPE]`
+        /// prefix); pass a type configured via `comment_types` to classify.
+        #[arg(long = "type", value_name = "TYPE", default_value = "none", value_parser = non_empty_comment_type)]
         comment_type: String,
 
         /// File path for a file, line, or range comment. Omit for a review comment.
@@ -898,7 +899,7 @@ mod tests {
                     r#"{"file":"src/main.rs","line":42,"side":"old","content":"note"}"#.to_string()
                 ),
                 repo: PathBuf::from("."),
-                comment_type: "note".to_string(),
+                comment_type: "none".to_string(),
                 file: None,
                 line: None,
                 end_line: None,

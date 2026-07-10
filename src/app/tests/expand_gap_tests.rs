@@ -955,7 +955,7 @@ fn total_lines_must_match_annotations_when_commit_scoped_comment_is_hidden() {
     // Add a line comment scoped to commit "aaa" on line 1.
     let mut comment = Comment::new(
         "scoped to aaa".to_string(),
-        CommentType::Note,
+        CommentType::from_id("note"),
         Some(LineSide::New),
     );
     comment.commit_id = Some("aaa".to_string());
@@ -1012,7 +1012,7 @@ fn comment_navigator_items_follow_rendered_comment_order() {
 
     app.session.review_comments.push(Comment::new(
         "review-level".to_string(),
-        CommentType::Note,
+        CommentType::from_id("note"),
         None,
     ));
     app.session
@@ -1022,7 +1022,7 @@ fn comment_navigator_items_follow_rendered_comment_order() {
         .file_comments
         .push(Comment::new(
             "file-level".to_string(),
-            CommentType::Suggestion,
+            CommentType::from_id("suggestion"),
             None,
         ));
     app.session
@@ -1034,7 +1034,7 @@ fn comment_navigator_items_follow_rendered_comment_order() {
         .or_default()
         .push(Comment::new(
             "line-level".to_string(),
-            CommentType::Issue,
+            CommentType::from_id("issue"),
             Some(LineSide::New),
         ));
     app.forge_review_threads = vec![RemoteReviewThread {
@@ -1133,7 +1133,7 @@ fn jump_to_selected_comment_uses_comment_annotation_target() {
         .or_default()
         .push(Comment::new(
             "line-level".to_string(),
-            CommentType::Issue,
+            CommentType::from_id("issue"),
             Some(LineSide::New),
         ));
     app.rebuild_annotations();

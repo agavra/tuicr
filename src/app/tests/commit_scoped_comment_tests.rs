@@ -80,8 +80,11 @@ fn commit(id: &str) -> CommitInfo {
 }
 
 fn line_comment(content: &str, commit_id: Option<&str>) -> crate::model::Comment {
-    let mut c =
-        crate::model::Comment::new(content.to_string(), CommentType::Note, Some(LineSide::New));
+    let mut c = crate::model::Comment::new(
+        content.to_string(),
+        CommentType::from_id("note"),
+        Some(LineSide::New),
+    );
     c.commit_id = commit_id.map(|s| s.to_string());
     c
 }
@@ -216,7 +219,7 @@ fn add_comment_to_session_stamps_commit_id_when_provided() {
                 side: LineSide::New,
             },
             content: "scoped note".to_string(),
-            comment_type: CommentType::Note,
+            comment_type: CommentType::from_id("note"),
             author: "user".to_string(),
             commit_id: Some("abc123".to_string()),
         },
@@ -264,7 +267,7 @@ fn add_comment_to_session_leaves_commit_id_none_when_not_provided() {
                 side: LineSide::New,
             },
             content: "unscoped note".to_string(),
-            comment_type: CommentType::Note,
+            comment_type: CommentType::from_id("note"),
             author: "user".to_string(),
             commit_id: None,
         },

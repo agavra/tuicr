@@ -158,8 +158,14 @@ pub fn format_comment_input_lines(
     let mut header_spans = vec![
         Span::styled(top_prefix, border_style),
         Span::styled(format!("{action} "), styles::dim_style(theme)),
-        Span::styled(format!("[{}] ", comment_type.label), type_style),
     ];
+    // `None` has an empty label — show no `[TYPE]` badge while composing.
+    if !comment_type.label.is_empty() {
+        header_spans.push(Span::styled(
+            format!("[{}] ", comment_type.label),
+            type_style,
+        ));
+    }
     if let Some((mode, warn)) = vim_mode {
         // The cancel-confirm hint is painted red to flag the destructive action.
         let mode_style = if warn {
@@ -464,9 +470,13 @@ pub fn format_comment_lines(
         None => styles::comment_border_style(theme, comment_type.color),
     };
 
-    let badge_text = match author {
-        Some(name) => format!("[{} @{name}] ", comment_type.label),
-        None => format!("[{}] ", comment_type.label),
+    // `None` comments have an empty label: drop the `[TYPE]` badge, keeping the
+    // author tag when present so per-author coloring still reads.
+    let badge_text = match (author, comment_type.label.is_empty()) {
+        (Some(name), true) => format!("[@{name}] "),
+        (Some(name), false) => format!("[{} @{name}] ", comment_type.label),
+        (None, true) => String::new(),
+        (None, false) => format!("[{}] ", comment_type.label),
     };
     let badge_width = badge_text.width();
 

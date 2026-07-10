@@ -1873,7 +1873,11 @@ mod remote_comments_snapshot_tests {
             .expect("file registered in session");
         file_review.add_line_comment(
             1,
-            Comment::new("needs a rename".to_string(), CommentType::Note, None),
+            Comment::new(
+                "needs a rename".to_string(),
+                CommentType::from_id("note"),
+                None,
+            ),
         );
         app.rebuild_annotations();
 

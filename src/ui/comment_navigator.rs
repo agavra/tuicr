@@ -61,7 +61,8 @@ fn render_comment_row(app: &App, item: &CommentNavigatorItem) -> Line<'static> {
     let (marker, marker_style) = match &item.kind {
         CommentNavigatorKind::Local(comment_type) => {
             let label = app.comment_type_label(comment_type);
-            let marker = label.chars().next().unwrap_or('?').to_string();
+            // `None` comments have an empty label; show a neutral bullet marker.
+            let marker = label.chars().next().unwrap_or('•').to_string();
             (
                 marker,
                 styles::comment_type_style(&app.theme, app.comment_type_color(comment_type)),

@@ -406,7 +406,7 @@ impl App {
             commit_list.len()
         };
 
-        let comment_types = Self::resolve_comment_types(&theme, comment_type_configs);
+        let comment_types = Self::resolve_comment_types(comment_type_configs);
         let default_comment_type = Self::first_comment_type(&comment_types);
         let session_path = crate::persistence::storage::session_path(&session).ok();
         let session_file_state = session_path
@@ -568,39 +568,29 @@ impl App {
         self.pr_tab = PullRequestsTab::new(repo);
     }
 
+    /// Build the definition for the typeless [`CommentType::None`] default.
+    /// It carries no definition and no explicit color (the fallback secondary
+    /// color is used), and is never rendered as a `[TYPE]` prefix or badge.
+    fn none_comment_type() -> CommentTypeDefinition {
+        CommentTypeDefinition {
+            id: CommentType::NONE_ID.to_string(),
+            label: CommentType::NONE_ID.to_string(),
+            definition: None,
+            color: None,
+        }
+    }
+
+    /// Resolve the effective, ordered list of comment types.
+    ///
+    /// With no `comment_types` config the only type is `None` — a fresh review
+    /// defaults to untyped comments with no `[TYPE]` prefix. Configuring types
+    /// overrides that default (the first configured type becomes the default),
+    /// but `None` stays available: it is appended so it can still be cycled to.
     fn resolve_comment_types(
-        theme: &Theme,
         comment_type_configs: Option<Vec<CommentTypeConfig>>,
     ) -> Vec<CommentTypeDefinition> {
-        let defaults = vec![
-            CommentTypeDefinition {
-                id: "note".to_string(),
-                label: "note".to_string(),
-                definition: Some("observations".to_string()),
-                color: Some(theme.comment_note),
-            },
-            CommentTypeDefinition {
-                id: "suggestion".to_string(),
-                label: "suggestion".to_string(),
-                definition: Some("improvements".to_string()),
-                color: Some(theme.comment_suggestion),
-            },
-            CommentTypeDefinition {
-                id: "issue".to_string(),
-                label: "issue".to_string(),
-                definition: Some("problems to fix".to_string()),
-                color: Some(theme.comment_issue),
-            },
-            CommentTypeDefinition {
-                id: "praise".to_string(),
-                label: "praise".to_string(),
-                definition: Some("positive feedback".to_string()),
-                color: Some(theme.comment_praise),
-            },
-        ];
-
         let Some(configs) = comment_type_configs else {
-            return defaults;
+            return vec![Self::none_comment_type()];
         };
 
         let mut resolved = Vec::new();
@@ -618,10 +608,19 @@ impl App {
         }
 
         if resolved.is_empty() {
-            defaults
-        } else {
-            resolved
+            return vec![Self::none_comment_type()];
         }
+
+        // Keep `None` selectable even when custom types are configured, unless
+        // the user already declared a `none` entry themselves.
+        if !resolved
+            .iter()
+            .any(|definition| definition.id == CommentType::NONE_ID)
+        {
+            resolved.push(Self::none_comment_type());
+        }
+
+        resolved
     }
 
     fn first_comment_type(comment_types: &[CommentTypeDefinition]) -> CommentType {
@@ -672,7 +671,13 @@ impl App {
         }
     }
 
+    /// Human-facing label for a comment type, e.g. `SUGGESTION`. Returns an
+    /// empty string for [`CommentType::None`] so callers render no badge.
     pub fn comment_type_label(&self, comment_type: &CommentType) -> String {
+        if comment_type.is_none() {
+            return String::new();
+        }
+
         if let Some(definition) = self
             .comment_types
             .iter()

@@ -74,7 +74,7 @@ comment_type_prefix = true
 | `no_update_check` | `false` | Skip startup update check when `true`. |
 | `review_watch_interval_ms` | `1000` | Poll interval for persisted review-session changes. Set to `0` to disable automatic local-session reloads. |
 | `backend` | `libgit2` | Git backend: `libgit2` or `cli`. Sparse-checkout repos auto-route to `cli`. |
-| `comment_types` | (built-in) | Comment categories. See [Comment types](#comment-types). |
+| `comment_types` | (none) | Comment categories. Untyped by default. See [Comment types](#comment-types). |
 
 ## Themes
 
@@ -166,11 +166,22 @@ Comment categories control:
 
 ### Defaults
 
-If `comment_types` is missing, tuicr uses: `note`, `suggestion`, `issue`, `praise`.
+If `comment_types` is missing, comments are **untyped** (`None`): no `[TYPE]` tag is prepended on
+submit or export, and no badge is shown in the TUI. Define `comment_types` to opt into
+classifications.
+
+### The `None` type
+
+`None` is always available regardless of config — it is the default when no types are configured,
+and it is appended to the end of the Tab cycle when they are, so you can always leave a comment
+untyped. An untyped comment never renders a `[TYPE]` tag, a badge, or a legend entry (file-level
+comments still keep their `File-level:` marker on submit).
 
 ### Replacement semantics
 
-`comment_types` is a full replacement. If you define 2 types, only those 2 are available. Invalid entries are ignored with startup warnings; if every entry is invalid, tuicr falls back to defaults.
+`comment_types` is a full replacement of the *configured* types. If you define 2 types, those 2 —
+plus `None` — are available, and the first configured type becomes the default. Invalid entries are
+ignored with startup warnings; if every entry is invalid, tuicr falls back to `None` only.
 
 ### Minimal example
 

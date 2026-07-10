@@ -69,39 +69,50 @@ impl CommentLifecycleState {
     }
 }
 
+/// Classification of a review comment.
+///
+/// `None` is the out-of-the-box default: a comment with no type. It carries no
+/// `[TYPE]` prefix on submit or markdown export and shows no badge in the UI.
+/// Any other type is user-defined through the `comment_types` config (see #211)
+/// and represented as `Custom`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub enum CommentType {
+    /// No type — the default. Emits no prefix or badge anywhere.
     #[default]
-    Note,
-    Suggestion,
-    Issue,
-    Praise,
+    None,
+    /// A user-configured type, identified by its id.
     Custom(String),
 }
 
 impl CommentType {
+    /// Reserved id for the typeless [`CommentType::None`] variant. A config
+    /// entry (or CLI `--type`) of `"none"` — or an empty value — resolves here.
+    pub const NONE_ID: &'static str = "none";
+
     pub fn from_id(id: &str) -> Self {
-        match id.to_ascii_lowercase().as_str() {
-            "note" => Self::Note,
-            "suggestion" => Self::Suggestion,
-            "issue" => Self::Issue,
-            "praise" => Self::Praise,
-            _ => Self::Custom(id.to_string()),
+        let trimmed = id.trim();
+        if trimmed.is_empty() || trimmed.eq_ignore_ascii_case(Self::NONE_ID) {
+            Self::None
+        } else {
+            Self::Custom(trimmed.to_string())
         }
     }
 
     pub fn id(&self) -> &str {
         match self {
-            CommentType::Note => "note",
-            CommentType::Suggestion => "suggestion",
-            CommentType::Issue => "issue",
-            CommentType::Praise => "praise",
+            CommentType::None => Self::NONE_ID,
             CommentType::Custom(id) => id.as_str(),
         }
     }
 
     pub fn as_str(&self) -> String {
         self.id().to_ascii_uppercase()
+    }
+
+    /// True for the typeless default. Callers use this to suppress the
+    /// `[TYPE]` prefix / badge for untyped comments.
+    pub fn is_none(&self) -> bool {
+        matches!(self, CommentType::None)
     }
 }
 
@@ -362,15 +373,38 @@ mod tests {
         }
 
         #[test]
+        fn comment_type_defaults_to_none() {
+            assert_eq!(CommentType::default(), CommentType::None);
+            assert!(CommentType::default().is_none());
+        }
+
+        #[test]
+        fn comment_type_from_id_maps_none_and_empty_to_none() {
+            assert!(CommentType::from_id("none").is_none());
+            assert!(CommentType::from_id("NONE").is_none());
+            assert!(CommentType::from_id("").is_none());
+            assert!(CommentType::from_id("   ").is_none());
+            assert!(!CommentType::from_id("issue").is_none());
+        }
+
+        #[test]
+        fn comment_type_none_roundtrips_via_serde() {
+            let json = serde_json::to_string(&CommentType::None).unwrap();
+            assert_eq!(json, "\"none\"");
+            let restored: CommentType = serde_json::from_str(&json).unwrap();
+            assert_eq!(restored, CommentType::None);
+        }
+
+        #[test]
         fn new_creates_comment_without_line_range() {
             let comment = Comment::new(
                 "Test comment".to_string(),
-                CommentType::Note,
+                CommentType::from_id("note"),
                 Some(LineSide::New),
             );
             assert!(comment.line_range.is_none());
             assert_eq!(comment.content, "Test comment");
-            assert_eq!(comment.comment_type, CommentType::Note);
+            assert_eq!(comment.comment_type, CommentType::from_id("note"));
             assert_eq!(comment.side, Some(LineSide::New));
         }
 
@@ -379,7 +413,7 @@ mod tests {
             let range = LineRange::new(10, 15);
             let comment = Comment::new_with_range(
                 "Range comment".to_string(),
-                CommentType::Issue,
+                CommentType::from_id("issue"),
                 Some(LineSide::Old),
                 range,
             );
@@ -395,7 +429,7 @@ mod tests {
             let range = LineRange::new(10, 15);
             let comment = Comment::new_with_range(
                 "Test".to_string(),
-                CommentType::Note,
+                CommentType::from_id("note"),
                 Some(LineSide::New),
                 range,
             );
@@ -442,7 +476,7 @@ mod tests {
         #[test]
         fn should_default_lifecycle_state_to_local_draft_for_new_comment() {
             // given/when
-            let comment = Comment::new("hi".to_string(), CommentType::Note, None);
+            let comment = Comment::new("hi".to_string(), CommentType::from_id("note"), None);
             // then
             assert_eq!(comment.lifecycle_state, CommentLifecycleState::LocalDraft);
             assert!(!comment.is_locked());
@@ -453,9 +487,9 @@ mod tests {
         #[test]
         fn should_report_pushed_and_submitted_comments_as_locked() {
             // given
-            let mut pushed = Comment::new("p".to_string(), CommentType::Note, None);
+            let mut pushed = Comment::new("p".to_string(), CommentType::from_id("note"), None);
             pushed.lifecycle_state = CommentLifecycleState::PushedDraft;
-            let mut submitted = Comment::new("s".to_string(), CommentType::Note, None);
+            let mut submitted = Comment::new("s".to_string(), CommentType::from_id("note"), None);
             submitted.lifecycle_state = CommentLifecycleState::Submitted;
             // then
             assert!(pushed.is_locked());
@@ -465,7 +499,8 @@ mod tests {
         #[test]
         fn should_roundtrip_lifecycle_fields_via_serde() {
             // given
-            let mut original = Comment::new("body".to_string(), CommentType::Issue, None);
+            let mut original =
+                Comment::new("body".to_string(), CommentType::from_id("issue"), None);
             original.lifecycle_state = CommentLifecycleState::Submitted;
             original.remote_review_id = Some("R_kgDOEx".to_string());
             original.remote_comment_id = Some("RC_kgDOEx".to_string());

@@ -122,7 +122,11 @@ fn make_pr_app_with_single_modified_file(file_path: &str) -> App {
 }
 
 fn line_comment(side: LineSide, new: Option<u32>, old: Option<u32>) -> Comment {
-    let mut c = Comment::new("body".to_string(), CommentType::Issue, Some(side));
+    let mut c = Comment::new(
+        "body".to_string(),
+        CommentType::from_id("issue"),
+        Some(side),
+    );
     c.line_context = Some(LineContext {
         new_line: new,
         old_line: old,
@@ -200,7 +204,7 @@ fn should_use_subset_head_sha_as_commit_id_when_inline_selector_is_strict_subset
         11,
         Comment::new(
             "comment on C2".to_string(),
-            CommentType::Issue,
+            CommentType::from_id("issue"),
             Some(LineSide::New),
         ),
     );
@@ -244,7 +248,7 @@ fn should_use_pr_head_sha_as_commit_id_when_full_commit_range_selected() {
         11,
         Comment::new(
             "comment".to_string(),
-            CommentType::Issue,
+            CommentType::from_id("issue"),
             Some(LineSide::New),
         ),
     );
@@ -267,7 +271,7 @@ fn should_anchor_line_comments_via_hashmap_key_when_line_context_missing() {
     let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
     let bare = Comment::new(
         "real line comment".to_string(),
-        CommentType::Issue,
+        CommentType::from_id("issue"),
         Some(LineSide::New),
     );
     assert!(bare.line_context.is_none(), "fixture contract");
@@ -319,9 +323,11 @@ fn should_open_resolver_when_any_comment_is_unmappable() {
     // file-level comment in session
     let pb = PathBuf::from("img.png");
     let review = app.session.get_file_mut(&pb).expect("file in session");
-    review
-        .file_comments
-        .push(Comment::new("oof".to_string(), CommentType::Note, None));
+    review.file_comments.push(Comment::new(
+        "oof".to_string(),
+        CommentType::from_id("note"),
+        None,
+    ));
     // when
     app.start_submit(SubmitEvent::Comment);
     // then — resolver entered with one unmappable
@@ -476,12 +482,16 @@ fn should_toggle_resolver_action_between_move_and_omit() {
     app.diff_files[0].is_binary = true;
     let pb = PathBuf::from("img.png");
     let review = app.session.get_file_mut(&pb).expect("file in session");
-    review
-        .file_comments
-        .push(Comment::new("a".to_string(), CommentType::Note, None));
-    review
-        .file_comments
-        .push(Comment::new("b".to_string(), CommentType::Note, None));
+    review.file_comments.push(Comment::new(
+        "a".to_string(),
+        CommentType::from_id("note"),
+        None,
+    ));
+    review.file_comments.push(Comment::new(
+        "b".to_string(),
+        CommentType::from_id("note"),
+        None,
+    ));
     app.start_submit(SubmitEvent::Comment);
     // when — toggle row 0
     app.submit_resolver_toggle();
@@ -501,9 +511,11 @@ fn should_advance_from_resolver_to_confirm() {
     app.diff_files[0].is_binary = true;
     let pb = PathBuf::from("img.png");
     let review = app.session.get_file_mut(&pb).expect("file in session");
-    review
-        .file_comments
-        .push(Comment::new("a".to_string(), CommentType::Note, None));
+    review.file_comments.push(Comment::new(
+        "a".to_string(),
+        CommentType::from_id("note"),
+        None,
+    ));
     app.start_submit(SubmitEvent::Comment);
     assert_eq!(app.input_mode, InputMode::SubmitResolver);
     // when
@@ -547,7 +559,7 @@ fn should_route_picker_through_resolver_then_skip_confirm() {
     let review = app.session.get_file_mut(&pb).expect("file in session");
     review.file_comments.push(Comment::new(
         "binary art".to_string(),
-        CommentType::Note,
+        CommentType::from_id("note"),
         None,
     ));
 
@@ -762,7 +774,7 @@ fn should_flip_review_level_comments_on_submit_success() {
     // review body. Its id is tracked on the in-flight state so we know
     // exactly which review-level entries went out.
     let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
-    let review_comment = Comment::new("nice work".to_string(), CommentType::Note, None);
+    let review_comment = Comment::new("nice work".to_string(), CommentType::from_id("note"), None);
     let review_comment_id = review_comment.id.clone();
     app.session.review_comments.push(review_comment);
     let mut in_flight = make_in_flight(SubmitEvent::Comment, &[], "abcdef0123", 0);
@@ -808,11 +820,13 @@ fn should_prune_locked_comments_across_all_buckets() {
     // survive the prune.
     let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
 
-    let mut review_locked = Comment::new("body item".to_string(), CommentType::Note, None);
+    let mut review_locked =
+        Comment::new("body item".to_string(), CommentType::from_id("note"), None);
     review_locked.lifecycle_state = CommentLifecycleState::Submitted;
     app.session.review_comments.push(review_locked);
 
-    let mut file_locked = Comment::new("file-level".to_string(), CommentType::Note, None);
+    let mut file_locked =
+        Comment::new("file-level".to_string(), CommentType::from_id("note"), None);
     file_locked.lifecycle_state = CommentLifecycleState::PushedDraft;
     let mut line_locked = line_comment(LineSide::New, Some(11), None);
     line_locked.lifecycle_state = CommentLifecycleState::Submitted;
@@ -865,7 +879,7 @@ fn should_keep_locked_line_comments_when_remote_thread_refetch_fails() {
 #[test]
 fn should_keep_locked_review_comments_when_remote_summary_refetch_fails() {
     let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
-    let mut review_locked = Comment::new("summary".to_string(), CommentType::Note, None);
+    let mut review_locked = Comment::new("summary".to_string(), CommentType::from_id("note"), None);
     review_locked.lifecycle_state = CommentLifecycleState::Submitted;
     app.session.review_comments.push(review_locked);
 
@@ -1039,7 +1053,7 @@ fn should_apply_result_via_poll_when_head_sha_matches() {
 fn should_lock_file_level_comment_via_submit_success() {
     // given — a file-level comment lives in `file_comments`, not `line_comments`
     let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
-    let comment = Comment::new("file-level".to_string(), CommentType::Note, None);
+    let comment = Comment::new("file-level".to_string(), CommentType::from_id("note"), None);
     let comment_id = comment.id.clone();
     {
         let review = app

@@ -101,7 +101,7 @@ JSON
 Flat JSON fields:
 
 - `content`: required comment text
-- `type` or `comment_type`: comment classification, defaults to `note`
+- `type` or `comment_type`: comment classification, defaults to `none` (untyped, no `[TYPE]` tag)
 - `file`: file path; omit for a review-level comment
 - `line`: line number for a line comment
 - `start_line` and `end_line`: range bounds
