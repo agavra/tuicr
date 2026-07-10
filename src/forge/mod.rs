@@ -95,40 +95,31 @@ fn remote_urls(repo_root: &Path) -> Vec<String> {
     all_urls
 }
 
-/// Detect the forge repository for the local checkout at `repo_root`.
+/// Parse `url` as a forge remote repository.
 ///
-/// Tries GitLab first (host must contain "gitlab"); falls back to GitHub,
-/// which accepts any host so GitHub Enterprise remotes whose hostname does
-/// not literally contain "github" are still detected. Returns `None` when
-/// no remote can be parsed.
-pub fn detect_forge_repository(repo_root: &Path) -> Option<ForgeRepository> {
-    let all_urls = remote_urls(repo_root);
+/// Tries GitLab first — its parser already filters to "gitlab" hosts, so
+/// trying it first won't claim GitHub Enterprise remotes — then falls back
+/// to GitHub, which accepts any host (covers github.com and GHE hosts whose
+/// hostname does not literally contain "github").
+fn parse_any_remote_url(url: &str) -> Option<ForgeRepository> {
+    parse_gitlab_remote_url(url).or_else(|| parse_github_remote_url(url))
+}
 
-    // GitLab parser already filters to "gitlab" hosts, so trying it first
-    // won't claim GitHub Enterprise remotes.
-    for url in &all_urls {
-        if let Some(parsed) = parse_gitlab_remote_url(url) {
-            return Some(parsed);
-        }
-    }
-    // GitHub fallback accepts any host (covers github.com and GHE hosts
-    // whose hostname does not literally contain "github").
-    for url in &all_urls {
-        if let Some(parsed) = parse_github_remote_url(url) {
-            return Some(parsed);
-        }
-    }
-    None
+/// Detect the forge repository for the local checkout at `repo_root`.
+/// Returns `None` when no remote can be parsed.
+pub fn detect_forge_repository(repo_root: &Path) -> Option<ForgeRepository> {
+    remote_urls(repo_root)
+        .iter()
+        .find_map(|url| parse_any_remote_url(url))
 }
 
 /// `root`'s local checkout, but only when one of its remotes — not
 /// necessarily `origin` — matches `target_repo`.
 pub fn local_checkout_for_repo(root: &Path, target_repo: &ForgeRepository) -> Option<PathBuf> {
-    let matches = remote_urls(root).iter().any(|url| {
-        parse_gitlab_remote_url(url).as_ref() == Some(target_repo)
-            || parse_github_remote_url(url).as_ref() == Some(target_repo)
-    });
-    matches.then(|| root.to_path_buf())
+    remote_urls(root)
+        .iter()
+        .any(|url| parse_any_remote_url(url).as_ref() == Some(target_repo))
+        .then(|| root.to_path_buf())
 }
 
 #[cfg(test)]
