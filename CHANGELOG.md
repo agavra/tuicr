@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.19.1] - 2026-07-13
+
+### Bug Fixes
+
+- Route PR inline commit-range reload through the forge backend (#462) (#464)
 ## [0.19.0] - 2026-07-09
 
 ### Bug Fixes
