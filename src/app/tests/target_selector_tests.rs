@@ -829,6 +829,52 @@ fn should_resolve_pr_range_to_pr_base_when_oldest_commit_selected() {
 }
 
 #[test]
+fn should_route_pr_inline_selection_reload_through_forge_not_vcs() {
+    // Regression for #462: narrowing a PR review to a commit subrange with
+    // `(`/`)` used to reload via the VCS `get_commit_range_diff`, which the
+    // forge-backed review has no support for — it errored with "Commit range
+    // diff not supported for this VCS". The reload must route through the
+    // forge `compare` API instead, exactly like the Enter/toggle path does.
+    let _reviews = TestReviewsDir::new();
+    let mut app = build_app();
+    app.forge_repository = Some(ForgeRepository::github("github.com", "agavra", "tuicr"));
+    app.pr_tab = PullRequestsTab::new(app.forge_repository.clone());
+    app.pr_tab.start_initial_load();
+    let summary = sample_pr(42, "cycle");
+    app.pr_tab
+        .apply_initial_load(Ok((vec![summary.clone()], false)));
+    let mut backend = FakeForgeBackend::open_pr_details(
+        test_pr_details(42, "cycle"),
+        crate::forge::github::gh::tests_fixture::SIMPLE_PATCH.to_string(),
+    );
+    backend.commits = vec![
+        sample_pr_commit("first11", "first"),
+        sample_pr_commit("middle2", "middle"),
+        sample_pr_commit("last333", "last"),
+    ];
+    app.open_pr_with_backend(&summary, Box::new(backend), None)
+        .unwrap();
+    // Default selection covers all three commits.
+    assert_eq!(app.commit_selection_range, Some((0, 2)));
+
+    // when — `(` narrows the selection to a strict subrange (all → first).
+    app.cycle_commit_prev();
+    assert_eq!(app.commit_selection_range, Some((0, 0)));
+    let result = app.reload_inline_selection_for_source();
+
+    // then — the reload succeeds (the VCS path would return
+    // UnsupportedOperation) and takes the forge range-reload route.
+    assert!(
+        result.is_ok(),
+        "PR inline reload must not hit the unsupported VCS path: {result:?}"
+    );
+    assert!(
+        app.pr_range_reload_state.is_some(),
+        "narrowing a PR review should spawn a forge range reload"
+    );
+}
+
+#[test]
 fn should_preserve_hunk_marks_hidden_by_pr_range_diff() {
     let mut app = build_app();
     app.forge_repository = Some(ForgeRepository::github("github.com", "agavra", "tuicr"));

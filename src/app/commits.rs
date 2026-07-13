@@ -161,7 +161,7 @@ impl App {
 
             // Reload diff for the restored selection
             if self.commit_selection_range.is_some() {
-                self.reload_inline_selection()?;
+                self.reload_inline_selection_for_source()?;
             }
             return Ok(());
         }
@@ -844,5 +844,22 @@ impl App {
         self.rebuild_annotations();
 
         Ok(())
+    }
+
+    /// Reload the inline commit subrange diff via the backend appropriate for
+    /// the current review. PR reviews route through the forge `compare` API
+    /// (persisting the narrowed range so it survives a restart); local reviews
+    /// reload straight from the VCS. Callers that adjust the selection (toggle,
+    /// `(`/`)` cycling, restore-on-exit) must go through here so PR reviews
+    /// don't fall into the VCS path — the forge backend has no commit-range
+    /// diff support and would error with "Commit range diff not supported".
+    pub fn reload_inline_selection_for_source(&mut self) -> Result<()> {
+        if matches!(self.diff_source, DiffSource::PullRequest(_)) {
+            self.persist_pr_commit_selection_range();
+            self.reload_pr_inline_selection();
+            Ok(())
+        } else {
+            self.reload_inline_selection()
+        }
     }
 }
