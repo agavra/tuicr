@@ -221,3 +221,51 @@ fn has_review_commits_ignores_visibility_but_requires_multiple_non_worktree() {
     app.diff_source = DiffSource::WorkingTree;
     assert!(!app.has_review_commits());
 }
+
+#[test]
+fn commit_selection_summary_shows_position_for_single_and_count_for_range() {
+    let mut app = build_app(vec![
+        normal_commit("a"),
+        normal_commit("b"),
+        normal_commit("c"),
+    ]);
+    app.review_commits = app.commit_list.clone();
+
+    // Whole range selected -> no summary (caller shows the plain total).
+    app.commit_selection_range = Some((0, 2));
+    assert_eq!(app.commit_selection_summary(), None);
+
+    // Single commit, descending: position == data index + 1, so cycling moves it.
+    app.commit_order = CommitOrder::Descending;
+    app.commit_selection_range = Some((0, 0));
+    assert_eq!(
+        app.commit_selection_summary().as_deref(),
+        Some("commit 1/3")
+    );
+    app.commit_selection_range = Some((2, 2));
+    assert_eq!(
+        app.commit_selection_summary().as_deref(),
+        Some("commit 3/3")
+    );
+
+    // Single commit, ascending: display position is mirrored (top row == 1).
+    app.commit_order = CommitOrder::Ascending;
+    app.commit_selection_range = Some((0, 0)); // newest -> bottom row
+    assert_eq!(
+        app.commit_selection_summary().as_deref(),
+        Some("commit 3/3")
+    );
+    app.commit_selection_range = Some((2, 2)); // oldest -> top row
+    assert_eq!(
+        app.commit_selection_summary().as_deref(),
+        Some("commit 1/3")
+    );
+
+    // Multi-commit subrange -> selected count.
+    app.commit_order = CommitOrder::Descending;
+    app.commit_selection_range = Some((0, 1));
+    assert_eq!(
+        app.commit_selection_summary().as_deref(),
+        Some("2 of 3 commits")
+    );
+}

@@ -136,6 +136,29 @@ impl App {
         }
     }
 
+    /// Status-bar description of the current inline commit selection, or `None`
+    /// when the whole range is selected (the caller shows the plain total).
+    /// A single selected commit reports its 1-based display position — so the
+    /// value changes as `(` / `)` cycle — while a multi-commit subrange reports
+    /// the selected count.
+    pub fn commit_selection_summary(&self) -> Option<String> {
+        let total = self.review_commits.len();
+        let (start, end) = self.commit_selection_range?;
+        let selected = end.saturating_sub(start) + 1;
+        if total <= 1 || selected >= total {
+            return None;
+        }
+        if start == end {
+            Some(format!(
+                "commit {}/{}",
+                self.commit_data_index(start) + 1,
+                total
+            ))
+        } else {
+            Some(format!("{selected} of {total} commits"))
+        }
+    }
+
     /// Open the review target selector on a specific tab.
     ///
     /// `Local` loads the recent-commits list (same as the historical commit
