@@ -9,10 +9,10 @@ use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 use zip::write::SimpleFileOptions;
 
-use super::archive::{extract_binary, release_asset_name};
+use super::archive::extract_binary;
 use super::method::{detect_install_method, manager_command};
 use super::replace::replace_executable;
-use super::source::{package_repository_url, release_asset_url};
+use super::source::{package_repository_url, release_asset_name, release_asset_url};
 use super::*;
 
 #[derive(Default)]

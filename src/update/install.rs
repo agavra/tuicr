@@ -13,10 +13,10 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use ureq::Agent;
 
-use self::archive::{extract_binary, release_asset_name};
+use self::archive::extract_binary;
 use self::method::{detect_install_method, manager_command};
 use self::replace::replace_executable;
-use self::source::{release_api_url, release_asset_url};
+use self::source::{release_api_url, release_asset_name, release_asset_url};
 use super::check::is_newer_version;
 
 pub use self::method::InstallMethod;
