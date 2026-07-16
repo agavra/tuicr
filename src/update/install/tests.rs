@@ -63,10 +63,11 @@ impl UpdateRuntime for MockRuntime {
 }
 
 fn context(executable: impl Into<PathBuf>) -> UpdateContext {
+    let executable = executable.into();
+    let method = detect_install_method(&executable, Some(Path::new("/home/alice")), None);
     UpdateContext {
-        executable: executable.into(),
-        home: Some(PathBuf::from("/home/alice")),
-        cargo_home: None,
+        executable,
+        method,
         current_version: "1.0.0".to_string(),
         os: "linux".to_string(),
         arch: "x86_64".to_string(),
@@ -159,6 +160,10 @@ fn detects_every_documented_install_method_and_custom_cargo_home() {
             "{path}"
         );
     }
+    assert_eq!(
+        context("/home/alice/.cargo/bin/tuicr").method,
+        InstallMethod::Cargo
+    );
 }
 
 #[cfg(windows)]

@@ -96,8 +96,7 @@ pub fn update_to_version(version: &Version) -> Result<UpdateOutcome, UpdateError
 #[derive(Debug)]
 struct UpdateContext {
     executable: PathBuf,
-    home: Option<PathBuf>,
-    cargo_home: Option<PathBuf>,
+    method: InstallMethod,
     current_version: String,
     os: String,
     arch: String,
@@ -105,10 +104,14 @@ struct UpdateContext {
 
 impl UpdateContext {
     fn current() -> Result<Self, UpdateError> {
+        let executable = std::env::current_exe().map_err(UpdateError::CurrentExecutable)?;
+        let home = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf());
+        let cargo_home = std::env::var_os("CARGO_HOME").map(PathBuf::from);
+        let method = detect_install_method(&executable, home.as_deref(), cargo_home.as_deref());
+
         Ok(Self {
-            executable: std::env::current_exe().map_err(UpdateError::CurrentExecutable)?,
-            home: directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()),
-            cargo_home: std::env::var_os("CARGO_HOME").map(PathBuf::from),
+            executable,
+            method,
             current_version: env!("CARGO_PKG_VERSION").to_string(),
             os: std::env::consts::OS.to_string(),
             arch: std::env::consts::ARCH.to_string(),
@@ -192,11 +195,7 @@ fn update_with_optional_version(
     context: UpdateContext,
     version: Option<&Version>,
 ) -> Result<UpdateOutcome, UpdateError> {
-    let method = detect_install_method(
-        &context.executable,
-        context.home.as_deref(),
-        context.cargo_home.as_deref(),
-    );
+    let method = context.method;
     if let Some(version) = version {
         return match method {
             InstallMethod::Cargo => {
