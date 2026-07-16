@@ -1,6 +1,6 @@
 mod archive;
+mod executable_swap;
 mod installation;
-mod replace;
 mod source;
 
 use std::fmt;
@@ -14,8 +14,8 @@ use sha2::{Digest, Sha256};
 use ureq::Agent;
 
 use self::archive::extract_binary;
+use self::executable_swap::swap_executable;
 use self::installation::{detect_install_method, manager_command};
-use self::replace::replace_executable;
 use self::source::{release_api_url, release_asset_name, release_asset_url};
 use super::check::is_newer_version;
 
@@ -171,7 +171,7 @@ impl UpdateRuntime for SystemRuntime {
     }
 
     fn replace_executable(&self, path: &Path, contents: &[u8]) -> Result<(), UpdateError> {
-        replace_executable(path, contents)
+        swap_executable(path, contents)
     }
 }
 

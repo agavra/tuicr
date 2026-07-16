@@ -10,8 +10,8 @@ use tempfile::TempDir;
 use zip::write::SimpleFileOptions;
 
 use super::archive::extract_binary;
+use super::executable_swap::swap_executable;
 use super::installation::{detect_install_method, manager_command};
-use super::replace::replace_executable;
 use super::source::{package_repository_url, release_asset_name, release_asset_url};
 use super::*;
 
@@ -524,7 +524,7 @@ fn rejects_invalid_or_binary_less_archives() {
 }
 
 #[test]
-fn atomically_replaces_a_direct_binary_and_preserves_executable_mode() {
+fn swaps_a_direct_binary_and_preserves_executable_mode() {
     let temp = TempDir::new().unwrap();
     let executable = temp.path().join("tuicr");
     std::fs::write(&executable, b"old").unwrap();
@@ -532,17 +532,17 @@ fn atomically_replaces_a_direct_binary_and_preserves_executable_mode() {
     {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o751)).unwrap();
-        replace_executable(&executable, b"new").unwrap();
+        swap_executable(&executable, b"new").unwrap();
         assert_eq!(
             std::fs::metadata(&executable).unwrap().mode() & 0o777,
             0o751
         );
     }
     #[cfg(windows)]
-    replace_executable(&executable, b"new").unwrap();
+    swap_executable(&executable, b"new").unwrap();
     assert_eq!(std::fs::read(&executable).unwrap(), b"new");
     assert!(matches!(
-        replace_executable(Path::new("/"), b"new"),
+        swap_executable(Path::new("/"), b"new"),
         Err(UpdateError::Replace { .. })
     ));
 }

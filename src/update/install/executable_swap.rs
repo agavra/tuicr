@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use super::UpdateError;
 
-pub(super) fn replace_executable(path: &Path, contents: &[u8]) -> Result<(), UpdateError> {
+pub(super) fn swap_executable(path: &Path, contents: &[u8]) -> Result<(), UpdateError> {
     let parent = path
         .parent()
         .ok_or_else(|| replacement_error(path, "missing parent directory"))?;
@@ -12,9 +12,9 @@ pub(super) fn replace_executable(path: &Path, contents: &[u8]) -> Result<(), Upd
     write_new_file(path, &temp_path, contents)?;
 
     #[cfg(unix)]
-    replace_unix(path, &temp_path)?;
+    swap_unix(path, &temp_path)?;
     #[cfg(windows)]
-    replace_windows(path, &temp_path)?;
+    swap_windows(path, &temp_path)?;
 
     Ok(())
 }
@@ -33,7 +33,7 @@ fn write_new_file(target: &Path, temp_path: &Path, contents: &[u8]) -> Result<()
 }
 
 #[cfg(unix)]
-fn replace_unix(target: &Path, temp_path: &Path) -> Result<(), UpdateError> {
+fn swap_unix(target: &Path, temp_path: &Path) -> Result<(), UpdateError> {
     use std::os::unix::fs::PermissionsExt;
 
     let mode = fs::metadata(target)
@@ -48,7 +48,7 @@ fn replace_unix(target: &Path, temp_path: &Path) -> Result<(), UpdateError> {
 }
 
 #[cfg(windows)]
-fn replace_windows(target: &Path, temp_path: &Path) -> Result<(), UpdateError> {
+fn swap_windows(target: &Path, temp_path: &Path) -> Result<(), UpdateError> {
     let backup_path = target.with_extension("exe.old");
     let _ = fs::remove_file(&backup_path);
     fs::rename(target, &backup_path).map_err(|error| {
