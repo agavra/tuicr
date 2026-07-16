@@ -316,6 +316,26 @@ mod tests {
             );
         }
 
+        fn linked_pr_worktree(&self) -> LinkedWorktree {
+            LinkedWorktree::new(self.repo.path(), "large-pr")
+        }
+
+        fn shallow_pr_clone(&self) -> tempfile::TempDir {
+            let clone = tempfile::tempdir().unwrap();
+            run_git(
+                clone.path(),
+                &[
+                    "clone",
+                    "--quiet",
+                    "--depth=1",
+                    "--branch=large-pr",
+                    &format!("file://{}", self.repo.path().display()),
+                    ".",
+                ],
+            );
+            clone
+        }
+
         fn pr_view_json(&self) -> String {
             format!(
                 r#"{{
@@ -328,6 +348,43 @@ mod tests {
                 }}"#,
                 self.head_sha, self.base_sha,
             )
+        }
+    }
+
+    struct LinkedWorktree {
+        source: PathBuf,
+        parent: tempfile::TempDir,
+        root: PathBuf,
+    }
+
+    impl LinkedWorktree {
+        fn new(source: &Path, branch: &str) -> Self {
+            let parent = tempfile::tempdir().unwrap();
+            let root = parent.path().join("checkout");
+            run_git(
+                source,
+                &["worktree", "add", "--quiet", root.to_str().unwrap(), branch],
+            );
+            Self {
+                source: source.to_path_buf(),
+                parent,
+                root,
+            }
+        }
+
+        fn path(&self) -> &Path {
+            &self.root
+        }
+    }
+
+    impl Drop for LinkedWorktree {
+        fn drop(&mut self) {
+            let _keep_parent_alive = &self.parent;
+            let _ = Command::new("git")
+                .current_dir(&self.source)
+                .args(["worktree", "remove", "--force"])
+                .arg(&self.root)
+                .output();
         }
     }
 
@@ -523,6 +580,134 @@ mod tests {
     }
 
     #[test]
+    fn dirty_files_do_not_enter_the_local_pr_diff() {
+        let fixture = LargeDiffFixture::new(1);
+        fixture.checkout_pr_head();
+        fs::write(fixture.repo.path().join("README.md"), "dirty checkout\n").unwrap();
+        fs::write(fixture.repo.path().join("untracked.txt"), "untracked\n").unwrap();
+        let runner = LargeDiffGhRunner::new(&fixture);
+        let mut backend = GitHubGhBackend::with_runner(Some(repository()), runner.clone());
+        backend.set_local_checkout(Some(fixture.repo.path().to_path_buf()));
+
+        let patch = backend.get_pull_request_diff(&details(&backend)).unwrap();
+
+        assert!(!patch.contains("dirty checkout"));
+        assert!(!patch.contains("untracked.txt"));
+        assert!(!runner.used_temporary_clone());
+    }
+
+    #[test]
+    fn local_diff_ignores_replace_objects() {
+        let fixture = LargeDiffFixture::new(1);
+        fixture.checkout_pr_head();
+        run_git(
+            fixture.repo.path(),
+            &["replace", &fixture.head_sha, &fixture.base_sha],
+        );
+        let runner = LargeDiffGhRunner::new(&fixture);
+        let mut backend = GitHubGhBackend::with_runner(Some(repository()), runner.clone());
+        backend.set_local_checkout(Some(fixture.repo.path().to_path_buf()));
+
+        let patch = backend.get_pull_request_diff(&details(&backend)).unwrap();
+
+        assert!(patch.contains("src/file-000.rs"));
+        assert!(!runner.used_temporary_clone());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_diff_does_not_run_external_diff_or_textconv_commands() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let fixture = LargeDiffFixture::new(1);
+        fixture.checkout_pr_head();
+        let marker = fixture.repo.path().join("diff-command-ran");
+        let script = fixture.repo.path().join("diff-command.sh");
+        fs::write(
+            &script,
+            format!("#!/bin/sh\ntouch '{}'\nexit 1\n", marker.display()),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&script, permissions).unwrap();
+        run_git(
+            fixture.repo.path(),
+            &["config", "diff.external", script.to_str().unwrap()],
+        );
+        run_git(
+            fixture.repo.path(),
+            &["config", "diff.evil.textconv", script.to_str().unwrap()],
+        );
+        fs::write(
+            fixture.repo.path().join(".git/info/attributes"),
+            "*.rs diff=evil\n",
+        )
+        .unwrap();
+        let runner = LargeDiffGhRunner::new(&fixture);
+        let mut backend = GitHubGhBackend::with_runner(Some(repository()), runner.clone());
+        backend.set_local_checkout(Some(fixture.repo.path().to_path_buf()));
+
+        let patch = backend.get_pull_request_diff(&details(&backend)).unwrap();
+
+        assert!(patch.contains("src/file-000.rs"));
+        assert!(!marker.exists());
+        assert!(!runner.used_temporary_clone());
+    }
+
+    #[test]
+    fn detached_head_uses_the_isolated_fallback() {
+        let fixture = LargeDiffFixture::new(1);
+        fixture.checkout_pr_head();
+        run_git(fixture.repo.path(), &["checkout", "--quiet", "--detach"]);
+        let runner = LargeDiffGhRunner::new(&fixture);
+        let mut backend = GitHubGhBackend::with_runner(Some(repository()), runner.clone());
+        backend.set_local_checkout(Some(fixture.repo.path().to_path_buf()));
+
+        backend.get_pull_request_diff(&details(&backend)).unwrap();
+
+        assert!(runner.used_temporary_clone());
+    }
+
+    #[test]
+    fn shallow_checkout_without_the_base_uses_the_isolated_fallback() {
+        let fixture = LargeDiffFixture::new(1);
+        let shallow = fixture.shallow_pr_clone();
+        assert!(
+            Command::new("git")
+                .current_dir(shallow.path())
+                .args(["cat-file", "-e", &fixture.base_sha])
+                .output()
+                .is_ok_and(|output| !output.status.success())
+        );
+        let runner = LargeDiffGhRunner::new(&fixture);
+        let mut backend = GitHubGhBackend::with_runner(Some(repository()), runner.clone());
+        backend.set_local_checkout(Some(shallow.path().to_path_buf()));
+
+        backend.get_pull_request_diff(&details(&backend)).unwrap();
+
+        assert!(runner.used_temporary_clone());
+    }
+
+    #[test]
+    fn exact_pr_branch_in_a_linked_worktree_uses_local_objects() {
+        let fixture = LargeDiffFixture::new(1);
+        let worktree = fixture.linked_pr_worktree();
+        let runner = LargeDiffGhRunner::new(&fixture);
+        let mut backend = GitHubGhBackend::with_runner(Some(repository()), runner.clone());
+        backend.set_local_checkout(Some(worktree.path().to_path_buf()));
+
+        let patch = backend.get_pull_request_diff(&details(&backend)).unwrap();
+
+        assert!(patch.contains("src/file-000.rs"));
+        assert!(!runner.used_temporary_clone());
+        assert_eq!(
+            local_common_git_dir(worktree.path()).unwrap(),
+            fixture.repo.path().join(".git")
+        );
+    }
+
+    #[test]
     fn temporary_clone_borrows_objects_from_a_matching_checkout() {
         let fixture = LargeDiffFixture::new(1);
         let runner = LargeDiffGhRunner::new(&fixture);
@@ -535,7 +720,27 @@ mod tests {
             "--reference-if-able={}",
             fixture.repo.path().join(".git").display()
         );
-        assert!(runner.clone_args().unwrap().contains(&reference_arg));
+        let clone_args = runner.clone_args().unwrap();
+        assert!(clone_args.contains(&reference_arg));
+        assert!(clone_args.contains(&"--single-branch".to_string()));
+        assert!(clone_args.contains(&"--branch=main".to_string()));
+    }
+
+    #[test]
+    fn temporary_clone_without_a_checkout_has_no_local_reference() {
+        let fixture = LargeDiffFixture::new(1);
+        let runner = LargeDiffGhRunner::new(&fixture);
+        let backend = GitHubGhBackend::with_runner(Some(repository()), runner.clone());
+
+        backend.get_pull_request_diff(&details(&backend)).unwrap();
+
+        assert!(
+            runner
+                .clone_args()
+                .unwrap()
+                .iter()
+                .all(|arg| !arg.starts_with("--reference"))
+        );
     }
 
     #[test]
