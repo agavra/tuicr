@@ -55,6 +55,18 @@ cargo install --path .
 
 </details>
 
+Update the active installation with one command:
+
+```bash
+tuicr update
+```
+
+`tuicr update` uses Homebrew, Cargo, Mise, or a Nix profile when that manager owns the
+executable. Install-script and manually downloaded binaries update in place from the matching
+GitHub release asset after SHA-256 verification. A `nix run` invocation is temporary rather than
+installed; rerun it to use the current flake, or use `nix profile install github:agavra/tuicr` for
+an installation that `tuicr update` can upgrade.
+
 ## Quick start
 
 ```bash
@@ -67,6 +79,7 @@ tuicr mr 125                # GitLab MR
 tuicr tui pr 125            # GitHub PR via explicit TUI subcommand
 tuicr --stdout              # Pipe the review to stdout
 tuicr review list           # List saved local review sessions
+tuicr update                # Update the active installation
 ```
 
 Inside tuicr, navigate with `j`/`k`, press `c` to comment, then `y` to copy the review or

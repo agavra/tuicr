@@ -54,6 +54,14 @@ tracing-subscriber = { version = "0.3", features = ["fmt"] }
 shlex = "1.3"
 sha1 = "0.10"
 
+# `tuicr update`: verify GitHub's SHA-256 digest.
+sha2 = "0.10"
+# `tuicr update`: read the published Unix .tar.gz archives.
+flate2 = "1"
+tar = "0.4"
+# `tuicr update`: read the published Windows .zip archive.
+zip = { version = "4", default-features = false, features = ["deflate-flate2"] }
+
 # Syntax highlighting
 syntect = "5.2"
 two-face = { version = "0.5", default-features = false, features = ["syntect-default-fancy"] }
