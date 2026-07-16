@@ -583,7 +583,8 @@ mod tests {
     fn dirty_files_do_not_enter_the_local_pr_diff() {
         let fixture = LargeDiffFixture::new(1);
         fixture.checkout_pr_head();
-        fs::write(fixture.repo.path().join("README.md"), "dirty checkout\n").unwrap();
+        fs::write(fixture.repo.path().join("README.md"), "staged checkout\n").unwrap();
+        run_git(fixture.repo.path(), &["add", "README.md"]);
         fs::write(fixture.repo.path().join("untracked.txt"), "untracked\n").unwrap();
         let runner = LargeDiffGhRunner::new(&fixture);
         let mut backend = GitHubGhBackend::with_runner(Some(repository()), runner.clone());
@@ -591,7 +592,7 @@ mod tests {
 
         let patch = backend.get_pull_request_diff(&details(&backend)).unwrap();
 
-        assert!(!patch.contains("dirty checkout"));
+        assert!(!patch.contains("staged checkout"));
         assert!(!patch.contains("untracked.txt"));
         assert!(!runner.used_temporary_clone());
     }
