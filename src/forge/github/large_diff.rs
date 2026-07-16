@@ -1,0 +1,364 @@
+use std::ffi::OsStr;
+
+use tempfile::TempDir;
+
+use crate::error::{Result, TuicrError};
+use crate::forge::traits::PullRequestDetails;
+use crate::process::{CommandOutputError, run_command_output};
+
+use super::gh::{GhCommandRunner, gh_repo_arg, map_gh_error};
+
+/// Build an uncapped PR diff without reading from or mutating the user's checkout.
+/// A blobless bare clone keeps transfer cost tied to the changed content that
+/// `git diff` ultimately needs instead of the repository's full blob history.
+pub(super) fn fetch_from_temporary_clone<R>(runner: &R, pr: &PullRequestDetails) -> Result<String>
+where
+    R: GhCommandRunner,
+{
+    let repo = TemporaryClone::new()?;
+    repo.clone_from_github(runner, pr)?;
+    repo.fetch_pr_refs(pr)?;
+    repo.diff(pr)
+}
+
+struct TemporaryClone {
+    dir: TempDir,
+}
+
+impl TemporaryClone {
+    fn new() -> Result<Self> {
+        let dir = tempfile::Builder::new().prefix("tuicr-pr-").tempdir()?;
+        Ok(Self { dir })
+    }
+
+    fn path(&self) -> &std::path::Path {
+        self.dir.path()
+    }
+
+    fn clone_from_github<R>(&self, runner: &R, pr: &PullRequestDetails) -> Result<()>
+    where
+        R: GhCommandRunner,
+    {
+        let args = vec![
+            "repo".to_string(),
+            "clone".to_string(),
+            gh_repo_arg(&pr.repository),
+            self.path().to_string_lossy().into_owned(),
+            "--".to_string(),
+            "--bare".to_string(),
+            "--filter=blob:none".to_string(),
+            "--no-tags".to_string(),
+        ];
+        runner.run(&args).map_err(|error| {
+            TuicrError::Forge(format!(
+                "Could not clone pull request repository: {}",
+                map_gh_error(error, &pr.repository.host)
+            ))
+        })?;
+        Ok(())
+    }
+
+    /// GitHub exposes fork PR heads through `refs/pull`, so fetching that ref
+    /// avoids trusting a similarly named branch in either repository.
+    fn fetch_pr_refs(&self, pr: &PullRequestDetails) -> Result<()> {
+        let base_ref = format!("+refs/heads/{}:refs/tuicr/base", pr.base_ref_name);
+        let head_ref = format!("+refs/pull/{}/head:refs/tuicr/head", pr.number);
+        self.git([
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "origin",
+            &base_ref,
+            &head_ref,
+        ])?;
+        Ok(())
+    }
+
+    /// GitHub shows merge-base-to-head changes. Disabling external diff and
+    /// textconv keeps local Git configuration from changing output or running
+    /// user-configured programs while processing an untrusted PR.
+    fn diff(&self, pr: &PullRequestDetails) -> Result<String> {
+        for sha in [&pr.base_sha, &pr.head_sha] {
+            let commit = format!("{sha}^{{commit}}");
+            self.git(["cat-file", "-e", &commit])?;
+        }
+        let merge_base = self
+            .git(["merge-base", &pr.base_sha, &pr.head_sha])?
+            .trim()
+            .to_string();
+        self.git([
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--find-renames",
+            &merge_base,
+            &pr.head_sha,
+        ])
+    }
+
+    fn git<I, S>(&self, args: I) -> Result<String>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        run_command_output("git", Some(self.path()), args).map_err(map_git_error)
+    }
+}
+
+fn map_git_error(error: CommandOutputError) -> TuicrError {
+    let detail = if error.stderr.is_empty() {
+        error
+            .status
+            .map(|status| format!("git exited with status {status}"))
+            .unwrap_or_else(|| "git command failed".to_string())
+    } else {
+        error.stderr
+    };
+    TuicrError::Forge(format!(
+        "Could not build pull request diff from temporary clone: {detail}"
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+    use std::rc::Rc;
+
+    use super::*;
+    use crate::forge::github::gh::{GhCommandError, GhCommandResult, GitHubGhBackend};
+    use crate::forge::pr_open::open_pull_request;
+    use crate::forge::traits::{ForgeBackend, ForgeRepository, PullRequestTarget};
+    use crate::syntax::SyntaxHighlighter;
+
+    struct LargeDiffFixture {
+        repo: tempfile::TempDir,
+        base_sha: String,
+        head_sha: String,
+    }
+
+    impl LargeDiffFixture {
+        fn new(file_count: usize) -> Self {
+            let repo = tempfile::tempdir().unwrap();
+            run_git(repo.path(), &["init", "--quiet"]);
+            run_git(repo.path(), &["config", "user.name", "Test User"]);
+            run_git(repo.path(), &["config", "user.email", "test@example.com"]);
+            fs::write(repo.path().join("README.md"), "base\n").unwrap();
+            run_git(repo.path(), &["add", "."]);
+            run_git(repo.path(), &["commit", "--quiet", "-m", "base"]);
+            run_git(repo.path(), &["branch", "-M", "main"]);
+            let base_sha = run_git(repo.path(), &["rev-parse", "HEAD"]);
+            run_git(repo.path(), &["checkout", "--quiet", "-b", "pr-head"]);
+
+            fs::create_dir(repo.path().join("src")).unwrap();
+            for index in 0..file_count {
+                fs::write(
+                    repo.path().join(format!("src/file-{index:03}.rs")),
+                    format!("pub const VALUE: usize = {index};\n"),
+                )
+                .unwrap();
+            }
+            run_git(repo.path(), &["add", "."]);
+            run_git(repo.path(), &["commit", "--quiet", "-m", "large PR"]);
+            let head_sha = run_git(repo.path(), &["rev-parse", "HEAD"]);
+            run_git(
+                repo.path(),
+                &["update-ref", "refs/pull/125/head", &head_sha],
+            );
+            run_git(repo.path(), &["checkout", "--quiet", "main"]);
+
+            Self {
+                repo,
+                base_sha,
+                head_sha,
+            }
+        }
+
+        fn advance_base(&mut self) {
+            fs::write(self.repo.path().join("base-only.txt"), "base advanced\n").unwrap();
+            run_git(self.repo.path(), &["add", "."]);
+            run_git(
+                self.repo.path(),
+                &["commit", "--quiet", "-m", "advance base"],
+            );
+            self.base_sha = run_git(self.repo.path(), &["rev-parse", "HEAD"]);
+        }
+
+        fn pr_view_json(&self) -> String {
+            format!(
+                r#"{{
+                    "number": 125,
+                    "state": "OPEN",
+                    "headRefName": "large-pr",
+                    "baseRefName": "main",
+                    "headRefOid": "{}",
+                    "baseRefOid": "{}"
+                }}"#,
+                self.head_sha, self.base_sha,
+            )
+        }
+    }
+
+    fn run_git(repo: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .current_dir(repo)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    #[derive(Clone)]
+    struct LargeDiffGhRunner {
+        state: Rc<LargeDiffRunnerState>,
+    }
+
+    struct LargeDiffRunnerState {
+        calls: RefCell<Vec<Vec<String>>>,
+        clone_source: PathBuf,
+        pr_view_json: String,
+    }
+
+    impl LargeDiffGhRunner {
+        fn new(fixture: &LargeDiffFixture) -> Self {
+            Self {
+                state: Rc::new(LargeDiffRunnerState {
+                    calls: RefCell::new(Vec::new()),
+                    clone_source: fixture.repo.path().to_path_buf(),
+                    pr_view_json: fixture.pr_view_json(),
+                }),
+            }
+        }
+
+        fn used_temporary_clone(&self) -> bool {
+            self.state.calls.borrow().iter().any(|args| {
+                args.first().map(String::as_str) == Some("repo")
+                    && args.get(1).map(String::as_str) == Some("clone")
+            })
+        }
+    }
+
+    impl GhCommandRunner for LargeDiffGhRunner {
+        fn run(&self, args: &[String]) -> GhCommandResult<String> {
+            self.state.calls.borrow_mut().push(args.to_vec());
+            match args.first().map(String::as_str) {
+                Some("pr") if args.get(1).map(String::as_str) == Some("view") => {
+                    Ok(self.state.pr_view_json.clone())
+                }
+                Some("pr") if args.get(1).map(String::as_str) == Some("diff") => {
+                    Err(GhCommandError::Failed {
+                        status: Some(1),
+                        stderr: "could not find pull request diff: HTTP 406: Sorry, the diff exceeded the maximum number of files (300)".to_string(),
+                    })
+                }
+                Some("repo") if args.get(1).map(String::as_str) == Some("clone") => {
+                    self.clone_into(args.get(3).expect("clone destination"))
+                }
+                _ => Err(GhCommandError::Failed {
+                    status: Some(1),
+                    stderr: "unexpected command".to_string(),
+                }),
+            }
+        }
+    }
+
+    impl LargeDiffGhRunner {
+        fn clone_into(&self, destination: &str) -> GhCommandResult<String> {
+            let output = Command::new("git")
+                .args([
+                    "clone",
+                    "--quiet",
+                    "--bare",
+                    self.state.clone_source.to_str().unwrap(),
+                    destination,
+                ])
+                .output()
+                .unwrap();
+            if output.status.success() {
+                Ok(String::new())
+            } else {
+                Err(GhCommandError::Failed {
+                    status: output.status.code(),
+                    stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+                })
+            }
+        }
+    }
+
+    fn repository() -> ForgeRepository {
+        ForgeRepository::github("github.com", "agavra", "tuicr")
+    }
+
+    fn details(backend: &impl ForgeBackend) -> PullRequestDetails {
+        backend
+            .get_pull_request(PullRequestTarget::with_repository(repository(), 125, "125"))
+            .unwrap()
+    }
+
+    #[test]
+    fn opens_prs_over_300_files_from_an_isolated_partial_clone() {
+        let fixture = LargeDiffFixture::new(301);
+        let runner = LargeDiffGhRunner::new(&fixture);
+        let backend = GitHubGhBackend::with_runner(Some(repository()), runner.clone());
+
+        let opened = open_pull_request(
+            &backend,
+            PullRequestTarget::with_repository(repository(), 125, "125"),
+            None,
+            &SyntaxHighlighter::default(),
+        )
+        .unwrap();
+
+        assert_eq!(opened.diff_files.len(), 301);
+        assert_eq!(
+            opened.diff_files.last().unwrap().display_path(),
+            Path::new("src/file-300.rs")
+        );
+        assert!(runner.used_temporary_clone());
+    }
+
+    #[test]
+    fn diffs_from_merge_base_when_the_base_branch_has_advanced() {
+        let mut fixture = LargeDiffFixture::new(1);
+        fixture.advance_base();
+        let runner = LargeDiffGhRunner::new(&fixture);
+        let backend = GitHubGhBackend::with_runner(Some(repository()), runner);
+
+        let patch = backend.get_pull_request_diff(&details(&backend)).unwrap();
+
+        assert!(patch.contains("src/file-000.rs"));
+        assert!(!patch.contains("base-only.txt"));
+    }
+
+    #[test]
+    fn never_uses_the_current_checkout_as_pr_diff_source() {
+        let fixture = LargeDiffFixture::new(1);
+        let runner = LargeDiffGhRunner::new(&fixture);
+        let mut backend = GitHubGhBackend::with_runner(Some(repository()), runner.clone());
+        backend.set_local_checkout(Some(fixture.repo.path().to_path_buf()));
+
+        let patch = backend.get_pull_request_diff(&details(&backend)).unwrap();
+
+        assert!(patch.contains("src/file-000.rs"));
+        assert!(runner.used_temporary_clone());
+    }
+
+    #[test]
+    fn temporary_clone_removes_its_directory_on_drop() {
+        let path = {
+            let repo = TemporaryClone::new().unwrap();
+            let path = repo.path().to_path_buf();
+            assert!(path.exists());
+            path
+        };
+
+        assert!(!path.exists());
+    }
+}

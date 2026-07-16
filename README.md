@@ -72,8 +72,9 @@ tuicr review list           # List saved local review sessions
 Inside tuicr, navigate with `j`/`k`, press `c` to comment, then `y` to copy the review or
 `:submit` to push it to GitHub. When opening a GitHub PR or GitLab MR you've reviewed before,
 tuicr preselects commits newer than your latest submitted review when that metadata is available;
-commits already covered by that review are marked with `✓` in the inline selector.
-Auto-detects git, jj, or mercurial.
+commits already covered by that review are marked with `✓` in the inline selector. When GitHub's
+300-file diff endpoint limit is reached, tuicr builds the same merge-base diff in an isolated,
+blobless temporary clone. Auto-detects git, jj, or mercurial.
 
 ## How it compares
 

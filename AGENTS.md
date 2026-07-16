@@ -56,6 +56,7 @@ src/
 │   └── github/          # GitHub backend (only forge in v1, via `gh` CLI)
 │       ├── mod.rs       # GitHubGhBackend: ForgeBackend impl
 │       ├── gh.rs        # GhCommandRunner: spawn `gh`, parse output, error mapping
+│       ├── large_diff.rs # Uncapped PR diff via isolated blobless temporary clone
 │       ├── models.rs    # JSON parsing for `gh` REST + GraphQL responses
 │       ├── review_threads.rs # GraphQL query for existing review threads
 │       ├── review_metadata.rs # GraphQL review commit metadata for since-last-review scoping
@@ -160,6 +161,7 @@ Repository-managed agent integrations:
 - `toml`: User config parsing
 - `arboard`: Clipboard access
 - `ignore`: Gitignore-style matcher for `.tuicrignore`
+- `tempfile`: Private temporary repositories for oversized GitHub PR diffs
 - `chrono`: Timestamps
 - `thiserror` + `anyhow`: Error handling
 
@@ -241,6 +243,8 @@ These are non-obvious things the implementation chain hit. Worth preserving for 
 12. **`cd` into the worktree before running `cargo`.** `cargo` resolves `Cargo.toml` from `pwd`. Running gates from the wrong worktree silently exercises the wrong tree.
 
 13. **Comments are commit-scoped via `Comment::commit_id`.** When the inline commit selector shows exactly one commit, `App::save_comment` stamps that commit's SHA on the comment. Comments with `commit_id = Some(sha)` are hidden when a different commit (or a subset not containing `sha`) is selected; `commit_id = None` (legacy, review-level, or made against the full cumulative diff) is always visible. The filter runs in `rebuild_annotations`, both diff renderers, the comment navigator (via filtered annotations), and the submit preflight. `App::comment_visible(&Comment)` is the single predicate. `AnnotatedLine::LineComment`/`FileComment` `comment_idx` is the **absolute** index into the stored `Vec`/`HashMap` value — `delete_comment_at_cursor` and `enter_edit_mode` must look it up directly, not re-count by side.
+
+14. **GitHub caps `gh pr diff` at 300 files.** On that specific HTTP 406 response, clone the forge repository into an isolated blobless bare temporary repo, fetch the base branch plus `refs/pull/<n>/head`, and diff merge-base to head. This has no file-count ceiling and preserves the original rule that a user's checkout is never the PR source of truth. The tradeoff is extra network, disk, and startup time for oversized PRs. Keep normal PRs on plain `gh pr diff`, disable external diff/textconv in the fallback, clean up the temporary repo, and do not fall back for unrelated errors.
 
 ### Keeping Docs Updated
 

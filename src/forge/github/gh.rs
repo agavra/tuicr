@@ -37,6 +37,17 @@ pub enum GhCommandError {
     Failed { status: Option<i32>, stderr: String },
 }
 
+impl GhCommandError {
+    fn is_diff_too_large(&self) -> bool {
+        let Self::Failed { stderr, .. } = self else {
+            return false;
+        };
+        let stderr = stderr.to_ascii_lowercase();
+        stderr.contains("diff exceeded the maximum number of files")
+            || (stderr.contains("http 406") && stderr.contains("pull request diff"))
+    }
+}
+
 pub type GhCommandResult<T> = std::result::Result<T, GhCommandError>;
 
 pub trait GhCommandRunner {
@@ -134,10 +145,8 @@ fn local_range_diff(repo_root: &Path, start_sha: &str, end_sha: &str) -> Option<
 pub struct GitHubGhBackend<R = SystemGhRunner> {
     default_repository: Option<ForgeRepository>,
     runner: R,
-    /// Optional path to a local checkout. When present, the backend may
-    /// satisfy `fetch_file_lines` from local git objects before falling back
-    /// to `gh api`. It is **never** used as the source of truth for PR
-    /// contents; the source of truth is always GitHub.
+    /// Optional path to a local checkout. It may speed up context reads, but
+    /// never supplies the PR diff. PR contents always come from the forge.
     local_checkout: Option<PathBuf>,
 }
 
@@ -263,18 +272,22 @@ where
         // into duplicate `DiffFile`s. Plain `gh pr diff` (no `--patch`)
         // returns the single cumulative diff. Hard-won lesson; see the
         // duplicate-files-in-list bug.
-        self.run_gh(
-            vec![
-                "pr".to_string(),
-                "diff".to_string(),
-                pr.number.to_string(),
-                "--repo".to_string(),
-                gh_repo_arg(&pr.repository),
-                "--color".to_string(),
-                "never".to_string(),
-            ],
-            &pr.repository.host,
-        )
+        let args = vec![
+            "pr".to_string(),
+            "diff".to_string(),
+            pr.number.to_string(),
+            "--repo".to_string(),
+            gh_repo_arg(&pr.repository),
+            "--color".to_string(),
+            "never".to_string(),
+        ];
+        match self.runner.run(&args) {
+            Ok(diff) => Ok(diff),
+            Err(error) if error.is_diff_too_large() => {
+                super::large_diff::fetch_from_temporary_clone(&self.runner, pr)
+            }
+            Err(error) => Err(map_gh_error(error, &pr.repository.host)),
+        }
     }
 
     fn local_checkout_path(&self) -> Option<PathBuf> {
@@ -815,7 +828,7 @@ fn strip_git_suffix(value: &str) -> &str {
     value.strip_suffix(".git").unwrap_or(value)
 }
 
-fn gh_repo_arg(repository: &ForgeRepository) -> String {
+pub(super) fn gh_repo_arg(repository: &ForgeRepository) -> String {
     if repository.host == DEFAULT_GITHUB_HOST {
         repository.slug()
     } else {
@@ -823,7 +836,7 @@ fn gh_repo_arg(repository: &ForgeRepository) -> String {
     }
 }
 
-fn map_gh_error(error: GhCommandError, host: &str) -> TuicrError {
+pub(super) fn map_gh_error(error: GhCommandError, host: &str) -> TuicrError {
     match error {
         GhCommandError::MissingGh => TuicrError::Forge(
             "GitHub integration requires `gh`.\nInstall GitHub CLI and run `gh auth login`."
@@ -1629,6 +1642,16 @@ Match host github-work
         let patch = backend.get_pull_request_diff(&details).unwrap();
 
         assert_eq!(patch, PR_PATCH);
+    }
+
+    #[test]
+    fn should_not_treat_unrelated_http_406_as_diff_file_limit() {
+        let error = GhCommandError::Failed {
+            status: Some(1),
+            stderr: "HTTP 406: unsupported media type".to_string(),
+        };
+
+        assert!(!error.is_diff_too_large());
     }
 
     #[test]

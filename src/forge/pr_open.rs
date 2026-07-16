@@ -5,12 +5,14 @@
 //! a `PrSessionKey` that scopes persistence and remote context fetches.
 //!
 //! Key invariants enforced here:
-//! - The current local checkout is never treated as the source of truth.
-//!   Diffs are parsed from `gh pr diff`; SHAs are captured from PR metadata.
+//! - The current local checkout is never the PR diff source. Normal diffs
+//!   come from `gh pr diff`; oversized diffs come from GitHub refs fetched
+//!   into an isolated temporary clone.
 //! - `.tuicrignore` is applied only when the caller supplies a local
 //!   checkout path. Outside a checkout, the unfiltered diff is shown.
-//! - No checkout mutation. We never spawn `git checkout/fetch/reset/stash`
-//!   or branch-creation commands here.
+//! - No user-checkout mutation. Temporary-clone fetches stay outside the
+//!   checkout, and no PR path runs checkout/reset/stash or creates branches
+//!   in the user's repository.
 
 use std::path::{Path, PathBuf};
 
@@ -297,8 +299,8 @@ index 1111111..2222222 100644
     }
 
     /// Patch fixture covering add/modify/delete/rename in a single PR
-    /// diff, mirroring what `gh pr diff --patch --color never` would
-    /// emit. Acts as a regression guard against future changes to the
+    /// diff, mirroring the Git-style patch text returned by the forge
+    /// backend. Acts as a regression guard against future changes to the
     /// shared diff parser.
     const MULTI_STATUS_PATCH: &str = r##"diff --git a/added.rs b/added.rs
 new file mode 100644
