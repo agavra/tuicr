@@ -71,17 +71,10 @@ fn classify_versions(current: &str, latest: Option<&str>) -> UpdateCheckResult {
 }
 
 pub(super) fn is_newer_version(current: &str, latest: &str) -> bool {
-    parse_version(latest)
-        .zip(parse_version(current))
+    semver::Version::parse(latest)
+        .ok()
+        .zip(semver::Version::parse(current).ok())
         .is_some_and(|(latest_version, current_version)| latest_version > current_version)
-}
-
-fn parse_version(version: &str) -> Option<(u32, u32, u32)> {
-    let mut parts = version.split('.');
-    let major = parts.next()?.parse().ok()?;
-    let minor = parts.next()?.parse().ok()?;
-    let patch = parts.next().unwrap_or("0").parse().ok()?;
-    Some((major, minor, patch))
 }
 
 #[cfg(test)]
@@ -113,7 +106,9 @@ mod tests {
         assert!(is_newer_version("0.5.0", "0.6.0"));
         assert!(is_newer_version("0.5.0", "1.0.0"));
         assert!(is_newer_version("0.5.0", "0.5.1"));
-        assert!(is_newer_version("0.5", "0.5.1"));
+        assert!(is_newer_version("1.0.0-beta.1", "1.0.0"));
+        assert!(is_newer_version("1.0.0-beta.1", "1.0.0-beta.2"));
+        assert!(!is_newer_version("0.5", "0.5.1"));
         assert!(!is_newer_version("0.5.0", "0.5.0"));
         assert!(!is_newer_version("0.6.0", "0.5.0"));
         assert!(!is_newer_version("dev", "1.0.0"));

@@ -2818,6 +2818,7 @@ dependencies = [
  "git2",
  "ignore",
  "ratatui",
+ "semver",
  "serde",
  "serde_json",
  "sha1",
