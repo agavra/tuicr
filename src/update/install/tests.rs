@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
@@ -10,7 +10,7 @@ use tempfile::TempDir;
 use zip::write::SimpleFileOptions;
 
 use super::archive::extract_binary;
-use super::executable_swap::swap_executable;
+use super::executable_swap::{stage_and_swap, swap_executable};
 use super::installation::{detect_install_method, manager_command};
 use super::source::{package_repository_url, release_asset_name, release_asset_url};
 use super::*;
@@ -524,27 +524,102 @@ fn rejects_invalid_or_binary_less_archives() {
 }
 
 #[test]
-fn swaps_a_direct_binary_and_preserves_executable_mode() {
+fn stages_a_sibling_executable_and_preserves_permissions() {
     let temp = TempDir::new().unwrap();
     let executable = temp.path().join("tuicr");
     std::fs::write(&executable, b"old").unwrap();
     #[cfg(unix)]
     {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o751)).unwrap();
-        swap_executable(&executable, b"new").unwrap();
+    }
+
+    stage_and_swap(&executable, b"new", |staged| {
+        assert_eq!(staged.parent(), executable.parent());
+        assert_eq!(std::fs::read(staged)?, b"new");
+        std::fs::remove_file(&executable)?;
+        std::fs::rename(staged, &executable)
+    })
+    .unwrap();
+
+    assert_eq!(std::fs::read(&executable).unwrap(), b"new");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
         assert_eq!(
             std::fs::metadata(&executable).unwrap().mode() & 0o777,
             0o751
         );
     }
-    #[cfg(windows)]
-    swap_executable(&executable, b"new").unwrap();
-    assert_eq!(std::fs::read(&executable).unwrap(), b"new");
+}
+
+#[test]
+fn rejects_unsafe_executable_swap_inputs_before_touching_the_target() {
+    let temp = TempDir::new().unwrap();
+    let executable = temp.path().join("tuicr");
+    std::fs::write(&executable, b"old").unwrap();
+    let called = Cell::new(false);
+
     assert!(matches!(
-        swap_executable(Path::new("/"), b"new"),
+        stage_and_swap(&executable, b"", |_| {
+            called.set(true);
+            Ok(())
+        }),
         Err(UpdateError::Replace { .. })
     ));
+    assert!(!called.get());
+    assert_eq!(std::fs::read(&executable).unwrap(), b"old");
+
+    assert!(matches!(
+        stage_and_swap(Path::new("relative-tuicr"), b"new", |_| Ok(())),
+        Err(UpdateError::Replace { .. })
+    ));
+    assert!(matches!(
+        stage_and_swap(&temp.path().join("missing"), b"new", |_| Ok(())),
+        Err(UpdateError::Replace { .. })
+    ));
+    assert!(matches!(
+        stage_and_swap(temp.path(), b"new", |_| Ok(())),
+        Err(UpdateError::Replace { .. })
+    ));
+    assert!(matches!(
+        swap_executable(&executable, b"new"),
+        Err(UpdateError::Replace { .. })
+    ));
+    assert_eq!(std::fs::read(&executable).unwrap(), b"old");
+}
+
+#[cfg(unix)]
+#[test]
+fn rejects_symlink_executable_targets() {
+    let temp = TempDir::new().unwrap();
+    let executable = temp.path().join("tuicr");
+    let link = temp.path().join("tuicr-link");
+    std::fs::write(&executable, b"old").unwrap();
+    std::os::unix::fs::symlink(&executable, &link).unwrap();
+
+    assert!(matches!(
+        stage_and_swap(&link, b"new", |_| Ok(())),
+        Err(UpdateError::Replace { .. })
+    ));
+    assert_eq!(std::fs::read(&executable).unwrap(), b"old");
+}
+
+#[test]
+fn cleans_staged_executable_when_swap_fails() {
+    let temp = TempDir::new().unwrap();
+    let executable = temp.path().join("tuicr");
+    std::fs::write(&executable, b"old").unwrap();
+    let staged_path = RefCell::new(None);
+
+    let result = stage_and_swap(&executable, b"new", |staged| {
+        *staged_path.borrow_mut() = Some(staged.to_path_buf());
+        Err(std::io::Error::other("swap failed"))
+    });
+
+    assert!(matches!(result, Err(UpdateError::Replace { .. })));
+    assert!(!staged_path.into_inner().unwrap().exists());
+    assert_eq!(std::fs::read(&executable).unwrap(), b"old");
 }
 
 #[test]

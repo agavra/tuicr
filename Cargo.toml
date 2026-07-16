@@ -54,6 +54,9 @@ tracing-subscriber = { version = "0.3", features = ["fmt"] }
 shlex = "1.3"
 sha1 = "0.10"
 
+# `tuicr update`: stage verified binaries and swap the running executable safely.
+self-replace = "1.5"
+tempfile = "3.24.0"
 # `tuicr update`: compare Cargo release versions using SemVer rules.
 semver = "1"
 # `tuicr update`: verify GitHub's SHA-256 digest.
@@ -70,6 +73,3 @@ two-face = { version = "0.5", default-features = false, features = ["syntect-def
 
 # Terminal background detection
 terminal-colorsaurus = "1"
-
-[dev-dependencies]
-tempfile = "3.24.0"

@@ -163,6 +163,7 @@ Repository-managed agent integrations:
 - `git2`: Native git operations
 - `serde` + `serde_json`: Session serialization and GitHub release metadata
 - `sha2` + `flate2` + `tar` + `zip`: Verified direct-binary updates and release extraction
+- `self-replace` + `tempfile`: Guarded staging and cross-platform executable swaps
 - `toml`: User config parsing
 - `arboard`: Clipboard access
 - `ignore`: Gitignore-style matcher for `.tuicrignore`
