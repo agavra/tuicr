@@ -228,6 +228,9 @@ struct GitHubRelease {
 #[derive(Debug, Deserialize)]
 struct GitHubAsset {
     name: String,
+    // GitHub computes SHA-256 digests when release assets are uploaded:
+    // https://github.blog/changelog/2025-06-03-releases-now-expose-digests-for-release-assets/
+    // Keep this optional so missing data fails closed instead of breaking deserialization.
     digest: Option<String>,
 }
 
