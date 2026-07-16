@@ -1,6 +1,7 @@
 mod archive;
 mod method;
 mod replace;
+mod source;
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -12,15 +13,14 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use ureq::Agent;
 
-use self::archive::{extract_binary, release_asset_name, release_asset_url};
+use self::archive::{extract_binary, release_asset_name};
 use self::method::{detect_install_method, manager_command};
 use self::replace::replace_executable;
+use self::source::{release_api_url, release_asset_url};
 use super::check::is_newer_version;
 
 pub use self::method::InstallMethod;
 
-const RELEASE_API_BASE: &str = "https://api.github.com/repos/agavra/tuicr/releases";
-const RELEASE_API_URL: &str = "https://api.github.com/repos/agavra/tuicr/releases/latest";
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -284,13 +284,6 @@ fn update_direct(
         previous_version: context.current_version.clone(),
         new_version: release_version,
     })
-}
-
-fn release_api_url(version: Option<&Version>) -> String {
-    version.map_or_else(
-        || RELEASE_API_URL.to_string(),
-        |version| format!("{RELEASE_API_BASE}/tags/v{version}"),
-    )
 }
 
 fn display_command(program: &str, args: &[&str]) -> String {

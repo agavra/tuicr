@@ -7,10 +7,6 @@ use flate2::read::GzDecoder;
 
 use super::UpdateError;
 
-pub(super) fn release_asset_url(version: &str, asset_name: &str) -> String {
-    format!("https://github.com/agavra/tuicr/releases/download/v{version}/{asset_name}")
-}
-
 pub(super) fn release_asset_name(
     version: &str,
     os: &str,

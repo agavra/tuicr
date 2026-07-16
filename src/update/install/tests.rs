@@ -9,9 +9,10 @@ use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 use zip::write::SimpleFileOptions;
 
-use super::archive::{extract_binary, release_asset_name, release_asset_url};
+use super::archive::{extract_binary, release_asset_name};
 use super::method::{detect_install_method, manager_command};
 use super::replace::replace_executable;
+use super::source::{package_repository_url, release_asset_url};
 use super::*;
 
 #[derive(Default)]
@@ -115,7 +116,7 @@ fn direct_runtime(
     MockRuntime {
         responses: HashMap::from([
             (
-                RELEASE_API_URL.to_string(),
+                release_api_url(None),
                 serde_json::to_vec(&metadata).unwrap(),
             ),
             (asset_url, archive),
@@ -260,7 +261,7 @@ fn installs_an_exact_direct_version_even_when_it_is_older() {
     let target = semver::Version::parse("0.9.0").unwrap();
     let binary = b"known-good-binary";
     let mut runtime = direct_runtime("0.9.0", "linux", "x86_64", tar_gz("tuicr", binary), true);
-    let metadata = runtime.responses.remove(RELEASE_API_URL).unwrap();
+    let metadata = runtime.responses.remove(&release_api_url(None)).unwrap();
     runtime
         .responses
         .insert(release_api_url(Some(&target)), metadata);
@@ -278,7 +279,7 @@ fn installs_an_exact_direct_version_even_when_it_is_older() {
 
     let mismatched_target = semver::Version::parse("0.8.0").unwrap();
     let mut mismatch = direct_runtime("0.9.0", "linux", "x86_64", tar_gz("tuicr", binary), true);
-    let metadata = mismatch.responses.remove(RELEASE_API_URL).unwrap();
+    let metadata = mismatch.responses.remove(&release_api_url(None)).unwrap();
     mismatch
         .responses
         .insert(release_api_url(Some(&mismatched_target)), metadata);
@@ -355,7 +356,7 @@ fn skips_download_when_direct_install_is_current_or_ahead() {
         let metadata = serde_json::json!({"tag_name": latest, "assets": []});
         let runtime = MockRuntime {
             responses: HashMap::from([(
-                RELEASE_API_URL.to_string(),
+                release_api_url(None),
                 serde_json::to_vec(&metadata).unwrap(),
             )]),
             ..MockRuntime::default()
@@ -383,7 +384,7 @@ fn propagates_fetch_extraction_and_replacement_failures() {
         direct_runtime("1.1.0", "linux", "x86_64", tar_gz("tuicr", b"binary"), true);
     missing_download
         .responses
-        .retain(|url, _| url == RELEASE_API_URL);
+        .retain(|url, _| url == &release_api_url(None));
     assert!(matches!(
         update_with_runtime(&missing_download, direct()),
         Err(UpdateError::Network(_))
@@ -414,7 +415,7 @@ fn propagates_fetch_extraction_and_replacement_failures() {
 fn rejects_bad_release_metadata_assets_and_digests() {
     let direct = || context("/home/alice/.local/bin/tuicr");
     let invalid_metadata = MockRuntime {
-        responses: HashMap::from([(RELEASE_API_URL.to_string(), b"{".to_vec())]),
+        responses: HashMap::from([(release_api_url(None), b"{".to_vec())]),
         ..MockRuntime::default()
     };
     assert!(matches!(
@@ -424,7 +425,7 @@ fn rejects_bad_release_metadata_assets_and_digests() {
 
     let no_asset = MockRuntime {
         responses: HashMap::from([(
-            RELEASE_API_URL.to_string(),
+            release_api_url(None),
             br#"{"tag_name":"1.1.0","assets":[]}"#.to_vec(),
         )]),
         ..MockRuntime::default()
@@ -463,6 +464,7 @@ fn rejects_bad_release_metadata_assets_and_digests() {
 
 #[test]
 fn maps_every_published_target_and_rejects_unsupported_targets() {
+    assert_eq!(package_repository_url(), env!("CARGO_PKG_REPOSITORY"));
     let cases = [
         ("linux", "x86_64", "x86_64-unknown-linux-gnu.tar.gz"),
         ("linux", "aarch64", "aarch64-unknown-linux-gnu.tar.gz"),
