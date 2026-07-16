@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use ureq::Agent;
 
-const CRATES_IO_URL: &str = "https://crates.io/api/v1/crates/tuicr";
+const CRATES_IO_API_BASE: &str = "https://crates.io/api/v1/crates";
 const CHECK_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone)]
@@ -25,7 +25,8 @@ pub fn check_for_updates() -> UpdateCheckResult {
         .timeout_global(Some(CHECK_TIMEOUT))
         .build();
     let agent: Agent = config.into();
-    let response = match agent.get(CRATES_IO_URL).call() {
+    let crates_io_url = crates_io_url();
+    let response = match agent.get(&crates_io_url).call() {
         Ok(response) => response,
         Err(error) => return UpdateCheckResult::Failed(format!("Network error: {error}")),
     };
@@ -37,6 +38,10 @@ pub fn check_for_updates() -> UpdateCheckResult {
     };
 
     classify_versions(env!("CARGO_PKG_VERSION"), latest_version(&body))
+}
+
+fn crates_io_url() -> String {
+    format!("{CRATES_IO_API_BASE}/{}", env!("CARGO_PKG_NAME"))
 }
 
 fn latest_version(body: &serde_json::Value) -> Option<&str> {
@@ -114,6 +119,14 @@ mod tests {
         assert!(!is_newer_version("dev", "1.0.0"));
         assert!(!is_newer_version("1.0.0", "dev"));
         assert!(!is_newer_version("1", "2"));
+    }
+
+    #[test]
+    fn builds_crates_io_url_from_package_name() {
+        assert_eq!(
+            crates_io_url(),
+            format!("https://crates.io/api/v1/crates/{}", env!("CARGO_PKG_NAME"))
+        );
     }
 
     #[test]
