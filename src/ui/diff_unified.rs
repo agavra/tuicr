@@ -85,8 +85,9 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
 
     // The `═══ Review Comments ═══` label is redundant in single-file
     // view (review-level comments are still rendered below; they just
-    // don't need a banner that confuses horizontal scroll).
-    if !app.is_single_file_view {
+    // don't need a banner that confuses horizontal scroll). It's also hidden
+    // while the section has no content.
+    if app.show_review_comments_header() {
         let general_indicator = cursor_indicator_spaced(line_idx, current_line_idx);
         lines.push(Line::from(vec![
             Span::styled(
