@@ -145,8 +145,8 @@ fn local_range_diff(repo_root: &Path, start_sha: &str, end_sha: &str) -> Option<
 pub struct GitHubGhBackend<R = SystemGhRunner> {
     default_repository: Option<ForgeRepository>,
     runner: R,
-    /// Optional path to a local checkout. It may speed up context reads, but
-    /// never supplies the PR diff. PR contents always come from the forge.
+    /// Optional matching checkout. Exact forge-selected objects may be read
+    /// locally, but PR revisions are not inferred from local refs or files.
     local_checkout: Option<PathBuf>,
 }
 
@@ -283,9 +283,11 @@ where
         ];
         match self.runner.run(&args) {
             Ok(diff) => Ok(diff),
-            Err(error) if error.is_diff_too_large() => {
-                super::large_diff::fetch_from_temporary_clone(&self.runner, pr)
-            }
+            Err(error) if error.is_diff_too_large() => super::large_diff::fetch_large_diff(
+                &self.runner,
+                pr,
+                self.local_checkout.as_deref(),
+            ),
             Err(error) => Err(map_gh_error(error, &pr.repository.host)),
         }
     }

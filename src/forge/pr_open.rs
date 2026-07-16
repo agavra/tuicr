@@ -5,14 +5,12 @@
 //! a `PrSessionKey` that scopes persistence and remote context fetches.
 //!
 //! Key invariants enforced here:
-//! - The current local checkout is never the PR diff source. Normal diffs
-//!   come from `gh pr diff`; oversized diffs come from GitHub refs fetched
-//!   into an isolated temporary clone.
-//! - `.tuicrignore` is applied only when the caller supplies a local
+//! - Normal diffs come from `gh pr diff`. An oversized diff may use the local
+//!   checkout only when its branch and `HEAD` exactly match the PR metadata.
+//! - Missing objects are fetched into an isolated temporary bare repository,
+//!   which can borrow existing local objects without changing the checkout.
+//! - `.tuicrignore` is applied only when the caller supplies a matching local
 //!   checkout path. Outside a checkout, the unfiltered diff is shown.
-//! - No user-checkout mutation. Temporary-clone fetches stay outside the
-//!   checkout, and no PR path runs checkout/reset/stash or creates branches
-//!   in the user's repository.
 
 use std::path::{Path, PathBuf};
 

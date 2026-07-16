@@ -1,4 +1,5 @@
 use std::ffi::OsStr;
+use std::path::Path;
 
 use tempfile::TempDir;
 
@@ -8,17 +9,116 @@ use crate::process::{CommandOutputError, run_command_output};
 
 use super::gh::{GhCommandRunner, gh_repo_arg, map_gh_error};
 
-/// Build an uncapped PR diff without reading from or mutating the user's checkout.
-/// A blobless bare clone keeps transfer cost tied to the changed content that
-/// `git diff` ultimately needs instead of the repository's full blob history.
-pub(super) fn fetch_from_temporary_clone<R>(runner: &R, pr: &PullRequestDetails) -> Result<String>
+/// Build an uncapped PR diff without changing the user's checkout.
+///
+/// A checkout already on the exact PR head can provide the diff directly. All
+/// other cases use a temporary bare clone, borrowing matching local objects
+/// when available before fetching the forge refs.
+pub(super) fn fetch_large_diff<R>(
+    runner: &R,
+    pr: &PullRequestDetails,
+    local_checkout: Option<&Path>,
+) -> Result<String>
 where
     R: GhCommandRunner,
 {
+    if let Some(diff) = local_checkout.and_then(|root| diff_from_current_pr_branch(root, pr)) {
+        return Ok(diff);
+    }
+
+    let reference_repo = local_checkout.and_then(local_common_git_dir);
     let repo = TemporaryClone::new()?;
-    repo.clone_from_github(runner, pr)?;
+    repo.clone_from_github(runner, pr, reference_repo.as_deref())?;
     repo.fetch_pr_refs(pr)?;
     repo.diff(pr)
+}
+
+fn diff_from_current_pr_branch(root: &Path, pr: &PullRequestDetails) -> Option<String> {
+    let top_level = local_git(
+        root,
+        ["--no-replace-objects", "rev-parse", "--show-toplevel"],
+    )?;
+    if std::fs::canonicalize(top_level.trim()).ok()? != std::fs::canonicalize(root).ok()? {
+        return None;
+    }
+
+    let branch = local_git(
+        root,
+        [
+            "--no-replace-objects",
+            "symbolic-ref",
+            "--quiet",
+            "--short",
+            "HEAD",
+        ],
+    )?;
+    if branch.trim() != pr.head_ref_name {
+        return None;
+    }
+
+    let head = local_git(
+        root,
+        [
+            "--no-replace-objects",
+            "rev-parse",
+            "--verify",
+            "HEAD^{commit}",
+        ],
+    )?;
+    if head.trim() != pr.head_sha {
+        return None;
+    }
+
+    for sha in [&pr.base_sha, &pr.head_sha] {
+        let commit = format!("{sha}^{{commit}}");
+        local_git(
+            root,
+            ["--no-replace-objects", "cat-file", "-e", commit.as_str()],
+        )?;
+    }
+
+    let merge_base = local_git(
+        root,
+        [
+            "--no-replace-objects",
+            "merge-base",
+            &pr.base_sha,
+            &pr.head_sha,
+        ],
+    )?;
+    local_git(
+        root,
+        [
+            "--no-replace-objects",
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--find-renames",
+            merge_base.trim(),
+            &pr.head_sha,
+        ],
+    )
+}
+
+fn local_common_git_dir(root: &Path) -> Option<std::path::PathBuf> {
+    let path = local_git(
+        root,
+        [
+            "--no-replace-objects",
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-common-dir",
+        ],
+    )?;
+    Some(path.trim().into())
+}
+
+fn local_git<I, S>(root: &Path, args: I) -> Option<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    run_command_output("git", Some(root), args).ok()
 }
 
 struct TemporaryClone {
@@ -35,11 +135,16 @@ impl TemporaryClone {
         self.dir.path()
     }
 
-    fn clone_from_github<R>(&self, runner: &R, pr: &PullRequestDetails) -> Result<()>
+    fn clone_from_github<R>(
+        &self,
+        runner: &R,
+        pr: &PullRequestDetails,
+        reference_repo: Option<&Path>,
+    ) -> Result<()>
     where
         R: GhCommandRunner,
     {
-        let args = vec![
+        let mut args = vec![
             "repo".to_string(),
             "clone".to_string(),
             gh_repo_arg(&pr.repository),
@@ -48,7 +153,15 @@ impl TemporaryClone {
             "--bare".to_string(),
             "--filter=blob:none".to_string(),
             "--no-tags".to_string(),
+            "--single-branch".to_string(),
+            format!("--branch={}", pr.base_ref_name),
         ];
+        if let Some(repository) = reference_repo {
+            args.push(format!(
+                "--reference-if-able={}",
+                repository.to_string_lossy()
+            ));
+        }
         runner.run(&args).map_err(|error| {
             TuicrError::Forge(format!(
                 "Could not clone pull request repository: {}",
@@ -150,7 +263,7 @@ mod tests {
             run_git(repo.path(), &["commit", "--quiet", "-m", "base"]);
             run_git(repo.path(), &["branch", "-M", "main"]);
             let base_sha = run_git(repo.path(), &["rev-parse", "HEAD"]);
-            run_git(repo.path(), &["checkout", "--quiet", "-b", "pr-head"]);
+            run_git(repo.path(), &["checkout", "--quiet", "-b", "large-pr"]);
 
             fs::create_dir(repo.path().join("src")).unwrap();
             for index in 0..file_count {
@@ -184,6 +297,23 @@ mod tests {
                 &["commit", "--quiet", "-m", "advance base"],
             );
             self.base_sha = run_git(self.repo.path(), &["rev-parse", "HEAD"]);
+        }
+
+        fn checkout_pr_head(&self) {
+            run_git(self.repo.path(), &["checkout", "--quiet", "large-pr"]);
+        }
+
+        fn advance_pr_head_locally(&self) {
+            fs::write(
+                self.repo.path().join("local-only.txt"),
+                "new local commit\n",
+            )
+            .unwrap();
+            run_git(self.repo.path(), &["add", "."]);
+            run_git(
+                self.repo.path(),
+                &["commit", "--quiet", "-m", "advance local branch"],
+            );
         }
 
         fn pr_view_json(&self) -> String {
@@ -237,11 +367,20 @@ mod tests {
             }
         }
 
+        fn clone_args(&self) -> Option<Vec<String>> {
+            self.state
+                .calls
+                .borrow()
+                .iter()
+                .find(|args| {
+                    args.first().map(String::as_str) == Some("repo")
+                        && args.get(1).map(String::as_str) == Some("clone")
+                })
+                .cloned()
+        }
+
         fn used_temporary_clone(&self) -> bool {
-            self.state.calls.borrow().iter().any(|args| {
-                args.first().map(String::as_str) == Some("repo")
-                    && args.get(1).map(String::as_str) == Some("clone")
-            })
+            self.clone_args().is_some()
         }
     }
 
@@ -338,8 +477,9 @@ mod tests {
     }
 
     #[test]
-    fn never_uses_the_current_checkout_as_pr_diff_source() {
+    fn uses_the_current_checkout_when_branch_and_head_match_the_pr() {
         let fixture = LargeDiffFixture::new(1);
+        fixture.checkout_pr_head();
         let runner = LargeDiffGhRunner::new(&fixture);
         let mut backend = GitHubGhBackend::with_runner(Some(repository()), runner.clone());
         backend.set_local_checkout(Some(fixture.repo.path().to_path_buf()));
@@ -347,7 +487,55 @@ mod tests {
         let patch = backend.get_pull_request_diff(&details(&backend)).unwrap();
 
         assert!(patch.contains("src/file-000.rs"));
+        assert!(!runner.used_temporary_clone());
+    }
+
+    #[test]
+    fn local_diff_uses_merge_base_when_the_base_branch_has_advanced() {
+        let mut fixture = LargeDiffFixture::new(1);
+        fixture.advance_base();
+        fixture.checkout_pr_head();
+        let runner = LargeDiffGhRunner::new(&fixture);
+        let mut backend = GitHubGhBackend::with_runner(Some(repository()), runner.clone());
+        backend.set_local_checkout(Some(fixture.repo.path().to_path_buf()));
+
+        let patch = backend.get_pull_request_diff(&details(&backend)).unwrap();
+
+        assert!(patch.contains("src/file-000.rs"));
+        assert!(!patch.contains("base-only.txt"));
+        assert!(!runner.used_temporary_clone());
+    }
+
+    #[test]
+    fn rejects_a_matching_branch_when_head_has_advanced_locally() {
+        let fixture = LargeDiffFixture::new(1);
+        fixture.checkout_pr_head();
+        fixture.advance_pr_head_locally();
+        let runner = LargeDiffGhRunner::new(&fixture);
+        let mut backend = GitHubGhBackend::with_runner(Some(repository()), runner.clone());
+        backend.set_local_checkout(Some(fixture.repo.path().to_path_buf()));
+
+        let patch = backend.get_pull_request_diff(&details(&backend)).unwrap();
+
+        assert!(patch.contains("src/file-000.rs"));
+        assert!(!patch.contains("local-only.txt"));
         assert!(runner.used_temporary_clone());
+    }
+
+    #[test]
+    fn temporary_clone_borrows_objects_from_a_matching_checkout() {
+        let fixture = LargeDiffFixture::new(1);
+        let runner = LargeDiffGhRunner::new(&fixture);
+        let mut backend = GitHubGhBackend::with_runner(Some(repository()), runner.clone());
+        backend.set_local_checkout(Some(fixture.repo.path().to_path_buf()));
+
+        backend.get_pull_request_diff(&details(&backend)).unwrap();
+
+        let reference_arg = format!(
+            "--reference-if-able={}",
+            fixture.repo.path().join(".git").display()
+        );
+        assert!(runner.clone_args().unwrap().contains(&reference_arg));
     }
 
     #[test]

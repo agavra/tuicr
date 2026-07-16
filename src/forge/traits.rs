@@ -408,18 +408,17 @@ pub trait ForgeBackend {
     }
     /// Fetch the cumulative diff between two commit SHAs that both belong to
     /// `pr`. `start_sha` is the *parent* of the first commit in the
-    /// subrange; `end_sha` is the last commit. Implementations may use a
-    /// local checkout when both SHAs are present locally, but the source of
-    /// truth is the forge.
+    /// subrange; `end_sha` is the last commit. Implementations may read those
+    /// exact forge-selected objects from a matching local checkout.
     fn get_pull_request_commit_range_diff(
         &self,
         pr: &PullRequestDetails,
         start_sha: &str,
         end_sha: &str,
     ) -> Result<String>;
-    /// Optional path to a local checkout the backend may consult as an
-    /// optimization. The default returns `None`; callers must never treat
-    /// this path as the source of truth for PR contents.
+    /// Optional path to a matching local checkout. Callers may reuse exact
+    /// forge-selected objects, but must not infer PR revisions from local
+    /// branches, the index, or working-tree files.
     fn local_checkout_path(&self) -> Option<PathBuf> {
         None
     }

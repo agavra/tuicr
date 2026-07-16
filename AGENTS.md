@@ -56,7 +56,7 @@ src/
 │   └── github/          # GitHub backend (only forge in v1, via `gh` CLI)
 │       ├── mod.rs       # GitHubGhBackend: ForgeBackend impl
 │       ├── gh.rs        # GhCommandRunner: spawn `gh`, parse output, error mapping
-│       ├── large_diff.rs # Uncapped PR diff via isolated blobless temporary clone
+│       ├── large_diff.rs # Uncapped PR diff via verified local objects or temporary bare repo
 │       ├── models.rs    # JSON parsing for `gh` REST + GraphQL responses
 │       ├── review_threads.rs # GraphQL query for existing review threads
 │       ├── review_metadata.rs # GraphQL review commit metadata for since-last-review scoping
@@ -246,7 +246,7 @@ These are non-obvious things the implementation chain hit. Worth preserving for 
 
 14. **Large-diff work must stay bounded on input.** Renderers use `DiffLineBuffer` plus `file_annotation_ranges`, navigation bounds use `line_annotations`, PR range parsing runs on a worker, and commit-range persistence is debounced on a serial worker. Unified-diff hunks above 5,000 lines keep plain diff styling rather than allocating syntect spans for generated content. Do not reintroduce full-review `Vec<Line>` allocation, synchronous highlighter construction, full-diff cloning, or annotation rebuilds after saves with no external changes.
 
-15. **GitHub caps `gh pr diff` at 300 files.** On that specific HTTP 406 response, clone the forge repository into an isolated blobless bare temporary repo, fetch the base branch plus `refs/pull/<n>/head`, and diff merge-base to head. This has no file-count ceiling and preserves the original rule that a user's checkout is never the PR source of truth. The tradeoff is extra network, disk, and startup time for oversized PRs. Keep normal PRs on plain `gh pr diff`, disable external diff/textconv in the fallback, clean up the temporary repo, and do not fall back for unrelated errors.
+15. **GitHub caps `gh pr diff` at 300 files.** On that specific HTTP 406 response, first use the matching checkout when its current branch and `HEAD` exactly match the forge PR metadata. If that check fails, clone the forge repository into an isolated blobless bare temporary repo, borrow local objects with `--reference-if-able` when possible, fetch the base branch plus `refs/pull/<n>/head`, and diff merge-base to head. Keep normal PRs on plain `gh pr diff`, disable replace objects, external diff, and textconv, clean up the temporary repo, and do not fall back for unrelated errors. A linked worktree is not useful here: commit-to-commit diff needs no checked-out files, and a worktree writes administrative state into the user's repository.
 
 ### Keeping Docs Updated
 
