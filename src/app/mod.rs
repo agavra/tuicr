@@ -1233,8 +1233,9 @@ pub struct App {
     pub pr_range_reload_state: Option<PrRangeReloadRequest>,
     /// Background-thread channel for the active range re-fetch.
     pub pr_range_reload_rx: Option<std::sync::mpsc::Receiver<PrRangeReloadEvent>>,
-    /// Serial worker for best-effort commit-range persistence off the input thread.
+    /// Serial worker for commit-range persistence off the input thread.
     pr_selection_save_tx: Option<std::sync::mpsc::Sender<PrSelectionSave>>,
+    pr_selection_save_worker: Option<std::thread::JoinHandle<()>>,
     /// Whether the inline commit selector panel is visible
     pub show_commit_selector: bool,
     /// Cached individual/subrange diffs keyed by (start_idx, end_idx) into review_commits

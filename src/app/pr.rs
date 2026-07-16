@@ -202,9 +202,13 @@ impl App {
     }
 
     fn queue_pr_commit_selection_save(&mut self, value: Option<(usize, usize)>) {
-        let sender = self.pr_selection_save_tx.get_or_insert_with(|| {
+        if self.pr_selection_save_tx.is_none() {
             let (tx, rx) = std::sync::mpsc::channel::<PrSelectionSave>();
-            std::thread::spawn(move || {
+            // Test storage overrides are thread-local, so carry the selected
+            // directory into the worker.
+            #[cfg(test)]
+            let test_reviews_dir = crate::persistence::storage::get_reviews_dir().ok();
+            let worker = std::thread::spawn(move || {
                 while let Ok(mut pending) = rx.recv() {
                     // Debounce so the input loop can paint the new selection
                     // before persistence touches the shared reviews directory.
@@ -215,25 +219,45 @@ impl App {
                     let identity = pending.identity;
                     let value = pending.value;
                     let identity_for_default = identity.clone();
-                    let _ = crate::persistence::storage::save_session_by_identity(
-                        &identity,
-                        |persisted| {
-                            let session = Self::session_with_pr_commit_selection(
-                                identity_for_default,
-                                persisted,
-                                value,
-                            );
-                            Ok((session, ()))
-                        },
-                    );
+                    let update = |persisted| {
+                        let session = Self::session_with_pr_commit_selection(
+                            identity_for_default,
+                            persisted,
+                            value,
+                        );
+                        Ok((session, ()))
+                    };
+                    #[cfg(test)]
+                    let _ = if let Some(reviews_dir) = test_reviews_dir.as_deref() {
+                        crate::persistence::storage::save_session_by_identity_in_dir(
+                            &identity,
+                            reviews_dir,
+                            update,
+                        )
+                    } else {
+                        crate::persistence::storage::save_session_by_identity(&identity, update)
+                    };
+                    #[cfg(not(test))]
+                    let _ =
+                        crate::persistence::storage::save_session_by_identity(&identity, update);
                 }
             });
-            tx
-        });
-        let _ = sender.send(PrSelectionSave {
-            identity: self.session.clone(),
-            value,
-        });
+            self.pr_selection_save_tx = Some(tx);
+            self.pr_selection_save_worker = Some(worker);
+        }
+        if let Some(sender) = &self.pr_selection_save_tx {
+            let _ = sender.send(PrSelectionSave {
+                identity: self.session.clone(),
+                value,
+            });
+        }
+    }
+
+    pub fn flush_pr_commit_selection_save(&mut self) {
+        self.pr_selection_save_tx.take();
+        if let Some(worker) = self.pr_selection_save_worker.take() {
+            let _ = worker.join();
+        }
     }
 
     /// Persist the active inline selection on a serial worker so filesystem
@@ -696,6 +720,21 @@ impl App {
                 &opened.commits,
                 &opened.review_metadata,
             );
+            let stale_range_files = self.range_diff_files.take();
+            let stale_range_line_counts = self.range_file_line_count_cache.take();
+            let stale_range_render_index = self.range_render_index_cache.take();
+            if stale_range_files.is_some()
+                || stale_range_line_counts.is_some()
+                || stale_range_render_index.is_some()
+            {
+                std::thread::spawn(move || {
+                    drop((
+                        stale_range_files,
+                        stale_range_line_counts,
+                        stale_range_render_index,
+                    ));
+                });
+            }
             self.diff_files = opened.diff_files;
             self.clear_expanded_gaps();
             for file in &self.diff_files {

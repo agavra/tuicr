@@ -533,6 +533,7 @@ impl App {
             pr_range_reload_state: None,
             pr_range_reload_rx: None,
             pr_selection_save_tx: None,
+            pr_selection_save_worker: None,
             show_commit_selector: false,
             commit_diff_cache: HashMap::new(),
             range_diff_files: None,

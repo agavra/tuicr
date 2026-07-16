@@ -747,9 +747,6 @@ impl App {
     }
 
     pub(in crate::app) fn calculate_file_scroll_offset(&self, file_idx: usize) -> usize {
-        if self.is_single_file_view {
-            return 0;
-        }
         self.file_annotation_range(file_idx)
             .map(|range| range.start)
             .unwrap_or_else(|| self.review_comments_render_height())

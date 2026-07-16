@@ -118,6 +118,25 @@ fn annotation_ranges_index_each_file() {
 }
 
 #[test]
+fn single_file_jump_starts_after_review_comments() {
+    let mut app = app_with(vec![file("a.rs", vec![hunk(1, 2)])]);
+    app.session.review_comments.push(Comment::new(
+        "review comment".to_string(),
+        CommentType::from_id("note"),
+        None,
+    ));
+    app.is_single_file_view = true;
+    app.rebuild_annotations();
+    let file_start = app.file_annotation_range(0).unwrap().start;
+    assert!(file_start > 0);
+
+    app.jump_to_file(0);
+
+    assert_eq!(app.calculate_file_scroll_offset(0), file_start);
+    assert_eq!(app.diff_state.cursor_line, file_start);
+}
+
+#[test]
 fn editor_target_uses_selected_file_list_row() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("main.rs");

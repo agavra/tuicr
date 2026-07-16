@@ -695,6 +695,7 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
+    app.flush_pr_commit_selection_save();
     terminal.restore()?;
 
     if let Err(e) = app.cleanup_empty_ephemeral_sessions() {
