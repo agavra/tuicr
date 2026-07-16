@@ -324,6 +324,13 @@ impl App {
         self.set_message(format!("Commit selector: {status}"));
     }
 
+    /// Whether the diff is the only visible pane — no file list (which also
+    /// carries the comment navigator) and no inline commit selector. Used to
+    /// drop the diff's frame for a cleaner full-width view.
+    pub fn is_diff_sole_pane(&self) -> bool {
+        !self.show_file_list && !self.has_inline_commit_selector()
+    }
+
     // Commit selection methods
 
     pub fn commit_select_up(&mut self) {

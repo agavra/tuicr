@@ -449,6 +449,28 @@ fn should_comment_on_a_commit_only_file_after_narrowing_the_commit_pane() {
 }
 
 #[test]
+fn is_diff_sole_pane_only_when_no_other_panes_visible() {
+    let mut app = build_app(vec![normal_commit("a"), normal_commit("b")]);
+    app.review_commits = app.commit_list.clone();
+    app.diff_source = DiffSource::CommitRange(vec!["a".to_string(), "b".to_string()]);
+
+    // File list visible -> not sole.
+    app.show_file_list = true;
+    app.show_commit_selector = false;
+    assert!(!app.is_diff_sole_pane());
+
+    // File list hidden but commit selector visible -> not sole.
+    app.show_file_list = false;
+    app.show_commit_selector = true;
+    assert!(app.has_inline_commit_selector());
+    assert!(!app.is_diff_sole_pane());
+
+    // Both hidden -> diff is the sole pane.
+    app.show_commit_selector = false;
+    assert!(app.is_diff_sole_pane());
+}
+
+#[test]
 fn review_comments_header_hidden_while_empty() {
     let mut app = build_app(vec![normal_commit("a")]);
     app.is_single_file_view = false;

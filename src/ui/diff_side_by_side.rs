@@ -287,10 +287,17 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
 
     let title = crate::ui::diff_view::diff_title(app, area.width);
 
+    // Drop the frame when the diff is the only pane; the title still renders
+    // on the reserved top row (ratatui keeps it without a top border).
+    let borders = if app.is_diff_sole_pane() {
+        Borders::NONE
+    } else {
+        Borders::ALL
+    };
     let block = Block::default()
         .title(title)
         .title_top(diff_stat_title(app).right_aligned())
-        .borders(Borders::ALL)
+        .borders(borders)
         .style(styles::panel_style(&app.theme))
         .border_style(styles::border_style(&app.theme, focused));
 
