@@ -104,6 +104,20 @@ fn app_with_root(root_path: PathBuf, files: Vec<DiffFile>) -> App {
 }
 
 #[test]
+fn annotation_ranges_index_each_file() {
+    let app = app_with(vec![
+        file("a.rs", vec![hunk(1, 2)]),
+        file("b.rs", vec![hunk(10, 3)]),
+    ]);
+
+    let first = app.file_annotation_range(0).unwrap();
+    let second = app.file_annotation_range(1).unwrap();
+    assert_eq!(first.start, 1);
+    assert_eq!(first.end, second.start);
+    assert_eq!(second.end, app.line_annotations.len());
+}
+
+#[test]
 fn editor_target_uses_selected_file_list_row() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("main.rs");

@@ -43,6 +43,18 @@ fn file_comment_ids(session: &ReviewSession) -> Vec<String> {
 }
 
 #[test]
+fn queued_pr_selection_save_preserves_persisted_comments() {
+    let identity = test_session();
+    let mut persisted = identity.clone();
+    push_file_comment(&mut persisted, "external", "keep me");
+
+    let saved = App::session_with_pr_commit_selection(identity, Some(persisted), Some((2, 4)));
+
+    assert_eq!(saved.commit_selection_range, Some((2, 4)));
+    assert_eq!(file_comment_ids(&saved), vec!["external"]);
+}
+
+#[test]
 fn should_merge_external_comment_without_losing_local_comment() {
     let base = test_session();
     let mut current = base.clone();

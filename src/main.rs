@@ -348,11 +348,14 @@ fn main() -> anyhow::Result<()> {
             // it atomically. Without this, scrolling over a slow link visibly
             // tears as escape sequences arrive in chunks. Terminals that do
             // not support DEC 2026 ignore it.
-            queue!(terminal.backend_mut(), BeginSynchronizedUpdate)?;
-            terminal.draw(|frame| {
-                ui::render(frame, &mut app);
+            profile::time("frame.render", || -> anyhow::Result<()> {
+                queue!(terminal.backend_mut(), BeginSynchronizedUpdate)?;
+                terminal.draw(|frame| {
+                    ui::render(frame, &mut app);
+                })?;
+                execute!(terminal.backend_mut(), EndSynchronizedUpdate)?;
+                Ok(())
             })?;
-            execute!(terminal.backend_mut(), EndSynchronizedUpdate)?;
             needs_redraw = false;
         }
 

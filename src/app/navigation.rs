@@ -674,44 +674,13 @@ impl App {
     /// reviewed-collapse behavior in multi-file view (skipped entirely)
     /// versus single-file view (body rendered under a banner).
     pub(in crate::app) fn hunk_positions(&self) -> Vec<usize> {
-        let single = self.is_single_file_view;
-        let current_idx = self.diff_state.current_file_idx;
-        let mut positions = Vec::new();
-        let mut cumulative = self.review_comments_render_height();
-        for (file_idx, file) in self.diff_files.iter().enumerate() {
-            if single && file_idx != current_idx {
-                continue;
-            }
-            let path = file.display_path();
-            let is_reviewed = self.session.is_file_reviewed(path);
-
-            if !single {
-                cumulative += 1; // File header
-            }
-            if !single && is_reviewed {
-                // multi-file collapsed: no body, no trailing spacing
-                continue;
-            }
-            if single && is_reviewed {
-                cumulative += 1; // banner
-            }
-            if let Some(review) = self.session.files.get(path) {
-                cumulative += review.file_comments.len();
-            }
-            if file.is_binary || file.hunks.is_empty() {
-                cumulative += 1;
-            } else {
-                for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
-                    positions.push(cumulative);
-                    cumulative += 1;
-                    if !self.is_hunk_reviewed(file_idx, hunk_idx) {
-                        cumulative += hunk.lines.len();
-                    }
-                }
-            }
-            cumulative += 1; // trailing spacing or "next file" hint
-        }
-        positions
+        self.line_annotations
+            .iter()
+            .enumerate()
+            .filter_map(|(index, annotation)| {
+                matches!(annotation, AnnotatedLine::HunkHeader { .. }).then_some(index)
+            })
+            .collect()
     }
 
     pub fn next_hunk(&mut self) {
@@ -778,14 +747,12 @@ impl App {
     }
 
     pub(in crate::app) fn calculate_file_scroll_offset(&self, file_idx: usize) -> usize {
-        let mut offset = self.review_comments_render_height();
-        for (i, file) in self.diff_files.iter().enumerate() {
-            if i == file_idx {
-                break;
-            }
-            offset += self.effective_file_height(i, file);
+        if self.is_single_file_view {
+            return 0;
         }
-        offset
+        self.file_annotation_range(file_idx)
+            .map(|range| range.start)
+            .unwrap_or_else(|| self.review_comments_render_height())
     }
 
     pub(in crate::app) fn review_comments_render_height(&self) -> usize {
@@ -1169,6 +1136,7 @@ impl App {
     /// Multi-file view: same as `file_render_height`. Single-file view:
     /// non-current files return 0; the current file returns the body
     /// (no header) plus a 1-line banner when the file is reviewed.
+    #[cfg(test)]
     pub(in crate::app) fn effective_file_height(&self, file_idx: usize, file: &DiffFile) -> usize {
         if !self.is_single_file_view {
             return self.file_render_height(file_idx, file);
@@ -1193,37 +1161,21 @@ impl App {
         if self.is_single_file_view {
             return;
         }
-        let mut cumulative = self.review_comments_render_height();
-        if self.diff_state.cursor_line < cumulative {
-            if !self.diff_files.is_empty() {
-                self.diff_state.current_file_idx = 0;
-                self.file_list_state.select(0);
-            }
+        if self.diff_files.is_empty() {
             return;
         }
-        for (i, file) in self.diff_files.iter().enumerate() {
-            let height = self.file_render_height(i, file);
-            if cumulative + height > self.diff_state.cursor_line {
-                self.diff_state.current_file_idx = i;
-                self.file_list_state.select(i);
-                return;
-            }
-            cumulative += height;
-        }
-        if !self.diff_files.is_empty() {
-            self.diff_state.current_file_idx = self.diff_files.len() - 1;
-            self.file_list_state.select(self.diff_files.len() - 1);
-        }
+        let cursor = self.diff_state.cursor_line;
+        let file_idx = self
+            .file_annotation_ranges
+            .partition_point(|range| range.as_ref().is_some_and(|range| range.start <= cursor))
+            .saturating_sub(1)
+            .min(self.diff_files.len() - 1);
+        self.diff_state.current_file_idx = file_idx;
+        self.file_list_state.select(file_idx);
     }
 
     pub fn total_lines(&self) -> usize {
-        self.review_comments_render_height()
-            + self
-                .diff_files
-                .iter()
-                .enumerate()
-                .map(|(i, f)| self.effective_file_height(i, f))
-                .sum::<usize>()
+        self.line_annotations.len()
     }
 
     /// Last line the cursor can occupy. If the final annotation is a Spacing

@@ -144,7 +144,7 @@ Repository-managed agent integrations:
 
 ### Important Implementation Details
 
-- **Infinite scroll**: All files rendered into one `Vec<Line>`, then sliced by `scroll_offset`
+- **Virtualized infinite scroll**: `line_annotations` indexes the full review, while each frame retains only the viewport plus bounded overscan in `DiffLineBuffer`. Per-file annotation ranges let renderers skip files outside the viewport.
 - **Inline comments**: Comments are rendered in `app_layout.rs` after file headers and after relevant diff lines
 - **Comment navigator**: Built from `line_annotations` in rendered order. Local review/file/line comments and visible remote threads appear as compact rows; selecting one calls `move_cursor_to_annotation()` so the diff viewport scrolls to the comment.
 - **Session loading**: `App::new()` calls manifest-backed persistence helpers to restore previous review
@@ -186,12 +186,12 @@ PR review (`tuicr pr <target>` or `tuicr tui pr <target>`) is the only feature i
 
 ### Async pattern
 
-Network calls run on a background thread. Parsing + state mutation run on the main thread. The pattern across `spawn_pr_open` / `spawn_pr_reload` / `spawn_pr_submit`:
+Network and patch parsing run on background threads. State mutation stays on the main thread. The pattern across `spawn_pr_open` / `spawn_pr_reload` / `spawn_pr_submit`:
 
 1. Snapshot the request inputs on the main thread (no `&App` lives across the spawn).
-2. Spawn a thread that returns only `Send` data — typically `Result<(PullRequestDetails, String, Vec<PullRequestCommit>)>` or similar tuples.
-3. The thread sends the result on an `mpsc` channel; `poll_*_events()` drains the channel each tick.
-4. The main-thread `finish_*` function parses the diff and builds the `ReviewSession`. `SyntaxHighlighter` is not trivially `Send`, so parsing has to happen on the main thread.
+2. Spawn a thread that returns only `Send` data, usually a prepared `OpenedPullRequest`, parsed range files, or a submit result.
+3. The worker creates its own `SyntaxHighlighter` from a cheap, cloneable theme factory, then parses and highlights the patch before sending the prepared result over `mpsc`.
+4. `poll_*_events()` validates request identity and installs the prepared result. Keep expensive parsing off the input/render thread; synchronous helper paths remain only as test seams and direct-entry startup wiring.
 
 In-flight requests carry an identity tuple (repo, PR#, head SHA). A late result is discarded if the user has since opened a different PR.
 
@@ -222,7 +222,7 @@ These are non-obvious things the implementation chain hit. Worth preserving for 
 
 2. **GraphQL thread anchors live on `PullRequestReviewThread`, not the comment.** `path`, `line`, `originalLine`, `diffSide` are thread fields. Putting them on `PullRequestReviewComment` returns a schema error.
 
-3. **Network on the background thread, parsing on the main thread.** `SyntaxHighlighter` is not `Send`. Background threads return Send-safe data; the main thread parses and builds the session. Used by `spawn_pr_open` / `spawn_pr_reload` / `spawn_pr_submit`.
+3. **PR parsing stays off the input/render thread.** `Theme::syntax_highlighter_factory()` is cheap to clone and crosses the thread boundary; the worker builds the highlighter, parses the patch, and returns `OpenedPullRequest` or parsed range files. Never build the full highlighter in a navigation handler because loading its syntax set adds visible input latency.
 
 4. **`apply_initial_load(Err(...))` is a no-op when the tab is already `Loaded`.** It only transitions `Loading → Error`. For transient errors during reload or submit, use `App::set_error()` (the message bar) instead.
 
@@ -244,7 +244,9 @@ These are non-obvious things the implementation chain hit. Worth preserving for 
 
 13. **Comments are commit-scoped via `Comment::commit_id`.** When the inline commit selector shows exactly one commit, `App::save_comment` stamps that commit's SHA on the comment. Comments with `commit_id = Some(sha)` are hidden when a different commit (or a subset not containing `sha`) is selected; `commit_id = None` (legacy, review-level, or made against the full cumulative diff) is always visible. The filter runs in `rebuild_annotations`, both diff renderers, the comment navigator (via filtered annotations), and the submit preflight. `App::comment_visible(&Comment)` is the single predicate. `AnnotatedLine::LineComment`/`FileComment` `comment_idx` is the **absolute** index into the stored `Vec`/`HashMap` value — `delete_comment_at_cursor` and `enter_edit_mode` must look it up directly, not re-count by side.
 
-14. **GitHub caps `gh pr diff` at 300 files.** On that specific HTTP 406 response, clone the forge repository into an isolated blobless bare temporary repo, fetch the base branch plus `refs/pull/<n>/head`, and diff merge-base to head. This has no file-count ceiling and preserves the original rule that a user's checkout is never the PR source of truth. The tradeoff is extra network, disk, and startup time for oversized PRs. Keep normal PRs on plain `gh pr diff`, disable external diff/textconv in the fallback, clean up the temporary repo, and do not fall back for unrelated errors.
+14. **Large-diff work must stay bounded on input.** Renderers use `DiffLineBuffer` plus `file_annotation_ranges`, navigation bounds use `line_annotations`, PR range parsing runs on a worker, and commit-range persistence is debounced on a serial worker. Unified-diff hunks above 5,000 lines keep plain diff styling rather than allocating syntect spans for generated content. Do not reintroduce full-review `Vec<Line>` allocation, synchronous highlighter construction, full-diff cloning, or annotation rebuilds after saves with no external changes.
+
+15. **GitHub caps `gh pr diff` at 300 files.** On that specific HTTP 406 response, clone the forge repository into an isolated blobless bare temporary repo, fetch the base branch plus `refs/pull/<n>/head`, and diff merge-base to head. This has no file-count ceiling and preserves the original rule that a user's checkout is never the PR source of truth. The tradeoff is extra network, disk, and startup time for oversized PRs. Keep normal PRs on plain `gh pr diff`, disable external diff/textconv in the fallback, clean up the temporary repo, and do not fall back for unrelated errors.
 
 ### Keeping Docs Updated
 

@@ -92,8 +92,8 @@ pub fn fetch_pr_data(
 }
 
 /// CPU-only half of the PR open path: parse the patch, apply
-/// `.tuicrignore`, and build the session. Runs on the main thread because
-/// `SyntaxHighlighter` is not trivially `Send`-cloneable.
+/// `.tuicrignore`, and build the session. Async App paths call this on their
+/// worker with a highlighter built there; synchronous callers use it directly.
 pub fn prepare_open_pr(
     details: PullRequestDetails,
     patch: &str,

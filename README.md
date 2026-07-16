@@ -74,7 +74,9 @@ Inside tuicr, navigate with `j`/`k`, press `c` to comment, then `y` to copy the 
 tuicr preselects commits newer than your latest submitted review when that metadata is available;
 commits already covered by that review are marked with `✓` in the inline selector. When GitHub's
 300-file diff endpoint limit is reached, tuicr builds the same merge-base diff in an isolated,
-blobless temporary clone. Auto-detects git, jj, or mercurial.
+blobless temporary clone. Large reviews keep input responsive by parsing PR updates on a worker,
+retaining only visible diff rows, and using plain diff colors for giant generated hunks instead of
+expanding thousands of syntax spans. Auto-detects git, jj, or mercurial.
 
 ## How it compares
 

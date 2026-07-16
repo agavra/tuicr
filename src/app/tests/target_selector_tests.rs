@@ -937,6 +937,8 @@ fn should_preserve_hunk_marks_hidden_by_pr_range_diff() {
         .unwrap()
         .toggle_hunk_reviewed(hidden_key.clone());
 
+    app.file_line_count_cache.insert(0, 123);
+    let full_annotation_count = app.line_annotations.len();
     let request = PrRangeReloadRequest {
         repository: ForgeRepository::github("github.com", "agavra", "tuicr"),
         pr_number: 42,
@@ -951,6 +953,24 @@ fn should_preserve_hunk_marks_hidden_by_pr_range_diff() {
         .unwrap();
 
     assert!(app.session.is_hunk_reviewed(&path, &hidden_key));
+    assert!(app.range_diff_files.is_some());
+    assert!(app.range_render_index_cache.is_some());
+    assert_eq!(
+        app.range_file_line_count_cache
+            .as_ref()
+            .and_then(|cache| cache.get(&0)),
+        Some(&123)
+    );
+
+    app.commit_selection_range = Some((0, 1));
+    app.reload_pr_inline_selection();
+
+    assert_eq!(app.diff_files[0].hunks.len(), 2);
+    assert_eq!(app.line_annotations.len(), full_annotation_count);
+    assert!(app.range_diff_files.is_none());
+    assert!(app.range_render_index_cache.is_none());
+    assert_eq!(app.file_line_count_cache.get(&0), Some(&123));
+    assert!(app.range_file_line_count_cache.is_none());
 }
 
 #[test]
