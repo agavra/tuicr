@@ -21,7 +21,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
     frame.render_widget(Clear, area);
 
     let block = Block::default()
-        .title(" Help (j/k to scroll) - Press ? or Esc to close ")
+        .title(" Help (j/k scroll, / search) - Press ? or Esc to close ")
         .borders(Borders::ALL)
         .style(styles::popup_style(theme))
         .border_style(styles::border_style(theme, true));
@@ -96,7 +96,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  /         ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Search within diff"),
+            Span::raw("Search within diff (case-insensitive)"),
         ]),
         Line::from(vec![
             Span::styled(
@@ -770,6 +770,20 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         Line::from(""),
         Line::from(vec![
             Span::styled(
+                "  /         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Search within this help (case-insensitive)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  n/N       ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Next/previous help search match"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  ?         ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
@@ -782,6 +796,15 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
     let viewport_height = inner.height as usize;
     app.help_state.total_lines = total_lines;
     app.help_state.viewport_height = viewport_height;
+    app.help_state.searchable_lines = help_text
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect()
+        })
+        .collect();
 
     // Calculate if we can scroll
     let can_scroll_up = app.help_state.scroll_offset > 0;
@@ -790,8 +813,16 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
     // Apply scroll offset
     let visible_lines: Vec<Line> = help_text
         .into_iter()
+        .enumerate()
         .skip(app.help_state.scroll_offset)
         .take(viewport_height)
+        .map(|(line_idx, line)| {
+            if app.help_state.current_match_line == Some(line_idx) {
+                line.style(styles::selected_style(theme))
+            } else {
+                line
+            }
+        })
         .collect();
 
     let paragraph = Paragraph::new(visible_lines).style(styles::popup_style(theme));

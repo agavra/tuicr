@@ -279,7 +279,7 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                 }
                 InputMode::Search => Cow::Borrowed("   \u{21b5} search \u{00b7} esc cancel"),
                 InputMode::Comment => Cow::Borrowed("   ctrl-s save \u{00b7} esc cancel"),
-                InputMode::Help => Cow::Borrowed("   q/?/esc close"),
+                InputMode::Help => Cow::Borrowed("   / search · n/N match · q/?/esc close"),
                 InputMode::Confirm => Cow::Borrowed("   y yes \u{00b7} n no"),
                 InputMode::CommitSelect => Cow::Borrowed(
                     "   j/k navigate \u{00b7} space select \u{00b7} \u{21b5} confirm \u{00b7} esc back",
