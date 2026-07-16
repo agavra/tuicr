@@ -299,7 +299,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
 
     // The `═══ Review Comments ═══` label is redundant in single-file
     // view -- see the matching guard in `src/ui/diff_unified.rs`.
-    if !app.is_single_file_view {
+    if app.show_review_comments_header() {
         let general_indicator = cursor_indicator_spaced(line_idx, ctx.current_line_idx);
         lines.push(Line::from(vec![
             Span::styled(

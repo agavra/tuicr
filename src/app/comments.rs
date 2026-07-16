@@ -1,6 +1,34 @@
 use super::*;
 
 impl App {
+    /// Whether the `═══ Review Comments ═══` section has anything to show:
+    /// a remote review summary, a local review-level comment, or a visible
+    /// review-level (line: None) remote thread. Mirrors exactly what the
+    /// section renders, so the header gate stays in sync between the renderer
+    /// and the annotation model.
+    pub fn has_review_section_content(&self) -> bool {
+        if !self.forge_review_summaries.is_empty() || !self.session.review_comments.is_empty() {
+            return true;
+        }
+        let visibility = self.session.remote_comments_visibility;
+        if matches!(
+            visibility,
+            crate::forge::remote_comments::PrCommentsVisibility::Hide
+        ) {
+            return false;
+        }
+        self.forge_review_threads
+            .iter()
+            .filter(|thread| thread.line.is_none())
+            .any(|thread| visibility.render_decision(thread).is_some())
+    }
+
+    /// Whether the `═══ Review Comments ═══` section header should render.
+    /// Omitted in single-file view and while the section has no content yet.
+    pub fn show_review_comments_header(&self) -> bool {
+        !self.is_single_file_view && self.has_review_section_content()
+    }
+
     pub fn comment_navigator_idx_at_screen_row(&self, screen_row: u16) -> Option<usize> {
         let inner = self.comment_navigator_inner_area?;
         if screen_row < inner.y || screen_row >= inner.y + inner.height {

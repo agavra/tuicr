@@ -447,3 +447,26 @@ fn should_comment_on_a_commit_only_file_after_narrowing_the_commit_pane() {
         "the comment must be stored against the file"
     );
 }
+
+#[test]
+fn review_comments_header_hidden_while_empty() {
+    let mut app = build_app(vec![normal_commit("a")]);
+    app.is_single_file_view = false;
+
+    // Empty section -> no header.
+    assert!(!app.has_review_section_content());
+    assert!(!app.show_review_comments_header());
+
+    // A local review comment gives the section content -> header shows.
+    app.session.review_comments.push(crate::model::Comment::new(
+        "review-level".to_string(),
+        crate::model::CommentType::from_id("note"),
+        None,
+    ));
+    assert!(app.has_review_section_content());
+    assert!(app.show_review_comments_header());
+
+    // Single-file view always hides the header.
+    app.is_single_file_view = true;
+    assert!(!app.show_review_comments_header());
+}
