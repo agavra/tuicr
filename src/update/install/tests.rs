@@ -312,13 +312,7 @@ fn returns_manager_failures_without_replacing_the_binary() {
 #[test]
 fn downloads_verifies_and_extracts_a_linux_direct_install() {
     let binary = b"new-linux-binary";
-    let runtime = direct_runtime(
-        "1.1.0",
-        "linux",
-        "x86_64",
-        tar_gz("release/tuicr", binary),
-        true,
-    );
+    let runtime = direct_runtime("1.1.0", "linux", "x86_64", tar_gz("tuicr", binary), true);
     assert_eq!(
         update_with_runtime(&runtime, context("/home/alice/.local/bin/tuicr")).unwrap(),
         UpdateOutcome::Updated {
@@ -343,7 +337,7 @@ fn downloads_verifies_and_extracts_a_windows_direct_install() {
         "1.1.0",
         "windows",
         "x86_64",
-        zip_archive("release/tuicr.exe", binary),
+        zip_archive("tuicr.exe", binary),
         true,
     );
     let mut context = context("C:/Users/alice/bin/tuicr.exe");
@@ -517,6 +511,14 @@ fn rejects_invalid_or_binary_less_archives() {
     ));
     assert!(matches!(
         extract_binary("tuicr.zip", &zip_archive("README", b"text")),
+        Err(UpdateError::Archive { .. })
+    ));
+    assert!(matches!(
+        extract_binary("tuicr.tar.gz", &tar_gz("nested/tuicr", b"binary")),
+        Err(UpdateError::Archive { .. })
+    ));
+    assert!(matches!(
+        extract_binary("tuicr.zip", &zip_archive("nested/tuicr.exe", b"binary")),
         Err(UpdateError::Archive { .. })
     ));
 }
