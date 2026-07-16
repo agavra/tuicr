@@ -1,6 +1,22 @@
 use super::*;
 
 impl App {
+    /// The commit-selection range a fresh multi-commit review opens with,
+    /// honoring the `initial_commit_selection` config. `review_commits` is stored
+    /// newest-first, so the oldest commit is the last index — that stays true
+    /// regardless of the `commit_order` display setting (which is presentation
+    /// only). Returns `None` for an empty list.
+    pub(in crate::app) fn initial_commit_range(
+        start: CommitSelectionStart,
+        n: usize,
+    ) -> Option<(usize, usize)> {
+        match (start, n) {
+            (_, 0) => None,
+            (CommitSelectionStart::Oldest, n) => Some((n - 1, n - 1)),
+            (CommitSelectionStart::All, n) => Some((0, n - 1)),
+        }
+    }
+
     pub(in crate::app) fn is_strict_commit_selection(
         range: Option<(usize, usize)>,
         total: usize,
@@ -38,13 +54,21 @@ impl App {
         let mut since_last_review_message = None;
         // Restore any persisted range scoped to this head SHA. If the
         // restored range exceeds the current commit count (e.g., the PR
-        // was rebased), fall back to "all". Only auto-scope to commits
-        // since last review when no explicit per-session range exists.
+        // was rebased), fall back to "all". A valid persisted range wins over
+        // both the `initial_commit_selection = oldest` opt-in and the
+        // since-last-review auto-scoping; `oldest` in turn takes precedence
+        // over since-last-review.
         if let Some(persisted) = self.session.commit_selection_range
             && persisted.1 < mapped.len()
             && persisted.0 <= persisted.1
         {
             range = persisted;
+        } else if self.commit_selection_start == CommitSelectionStart::Oldest {
+            if let Some(oldest) =
+                Self::initial_commit_range(CommitSelectionStart::Oldest, mapped.len())
+            {
+                range = oldest;
+            }
         } else if self.session.commit_selection_range.is_none()
             && let Some(selection) = since_last_review.as_ref()
         {
@@ -77,14 +101,39 @@ impl App {
             return None;
         }
         let rel = (screen_row - inner.y) as usize;
-        let idx = self.commit_list_scroll_offset + rel;
-        let total = match self.input_mode {
+        // Display row: the scroll offset is kept in display space for the
+        // inline pane (see the renderer), so this is the on-screen row index.
+        let display_idx = self.commit_list_scroll_offset + rel;
+        match self.input_mode {
             InputMode::CommitSelect => {
-                self.visible_commit_count + usize::from(self.can_show_more_commits())
+                let total = self.visible_commit_count + usize::from(self.can_show_more_commits());
+                (display_idx < total).then_some(display_idx)
             }
-            _ => self.review_commits.len(),
-        };
-        (idx < total).then_some(idx)
+            // Inline commit selector: map the display row back to a data index
+            // into `review_commits` (newest-first storage) for ascending order.
+            _ => {
+                let total = self.review_commits.len();
+                (display_idx < total).then_some(self.commit_data_index(display_idx))
+            }
+        }
+    }
+
+    /// Whether the inline commit selector renders oldest-first. Presentation
+    /// only — `review_commits` is always stored newest-first.
+    pub fn commits_ascending(&self) -> bool {
+        matches!(self.commit_order, CommitOrder::Ascending)
+    }
+
+    /// Convert between a data index into `review_commits` and its on-screen
+    /// display row (and back — the mapping is its own inverse). Identity in
+    /// descending order; mirrored (`n-1-i`) in ascending order.
+    pub fn commit_data_index(&self, index: usize) -> usize {
+        let n = self.review_commits.len();
+        if self.commits_ascending() && n > 0 {
+            n - 1 - index.min(n - 1)
+        } else {
+            index
+        }
     }
 
     /// Open the review target selector on a specific tab.
@@ -229,9 +278,27 @@ impl App {
 
     /// Whether the inline commit selector panel should be displayed.
     pub fn has_inline_commit_selector(&self) -> bool {
-        self.show_commit_selector
-            && self.review_commits.len() > 1
-            && !matches!(&self.diff_source, DiffSource::WorkingTree)
+        self.show_commit_selector && self.has_review_commits()
+    }
+
+    /// Whether the current review has a multi-commit selection that `(` / `)`
+    /// can cycle through. Unlike [`has_inline_commit_selector`], this ignores
+    /// pane visibility so cycling still works while the pane is hidden (the
+    /// status bar shows the `{n}/{total} commits` count as feedback).
+    pub fn has_review_commits(&self) -> bool {
+        self.review_commits.len() > 1 && !matches!(&self.diff_source, DiffSource::WorkingTree)
+    }
+
+    /// Toggle the inline commit selector's visibility. When hiding it while it
+    /// is focused, move focus back to the diff so input keeps flowing.
+    pub fn toggle_commit_selector(&mut self) {
+        let visible = !self.show_commit_selector;
+        self.show_commit_selector = visible;
+        if !visible && self.focused_panel == FocusedPanel::CommitSelector {
+            self.focused_panel = FocusedPanel::Diff;
+        }
+        let status = if visible { "visible" } else { "hidden" };
+        self.set_message(format!("Commit selector: {status}"));
     }
 
     // Commit selection methods
@@ -685,12 +752,10 @@ impl App {
         self.review_commits = selected_commits.iter().rev().cloned().collect();
         self.range_diff_files = Some(self.diff_files.clone());
         self.commit_list = self.review_commits.clone();
-        self.commit_list_cursor = 0;
-        self.commit_selection_range = if self.review_commits.is_empty() {
-            None
-        } else {
-            Some((0, self.review_commits.len() - 1))
-        };
+        let range =
+            Self::initial_commit_range(self.commit_selection_start, self.review_commits.len());
+        self.commit_selection_range = range;
+        self.commit_list_cursor = range.map(|(start, _)| start).unwrap_or(0);
         self.commit_list_scroll_offset = 0;
         self.visible_commit_count = self.review_commits.len();
         self.has_more_commit = false;
@@ -698,9 +763,16 @@ impl App {
         self.commit_diff_cache.clear();
         self.saved_inline_selection = None;
 
-        self.sort_files_by_directory(true);
-        self.expand_all_dirs();
-        self.rebuild_annotations();
+        // `initial_commit_selection = oldest` opens scoped to a single commit; narrow
+        // the loaded diff to it. Otherwise finalize the full-range diff.
+        if Self::is_strict_commit_selection(self.commit_selection_range, self.review_commits.len())
+        {
+            self.reload_inline_selection()?;
+        } else {
+            self.sort_files_by_directory(true);
+            self.expand_all_dirs();
+            self.rebuild_annotations();
+        }
 
         Ok(())
     }

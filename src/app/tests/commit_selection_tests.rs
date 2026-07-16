@@ -130,3 +130,94 @@ fn toggle_commit_selection_keeps_partial_range_shrink_behavior() {
 
     assert_eq!(app.commit_selection_range, Some((1, 1)));
 }
+
+#[test]
+fn initial_commit_range_all_selects_full_span() {
+    assert_eq!(
+        App::initial_commit_range(CommitSelectionStart::All, 4),
+        Some((0, 3))
+    );
+}
+
+#[test]
+fn initial_commit_range_oldest_selects_last_index() {
+    // review_commits is stored newest-first, so the oldest commit is the last
+    // index regardless of the display order.
+    assert_eq!(
+        App::initial_commit_range(CommitSelectionStart::Oldest, 4),
+        Some((3, 3))
+    );
+}
+
+#[test]
+fn initial_commit_range_empty_is_none() {
+    assert_eq!(
+        App::initial_commit_range(CommitSelectionStart::Oldest, 0),
+        None
+    );
+    assert_eq!(
+        App::initial_commit_range(CommitSelectionStart::All, 0),
+        None
+    );
+}
+
+#[test]
+fn commit_data_index_is_identity_when_descending() {
+    let mut app = build_app(vec![
+        normal_commit("a"),
+        normal_commit("b"),
+        normal_commit("c"),
+    ]);
+    app.review_commits = app.commit_list.clone();
+    app.commit_order = CommitOrder::Descending;
+    for i in 0..3 {
+        assert_eq!(app.commit_data_index(i), i);
+    }
+}
+
+#[test]
+fn commit_data_index_mirrors_and_round_trips_when_ascending() {
+    let mut app = build_app(vec![
+        normal_commit("a"),
+        normal_commit("b"),
+        normal_commit("c"),
+    ]);
+    app.review_commits = app.commit_list.clone();
+    app.commit_order = CommitOrder::Ascending;
+    assert_eq!(app.commit_data_index(0), 2);
+    assert_eq!(app.commit_data_index(2), 0);
+    // The mapping is its own inverse (data <-> display row).
+    for i in 0..3 {
+        assert_eq!(app.commit_data_index(app.commit_data_index(i)), i);
+    }
+}
+
+#[test]
+fn toggle_commit_selector_flips_visibility_and_drops_focus() {
+    let mut app = build_app(vec![normal_commit("a"), normal_commit("b")]);
+    app.show_commit_selector = true;
+    app.focused_panel = FocusedPanel::CommitSelector;
+
+    app.toggle_commit_selector();
+    assert!(!app.show_commit_selector);
+    // Hiding the focused pane returns focus to the diff.
+    assert_eq!(app.focused_panel, FocusedPanel::Diff);
+
+    app.toggle_commit_selector();
+    assert!(app.show_commit_selector);
+}
+
+#[test]
+fn has_review_commits_ignores_visibility_but_requires_multiple_non_worktree() {
+    let mut app = build_app(vec![normal_commit("a"), normal_commit("b")]);
+    app.review_commits = app.commit_list.clone();
+    app.diff_source = DiffSource::CommitRange(vec!["a".to_string(), "b".to_string()]);
+
+    app.show_commit_selector = false;
+    assert!(app.has_review_commits());
+    assert!(!app.has_inline_commit_selector());
+
+    // Working-tree reviews never cycle commits.
+    app.diff_source = DiffSource::WorkingTree;
+    assert!(!app.has_review_commits());
+}

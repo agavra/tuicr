@@ -923,6 +923,28 @@ pub enum DiffViewMode {
     SideBySide,
 }
 
+/// Display order for the inline commit selector. The stored `review_commits`
+/// list is always newest-first; this only flips presentation (render + input
+/// mapping), never the underlying data model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CommitOrder {
+    /// Newest commit at the top (the historical default).
+    #[default]
+    Descending,
+    /// Oldest commit at the top.
+    Ascending,
+}
+
+/// Which commits are selected when a multi-commit review first opens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CommitSelectionStart {
+    /// Select the whole range (the historical default).
+    #[default]
+    All,
+    /// Select only the oldest commit, for a walk-forward per-commit review.
+    Oldest,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MessageType {
     Info,
@@ -1239,6 +1261,10 @@ pub struct App {
     pub pr_range_reload_rx: Option<std::sync::mpsc::Receiver<PrRangeReloadEvent>>,
     /// Whether the inline commit selector panel is visible
     pub show_commit_selector: bool,
+    /// Display order for the inline commit selector (presentation only).
+    pub commit_order: CommitOrder,
+    /// Which commits are selected when a multi-commit review first opens.
+    pub commit_selection_start: CommitSelectionStart,
     /// Cached individual/subrange diffs keyed by (start_idx, end_idx) into review_commits
     pub commit_diff_cache: HashMap<(usize, usize), Vec<DiffFile>>,
     /// The combined "all selected" diff, cached for quick restoration
@@ -1446,6 +1472,8 @@ pub struct AppStartupOptions<'a> {
     pub all_files: bool,
     pub git_backend_preference: GitBackendPreference,
     pub diff_whitespace_mode: DiffWhitespaceMode,
+    /// Which commits are selected when a multi-commit review first opens.
+    pub commit_selection: CommitSelectionStart,
     /// Direct PR target (`tuicr pr <target>`). Mutually exclusive with the
     /// other selectors above; the binary validates that before reaching here.
     pub pr_target: Option<&'a str>,

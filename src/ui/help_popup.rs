@@ -149,6 +149,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                format!("  {}s        ", app.leader_key),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Toggle commit selector visibility (also `:set commits!`)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 format!("  {}f        ", app.leader_key),
                 Style::default().add_modifier(Modifier::BOLD),
             ),

@@ -277,6 +277,15 @@ pub fn clear_visual_if_cursor_offscreen(app: &mut App) {
 /// The list is short and selection-oriented, so each tick moves the cursor
 /// rather than the viewport, matching how arrow keys behave.
 fn wheel_commit_list(app: &mut App, scroll_up: bool) {
+    // Match screen direction: the inline pane (Normal mode) reverses its
+    // display in ascending order, so wheel-up moves toward newer (lower) data
+    // indices there. The full-screen picker (CommitSelect) is always
+    // newest-first.
+    let scroll_up = if app.input_mode == InputMode::Normal && app.commits_ascending() {
+        !scroll_up
+    } else {
+        scroll_up
+    };
     for _ in 0..WHEEL_LINES {
         if scroll_up {
             app.commit_select_up();
@@ -798,7 +807,7 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
             CommandAfterDispatch::ExitCommandMode
         }
         CommandKind::ToggleCommits => {
-            set_commit_selector_visible(app, !app.show_commit_selector);
+            app.toggle_commit_selector();
             CommandAfterDispatch::ExitCommandMode
         }
         CommandKind::Diff => {
@@ -1206,8 +1215,23 @@ fn handle_pr_filter_action(app: &mut App, action: Action) {
 /// Handle actions when inline commit selector panel is focused
 pub fn handle_commit_selector_action(app: &mut App, action: Action) {
     match action {
-        Action::CursorDown(_) => app.commit_select_down(),
-        Action::CursorUp(_) => app.commit_select_up(),
+        // `j`/`k` track screen direction: in ascending (oldest-first) order the
+        // display is reversed, so moving down the screen moves toward newer
+        // (lower) data indices.
+        Action::CursorDown(_) => {
+            if app.commits_ascending() {
+                app.commit_select_up();
+            } else {
+                app.commit_select_down();
+            }
+        }
+        Action::CursorUp(_) => {
+            if app.commits_ascending() {
+                app.commit_select_down();
+            } else {
+                app.commit_select_up();
+            }
+        }
         // Toggle + auto-advance so repeated presses sweep a contiguous run.
         Action::ToggleExpand | Action::ToggleCommitSelect | Action::SelectFile => {
             app.toggle_commit_selection_and_advance();
@@ -1507,14 +1531,25 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
                 app.set_message("Move cursor to a diff line to start visual selection");
             }
         }
-        Action::CycleCommitNext if app.has_inline_commit_selector() => {
-            app.cycle_commit_next();
+        // `(` moves toward the top row, `)` toward the bottom row. The cycle
+        // methods walk data indices (newest-first), so ascending display order
+        // swaps which one runs to keep the on-screen direction stable.
+        Action::CycleCommitNext if app.has_review_commits() => {
+            if app.commits_ascending() {
+                app.cycle_commit_prev();
+            } else {
+                app.cycle_commit_next();
+            }
             if let Err(e) = app.reload_inline_selection_for_source() {
                 app.set_error(format!("Failed to load diff: {e}"));
             }
         }
-        Action::CycleCommitPrev if app.has_inline_commit_selector() => {
-            app.cycle_commit_prev();
+        Action::CycleCommitPrev if app.has_review_commits() => {
+            if app.commits_ascending() {
+                app.cycle_commit_next();
+            } else {
+                app.cycle_commit_prev();
+            }
             if let Err(e) = app.reload_inline_selection_for_source() {
                 app.set_error(format!("Failed to load diff: {e}"));
             }

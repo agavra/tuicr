@@ -56,6 +56,7 @@ Press `?` to open help.
 | `<leader>k` | Move focus up (comments to files, or diff/files to commit selector when visible) |
 | `<leader>j` | Move focus down (files to comments when visible, otherwise diff) |
 | `<leader>e` | Toggle file list visibility |
+| `<leader>s` | Toggle commit selector visibility (also `:set commits!`) |
 | `Enter` | Select file (when file list is focused) |
 
 ## Comment navigator

@@ -45,6 +45,13 @@ pub struct AppConfig {
     pub comment_types: Option<Vec<CommentTypeConfig>>,
     pub show_file_list: Option<bool>,
     pub diff_view: Option<String>,
+    /// Inline commit selector display order: `"descending"` (newest-first,
+    /// the default) or `"ascending"` (oldest-first).
+    pub commit_order: Option<String>,
+    /// Which commits are selected when a multi-commit review first opens:
+    /// `"all"` (the default) or `"oldest"` (only the oldest commit, for a
+    /// walk-forward per-commit review).
+    pub initial_commit_selection: Option<String>,
     pub ignore_whitespace: Option<bool>,
     pub wrap: Option<bool>,
     pub export_legend: Option<bool>,
@@ -84,6 +91,8 @@ const KNOWN_KEYS: &[&str] = &[
     "comment_types",
     "show_file_list",
     "diff_view",
+    "commit_order",
+    "initial_commit_selection",
     "ignore_whitespace",
     "wrap",
     "export_legend",
@@ -293,6 +302,18 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
             table,
             "diff_view",
             &["unified", "side-by-side"],
+            &mut warnings,
+        ),
+        commit_order: read_enum(
+            table,
+            "commit_order",
+            &["descending", "ascending"],
+            &mut warnings,
+        ),
+        initial_commit_selection: read_enum(
+            table,
+            "initial_commit_selection",
+            &["all", "oldest"],
             &mut warnings,
         ),
         ignore_whitespace: read_bool(table, "ignore_whitespace", &mut warnings),
@@ -740,6 +761,62 @@ mod tests {
             Some("unified")
         );
         assert!(outcome.warnings.is_empty());
+    }
+
+    // commit_order / initial_commit_selection
+
+    #[test]
+    fn should_parse_commit_order_ascending() {
+        let outcome = parse_config("commit_order = \"ascending\"\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.commit_order.as_deref()),
+            Some("ascending")
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_warn_and_ignore_commit_order_with_invalid_value() {
+        let outcome = parse_config("commit_order = \"sideways\"\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.commit_order.as_deref()),
+            None
+        );
+        assert_eq!(outcome.warnings.len(), 1);
+        assert!(outcome.warnings[0].contains("\"descending\" or \"ascending\""));
+    }
+
+    #[test]
+    fn should_parse_initial_commit_selection_oldest() {
+        let outcome = parse_config("initial_commit_selection = \"oldest\"\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.initial_commit_selection.as_deref()),
+            Some("oldest")
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_warn_and_ignore_initial_commit_selection_with_invalid_value() {
+        let outcome = parse_config("initial_commit_selection = \"newest\"\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.initial_commit_selection.as_deref()),
+            None
+        );
+        assert_eq!(outcome.warnings.len(), 1);
+        assert!(outcome.warnings[0].contains("\"all\" or \"oldest\""));
     }
 
     #[test]
