@@ -550,6 +550,14 @@ impl App {
         !self.show_file_list && !self.has_inline_commit_selector()
     }
 
+    /// Whether the bottom status bar should be rendered this frame. Always on
+    /// unless `show_status_bar` is disabled; even then it appears while typing
+    /// a `:` command or `/` search so the input line stays visible (the mode
+    /// and transient messages otherwise live in the top header).
+    pub fn status_bar_visible(&self) -> bool {
+        self.show_status_bar || matches!(self.input_mode, InputMode::Command | InputMode::Search)
+    }
+
     // Commit selection methods
 
     pub fn commit_select_up(&mut self) {

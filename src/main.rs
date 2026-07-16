@@ -379,6 +379,9 @@ fn main() -> anyhow::Result<()> {
             app.toggle_single_file_view();
         }
         app.export = cfg.resolved_export();
+        if cfg.show_status_bar == Some(false) {
+            app.show_status_bar = false;
+        }
         if cfg.cursor_line == Some(false) {
             app.cursor_line_highlight = false;
         }

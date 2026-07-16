@@ -61,19 +61,27 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // Clear cursor position before rendering (will be set if in Comment mode)
     app.comment_cursor_screen_pos = None;
 
+    // The status bar row is dropped when hidden via config (it still appears
+    // while typing a command / search — see `status_bar_visible`).
+    let show_status = app.status_bar_visible();
+    let mut constraints = vec![
+        Constraint::Length(1), // Header
+        Constraint::Min(0),    // Main content
+    ];
+    if show_status {
+        constraints.push(Constraint::Length(1)); // Status bar / command input
+    }
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(vec![
-            Constraint::Length(1), // Header
-            Constraint::Min(0),    // Main content
-            Constraint::Length(1), // Status bar (also shows command input in command mode)
-        ])
+        .constraints(constraints)
         .split(frame.area());
 
     status_bar::render_header(frame, app, chunks[0]);
     render_main_content(frame, app, chunks[1]);
-    status_bar::render_status_bar(frame, app, chunks[2]);
-    status_bar::render_command_completion_popup(frame, app, chunks[2]);
+    if show_status {
+        status_bar::render_status_bar(frame, app, chunks[2]);
+        status_bar::render_command_completion_popup(frame, app, chunks[2]);
+    }
 
     // Keep help visible while its search prompt is active.
     if app.input_mode == InputMode::Help || app.searching_help() {
