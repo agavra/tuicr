@@ -44,6 +44,10 @@ pub struct AppConfig {
     pub backend: Option<String>,
     pub comment_types: Option<Vec<CommentTypeConfig>>,
     pub show_file_list: Option<bool>,
+    /// Whether the inline commit selector pane is visible on startup for
+    /// multi-commit reviews. Defaults to true; toggle at runtime with
+    /// `<leader>s` or `:set commits!`.
+    pub show_commits: Option<bool>,
     pub diff_view: Option<String>,
     /// Inline commit selector display order: `"descending"` (newest-first,
     /// the default) or `"ascending"` (oldest-first).
@@ -90,6 +94,7 @@ const KNOWN_KEYS: &[&str] = &[
     "backend",
     "comment_types",
     "show_file_list",
+    "show_commits",
     "diff_view",
     "commit_order",
     "initial_commit_selection",
@@ -298,6 +303,7 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
             .get("comment_types")
             .and_then(|v| parse_comment_types(v, &mut warnings)),
         show_file_list: read_bool(table, "show_file_list", &mut warnings),
+        show_commits: read_bool(table, "show_commits", &mut warnings),
         diff_view: read_enum(
             table,
             "diff_view",
@@ -730,6 +736,28 @@ mod tests {
         let outcome = parse_config("show_file_list = \"no\"\n");
         assert_eq!(
             outcome.config.as_ref().and_then(|cfg| cfg.show_file_list),
+            None
+        );
+        assert_eq!(outcome.warnings.len(), 1);
+    }
+
+    // show_commits
+
+    #[test]
+    fn should_parse_show_commits_false() {
+        let outcome = parse_config("show_commits = false\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.show_commits),
+            Some(false)
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_warn_and_ignore_show_commits_with_invalid_type() {
+        let outcome = parse_config("show_commits = \"no\"\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.show_commits),
             None
         );
         assert_eq!(outcome.warnings.len(), 1);

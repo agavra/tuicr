@@ -275,6 +275,14 @@ fn main() -> anyhow::Result<()> {
             app.show_file_list = false;
             app.focused_panel = FocusedPanel::Diff;
         }
+        // Start with the commit selector pane hidden. `(` / `)` still cycle the
+        // selected commit while hidden; `<leader>s` / `:set commits!` reveal it.
+        if cfg.show_commits == Some(false) {
+            app.show_commit_selector = false;
+            if app.focused_panel == FocusedPanel::CommitSelector {
+                app.focused_panel = FocusedPanel::Diff;
+            }
+        }
         // Pristine mode has no diff, so side-by-side would render two
         // identical panes. Honor the config for every other mode.
         if cfg.diff_view.as_deref() == Some("side-by-side") && !app.is_pristine_mode {
