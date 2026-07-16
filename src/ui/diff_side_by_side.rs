@@ -1071,10 +1071,35 @@ fn render_hunk_lines_side_by_side(
     let mut i = 0;
     let mut cursor_info_out: Option<SideBySideCursorInfo> = None;
 
+    // A commit message is a synthetic "added" file; its lines are Context so
+    // the unified view renders them neutrally. In side-by-side that would
+    // duplicate the message across both columns, so render it right-side only
+    // as an addition instead.
+    let is_commit_msg = ctx
+        .app
+        .diff_files
+        .get(file_idx)
+        .is_some_and(|f| f.is_commit_message);
+
     while i < hunk_lines.len() {
         let diff_line = &hunk_lines[i];
 
         match diff_line.origin {
+            LineOrigin::Context if is_commit_msg => {
+                let (new_line_idx, cursor_info) = render_commit_message_line_side_by_side(
+                    diff_line,
+                    line_comments,
+                    ctx,
+                    file_idx,
+                    line_idx,
+                    lines,
+                );
+                line_idx = new_line_idx;
+                if cursor_info.is_some() {
+                    cursor_info_out = cursor_info;
+                }
+                i += 1;
+            }
             LineOrigin::Context => {
                 let (new_line_idx, cursor_info) = render_context_line_side_by_side(
                     diff_line,
@@ -1508,6 +1533,66 @@ fn render_standalone_addition_side_by_side(
     line_idx += 1;
 
     // Add comments if any
+    let mut cursor_info_out: Option<SideBySideCursorInfo> = None;
+    if let Some(new_ln) = diff_line.new_lineno {
+        let (new_line_idx, cursor_info) = add_comments_to_line(
+            new_ln,
+            line_comments,
+            LineSide::New,
+            ctx,
+            file_idx,
+            line_idx,
+            lines,
+        );
+        line_idx = new_line_idx;
+        cursor_info_out = cursor_info;
+        if let Some(file) = ctx.app.diff_files.get(file_idx) {
+            line_idx = add_remote_threads_to_line(
+                new_ln,
+                LineSide::New,
+                ctx,
+                file.display_path(),
+                line_idx,
+                lines,
+            );
+        }
+    }
+
+    (line_idx, cursor_info_out)
+}
+
+/// Render a commit-message line in side-by-side mode. The commit message is a
+/// synthetic "added" file, but visually it is prose, not code: delta renders it
+/// as a full-width block, not confined to a diff column. So we emit a single
+/// full-width, left-aligned, neutrally-styled line with no column split, diff
+/// coloring, or per-column line numbers. It is deliberately NOT inserted into
+/// `sbs_meta`, so the wrap path falls through to the full-width wrapping branch.
+fn render_commit_message_line_side_by_side(
+    diff_line: &crate::model::DiffLine,
+    line_comments: &std::collections::HashMap<u32, Vec<crate::model::Comment>>,
+    ctx: &SideBySideContext,
+    file_idx: usize,
+    mut line_idx: usize,
+    lines: &mut Vec<Line>,
+) -> (usize, Option<SideBySideCursorInfo>) {
+    let ctx_style = styles::diff_context_style(ctx.theme);
+
+    if ctx.is_visible(line_idx) {
+        let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
+        let mut spans = vec![Span::styled(
+            indicator,
+            styles::current_line_indicator_style(ctx.theme),
+        )];
+        // Git-style two-space indent, then the message text at full width.
+        spans.push(Span::styled("  ".to_string(), ctx_style));
+        spans.push(Span::styled(diff_line.content.clone(), ctx_style));
+
+        lines.push(Line::from(spans));
+    } else {
+        lines.push(Line::default());
+    }
+    line_idx += 1;
+
     let mut cursor_info_out: Option<SideBySideCursorInfo> = None;
     if let Some(new_ln) = diff_line.new_lineno {
         let (new_line_idx, cursor_info) = add_comments_to_line(
@@ -2244,6 +2329,72 @@ mod remote_comments_side_by_side_snapshot_tests {
         assert!(
             checked >= 2,
             "expected ≥2 wrapped rows to check, got {checked}"
+        );
+    }
+
+    fn commit_message_file(message: &str) -> DiffFile {
+        let lines: Vec<DiffLine> = message
+            .lines()
+            .enumerate()
+            .map(|(i, line)| DiffLine {
+                origin: LineOrigin::Context,
+                content: line.to_string(),
+                old_lineno: None,
+                new_lineno: Some(i as u32 + 1),
+                highlighted_spans: None,
+            })
+            .collect();
+        let new_count = lines.len() as u32;
+        let hunks = vec![DiffHunk {
+            header: String::new(),
+            lines,
+            old_start: 0,
+            old_count: 0,
+            new_start: 1,
+            new_count,
+        }];
+        let content_hash = DiffFile::compute_content_hash(&hunks);
+        DiffFile {
+            old_path: None,
+            new_path: Some(PathBuf::from("Commit Message (abc1234)")),
+            status: FileStatus::Added,
+            hunks,
+            is_binary: false,
+            is_too_large: false,
+            is_commit_message: true,
+            content_hash,
+        }
+    }
+
+    #[test]
+    fn should_render_commit_message_full_width_in_side_by_side() {
+        let mut app = make_pr_app();
+        app.diff_files = vec![commit_message_file("COMMITMSG summary line")];
+        app.rebuild_annotations();
+
+        let buf = draw_sbs(&mut app, 160, 20);
+
+        let mut checked = 0;
+        for y in 0..buf.area.height {
+            let row: String = (0..buf.area.width).map(|x| char_at(&buf, x, y)).collect();
+            let Some(col) = row.find("COMMITMSG") else {
+                continue;
+            };
+            checked += 1;
+            // Full-width prose: rendered near the left edge (small indent), not
+            // pushed into the right diff column, and with no column divider.
+            assert!(
+                col < 8,
+                "commit message should start near the left edge, got col {col} on row {y}: {row:?}"
+            );
+            assert!(
+                !row.contains(" │ "),
+                "commit message row should not have a column divider on row {y}: {row:?}"
+            );
+        }
+        assert_eq!(
+            checked, 1,
+            "expected the commit message body to render exactly once, got {checked}"
         );
     }
 }
