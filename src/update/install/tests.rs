@@ -228,6 +228,71 @@ fn delegates_all_managed_install_methods_to_their_manager() {
 }
 
 #[test]
+fn installs_an_exact_cargo_version_and_rejects_unsupported_manager_pins() {
+    let target = semver::Version::parse("0.9.0").unwrap();
+    let cargo_runtime = MockRuntime::default();
+    assert_eq!(
+        update_version_with_runtime(
+            &cargo_runtime,
+            context("/home/alice/.cargo/bin/tuicr"),
+            &target,
+        )
+        .unwrap(),
+        UpdateOutcome::ManagerCompleted(InstallMethod::Cargo)
+    );
+    assert_eq!(
+        cargo_runtime.commands.into_inner()[0].2,
+        ["install", "tuicr", "--version", "0.9.0", "--force"]
+    );
+
+    assert!(matches!(
+        update_version_with_runtime(
+            &MockRuntime::default(),
+            context("/opt/homebrew/Cellar/tuicr/1.0.0/bin/tuicr"),
+            &target,
+        ),
+        Err(UpdateError::VersionPinUnsupported(InstallMethod::Homebrew))
+    ));
+}
+
+#[test]
+fn installs_an_exact_direct_version_even_when_it_is_older() {
+    let target = semver::Version::parse("0.9.0").unwrap();
+    let binary = b"known-good-binary";
+    let mut runtime = direct_runtime("0.9.0", "linux", "x86_64", tar_gz("tuicr", binary), true);
+    let metadata = runtime.responses.remove(RELEASE_API_URL).unwrap();
+    runtime
+        .responses
+        .insert(release_api_url(Some(&target)), metadata);
+
+    assert_eq!(
+        update_version_with_runtime(&runtime, context("/home/alice/.local/bin/tuicr"), &target,)
+            .unwrap(),
+        UpdateOutcome::Updated {
+            method: InstallMethod::Direct,
+            previous_version: "1.0.0".to_string(),
+            new_version: "0.9.0".to_string(),
+        }
+    );
+    assert_eq!(runtime.replacement.into_inner().unwrap().1, binary);
+
+    let mismatched_target = semver::Version::parse("0.8.0").unwrap();
+    let mut mismatch = direct_runtime("0.9.0", "linux", "x86_64", tar_gz("tuicr", binary), true);
+    let metadata = mismatch.responses.remove(RELEASE_API_URL).unwrap();
+    mismatch
+        .responses
+        .insert(release_api_url(Some(&mismatched_target)), metadata);
+    assert!(matches!(
+        update_version_with_runtime(
+            &mismatch,
+            context("/home/alice/.local/bin/tuicr"),
+            &mismatched_target,
+        ),
+        Err(UpdateError::ReleaseMetadata(_))
+    ));
+}
+
+#[test]
 fn returns_manager_failures_without_replacing_the_binary() {
     let runtime = MockRuntime {
         command_error: Some("upgrade failed".to_string()),
@@ -419,6 +484,10 @@ fn maps_every_published_target_and_rejects_unsupported_targets() {
     assert_eq!(
         release_asset_url("1.2.3", "tuicr.zip"),
         "https://github.com/agavra/tuicr/releases/download/v1.2.3/tuicr.zip"
+    );
+    assert_eq!(
+        release_api_url(Some(&semver::Version::parse("1.2.3").unwrap())),
+        "https://api.github.com/repos/agavra/tuicr/releases/tags/v1.2.3"
     );
 }
 

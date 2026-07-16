@@ -44,7 +44,10 @@ fn main() -> anyhow::Result<()> {
     // This also configures syntax highlighting colors before diff parsing
     let mut cli_args = profile::time("startup.parse_cli_args", parse_cli_args);
     if cli_args.update_command {
-        let outcome = update::update_installed()?;
+        let outcome = match cli_args.update_version.as_ref() {
+            Some(version) => update::update_to_version(version)?,
+            None => update::update_installed()?,
+        };
         println!("{outcome}");
         return Ok(());
     }

@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
+use semver::Version;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use ureq::Agent;
@@ -18,6 +19,7 @@ use super::check::is_newer_version;
 
 pub use self::method::InstallMethod;
 
+const RELEASE_API_BASE: &str = "https://api.github.com/repos/agavra/tuicr/releases";
 const RELEASE_API_URL: &str = "https://api.github.com/repos/agavra/tuicr/releases/latest";
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -72,6 +74,8 @@ pub enum UpdateError {
     Integrity(String),
     #[error("failed to extract '{asset}': {detail}")]
     Archive { asset: String, detail: String },
+    #[error("{0} cannot install a specific tuicr version; use that manager's pinning workflow")]
+    VersionPinUnsupported(InstallMethod),
     #[error("{method} could not update tuicr: {detail}")]
     Manager {
         method: InstallMethod,
@@ -83,6 +87,10 @@ pub enum UpdateError {
 
 pub fn update_installed() -> Result<UpdateOutcome, UpdateError> {
     update_with_runtime(&SystemRuntime, UpdateContext::current()?)
+}
+
+pub fn update_to_version(version: &Version) -> Result<UpdateOutcome, UpdateError> {
+    update_version_with_runtime(&SystemRuntime, UpdateContext::current()?, version)
 }
 
 #[derive(Debug)]
@@ -168,16 +176,47 @@ fn update_with_runtime(
     runtime: &impl UpdateRuntime,
     context: UpdateContext,
 ) -> Result<UpdateOutcome, UpdateError> {
+    update_with_optional_version(runtime, context, None)
+}
+
+fn update_version_with_runtime(
+    runtime: &impl UpdateRuntime,
+    context: UpdateContext,
+    version: &Version,
+) -> Result<UpdateOutcome, UpdateError> {
+    update_with_optional_version(runtime, context, Some(version))
+}
+
+fn update_with_optional_version(
+    runtime: &impl UpdateRuntime,
+    context: UpdateContext,
+    version: Option<&Version>,
+) -> Result<UpdateOutcome, UpdateError> {
     let method = detect_install_method(
         &context.executable,
         context.home.as_deref(),
         context.cargo_home.as_deref(),
     );
+    if let Some(version) = version {
+        return match method {
+            InstallMethod::Cargo => {
+                let version = version.to_string();
+                runtime.run_command(
+                    method,
+                    "cargo",
+                    &["install", "tuicr", "--version", &version, "--force"],
+                )?;
+                Ok(UpdateOutcome::ManagerCompleted(method))
+            }
+            InstallMethod::Direct => update_direct(runtime, &context, method, Some(version)),
+            _ => Err(UpdateError::VersionPinUnsupported(method)),
+        };
+    }
     if let Some(command) = manager_command(method) {
         runtime.run_command(method, command.program, command.args)?;
         return Ok(UpdateOutcome::ManagerCompleted(method));
     }
-    update_direct(runtime, &context, method)
+    update_direct(runtime, &context, method, None)
 }
 
 #[derive(Debug, Deserialize)]
@@ -196,19 +235,33 @@ fn update_direct(
     runtime: &impl UpdateRuntime,
     context: &UpdateContext,
     method: InstallMethod,
+    requested_version: Option<&Version>,
 ) -> Result<UpdateOutcome, UpdateError> {
-    let metadata = runtime.fetch(RELEASE_API_URL)?;
+    let metadata = runtime.fetch(&release_api_url(requested_version))?;
     let release: GitHubRelease = serde_json::from_slice(&metadata)
         .map_err(|error| UpdateError::ReleaseMetadata(error.to_string()))?;
-    let latest_version = release.tag_name.trim_start_matches('v');
-    if !is_newer_version(&context.current_version, latest_version) {
+    let release_version = Version::parse(release.tag_name.trim_start_matches('v'))
+        .map_err(|error| UpdateError::ReleaseMetadata(error.to_string()))?;
+    if let Some(requested) = requested_version.filter(|requested| *requested != &release_version) {
+        return Err(UpdateError::ReleaseMetadata(format!(
+            "requested {requested}, but GitHub returned {release_version}"
+        )));
+    }
+    let should_install = requested_version.map_or_else(
+        || is_newer_version(&context.current_version, &release_version.to_string()),
+        |requested| {
+            Version::parse(&context.current_version).map_or(true, |current| current != *requested)
+        },
+    );
+    if !should_install {
         return Ok(UpdateOutcome::UpToDate {
             method,
             version: context.current_version.clone(),
         });
     }
 
-    let asset_name = release_asset_name(latest_version, &context.os, &context.arch)?;
+    let release_version = release_version.to_string();
+    let asset_name = release_asset_name(&release_version, &context.os, &context.arch)?;
     let asset = release
         .assets
         .iter()
@@ -219,7 +272,7 @@ fn update_direct(
         .as_deref()
         .and_then(|digest| digest.strip_prefix("sha256:"))
         .ok_or_else(|| UpdateError::MissingDigest(asset.name.clone()))?;
-    let archive = runtime.fetch(&release_asset_url(latest_version, &asset.name))?;
+    let archive = runtime.fetch(&release_asset_url(&release_version, &asset.name))?;
     if !format!("{:x}", Sha256::digest(&archive)).eq_ignore_ascii_case(expected_digest) {
         return Err(UpdateError::Integrity(asset.name.clone()));
     }
@@ -229,8 +282,15 @@ fn update_direct(
     Ok(UpdateOutcome::Updated {
         method,
         previous_version: context.current_version.clone(),
-        new_version: latest_version.to_string(),
+        new_version: release_version,
     })
+}
+
+fn release_api_url(version: Option<&Version>) -> String {
+    version.map_or_else(
+        || RELEASE_API_URL.to_string(),
+        |version| format!("{RELEASE_API_BASE}/tags/v{version}"),
+    )
 }
 
 fn display_command(program: &str, args: &[&str]) -> String {
