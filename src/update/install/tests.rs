@@ -10,7 +10,7 @@ use tempfile::TempDir;
 use zip::write::SimpleFileOptions;
 
 use super::archive::extract_binary;
-use super::method::{detect_install_method, manager_command};
+use super::installation::{detect_install_method, manager_command};
 use super::replace::replace_executable;
 use super::source::{package_repository_url, release_asset_name, release_asset_url};
 use super::*;

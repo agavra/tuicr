@@ -1,5 +1,5 @@
 mod archive;
-mod method;
+mod installation;
 mod replace;
 mod source;
 
@@ -14,12 +14,12 @@ use sha2::{Digest, Sha256};
 use ureq::Agent;
 
 use self::archive::extract_binary;
-use self::method::{detect_install_method, manager_command};
+use self::installation::{detect_install_method, manager_command};
 use self::replace::replace_executable;
 use self::source::{release_api_url, release_asset_name, release_asset_url};
 use super::check::is_newer_version;
 
-pub use self::method::InstallMethod;
+pub use self::installation::InstallMethod;
 
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(60);
 
