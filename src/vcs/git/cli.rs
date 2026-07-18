@@ -93,6 +93,12 @@ impl GitCliBackend {
         new_source: GitContentSource<'_>,
         highlighter: &SyntaxHighlighter,
     ) -> Result<Vec<DiffFile>> {
+        // Force the traditional "a/" and "b/" path prefixes. The user's Git config
+        // can change this: diff.mnemonicPrefix emits mnemonic prefixes (i/, w/, c/,
+        // o/) and diff.noprefix drops prefixes entirely. The diff parser only strips
+        // "a/" and "b/", so these flags override the config to keep output parseable.
+        args.insert(1, "--src-prefix=a/".to_string());
+        args.insert(2, "--dst-prefix=b/".to_string());
         if self.whitespace_mode.ignores_all() {
             args.insert(1, "--ignore-all-space".to_string());
         }
