@@ -1008,6 +1008,7 @@ pub struct App {
     pub(crate) command_completion: Option<CommandCompletionState>,
     pub search_buffer: String,
     pub last_search_pattern: Option<String>,
+    pub(crate) search_return_mode: InputMode,
     pub comment_buffer: String,
     pub comment_cursor: usize,
     /// Config `comment_vim`: vim modal editing in the comment box.
@@ -1413,6 +1414,9 @@ pub struct HelpState {
     pub scroll_offset: usize,
     pub viewport_height: usize,
     pub total_lines: usize, // Set during render
+    pub(crate) searchable_lines: Vec<String>,
+    pub(crate) last_search_pattern: Option<String>,
+    pub(crate) current_match_line: Option<usize>,
 }
 
 /// Represents a comment location for deletion

@@ -1,6 +1,109 @@
 use super::*;
 
+fn find_search_match(
+    total_lines: usize,
+    start_idx: usize,
+    forward: bool,
+    include_current: bool,
+    pattern: &str,
+    mut line_text: impl FnMut(usize) -> Option<String>,
+) -> Option<usize> {
+    if total_lines == 0 {
+        return None;
+    }
+
+    let normalized_pattern = pattern.to_lowercase();
+    let mut matches = |line_idx| {
+        line_text(line_idx).is_some_and(|text| text.to_lowercase().contains(&normalized_pattern))
+    };
+    let start_idx = start_idx.min(total_lines - 1);
+    if forward {
+        let first = if include_current {
+            start_idx
+        } else {
+            start_idx.saturating_add(1)
+        };
+        (first..total_lines).find(|&line_idx| matches(line_idx))
+    } else {
+        let first = if include_current {
+            Some(start_idx)
+        } else {
+            start_idx.checked_sub(1)
+        };
+        first.and_then(|line_idx| (0..=line_idx).rev().find(|&line_idx| matches(line_idx)))
+    }
+}
+
+impl HelpState {
+    fn search(&mut self, pattern: &str, forward: bool, include_current: bool) -> bool {
+        let start_idx = self.current_match_line.unwrap_or(self.scroll_offset);
+        let Some(line) = find_search_match(
+            self.searchable_lines.len(),
+            start_idx,
+            forward,
+            include_current,
+            pattern,
+            |line_idx| self.searchable_lines.get(line_idx).cloned(),
+        ) else {
+            return false;
+        };
+
+        self.current_match_line = Some(line);
+        let max_offset = self
+            .searchable_lines
+            .len()
+            .saturating_sub(self.viewport_height);
+        self.scroll_offset = line
+            .saturating_sub(self.viewport_height / 2)
+            .min(max_offset);
+        true
+    }
+}
+
 impl App {
+    pub fn search_in_help_from_scroll(&mut self) -> bool {
+        let pattern = self.search_buffer.clone();
+        if pattern.trim().is_empty() {
+            self.set_message("Search pattern is empty");
+            return false;
+        }
+
+        self.help_state.last_search_pattern = Some(pattern.clone());
+        self.help_state.current_match_line = None;
+        if self.help_state.search(&pattern, true, true) {
+            true
+        } else {
+            self.set_message(format!("No help matches for \"{pattern}\""));
+            false
+        }
+    }
+
+    pub fn search_next_in_help(&mut self) -> bool {
+        let Some(pattern) = self.help_state.last_search_pattern.clone() else {
+            self.set_message("No previous help search");
+            return false;
+        };
+        if self.help_state.search(&pattern, true, false) {
+            true
+        } else {
+            self.set_message(format!("No further help matches for \"{pattern}\""));
+            false
+        }
+    }
+
+    pub fn search_prev_in_help(&mut self) -> bool {
+        let Some(pattern) = self.help_state.last_search_pattern.clone() else {
+            self.set_message("No previous help search");
+            return false;
+        };
+        if self.help_state.search(&pattern, false, false) {
+            true
+        } else {
+            self.set_message(format!("No earlier help matches for \"{pattern}\""));
+            false
+        }
+    }
+
     pub fn search_in_diff_from_cursor(&mut self) -> bool {
         let pattern = self.search_buffer.clone();
         if pattern.trim().is_empty() {
@@ -41,47 +144,25 @@ impl App {
             return false;
         }
 
-        if forward {
-            let mut idx = start_idx.min(total_lines.saturating_sub(1));
-            if !include_current {
-                idx = idx.saturating_add(1);
-            }
-            for line_idx in idx..total_lines {
-                if let Some(text) = self.line_text_for_search(line_idx)
-                    && text.contains(pattern)
-                {
-                    self.diff_state.cursor_line = line_idx;
-                    self.ensure_cursor_visible();
-                    self.center_cursor();
-                    self.update_current_file_from_cursor();
-                    return true;
-                }
-            }
-        } else {
-            let mut idx = start_idx.min(total_lines.saturating_sub(1));
-            if !include_current {
-                idx = idx.saturating_sub(1);
-            }
-            let mut line_idx = idx;
-            loop {
-                if let Some(text) = self.line_text_for_search(line_idx)
-                    && text.contains(pattern)
-                {
-                    self.diff_state.cursor_line = line_idx;
-                    self.ensure_cursor_visible();
-                    self.center_cursor();
-                    self.update_current_file_from_cursor();
-                    return true;
-                }
-                if line_idx == 0 {
-                    break;
-                }
-                line_idx = line_idx.saturating_sub(1);
-            }
-        }
+        let matched_line = find_search_match(
+            total_lines,
+            start_idx,
+            forward,
+            include_current,
+            pattern,
+            |line_idx| self.line_text_for_search(line_idx),
+        );
 
-        self.set_message(format!("No matches for \"{pattern}\""));
-        false
+        let Some(line_idx) = matched_line else {
+            self.set_message(format!("No matches for \"{pattern}\""));
+            return false;
+        };
+
+        self.diff_state.cursor_line = line_idx;
+        self.ensure_cursor_visible();
+        self.center_cursor();
+        self.update_current_file_from_cursor();
+        true
     }
 
     fn line_text_for_search(&self, line_idx: usize) -> Option<String> {
@@ -204,5 +285,57 @@ impl App {
             }
             AnnotatedLine::Spacing => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HelpState;
+
+    fn help_state() -> HelpState {
+        HelpState {
+            viewport_height: 5,
+            searchable_lines: vec![
+                "Navigation".to_string(),
+                "Scroll down/up".to_string(),
+                "Review actions".to_string(),
+                "Add line comment".to_string(),
+                "Commands".to_string(),
+                "Reload comments".to_string(),
+                "Toggle this help".to_string(),
+            ],
+            ..HelpState::default()
+        }
+    }
+
+    #[test]
+    fn should_find_help_text_case_insensitively_and_center_it_in_the_viewport() {
+        let mut state = help_state();
+
+        assert!(state.search("COMMENT", true, true));
+        assert_eq!(state.current_match_line, Some(3));
+        assert_eq!(state.scroll_offset, 1);
+    }
+
+    #[test]
+    fn should_move_to_next_and_previous_help_matches() {
+        let mut state = help_state();
+        assert!(state.search("comment", true, true));
+
+        assert!(state.search("comment", true, false));
+        assert_eq!(state.current_match_line, Some(5));
+
+        assert!(state.search("comment", false, false));
+        assert_eq!(state.current_match_line, Some(3));
+    }
+
+    #[test]
+    fn should_keep_the_current_help_position_when_no_match_exists() {
+        let mut state = help_state();
+        state.scroll_offset = 2;
+
+        assert!(!state.search("missing", true, true));
+        assert_eq!(state.current_match_line, None);
+        assert_eq!(state.scroll_offset, 2);
     }
 }

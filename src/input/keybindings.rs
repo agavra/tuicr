@@ -341,6 +341,9 @@ fn map_help_mode(key: KeyEvent) -> Action {
         (KeyCode::PageUp, KeyModifiers::NONE) => Action::PageUp,
         (KeyCode::Char('g'), KeyModifiers::NONE) => Action::GoToTop,
         (KeyCode::Char('G'), _) => Action::GoToBottom,
+        (KeyCode::Char('/'), _) => Action::EnterSearchMode,
+        (KeyCode::Char('n'), KeyModifiers::NONE) => Action::SearchNext,
+        (KeyCode::Char('N'), _) => Action::SearchPrev,
         _ => Action::None,
     }
 }
@@ -475,6 +478,16 @@ mod tests {
     fn should_map_uppercase_g_to_go_to_bottom_in_normal_mode() {
         let action = map_normal_mode(key_shift('G'), DEFAULT_LEADER_KEY);
         assert_eq!(action, Action::GoToBottom);
+    }
+
+    #[test]
+    fn should_map_slash_and_match_navigation_in_help_mode() {
+        assert_eq!(
+            map_help_mode(key(KeyCode::Char('/'))),
+            Action::EnterSearchMode
+        );
+        assert_eq!(map_help_mode(key(KeyCode::Char('n'))), Action::SearchNext);
+        assert_eq!(map_help_mode(key_shift('N')), Action::SearchPrev);
     }
 
     #[test]

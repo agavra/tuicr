@@ -441,6 +441,7 @@ impl App {
             command_completion: None,
             search_buffer: String::new(),
             last_search_pattern: None,
+            search_return_mode: InputMode::Normal,
             comment_buffer: String::new(),
             comment_cursor: 0,
             comment_vim_enabled: false,

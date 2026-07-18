@@ -485,6 +485,13 @@ pub fn handle_help_action(app: &mut App, action: Action) {
         Action::GoToBottom => app.help_scroll_to_bottom(),
         Action::MouseScrollDown(n) => app.help_scroll_down(n),
         Action::MouseScrollUp(n) => app.help_scroll_up(n),
+        Action::EnterSearchMode => app.enter_search_mode(),
+        Action::SearchNext => {
+            app.search_next_in_help();
+        }
+        Action::SearchPrev => {
+            app.search_prev_in_help();
+        }
         Action::ToggleHelp => app.toggle_help(),
         Action::Quit => app.should_quit = true,
         _ => {}
@@ -980,7 +987,11 @@ pub fn handle_search_action(app: &mut App, action: Action) {
         }
         Action::ExitMode => app.exit_search_mode(),
         Action::SubmitInput => {
-            app.search_in_diff_from_cursor();
+            if app.searching_help() {
+                app.search_in_help_from_scroll();
+            } else {
+                app.search_in_diff_from_cursor();
+            }
             app.exit_search_mode();
         }
         Action::Quit => app.should_quit = true,

@@ -45,8 +45,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     status_bar::render_status_bar(frame, app, chunks[2]);
     status_bar::render_command_completion_popup(frame, app, chunks[2]);
 
-    // Render help popup on top if in help mode
-    if app.input_mode == InputMode::Help {
+    // Keep help visible while its search prompt is active.
+    if app.input_mode == InputMode::Help || app.searching_help() {
         help_popup::render_help(frame, app);
     }
 

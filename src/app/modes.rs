@@ -59,13 +59,18 @@ impl App {
     }
 
     pub fn enter_search_mode(&mut self) {
+        self.search_return_mode = self.input_mode;
         self.input_mode = InputMode::Search;
         self.search_buffer.clear();
     }
 
     pub fn exit_search_mode(&mut self) {
-        self.input_mode = InputMode::Normal;
+        self.input_mode = self.search_return_mode;
         self.search_buffer.clear();
+    }
+
+    pub fn searching_help(&self) -> bool {
+        self.input_mode == InputMode::Search && self.search_return_mode == InputMode::Help
     }
 
     pub fn toggle_help(&mut self) {

@@ -19,12 +19,23 @@ Full reference. Press `?` inside tuicr for an in-app version of this list.
 | `{N}{motion}` | Vim-style count prefix — repeats `j` / `k` / `h` / `l` / `{` / `}` / `[` / `]` `N` times |
 | `{` / `}` | Jump to previous / next file |
 | `[` / `]` | Jump to previous / next hunk |
-| `/` | Search within diff |
+| `/` | Search within diff (case-insensitive) |
 | `n` / `N` | Next / previous search match |
 | `Enter` | Expand or collapse hidden context between hunks |
 | `zt` | Scroll cursor to top of screen |
 | `zz` | Center cursor on screen |
 | `zb` | Scroll cursor to bottom of screen |
+
+## Help
+
+Press `?` to open help.
+
+| Key | Action |
+|-----|--------|
+| `/` | Search within help (case-insensitive) |
+| `n` / `N` | Next / previous help search match |
+| `j` / `k` | Scroll down / up |
+| `q` / `?` / `Esc` | Close help |
 
 ## File tree
 
