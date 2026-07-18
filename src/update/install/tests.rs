@@ -179,7 +179,7 @@ fn canonicalizes_an_invocation_symlink_before_install_method_detection() {
 
     let resolved = canonical_executable(&link).unwrap();
 
-    assert_eq!(resolved, executable);
+    assert_eq!(resolved, std::fs::canonicalize(&executable).unwrap());
     assert_eq!(
         detect_install_method(&resolved, Some(temp.path()), None),
         InstallMethod::Homebrew
