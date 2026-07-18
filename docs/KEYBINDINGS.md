@@ -101,8 +101,7 @@ and the header shows a confirm hint. `Alt-Enter` (Option+Enter) accepts and
 `Enter`/`Esc` that reaches the app across terminals, including browser/web
 terminals like zellij web. `Tab` cycles the comment type in Normal
 mode and inserts `comment_tab_width` spaces (default 4) in Insert mode; `Ctrl-s`
-also saves. Operator+motion combos like
-`dw`/`cw` aren't supported (edtui limitation).
+also saves.
 
 ## Commands
 
