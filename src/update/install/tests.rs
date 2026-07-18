@@ -166,6 +166,26 @@ fn detects_every_documented_install_method_and_custom_cargo_home() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn canonicalizes_an_invocation_symlink_before_install_method_detection() {
+    let temp = TempDir::new().unwrap();
+    let executable = temp.path().join("Cellar/tuicr/1.0.0/bin/tuicr");
+    let link = temp.path().join("bin/tuicr");
+    std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+    std::fs::write(&executable, b"binary").unwrap();
+    std::os::unix::fs::symlink(&executable, &link).unwrap();
+
+    let resolved = canonical_executable(&link).unwrap();
+
+    assert_eq!(resolved, executable);
+    assert_eq!(
+        detect_install_method(&resolved, Some(temp.path()), None),
+        InstallMethod::Homebrew
+    );
+}
+
 #[cfg(windows)]
 #[test]
 fn detects_windows_cargo_mise_and_direct_binary_layouts() {

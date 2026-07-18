@@ -105,6 +105,7 @@ struct UpdateContext {
 impl UpdateContext {
     fn current() -> Result<Self, UpdateError> {
         let executable = std::env::current_exe().map_err(UpdateError::CurrentExecutable)?;
+        let executable = canonical_executable(&executable)?;
         let home = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf());
         let cargo_home = std::env::var_os("CARGO_HOME").map(PathBuf::from);
         let method = detect_install_method(&executable, home.as_deref(), cargo_home.as_deref());
@@ -117,6 +118,10 @@ impl UpdateContext {
             arch: std::env::consts::ARCH.to_string(),
         })
     }
+}
+
+fn canonical_executable(executable: &Path) -> Result<PathBuf, UpdateError> {
+    std::fs::canonicalize(executable).map_err(UpdateError::CurrentExecutable)
 }
 
 trait UpdateRuntime {
