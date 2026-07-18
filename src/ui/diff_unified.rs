@@ -569,20 +569,26 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                         let style = base_style;
 
                         let blank = " ".repeat(lw + 1);
-                        let line_num_str = match diff_line.origin {
-                            LineOrigin::Addition => diff_line
-                                .new_lineno
-                                .map(|n| format!("{n:>lw$} "))
-                                .unwrap_or_else(|| blank.clone()),
-                            LineOrigin::Deletion => diff_line
-                                .old_lineno
-                                .map(|n| format!("{n:>lw$} "))
-                                .unwrap_or_else(|| blank.clone()),
-                            _ => diff_line
-                                .new_lineno
-                                .or(diff_line.old_lineno)
-                                .map(|n| format!("{n:>lw$} "))
-                                .unwrap_or_else(|| blank),
+                        // A commit message is prose, not code: render it without
+                        // line numbers, matching the side-by-side view.
+                        let line_num_str = if file.is_commit_message {
+                            blank
+                        } else {
+                            match diff_line.origin {
+                                LineOrigin::Addition => diff_line
+                                    .new_lineno
+                                    .map(|n| format!("{n:>lw$} "))
+                                    .unwrap_or_else(|| blank.clone()),
+                                LineOrigin::Deletion => diff_line
+                                    .old_lineno
+                                    .map(|n| format!("{n:>lw$} "))
+                                    .unwrap_or_else(|| blank.clone()),
+                                _ => diff_line
+                                    .new_lineno
+                                    .or(diff_line.old_lineno)
+                                    .map(|n| format!("{n:>lw$} "))
+                                    .unwrap_or_else(|| blank),
+                            }
                         };
 
                         let indicator = cursor_indicator(line_idx, current_line_idx);
@@ -1607,6 +1613,74 @@ mod remote_comments_snapshot_tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    fn commit_message_file(message: &str) -> DiffFile {
+        let lines: Vec<DiffLine> = message
+            .lines()
+            .enumerate()
+            .map(|(i, line)| DiffLine {
+                origin: LineOrigin::Context,
+                content: line.to_string(),
+                old_lineno: None,
+                new_lineno: Some(i as u32 + 1),
+                highlighted_spans: None,
+            })
+            .collect();
+        let new_count = lines.len() as u32;
+        let hunks = vec![DiffHunk {
+            header: String::new(),
+            lines,
+            old_start: 0,
+            old_count: 0,
+            new_start: 1,
+            new_count,
+        }];
+        let content_hash = DiffFile::compute_content_hash(&hunks);
+        DiffFile {
+            old_path: None,
+            new_path: Some(PathBuf::from("Commit Message (abc1234)")),
+            status: FileStatus::Added,
+            hunks,
+            is_binary: false,
+            is_too_large: false,
+            is_commit_message: true,
+            content_hash,
+        }
+    }
+
+    #[test]
+    fn should_render_commit_message_without_line_numbers_in_unified() {
+        let mut app = make_revision_app(vec![commit_message_file(
+            "COMMITMSG summary\n\nsecond body line",
+        )]);
+        let buf = draw_unified_diff(&mut app);
+
+        let mut checked = 0;
+        for y in 0..buf.area.height {
+            let cells: Vec<String> = (0..buf.area.width)
+                .map(|x| buf[(x, y)].symbol().to_string())
+                .collect();
+            let row: String = cells.concat();
+            let Some(byte_col) = row
+                .find("COMMITMSG")
+                .or_else(|| row.find("second body line"))
+            else {
+                continue;
+            };
+            checked += 1;
+            // No line-number gutter: nothing but whitespace precedes the text.
+            let col = row[..byte_col].chars().count();
+            let gutter: String = cells[..col].concat();
+            assert!(
+                gutter.chars().all(|c| c.is_whitespace() || c == '│'),
+                "commit message row {y} should have no line number, got gutter {gutter:?}"
+            );
+        }
+        assert_eq!(
+            checked, 2,
+            "expected both message body lines to render, got {checked}"
+        );
     }
 
     #[test]
