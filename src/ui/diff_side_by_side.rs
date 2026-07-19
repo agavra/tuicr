@@ -1584,7 +1584,7 @@ fn render_commit_message_line_side_by_side(
     ctx: &SideBySideContext,
     file_idx: usize,
     mut line_idx: usize,
-    lines: &mut Vec<Line>,
+    lines: &mut DiffLineBuffer<'_>,
 ) -> (usize, Option<SideBySideCursorInfo>) {
     let ctx_style = styles::diff_context_style(ctx.theme);
 
