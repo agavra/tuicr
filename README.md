@@ -65,14 +65,15 @@ tuicr -r main..HEAD         # Commit range
 tuicr pr 125                # GitHub PR
 tuicr mr 125                # GitLab MR
 tuicr tui pr 125            # GitHub PR via explicit TUI subcommand
+tuicr tui mr 125            # GitLab MR via explicit TUI subcommand
 tuicr --stdout              # Pipe the review to stdout
 tuicr review list           # List saved local review sessions
 ```
 
 Inside tuicr, navigate with `j`/`k`, press `c` to comment, then `y` to copy the review or
-`:submit` to push it to GitHub. When opening a GitHub PR or GitLab MR you've reviewed before,
-tuicr preselects commits newer than your latest submitted review when that metadata is available;
-commits already covered by that review are marked with `✓` in the inline selector.
+`:submit` to push it to GitHub or GitLab. When opening a GitHub PR or GitLab MR you've reviewed
+before, tuicr preselects commits newer than your latest submitted review when that metadata is
+available; commits already covered by that review are marked with `✓` in the inline selector.
 Auto-detects git, jj, or mercurial.
 
 ## How it compares
@@ -233,7 +234,7 @@ A first-session cheatsheet. Press `?` inside tuicr for the full reference.
 | `R` | Toggle hunk reviewed |
 | `y` | Copy review to clipboard |
 | `:edit` | Open focused file in `$EDITOR` |
-| `:submit` | Push review to GitHub |
+| `:submit` | Push review to GitHub or GitLab |
 | `Tab` in `:` prompt | Complete or cycle commands |
 | `?` | Toggle full help |
 
