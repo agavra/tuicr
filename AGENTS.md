@@ -42,8 +42,8 @@ src/
 │   └── jj/              # Jujutsu backend (always compiled)
 │       └── mod.rs       # JjBackend: uses jj CLI, parses with diff_parser::GitStyle
 │
-├── forge/               # Remote forge integration (GitHub PR review, experimental)
-│   ├── mod.rs           # detect_github_repository() — parse origin URL to ForgeRepository
+├── forge/               # Remote forge integration (GitHub PR and GitLab MR review)
+│   ├── mod.rs           # Detect and parse GitHub/GitLab remotes
 │   ├── traits.rs        # ForgeBackend trait, ForgeRepository, PullRequestTarget,
 │   │                    # PullRequestDetails, PrSessionKey, CreateReviewRequest,
 │   │                    # GhCreateReviewResponse, ForgeFileLinesRequest
@@ -53,13 +53,17 @@ src/
 │   ├── remote_comments.rs # RemoteReviewThread shape + visibility filter
 │   ├── submit.rs        # Submit pipeline: preflight mapping, resolver actions,
 │   │                    # InlineComment payload, build_review_body, SubmitEvent
-│   └── github/          # GitHub backend (only forge in v1, via `gh` CLI)
-│       ├── mod.rs       # GitHubGhBackend: ForgeBackend impl
-│       ├── gh.rs        # GhCommandRunner: spawn `gh`, parse output, error mapping
-│       ├── models.rs    # JSON parsing for `gh` REST + GraphQL responses
-│       ├── review_threads.rs # GraphQL query for existing review threads
-│       ├── review_metadata.rs # GraphQL review commit metadata for since-last-review scoping
-│       └── submit.rs    # build_review_payload, create_review wiring
+│   ├── github/          # GitHub backend via `gh` CLI
+│   │   ├── mod.rs       # GitHubGhBackend: ForgeBackend impl
+│   │   ├── gh.rs        # GhCommandRunner: spawn `gh`, parse output, error mapping
+│   │   ├── models.rs    # JSON parsing for `gh` REST + GraphQL responses
+│   │   ├── review_threads.rs # GraphQL query for existing review threads
+│   │   ├── review_metadata.rs # GraphQL review commit metadata for since-last-review scoping
+│   │   └── submit.rs    # build_review_payload, create_review wiring
+│   └── gitlab/          # GitLab backend via `glab` CLI
+│       ├── mod.rs       # GitLabGlabBackend export
+│       ├── glab.rs      # ForgeBackend impl and glab command runner
+│       └── models.rs    # GitLab API response models
 │
 ├── model/
 │   ├── mod.rs
@@ -165,7 +169,7 @@ Repository-managed agent integrations:
 
 ## Forge integration
 
-PR review (`tuicr pr <target>` or `tuicr tui pr <target>`) is the only feature in `src/forge/`. The trait shape is forge-agnostic so other forges can plug in later; v1 only ships a GitHub backend that shells out to `gh`.
+Forge review (`tuicr pr <target>`, `tuicr mr <target>`, or their explicit `tuicr tui` forms) is the only feature in `src/forge/`. GitHub operations shell out to `gh`; GitLab operations shell out to `glab`.
 
 ### ForgeBackend trait
 
@@ -178,7 +182,7 @@ PR review (`tuicr pr <target>` or `tuicr tui pr <target>`) is the only feature i
 - `list_pull_request_review_metadata` — best-effort viewer login + review commit OIDs used to preselect commits since the viewer's latest submitted review and mark already-reviewed commits in the inline selector.
   GitHub uses review metadata; GitLab combines `/user`, MR diff versions, approvals, and discussions.
 - `get_pull_request_commit_range_diff` — cumulative diff for a contiguous subrange (`start_sha` is the parent of the first selected commit; `end_sha` is the last).
-- `list_review_threads` — existing GitHub comments + resolved/outdated state.
+- `list_review_threads` — existing forge comments + resolved/outdated state.
 - `fetch_file_lines` — remote context expansion in the diff view.
 - `create_review` — POST a review with inline comments via `CreateReviewRequest`.
 
