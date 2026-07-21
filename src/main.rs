@@ -251,6 +251,11 @@ fn main() -> anyhow::Result<()> {
             app.show_file_list = false;
             app.focused_panel = FocusedPanel::Diff;
         }
+        // Force the commit selector open/closed on startup when configured;
+        // unset preserves the >1-commit auto-default from App::new.
+        if let Some(show_commits) = cfg.show_commits {
+            app.show_commit_selector = show_commits;
+        }
         // Pristine mode has no diff, so side-by-side would render two
         // identical panes. Honor the config for every other mode.
         if cfg.diff_view.as_deref() == Some("side-by-side") && !app.is_pristine_mode {
