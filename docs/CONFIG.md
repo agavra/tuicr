@@ -27,6 +27,7 @@ theme_light = "gruvbox-light"
 diff_view = "side-by-side"
 ignore_whitespace = false
 show_file_list = true
+show_commits = true
 mouse = true
 leader = ","
 comment_vim = false
@@ -63,6 +64,7 @@ comment_type_prefix = true
 | `diff_view` | `unified` | `unified` or `side-by-side`. Toggle in-app with `:diff`. |
 | `ignore_whitespace` | `false` | Ignore all whitespace in local Git, jj, and hg diffs. PR diffs are unchanged. |
 | `show_file_list` | `true` | Whether the file list panel is visible on startup. Toggle with `<leader>e`. |
+| `show_commits` | (auto) | Whether the commit selector panel is shown on startup. Unset shows it automatically for multi-commit reviews. Toggle with `:set commits` / `:set nocommits` / `:set commits!`. |
 | `mouse` | `true` | Wheel scrolling, clicks, and drag-to-select. |
 | `leader` | `;` | Single-character prefix for panel focus, sidebar toggles, and review-comment shortcuts. Invalid multi-character values are ignored with a startup warning. |
 | `comment_vim` | `false` | Vim modal editing in the comment box; toggle at runtime with `:vim`. When off, default emacs/readline bindings. |
