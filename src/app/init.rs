@@ -17,6 +17,7 @@ impl App {
                 output_to_stdout,
                 target,
                 options.repo_url_override.clone(),
+                options.commit_selection,
             );
         }
 
@@ -198,22 +199,28 @@ impl App {
 
                 app.range_diff_files = Some(app.diff_files.clone());
                 app.commit_list = all_commits.clone();
-                app.commit_list_cursor = 0;
-                app.commit_selection_range = if all_commits.is_empty() {
-                    None
-                } else {
-                    Some((0, all_commits.len() - 1))
-                };
+                let range = Self::initial_commit_range(options.commit_selection, all_commits.len());
+                app.commit_selection_range = range;
+                app.commit_list_cursor = range.map(|(start, _)| start).unwrap_or(0);
                 app.commit_list_scroll_offset = 0;
                 app.visible_commit_count = all_commits.len();
                 app.has_more_commit = false;
                 app.show_commit_selector = all_commits.len() > 1;
                 app.commit_diff_cache.clear();
                 app.review_commits = all_commits;
-                app.insert_commit_message_if_single();
-                app.sort_files_by_directory(true);
-                app.expand_all_dirs();
-                app.rebuild_annotations();
+                // `initial_commit_selection = oldest` scopes the review to a single
+                // commit; narrow the loaded diff to it.
+                if Self::is_strict_commit_selection(
+                    app.commit_selection_range,
+                    app.review_commits.len(),
+                ) {
+                    app.reload_inline_selection()?;
+                } else {
+                    app.insert_commit_message_if_single();
+                    app.sort_files_by_directory(true);
+                    app.expand_all_dirs();
+                    app.rebuild_annotations();
+                }
 
                 return Ok(app);
             }
@@ -255,8 +262,10 @@ impl App {
             if review_commits.len() > 1 {
                 app.range_diff_files = Some(app.diff_files.clone());
                 app.commit_list = review_commits.clone();
-                app.commit_list_cursor = 0;
-                app.commit_selection_range = Some((0, review_commits.len() - 1));
+                let range =
+                    Self::initial_commit_range(options.commit_selection, review_commits.len());
+                app.commit_selection_range = range;
+                app.commit_list_cursor = range.map(|(start, _)| start).unwrap_or(0);
                 app.commit_list_scroll_offset = 0;
                 app.visible_commit_count = review_commits.len();
                 app.has_more_commit = false;
@@ -264,10 +273,20 @@ impl App {
                 app.commit_diff_cache.clear();
             }
             app.review_commits = review_commits;
-            app.insert_commit_message_if_single();
-            app.sort_files_by_directory(true);
-            app.expand_all_dirs();
-            app.rebuild_annotations();
+            // `initial_commit_selection = oldest` opens the review scoped to a single
+            // commit; narrow the loaded diff to it. Otherwise finalize the
+            // full-range diff already loaded above.
+            if Self::is_strict_commit_selection(
+                app.commit_selection_range,
+                app.review_commits.len(),
+            ) {
+                app.reload_inline_selection()?;
+            } else {
+                app.insert_commit_message_if_single();
+                app.sort_files_by_directory(true);
+                app.expand_all_dirs();
+                app.rebuild_annotations();
+            }
 
             Ok(app)
         } else if options.working_tree {
@@ -532,6 +551,8 @@ impl App {
             pr_range_reload_state: None,
             pr_range_reload_rx: None,
             show_commit_selector: false,
+            commit_order: CommitOrder::default(),
+            commit_selection_start: CommitSelectionStart::default(),
             commit_diff_cache: HashMap::new(),
             range_diff_files: None,
             saved_inline_selection: None,
@@ -730,6 +751,7 @@ impl App {
         output_to_stdout: bool,
         target: &str,
         repo_url_override: Option<ForgeRepository>,
+        commit_selection: CommitSelectionStart,
     ) -> Result<Self> {
         use crate::forge::github::gh::parse_pull_request_target;
         use crate::forge::gitlab::glab::parse_pull_request_target_gitlab;
@@ -840,6 +862,7 @@ impl App {
         // the user came straight from CLI into PR diff mode).
         app.canonical_resolved = true;
         app.current_pr_head = Some(details_for_threads.head_sha.clone());
+        app.commit_selection_start = commit_selection;
         let since_last_review_message =
             app.apply_pr_commit_selector(commits_for_selector, review_metadata);
         if matches!(&app.diff_source, DiffSource::PullRequest(_))

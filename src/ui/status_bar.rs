@@ -170,12 +170,10 @@ fn header_source_chunk(app: &App) -> Option<String> {
             if commits.len() == 1 {
                 Some(format!("commit {}", &commits[0][..7.min(commits[0].len())]))
             } else {
-                match app.commit_selection_range {
-                    Some((start, end)) if end - start + 1 < app.review_commits.len() => Some(
-                        format!("{}/{} commits", end - start + 1, app.review_commits.len()),
-                    ),
-                    _ => Some(format!("{} commits", commits.len())),
-                }
+                Some(
+                    app.commit_selection_summary()
+                        .unwrap_or_else(|| format!("{} commits", commits.len())),
+                )
             }
         }
         DiffSource::StagedUnstagedAndCommits(commits) => {
@@ -200,14 +198,10 @@ fn header_source_chunk(app: &App) -> Option<String> {
                 "{slug}#{number} \u{00b7} {trimmed_title}",
                 number = pr.key.number
             );
-            let total = app.pr_commits.len();
-            if total > 1
-                && let Some((start, end)) = app.commit_selection_range
+            if app.pr_commits.len() > 1
+                && let Some(summary) = app.commit_selection_summary()
             {
-                let selected = end - start + 1;
-                if selected < total {
-                    s.push_str(&format!(" \u{00b7} {selected} of {total} commits"));
-                }
+                s.push_str(&format!(" \u{00b7} {summary}"));
             }
             Some(s)
         }
@@ -721,19 +715,47 @@ mod pr_header_snapshot_tests {
 
     #[test]
     fn should_render_n_of_m_commits_when_subset_selected() {
-        // given a 3-commit PR with the middle commit selected
+        // given a 3-commit PR with a two-commit subrange selected
         let mut app = build_pr_app(pr_source(false, false));
         app.pr_commits = vec![
             fake_pr_commit("aaaaaaa1", "third"),
             fake_pr_commit("bbbbbbb2", "second"),
             fake_pr_commit("ccccccc3", "first"),
         ];
+        app.review_commits = app
+            .pr_commits
+            .iter()
+            .map(crate::app::pr_commit_to_commit_info)
+            .collect();
+        app.commit_selection_range = Some((0, 1));
+        // when
+        let buffer = draw_header(&app);
+        // then
+        let line = row_text(&buffer, 0);
+        assert!(line.contains("2 of 3 commits"), "got: {line:?}");
+    }
+
+    #[test]
+    fn should_render_commit_position_when_single_commit_selected() {
+        // given a 3-commit PR with a single commit selected, the header shows
+        // its position (not "1 of 3") so it changes as ( / ) cycle.
+        let mut app = build_pr_app(pr_source(false, false));
+        app.pr_commits = vec![
+            fake_pr_commit("aaaaaaa1", "third"),
+            fake_pr_commit("bbbbbbb2", "second"),
+            fake_pr_commit("ccccccc3", "first"),
+        ];
+        app.review_commits = app
+            .pr_commits
+            .iter()
+            .map(crate::app::pr_commit_to_commit_info)
+            .collect();
         app.commit_selection_range = Some((1, 1));
         // when
         let buffer = draw_header(&app);
         // then
         let line = row_text(&buffer, 0);
-        assert!(line.contains("1 of 3 commits"), "got: {line:?}");
+        assert!(line.contains("commit 2/3"), "got: {line:?}");
     }
 
     #[test]

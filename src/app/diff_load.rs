@@ -671,12 +671,10 @@ impl App {
         self.review_commits = selected_commits.into_iter().rev().collect();
         self.range_diff_files = Some(self.diff_files.clone());
         self.commit_list = self.review_commits.clone();
-        self.commit_list_cursor = 0;
-        self.commit_selection_range = if self.review_commits.is_empty() {
-            None
-        } else {
-            Some((0, self.review_commits.len() - 1))
-        };
+        let range =
+            Self::initial_commit_range(self.commit_selection_start, self.review_commits.len());
+        self.commit_selection_range = range;
+        self.commit_list_cursor = range.map(|(start, _)| start).unwrap_or(0);
         self.commit_list_scroll_offset = 0;
         self.visible_commit_count = self.review_commits.len();
         self.has_more_commit = false;
@@ -684,10 +682,17 @@ impl App {
         self.commit_diff_cache.clear();
         self.saved_inline_selection = None;
 
-        self.insert_commit_message_if_single();
-        self.sort_files_by_directory(true);
-        self.expand_all_dirs();
-        self.rebuild_annotations();
+        // `initial_commit_selection = oldest` opens scoped to a single commit; narrow
+        // the loaded diff to it. Otherwise finalize the full-range diff.
+        if Self::is_strict_commit_selection(self.commit_selection_range, self.review_commits.len())
+        {
+            self.reload_inline_selection()?;
+        } else {
+            self.insert_commit_message_if_single();
+            self.sort_files_by_directory(true);
+            self.expand_all_dirs();
+            self.rebuild_annotations();
+        }
         Ok(())
     }
 }

@@ -25,7 +25,9 @@ pub(super) fn render_inline_commit_selector(frame: &mut Frame, app: &mut App, ar
     app.commit_list_viewport_height = inner.height as usize;
     app.commit_list_inner_area = Some(inner);
 
-    let items: Vec<Line> = app
+    // Rows are built in data order (index into newest-first `review_commits`),
+    // then reversed for ascending display so the oldest commit sits on top.
+    let mut items: Vec<Line> = app
         .review_commits
         .iter()
         .enumerate()
@@ -40,10 +42,31 @@ pub(super) fn render_inline_commit_selector(frame: &mut Frame, app: &mut App, ar
         })
         .collect();
 
+    let height = inner.height as usize;
+    let n = app.review_commits.len();
+    if app.commits_ascending() {
+        items.reverse();
+        // The renderer owns the scroll offset in display space for ascending
+        // order (descending order lets commit_select_up/down maintain it):
+        // clamp it so the cursor's display row stays visible.
+        if n > 0 && height > 0 {
+            let cursor_row = app.commit_data_index(app.commit_list_cursor);
+            let offset = app.commit_list_scroll_offset;
+            let offset = if cursor_row < offset {
+                cursor_row
+            } else if cursor_row >= offset + height {
+                cursor_row + 1 - height
+            } else {
+                offset
+            };
+            app.commit_list_scroll_offset = offset.min(n.saturating_sub(1));
+        }
+    }
+
     let visible_items: Vec<Line> = items
         .into_iter()
         .skip(app.commit_list_scroll_offset)
-        .take(inner.height as usize)
+        .take(height)
         .collect();
 
     frame.render_widget(

@@ -152,6 +152,23 @@ fn main() -> anyhow::Result<()> {
         DiffWhitespaceMode::Normal
     };
 
+    let commit_order = match config_outcome
+        .config
+        .as_ref()
+        .and_then(|cfg| cfg.commit_order.as_deref())
+    {
+        Some("ascending") => app::CommitOrder::Ascending,
+        _ => app::CommitOrder::Descending,
+    };
+    let commit_selection = match config_outcome
+        .config
+        .as_ref()
+        .and_then(|cfg| cfg.initial_commit_selection.as_deref())
+    {
+        Some("oldest") => app::CommitSelectionStart::Oldest,
+        _ => app::CommitSelectionStart::All,
+    };
+
     let mut app = match profile::time("startup.app_init", || {
         App::new(
             theme,
@@ -168,6 +185,7 @@ fn main() -> anyhow::Result<()> {
                 all_files: cli_args.all_files,
                 git_backend_preference,
                 diff_whitespace_mode,
+                commit_selection,
                 pr_target: cli_args.pr_target.as_deref(),
                 repo_url_override: cli_args
                     .repo_url
@@ -222,6 +240,12 @@ fn main() -> anyhow::Result<()> {
         }
     };
 
+    // Commit selector presentation/behavior prefs. `initial_commit_selection`
+    // also fed `App::new` for the initial `-r`/PR range; keep it on the app so
+    // re-selections during the session (target selector, PR reload) honor it.
+    app.commit_order = commit_order;
+    app.commit_selection_start = commit_selection;
+
     if let Err(e) = app.ensure_ephemeral_session_file() {
         startup_warnings.push(format!("Failed to initialize review session file: {e}"));
     }
@@ -255,6 +279,14 @@ fn main() -> anyhow::Result<()> {
         if cfg.show_file_list == Some(false) {
             app.show_file_list = false;
             app.focused_panel = FocusedPanel::Diff;
+        }
+        // Start with the commit selector pane hidden. `(` / `)` still cycle the
+        // selected commit while hidden; `<leader>s` / `:set commits!` reveal it.
+        if cfg.show_commits == Some(false) {
+            app.show_commit_selector = false;
+            if app.focused_panel == FocusedPanel::CommitSelector {
+                app.focused_panel = FocusedPanel::Diff;
+            }
         }
         // Pristine mode has no diff, so side-by-side would render two
         // identical panes. Honor the config for every other mode.
@@ -527,6 +559,11 @@ fn main() -> anyhow::Result<()> {
                             }
                             crossterm::event::KeyCode::Char('c') => {
                                 app.enter_review_comment_mode();
+                                continue;
+                            }
+                            // `<leader>s` toggles the commit selector pane.
+                            crossterm::event::KeyCode::Char('s') => {
+                                app.toggle_commit_selector();
                                 continue;
                             }
                             crossterm::event::KeyCode::Char('f') => {
