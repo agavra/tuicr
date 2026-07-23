@@ -1413,7 +1413,6 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
             }
         }
         Action::ExitMode => {
-            app.show_file_list = false;
             app.focused_panel = FocusedPanel::Diff;
         }
         Action::HalfPageDown => app.scroll_down(app.diff_state.viewport_height / 2),

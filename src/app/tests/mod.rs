@@ -4,6 +4,7 @@ mod commit_selection_tests;
 mod decoration_skip_tests;
 mod diff_source_tests;
 mod expand_gap_tests;
+mod file_list_visibility_tests;
 mod find_source_line_tests;
 mod persistence_merge_tests;
 mod scroll_behavior_tests;
