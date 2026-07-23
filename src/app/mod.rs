@@ -773,18 +773,9 @@ impl PrOpenRequest {
 pub enum PrOpenEvent {
     Done {
         request: PrOpenRequest,
-        /// Network-only outcome. Parsing + session build runs on the main
-        /// thread after this lands so `SyntaxHighlighter` does not need to
-        /// cross thread boundaries.
-        result: std::result::Result<
-            (
-                crate::forge::traits::PullRequestDetails,
-                String,
-                Vec<crate::forge::traits::PullRequestCommit>,
-                crate::forge::traits::PullRequestReviewMetadata,
-            ),
-            String,
-        >,
+        /// Network, parsing, and syntax highlighting all finish on the worker.
+        /// The main thread only validates identity and installs the result.
+        result: std::result::Result<crate::forge::pr_open::OpenedPullRequest, String>,
     },
 }
 
@@ -816,15 +807,7 @@ pub struct PrReloadRequest {
 pub enum PrReloadEvent {
     Done {
         request: PrReloadRequest,
-        result: std::result::Result<
-            (
-                crate::forge::traits::PullRequestDetails,
-                String,
-                Vec<crate::forge::traits::PullRequestCommit>,
-                crate::forge::traits::PullRequestReviewMetadata,
-            ),
-            String,
-        >,
+        result: std::result::Result<crate::forge::pr_open::OpenedPullRequest, String>,
     },
 }
 
@@ -848,8 +831,18 @@ pub struct PrRangeReloadRequest {
 pub enum PrRangeReloadEvent {
     Done {
         request: PrRangeReloadRequest,
-        result: std::result::Result<String, String>,
+        result: std::result::Result<Vec<DiffFile>, String>,
     },
+}
+
+struct PrSelectionSave {
+    identity: ReviewSession,
+    value: Option<(usize, usize)>,
+}
+
+pub(in crate::app) struct RangeRenderIndexCache {
+    annotations: Vec<AnnotatedLine>,
+    file_ranges: Vec<Option<std::ops::Range<usize>>>,
 }
 
 /// Snapshot of the submit state needed to lock the matching local comments
@@ -1200,8 +1193,11 @@ pub struct App {
     pub expanded_bottom: HashMap<GapId, Vec<DiffLine>>,
     /// Cached file line counts (keyed by file_idx) to avoid repeated disk reads
     pub file_line_count_cache: HashMap<usize, u32>,
-    /// Cached annotations describing what each rendered line represents
+    /// Cached annotations describing what each rendered line represents.
     pub line_annotations: Vec<AnnotatedLine>,
+    /// Half-open annotation range for each rendered file. Non-rendered files
+    /// are `None` in single-file view.
+    pub(in crate::app) file_annotation_ranges: Vec<Option<std::ops::Range<usize>>>,
     /// Output to stdout instead of clipboard when exporting
     pub output_to_stdout: bool,
     /// Pending output to print to stdout after TUI exits
@@ -1237,12 +1233,23 @@ pub struct App {
     pub pr_range_reload_state: Option<PrRangeReloadRequest>,
     /// Background-thread channel for the active range re-fetch.
     pub pr_range_reload_rx: Option<std::sync::mpsc::Receiver<PrRangeReloadEvent>>,
+    /// Serial worker for commit-range persistence off the input thread.
+    pr_selection_save_tx: Option<std::sync::mpsc::Sender<PrSelectionSave>>,
+    pr_selection_save_worker: Option<std::thread::JoinHandle<()>>,
     /// Whether the inline commit selector panel is visible
     pub show_commit_selector: bool,
     /// Cached individual/subrange diffs keyed by (start_idx, end_idx) into review_commits
     pub commit_diff_cache: HashMap<(usize, usize), Vec<DiffFile>>,
-    /// The combined "all selected" diff, cached for quick restoration
+    /// The combined "all selected" diff, cached for quick restoration.
     pub range_diff_files: Option<Vec<DiffFile>>,
+    /// File line counts paired with `range_diff_files`; restoring these avoids
+    /// hundreds of context-provider calls on a full-range switch.
+    pub(in crate::app) range_file_line_count_cache: Option<HashMap<usize, u32>>,
+    /// Render index paired with the cached full PR diff when no commit-scoped
+    /// draft comments make that index selection-dependent.
+    pub(in crate::app) range_render_index_cache: Option<RangeRenderIndexCache>,
+    /// Suppresses full-range cache invalidation during a subset-only rebuild.
+    pub(in crate::app) preserve_range_render_index_cache: bool,
     /// Saved inline selection range when entering full commit select mode via :commits
     pub saved_inline_selection: Option<(usize, usize)>,
     /// Path filter for scoping diff to a specific file or directory

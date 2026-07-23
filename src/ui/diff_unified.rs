@@ -15,11 +15,11 @@ use crate::model::{FileStatus, LineOrigin, LineRange, LineSide};
 use crate::theme::Theme;
 use crate::ui::comment_panel;
 use crate::ui::diff_view::{
-    apply_horizontal_scroll, comment_type_presentation, cursor_indicator, cursor_indicator_spaced,
-    diff_stat_title, hunk_header_text_and_style, paint_cursor_line_highlight,
-    paint_unified_diff_rows_with, paint_visual_selection_overlay, populate_row_to_annotation,
-    push_comment_bar, render_expander_line, render_hidden_lines, scroll_comment_input_into_view,
-    unified_line_bg_style,
+    DiffLineBuffer, apply_horizontal_scroll, comment_type_presentation, cursor_indicator,
+    cursor_indicator_spaced, diff_stat_title, hunk_header_text_and_style,
+    paint_cursor_line_highlight, paint_unified_diff_rows_with, paint_visual_selection_overlay,
+    populate_row_to_annotation, push_comment_bar, render_expander_line, render_hidden_lines,
+    scroll_comment_input_into_view, unified_line_bg_style,
 };
 use crate::ui::styles;
 use crate::vcs::git::calculate_gap;
@@ -51,7 +51,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
 
     // Build all diff lines for infinite scroll
     // Track line index to mark the current line (cursor position)
-    let mut lines: Vec<Line> = Vec::new();
+    let mut lines = DiffLineBuffer::new(app.diff_state.scroll_offset, inner.height as usize);
     let mut line_idx: usize = 0;
     let current_line_idx = app.diff_state.cursor_line;
 
@@ -224,6 +224,20 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
     }
 
     for (file_idx, file) in app.diff_files.iter().enumerate() {
+        if app.input_mode != InputMode::Comment
+            && let Some(range) = app.file_annotation_range(file_idx)
+        {
+            if range.end <= visible_start {
+                lines.advance_to(range.end);
+                line_idx = range.end;
+                continue;
+            }
+            if range.start >= visible_end {
+                lines.advance_to(app.line_annotations.len());
+                break;
+            }
+        }
+
         // Single-file view hides every file except the one the cursor is
         // currently on. Navigation (`}`/`{`, file list) flips
         // `current_file_idx` and the next render shows the new file.
@@ -1101,11 +1115,8 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
         lines.len(),
     );
 
-    let visible_lines_unscrolled: Vec<Line> = lines
-        .into_iter()
-        .skip(app.diff_state.scroll_offset)
-        .take(inner.height as usize)
-        .collect();
+    let visible_lines_unscrolled =
+        lines.into_visible(app.diff_state.scroll_offset, inner.height as usize);
 
     // Calculate the width of each line for max_content_width and visible line count
     let line_widths: Vec<usize> = visible_lines_unscrolled
@@ -1264,7 +1275,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
 /// the spec; visible-but-resolved threads only render under `:comments all`.
 #[allow(clippy::too_many_arguments)]
 fn render_remote_threads_for_anchor(
-    lines: &mut Vec<ratatui::text::Line<'static>>,
+    lines: &mut DiffLineBuffer<'static>,
     line_idx: &mut usize,
     current_line_idx: usize,
     app: &App,
@@ -1334,7 +1345,7 @@ fn render_remote_threads_for_anchor(
 
 /// Render a single expanded context line (shared by unified + side-by-side via unified path)
 fn render_expanded_context_line(
-    lines: &mut Vec<Line<'_>>,
+    lines: &mut DiffLineBuffer<'_>,
     line_idx: &mut usize,
     current_line_idx: usize,
     expanded_line: &crate::model::DiffLine,
@@ -1484,6 +1495,41 @@ mod remote_comments_snapshot_tests {
         }
     }
 
+    fn large_diff_files(file_count: usize, lines_per_file: usize) -> Vec<DiffFile> {
+        (0..file_count)
+            .map(|file_idx| {
+                let lines = (0..lines_per_file)
+                    .map(|line_idx| DiffLine {
+                        origin: LineOrigin::Addition,
+                        content: format!("generated value {line_idx}"),
+                        old_lineno: None,
+                        new_lineno: Some(line_idx as u32 + 1),
+                        highlighted_spans: None,
+                    })
+                    .collect::<Vec<_>>();
+                let hunk = DiffHunk {
+                    header: format!("@@ -0,0 +1,{lines_per_file} @@"),
+                    lines,
+                    old_start: 0,
+                    old_count: 0,
+                    new_start: 1,
+                    new_count: lines_per_file as u32,
+                };
+                let hunks = vec![hunk];
+                DiffFile {
+                    old_path: None,
+                    new_path: Some(PathBuf::from(format!("generated/file-{file_idx:03}.rs"))),
+                    status: FileStatus::Added,
+                    content_hash: DiffFile::compute_content_hash(&hunks),
+                    hunks,
+                    is_binary: false,
+                    is_too_large: false,
+                    is_commit_message: false,
+                }
+            })
+            .collect()
+    }
+
     fn thread(
         id: &str,
         author: &str,
@@ -1593,6 +1639,32 @@ mod remote_comments_snapshot_tests {
             .draw(|frame| render(frame, app))
             .expect("draw frame");
         terminal.backend().buffer().clone()
+    }
+
+    #[test]
+    #[ignore = "release-mode performance regression"]
+    fn large_diff_navigation_stays_within_one_frame() {
+        let mut app = make_revision_app(large_diff_files(80, 5_000));
+        app.show_file_list = false;
+        let backend = TestBackend::new(140, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+
+        let started = std::time::Instant::now();
+        for _ in 0..20 {
+            app.cursor_down(1);
+            terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        }
+        let average = started.elapsed() / 20;
+        let rebuild_started = std::time::Instant::now();
+        app.rebuild_annotations();
+        let rebuild = rebuild_started.elapsed();
+        eprintln!("400k-line navigation average: {average:?}; annotation rebuild: {rebuild:?}");
+
+        assert!(
+            average < std::time::Duration::from_millis(16),
+            "400k-line navigation averaged {average:?} per frame"
+        );
     }
 
     fn draw_unified_diff(app: &mut App) -> Buffer {

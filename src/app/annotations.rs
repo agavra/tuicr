@@ -57,11 +57,17 @@ impl App {
     /// - Comments are added/removed
     /// - Diff view mode changes
     pub fn rebuild_annotations(&mut self) {
+        if !self.preserve_range_render_index_cache {
+            self.range_render_index_cache = None;
+        }
         if self.file_line_count_cache.is_empty() {
             self.populate_file_line_count_cache();
         }
 
         self.line_annotations.clear();
+        self.file_annotation_ranges.clear();
+        self.file_annotation_ranges
+            .resize_with(self.diff_files.len(), || None);
 
         // Pre-index remote threads by (path, line, side) for quick lookup
         // during the file/hunk walk. Threads whose visibility is
@@ -123,6 +129,7 @@ impl App {
             if self.is_single_file_view && file_idx != self.diff_state.current_file_idx {
                 continue;
             }
+            let annotation_start = self.line_annotations.len();
             let path = file.display_path();
 
             // File header (only when shown — same gate as the renderer).
@@ -135,6 +142,8 @@ impl App {
             // view ignores the reviewed-collapse since the user
             // explicitly focused this file.
             if self.session.is_file_reviewed(path) && !self.is_single_file_view {
+                self.file_annotation_ranges[file_idx] =
+                    Some(annotation_start..self.line_annotations.len());
                 continue;
             }
 
@@ -344,7 +353,20 @@ impl App {
 
             // Spacing line
             self.line_annotations.push(AnnotatedLine::Spacing);
+            self.file_annotation_ranges[file_idx] =
+                Some(annotation_start..self.line_annotations.len());
         }
+    }
+
+    pub(in crate::app) fn rebuild_annotations_preserving_range_cache(&mut self) {
+        let previous = self.preserve_range_render_index_cache;
+        self.preserve_range_render_index_cache = true;
+        self.rebuild_annotations();
+        self.preserve_range_render_index_cache = previous;
+    }
+
+    pub(crate) fn file_annotation_range(&self, file_idx: usize) -> Option<std::ops::Range<usize>> {
+        self.file_annotation_ranges.get(file_idx)?.clone()
     }
 
     fn push_comments(

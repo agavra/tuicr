@@ -855,8 +855,10 @@ impl App {
     /// diff support and would error with "Commit range diff not supported".
     pub fn reload_inline_selection_for_source(&mut self) -> Result<()> {
         if matches!(self.diff_source, DiffSource::PullRequest(_)) {
-            self.persist_pr_commit_selection_range();
-            self.reload_pr_inline_selection();
+            crate::profile::time("pr.selection.persist", || {
+                self.persist_pr_commit_selection_range()
+            });
+            crate::profile::time("pr.selection.reload", || self.reload_pr_inline_selection());
             Ok(())
         } else {
             self.reload_inline_selection()

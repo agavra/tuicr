@@ -57,6 +57,8 @@ impl App {
         self.pr_last_reviewed_commit_index = None;
         self.show_commit_selector = false;
         self.range_diff_files = None;
+        self.range_file_line_count_cache = None;
+        self.range_render_index_cache = None;
         self.saved_inline_selection = None;
         self.diff_state = DiffState::default();
 
@@ -142,23 +144,22 @@ impl App {
     /// `(path, old_lineno)` on the LEFT side, else the file's first
     /// annotation, else stay at line 0.
     fn restore_pr_cursor_to_anchor(&mut self, anchor: &PrCursorAnchor) {
+        let Some(file_idx) = self
+            .diff_files
+            .iter()
+            .position(|file| file.display_path() == &anchor.path)
+        else {
+            self.move_cursor_to_annotation(0);
+            return;
+        };
+        let Some(range) = self.file_annotation_range(file_idx) else {
+            self.move_cursor_to_annotation(0);
+            return;
+        };
         let mut best: Option<usize> = None;
-        let mut file_first: Option<usize> = None;
-        for (idx, ann) in self.line_annotations.iter().enumerate() {
-            let file_idx = match ann {
-                AnnotatedLine::DiffLine { file_idx, .. }
-                | AnnotatedLine::SideBySideLine { file_idx, .. }
-                | AnnotatedLine::HunkHeader { file_idx, .. }
-                | AnnotatedLine::FileHeader { file_idx, .. } => *file_idx,
-                _ => continue,
-            };
-            let Some(file) = self.diff_files.get(file_idx) else {
-                continue;
-            };
-            if file.display_path() != &anchor.path {
-                continue;
-            }
-            file_first.get_or_insert(idx);
+        let file_first = Some(range.start);
+        for (relative_idx, ann) in self.line_annotations[range.clone()].iter().enumerate() {
+            let idx = range.start + relative_idx;
             let (line_new, line_old) = match ann {
                 AnnotatedLine::DiffLine {
                     old_lineno,
@@ -189,7 +190,78 @@ impl App {
         self.move_cursor_to_annotation(target);
     }
 
-    /// Persist the active inline selection on the session (PR mode only).
+    pub(in crate::app) fn session_with_pr_commit_selection(
+        identity: ReviewSession,
+        persisted: Option<ReviewSession>,
+        value: Option<(usize, usize)>,
+    ) -> ReviewSession {
+        let mut session = persisted.unwrap_or(identity);
+        session.commit_selection_range = value;
+        session.updated_at = chrono::Utc::now();
+        session
+    }
+
+    fn queue_pr_commit_selection_save(&mut self, value: Option<(usize, usize)>) {
+        if self.pr_selection_save_tx.is_none() {
+            let (tx, rx) = std::sync::mpsc::channel::<PrSelectionSave>();
+            // Test storage overrides are thread-local, so carry the selected
+            // directory into the worker.
+            #[cfg(test)]
+            let test_reviews_dir = crate::persistence::storage::get_reviews_dir().ok();
+            let worker = std::thread::spawn(move || {
+                while let Ok(mut pending) = rx.recv() {
+                    // Debounce so the input loop can paint the new selection
+                    // before persistence touches the shared reviews directory.
+                    std::thread::sleep(std::time::Duration::from_millis(150));
+                    while let Ok(newer) = rx.try_recv() {
+                        pending = newer;
+                    }
+                    let identity = pending.identity;
+                    let value = pending.value;
+                    let identity_for_default = identity.clone();
+                    let update = |persisted| {
+                        let session = Self::session_with_pr_commit_selection(
+                            identity_for_default,
+                            persisted,
+                            value,
+                        );
+                        Ok((session, ()))
+                    };
+                    #[cfg(test)]
+                    let _ = if let Some(reviews_dir) = test_reviews_dir.as_deref() {
+                        crate::persistence::storage::save_session_by_identity_in_dir(
+                            &identity,
+                            reviews_dir,
+                            update,
+                        )
+                    } else {
+                        crate::persistence::storage::save_session_by_identity(&identity, update)
+                    };
+                    #[cfg(not(test))]
+                    let _ =
+                        crate::persistence::storage::save_session_by_identity(&identity, update);
+                }
+            });
+            self.pr_selection_save_tx = Some(tx);
+            self.pr_selection_save_worker = Some(worker);
+        }
+        if let Some(sender) = &self.pr_selection_save_tx {
+            let _ = sender.send(PrSelectionSave {
+                identity: self.session.clone(),
+                value,
+            });
+        }
+    }
+
+    pub fn flush_pr_commit_selection_save(&mut self) {
+        self.pr_selection_save_tx.take();
+        if let Some(worker) = self.pr_selection_save_worker.take() {
+            let _ = worker.join();
+        }
+    }
+
+    /// Persist the active inline selection on a serial worker so filesystem
+    /// locking and session merging never block commit navigation.
     /// `None` is written when the range covers all commits so re-open
     /// doesn't trigger an unnecessary subset re-fetch.
     pub fn persist_pr_commit_selection_range(&mut self) {
@@ -203,7 +275,7 @@ impl App {
         };
         self.session.commit_selection_range = value;
         self.session.updated_at = chrono::Utc::now();
-        let _ = self.save_current_session_merging_external();
+        self.queue_pr_commit_selection_save(value);
     }
 
     /// Resolve the active inline selection (PR mode) to (start_sha,
@@ -244,6 +316,10 @@ impl App {
         if !matches!(self.diff_source, DiffSource::PullRequest(_)) {
             return;
         }
+        // Every selection supersedes the previous worker, including an empty
+        // selection or a switch back to the cached full diff.
+        self.pr_range_reload_state = None;
+        self.pr_range_reload_rx = None;
         let Some(range) = self.commit_selection_range else {
             return;
         };
@@ -263,24 +339,57 @@ impl App {
         self.spawn_pr_range_reload();
     }
 
+    fn has_commit_scoped_draft_comments(&self) -> bool {
+        self.session
+            .review_comments
+            .iter()
+            .chain(
+                self.session
+                    .files
+                    .values()
+                    .flat_map(|review| review.file_comments.iter()),
+            )
+            .chain(
+                self.session
+                    .files
+                    .values()
+                    .flat_map(|review| review.line_comments.values().flatten()),
+            )
+            .any(|comment| comment.commit_id.is_some())
+    }
+
     /// Restore the cached cumulative PR diff into the diff view. Used when
     /// the user toggles the selector back to "all commits".
     fn apply_cached_full_pr_diff(&mut self) {
-        let Some(files) = self.range_diff_files.clone() else {
+        let Some(files) = self.range_diff_files.take() else {
             return;
         };
         let anchor = self.capture_pr_cursor_anchor();
-        self.diff_files = files;
-        self.clear_expanded_gaps();
-        for file in &self.diff_files {
-            self.session.add_diff_file(file);
-        }
-        self.sort_files_by_directory(true);
-        self.expand_all_dirs();
-        self.rebuild_annotations();
+        let stale_files = std::mem::replace(&mut self.diff_files, files);
+        self.expanded_top.clear();
+        self.expanded_bottom.clear();
+        self.file_line_count_cache = self.range_file_line_count_cache.take().unwrap_or_default();
+        // The cumulative PR was already registered and directory-sorted before
+        // it moved into `range_diff_files`. Restore its render index when safe;
+        // state changes while viewing a subset invalidate this cache.
+        let stale_render_index = if let Some(cache) = self.range_render_index_cache.take() {
+            let annotations = std::mem::replace(&mut self.line_annotations, cache.annotations);
+            let file_ranges =
+                std::mem::replace(&mut self.file_annotation_ranges, cache.file_ranges);
+            Some((annotations, file_ranges))
+        } else {
+            self.rebuild_annotations();
+            None
+        };
         if let Some(anchor) = anchor {
             self.restore_pr_cursor_to_anchor(&anchor);
         }
+        // Releasing hundreds of thousands of owned lines can take longer than
+        // a frame. Move that destructor work away from the input thread.
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            drop((stale_files, stale_render_index));
+        });
     }
 
     /// Kick off a background fetch of `compare/<start>...<end>` and apply
@@ -323,8 +432,10 @@ impl App {
         let pr_number = current.key.number;
         let head_sha = current.key.head_sha.clone();
         let base_sha = current.base_sha.clone();
+        let highlighter_factory = self.theme.syntax_highlighter_factory();
         std::thread::spawn(move || {
-            let backend = create_forge_backend(&repository, local_checkout);
+            let highlighter = highlighter_factory.build();
+            let backend = create_forge_backend(&repository, local_checkout.clone());
             let details = crate::forge::traits::PullRequestDetails {
                 repository: repository.clone(),
                 number: pr_number,
@@ -345,6 +456,18 @@ impl App {
             };
             let outcome = backend
                 .get_pull_request_commit_range_diff(&details, &start_sha, &end_sha)
+                .and_then(|patch| {
+                    use crate::vcs::diff_parser::{DiffFormat, parse_unified_diff};
+                    match parse_unified_diff(&patch, DiffFormat::GitStyle, &highlighter) {
+                        Ok(files) => Ok(files),
+                        Err(TuicrError::NoChanges) => Ok(Vec::new()),
+                        Err(error) => Err(error),
+                    }
+                })
+                .map(|files| match local_checkout.as_deref() {
+                    Some(root) => crate::tuicrignore::filter_diff_files(root, files),
+                    None => files,
+                })
                 .map_err(|e| e.to_string());
             let _ = tx.send(PrRangeReloadEvent::Done {
                 request,
@@ -353,8 +476,8 @@ impl App {
         });
     }
 
-    /// Pump any pending range-reload result, parse on the main thread, and
-    /// apply. Stale results (the user toggled again, or left PR mode) are
+    /// Pump any prepared range-reload result and apply it. Stale results
+    /// (the user toggled again, or left PR mode) are
     /// silently dropped.
     pub fn poll_pr_range_reload_events(&mut self) {
         let Some(rx) = self.pr_range_reload_rx.as_ref() else {
@@ -385,10 +508,8 @@ impl App {
         self.pr_range_reload_state = None;
 
         match result {
-            Ok(patch) => {
-                if let Err(e) = self.finish_pr_range_reload(&request, &patch) {
-                    self.set_error(format!("Range diff failed: {e}"));
-                }
+            Ok(files) => {
+                self.finish_pr_range_reload_files(&request, files);
             }
             Err(e) => {
                 self.set_error(format!("Range diff failed: {e}"));
@@ -396,6 +517,7 @@ impl App {
         }
     }
 
+    #[cfg(test)]
     pub(in crate::app) fn finish_pr_range_reload(
         &mut self,
         request: &PrRangeReloadRequest,
@@ -409,7 +531,6 @@ impl App {
             Err(TuicrError::NoChanges) => Vec::new(),
             Err(e) => return Err(e),
         };
-
         let local_checkout = self
             .forge_backend
             .as_deref()
@@ -418,7 +539,28 @@ impl App {
             Some(root) => crate::tuicrignore::filter_diff_files(root, parsed),
             None => parsed,
         };
+        self.finish_pr_range_reload_files(request, files);
+        Ok(())
+    }
 
+    fn finish_pr_range_reload_files(
+        &mut self,
+        request: &PrRangeReloadRequest,
+        files: Vec<crate::model::DiffFile>,
+    ) {
+        if self.range_diff_files.is_none() {
+            self.range_diff_files = Some(std::mem::take(&mut self.diff_files));
+        }
+        if self.range_render_index_cache.is_none() && !self.has_commit_scoped_draft_comments() {
+            self.range_render_index_cache = Some(RangeRenderIndexCache {
+                annotations: std::mem::take(&mut self.line_annotations),
+                file_ranges: std::mem::take(&mut self.file_annotation_ranges),
+            });
+        }
+        if self.range_file_line_count_cache.is_none() {
+            self.range_file_line_count_cache =
+                Some(std::mem::take(&mut self.file_line_count_cache));
+        }
         self.diff_files = files;
         self.clear_expanded_gaps();
         // Range diffs can hide hunks that are still reviewed in the broader
@@ -426,12 +568,15 @@ impl App {
         Self::register_diff_files(&mut self.session, &self.diff_files, true);
         self.sort_files_by_directory(true);
         self.expand_all_dirs();
-        self.rebuild_annotations();
+        if self.range_render_index_cache.is_some() {
+            self.rebuild_annotations_preserving_range_cache();
+        } else {
+            self.rebuild_annotations();
+        }
 
         if let Some(anchor) = &request.anchor {
             self.restore_pr_cursor_to_anchor(anchor);
         }
-        Ok(())
     }
 
     /// Kick off `:e` asynchronously. Captures the cursor anchor, sets
@@ -439,7 +584,7 @@ impl App {
     /// on a background thread. Returns immediately. The result is
     /// applied later in `poll_pr_reload_events`.
     pub fn spawn_pr_reload(&mut self) -> Result<()> {
-        use crate::forge::pr_open::fetch_pr_data;
+        use crate::forge::pr_open::open_pull_request;
         use crate::forge::traits::PullRequestTarget;
 
         let DiffSource::PullRequest(current) = self.diff_source.clone() else {
@@ -471,11 +616,19 @@ impl App {
 
         let repository = current.key.repository.clone();
         let pr_number = current.key.number;
+        let highlighter_factory = self.theme.syntax_highlighter_factory();
         std::thread::spawn(move || {
-            let backend = create_forge_backend(&repository, local_checkout);
+            let highlighter = highlighter_factory.build();
+            let backend = create_forge_backend(&repository, local_checkout.clone());
             let target =
                 PullRequestTarget::with_repository(repository, pr_number, pr_number.to_string());
-            let outcome = fetch_pr_data(backend.as_ref(), target).map_err(|e| e.to_string());
+            let outcome = open_pull_request(
+                backend.as_ref(),
+                target,
+                local_checkout.as_deref(),
+                &highlighter,
+            )
+            .map_err(|e| e.to_string());
             let _ = tx.send(PrReloadEvent::Done {
                 request,
                 result: outcome,
@@ -484,8 +637,7 @@ impl App {
         Ok(())
     }
 
-    /// Pump a pending reload result. Parses + applies on the main thread,
-    /// then restores the cursor to the remembered anchor.
+    /// Pump a prepared reload result and restore the remembered cursor anchor.
     pub fn poll_pr_reload_events(&mut self) {
         let Some(rx) = self.pr_reload_rx.as_ref() else {
             return;
@@ -505,10 +657,8 @@ impl App {
             return;
         }
         match result {
-            Ok((details, patch, commits, review_metadata)) => {
-                if let Err(e) =
-                    self.finish_pr_reload(details, patch, commits, review_metadata, &request)
-                {
+            Ok(opened) => {
+                if let Err(e) = self.apply_prepared_pr_reload(opened, &request) {
                     self.set_error(format!("Reload failed: {e}"));
                 }
             }
@@ -518,6 +668,7 @@ impl App {
         }
     }
 
+    #[cfg(test)]
     pub(in crate::app) fn finish_pr_reload(
         &mut self,
         details: crate::forge::traits::PullRequestDetails,
@@ -541,7 +692,18 @@ impl App {
             local_checkout.as_deref(),
             highlighter,
         )?;
+        self.apply_prepared_pr_reload(opened, request)
+    }
 
+    fn apply_prepared_pr_reload(
+        &mut self,
+        opened: crate::forge::pr_open::OpenedPullRequest,
+        request: &PrReloadRequest,
+    ) -> Result<()> {
+        let local_checkout = self
+            .forge_backend
+            .as_deref()
+            .and_then(|backend| backend.local_checkout_path());
         let head_changed = opened.details.head_sha != request.head_sha;
         if head_changed {
             let details_for_threads = opened.details.clone();
@@ -558,6 +720,21 @@ impl App {
                 &opened.commits,
                 &opened.review_metadata,
             );
+            let stale_range_files = self.range_diff_files.take();
+            let stale_range_line_counts = self.range_file_line_count_cache.take();
+            let stale_range_render_index = self.range_render_index_cache.take();
+            if stale_range_files.is_some()
+                || stale_range_line_counts.is_some()
+                || stale_range_render_index.is_some()
+            {
+                std::thread::spawn(move || {
+                    drop((
+                        stale_range_files,
+                        stale_range_line_counts,
+                        stale_range_render_index,
+                    ));
+                });
+            }
             self.diff_files = opened.diff_files;
             self.clear_expanded_gaps();
             for file in &self.diff_files {
@@ -805,12 +982,10 @@ impl App {
         true
     }
 
-    /// Kick off the background fetch for a PR open. The main thread keeps
-    /// rendering and pumping events; the resulting `PrOpenEvent::Done` is
-    /// drained in `poll_pr_open_events` where parsing happens and PR mode
-    /// is entered.
+    /// Kick off fetch, parse, and syntax highlighting for a PR open. The
+    /// worker returns a prepared review so the main thread keeps pumping input.
     fn spawn_pr_open(&mut self, summary: &crate::forge::traits::PullRequestSummary) {
-        use crate::forge::pr_open::fetch_pr_data;
+        use crate::forge::pr_open::open_pull_request;
         use crate::forge::traits::PullRequestTarget;
 
         let request = PrOpenRequest {
@@ -825,11 +1000,21 @@ impl App {
 
         let summary_repo = summary.repository.clone();
         let pr_number = summary.number;
+        let local_checkout =
+            crate::forge::local_checkout_for_repo(&self.vcs_info.root_path, &summary.repository);
+        let highlighter_factory = self.theme.syntax_highlighter_factory();
         std::thread::spawn(move || {
-            let backend = create_forge_backend(&summary_repo, None);
+            let highlighter = highlighter_factory.build();
+            let backend = create_forge_backend(&summary_repo, local_checkout.clone());
             let target =
                 PullRequestTarget::with_repository(summary_repo, pr_number, pr_number.to_string());
-            let outcome = fetch_pr_data(backend.as_ref(), target).map_err(|e| e.to_string());
+            let outcome = open_pull_request(
+                backend.as_ref(),
+                target,
+                local_checkout.as_deref(),
+                &highlighter,
+            )
+            .map_err(|e| e.to_string());
             let _ = tx.send(PrOpenEvent::Done {
                 request,
                 result: outcome,
@@ -837,8 +1022,8 @@ impl App {
         });
     }
 
-    /// Drain any pending PR-open result and apply it. On success, parses
-    /// the diff and enters PR diff mode; on failure, routes the error
+    /// Drain any prepared PR-open result and apply it. On success, enters
+    /// PR diff mode; on failure, routes the error
     /// into the selector banner. Either way, clears `pr_open_state` and
     /// the receiver so the spinner stops animating.
     pub fn poll_pr_open_events(&mut self) {
@@ -865,10 +1050,8 @@ impl App {
                     return;
                 }
                 match result {
-                    Ok((details, patch, commits, review_metadata)) => {
-                        if let Err(e) =
-                            self.finish_pr_open(details, patch, commits, review_metadata, &request)
-                        {
+                    Ok(opened) => {
+                        if let Err(e) = self.apply_prepared_pr_open(opened, &request) {
                             self.set_error(format!(
                                 "Failed to open PR #{}: {}",
                                 request.pr_number, e
@@ -883,31 +1066,14 @@ impl App {
         }
     }
 
-    /// Main-thread half of the PR open: parse the patch, build the
-    /// session, and enter PR diff mode. Mirrors what the previous synchronous
-    /// `open_pr_with_backend` did, but the network fetch has already
-    /// happened on the background thread.
-    fn finish_pr_open(
+    fn apply_prepared_pr_open(
         &mut self,
-        details: crate::forge::traits::PullRequestDetails,
-        patch: String,
-        commits: Vec<crate::forge::traits::PullRequestCommit>,
-        review_metadata: crate::forge::traits::PullRequestReviewMetadata,
+        opened: crate::forge::pr_open::OpenedPullRequest,
         request: &PrOpenRequest,
     ) -> Result<()> {
-        use crate::forge::pr_open::prepare_open_pr;
-
         let local_checkout =
             crate::forge::local_checkout_for_repo(&self.vcs_info.root_path, &request.repository);
-        let highlighter = self.theme.syntax_highlighter();
-        let opened = prepare_open_pr(
-            details.clone(),
-            &patch,
-            commits,
-            review_metadata,
-            local_checkout.as_deref(),
-            highlighter,
-        )?;
+        let details = opened.details.clone();
         let opened = Self::opened_pr_with_persisted_session(opened)?;
         let backend = create_forge_backend(&request.repository, local_checkout.clone());
         let previous_message = self.message.clone();

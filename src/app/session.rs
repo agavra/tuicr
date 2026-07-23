@@ -111,18 +111,21 @@ impl App {
         let identity = self.session.clone();
         let current = self.session.clone();
         let base = self.persisted_session_snapshot.clone();
-        let (path, saved, _changed) =
+        let (path, saved, external_changes) =
             crate::persistence::storage::save_session_by_identity(&identity, |persisted| {
                 let mut merged = current.clone();
-                if let Some(latest) = persisted.as_ref() {
-                    Self::merge_external_session_changes(&mut merged, &base, latest);
-                }
+                let external_changes = persisted
+                    .as_ref()
+                    .map(|latest| Self::merge_external_session_changes(&mut merged, &base, latest))
+                    .unwrap_or(0);
                 merged.updated_at = Utc::now();
-                Ok((merged, ()))
+                Ok((merged, external_changes))
             })?;
         self.mark_session_saved(path.clone(), saved);
         self.mark_current_session_active_at(&path);
-        self.rebuild_annotations();
+        if external_changes > 0 {
+            self.rebuild_annotations();
+        }
         Ok(path)
     }
 

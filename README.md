@@ -88,8 +88,12 @@ tuicr update 0.18.0         # Install a known-good version
 Inside tuicr, navigate with `j`/`k`, press `c` to comment, then `y` to copy the review or
 `:submit` to push it to GitHub. When opening a GitHub PR or GitLab MR you've reviewed before,
 tuicr preselects commits newer than your latest submitted review when that metadata is available;
-commits already covered by that review are marked with `✓` in the inline selector.
-Auto-detects git, jj, or mercurial.
+commits already covered by that review are marked with `✓` in the inline selector. When GitHub's
+300-file diff endpoint limit is reached, tuicr uses the matching checkout if it is on the exact PR
+head. Otherwise it fetches into an isolated blobless bare repository, reusing local objects when
+available. Large reviews keep input responsive by parsing PR updates on a worker,
+retaining only visible diff rows, and using plain diff colors for giant generated hunks instead of
+expanding thousands of syntax spans. Auto-detects git, jj, or mercurial.
 
 ## How it compares
 

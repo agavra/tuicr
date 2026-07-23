@@ -113,9 +113,9 @@ impl App {
     /// way on the rendered subset.
     pub fn toggle_single_file_view(&mut self) {
         self.is_single_file_view = !self.is_single_file_view;
-        // `calculate_file_scroll_offset` changes meaning across modes
-        // (single-file stops at review-comments header, all-files
-        // accumulates), so re-snap the viewport to the current file.
+        // Rebuild first so the file-range index reflects the new view mode,
+        // then re-snap the viewport to the current file.
+        self.rebuild_annotations();
         let start = self.calculate_file_scroll_offset(self.diff_state.current_file_idx);
         self.diff_state.scroll_offset = start;
         self.diff_state.cursor_line = start;
@@ -125,7 +125,6 @@ impl App {
             "all files"
         };
         self.set_message(format!("View: {status}"));
-        self.rebuild_annotations();
     }
 
     pub(in crate::app) fn sort_files_by_directory(&mut self, reset_position: bool) {

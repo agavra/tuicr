@@ -937,6 +937,8 @@ fn should_preserve_hunk_marks_hidden_by_pr_range_diff() {
         .unwrap()
         .toggle_hunk_reviewed(hidden_key.clone());
 
+    app.file_line_count_cache.insert(0, 123);
+    let full_annotation_count = app.line_annotations.len();
     let request = PrRangeReloadRequest {
         repository: ForgeRepository::github("github.com", "agavra", "tuicr"),
         pr_number: 42,
@@ -951,6 +953,85 @@ fn should_preserve_hunk_marks_hidden_by_pr_range_diff() {
         .unwrap();
 
     assert!(app.session.is_hunk_reviewed(&path, &hidden_key));
+    assert!(app.range_diff_files.is_some());
+    assert!(app.range_render_index_cache.is_some());
+    assert_eq!(
+        app.range_file_line_count_cache
+            .as_ref()
+            .and_then(|cache| cache.get(&0)),
+        Some(&123)
+    );
+
+    app.commit_selection_range = Some((0, 1));
+    app.reload_pr_inline_selection();
+
+    assert_eq!(app.diff_files[0].hunks.len(), 2);
+    assert_eq!(app.line_annotations.len(), full_annotation_count);
+    assert!(app.range_diff_files.is_none());
+    assert!(app.range_render_index_cache.is_none());
+    assert_eq!(app.file_line_count_cache.get(&0), Some(&123));
+    assert!(app.range_file_line_count_cache.is_none());
+}
+
+#[test]
+fn should_ignore_stale_pr_range_reload_done_event() {
+    let mut app = build_app();
+    let summary = sample_pr(42, "ranges");
+    let backend = Box::new(FakeForgeBackend::open_pr_details(
+        test_pr_details(42, "ranges"),
+        two_hunk_patch().to_string(),
+    ));
+    app.open_pr_with_backend(&summary, backend, None).unwrap();
+
+    let stale_request = PrRangeReloadRequest {
+        repository: ForgeRepository::github("github.com", "agavra", "tuicr"),
+        pr_number: 42,
+        head_sha: "abcdef0123456789".to_string(),
+        start_sha: "aaa1111".to_string(),
+        end_sha: "bbb2222".to_string(),
+        range: (1, 1),
+        started_at: Instant::now(),
+        anchor: None,
+    };
+    app.finish_pr_range_reload(&stale_request, first_hunk_patch())
+        .unwrap();
+    let displayed_shape: Vec<_> = app
+        .diff_files
+        .iter()
+        .map(|file| (file.display_path().clone(), file.hunks.len()))
+        .collect();
+
+    let active_request = PrRangeReloadRequest {
+        start_sha: "ccc3333".to_string(),
+        end_sha: "ddd4444".to_string(),
+        range: (0, 0),
+        started_at: Instant::now(),
+        ..stale_request.clone()
+    };
+    app.pr_range_reload_state = Some(active_request.clone());
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.pr_range_reload_rx = Some(rx);
+    tx.send(PrRangeReloadEvent::Done {
+        request: stale_request,
+        result: Ok(Vec::new()),
+    })
+    .unwrap();
+
+    app.poll_pr_range_reload_events();
+
+    let current_shape: Vec<_> = app
+        .diff_files
+        .iter()
+        .map(|file| (file.display_path().clone(), file.hunks.len()))
+        .collect();
+    assert_eq!(current_shape, displayed_shape);
+    let in_flight = app
+        .pr_range_reload_state
+        .as_ref()
+        .expect("newer range reload should remain active");
+    assert_eq!(in_flight.start_sha, active_request.start_sha);
+    assert_eq!(in_flight.end_sha, active_request.end_sha);
+    assert_eq!(in_flight.range, active_request.range);
 }
 
 #[test]
@@ -1868,6 +1949,69 @@ fn should_keep_reviewed_state_through_finish_pr_reload_when_head_unchanged() {
     // then reviewed file and hunk markers are preserved.
     assert!(app.session.is_file_reviewed(&stable_path));
     assert!(app.session.is_hunk_reviewed(&stable_path, &stable_key));
+}
+
+#[test]
+fn should_not_restore_stale_full_diff_after_same_head_reload() {
+    let mut app = build_app();
+    let summary = sample_pr(424254, "same-head-cache");
+    let mut details = test_pr_details(424254, "same-head-cache");
+    details.head_sha = "aaaaaaaaaaaaaaaa".to_string();
+    let commits = vec![
+        sample_pr_commit("aaa1111", "first"),
+        sample_pr_commit("bbb2222", "second"),
+    ];
+    let mut backend =
+        FakeForgeBackend::open_pr_details(details.clone(), two_file_patch("new changed"));
+    backend.commits = commits.clone();
+    app.open_pr_with_backend(&summary, Box::new(backend), None)
+        .unwrap();
+
+    let range_request = PrRangeReloadRequest {
+        repository: details.repository.clone(),
+        pr_number: details.number,
+        head_sha: details.head_sha.clone(),
+        start_sha: "aaa1111".to_string(),
+        end_sha: "bbb2222".to_string(),
+        range: (1, 1),
+        started_at: Instant::now(),
+        anchor: None,
+    };
+    app.finish_pr_range_reload(&range_request, first_hunk_patch())
+        .unwrap();
+    assert!(app.range_diff_files.is_some());
+
+    let reload_request = PrReloadRequest {
+        repository: details.repository.clone(),
+        pr_number: details.number,
+        head_sha: details.head_sha.clone(),
+        started_at: Instant::now(),
+        anchor: None,
+    };
+    app.finish_pr_reload(
+        details,
+        two_file_patch("newer changed"),
+        commits,
+        PullRequestReviewMetadata::default(),
+        &reload_request,
+    )
+    .unwrap();
+    app.commit_selection_range = Some((0, app.pr_commits.len() - 1));
+
+    app.reload_pr_inline_selection();
+
+    let changed_file = app
+        .diff_files
+        .iter()
+        .find(|file| file.display_path() == &PathBuf::from("src/changed.rs"))
+        .expect("fresh changed file");
+    let added_line = changed_file
+        .hunks
+        .iter()
+        .flat_map(|hunk| &hunk.lines)
+        .find(|line| line.origin == LineOrigin::Addition)
+        .expect("added line");
+    assert_eq!(added_line.content, "newer changed");
 }
 
 #[test]

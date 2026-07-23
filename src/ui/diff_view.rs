@@ -26,16 +26,99 @@ pub(super) static EMPTY_LINE_COMMENTS: std::sync::LazyLock<
 
 /// Compute the half-open `line_idx` range whose diff-line spans must be fully
 /// built this frame. Outside this range the hot loops push `Line::default()`
-/// placeholders so the bulk of per-line allocations are skipped.
-///
-/// In Comment mode the scroll offset may still be adjusted after building (to
-/// keep the inline input box visible), so fall back to building everything.
+/// placeholders so the bulk of per-line allocations are skipped. The line
+/// buffer's overscan covers small comment-input scroll adjustments.
 pub(super) fn diff_visible_range(app: &App, inner: Rect) -> (usize, usize) {
-    if app.input_mode == crate::app::InputMode::Comment {
-        (0, usize::MAX)
-    } else {
-        let start = app.diff_state.scroll_offset;
-        (start, start.saturating_add(inner.height as usize))
+    let start = app.diff_state.scroll_offset;
+    (start, start.saturating_add(inner.height as usize))
+}
+
+/// Counts every logical diff row while retaining only a small viewport window.
+///
+/// The renderers still walk the diff to preserve their existing row-count and
+/// comment-layout logic, but off-screen `Line::default()` values no longer
+/// accumulate into a vector proportional to the entire review. One viewport
+/// of overscan on each side lets comment-mode auto-scroll adjust after layout.
+pub(super) struct DiffLineBuffer<'a> {
+    logical_len: usize,
+    retain_start: usize,
+    retain_end: usize,
+    retained: Vec<(usize, Line<'a>)>,
+}
+
+impl<'a> DiffLineBuffer<'a> {
+    pub(super) fn new(viewport_start: usize, viewport_height: usize) -> Self {
+        let retain_start = viewport_start.saturating_sub(viewport_height);
+        let retain_end = viewport_start.saturating_add(viewport_height.saturating_mul(2));
+        Self {
+            logical_len: 0,
+            retain_start,
+            retain_end,
+            retained: Vec::with_capacity(viewport_height.saturating_mul(3)),
+        }
+    }
+
+    pub(super) fn push(&mut self, line: Line<'a>) {
+        let index = self.logical_len;
+        if index >= self.retain_start && index < self.retain_end {
+            self.retained.push((index, line));
+        }
+        self.logical_len += 1;
+    }
+
+    pub(super) fn len(&self) -> usize {
+        self.logical_len
+    }
+
+    pub(super) fn advance_to(&mut self, logical_len: usize) {
+        debug_assert!(logical_len >= self.logical_len);
+        self.logical_len = logical_len;
+    }
+
+    #[cfg(test)]
+    fn retained_len(&self) -> usize {
+        self.retained.len()
+    }
+
+    pub(super) fn into_visible(self, start: usize, height: usize) -> Vec<Line<'a>> {
+        let end = start.saturating_add(height);
+        self.retained
+            .into_iter()
+            .filter_map(|(index, line)| (index >= start && index < end).then_some(line))
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod line_buffer_tests {
+    use super::DiffLineBuffer;
+    use ratatui::text::Line;
+
+    #[test]
+    fn retains_only_lines_near_the_viewport() {
+        let mut lines = DiffLineBuffer::new(200_000, 30);
+        for index in 0..400_000 {
+            lines.push(Line::from(index.to_string()));
+        }
+
+        assert_eq!(lines.len(), 400_000);
+        assert!(lines.retained_len() <= 90);
+        let visible = lines.into_visible(200_000, 30);
+        assert_eq!(visible.len(), 30);
+        assert_eq!(visible[0].spans[0].content.as_ref(), "200000");
+        assert_eq!(visible[29].spans[0].content.as_ref(), "200029");
+    }
+
+    #[test]
+    fn overscan_allows_comment_box_scroll_adjustment() {
+        let mut lines = DiffLineBuffer::new(100, 10);
+        for index in 0..200 {
+            lines.push(Line::from(index.to_string()));
+        }
+
+        let visible = lines.into_visible(108, 10);
+        assert_eq!(visible[0].spans[0].content.as_ref(), "108");
+        assert_eq!(visible[9].spans[0].content.as_ref(), "117");
     }
 }
 
@@ -163,7 +246,7 @@ pub(super) fn hunk_header_text_and_style(
 
 /// Render an expander line with direction arrow
 pub(super) fn render_expander_line(
-    lines: &mut Vec<Line<'_>>,
+    lines: &mut DiffLineBuffer<'_>,
     line_idx: &mut usize,
     current_line_idx: usize,
     direction: ExpandDirection,
@@ -189,7 +272,7 @@ pub(super) fn render_expander_line(
 
 /// Render a "N lines hidden" informational line
 pub(super) fn render_hidden_lines(
-    lines: &mut Vec<Line<'_>>,
+    lines: &mut DiffLineBuffer<'_>,
     line_idx: &mut usize,
     current_line_idx: usize,
     count: usize,

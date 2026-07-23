@@ -5,12 +5,12 @@
 //! a `PrSessionKey` that scopes persistence and remote context fetches.
 //!
 //! Key invariants enforced here:
-//! - The current local checkout is never treated as the source of truth.
-//!   Diffs are parsed from `gh pr diff`; SHAs are captured from PR metadata.
-//! - `.tuicrignore` is applied only when the caller supplies a local
+//! - Normal diffs come from `gh pr diff`. An oversized diff may use the local
+//!   checkout only when its branch and `HEAD` exactly match the PR metadata.
+//! - Missing objects are fetched into an isolated temporary bare repository,
+//!   which can borrow existing local objects without changing the checkout.
+//! - `.tuicrignore` is applied only when the caller supplies a matching local
 //!   checkout path. Outside a checkout, the unfiltered diff is shown.
-//! - No checkout mutation. We never spawn `git checkout/fetch/reset/stash`
-//!   or branch-creation commands here.
 
 use std::path::{Path, PathBuf};
 
@@ -90,8 +90,8 @@ pub fn fetch_pr_data(
 }
 
 /// CPU-only half of the PR open path: parse the patch, apply
-/// `.tuicrignore`, and build the session. Runs on the main thread because
-/// `SyntaxHighlighter` is not trivially `Send`-cloneable.
+/// `.tuicrignore`, and build the session. Async App paths call this on their
+/// worker with a highlighter built there; synchronous callers use it directly.
 pub fn prepare_open_pr(
     details: PullRequestDetails,
     patch: &str,
@@ -297,8 +297,8 @@ index 1111111..2222222 100644
     }
 
     /// Patch fixture covering add/modify/delete/rename in a single PR
-    /// diff, mirroring what `gh pr diff --patch --color never` would
-    /// emit. Acts as a regression guard against future changes to the
+    /// diff, mirroring the Git-style patch text returned by the forge
+    /// backend. Acts as a regression guard against future changes to the
     /// shared diff parser.
     const MULTI_STATUS_PATCH: &str = r##"diff --git a/added.rs b/added.rs
 new file mode 100644

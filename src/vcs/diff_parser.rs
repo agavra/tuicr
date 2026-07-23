@@ -11,6 +11,10 @@ use crate::error::{Result, TuicrError};
 use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin};
 use crate::syntax::{SyntaxHighlighter, needs_full_file_highlight};
 
+/// Huge generated hunks remain readable but skip syntect's per-line span
+/// expansion. This bounds parse time and memory without hiding diff content.
+const MAX_HIGHLIGHT_HUNK_LINES: usize = 5_000;
+
 /// Diff format variants for different VCS tools.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiffFormat {
@@ -334,15 +338,22 @@ where
     // Apply syntax highlighting by side-specific sequence to keep parser state valid.
     // Container grammars skip per-hunk highlighting; the full-file post-pass
     // (`enhance_with_full_file_highlight`) overwrites these spans anyway.
-    let highlight_sequences =
-        SyntaxHighlighter::split_diff_lines_for_highlighting(&line_contents, &line_origins);
-    let (old_highlighted_lines, new_highlighted_lines) = match file_path {
-        Some(path) if !needs_full_file_highlight(path) => (
-            highlighter.highlight_file_lines(path, &highlight_sequences.old_lines),
-            highlighter.highlight_file_lines(path, &highlight_sequences.new_lines),
-        ),
-        _ => (None, None),
-    };
+    // Giant hunks stay as plain styled diff text so generated files cannot
+    // monopolize the input thread or inflate each line into many owned spans.
+    let highlight_sequences = file_path
+        .filter(|path| !needs_full_file_highlight(path))
+        .filter(|_| line_contents.len() <= MAX_HIGHLIGHT_HUNK_LINES)
+        .map(|_| {
+            SyntaxHighlighter::split_diff_lines_for_highlighting(&line_contents, &line_origins)
+        });
+    let (old_highlighted_lines, new_highlighted_lines) =
+        match (file_path, highlight_sequences.as_ref()) {
+            (Some(path), Some(sequences)) => (
+                highlighter.highlight_file_lines(path, &sequences.old_lines),
+                highlighter.highlight_file_lines(path, &sequences.new_lines),
+            ),
+            _ => (None, None),
+        };
 
     // Build DiffLines
     let mut diff_lines: Vec<DiffLine> = Vec::with_capacity(line_contents.len());
@@ -350,13 +361,15 @@ where
         let origin = line_origins[idx];
         let (old_lineno, new_lineno) = line_numbers[idx];
 
-        let highlighted_spans = highlighter.highlighted_line_for_diff_with_background(
-            old_highlighted_lines.as_deref(),
-            new_highlighted_lines.as_deref(),
-            highlight_sequences.old_line_indices[idx],
-            highlight_sequences.new_line_indices[idx],
-            origin,
-        );
+        let highlighted_spans = highlight_sequences.as_ref().and_then(|sequences| {
+            highlighter.highlighted_line_for_diff_with_background(
+                old_highlighted_lines.as_deref(),
+                new_highlighted_lines.as_deref(),
+                sequences.old_line_indices[idx],
+                sequences.new_line_indices[idx],
+                origin,
+            )
+        });
 
         diff_lines.push(DiffLine {
             origin,
@@ -873,6 +886,27 @@ copy to dest.rs
                 "line {idx} should retain highlighting"
             );
         }
+    }
+
+    #[test]
+    fn should_skip_syntax_highlighting_for_giant_hunks() {
+        let mut diff = String::from(
+            "diff --git a/generated.rs b/generated.rs\n\
+             new file mode 100644\n\
+             --- /dev/null\n\
+             +++ b/generated.rs\n\
+             @@ -0,0 +1,5001 @@\n",
+        );
+        for index in 0..5_001 {
+            diff.push_str(&format!("+pub const VALUE_{index}: usize = {index};\n"));
+        }
+
+        let files =
+            parse_unified_diff(&diff, DiffFormat::GitStyle, &SyntaxHighlighter::default()).unwrap();
+        let lines = &files[0].hunks[0].lines;
+
+        assert_eq!(lines.len(), 5_001);
+        assert!(lines.iter().all(|line| line.highlighted_spans.is_none()));
     }
 
     #[test]

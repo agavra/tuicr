@@ -22,6 +22,26 @@ pub enum SyntaxThemeSource {
     Custom(Box<syntect::highlighting::Theme>),
 }
 
+#[derive(Clone)]
+pub(crate) struct SyntaxHighlighterFactory {
+    source: SyntaxThemeSource,
+    add_bg: Color,
+    del_bg: Color,
+}
+
+impl SyntaxHighlighterFactory {
+    pub(crate) fn build(self) -> SyntaxHighlighter {
+        match self.source {
+            SyntaxThemeSource::Embedded(theme) => {
+                SyntaxHighlighter::new(theme, self.add_bg, self.del_bg)
+            }
+            SyntaxThemeSource::Custom(theme) => {
+                SyntaxHighlighter::with_theme(*theme, self.add_bg, self.del_bg)
+            }
+        }
+    }
+}
+
 /// Complete color theme for the application
 pub struct Theme {
     /// Cached syntax highlighter (lazily initialized)
@@ -2291,18 +2311,22 @@ pub fn resolve_theme_with_config(
 }
 
 impl Theme {
-    /// Get the syntax highlighter for this theme (lazily initialized, cached)
+    pub(crate) fn syntax_highlighter_factory(&self) -> SyntaxHighlighterFactory {
+        SyntaxHighlighterFactory {
+            source: self.syntax_theme.clone(),
+            add_bg: self.syntax_add_bg,
+            del_bg: self.syntax_del_bg,
+        }
+    }
+
+    fn build_syntax_highlighter(&self) -> SyntaxHighlighter {
+        self.syntax_highlighter_factory().build()
+    }
+
+    /// Get the syntax highlighter for this theme (lazily initialized, cached).
     pub fn syntax_highlighter(&self) -> &SyntaxHighlighter {
-        self.highlighter.get_or_init(|| match &self.syntax_theme {
-            SyntaxThemeSource::Embedded(theme) => {
-                SyntaxHighlighter::new(*theme, self.syntax_add_bg, self.syntax_del_bg)
-            }
-            SyntaxThemeSource::Custom(theme) => SyntaxHighlighter::with_theme(
-                *theme.clone(),
-                self.syntax_add_bg,
-                self.syntax_del_bg,
-            ),
-        })
+        self.highlighter
+            .get_or_init(|| self.build_syntax_highlighter())
     }
 
     #[cfg(test)]
@@ -2351,6 +2375,18 @@ mod tests {
         path::{Path, PathBuf},
     };
     use tempfile::tempdir;
+
+    #[test]
+    fn worker_syntax_highlighter_is_sendable() {
+        let factory = Theme::dark().syntax_highlighter_factory();
+        std::thread::spawn(move || {
+            let highlighter = factory.build();
+            let lines = vec!["fn main() {}".to_string()];
+            highlighter.highlight_file_lines(Path::new("main.rs"), &lines)
+        })
+        .join()
+        .unwrap();
+    }
 
     fn sample_tm_theme() -> &'static str {
         r#"<?xml version="1.0" encoding="UTF-8"?>

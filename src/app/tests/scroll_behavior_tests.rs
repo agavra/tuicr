@@ -109,6 +109,25 @@ fn build_scroll_app(n: usize, viewport: usize, scroll_offset_config: usize) -> A
 }
 
 #[test]
+fn navigation_bounds_use_the_render_annotation_index() {
+    let mut app = build_scroll_app(10, 5, 0);
+    let rendered_lines = app.line_annotations.len();
+
+    app.diff_files[0].hunks[0]
+        .lines
+        .extend((0..100_000).map(|index| DiffLine {
+            origin: crate::model::LineOrigin::Addition,
+            content: index.to_string(),
+            old_lineno: None,
+            new_lineno: Some(index + 100),
+            highlighted_spans: None,
+        }));
+
+    assert_eq!(app.total_lines(), rendered_lines);
+    assert_eq!(app.max_scroll_offset(), rendered_lines - 1);
+}
+
+#[test]
 fn zz_on_last_line_centers_cursor() {
     // 40 diff lines + 4 overhead = 44 total. max_cursor = 42. Viewport = 20.
     let mut app = build_scroll_app(40, 20, 5);
