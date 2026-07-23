@@ -1256,10 +1256,12 @@ pub fn handle_visual_action(app: &mut App, action: Action) {
         Action::Quit => app.should_quit = true,
         Action::ScrollViewDown(n) | Action::MouseScrollDown(n) => app.scroll_view_down(n),
         Action::ScrollViewUp(n) | Action::MouseScrollUp(n) => app.scroll_view_up(n),
-        Action::HalfPageDown => app.scroll_down(app.diff_state.viewport_height / 2),
-        Action::HalfPageUp => app.scroll_up(app.diff_state.viewport_height / 2),
-        Action::PageDown => app.scroll_down(app.diff_state.viewport_height),
-        Action::PageUp => app.scroll_up(app.diff_state.viewport_height),
+        Action::HalfPageDown => {
+            app.scroll_down(app.page_lines_down(app.diff_state.viewport_height / 2))
+        }
+        Action::HalfPageUp => app.scroll_up(app.page_lines_up(app.diff_state.viewport_height / 2)),
+        Action::PageDown => app.scroll_down(app.page_lines_down(app.diff_state.viewport_height)),
+        Action::PageUp => app.scroll_up(app.page_lines_up(app.diff_state.viewport_height)),
         _ => {}
     }
     clear_visual_if_cursor_offscreen(app);
@@ -1416,10 +1418,12 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
             app.show_file_list = false;
             app.focused_panel = FocusedPanel::Diff;
         }
-        Action::HalfPageDown => app.scroll_down(app.diff_state.viewport_height / 2),
-        Action::HalfPageUp => app.scroll_up(app.diff_state.viewport_height / 2),
-        Action::PageDown => app.scroll_down(app.diff_state.viewport_height),
-        Action::PageUp => app.scroll_up(app.diff_state.viewport_height),
+        Action::HalfPageDown => {
+            app.scroll_down(app.page_lines_down(app.diff_state.viewport_height / 2))
+        }
+        Action::HalfPageUp => app.scroll_up(app.page_lines_up(app.diff_state.viewport_height / 2)),
+        Action::PageDown => app.scroll_down(app.page_lines_down(app.diff_state.viewport_height)),
+        Action::PageUp => app.scroll_up(app.page_lines_up(app.diff_state.viewport_height)),
         Action::GoToTop => app.jump_to_file(0),
         Action::GoToBottom => app.jump_to_bottom(),
         Action::NextFile => app.next_file(),

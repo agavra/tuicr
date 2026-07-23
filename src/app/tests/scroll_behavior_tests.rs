@@ -1,5 +1,6 @@
 use crate::app::*;
 use crate::model::FileStatus;
+use crate::ui::row_height::annotation_row_height;
 use crate::vcs::traits::VcsType;
 
 struct DummyVcs {
@@ -390,4 +391,262 @@ fn scroll_offset_zero_means_no_margin() {
     };
     let margin = state.effective_scroll_margin(0);
     assert_eq!(margin, 0, "margin should be 0 when scroll_offset is 0");
+}
+
+#[test]
+fn scroll_offset_for_rows_above_wrap_off_matches_saturating_sub() {
+    let mut app = build_scroll_app(40, 20, 5);
+    app.diff_state.wrap_lines = false;
+    for anchor in [0usize, 1, 5, 20, 43] {
+        for n in [0usize, 1, 3, 10, 100] {
+            assert_eq!(
+                app.scroll_offset_for_rows_above(anchor, n),
+                anchor.saturating_sub(n),
+                "anchor={anchor} n={n}"
+            );
+        }
+    }
+}
+
+/// Build a scroll app whose diff lines are long enough that each wraps
+/// to multiple visual rows at the given viewport_width.
+fn build_wrapping_scroll_app(n: usize, viewport: usize, viewport_width: usize) -> App {
+    let contents: Vec<String> = (0..n).map(|_| "L".repeat(viewport_width * 4)).collect();
+    build_wrapping_scroll_app_with_contents(&contents, viewport, viewport_width)
+}
+
+/// Variant that lets callers set per-line diff content, so heterogeneous
+/// heights can be arranged without duplicating the fixture.
+fn build_wrapping_scroll_app_with_contents(
+    contents: &[String],
+    viewport: usize,
+    viewport_width: usize,
+) -> App {
+    let mut app = build_scroll_app(contents.len(), viewport, 0);
+    for (line, content) in app.diff_files[0].hunks[0]
+        .lines
+        .iter_mut()
+        .zip(contents.iter())
+    {
+        line.content = content.clone();
+    }
+    app.diff_state.wrap_lines = true;
+    app.rebuild_annotations();
+    app.sync_viewport_width(viewport_width);
+    app
+}
+
+#[test]
+fn center_cursor_wrap_on_walks_maximally() {
+    let mut app = build_wrapping_scroll_app(40, 20, 20);
+    let cursor = 30usize;
+    app.diff_state.cursor_line = cursor;
+    app.center_cursor();
+
+    let scroll = app.diff_state.scroll_offset;
+    let budget = app.diff_state.viewport_height / 2;
+    let sum: usize = (scroll..cursor)
+        .map(|k| annotation_row_height(&app, k))
+        .sum();
+    assert!(
+        sum <= budget,
+        "sum of heights [{scroll}..{cursor}) = {sum} must be <= budget {budget}"
+    );
+    let max_scroll = app.max_scroll_offset();
+    if scroll > 0 && scroll <= max_scroll {
+        let next = sum + annotation_row_height(&app, scroll - 1);
+        assert!(
+            next > budget,
+            "walk should be maximal: adding row {} (height {}) yields {next}, budget {budget}",
+            scroll - 1,
+            annotation_row_height(&app, scroll - 1)
+        );
+    }
+}
+
+#[test]
+fn cursor_to_bottom_wrap_on_walks_maximally() {
+    let mut app = build_wrapping_scroll_app(40, 20, 20);
+    let cursor = 30usize;
+    app.diff_state.cursor_line = cursor;
+    let viewport = app.diff_state.viewport_height;
+    let margin = app.diff_state.effective_scroll_margin(app.scroll_offset);
+    let cursor_h = annotation_row_height(&app, cursor);
+    let budget = viewport.saturating_sub(margin + cursor_h);
+
+    app.cursor_to_bottom();
+
+    let scroll = app.diff_state.scroll_offset;
+    let sum: usize = (scroll..cursor)
+        .map(|k| annotation_row_height(&app, k))
+        .sum();
+    let total = sum + cursor_h;
+    assert!(
+        total + margin <= viewport,
+        "sum over [{scroll}..={cursor}] = {total} plus margin {margin} must be <= viewport {viewport}"
+    );
+    let max_scroll = app.max_scroll_offset();
+    if scroll > 0 && scroll <= max_scroll {
+        let next = sum + annotation_row_height(&app, scroll - 1);
+        assert!(
+            next > budget,
+            "walk should be maximal: adding row {} (height {}) yields {next}, budget {budget}",
+            scroll - 1,
+            annotation_row_height(&app, scroll - 1)
+        );
+    }
+}
+
+#[test]
+fn page_lines_wrap_off_equals_row_budget() {
+    let mut app = build_scroll_app(40, 20, 0);
+    app.diff_state.wrap_lines = false;
+    app.diff_state.cursor_line = 20;
+    assert_eq!(app.page_lines_down(5), 5);
+    assert_eq!(app.page_lines_up(5), 5);
+}
+
+#[test]
+fn page_lines_down_wrap_on_counts_visual_rows() {
+    let mut app = build_wrapping_scroll_app(40, 20, 20);
+    let cursor = 5usize;
+    app.diff_state.cursor_line = cursor;
+    let budget = 10usize;
+    let count = app.page_lines_down(budget);
+    assert!(count >= 1);
+    let sum: usize = (cursor + 1..=cursor + count)
+        .map(|k| annotation_row_height(&app, k))
+        .sum();
+    assert!(
+        sum <= budget,
+        "sum of heights {sum} must be <= budget {budget}"
+    );
+    let next_idx = cursor + count + 1;
+    if next_idx < app.line_annotations.len() {
+        let next_h = annotation_row_height(&app, next_idx);
+        assert!(
+            sum + next_h > budget,
+            "walk should be maximal: adding next height {next_h} to {sum} would fit in {budget}"
+        );
+    }
+}
+
+#[test]
+fn scroll_offset_for_rows_above_wrap_on_heterogeneous_heights() {
+    // Alternating short (1-row) and long (3-row) diff lines at
+    // viewport_width=20. Prefix width for a DiffLine at lw=1 is 5
+    // (indicator + "n " + prefix + " "). Short content "x" -> 6 chars
+    // total -> 1 row. Long content "L"*36 -> 41 chars total -> 3 rows.
+    let contents: Vec<String> = (0..8)
+        .map(|i| {
+            if i % 2 == 0 {
+                "x".to_string()
+            } else {
+                "L".repeat(36)
+            }
+        })
+        .collect();
+    let app = build_wrapping_scroll_app_with_contents(&contents, 20, 20);
+
+    // Locate the first DiffLine annotation and pin the heights so the
+    // test is self-documenting. Indices [first_diff..first_diff+8]
+    // correspond to contents[0..8], alternating 1, 3, 1, 3, ...
+    let first_diff = app
+        .line_annotations
+        .iter()
+        .position(|a| matches!(a, AnnotatedLine::DiffLine { .. }))
+        .expect("a diff line annotation must exist");
+    for i in 0..8 {
+        let expected = if i % 2 == 0 { 1 } else { 3 };
+        let got = annotation_row_height(&app, first_diff + i);
+        assert_eq!(
+            got,
+            expected,
+            "height mismatch at content {i} (annotation {}): got {got}, want {expected}",
+            first_diff + i
+        );
+    }
+
+    // Anchor at content index 6 (short, height 1). Walk backwards:
+    //   k = anchor-1 (idx 5, long,  h=3): acc=3 <=5, keep
+    //   k = anchor-2 (idx 4, short, h=1): acc=4 <=5, keep
+    //   k = anchor-3 (idx 3, long,  h=3): acc=7  >5, break
+    // Expected offset = anchor-2.
+    //
+    // Off-by-one bug (reading height(k+1) or height(k-1) instead of k)
+    // would misroute the walk at k=anchor-1, yielding anchor-3.
+    let anchor = first_diff + 6;
+    let budget = 5usize;
+    assert_eq!(
+        app.scroll_offset_for_rows_above(anchor, budget),
+        anchor - 2,
+        "walk must consume heights[anchor-1..anchor] correctly"
+    );
+}
+
+#[test]
+fn page_lines_return_at_least_one() {
+    let mut app = build_scroll_app(40, 20, 0);
+    app.diff_state.wrap_lines = false;
+    app.diff_state.cursor_line = 10;
+    assert_eq!(app.page_lines_down(0), 1);
+    assert_eq!(app.page_lines_up(0), 1);
+
+    let last = app.line_annotations.len().saturating_sub(1);
+    app.diff_state.cursor_line = last;
+    assert_eq!(app.page_lines_down(10), 1);
+}
+
+#[test]
+fn jump_to_bottom_wrap_on_keeps_last_line_fully_visible() {
+    let mut app = build_wrapping_scroll_app(40, 20, 20);
+    app.jump_to_bottom();
+
+    let scroll = app.diff_state.scroll_offset;
+    let max_line = app.max_cursor_line();
+    let viewport = app.diff_state.viewport_height;
+
+    let total: usize = (scroll..=max_line)
+        .map(|k| annotation_row_height(&app, k))
+        .sum();
+    assert!(
+        total <= viewport,
+        "rows over [{scroll}..={max_line}] = {total} must fit viewport {viewport}"
+    );
+    assert_eq!(app.diff_state.cursor_line, max_line);
+    if scroll > 0 {
+        let with_prev = total + annotation_row_height(&app, scroll - 1);
+        assert!(
+            with_prev > viewport,
+            "walk should be maximal: adding row {} yields {with_prev}, viewport {viewport}",
+            scroll - 1
+        );
+    }
+}
+
+#[test]
+fn move_cursor_to_annotation_wrap_on_scrolls_target_fully_into_view() {
+    let mut app = build_wrapping_scroll_app(40, 20, 20);
+    app.diff_state.scroll_offset = 0;
+    let target = app.max_cursor_line();
+
+    app.move_cursor_to_annotation(target);
+
+    let scroll = app.diff_state.scroll_offset;
+    let viewport = app.diff_state.viewport_height;
+    let total: usize = (scroll..=target)
+        .map(|k| annotation_row_height(&app, k))
+        .sum();
+    assert!(
+        total <= viewport,
+        "target must be fully visible: rows over [{scroll}..={target}] = {total}, viewport {viewport}"
+    );
+    assert_eq!(app.diff_state.cursor_line, target);
+
+    let scroll_before = app.diff_state.scroll_offset;
+    app.move_cursor_to_annotation(target);
+    assert_eq!(
+        app.diff_state.scroll_offset, scroll_before,
+        "already-visible target should not change scroll_offset"
+    );
 }

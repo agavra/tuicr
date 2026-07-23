@@ -8,7 +8,7 @@ use ratatui::{
 use crate::app::{
     AnnotatedLine, App, DiffViewMode, ExpandDirection, GAP_EXPAND_BATCH, VisualSelection,
 };
-use crate::model::{Comment, DiffHunk, LineSide};
+use crate::model::{Comment, DiffFile, DiffHunk, DiffLine, LineOrigin, LineSide};
 use crate::theme::Theme;
 use crate::ui::comment_panel;
 use crate::ui::diff_side_by_side::render_side_by_side_diff;
@@ -18,6 +18,103 @@ use unicode_width::UnicodeWidthStr;
 
 /// Static header rule used for file/section headers; avoids `"═".repeat(40)` per frame.
 pub(super) const HEADER_RULE: &str = "════════════════════════════════════════";
+
+/// Shared text before `HEADER_RULE` for the synthetic review-comments banner.
+pub(super) const REVIEW_COMMENTS_HEADER_PREFIX: &str = "═══ Review Comments ";
+
+/// Text portion of a per-file section header, without the trailing
+/// `HEADER_RULE`. Callers concatenate `HEADER_RULE` themselves so the rule
+/// can be styled as a separate span (both renderers) or absorbed into a
+/// single width computation (`row_height`).
+pub(super) fn file_header_prefix_text(app: &App, file: &DiffFile) -> String {
+    let path = file.display_path();
+    let is_reviewed = app.session.is_file_reviewed(path);
+    let review_mark = if is_reviewed { "✓ " } else { "" };
+    if file.is_commit_message || app.is_pristine_mode {
+        format!("═══ {}{} ", review_mark, path.display())
+    } else {
+        format!(
+            "═══ {}{} [{}] ",
+            review_mark,
+            path.display(),
+            file.status.as_char()
+        )
+    }
+}
+
+/// Styled body text of the gap `expand (N lines)` row. Callers prepend a
+/// two-cell cursor indicator.
+pub(super) fn expander_body_text(direction: ExpandDirection, remaining: usize) -> String {
+    let arrow = match direction {
+        ExpandDirection::Down => "↓",
+        ExpandDirection::Up => "↑",
+        ExpandDirection::Both => "↕",
+    };
+    let count = remaining.min(GAP_EXPAND_BATCH);
+    format!("       ... {arrow} expand ({count} lines) ...")
+}
+
+/// Styled body text of the `N lines hidden` row.
+pub(super) fn hidden_lines_body_text(count: usize) -> String {
+    format!("       ... {count} lines hidden ...")
+}
+
+/// Unified-mode line-number gutter field for a diff line — a right-aligned
+/// number followed by a single space, or all spaces when the side is absent.
+pub(super) fn unified_line_number_field(dl: &DiffLine, lw: usize) -> String {
+    let blank = || " ".repeat(lw + 1);
+    let format_n = |n: u32| format!("{n:>lw$} ");
+    match dl.origin {
+        LineOrigin::Addition => dl.new_lineno.map(format_n).unwrap_or_else(blank),
+        LineOrigin::Deletion => dl.old_lineno.map(format_n).unwrap_or_else(blank),
+        LineOrigin::Context => dl
+            .new_lineno
+            .or(dl.old_lineno)
+            .map(format_n)
+            .unwrap_or_else(blank),
+    }
+}
+
+/// Single-cell origin marker for a unified diff line (`▌` for add/del,
+/// space for context). Callers append a trailing space of their own.
+pub(super) fn unified_line_origin_marker(dl: &DiffLine) -> &'static str {
+    match dl.origin {
+        LineOrigin::Addition | LineOrigin::Deletion => "▌",
+        LineOrigin::Context => " ",
+    }
+}
+
+/// Body text of the `Spacing` inter-file row in unified single-file view —
+/// a hint pointing at the file `j` would walk into next. Callers prepend the
+/// one-cell cursor indicator. Multi-file view and side-by-side always emit a
+/// bare indicator instead, so this builder is only used by the unified
+/// single-file branch (and by `row_height` mirroring it).
+pub(super) fn spacing_next_file_hint_text(next_path: &str) -> String {
+    format!("  \u{2193}  {next_path}")
+}
+
+/// Label text for a `BinaryOrEmpty` row (unified & SBS both render this
+/// verbatim after the two-cell cursor indicator). Empty string means the
+/// file doesn't fall into any of the three known non-diff cases.
+pub(super) fn binary_or_empty_label(file: &DiffFile) -> &'static str {
+    if file.is_too_large {
+        "(file too large to display)"
+    } else if file.is_binary {
+        "(binary file)"
+    } else if file.hunks.is_empty() {
+        "(no changes)"
+    } else {
+        ""
+    }
+}
+
+/// Line-number gutter field for an expanded-context row (uses new-side
+/// numbers only).
+pub(super) fn expanded_context_lineno_field(dl: &DiffLine, lw: usize) -> String {
+    dl.new_lineno
+        .map(|n| format!("{n:>lw$} "))
+        .unwrap_or_else(|| " ".repeat(lw + 1))
+}
 
 /// Shared empty map so we can borrow `line_comments` without cloning per file per frame.
 pub(super) static EMPTY_LINE_COMMENTS: std::sync::LazyLock<
@@ -170,17 +267,11 @@ pub(super) fn render_expander_line(
     remaining: usize,
     theme: &Theme,
 ) {
-    let arrow = match direction {
-        ExpandDirection::Down => "↓",
-        ExpandDirection::Up => "↑",
-        ExpandDirection::Both => "↕",
-    };
-    let count = remaining.min(GAP_EXPAND_BATCH);
     let indicator = cursor_indicator_spaced(*line_idx, current_line_idx);
     lines.push(Line::from(vec![
         Span::styled(indicator, styles::current_line_indicator_style(theme)),
         Span::styled(
-            format!("       ... {arrow} expand ({count} lines) ..."),
+            expander_body_text(direction, remaining),
             styles::dim_style(theme),
         ),
     ]));
@@ -198,10 +289,7 @@ pub(super) fn render_hidden_lines(
     let indicator = cursor_indicator_spaced(*line_idx, current_line_idx);
     lines.push(Line::from(vec![
         Span::styled(indicator, styles::current_line_indicator_style(theme)),
-        Span::styled(
-            format!("       ... {count} lines hidden ..."),
-            styles::dim_style(theme),
-        ),
+        Span::styled(hidden_lines_body_text(count), styles::dim_style(theme)),
     ]));
     *line_idx += 1;
 }

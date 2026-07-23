@@ -87,7 +87,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                 styles::current_line_indicator_style(&app.theme),
             ),
             Span::styled(
-                "═══ Review Comments ",
+                crate::ui::diff_view::REVIEW_COMMENTS_HEADER_PREFIX,
                 styles::file_header_style(&app.theme),
             ),
             Span::styled(
@@ -231,7 +231,6 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
             continue;
         }
         let path = file.display_path();
-        let status = file.status.as_char();
         let is_reviewed = app.session.is_file_reviewed(path);
 
         // The `═══ filename ═══` separator is redundant in single-file
@@ -239,16 +238,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
         // the wide bar of `═` characters confuses horizontal scrolling.
         if !app.is_single_file_view {
             let indicator = cursor_indicator_spaced(line_idx, current_line_idx);
-            let review_mark = if is_reviewed { "✓ " } else { "" };
-            let header_text = if file.is_commit_message {
-                format!("═══ {}{} ", review_mark, path.display())
-            } else if app.is_pristine_mode {
-                // Pristine mode reviews unchanged code; the M/A/D badge would
-                // mislead. Render the header without it.
-                format!("═══ {}{} ", review_mark, path.display())
-            } else {
-                format!("═══ {}{} [{}] ", review_mark, path.display(), status)
-            };
+            let header_text = crate::ui::diff_view::file_header_prefix_text(app, file);
             lines.push(Line::from(vec![
                 Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
                 Span::styled(header_text, styles::file_header_style(&app.theme)),
@@ -389,25 +379,14 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
             }
         }
 
-        if file.is_too_large {
+        if file.is_too_large || file.is_binary || file.hunks.is_empty() {
             let indicator = cursor_indicator_spaced(line_idx, current_line_idx);
             lines.push(Line::from(vec![
                 Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
-                Span::styled("(file too large to display)", styles::dim_style(&app.theme)),
-            ]));
-            line_idx += 1;
-        } else if file.is_binary {
-            let indicator = cursor_indicator_spaced(line_idx, current_line_idx);
-            lines.push(Line::from(vec![
-                Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
-                Span::styled("(binary file)", styles::dim_style(&app.theme)),
-            ]));
-            line_idx += 1;
-        } else if file.hunks.is_empty() {
-            let indicator = cursor_indicator_spaced(line_idx, current_line_idx);
-            lines.push(Line::from(vec![
-                Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
-                Span::styled("(no changes)", styles::dim_style(&app.theme)),
+                Span::styled(
+                    crate::ui::diff_view::binary_or_empty_label(file),
+                    styles::dim_style(&app.theme),
+                ),
             ]));
             line_idx += 1;
         } else {
@@ -560,36 +539,20 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                         lines.push(Line::default());
                         line_idx += 1;
                     } else {
-                        let (prefix, base_style) = match diff_line.origin {
-                            LineOrigin::Addition => ("▌", styles::diff_add_style(&app.theme)),
-                            LineOrigin::Deletion => ("▌", styles::diff_del_style(&app.theme)),
-                            LineOrigin::Context => (" ", styles::diff_context_style(&app.theme)),
+                        let base_style = match diff_line.origin {
+                            LineOrigin::Addition => styles::diff_add_style(&app.theme),
+                            LineOrigin::Deletion => styles::diff_del_style(&app.theme),
+                            LineOrigin::Context => styles::diff_context_style(&app.theme),
                         };
-
                         let style = base_style;
-
-                        let blank = " ".repeat(lw + 1);
                         // A commit message is prose, not code: render it without
                         // line numbers, matching the side-by-side view.
                         let line_num_str = if file.is_commit_message {
-                            blank
+                            " ".repeat(lw + 1)
                         } else {
-                            match diff_line.origin {
-                                LineOrigin::Addition => diff_line
-                                    .new_lineno
-                                    .map(|n| format!("{n:>lw$} "))
-                                    .unwrap_or_else(|| blank.clone()),
-                                LineOrigin::Deletion => diff_line
-                                    .old_lineno
-                                    .map(|n| format!("{n:>lw$} "))
-                                    .unwrap_or_else(|| blank.clone()),
-                                _ => diff_line
-                                    .new_lineno
-                                    .or(diff_line.old_lineno)
-                                    .map(|n| format!("{n:>lw$} "))
-                                    .unwrap_or_else(|| blank),
-                            }
+                            crate::ui::diff_view::unified_line_number_field(diff_line, lw)
                         };
+                        let prefix = crate::ui::diff_view::unified_line_origin_marker(diff_line);
 
                         let indicator = cursor_indicator(line_idx, current_line_idx);
 
@@ -1075,7 +1038,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
             lines.push(Line::from(vec![
                 Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
                 Span::styled(
-                    format!("  \u{2193}  {next_path}"),
+                    crate::ui::diff_view::spacing_next_file_hint_text(&next_path),
                     Style::default()
                         .fg(app.theme.fg_secondary)
                         .add_modifier(Modifier::DIM),
@@ -1342,10 +1305,7 @@ fn render_expanded_context_line(
     lw: usize,
 ) {
     let indicator = cursor_indicator(*line_idx, current_line_idx);
-    let line_num = expanded_line
-        .new_lineno
-        .map(|n| format!("{n:>lw$} "))
-        .unwrap_or_else(|| " ".repeat(lw + 1));
+    let line_num = crate::ui::diff_view::expanded_context_lineno_field(expanded_line, lw);
     let line_spans = vec![
         Span::styled(indicator, styles::current_line_indicator_style(theme)),
         Span::styled(line_num, styles::expanded_context_style(theme)),

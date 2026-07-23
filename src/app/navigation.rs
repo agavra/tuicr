@@ -1,4 +1,5 @@
 use super::*;
+use crate::ui::row_height::annotation_row_height;
 
 impl App {
     pub fn cursor_down(&mut self, lines: usize) {
@@ -223,14 +224,54 @@ impl App {
         }
     }
 
+    pub(in crate::app) fn scroll_offset_for_rows_above(
+        &self,
+        anchor: usize,
+        row_budget: usize,
+    ) -> usize {
+        let mut result = anchor;
+        let mut acc: usize = 0;
+        let mut k = anchor;
+        while k > 0 {
+            k -= 1;
+            let h = annotation_row_height(self, k);
+            if acc + h > row_budget {
+                break;
+            }
+            acc += h;
+            result = k;
+        }
+        result
+    }
+
+    pub(crate) fn page_lines_down(&self, row_budget: usize) -> usize {
+        let anchor = self.diff_state.cursor_line;
+        let total = self.line_annotations.len();
+        let mut acc: usize = 0;
+        let mut count: usize = 0;
+        let mut k = anchor + 1;
+        while k < total {
+            let h = annotation_row_height(self, k);
+            if acc + h > row_budget {
+                break;
+            }
+            acc += h;
+            count += 1;
+            k += 1;
+        }
+        count.max(1)
+    }
+
+    pub(crate) fn page_lines_up(&self, row_budget: usize) -> usize {
+        let anchor = self.diff_state.cursor_line;
+        (anchor - self.scroll_offset_for_rows_above(anchor, row_budget)).max(1)
+    }
+
     pub fn center_cursor(&mut self) {
         let viewport = self.diff_state.viewport_height.max(1);
-        let half_viewport = viewport / 2;
         let max_scroll = self.max_scroll_offset();
         self.diff_state.scroll_offset = self
-            .diff_state
-            .cursor_line
-            .saturating_sub(half_viewport)
+            .scroll_offset_for_rows_above(self.diff_state.cursor_line, viewport / 2)
             .min(max_scroll);
     }
 
@@ -238,20 +279,18 @@ impl App {
         let scroll_margin = self.diff_state.effective_scroll_margin(self.scroll_offset);
         let max_scroll = self.max_scroll_offset();
         self.diff_state.scroll_offset = self
-            .diff_state
-            .cursor_line
-            .saturating_sub(scroll_margin)
+            .scroll_offset_for_rows_above(self.diff_state.cursor_line, scroll_margin)
             .min(max_scroll);
     }
 
     pub fn cursor_to_bottom(&mut self) {
-        let visible_lines = self.diff_state.effective_visible_lines();
+        let viewport = self.diff_state.viewport_height.max(1);
         let scroll_margin = self.diff_state.effective_scroll_margin(self.scroll_offset);
+        let cursor = self.diff_state.cursor_line;
+        let budget = viewport.saturating_sub(scroll_margin + annotation_row_height(self, cursor));
         let max_scroll = self.max_scroll_offset();
         self.diff_state.scroll_offset = self
-            .diff_state
-            .cursor_line
-            .saturating_sub(visible_lines.saturating_sub(1 + scroll_margin))
+            .scroll_offset_for_rows_above(cursor, budget)
             .min(max_scroll);
     }
 
@@ -381,8 +420,14 @@ impl App {
         let viewport = self.diff_state.viewport_height.max(1);
         if idx < self.diff_state.scroll_offset {
             self.diff_state.scroll_offset = idx;
-        } else if idx >= self.diff_state.scroll_offset + viewport {
-            self.diff_state.scroll_offset = idx + 1 - viewport;
+        } else {
+            let bottom_start = self.scroll_offset_for_rows_above(
+                idx,
+                viewport.saturating_sub(annotation_row_height(self, idx)),
+            );
+            if self.diff_state.scroll_offset < bottom_start {
+                self.diff_state.scroll_offset = bottom_start;
+            }
         }
     }
 
@@ -625,7 +670,10 @@ impl App {
         self.diff_state.cursor_line = max_line;
         // Position so the last navigable line is at the bottom of the viewport
         let viewport = self.diff_state.viewport_height.max(1);
-        self.diff_state.scroll_offset = (max_line + 1).saturating_sub(viewport);
+        self.diff_state.scroll_offset = self.scroll_offset_for_rows_above(
+            max_line,
+            viewport.saturating_sub(annotation_row_height(self, max_line)),
+        );
         self.update_current_file_from_cursor();
     }
 

@@ -1,7 +1,7 @@
 use super::*;
 
 impl App {
-    pub(in crate::app) fn gap_size(&self, gap_id: &GapId) -> Option<u32> {
+    pub(crate) fn gap_size(&self, gap_id: &GapId) -> Option<u32> {
         let file = self.diff_files.get(gap_id.file_idx)?;
 
         if gap_id.hunk_idx == file.hunks.len() {
