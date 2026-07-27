@@ -213,7 +213,7 @@ fn map_normal_mode(key: KeyEvent, leader_key: char) -> Action {
         (KeyCode::Char(':'), _) => Action::EnterCommandMode,
         (KeyCode::Char('/'), _) => Action::EnterSearchMode,
         (KeyCode::Char('?'), _) => Action::ToggleHelp,
-        (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
+        (KeyCode::Esc, KeyModifiers::NONE) => Action::None,
 
         // Quick quit
         (KeyCode::Char('q'), KeyModifiers::NONE) => Action::Quit,
@@ -503,6 +503,12 @@ mod tests {
     #[test]
     fn should_leave_lowercase_e_unbound_in_normal_mode() {
         let action = map_normal_mode(key(KeyCode::Char('e')), DEFAULT_LEADER_KEY);
+        assert_eq!(action, Action::None);
+    }
+
+    #[test]
+    fn should_leave_escape_unbound_in_normal_mode() {
+        let action = map_normal_mode(key(KeyCode::Esc), DEFAULT_LEADER_KEY);
         assert_eq!(action, Action::None);
     }
 
