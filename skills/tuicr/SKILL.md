@@ -1,6 +1,6 @@
 ---
 name: tuicr
-description: Use tuicr's review CLI to read and add comments in active TUI review sessions, and launch tuicr in tmux/zellij when a user needs an interactive review pane.
+description: Use tuicr's review CLI to read and add comments in active TUI review sessions, and launch tuicr in tmux, Zellij, or Herdr when a user needs an interactive review pane.
 ---
 
 # tuicr Review Workflow
@@ -63,8 +63,8 @@ If the user's intent is ambiguous, ask which workflow they want.
      `"active": true` as a convenience signal. If slug resolution fails, ask the
      user for the slug or repo path used by the session.
 
-The CLI works even if the agent is not running inside tmux or zellij, so do not
-require a multiplexer just to connect to an existing active session.
+The CLI works even if the agent is not running inside tmux, Zellij, or Herdr,
+so do not require a multiplexer just to connect to an existing active session.
 
 ## Start A Session
 
@@ -74,17 +74,22 @@ When the user needs an interactive tuicr pane and no active session exists:
 |-------------|--------|
 | `$TMUX` is set | Run `tuicr-wrapper.sh /path/to/repo` |
 | `$ZELLIJ` is set | Run `tuicr-wrapper-zellij.sh /path/to/repo` |
-| Neither is set | Tell the user you are waiting for them to start `tuicr` in the repo, then attach with `tuicr review list` after they say it is ready |
+| `$HERDR_ENV` is `1` | Run `tuicr-wrapper-herdr.sh /path/to/repo` |
+| None is set | Tell the user you are waiting for them to start `tuicr` in the repo, then attach with `tuicr review list` after they say it is ready |
 
-If both `$TMUX` and `$ZELLIJ` are set, prefer the innermost multiplexer if that
-is clear; otherwise ask.
+If more than one multiplexer marker is set, prefer the innermost multiplexer if
+that is clear; otherwise ask.
 
 Wrapper paths are relative to this skill directory:
 
 ```bash
 <skill-directory>/tuicr-wrapper.sh /path/to/repo
 <skill-directory>/tuicr-wrapper-zellij.sh /path/to/repo
+<skill-directory>/tuicr-wrapper-herdr.sh /path/to/repo
 ```
+
+The Herdr wrapper requires `jq` to read pane IDs and completion results from
+Herdr's JSON responses.
 
 If your tool supports command timeouts, use a long timeout, such as 10 minutes,
 because the wrappers wait for the TUI to exit. Once the TUI creates its active
@@ -207,12 +212,17 @@ zellij:
 - Toggle fullscreen: `Alt-f`
 - Cycle stacked panes: `Alt` + `[` / `]`
 
+Herdr:
+
+- Select a pane: click it in the Herdr UI
+- Close tuicr: press `q`; the wrapper then closes the review pane
+
 ## Error Handling
 
 | Situation | Action |
 |-----------|--------|
 | Multiple plausible active sessions | Ask which session slug to use |
-| No active session, tmux/zellij available | Start a new tuicr pane with the matching wrapper |
+| No active session, tmux/Zellij/Herdr available | Start a new tuicr pane with the matching wrapper |
 | No active session, no multiplexer | Tell the user you are waiting for them to start `tuicr` |
 | `tuicr` not installed | Tell the user to install tuicr |
 | Not a repository | Ask for the correct repo directory |
