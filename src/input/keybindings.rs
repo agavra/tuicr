@@ -161,8 +161,8 @@ fn map_normal_mode(key: KeyEvent, leader_key: char) -> Action {
         }
 
         // Cursor movement (vim-like: cursor moves, scroll follows when needed)
-        (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => Action::CursorDown(1),
-        (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => Action::CursorUp(1),
+        (KeyCode::Char('j'), KeyModifiers::NONE) => Action::CursorDown(1),
+        (KeyCode::Char('k'), KeyModifiers::NONE) => Action::CursorUp(1),
         (KeyCode::Char('e'), KeyModifiers::CONTROL) => Action::ScrollViewDown(1),
         (KeyCode::Char('y'), KeyModifiers::CONTROL) => Action::ScrollViewUp(1),
         (KeyCode::Char('d'), KeyModifiers::CONTROL) => Action::HalfPageDown,
@@ -193,8 +193,8 @@ fn map_normal_mode(key: KeyEvent, leader_key: char) -> Action {
         (KeyCode::Enter, KeyModifiers::SHIFT) => Action::SelectFileFull,
 
         // Horizontal scrolling
-        (KeyCode::Char('h') | KeyCode::Left, KeyModifiers::NONE) => Action::ScrollLeft(4),
-        (KeyCode::Char('l') | KeyCode::Right, KeyModifiers::NONE) => Action::ScrollRight(4),
+        (KeyCode::Char('h'), KeyModifiers::NONE) => Action::ScrollLeft(4),
+        (KeyCode::Char('l'), KeyModifiers::NONE) => Action::ScrollRight(4),
 
         // Review actions
         (KeyCode::Char('r'), KeyModifiers::NONE) => Action::ToggleReviewed,
@@ -335,8 +335,8 @@ fn map_help_mode(key: KeyEvent) -> Action {
         | (KeyCode::Char('q'), KeyModifiers::NONE)
         | (KeyCode::Char('?'), _) => Action::ToggleHelp,
         // Scroll navigation
-        (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => Action::CursorDown(1),
-        (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => Action::CursorUp(1),
+        (KeyCode::Char('j'), KeyModifiers::NONE) => Action::CursorDown(1),
+        (KeyCode::Char('k'), KeyModifiers::NONE) => Action::CursorUp(1),
         (KeyCode::Char('d'), KeyModifiers::CONTROL) => Action::HalfPageDown,
         (KeyCode::Char('u'), KeyModifiers::CONTROL) => Action::HalfPageUp,
         (KeyCode::Char('f'), KeyModifiers::CONTROL) => Action::PageDown,
@@ -362,8 +362,8 @@ fn map_confirm_mode(key: KeyEvent) -> Action {
 
 fn map_submit_resolver_mode(key: KeyEvent) -> Action {
     match (key.code, key.modifiers) {
-        (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => Action::SubmitResolverDown,
-        (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => Action::SubmitResolverUp,
+        (KeyCode::Char('j'), KeyModifiers::NONE) => Action::SubmitResolverDown,
+        (KeyCode::Char('k'), KeyModifiers::NONE) => Action::SubmitResolverUp,
         (KeyCode::Enter, KeyModifiers::NONE) => Action::SubmitResolverToggle,
         (KeyCode::Char(' '), KeyModifiers::NONE) => Action::SubmitResolverToggle,
         (KeyCode::Char('s'), KeyModifiers::NONE) => Action::SubmitResolverAdvance,
@@ -383,8 +383,8 @@ fn map_submit_confirm_mode(key: KeyEvent) -> Action {
 
 fn map_submit_action_picker_mode(key: KeyEvent) -> Action {
     match (key.code, key.modifiers) {
-        (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => Action::SubmitPickerDown,
-        (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => Action::SubmitPickerUp,
+        (KeyCode::Char('j'), KeyModifiers::NONE) => Action::SubmitPickerDown,
+        (KeyCode::Char('k'), KeyModifiers::NONE) => Action::SubmitPickerUp,
         (KeyCode::Enter, KeyModifiers::NONE) => Action::SubmitPickerConfirm,
         (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
         (KeyCode::Char('q'), KeyModifiers::NONE) => Action::Quit,
@@ -394,8 +394,8 @@ fn map_submit_action_picker_mode(key: KeyEvent) -> Action {
 
 fn map_commit_select_mode(key: KeyEvent) -> Action {
     match (key.code, key.modifiers) {
-        (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => Action::CommitSelectDown,
-        (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => Action::CommitSelectUp,
+        (KeyCode::Char('j'), KeyModifiers::NONE) => Action::CommitSelectDown,
+        (KeyCode::Char('k'), KeyModifiers::NONE) => Action::CommitSelectUp,
         (KeyCode::Char(' '), KeyModifiers::NONE) => Action::ToggleCommitSelect,
         (KeyCode::Enter, KeyModifiers::NONE) => Action::ConfirmCommitSelect,
         (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
@@ -427,8 +427,8 @@ pub fn map_target_filter_mode(key: KeyEvent) -> Action {
 fn map_visual_mode(key: KeyEvent) -> Action {
     match (key.code, key.modifiers) {
         // Extend selection
-        (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => Action::CursorDown(1),
-        (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => Action::CursorUp(1),
+        (KeyCode::Char('j'), KeyModifiers::NONE) => Action::CursorDown(1),
+        (KeyCode::Char('k'), KeyModifiers::NONE) => Action::CursorUp(1),
         (KeyCode::Char('c'), KeyModifiers::NONE) => Action::AddRangeComment,
         (KeyCode::Enter, KeyModifiers::NONE) => Action::AddRangeComment,
         (KeyCode::Char('y'), KeyModifiers::NONE) => Action::ExportToClipboard,

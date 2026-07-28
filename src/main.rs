@@ -412,13 +412,13 @@ fn main() -> anyhow::Result<()> {
             {
                 if matches!(
                     key.code,
-                    crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Char('j')
+                    crossterm::event::KeyCode::Char('j')
                 ) {
                     app.down_released_since_arm = true;
                 }
                 if matches!(
                     key.code,
-                    crossterm::event::KeyCode::Up | crossterm::event::KeyCode::Char('k')
+                    crossterm::event::KeyCode::Char('k')
                 ) {
                     app.up_released_since_arm = true;
                 }
