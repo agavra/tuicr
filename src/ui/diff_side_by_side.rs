@@ -390,6 +390,14 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
         }
     }
 
+    crate::ui::pr_info_panel::append_issue_comments_section(
+        app,
+        &mut lines,
+        &mut line_idx,
+        ctx.current_line_idx,
+        ctx.panel_width.saturating_sub(1),
+    );
+
     for (file_idx, file) in app.diff_files.iter().enumerate() {
         // Single-file view: hide everything except the cursor's file. See
         // src/ui/diff_unified.rs for the matching guard.

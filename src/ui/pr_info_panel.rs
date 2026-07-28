@@ -4,17 +4,36 @@ use ratatui::{
 };
 
 use crate::app::App;
-use crate::forge::traits::{PullRequestCheckStatus, PullRequestInfo, PullRequestReviewStatus};
-use crate::ui::diff_view::{HEADER_RULE, cursor_indicator_spaced};
+use crate::forge::traits::{
+    PullRequestCheckStatus, PullRequestInfo, PullRequestIssueComment, PullRequestReviewStatus,
+};
+use crate::model::CommentType;
+use crate::theme::Theme;
+use crate::ui::comment_panel::{self, CommentTypePresentation};
+use crate::ui::diff_view::{HEADER_RULE, cursor_indicator, cursor_indicator_spaced};
 use crate::ui::styles;
 
-/// Rendered line count of the PR description block at the top of the diff view.
 pub fn pr_info_render_height(app: &App) -> usize {
+    app.pr_info
+        .as_ref()
+        .map(|info| {
+            build_pr_info_lines(info, app.diff_state.viewport_width.max(1), &app.theme).len()
+        })
+        .unwrap_or(0)
+}
+
+pub fn issue_comments_render_height(app: &App) -> usize {
     let Some(info) = app.pr_info.as_ref() else {
         return 0;
     };
+    if info.issue_comments.is_empty() {
+        return 0;
+    }
     let mut height = if app.is_single_file_view { 0 } else { 1 };
-    height += build_pr_info_lines(info, app.diff_state.viewport_width.max(1)).len();
+    let width = app.diff_state.viewport_width.max(1);
+    for comment in &info.issue_comments {
+        height += issue_comment_display_lines(comment, width);
+    }
     height
 }
 
@@ -22,7 +41,12 @@ pub fn is_cursor_in_pr_info(app: &App) -> bool {
     pr_info_render_height(app) > 0 && app.diff_state.cursor_line < pr_info_render_height(app)
 }
 
-/// Append PR metadata lines to the main diff scroll buffer, before review comments.
+pub fn is_cursor_in_issue_comments(app: &App) -> bool {
+    let start = app.issue_comments_start_line();
+    let end = start + issue_comments_render_height(app);
+    end > start && (start..end).contains(&app.diff_state.cursor_line)
+}
+
 pub fn append_pr_info_section(
     app: &App,
     lines: &mut Vec<Line<'static>>,
@@ -34,20 +58,7 @@ pub fn append_pr_info_section(
         return;
     };
 
-    if !app.is_single_file_view {
-        let general_indicator = cursor_indicator_spaced(*line_idx, current_line_idx);
-        lines.push(Line::from(vec![
-            Span::styled(
-                general_indicator,
-                styles::current_line_indicator_style(&app.theme),
-            ),
-            Span::styled("═══ PR Description ", styles::file_header_style(&app.theme)),
-            Span::styled(HEADER_RULE, styles::file_header_style(&app.theme)),
-        ]));
-        *line_idx += 1;
-    }
-
-    for mut pr_line in build_pr_info_lines(info, content_width) {
+    for mut pr_line in build_pr_info_lines(info, content_width, &app.theme) {
         let indicator = cursor_indicator_spaced(*line_idx, current_line_idx);
         pr_line.spans.insert(
             0,
@@ -58,15 +69,82 @@ pub fn append_pr_info_section(
     }
 }
 
-pub fn build_pr_info_lines(info: &PullRequestInfo, width: usize) -> Vec<Line<'static>> {
+pub fn append_issue_comments_section(
+    app: &App,
+    lines: &mut Vec<Line<'static>>,
+    line_idx: &mut usize,
+    current_line_idx: usize,
+    content_width: usize,
+) {
+    let Some(info) = app.pr_info.as_ref() else {
+        return;
+    };
+    if info.issue_comments.is_empty() {
+        return;
+    }
+
+    if !app.is_single_file_view {
+        let header = format!("═══ PR #{} Comments ", info.details.number);
+        lines.push(Line::from(vec![
+            Span::styled(
+                cursor_indicator_spaced(*line_idx, current_line_idx),
+                styles::current_line_indicator_style(&app.theme),
+            ),
+            Span::styled(header, styles::file_header_style(&app.theme)),
+            Span::styled(HEADER_RULE, styles::file_header_style(&app.theme)),
+        ]));
+        *line_idx += 1;
+    }
+
+    let note_type = CommentType::from_id("note");
+    let presentation = CommentTypePresentation {
+        label: app.comment_type_label(&note_type),
+        color: app.comment_type_color(&note_type),
+    };
+    for comment in &info.issue_comments {
+        for mut comment_line in
+            format_issue_comment_lines(&app.theme, comment, content_width, &presentation)
+        {
+            let indicator = cursor_indicator(*line_idx, current_line_idx);
+            comment_line.spans.insert(
+                0,
+                Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
+            );
+            lines.push(comment_line);
+            *line_idx += 1;
+        }
+    }
+}
+
+pub fn build_pr_info_lines(
+    info: &PullRequestInfo,
+    width: usize,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let content_width = width.max(1);
-
     let details = &info.details;
-    push_section(
+
+    push_section_header(
         &mut lines,
-        format!("#{} · {}", details.number, details.title),
-        content_width,
+        theme,
+        format!("═══ PR #{} {} ", details.number, details.title),
+    );
+
+    let body = if details.body.trim().is_empty() {
+        "(no description)".to_string()
+    } else {
+        details.body.clone()
+    };
+    for paragraph in body.lines() {
+        push_wrapped_line(&mut lines, paragraph.to_string(), content_width);
+    }
+
+    push_blank(&mut lines);
+    push_section_header(
+        &mut lines,
+        theme,
+        format!("═══ PR #{} Status ", details.number),
     );
 
     let mut status_parts = Vec::new();
@@ -112,7 +190,7 @@ pub fn build_pr_info_lines(info: &PullRequestInfo, width: usize) -> Vec<Line<'st
     push_wrapped_line(&mut lines, branch_line, content_width);
 
     if !info.requested_reviewers.is_empty() {
-        push_section(
+        push_wrapped_line(
             &mut lines,
             format!("Requested: {}", format_users(&info.requested_reviewers)),
             content_width,
@@ -123,21 +201,21 @@ pub fn build_pr_info_lines(info: &PullRequestInfo, width: usize) -> Vec<Line<'st
     let changes = reviews_by_state(&info.latest_reviews, "CHANGES_REQUESTED");
     let commented = reviews_by_state(&info.latest_reviews, "COMMENTED");
     if !approved.is_empty() {
-        push_section(
+        push_wrapped_line(
             &mut lines,
             format!("Approved: {}", format_users(&approved)),
             content_width,
         );
     }
     if !changes.is_empty() {
-        push_section(
+        push_wrapped_line(
             &mut lines,
             format!("Changes requested: {}", format_users(&changes)),
             content_width,
         );
     }
     if !commented.is_empty() {
-        push_section(
+        push_wrapped_line(
             &mut lines,
             format!("Commented: {}", format_users(&commented)),
             content_width,
@@ -148,31 +226,54 @@ pub fn build_pr_info_lines(info: &PullRequestInfo, width: usize) -> Vec<Line<'st
         push_blank(&mut lines);
         push_wrapped_line(&mut lines, "Checks".to_string(), content_width);
         for check in &info.checks {
-            push_wrapped_line(
-                &mut lines,
-                format!("{} {}", check_glyph(check), format_check(check)),
-                content_width,
-            );
+            lines.push(format_check_line(check, content_width, theme));
         }
-    }
-
-    push_blank(&mut lines);
-    push_wrapped_line(&mut lines, "Description".to_string(), content_width);
-    let body = if details.body.trim().is_empty() {
-        "(no description)".to_string()
-    } else {
-        details.body.clone()
-    };
-    for paragraph in body.lines() {
-        push_wrapped_line(&mut lines, paragraph.to_string(), content_width);
     }
 
     lines
 }
 
-fn push_section(lines: &mut Vec<Line<'static>>, text: String, width: usize) {
-    push_blank(lines);
-    push_wrapped_line(lines, text, width);
+pub fn issue_comment_display_lines(
+    comment: &PullRequestIssueComment,
+    viewport_width: usize,
+) -> usize {
+    let content_area = viewport_width.saturating_sub(10);
+    let visual_lines: usize = comment
+        .body
+        .split('\n')
+        .map(|line| comment_panel::wrap_segments(line, content_area).len())
+        .sum();
+    2 + visual_lines
+}
+
+fn format_issue_comment_lines(
+    theme: &Theme,
+    comment: &PullRequestIssueComment,
+    width: usize,
+    presentation: &CommentTypePresentation,
+) -> Vec<Line<'static>> {
+    comment_panel::format_comment_lines(
+        theme,
+        presentation.clone(),
+        &comment.body,
+        None,
+        width,
+        comment.author.as_deref(),
+    )
+}
+
+fn push_section_header(lines: &mut Vec<Line<'static>>, theme: &Theme, title: String) {
+    lines.push(Line::from(vec![
+        Span::styled(title, styles::file_header_style(theme)),
+        Span::styled(HEADER_RULE, styles::file_header_style(theme)),
+    ]));
+}
+
+fn push_wrapped_line(lines: &mut Vec<Line<'static>>, text: String, width: usize) {
+    let style = Style::default();
+    for chunk in wrap_text(&text, width) {
+        lines.push(Line::from(Span::styled(chunk, style)));
+    }
 }
 
 fn push_blank(lines: &mut Vec<Line<'static>>) {
@@ -181,11 +282,21 @@ fn push_blank(lines: &mut Vec<Line<'static>>) {
     }
 }
 
-fn push_wrapped_line(lines: &mut Vec<Line<'static>>, text: String, width: usize) {
-    let style = Style::default();
-    for chunk in wrap_text(&text, width) {
-        lines.push(Line::from(Span::styled(chunk, style)));
+fn format_check_line(
+    check: &PullRequestCheckStatus,
+    content_width: usize,
+    theme: &Theme,
+) -> Line<'static> {
+    let summary = format!("{} {}", check_glyph(check), format_check_summary(check));
+    let mut spans = Vec::new();
+    for chunk in wrap_text(&summary, content_width) {
+        spans.push(Span::raw(chunk));
     }
+    if let Some(url) = check.url.as_deref().filter(|url| !url.is_empty()) {
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(url.to_string(), styles::dim_style(theme)));
+    }
+    Line::from(spans)
 }
 
 fn wrap_text(text: &str, width: usize) -> Vec<String> {
@@ -268,7 +379,7 @@ fn check_glyph(check: &PullRequestCheckStatus) -> &'static str {
     }
 }
 
-fn format_check(check: &PullRequestCheckStatus) -> String {
+fn format_check_summary(check: &PullRequestCheckStatus) -> String {
     let mut parts = vec![check.name.clone()];
     if let Some(status) = &check.status {
         parts.push(humanize_token(status));
@@ -283,6 +394,7 @@ fn format_check(check: &PullRequestCheckStatus) -> String {
 mod tests {
     use super::*;
     use crate::forge::traits::{ForgeRepository, PullRequestDetails};
+    use crate::theme::Theme;
 
     fn sample_info() -> PullRequestInfo {
         PullRequestInfo {
@@ -317,13 +429,40 @@ mod tests {
                 name: "build".to_string(),
                 status: Some("COMPLETED".to_string()),
                 conclusion: Some("SUCCESS".to_string()),
+                url: Some("https://github.com/owner/repo/actions/runs/1".to_string()),
+            }],
+            issue_comments: vec![PullRequestIssueComment {
+                author: Some("dave".to_string()),
+                body: "Looks good".to_string(),
+                url: Some("https://github.com/owner/repo/pull/42#issuecomment-1".to_string()),
+                created_at: None,
             }],
         }
     }
 
     #[test]
-    fn should_build_non_empty_pr_info_lines() {
-        let lines = build_pr_info_lines(&sample_info(), 80);
-        assert!(lines.len() > 5);
+    fn should_build_title_and_status_sections() {
+        let lines = build_pr_info_lines(&sample_info(), 80, &Theme::dark());
+        let rendered = lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.contains("PR #42 Add panel"))
+        );
+        assert!(rendered.iter().any(|line| line.contains("Ship the panel")));
+        assert!(rendered.iter().any(|line| line.contains("PR #42 Status")));
+        assert!(
+            rendered
+                .iter()
+                .any(|line| { line.contains("https://github.com/owner/repo/actions/runs/1") })
+        );
     }
 }

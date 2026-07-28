@@ -1,9 +1,9 @@
 use std::path::PathBuf;
 
-use crate::app::{App, DiffSource, FileTreeItem, InputMode, PullRequestDiffSource};
+use crate::app::{App, DiffSource, InputMode, PullRequestDiffSource};
 use crate::forge::traits::{
     ForgeRepository, PrSessionKey, PullRequestCheckStatus, PullRequestDetails, PullRequestInfo,
-    PullRequestReviewStatus,
+    PullRequestIssueComment, PullRequestReviewStatus,
 };
 use crate::model::{DiffFile, FileStatus, ReviewSession, SessionDiffSource};
 use crate::theme::Theme;
@@ -43,6 +43,13 @@ fn sample_pr_info() -> PullRequestInfo {
             name: "build".to_string(),
             status: Some("COMPLETED".to_string()),
             conclusion: Some("SUCCESS".to_string()),
+            url: Some("https://github.com/owner/repo/actions/runs/1".to_string()),
+        }],
+        issue_comments: vec![PullRequestIssueComment {
+            author: Some("dave".to_string()),
+            body: "Looks good".to_string(),
+            url: Some("https://github.com/owner/repo/pull/42#issuecomment-1".to_string()),
+            created_at: None,
         }],
     }
 }
@@ -106,69 +113,70 @@ fn build_pr_app() -> App {
 }
 
 #[test]
-fn should_prepend_pr_info_tree_entry_in_pr_mode() {
+fn should_not_add_pr_info_to_file_tree() {
     let app = build_pr_app();
-    let items = app.build_visible_items();
-    assert!(matches!(items.first(), Some(FileTreeItem::PrInfo)));
-}
-
-#[test]
-fn should_prepend_pr_info_annotations_before_review_comments() {
-    let app = build_pr_app();
-    assert!(matches!(
-        app.line_annotations.first(),
-        Some(crate::app::AnnotatedLine::PrInfoHeader)
-    ));
     assert!(
         app.line_annotations
             .iter()
-            .any(|line| { matches!(line, crate::app::AnnotatedLine::PrInfoLine { .. }) })
+            .any(|line| matches!(line, crate::app::AnnotatedLine::PrInfoLine { .. }))
     );
+    assert!(app.build_visible_items().iter().all(|item| matches!(
+        item,
+        crate::app::FileTreeItem::Directory { .. } | crate::app::FileTreeItem::File { .. }
+    )));
+}
+
+#[test]
+fn should_order_overview_sections_before_file_diffs() {
+    let app = build_pr_app();
+    assert!(matches!(
+        app.line_annotations.first(),
+        Some(crate::app::AnnotatedLine::PrInfoLine { line_idx: 0 })
+    ));
+
     let review_header_idx = app
         .line_annotations
         .iter()
         .position(|line| matches!(line, crate::app::AnnotatedLine::ReviewCommentsHeader));
+    let issue_header_idx = app
+        .line_annotations
+        .iter()
+        .position(|line| matches!(line, crate::app::AnnotatedLine::IssueCommentsHeader));
     let first_file_idx = app
         .line_annotations
         .iter()
         .position(|line| matches!(line, crate::app::AnnotatedLine::FileHeader { .. }));
+
     assert!(review_header_idx.is_some());
+    assert!(issue_header_idx.is_some());
     assert!(first_file_idx.is_some());
-    assert!(review_header_idx.unwrap() < first_file_idx.unwrap());
+    assert!(review_header_idx.unwrap() < issue_header_idx.unwrap());
+    assert!(issue_header_idx.unwrap() < first_file_idx.unwrap());
 }
 
 #[test]
-fn should_jump_to_pr_description_at_top_of_main_view() {
+fn should_start_overview_at_top_of_main_view() {
     let mut app = build_pr_app();
     app.jump_to_file(0);
     assert!(app.diff_state.cursor_line > 0);
 
-    app.jump_to_pr_info();
-    assert_eq!(app.diff_state.cursor_line, 0);
-    assert_eq!(app.get_selected_tree_item(), Some(FileTreeItem::PrInfo));
+    app.diff_state.cursor_line = 0;
+    app.ensure_cursor_visible();
     assert!(crate::ui::pr_info_panel::is_cursor_in_pr_info(&app));
 }
 
 #[test]
-fn should_walk_from_pr_description_to_first_file_with_next_file() {
+fn should_walk_from_overview_to_first_file_with_next_file() {
     let mut app = build_pr_app();
-    app.jump_to_pr_info();
+    app.diff_state.cursor_line = 0;
     app.next_file();
     assert_eq!(app.diff_state.current_file_idx, 0);
     assert!(!crate::ui::pr_info_panel::is_cursor_in_pr_info(&app));
 }
 
 #[test]
-fn should_walk_from_first_file_to_pr_description_with_prev_file() {
-    let mut app = build_pr_app();
-    app.jump_to_file(0);
-    app.prev_file();
-    assert_eq!(app.diff_state.cursor_line, 0);
-    assert!(crate::ui::pr_info_panel::is_cursor_in_pr_info(&app));
-}
-
-#[test]
 fn should_build_pr_info_panel_lines() {
-    let lines = crate::ui::pr_info_panel::build_pr_info_lines(&sample_pr_info(), 80);
+    let lines =
+        crate::ui::pr_info_panel::build_pr_info_lines(&sample_pr_info(), 80, &Theme::dark());
     assert!(lines.len() > 5);
 }

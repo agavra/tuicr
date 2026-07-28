@@ -10,7 +10,8 @@ use serde::Deserialize;
 use crate::error::{Result, TuicrError};
 use crate::forge::github::models::GhPullRequestDetails;
 use crate::forge::traits::{
-    ForgeRepository, PullRequestCheckStatus, PullRequestInfo, PullRequestReviewStatus,
+    ForgeRepository, PullRequestCheckStatus, PullRequestInfo, PullRequestIssueComment,
+    PullRequestReviewStatus,
 };
 
 #[derive(Debug, Deserialize)]
@@ -30,6 +31,12 @@ pub(crate) struct GhPullRequestInfoResponse {
     latest_reviews: Vec<PullRequestReviewStatus>,
     #[serde(default, deserialize_with = "deserialize_status_checks")]
     status_check_rollup: Vec<PullRequestCheckStatus>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_issue_comments",
+        rename = "comments"
+    )]
+    issue_comments: Vec<PullRequestIssueComment>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -94,12 +101,16 @@ enum GhStatusCheck {
         status: Option<String>,
         #[serde(default)]
         conclusion: Option<String>,
+        #[serde(default, rename = "detailsUrl")]
+        details_url: Option<String>,
     },
     StatusContext {
         #[serde(default)]
         context: String,
         #[serde(default)]
         state: Option<String>,
+        #[serde(default, rename = "targetUrl")]
+        target_url: Option<String>,
     },
     #[serde(other)]
     Unknown,
@@ -142,6 +153,26 @@ enum GhStatusCheckRollupInput {
     Nested(GhStatusCheckRollupNested),
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GhIssueComment {
+    #[serde(default)]
+    author: Option<GhAuthor>,
+    #[serde(default)]
+    body: String,
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    created_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum GhIssueCommentsInput {
+    Flat(Vec<GhIssueComment>),
+    Wrapped { nodes: Vec<GhIssueComment> },
+}
+
 pub(crate) fn parse_pull_request_info(
     json: &str,
     repository: &ForgeRepository,
@@ -171,6 +202,7 @@ impl GhPullRequestInfoResponse {
             requested_reviewers: self.review_requests,
             latest_reviews: self.latest_reviews,
             checks: self.status_check_rollup,
+            issue_comments: self.issue_comments,
         })
     }
 }
@@ -234,13 +266,45 @@ where
     })
 }
 
+fn deserialize_issue_comments<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Vec<PullRequestIssueComment>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<GhIssueCommentsInput>::deserialize(deserializer)?;
+    Ok(match value {
+        None => Vec::new(),
+        Some(
+            GhIssueCommentsInput::Flat(comments)
+            | GhIssueCommentsInput::Wrapped { nodes: comments },
+        ) => comments
+            .into_iter()
+            .filter_map(issue_comment_label)
+            .collect(),
+    })
+}
+
+fn issue_comment_label(comment: GhIssueComment) -> Option<PullRequestIssueComment> {
+    let body = comment.body.trim();
+    if body.is_empty() {
+        return None;
+    }
+    Some(PullRequestIssueComment {
+        author: comment.author.and_then(|a| a.login),
+        body: comment.body,
+        url: non_empty(comment.url),
+        created_at: comment.created_at,
+    })
+}
+
 fn review_request_flat_label(node: GhReviewRequestFlat) -> Option<String> {
     match node.type_name.as_deref() {
         Some("Team") => node
             .name
             .filter(|s| !s.is_empty())
             .or(node.slug.filter(|s| !s.is_empty())),
-        Some("User") | Some("Bot") | _ => node.login.filter(|s| !s.is_empty()),
+        _ => node.login.filter(|s| !s.is_empty()),
     }
 }
 
@@ -259,6 +323,7 @@ fn status_check_label(check: GhStatusCheck) -> Option<PullRequestCheckStatus> {
             name,
             status,
             conclusion,
+            details_url,
         } => {
             if name.is_empty() {
                 None
@@ -267,10 +332,15 @@ fn status_check_label(check: GhStatusCheck) -> Option<PullRequestCheckStatus> {
                     name,
                     status: non_empty(status),
                     conclusion: non_empty(conclusion),
+                    url: non_empty(details_url),
                 })
             }
         }
-        GhStatusCheck::StatusContext { context, state } => {
+        GhStatusCheck::StatusContext {
+            context,
+            state,
+            target_url,
+        } => {
             if context.is_empty() {
                 None
             } else {
@@ -278,6 +348,7 @@ fn status_check_label(check: GhStatusCheck) -> Option<PullRequestCheckStatus> {
                     name: context,
                     status: None,
                     conclusion: non_empty(state),
+                    url: non_empty(target_url),
                 })
             }
         }
@@ -397,6 +468,44 @@ mod tests {
         assert_eq!(info.requested_reviewers, vec!["bob"]);
         assert_eq!(info.latest_reviews.len(), 1);
         assert_eq!(info.checks[0].name, "ci/travis");
+    }
+
+    #[test]
+    fn should_parse_issue_comments_and_check_urls() {
+        let json = format!(
+            r#"{{
+            {BASE_FIELDS},
+            "comments": [
+                {{
+                    "author": {{ "login": "dave" }},
+                    "body": "Ship it",
+                    "url": "https://github.com/owner/repo/pull/42#issuecomment-1",
+                    "createdAt": "2026-06-01T10:00:00Z"
+                }}
+            ],
+            "statusCheckRollup": [
+                {{
+                    "__typename": "CheckRun",
+                    "name": "build",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "detailsUrl": "https://github.com/owner/repo/actions/runs/1"
+                }}
+            ]
+        }}"#
+        );
+
+        let info = parse_pull_request_info(&json, &repo()).unwrap();
+        assert_eq!(info.issue_comments.len(), 1);
+        assert_eq!(info.issue_comments[0].body, "Ship it");
+        assert_eq!(
+            info.issue_comments[0].url.as_deref(),
+            Some("https://github.com/owner/repo/pull/42#issuecomment-1")
+        );
+        assert_eq!(
+            info.checks[0].url.as_deref(),
+            Some("https://github.com/owner/repo/actions/runs/1")
+        );
     }
 
     #[test]

@@ -72,7 +72,8 @@ pub(crate) fn annotation_row_height(app: &App, idx: usize) -> usize {
         // Pre-wrapped by comment_panel::wrap_segments to inner width - 1.
         AnnotatedLine::ReviewComment { .. }
         | AnnotatedLine::FileComment { .. }
-        | AnnotatedLine::LineComment { .. } => 1,
+        | AnnotatedLine::LineComment { .. }
+        | AnnotatedLine::IssueComment { .. } => 1,
 
         AnnotatedLine::SideBySideLine {
             file_idx,
@@ -195,6 +196,39 @@ fn full_row_text(app: &App, annotation: &AnnotatedLine) -> String {
                 diff_view::REVIEW_COMMENTS_HEADER_PREFIX,
                 diff_view::HEADER_RULE
             )
+        }
+
+        AnnotatedLine::IssueCommentsHeader => {
+            let number = app.pr_info.as_ref().map_or(0, |info| info.details.number);
+            format!(
+                "{indicator_spaced}═══ PR #{number} Comments {}",
+                diff_view::HEADER_RULE
+            )
+        }
+
+        // Reconstruct the concatenated text of the pre-built PR-info line so
+        // the outer wrap pass counts the same rows the renderer emits.
+        AnnotatedLine::PrInfoLine { line_idx: pr_line } => {
+            let body: String = app
+                .pr_info
+                .as_ref()
+                .and_then(|info| {
+                    crate::ui::pr_info_panel::build_pr_info_lines(
+                        info,
+                        app.diff_state.viewport_width,
+                        &app.theme,
+                    )
+                    .into_iter()
+                    .nth(*pr_line)
+                })
+                .map(|line| {
+                    line.spans
+                        .iter()
+                        .map(|span| span.content.as_ref())
+                        .collect::<String>()
+                })
+                .unwrap_or_default();
+            format!("{indicator_spaced}{body}")
         }
 
         AnnotatedLine::FileHeader { file_idx } => match app.diff_files.get(*file_idx) {
@@ -326,6 +360,7 @@ fn full_row_text(app: &App, annotation: &AnnotatedLine) -> String {
         | AnnotatedLine::RemoteReviewSummaryLine { .. }
         | AnnotatedLine::FileComment { .. }
         | AnnotatedLine::LineComment { .. }
+        | AnnotatedLine::IssueComment { .. }
         | AnnotatedLine::RemoteThreadLine { .. } => indicator.to_string(),
     }
 }

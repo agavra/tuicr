@@ -381,9 +381,20 @@ pub struct PullRequestCheckStatus {
     pub status: Option<String>,
     /// Normalized outcome: `SUCCESS`, `FAILURE`, `PENDING`, etc.
     pub conclusion: Option<String>,
+    /// Link to the check run or legacy status context, when available.
+    pub url: Option<String>,
 }
 
-/// Extended PR metadata for the in-app description panel.
+/// A top-level PR conversation comment (issue comment), not tied to a review or diff line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullRequestIssueComment {
+    pub author: Option<String>,
+    pub body: String,
+    pub url: Option<String>,
+    pub created_at: Option<DateTime<Utc>>,
+}
+
+/// Extended PR metadata rendered at the top of the diff view.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PullRequestInfo {
     pub details: PullRequestDetails,
@@ -393,6 +404,7 @@ pub struct PullRequestInfo {
     pub requested_reviewers: Vec<String>,
     pub latest_reviews: Vec<PullRequestReviewStatus>,
     pub checks: Vec<PullRequestCheckStatus>,
+    pub issue_comments: Vec<PullRequestIssueComment>,
 }
 
 impl PullRequestInfo {
@@ -406,6 +418,7 @@ impl PullRequestInfo {
             requested_reviewers: Vec::new(),
             latest_reviews: Vec::new(),
             checks: Vec::new(),
+            issue_comments: Vec::new(),
         }
     }
 }

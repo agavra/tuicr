@@ -72,13 +72,11 @@ impl App {
         // current inline selection are hidden. `None` => no selector, show all.
         let commit_set = self.selected_commit_set();
 
-        if self.pr_info.is_some() {
-            if !self.is_single_file_view {
-                self.line_annotations.push(AnnotatedLine::PrInfoHeader);
-            }
+        if let Some(info) = &self.pr_info {
             let pr_line_count = crate::ui::pr_info_panel::build_pr_info_lines(
-                self.pr_info.as_ref().expect("pr_info checked above"),
+                info,
                 self.diff_state.viewport_width.max(1),
+                &self.theme,
             )
             .len();
             for line_idx in 0..pr_line_count {
@@ -127,6 +125,25 @@ impl App {
                         self.line_annotations
                             .push(AnnotatedLine::RemoteThreadLine { thread_idx });
                     }
+                }
+            }
+        }
+
+        if let Some(info) = &self.pr_info
+            && !info.issue_comments.is_empty()
+        {
+            if !self.is_single_file_view {
+                self.line_annotations
+                    .push(AnnotatedLine::IssueCommentsHeader);
+            }
+            for (comment_idx, comment) in info.issue_comments.iter().enumerate() {
+                let comment_lines = crate::ui::pr_info_panel::issue_comment_display_lines(
+                    comment,
+                    self.diff_state.viewport_width,
+                );
+                for _ in 0..comment_lines {
+                    self.line_annotations
+                        .push(AnnotatedLine::IssueComment { comment_idx });
                 }
             }
         }

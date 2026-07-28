@@ -34,7 +34,7 @@ const PR_INFO_JSON_FIELDS: &str = concat!(
     "number,title,url,state,isDraft,author,headRefName,baseRefName,",
     "headRefOid,baseRefOid,body,updatedAt,closed,mergedAt,",
     "reviewDecision,mergeable,mergeStateStatus,reviewRequests,latestReviews,",
-    "statusCheckRollup"
+    "statusCheckRollup,comments"
 );
 
 #[derive(Debug, Clone, PartialEq, Eq)]

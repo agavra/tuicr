@@ -453,8 +453,10 @@ impl App {
             return Ok(()); // already in flight; the existing spinner is enough
         }
 
-        let restore_pr_info = crate::ui::pr_info_panel::is_cursor_in_pr_info(self);
-        let anchor = if restore_pr_info {
+        let restore_overview_cursor = (self.diff_state.cursor_line
+            < self.review_comments_render_height())
+        .then_some(self.diff_state.cursor_line);
+        let anchor = if restore_overview_cursor.is_some() {
             None
         } else {
             self.capture_pr_cursor_anchor()
@@ -465,7 +467,7 @@ impl App {
             head_sha: current.key.head_sha.clone(),
             started_at: Instant::now(),
             anchor,
-            restore_pr_info,
+            restore_overview_cursor,
         };
         self.pr_reload_state = Some(request.clone());
 
@@ -586,8 +588,9 @@ impl App {
             self.set_message("Reloaded PR (no new commits)".to_string());
         }
 
-        if request.restore_pr_info {
-            self.jump_to_pr_info();
+        if let Some(line) = request.restore_overview_cursor {
+            self.diff_state.cursor_line = line;
+            self.ensure_cursor_visible();
         } else if let Some(anchor) = &request.anchor {
             self.restore_pr_cursor_to_anchor(anchor);
         }

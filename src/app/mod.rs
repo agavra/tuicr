@@ -116,7 +116,6 @@ fn profile_unit_result(result: &Result<()>) -> String {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileTreeItem {
-    PrInfo,
     Directory {
         path: String,
         depth: usize,
@@ -253,10 +252,12 @@ pub enum GapCursorHit {
 /// Describes what a rendered line represents - built once and used for O(1) cursor queries
 #[derive(Debug, Clone)]
 pub enum AnnotatedLine {
-    /// PR description section header line
-    PrInfoHeader,
     /// A rendered line of [`App::pr_info`] content
     PrInfoLine { line_idx: usize },
+    /// Top-level PR conversation comments section header
+    IssueCommentsHeader,
+    /// A rendered line of a top-level PR issue comment box
+    IssueComment { comment_idx: usize },
     /// Review comments section header line
     ReviewCommentsHeader,
     /// A review-level comment line (part of a multi-line comment box)
@@ -441,8 +442,9 @@ pub fn annotation_file_idx(annotation: &AnnotatedLine) -> Option<usize> {
         | AnnotatedLine::SideBySideLine { file_idx, .. }
         | AnnotatedLine::LineComment { file_idx, .. }
         | AnnotatedLine::BinaryOrEmpty { file_idx } => Some(*file_idx),
-        AnnotatedLine::PrInfoHeader
-        | AnnotatedLine::PrInfoLine { .. }
+        AnnotatedLine::PrInfoLine { .. }
+        | AnnotatedLine::IssueCommentsHeader
+        | AnnotatedLine::IssueComment { .. }
         | AnnotatedLine::ReviewCommentsHeader
         | AnnotatedLine::ReviewComment { .. }
         | AnnotatedLine::RemoteReviewSummaryLine { .. }
@@ -817,7 +819,7 @@ pub struct PrReloadRequest {
     pub head_sha: String,
     pub started_at: Instant,
     pub anchor: Option<PrCursorAnchor>,
-    pub restore_pr_info: bool,
+    pub restore_overview_cursor: Option<usize>,
 }
 
 /// Result delivered from the PR-reload background thread.

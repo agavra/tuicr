@@ -231,6 +231,14 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
         }
     }
 
+    crate::ui::pr_info_panel::append_issue_comments_section(
+        app,
+        &mut lines,
+        &mut line_idx,
+        current_line_idx,
+        comment_width,
+    );
+
     for (file_idx, file) in app.diff_files.iter().enumerate() {
         // Single-file view hides every file except the one the cursor is
         // currently on. Navigation (`}`/`{`, file list) flips

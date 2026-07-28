@@ -332,14 +332,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  Enter     ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Expand dir / Jump to file (PR mode: open PR Description)"),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "  (top row) ",
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("PR Description — status, reviewers, checks, body (PR mode only)"),
+            Span::raw("Expand dir / Jump to file"),
         ]),
         Line::from(vec![
             Span::styled(

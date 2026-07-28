@@ -24,10 +24,6 @@ impl App {
         if !self.is_single_file_view {
             return;
         }
-        if let Some(FileTreeItem::PrInfo) = self.get_selected_tree_item() {
-            self.jump_to_pr_info();
-            return;
-        }
         if let Some(FileTreeItem::File { file_idx, .. }) = self.get_selected_tree_item() {
             self.jump_to_file(file_idx);
         }
@@ -240,13 +236,6 @@ impl App {
             return;
         }
 
-        if self.is_cursor_in_overview() && self.pr_info.is_some() {
-            if let Some(tree_idx) = self.pr_info_tree_idx() {
-                self.file_list_state.select(tree_idx);
-            }
-            return;
-        }
-
         let current_file_idx = self.diff_state.current_file_idx;
         let file_visible = visible_items.iter().any(|item| {
             matches!(item, FileTreeItem::File { file_idx, .. } if *file_idx == current_file_idx)
@@ -283,9 +272,6 @@ impl App {
         use std::path::Path;
 
         let mut items = Vec::new();
-        if self.pr_info.is_some() {
-            items.push(FileTreeItem::PrInfo);
-        }
         let mut seen_dirs: HashSet<String> = HashSet::new();
 
         for (file_idx, file) in self.diff_files.iter().enumerate() {

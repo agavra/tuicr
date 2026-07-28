@@ -1812,7 +1812,7 @@ fn should_carry_reviewed_state_through_finish_pr_reload_when_head_advances() {
         head_sha: details_a.head_sha.clone(),
         started_at: Instant::now(),
         anchor: None,
-        restore_pr_info: false,
+        restore_overview_cursor: None,
     };
 
     // when the async reload finish path applies head B
@@ -1863,7 +1863,7 @@ fn should_keep_reviewed_state_through_finish_pr_reload_when_head_unchanged() {
         head_sha: details.head_sha.clone(),
         started_at: Instant::now(),
         anchor: None,
-        restore_pr_info: false,
+        restore_overview_cursor: None,
     };
 
     // when the async reload finish path refreshes the same head

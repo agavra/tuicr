@@ -37,18 +37,6 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
     let max_content_width = visible_items
         .iter()
         .map(|item| match item {
-            FileTreeItem::PrInfo => {
-                let hint = app
-                    .pr_info
-                    .as_ref()
-                    .map(pr_info_tree_hint)
-                    .unwrap_or_default();
-                if hint.is_empty() {
-                    "PR Description".chars().count()
-                } else {
-                    format!("PR Description · {hint}").chars().count()
-                }
-            }
             FileTreeItem::Directory { path, depth, .. } => {
                 let dir_name = Path::new(path)
                     .file_name()
@@ -82,29 +70,19 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
     // When diff panel is focused, sync file list selection to current view
     // But preserve the current offset to not interfere with manual scrolling
     if app.focused_panel == FocusedPanel::Diff {
-        if app.is_cursor_in_overview() && app.pr_info.is_some() {
-            if let Some(tree_idx) = app.pr_info_tree_idx()
-                && app.file_list_state.selected() != tree_idx
+        let current_file_idx = app.diff_state.current_file_idx;
+        for (tree_idx, item) in visible_items.iter().enumerate() {
+            if let FileTreeItem::File { file_idx, .. } = item
+                && *file_idx == current_file_idx
             {
-                let current_offset = app.file_list_state.list_state.offset();
-                app.file_list_state.select(tree_idx);
-                *app.file_list_state.list_state.offset_mut() = current_offset;
-            }
-        } else {
-            let current_file_idx = app.diff_state.current_file_idx;
-            for (tree_idx, item) in visible_items.iter().enumerate() {
-                if let FileTreeItem::File { file_idx, .. } = item
-                    && *file_idx == current_file_idx
-                {
-                    if app.file_list_state.selected() != tree_idx {
-                        // Save current offset before changing selection
-                        let current_offset = app.file_list_state.list_state.offset();
-                        app.file_list_state.select(tree_idx);
-                        // Restore offset to prevent auto-scrolling
-                        *app.file_list_state.list_state.offset_mut() = current_offset;
-                    }
-                    break;
+                if app.file_list_state.selected() != tree_idx {
+                    // Save current offset before changing selection
+                    let current_offset = app.file_list_state.list_state.offset();
+                    app.file_list_state.select(tree_idx);
+                    // Restore offset to prevent auto-scrolling
+                    *app.file_list_state.list_state.offset_mut() = current_offset;
                 }
+                break;
             }
         }
     }
@@ -113,22 +91,6 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
         .iter()
         .map(|item| {
             let line = match item {
-                FileTreeItem::PrInfo => {
-                    let hint = app
-                        .pr_info
-                        .as_ref()
-                        .map(pr_info_tree_hint)
-                        .unwrap_or_default();
-                    let label = if hint.is_empty() {
-                        "PR Description".to_string()
-                    } else {
-                        format!("PR Description · {hint}")
-                    };
-                    Line::from(vec![Span::styled(
-                        label,
-                        styles::file_header_style(&app.theme),
-                    )])
-                }
                 FileTreeItem::Directory {
                     path,
                     depth,
@@ -205,49 +167,4 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
         .block(block);
 
     frame.render_stateful_widget(list, area, &mut app.file_list_state.list_state);
-}
-
-fn pr_info_tree_hint(info: &crate::forge::traits::PullRequestInfo) -> String {
-    let details = &info.details;
-    if details.merged_at.is_some() {
-        return "merged".to_string();
-    }
-    if details.closed {
-        return "closed".to_string();
-    }
-    if details.is_draft {
-        return "draft".to_string();
-    }
-    let failing = info
-        .checks
-        .iter()
-        .filter(|check| {
-            let outcome = check
-                .conclusion
-                .as_deref()
-                .or(check.status.as_deref())
-                .unwrap_or("")
-                .to_ascii_uppercase();
-            !matches!(
-                outcome.as_str(),
-                "SUCCESS"
-                    | "COMPLETED"
-                    | "NEUTRAL"
-                    | "SKIPPED"
-                    | "IN_PROGRESS"
-                    | "QUEUED"
-                    | "PENDING"
-                    | "WAITING"
-                    | "REQUESTED"
-                    | ""
-            )
-        })
-        .count();
-    if failing > 0 {
-        return format!("{failing} checks failing");
-    }
-    if let Some(decision) = &info.review_decision {
-        return decision.replace('_', " ").to_lowercase();
-    }
-    details.state.to_lowercase()
 }
