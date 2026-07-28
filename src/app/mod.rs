@@ -884,6 +884,48 @@ pub enum PrRangeReloadEvent {
     },
 }
 
+/// Identity snapshot for an in-flight diff-watch reload, captured when the
+/// fetch is spawned. Compared against the live `App` state when the result
+/// lands so a fetch that outlives a diff-source switch, a commit-selection
+/// change, or a mode change (see `apply_diff_files`'s invariant comment) is
+/// discarded instead of applied.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiffWatchReloadRequest {
+    pub diff_source: DiffSource,
+    pub commit_selection_range: Option<(usize, usize)>,
+}
+
+/// Result delivered from the diff-watch background thread. `Ok(None)` means
+/// the fetch ran but found nothing new to show (unchanged, or the VCS
+/// reported no changes); `Ok(Some(_))` carries a fully fetched, highlighted
+/// diff ready for `apply_diff_files`.
+#[derive(Debug)]
+pub enum DiffWatchReloadEvent {
+    Done {
+        request: DiffWatchReloadRequest,
+        result: std::result::Result<Option<Vec<DiffFile>>, String>,
+        /// Commits re-read during the same tick, so a commit written while
+        /// tuicr is open reaches the inline pane. `None` means the worker did
+        /// not ask: either a narrowing was active when it spawned, or the
+        /// backend does not list commits.
+        commits: Option<Vec<CommitInfo>>,
+        /// Whether each of staged and unstaged holds anything, read during the
+        /// same tick. Decides which of the two synthetic rows the pane should
+        /// carry. `None` means the backend could not say, and the rows are
+        /// left exactly as they are.
+        change_status: Option<VcsChangeStatus>,
+    },
+}
+
+/// An in-flight diff-watch reload: the channel the worker will answer on,
+/// paired with the snapshot of what the user was looking at when it was
+/// spawned. Held together so neither can exist without the other.
+#[derive(Debug)]
+pub struct DiffWatchReload {
+    pub request: DiffWatchReloadRequest,
+    pub rx: std::sync::mpsc::Receiver<DiffWatchReloadEvent>,
+}
+
 /// Snapshot of the submit state needed to lock the matching local comments
 /// after the background `gh api .../reviews` call returns. Captured at
 /// time and stashed on `App::pr_submit_state` so the in-flight spinner has
@@ -1045,6 +1087,27 @@ pub struct App {
     pub(crate) session_file_state: Option<SessionFileState>,
     pub review_watch_interval: Option<Duration>,
     pub next_review_watch_at: Instant,
+    /// `None` by default: the diff watch is opt-in. A `0` interval in config
+    /// also means disabled.
+    pub diff_watch_interval: Option<Duration>,
+    pub next_diff_watch_at: Instant,
+    /// Last diff-watch error text, so a sustained failure warns once instead of
+    /// once per tick. Cleared on the next successful fetch.
+    last_diff_watch_error: Option<String>,
+    /// In-flight diff-watch reload spawned by a tick. Guards against a second
+    /// tick spawning while one is already running, and carries the identity
+    /// snapshot checked on receipt. The channel and the snapshot live in one
+    /// value on purpose: as two independent `Option`s they could disagree,
+    /// and a snapshot left behind without its channel blocks every future
+    /// tick from ever spawning again.
+    pub diff_watch_reload: Option<DiffWatchReload>,
+    /// Everything `detect_vcs` needs to open a backend the same way the
+    /// startup one was opened. The diff-watch worker opens its own, because
+    /// `git2::Repository` is `Send` but not `Sync` and so cannot share
+    /// `App::vcs`, and `AppStartupOptions` is dropped by the end of
+    /// `App::new`. Kept as one value so a future setting is added in one
+    /// place rather than at every construction path.
+    vcs_open_options: VcsOpenOptions,
     pub(crate) ephemeral_session_paths: HashSet<PathBuf>,
     pub diff_files: Vec<DiffFile>,
     pub diff_source: DiffSource,
@@ -1568,6 +1631,26 @@ enum CommentLocation {
     },
 }
 
+/// What `detect_vcs` needs to open a backend. Bundled because these two
+/// always travel together: they are chosen once at startup and then replayed
+/// verbatim by the diff-watch worker when it opens its own backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct VcsOpenOptions {
+    git_backend_preference: GitBackendPreference,
+    diff_whitespace_mode: DiffWhitespaceMode,
+}
+
+impl Default for VcsOpenOptions {
+    /// What every non-Git start uses: `--file`, `--all-files`, and PR reviews
+    /// never reopen a backend, so their options are never read.
+    fn default() -> Self {
+        Self {
+            git_backend_preference: GitBackendPreference::Libgit2,
+            diff_whitespace_mode: DiffWhitespaceMode::default(),
+        }
+    }
+}
+
 pub struct AppStartupOptions<'a> {
     pub revisions: Option<&'a str>,
     pub working_tree: bool,
@@ -1587,6 +1670,17 @@ pub struct AppStartupOptions<'a> {
     /// `ForgeRepository`. When `Some`, the canonical resolver short-circuits
     /// the `gh api` parent lookup and uses this value directly.
     pub repo_url_override: Option<ForgeRepository>,
+}
+
+impl AppStartupOptions<'_> {
+    /// The subset `detect_vcs` needs, so an `App` can reopen a backend later
+    /// without holding on to the whole options struct.
+    fn vcs_open_options(&self) -> VcsOpenOptions {
+        VcsOpenOptions {
+            git_backend_preference: self.git_backend_preference,
+            diff_whitespace_mode: self.diff_whitespace_mode,
+        }
+    }
 }
 
 mod annotations;

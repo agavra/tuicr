@@ -414,6 +414,9 @@ mod tests {
     use std::fs;
     use std::path::Path;
 
+    use crate::vcs::git::{GitCliBackend, Libgit2Backend};
+    use crate::vcs::traits::VcsBackend;
+
     fn create_initial_commit(repo: &Repository, file_name: &str, content: &str) {
         fs::write(repo.workdir().unwrap().join(file_name), content)
             .expect("failed to write initial file");
@@ -635,5 +638,145 @@ mod tests {
         .expect("mode-only edit should still produce a diff");
         assert_eq!(files.len(), 1);
         assert!(files[0].hunks.is_empty());
+    }
+
+    /// Temporary git repo for the plain against highlighted test below.
+    /// `create_initial_commit` above adds one commit to an already-open
+    /// `Repository`. This builds the whole repo instead, so both the libgit2 and
+    /// Git CLI backends can open it from its path.
+    struct TempRepo {
+        dir: tempfile::TempDir,
+    }
+
+    impl TempRepo {
+        /// Creates a git repo with each `(path, content)` pair committed once
+        /// with empty content, then rewritten to `content` as an unstaged
+        /// change. Starts from a real commit rather than an unborn HEAD, which
+        /// keeps both backends on their ordinary "diff against HEAD" path.
+        fn with_changes(files: &[(&str, &str)]) -> Self {
+            let dir = tempfile::tempdir().expect("failed to create temp dir");
+            run_git(dir.path(), &["init"]);
+            run_git(dir.path(), &["config", "user.name", "Tuicr Test"]);
+            run_git(dir.path(), &["config", "user.email", "tuicr@example.com"]);
+            for (path, _) in files {
+                fs::write(dir.path().join(path), "")
+                    .unwrap_or_else(|e| panic!("failed to write {path}: {e}"));
+            }
+            run_git(dir.path(), &["add", "-A"]);
+            run_git(dir.path(), &["commit", "-m", "base"]);
+            for (path, content) in files {
+                fs::write(dir.path().join(path), content)
+                    .unwrap_or_else(|e| panic!("failed to update {path}: {e}"));
+            }
+            Self { dir }
+        }
+
+        fn path(&self) -> &Path {
+            self.dir.path()
+        }
+    }
+
+    fn run_git(dir: &Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap_or_else(|e| panic!("failed to run git {args:?}: {e}"));
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// Compares two parses of the same working tree on the fields the diff-watch
+    /// gate (`App::fetch_changed_diff_files`) keys on: path, status, binary and
+    /// too-large flags, and content hash. Sorted so the comparison does not depend
+    /// on backend return order.
+    fn assert_files_match(highlighted: &[DiffFile], plain: &[DiffFile], context: &str) {
+        // Two empty parses match, so the comparison below passes if the fixture
+        // stops producing a diff.
+        assert_eq!(
+            highlighted.len(),
+            2,
+            "{context}: fixture should produce both changed files"
+        );
+
+        assert_eq!(
+            highlighted.len(),
+            plain.len(),
+            "{context}: file count differs between highlighted and plain parses"
+        );
+
+        let key = |f: &DiffFile| {
+            (
+                f.display_path().clone(),
+                f.status.as_char(),
+                f.is_binary,
+                f.is_too_large,
+                f.content_hash,
+            )
+        };
+        let mut highlighted_keys: Vec<_> = highlighted.iter().map(key).collect();
+        let mut plain_keys: Vec<_> = plain.iter().map(key).collect();
+        highlighted_keys.sort();
+        plain_keys.sort();
+
+        assert_eq!(
+            highlighted_keys, plain_keys,
+            "{context}: plain and highlighted parses must match"
+        );
+    }
+
+    /// The gate in `App::fetch_changed_diff_files` (`src/app/diff_load.rs`) is sound
+    /// only because parsing without a syntax set produces the same per-file result as
+    /// parsing with one. Highlighting assigns spans; `content_hash` comes from line
+    /// text at parse time. If that stops being true the watcher breaks silently, so
+    /// pin it here.
+    ///
+    /// The `.vue` file is deliberate. Extensions accepted by
+    /// `needs_full_file_highlight` are the only ones where highlighting does extra
+    /// work after parsing, via `enhance_with_full_file_highlight`. Without one, the
+    /// test never exercises the path most likely to break the equality.
+    ///
+    /// Runs against both Git backends: `content_hash` is computed separately from
+    /// styling at each backend's own parse site, so the equality is a property of
+    /// each backend, not a shared guarantee. Mercurial and Jujutsu are out of scope.
+    /// Exercising them needs those CLIs installed, which this test suite does not
+    /// assume.
+    #[test]
+    fn should_match_plain_and_highlighted_parses_for_both_git_backends() {
+        let repo = TempRepo::with_changes(&[
+            ("a.rs", "fn main() { let x = 1; }\n"),
+            ("b.vue", "<template><div>{{ x }}</div></template>\n"),
+        ]);
+
+        let backends: Vec<(&str, Box<dyn VcsBackend>)> = vec![
+            (
+                "libgit2",
+                Box::new(
+                    Libgit2Backend::discover_from(repo.path(), DiffWhitespaceMode::Normal)
+                        .expect("failed to open libgit2 backend"),
+                ),
+            ),
+            (
+                "git cli",
+                Box::new(
+                    GitCliBackend::discover_from(repo.path(), DiffWhitespaceMode::Normal)
+                        .expect("failed to open git cli backend"),
+                ),
+            ),
+        ];
+
+        for (label, backend) in backends {
+            let highlighted = backend
+                .get_working_tree_diff(&SyntaxHighlighter::default())
+                .unwrap_or_else(|e| panic!("{label}: highlighted fetch failed: {e}"));
+            let plain = backend
+                .get_working_tree_diff(&SyntaxHighlighter::plain())
+                .unwrap_or_else(|e| panic!("{label}: plain fetch failed: {e}"));
+
+            assert_files_match(&highlighted, &plain, label);
+        }
     }
 }

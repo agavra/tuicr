@@ -842,85 +842,23 @@ impl App {
             return Ok(());
         }
 
-        // Load diff for selected subrange
-        let has_staged = (start..=end).any(|i| {
-            self.review_commits
-                .get(i)
-                .is_some_and(Self::is_staged_commit)
-        });
-        let has_unstaged = (start..=end).any(|i| {
-            self.review_commits
-                .get(i)
-                .is_some_and(Self::is_unstaged_commit)
-        });
-        let selected_ids: Vec<String> = (start..=end)
-            .rev() // oldest to newest
-            .filter_map(|i| self.review_commits.get(i))
-            .filter(|c| !Self::is_special_commit(c))
-            .map(|c| c.id.clone())
-            .collect();
-
+        // Load diff for selected subrange. `source_for_commit_subrange` holds
+        // the one copy of "which diff does this selection mean", shared with
+        // `narrowed_fetch_source` so a reload and the selector can never
+        // disagree about it. An empty result is not an error here: a subrange
+        // can legitimately contain no changes.
+        let fetch_source = Self::source_for_commit_subrange(&self.review_commits, start, end);
         let highlighter = self.theme.syntax_highlighter();
-        let diff_files = if (has_staged || has_unstaged) && !selected_ids.is_empty() {
-            match Self::get_working_tree_with_commits_diff_with_ignore(
-                self.vcs.as_ref(),
-                &self.vcs_info.root_path,
-                &selected_ids,
-                highlighter,
-                self.path_filter.as_deref(),
-            ) {
-                Ok(files) => files,
-                Err(TuicrError::NoChanges) => Vec::new(),
-                Err(e) => return Err(e),
-            }
-        } else if has_staged && has_unstaged {
-            match Self::get_working_tree_diff_with_ignore(
-                self.vcs.as_ref(),
-                &self.vcs_info.root_path,
-                highlighter,
-                self.path_filter.as_deref(),
-            ) {
-                Ok(files) => files,
-                Err(TuicrError::NoChanges) => Vec::new(),
-                Err(e) => return Err(e),
-            }
-        } else if has_staged {
-            match Self::get_staged_diff_with_ignore(
-                self.vcs.as_ref(),
-                &self.vcs_info.root_path,
-                highlighter,
-                self.path_filter.as_deref(),
-            ) {
-                Ok(files) => files,
-                Err(TuicrError::NoChanges) => Vec::new(),
-                Err(e) => return Err(e),
-            }
-        } else if has_unstaged {
-            match Self::get_unstaged_diff_with_ignore(
-                self.vcs.as_ref(),
-                &self.vcs_info.root_path,
-                highlighter,
-                self.path_filter.as_deref(),
-            ) {
-                Ok(files) => files,
-                Err(TuicrError::NoChanges) => Vec::new(),
-                Err(e) => return Err(e),
-            }
-        } else {
-            match Self::get_commit_range_diff_with_ignore(
-                self.vcs.as_ref(),
-                &self.vcs_info.root_path,
-                &ResolvedRevisionRange::from_commit_ids(
-                    &selected_ids,
-                    RevisionDiffTarget::CommitList,
-                ),
-                highlighter,
-                self.path_filter.as_deref(),
-            ) {
-                Ok(files) => files,
-                Err(TuicrError::NoChanges) => Vec::new(),
-                Err(e) => return Err(e),
-            }
+        let diff_files = match Self::fetch_diff_files_for_source(
+            self.vcs.as_ref(),
+            &self.vcs_info.root_path,
+            &fetch_source,
+            highlighter,
+            self.path_filter.as_deref(),
+        ) {
+            Ok(files) => files,
+            Err(TuicrError::NoChanges) => Vec::new(),
+            Err(e) => return Err(e),
         };
         self.commit_diff_cache
             .insert((start, end), diff_files.clone());
