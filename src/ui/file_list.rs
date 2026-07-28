@@ -218,19 +218,31 @@ fn pr_info_tree_hint(info: &crate::forge::traits::PullRequestInfo) -> String {
     if details.is_draft {
         return "draft".to_string();
     }
-    let failing = info.checks.iter().filter(|check| {
-        let outcome = check
-            .conclusion
-            .as_deref()
-            .or(check.status.as_deref())
-            .unwrap_or("")
-            .to_ascii_uppercase();
-        !matches!(
-            outcome.as_str(),
-            "SUCCESS" | "COMPLETED" | "NEUTRAL" | "SKIPPED" | "IN_PROGRESS" | "QUEUED"
-                | "PENDING" | "WAITING" | "REQUESTED" | ""
-        )
-    }).count();
+    let failing = info
+        .checks
+        .iter()
+        .filter(|check| {
+            let outcome = check
+                .conclusion
+                .as_deref()
+                .or(check.status.as_deref())
+                .unwrap_or("")
+                .to_ascii_uppercase();
+            !matches!(
+                outcome.as_str(),
+                "SUCCESS"
+                    | "COMPLETED"
+                    | "NEUTRAL"
+                    | "SKIPPED"
+                    | "IN_PROGRESS"
+                    | "QUEUED"
+                    | "PENDING"
+                    | "WAITING"
+                    | "REQUESTED"
+                    | ""
+            )
+        })
+        .count();
     if failing > 0 {
         return format!("{failing} checks failing");
     }

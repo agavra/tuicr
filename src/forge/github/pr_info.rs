@@ -72,7 +72,9 @@ struct GhReviewRequestWrappedNode {
 #[serde(untagged)]
 enum GhReviewRequestsInput {
     Flat(Vec<GhReviewRequestFlat>),
-    Wrapped { nodes: Vec<GhReviewRequestWrappedNode> },
+    Wrapped {
+        nodes: Vec<GhReviewRequestWrappedNode>,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -150,7 +152,9 @@ pub(crate) fn parse_pull_request_info(
             let details: GhPullRequestDetails = serde_json::from_str(json).map_err(|_| {
                 TuicrError::Forge(format!("Failed to parse GitHub PR info response: {e}"))
             })?;
-            Ok(PullRequestInfo::from_details(details.into_details(repository)?))
+            Ok(PullRequestInfo::from_details(
+                details.into_details(repository)?,
+            ))
         }
     }
 }
@@ -171,7 +175,9 @@ impl GhPullRequestInfoResponse {
     }
 }
 
-fn deserialize_review_requests<'de, D>(deserializer: D) -> std::result::Result<Vec<String>, D::Error>
+fn deserialize_review_requests<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Vec<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -198,9 +204,12 @@ where
     let value = Option::<GhLatestReviewsInput>::deserialize(deserializer)?;
     Ok(match value {
         None => Vec::new(),
-        Some(GhLatestReviewsInput::Flat(reviews) | GhLatestReviewsInput::Wrapped { nodes: reviews }) => {
-            reviews.into_iter().filter_map(latest_review_status).collect()
-        }
+        Some(
+            GhLatestReviewsInput::Flat(reviews) | GhLatestReviewsInput::Wrapped { nodes: reviews },
+        ) => reviews
+            .into_iter()
+            .filter_map(latest_review_status)
+            .collect(),
     })
 }
 
@@ -213,10 +222,9 @@ where
     let value = Option::<GhStatusCheckRollupInput>::deserialize(deserializer)?;
     Ok(match value {
         None => Vec::new(),
-        Some(GhStatusCheckRollupInput::Flat(checks)) => checks
-            .into_iter()
-            .filter_map(status_check_label)
-            .collect(),
+        Some(GhStatusCheckRollupInput::Flat(checks)) => {
+            checks.into_iter().filter_map(status_check_label).collect()
+        }
         Some(GhStatusCheckRollupInput::Nested(nested)) => nested
             .nodes
             .into_iter()

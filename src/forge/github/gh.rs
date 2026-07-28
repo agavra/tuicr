@@ -7,8 +7,7 @@ use crate::forge::remote_comments::{RemoteReviewSummary, RemoteReviewThread};
 use crate::forge::traits::{
     ForgeBackend, ForgeFileLinesRequest, ForgeRepository, GhCreateReviewResponse,
     PagedPullRequests, PullRequestCommit, PullRequestDetails, PullRequestInfo,
-    PullRequestListQuery,
-    PullRequestListScope, PullRequestTarget,
+    PullRequestListQuery, PullRequestListScope, PullRequestTarget,
 };
 use crate::model::DiffLine;
 use crate::process::{

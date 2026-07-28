@@ -7,8 +7,8 @@ use crate::forge::traits::{
 };
 use crate::model::{DiffFile, FileStatus, ReviewSession, SessionDiffSource};
 use crate::theme::Theme;
-use crate::vcs::{PrNoopVcs, VcsInfo};
 use crate::vcs::traits::VcsType;
+use crate::vcs::{PrNoopVcs, VcsInfo};
 
 fn sample_pr_info() -> PullRequestInfo {
     PullRequestInfo {
@@ -119,9 +119,11 @@ fn should_prepend_pr_info_annotations_before_review_comments() {
         app.line_annotations.first(),
         Some(crate::app::AnnotatedLine::PrInfoHeader)
     ));
-    assert!(app.line_annotations.iter().any(|line| {
-        matches!(line, crate::app::AnnotatedLine::PrInfoLine { .. })
-    }));
+    assert!(
+        app.line_annotations
+            .iter()
+            .any(|line| { matches!(line, crate::app::AnnotatedLine::PrInfoLine { .. }) })
+    );
     let review_header_idx = app
         .line_annotations
         .iter()

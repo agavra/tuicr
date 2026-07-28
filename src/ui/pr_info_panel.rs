@@ -5,7 +5,7 @@ use ratatui::{
 
 use crate::app::App;
 use crate::forge::traits::{PullRequestCheckStatus, PullRequestInfo, PullRequestReviewStatus};
-use crate::ui::diff_view::{cursor_indicator_spaced, HEADER_RULE};
+use crate::ui::diff_view::{HEADER_RULE, cursor_indicator_spaced};
 use crate::ui::styles;
 
 /// Rendered line count of the PR description block at the top of the diff view.
@@ -41,10 +41,7 @@ pub fn append_pr_info_section(
                 general_indicator,
                 styles::current_line_indicator_style(&app.theme),
             ),
-            Span::styled(
-                "═══ PR Description ",
-                styles::file_header_style(&app.theme),
-            ),
+            Span::styled("═══ PR Description ", styles::file_header_style(&app.theme)),
             Span::styled(HEADER_RULE, styles::file_header_style(&app.theme)),
         ]));
         *line_idx += 1;
@@ -54,10 +51,7 @@ pub fn append_pr_info_section(
         let indicator = cursor_indicator_spaced(*line_idx, current_line_idx);
         pr_line.spans.insert(
             0,
-            Span::styled(
-                indicator,
-                styles::current_line_indicator_style(&app.theme),
-            ),
+            Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
         );
         lines.push(pr_line);
         *line_idx += 1;
@@ -101,11 +95,7 @@ pub fn build_pr_info_lines(info: &PullRequestInfo, width: usize) -> Vec<Line<'st
         content_width,
     );
 
-    let head_short = details
-        .head_sha
-        .chars()
-        .take(8)
-        .collect::<String>();
+    let head_short = details.head_sha.chars().take(8).collect::<String>();
     let mut branch_line = format!(
         "{} → {} · {}",
         details.head_ref_name, details.base_ref_name, head_short
@@ -114,7 +104,10 @@ pub fn build_pr_info_lines(info: &PullRequestInfo, width: usize) -> Vec<Line<'st
         branch_line.push_str(&format!(" · @{author}"));
     }
     if let Some(updated) = details.updated_at {
-        branch_line.push_str(&format!(" · updated {}", updated.format("%Y-%m-%d %H:%M UTC")));
+        branch_line.push_str(&format!(
+            " · updated {}",
+            updated.format("%Y-%m-%d %H:%M UTC")
+        ));
     }
     push_wrapped_line(&mut lines, branch_line, content_width);
 
