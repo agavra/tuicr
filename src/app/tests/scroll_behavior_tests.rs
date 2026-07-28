@@ -502,8 +502,11 @@ fn page_lines_wrap_off_equals_row_budget() {
     let mut app = build_scroll_app(40, 20, 0);
     app.diff_state.wrap_lines = false;
     app.diff_state.cursor_line = 20;
+    app.diff_state.scroll_offset = 10;
     assert_eq!(app.page_lines_down(5), 5);
     assert_eq!(app.page_lines_up(5), 5);
+    assert_eq!(app.page_view_lines_down(5), 5);
+    assert_eq!(app.page_view_lines_up(5), 5);
 }
 
 #[test]
@@ -529,6 +532,78 @@ fn page_lines_down_wrap_on_counts_visual_rows() {
             "walk should be maximal: adding next height {next_h} to {sum} would fit in {budget}"
         );
     }
+}
+
+#[test]
+fn page_down_uses_viewport_relative_row_heights() {
+    let mut contents = vec!["x".to_string(); 16];
+    // Diff-row prefix is 5 cells at this fixture's line-number width, so
+    // 56 unbroken content cells produce a four-row annotation at width 20.
+    contents[0] = "L".repeat(56);
+    let mut app = build_wrapping_scroll_app_with_contents(&contents, 5, 20);
+    let first_diff = app
+        .line_annotations
+        .iter()
+        .position(|a| matches!(a, AnnotatedLine::DiffLine { .. }))
+        .expect("a diff line annotation must exist");
+    assert_eq!(annotation_row_height(&app, first_diff), 4);
+    assert_eq!(annotation_row_height(&app, first_diff + 1), 1);
+
+    app.diff_state.scroll_offset = first_diff;
+    app.diff_state.cursor_line = first_diff + 1;
+
+    assert_eq!(app.page_lines_down(5), 5);
+    assert_eq!(
+        app.page_view_lines_down(5),
+        2,
+        "the viewport must spend four rows on its tall top annotation"
+    );
+
+    app.page_down(5);
+
+    assert_eq!(app.diff_state.scroll_offset, first_diff + 2);
+    assert_eq!(app.diff_state.cursor_line, first_diff + 6);
+    let advanced_rows: usize = (first_diff..app.diff_state.scroll_offset)
+        .map(|idx| annotation_row_height(&app, idx))
+        .sum();
+    assert_eq!(advanced_rows, 5);
+}
+
+#[test]
+fn page_up_uses_viewport_relative_row_heights() {
+    let mut contents = vec!["x".to_string(); 20];
+    contents[5] = "L".repeat(56);
+    let mut app = build_wrapping_scroll_app_with_contents(&contents, 5, 20);
+    let first_diff = app
+        .line_annotations
+        .iter()
+        .position(|a| matches!(a, AnnotatedLine::DiffLine { .. }))
+        .expect("a diff line annotation must exist");
+    assert_eq!(annotation_row_height(&app, first_diff + 5), 4);
+
+    let old_scroll = first_diff + 6;
+    app.diff_state.scroll_offset = old_scroll;
+    app.diff_state.cursor_line = first_diff + 10;
+
+    assert_eq!(app.page_lines_up(5), 4);
+    assert_eq!(
+        app.page_view_lines_up(5),
+        2,
+        "the viewport must spend four rows on the tall annotation above it"
+    );
+
+    app.page_up(5);
+
+    assert_eq!(app.diff_state.scroll_offset, first_diff + 4);
+    let advanced_rows: usize = (app.diff_state.scroll_offset..old_scroll)
+        .map(|idx| annotation_row_height(&app, idx))
+        .sum();
+    assert_eq!(advanced_rows, 5);
+    assert_eq!(
+        app.diff_state.cursor_line,
+        first_diff + 5,
+        "cursor should clamp to the last fully visible annotation without moving the viewport"
+    );
 }
 
 #[test]

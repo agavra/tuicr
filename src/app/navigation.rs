@@ -133,6 +133,92 @@ impl App {
         self.update_current_file_from_cursor();
     }
 
+    pub fn page_down(&mut self, row_budget: usize) {
+        let cursor_lines = self.page_lines_down(row_budget);
+        let viewport_lines = self.page_view_lines_down(row_budget);
+        let max_line = self.max_cursor_line();
+        let cursor = skip_decoration_forward(
+            &self.line_annotations,
+            (self.diff_state.cursor_line + cursor_lines).min(max_line),
+            max_line,
+        );
+        let scroll = (self.diff_state.scroll_offset + viewport_lines).min(self.max_scroll_offset());
+        self.apply_page_position(cursor, scroll, true);
+    }
+
+    pub fn page_up(&mut self, row_budget: usize) {
+        let cursor_lines = self.page_lines_up(row_budget);
+        let viewport_lines = self.page_view_lines_up(row_budget);
+        let cursor = skip_decoration_backward(
+            &self.line_annotations,
+            self.diff_state.cursor_line.saturating_sub(cursor_lines),
+        );
+        let scroll = self.diff_state.scroll_offset.saturating_sub(viewport_lines);
+        self.apply_page_position(cursor, scroll, false);
+    }
+
+    fn apply_page_position(&mut self, cursor: usize, scroll: usize, moving_down: bool) {
+        // A trailing Spacing annotation is not a valid cursor row. Do not let
+        // a page motion leave it alone at the top with the cursor off-screen.
+        let scroll = scroll.min(self.max_cursor_line());
+        self.diff_state.scroll_offset = scroll;
+
+        // Cursor and viewport consume their row budgets from different
+        // anchors. If a tall row causes their greedy walks to land on
+        // opposite sides of a wrap boundary, keep the independently
+        // calculated viewport position and clamp the cursor into it.
+        let first = scroll;
+        let last = self.last_fully_visible_annotation(first);
+        let mut cursor = cursor.clamp(first, last);
+        if self
+            .line_annotations
+            .get(cursor)
+            .is_some_and(is_decoration)
+        {
+            cursor = if moving_down {
+                let forward = skip_decoration_forward(&self.line_annotations, cursor, last);
+                if self
+                    .line_annotations
+                    .get(forward)
+                    .is_some_and(|annotation| !is_decoration(annotation))
+                {
+                    forward
+                } else {
+                    skip_decoration_backward(&self.line_annotations, last).max(first)
+                }
+            } else {
+                let backward = skip_decoration_backward(&self.line_annotations, cursor).max(first);
+                if self
+                    .line_annotations
+                    .get(backward)
+                    .is_some_and(|annotation| !is_decoration(annotation))
+                {
+                    backward
+                } else {
+                    skip_decoration_forward(&self.line_annotations, first, last)
+                }
+            };
+        }
+
+        self.diff_state.cursor_line = cursor;
+        self.update_current_file_from_cursor();
+    }
+
+    fn last_fully_visible_annotation(&self, start: usize) -> usize {
+        let viewport = self.diff_state.viewport_height.max(1);
+        let mut used = 0;
+        let mut last = start;
+        for idx in start..self.line_annotations.len() {
+            let height = annotation_row_height(self, idx);
+            if used + height > viewport {
+                break;
+            }
+            used += height;
+            last = idx;
+        }
+        last
+    }
+
     pub fn scroll_view_down(&mut self, lines: usize) {
         let max_scroll = self.max_scroll_offset();
         self.diff_state.scroll_offset = (self.diff_state.scroll_offset + lines).min(max_scroll);
@@ -264,6 +350,28 @@ impl App {
 
     pub(crate) fn page_lines_up(&self, row_budget: usize) -> usize {
         let anchor = self.diff_state.cursor_line;
+        (anchor - self.scroll_offset_for_rows_above(anchor, row_budget)).max(1)
+    }
+
+    pub(crate) fn page_view_lines_down(&self, row_budget: usize) -> usize {
+        let total = self.line_annotations.len();
+        let mut used = 0;
+        let mut count = 0;
+        let mut idx = self.diff_state.scroll_offset;
+        while idx < total {
+            let height = annotation_row_height(self, idx);
+            if used + height > row_budget {
+                break;
+            }
+            used += height;
+            count += 1;
+            idx += 1;
+        }
+        count.max(1)
+    }
+
+    pub(crate) fn page_view_lines_up(&self, row_budget: usize) -> usize {
+        let anchor = self.diff_state.scroll_offset;
         (anchor - self.scroll_offset_for_rows_above(anchor, row_budget)).max(1)
     }
 
