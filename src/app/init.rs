@@ -557,7 +557,7 @@ impl App {
             range_diff_files: None,
             saved_inline_selection: None,
             path_filter: path_filter.map(|s| s.to_string()),
-            export_legend: true,
+            export: ExportConfig::default(),
         };
         // Auto-hide file list when path filter matches exactly one file
         if app.path_filter.is_some() && app.diff_files.len() == 1 {

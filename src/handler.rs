@@ -352,7 +352,7 @@ fn handle_export(app: &mut App) {
             &app.session,
             &app.diff_source,
             &app.comment_types,
-            app.export_legend,
+            &app.export,
             &app.forge_review_threads,
             slug.as_deref(),
         ) {
@@ -367,7 +367,7 @@ fn handle_export(app: &mut App) {
             &app.session,
             &app.diff_source,
             &app.comment_types,
-            app.export_legend,
+            &app.export,
             &app.forge_review_threads,
             slug.as_deref(),
         ) {
@@ -1069,7 +1069,7 @@ pub fn handle_confirm_action(app: &mut App, action: Action) {
                         &app.session,
                         &app.diff_source,
                         &app.comment_types,
-                        app.export_legend,
+                        &app.export,
                         &app.forge_review_threads,
                         slug.as_deref(),
                     ) {
@@ -1081,7 +1081,7 @@ pub fn handle_confirm_action(app: &mut App, action: Action) {
                         &app.session,
                         &app.diff_source,
                         &app.comment_types,
-                        app.export_legend,
+                        &app.export,
                         &app.forge_review_threads,
                         slug.as_deref(),
                     ) {

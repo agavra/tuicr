@@ -6,7 +6,7 @@ use chrono::Utc;
 use ratatui::style::Color;
 
 use crate::comment_vim::CommentVimEditor;
-use crate::config::CommentTypeConfig;
+use crate::config::{CommentTypeConfig, ExportConfig};
 use crate::editor::EditorTarget;
 use crate::error::{Result, TuicrError};
 use crate::forge::context::{ContextProvider, ForgeContextProvider, VcsContextProvider};
@@ -1273,8 +1273,8 @@ pub struct App {
     pub saved_inline_selection: Option<(usize, usize)>,
     /// Path filter for scoping diff to a specific file or directory
     pub path_filter: Option<String>,
-    /// Whether to include the "Comment types:" legend line in export
-    pub export_legend: bool,
+    /// Resolved `[export]` settings shaping the generated review markdown.
+    pub export: ExportConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
