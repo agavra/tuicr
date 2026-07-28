@@ -19,7 +19,10 @@ use tuicr::handler::{
     handle_search_action, handle_submit_action_picker_action, handle_submit_confirm_action,
     handle_submit_resolver_action, handle_visual_action,
 };
-use tuicr::input::{Action, map_key_to_action, map_target_filter_mode};
+use tuicr::input::{
+    Action, map_file_tree_mode, map_file_tree_prompt_mode, map_key_to_action,
+    map_target_filter_mode,
+};
 use tuicr::terminal_state::{TerminalFeatures, TerminalSession};
 use tuicr::theme::resolve_theme_with_config;
 use tuicr::vcs::{DiffWhitespaceMode, GitBackendPreference};
@@ -588,12 +591,24 @@ fn main() -> anyhow::Result<()> {
                     // route through the filter-specific key map so typed
                     // characters update the filter buffer rather than driving
                     // commit-list navigation.
-                    let mut action =
-                        if app.input_mode == InputMode::CommitSelect && app.pr_filter_editing() {
-                            map_target_filter_mode(key)
-                        } else {
-                            map_key_to_action(key, app.input_mode, app.leader_key)
-                        };
+                    let mut action = if app.input_mode == InputMode::CommitSelect
+                        && app.pr_filter_editing()
+                    {
+                        map_target_filter_mode(key)
+                    } else if app.input_mode == InputMode::Normal && app.file_tree_prompt_editing()
+                    {
+                        // An open file-tree prompt (`i`/`e`/`/`) captures all
+                        // input until Enter/Esc, like the PR filter above.
+                        map_file_tree_prompt_mode(key)
+                    } else if app.input_mode == InputMode::Normal
+                        && app.focused_panel == FocusedPanel::FileList
+                    {
+                        // The tree claims i/e/I/E and `/` for filtering; the
+                        // diff keeps its own meanings for those keys.
+                        map_file_tree_mode(key, app.leader_key)
+                    } else {
+                        map_key_to_action(key, app.input_mode, app.leader_key)
+                    };
 
                     // Handle pending command setters (these work in any mode)
                     match action {

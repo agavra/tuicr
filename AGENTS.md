@@ -17,6 +17,7 @@ src/
 ├── config/
 │   └── mod.rs           # User config loading (XDG on Unix, %APPDATA% on Windows)
 ├── app.rs               # Application state (App struct, InputMode, etc.)
+│   └── file_filter.rs   # File-tree include/exclude regex filters + `/` path search
 ├── error.rs             # Error types (TuicrError enum)
 ├── editor.rs            # External $EDITOR command construction and launch helpers
 ├── review_store.rs      # Library API for session listing/loading and shared comment insertion
@@ -116,6 +117,19 @@ Repository-managed agent integrations:
 - Capability hooks: `supports_sparse_checkout()` advertises whether the selected backend can operate on Git sparse-checkout repos
 - Implementations: `GitBackend`, `HgBackend`, `JjBackend` (all always compiled)
 
+**FileTreeFilter** (`src/app/mod.rs`, impls in `src/app/file_filter.rs`):
+- File-tree `i` include / `e` exclude regex filters plus the `/` path search
+- A filter is a *view* over `diff_files`, never a mutation: `file_idx` stays an absolute
+  index, so nothing downstream needs remapping. `App::file_passes_filter()` is the single
+  predicate, consulted by `build_visible_items`, `rebuild_annotations`,
+  `file_render_height`/`effective_file_height` (0 lines for hidden files), `hunk_positions`,
+  and both diff renderers. Add a gate anywhere a new loop walks `diff_files`.
+- `file_filter.draft` makes the tree a text-input sub-state of `InputMode::Normal`, the same
+  shape as `pr_filter_draft` for the target selector; `main.rs` routes to
+  `map_file_tree_prompt_mode` while it is `Some`
+- Keys are focus-scoped via `map_file_tree_mode`: the tree claims `i`/`e`/`I`/`E`/`/`, the
+  diff keeps `i` = edit comment and `/` = search diff
+
 **InputMode** (`src/app.rs`):
 - `Normal` - default navigation mode
 - `Command` - after pressing `:`, vim-style commands
@@ -160,6 +174,9 @@ Repository-managed agent integrations:
 - **Clipboard**: Uses `arboard` crate for cross-platform clipboard support
 - **Hunk navigation**: `next_hunk()`/`prev_hunk()` calculate positions by iterating through files
 - **Ignore filtering**: `.tuicrignore` is applied whenever diffs are loaded/reloaded
+- **File-tree filters**: `i`/`e` regex filters narrow the tree *and* the diff at render/measure
+  time (`App::file_passes_filter`), unlike `.tuicrignore` which drops files at load time. They
+  are session-local and never persisted
 
 ### Dependencies
 

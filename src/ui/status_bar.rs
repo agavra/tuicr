@@ -8,7 +8,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph},
 };
 
-use crate::app::{App, DiffSource, InputMode, Message, MessageType};
+use crate::app::{App, DiffSource, FocusedPanel, InputMode, Message, MessageType};
 use crate::theme::Theme;
 use crate::ui::commit_row::CURSOR_GLYPH;
 use crate::ui::styles;
@@ -263,8 +263,16 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
 
         let hints: Cow<'static, str> = if app.message.is_some() {
             Cow::Borrowed("")
+        } else if app.file_tree_prompt_editing() {
+            // File-tree prompts are a sub-state of Normal, so the mode chip
+            // still reads NORMAL; the hint is what tells the user Enter/Esc
+            // are the way out.
+            Cow::Borrowed("   \u{21b5} apply \u{00b7} esc cancel")
         } else {
             match app.input_mode {
+                InputMode::Normal if app.focused_panel == FocusedPanel::FileList => Cow::Borrowed(
+                    "   j/k move \u{00b7} \u{21b5} open \u{00b7} i/e filter \u{00b7} I/E clear \u{00b7} / search \u{00b7} r reviewed",
+                ),
                 InputMode::Normal => Cow::Borrowed(
                     "   j/k scroll \u{00b7} {/} file \u{00b7} m/M comment \u{00b7} r file \u{00b7} R hunk \u{00b7} c comment \u{00b7} ? help",
                 ),

@@ -388,6 +388,10 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
         if app.is_single_file_view && file_idx != app.diff_state.current_file_idx {
             continue;
         }
+        // See the matching filter guard in src/ui/diff_unified.rs.
+        if !app.file_passes_filter(file) {
+            continue;
+        }
         let path = file.display_path();
         let status = file.status.as_char();
         let is_reviewed = app.session.is_file_reviewed(path);

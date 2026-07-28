@@ -2829,6 +2829,7 @@ dependencies = [
  "git2",
  "ignore",
  "ratatui",
+ "regex",
  "self-replace",
  "semver",
  "serde",

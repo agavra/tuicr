@@ -682,6 +682,9 @@ impl App {
             if single && file_idx != current_idx {
                 continue;
             }
+            if !self.file_passes_filter(file) {
+                continue;
+            }
             let path = file.display_path();
             let is_reviewed = self.session.is_file_reviewed(path);
 
@@ -733,8 +736,11 @@ impl App {
         // into the next file's first hunk so `]` can step the codebase
         // hunk-by-hunk without breaking on file boundaries.
         if self.is_single_file_view {
-            let next_idx = self.diff_state.current_file_idx + 1;
-            if next_idx < self.diff_files.len() {
+            // Step over files hidden by a file-tree filter: they render
+            // nothing, so landing on one would show an empty pane.
+            let next_idx = ((self.diff_state.current_file_idx + 1)..self.diff_files.len())
+                .find(|&idx| self.file_idx_passes_filter(idx));
+            if let Some(next_idx) = next_idx {
                 self.jump_to_file(next_idx);
                 if let Some(&first) = self.hunk_positions().first() {
                     self.diff_state.cursor_line = first;
@@ -762,8 +768,11 @@ impl App {
         // Symmetric to next_hunk: in single-file view, fall through to the
         // previous file's last hunk so `[` keeps stepping backward across
         // files.
-        if self.is_single_file_view && self.diff_state.current_file_idx > 0 {
-            let prev_idx = self.diff_state.current_file_idx - 1;
+        if self.is_single_file_view
+            && let Some(prev_idx) = (0..self.diff_state.current_file_idx)
+                .rev()
+                .find(|&idx| self.file_idx_passes_filter(idx))
+        {
             self.jump_to_file(prev_idx);
             if let Some(&last) = self.hunk_positions().last() {
                 self.diff_state.cursor_line = last;
@@ -826,6 +835,11 @@ impl App {
     }
 
     pub(in crate::app) fn file_render_height(&self, file_idx: usize, file: &DiffFile) -> usize {
+        // Filtered out: renders nothing, so it must occupy no render lines or
+        // every cumulative offset below it would drift.
+        if !self.file_passes_filter(file) {
+            return 0;
+        }
         if self.session.is_file_reviewed(file.display_path()) {
             return 1; // collapsed: header only
         }
@@ -1174,6 +1188,9 @@ impl App {
             return self.file_render_height(file_idx, file);
         }
         if file_idx != self.diff_state.current_file_idx {
+            return 0;
+        }
+        if !self.file_passes_filter(file) {
             return 0;
         }
         let banner = if self.session.is_file_reviewed(file.display_path()) {
