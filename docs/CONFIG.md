@@ -237,9 +237,9 @@ This applies to inline line comments, file-level comments, and review-level comm
 
 ## Export
 
-Settings under the `[export]` section shape the Markdown that `y` and `:clip` copy to the clipboard, and that `--stdout` prints. They do not affect reviews pushed to a forge with `:submit`; those are covered by [Forge](#forge).
+Settings under the `[export]` section control the Markdown that `y` and `:clip` copy to the clipboard, and that `--stdout` prints. They do not affect reviews you push to a forge with `:submit`; see [Forge](#forge) for those.
 
-Every key defaults to what tuicr has always emitted, so an export is unchanged until you set one. Setting a string key to `""` omits that line along with the blank line after it:
+Every key defaults to what tuicr has always emitted, so your exports stay byte-identical until you set one. Setting a string key to `""` omits that line along with the blank line after it:
 
 ```toml
 [export]
@@ -254,7 +254,7 @@ comments_header = "## Comments"
 | `scope_line`             | `true`                                                                       | Emit the `Reviewing <scope>` line naming the staged, unstaged, commit, or pull request scope.                                               |
 | `pr_metadata`            | `true`                                                                       | Emit the `URL:` and `Head:` lines in pull request mode. Independent of `scope_line`, because an agent needs both to fetch the pull request. |
 | `comments_header`        | `## Local tuicr Comments`                                                    | Heading above comments you wrote in the TUI. Set to `""` to omit it.                                                                        |
-| `remote_comments_header` | `## Existing GitHub Comments`                                                | Heading above unresolved forge threads, included in pull request mode only. Set to `""` to omit it.                                         |
+| `remote_comments_header` | `## Existing GitHub Comments`                                                | Heading above unresolved forge threads. Appears only in pull request mode. Set to `""` to omit it.                                          |
 | `legend`                 | `true`                                                                       | Emit the `Comment types:` legend. Takes precedence over the top-level `export_legend` key when set.                                         |
 
 The example above produces an export that opens directly on the comment list:

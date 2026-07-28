@@ -148,6 +148,22 @@ pub struct AppConfig {
     pub export: Option<ExportConfig>,
 }
 
+impl AppConfig {
+    /// Effective export settings, layering `[export]` over the older
+    /// top-level `export_legend`.
+    ///
+    /// `[export]` wins only for keys it actually names, so a section that
+    /// sets just `intro` leaves a configured `export_legend` in force
+    /// instead of resetting the legend to its default.
+    pub fn resolved_export(&self) -> ExportConfig {
+        let mut export = self.export.clone().unwrap_or_default();
+        if export.legend.is_none() {
+            export.legend = self.export_legend;
+        }
+        export
+    }
+}
+
 /// Known top-level config keys. Used to warn about typos.
 const KNOWN_KEYS: &[&str] = &[
     "theme",
@@ -1633,6 +1649,46 @@ scope_line = "no"
             outcome.warnings,
             vec!["Warning: Config key 'export' must be a table; ignoring value".to_string()]
         );
+    }
+
+    // resolved export precedence
+
+    #[test]
+    fn should_default_resolved_export_to_shipped_behavior() {
+        let cfg = parse_config("").config.expect("config should parse");
+        let export = cfg.resolved_export();
+        assert!(export.legend());
+        assert!(export.scope_line());
+        assert!(export.pr_metadata());
+    }
+
+    #[test]
+    fn should_resolve_export_legend_from_the_legacy_flat_key() {
+        let cfg = parse_config("export_legend = false\n")
+            .config
+            .expect("config should parse");
+        assert!(!cfg.resolved_export().legend());
+    }
+
+    #[test]
+    fn should_let_export_section_override_the_legacy_legend_key() {
+        let cfg = parse_config("export_legend = false\n\n[export]\nlegend = true\n")
+            .config
+            .expect("config should parse");
+        assert!(cfg.resolved_export().legend());
+    }
+
+    #[test]
+    fn should_keep_legacy_legend_when_export_section_omits_it() {
+        // Guards the regression a fully-populated overrides struct would
+        // cause: adding `[export]` just to trim the intro must not switch
+        // the legend back on.
+        let cfg = parse_config("export_legend = false\n\n[export]\nintro = \"\"\n")
+            .config
+            .expect("config should parse");
+        let export = cfg.resolved_export();
+        assert!(!export.legend());
+        assert_eq!(export.intro(), "");
     }
 
     // config path resolution

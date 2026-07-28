@@ -298,7 +298,7 @@ Summary: {optional overall notes}
 
 That is the default layout, not a fixed contract. The `[export]` section of `config.toml` lets a user reword or drop the intro line, the `Reviewing …` line, the comment-type legend, and either section heading. Parse the numbered comment list as the only part guaranteed to be present. See [docs/CONFIG.md](docs/CONFIG.md) for the keys.
 
-In pull request mode the header block also carries `URL:` and `Head:` lines identifying the pull request and the commit reviewed, and unresolved upstream threads follow under their own heading.
+In pull request mode the header block also includes `URL:` and `Head:` lines identifying the pull request and the commit reviewed, and unresolved upstream threads follow under their own heading.
 
 ### Comment Types
 

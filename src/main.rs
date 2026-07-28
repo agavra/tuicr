@@ -302,14 +302,7 @@ fn main() -> anyhow::Result<()> {
         if cfg.single_file_view == Some(true) && !app.is_single_file_view {
             app.toggle_single_file_view();
         }
-        // `[export]` supersedes the older top-level `export_legend`, but only
-        // for keys it actually names: a section that omits `legend` must
-        // leave `export_legend` in force rather than reset it to the default.
-        let mut export = cfg.export.clone().unwrap_or_default();
-        if export.legend.is_none() {
-            export.legend = cfg.export_legend;
-        }
-        app.export = export;
+        app.export = cfg.resolved_export();
         if cfg.cursor_line == Some(false) {
             app.cursor_line_highlight = false;
         }
