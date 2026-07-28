@@ -2,17 +2,17 @@
 
 tuicr reads a TOML config file at startup.
 
-| Platform | Path |
-| --- | --- |
+| Platform      | Path                                                                          |
+| ------------- | ----------------------------------------------------------------------------- |
 | Linux / macOS | `$XDG_CONFIG_HOME/tuicr/config.toml` (default: `~/.config/tuicr/config.toml`) |
-| Windows | `%APPDATA%\tuicr\config.toml` |
+| Windows       | `%APPDATA%\tuicr\config.toml`                                                 |
 
 Local themes live in the sibling `themes/` directory:
 
-| Platform | Theme directory |
-| --- | --- |
+| Platform      | Theme directory                                                       |
+| ------------- | --------------------------------------------------------------------- |
 | Linux / macOS | `$XDG_CONFIG_HOME/tuicr/themes/` (default: `~/.config/tuicr/themes/`) |
-| Windows | `%APPDATA%\tuicr\themes\` |
+| Windows       | `%APPDATA%\tuicr\themes\`                                             |
 
 Unknown keys are ignored with a startup warning.
 
@@ -50,34 +50,43 @@ comment_types = [
 
 [forge]
 comment_type_prefix = true
+
+[export]
+intro = "I reviewed your code and have the following comments. Please address them."
+scope_line = true
+pr_metadata = true
+comments_header = "## Local tuicr Comments"
+remote_comments_header = "## Existing GitHub Comments"
+legend = true
 ```
 
 ## Options
 
-| Key | Default | Description |
-|-----|---------|-------------|
-| `theme` | (none) | Explicit theme name. See [Themes](#themes) for bundled names and local theme lookup. |
-| `appearance` | `system` | `dark`, `light`, or `system`. Used when no explicit theme is set. |
-| `theme_dark` | (none) | Theme name for dark appearance (paired with `theme_light`). |
-| `theme_light` | (none) | Theme name for light appearance (paired with `theme_dark`). |
-| `diff_view` | `unified` | `unified` or `side-by-side`. Toggle in-app with `:diff`. |
-| `commit_order` | `descending` | Inline commit selector order: `descending` (newest on top, the default) or `ascending` (oldest on top). |
-| `initial_commit_selection` | `all` | Which commits are selected when a multi-commit review first opens: `all`, or `oldest` to start on just the oldest commit and walk forward with `(` / `)`. |
-| `ignore_whitespace` | `false` | Ignore all whitespace in local Git, jj, and hg diffs. PR diffs are unchanged. |
-| `show_file_list` | `true` | Whether the file list panel is visible on startup. Toggle with `<leader>e`. |
-| `show_commits` | `true` | Whether the inline commit selector pane is visible on startup for multi-commit reviews. Toggle with `<leader>s` or `:set commits!`. |
-| `mouse` | `true` | Wheel scrolling, clicks, and drag-to-select. |
-| `leader` | `;` | Single-character prefix for panel focus, sidebar toggles, and review-comment shortcuts. Invalid multi-character values are ignored with a startup warning. |
-| `comment_vim` | `false` | Vim modal editing in the comment box; toggle at runtime with `:vim`. When off, default emacs/readline bindings. |
-| `comment_tab_width` | `4` | Spaces inserted by Tab while typing in the vim comment box (Insert mode). |
-| `wrap` | `false` | Line wrap in the diff view. Toggle with `:set wrap!`. |
-| `cursor_line` | `true` | Highlight the current cursor line and visual selection. |
-| `transparent_background` | `true` | Let the terminal background show through panels. `false` paints the theme's `panel_bg`. |
-| `scroll_offset` | `0` | Minimum lines visible above and below the cursor when scrolling (like Vim's `scrolloff`). |
-| `no_update_check` | `false` | Skip startup update check when `true`. |
-| `review_watch_interval_ms` | `1000` | Poll interval for persisted review-session changes. Set to `0` to disable automatic local-session reloads. |
-| `backend` | `libgit2` | Git backend: `libgit2` or `cli`. Sparse-checkout repos auto-route to `cli`. |
-| `comment_types` | (none) | Comment categories. Untyped by default. See [Comment types](#comment-types). |
+| Key                        | Default      | Description                                                                                                                                                |
+| -------------------------- | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `theme`                    | (none)       | Explicit theme name. See [Themes](#themes) for bundled names and local theme lookup.                                                                       |
+| `appearance`               | `system`     | `dark`, `light`, or `system`. Used when no explicit theme is set.                                                                                          |
+| `theme_dark`               | (none)       | Theme name for dark appearance (paired with `theme_light`).                                                                                                |
+| `theme_light`              | (none)       | Theme name for light appearance (paired with `theme_dark`).                                                                                                |
+| `diff_view`                | `unified`    | `unified` or `side-by-side`. Toggle in-app with `:diff`.                                                                                                   |
+| `commit_order`             | `descending` | Inline commit selector order: `descending` (newest on top, the default) or `ascending` (oldest on top).                                                    |
+| `initial_commit_selection` | `all`        | Which commits are selected when a multi-commit review first opens: `all`, or `oldest` to start on just the oldest commit and walk forward with `(` / `)`.  |
+| `ignore_whitespace`        | `false`      | Ignore all whitespace in local Git, jj, and hg diffs. PR diffs are unchanged.                                                                              |
+| `show_file_list`           | `true`       | Whether the file list panel is visible on startup. Toggle with `<leader>e`.                                                                                |
+| `show_commits`             | `true`       | Whether the inline commit selector pane is visible on startup for multi-commit reviews. Toggle with `<leader>s` or `:set commits!`.                        |
+| `mouse`                    | `true`       | Wheel scrolling, clicks, and drag-to-select.                                                                                                               |
+| `leader`                   | `;`          | Single-character prefix for panel focus, sidebar toggles, and review-comment shortcuts. Invalid multi-character values are ignored with a startup warning. |
+| `comment_vim`              | `false`      | Vim modal editing in the comment box; toggle at runtime with `:vim`. When off, default emacs/readline bindings.                                            |
+| `comment_tab_width`        | `4`          | Spaces inserted by Tab while typing in the vim comment box (Insert mode).                                                                                  |
+| `wrap`                     | `false`      | Line wrap in the diff view. Toggle with `:set wrap!`.                                                                                                      |
+| `cursor_line`              | `true`       | Highlight the current cursor line and visual selection.                                                                                                    |
+| `transparent_background`   | `true`       | Let the terminal background show through panels. `false` paints the theme's `panel_bg`.                                                                    |
+| `scroll_offset`            | `0`          | Minimum lines visible above and below the cursor when scrolling (like Vim's `scrolloff`).                                                                  |
+| `no_update_check`          | `false`      | Skip startup update check when `true`.                                                                                                                     |
+| `review_watch_interval_ms` | `1000`       | Poll interval for persisted review-session changes. Set to `0` to disable automatic local-session reloads.                                                 |
+| `backend`                  | `libgit2`    | Git backend: `libgit2` or `cli`. Sparse-checkout repos auto-route to `cli`.                                                                                |
+| `comment_types`            | (none)       | Comment categories. Untyped by default. See [Comment types](#comment-types).                                                                               |
+| `export_legend`            | `true`       | Include the `Comment types:` legend in the exported review. Superseded by `legend` under [Export](#export).                                                |
 
 ## Themes
 
@@ -160,12 +169,12 @@ Comment categories control:
 
 ### Fields
 
-| Field | Required | Description |
-|-------|----------|-------------|
-| `id` | yes | Stable internal value. Saved in sessions and used for matching. |
-| `label` | no | Visible tag in UI and export (`[QUESTION]`, `[NITPICK]`). Defaults to `id` uppercased. |
-| `definition` | no | Guidance text for LLMs, included in the exported `Comment types:` legend. |
-| `color` | no | Comment badge / border color. Terminal name (`yellow`, `light_red`) or hex (`#RRGGBB`). |
+| Field        | Required | Description                                                                             |
+| ------------ | -------- | --------------------------------------------------------------------------------------- |
+| `id`         | yes      | Stable internal value. Saved in sessions and used for matching.                         |
+| `label`      | no       | Visible tag in UI and export (`[QUESTION]`, `[NITPICK]`). Defaults to `id` uppercased.  |
+| `definition` | no       | Guidance text for LLMs, included in the exported `Comment types:` legend.               |
+| `color`      | no       | Comment badge / border color. Terminal name (`yellow`, `light_red`) or hex (`#RRGGBB`). |
 
 ### Defaults
 
@@ -182,7 +191,7 @@ comments still keep their `File-level:` marker on submit).
 
 ### Replacement semantics
 
-`comment_types` is a full replacement of the *configured* types. If you define 2 types, those 2 —
+`comment_types` is a full replacement of the _configured_ types. If you define 2 types, those 2 —
 plus `None` — are available, and the first configured type becomes the default. Invalid entries are
 ignored with startup warnings; if every entry is invalid, tuicr falls back to `None` only.
 
@@ -204,9 +213,9 @@ Settings under the `[forge]` section control how tuicr submits reviews to GitHub
 comment_type_prefix = false
 ```
 
-| Key | Default | Description |
-|-----|---------|-------------|
-| `comment_type_prefix` | `true` | Prepend `[TYPE] ` to comment bodies on submit (e.g. `[ISSUE] Magic number should be a constant`). Set to `false` to send the raw comment body without a classification tag. |
+| Key                   | Default | Description                                                                                                                                                                 |
+| --------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `comment_type_prefix` | `true`  | Prepend `[TYPE] ` to comment bodies on submit (e.g. `[ISSUE] Magic number should be a constant`). Set to `false` to send the raw comment body without a classification tag. |
 
 When enabled (the default), submitted comments look like:
 
@@ -225,6 +234,40 @@ This module could use a doc comment
 ```
 
 This applies to inline line comments, file-level comments, and review-level comments pushed via `:submit`. The prefix works the same way on GitLab MR submissions.
+
+## Export
+
+Settings under the `[export]` section shape the Markdown that `y` and `:clip` copy to the clipboard, and that `--stdout` prints. They do not affect reviews pushed to a forge with `:submit`; those are covered by [Forge](#forge).
+
+Every key defaults to what tuicr has always emitted, so an export is unchanged until you set one. Setting a string key to `""` omits that line along with the blank line after it:
+
+```toml
+[export]
+intro = ""
+scope_line = false
+comments_header = "## Comments"
+```
+
+| Key                      | Default                                                                      | Description                                                                                                                                 |
+| ------------------------ | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `intro`                  | `I reviewed your code and have the following comments. Please address them.` | Opening line above the comment list. Set to `""` to omit it.                                                                                |
+| `scope_line`             | `true`                                                                       | Emit the `Reviewing <scope>` line naming the staged, unstaged, commit, or pull request scope.                                               |
+| `pr_metadata`            | `true`                                                                       | Emit the `URL:` and `Head:` lines in pull request mode. Independent of `scope_line`, because an agent needs both to fetch the pull request. |
+| `comments_header`        | `## Local tuicr Comments`                                                    | Heading above comments you wrote in the TUI. Set to `""` to omit it.                                                                        |
+| `remote_comments_header` | `## Existing GitHub Comments`                                                | Heading above unresolved forge threads, included in pull request mode only. Set to `""` to omit it.                                         |
+| `legend`                 | `true`                                                                       | Emit the `Comment types:` legend. Takes precedence over the top-level `export_legend` key when set.                                         |
+
+The example above produces an export that opens directly on the comment list:
+
+```markdown
+## Comments
+
+1. **[ISSUE]** `src/auth.rs:42` - Magic number should be a named constant
+```
+
+### Relationship to `export_legend`
+
+The top-level `export_legend` key predates this section and still works. When both are set, `legend` wins. When `[export]` omits `legend`, `export_legend` stays in force, so adding an `[export]` block to trim the intro will not switch the legend back on.
 
 ## .tuicrignore
 
