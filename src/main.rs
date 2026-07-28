@@ -410,16 +410,10 @@ fn main() -> anyhow::Result<()> {
             if let Event::Key(key) = &event
                 && key.kind == KeyEventKind::Release
             {
-                if matches!(
-                    key.code,
-                    crossterm::event::KeyCode::Char('j')
-                ) {
+                if matches!(key.code, crossterm::event::KeyCode::Char('j')) {
                     app.down_released_since_arm = true;
                 }
-                if matches!(
-                    key.code,
-                    crossterm::event::KeyCode::Char('k')
-                ) {
+                if matches!(key.code, crossterm::event::KeyCode::Char('k')) {
                     app.up_released_since_arm = true;
                 }
             }
