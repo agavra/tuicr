@@ -769,6 +769,31 @@ impl App {
         }
     }
 
+    pub fn jump_to_pr_info(&mut self) {
+        if self.pr_info.is_none() {
+            return;
+        }
+        self.primed_walk_next = false;
+        self.primed_walk_prev = false;
+        self.down_released_since_arm = false;
+        self.up_released_since_arm = false;
+        self.diff_state.cursor_line = 0;
+        self.diff_state.scroll_offset = 0;
+        self.diff_state.current_file_idx = 0;
+        if let Some(tree_idx) = self.pr_info_tree_idx() {
+            self.file_list_state.select(tree_idx);
+        }
+    }
+
+    pub(crate) fn pr_info_tree_idx(&self) -> Option<usize> {
+        if self.pr_info.is_none() {
+            return None;
+        }
+        self.build_visible_items()
+            .iter()
+            .position(|item| matches!(item, FileTreeItem::PrInfo))
+    }
+
     pub fn jump_to_bottom(&mut self) {
         let max_line = self.max_cursor_line();
         self.diff_state.cursor_line = max_line;
@@ -782,6 +807,12 @@ impl App {
     }
 
     pub fn next_file(&mut self) {
+        if self.diff_state.cursor_line < self.review_comments_render_height() {
+            if !self.diff_files.is_empty() {
+                self.jump_to_file(0);
+            }
+            return;
+        }
         let visible_items = self.build_visible_items();
         let current_file_idx = self.diff_state.current_file_idx;
 
@@ -796,6 +827,13 @@ impl App {
     }
 
     pub fn prev_file(&mut self) {
+        if self.diff_state.current_file_idx == 0 && self.pr_info.is_some() {
+            let file_start = self.calculate_file_scroll_offset(0);
+            if self.diff_state.cursor_line >= file_start {
+                self.jump_to_pr_info();
+                return;
+            }
+        }
         let visible_items = self.build_visible_items();
         let current_file_idx = self.diff_state.current_file_idx;
 
@@ -941,9 +979,10 @@ impl App {
     }
 
     pub(in crate::app) fn review_comments_render_height(&self) -> usize {
+        let mut height = crate::ui::pr_info_panel::pr_info_render_height(self);
         // Header line is only rendered in multi-file view. See the guards
         // in `src/ui/diff_unified.rs` and `src/ui/diff_side_by_side.rs`.
-        let mut height = if self.is_single_file_view { 0 } else { 1 };
+        height += if self.is_single_file_view { 0 } else { 1 };
         for summary in &self.forge_review_summaries {
             height += crate::forge::remote_comments::summary_display_lines(summary);
         }
@@ -1349,7 +1388,13 @@ impl App {
         if self.diff_state.cursor_line < cumulative {
             if !self.diff_files.is_empty() {
                 self.diff_state.current_file_idx = 0;
-                self.file_list_state.select(0);
+                if self.pr_info.is_some() {
+                    if let Some(tree_idx) = self.pr_info_tree_idx() {
+                        self.file_list_state.select(tree_idx);
+                    }
+                } else {
+                    self.file_list_state.select(0);
+                }
             }
             return;
         }

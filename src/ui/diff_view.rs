@@ -147,6 +147,9 @@ pub(super) fn render_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {
 /// ` Overview ` in overview mode. Long paths are prefix-truncated so the
 /// most-informative tail (closest to the filename) survives.
 pub(super) fn diff_title(app: &App, area_width: u16) -> String {
+    if crate::ui::pr_info_panel::is_cursor_in_pr_info(app) {
+        return " PR Description ".to_string();
+    }
     if app.is_cursor_in_overview() || app.current_file_path().is_none() {
         return " Overview ".to_string();
     }

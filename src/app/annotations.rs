@@ -72,6 +72,21 @@ impl App {
         // current inline selection are hidden. `None` => no selector, show all.
         let commit_set = self.selected_commit_set();
 
+        if self.pr_info.is_some() {
+            if !self.is_single_file_view {
+                self.line_annotations.push(AnnotatedLine::PrInfoHeader);
+            }
+            let pr_line_count = crate::ui::pr_info_panel::build_pr_info_lines(
+                self.pr_info.as_ref().expect("pr_info checked above"),
+                self.diff_state.viewport_width.max(1),
+            )
+            .len();
+            for line_idx in 0..pr_line_count {
+                self.line_annotations
+                    .push(AnnotatedLine::PrInfoLine { line_idx });
+            }
+        }
+
         // The review-comments header is omitted in single-file view (see
         // the matching guard in `src/ui/diff_unified.rs`), so the
         // annotation list mirrors the render.

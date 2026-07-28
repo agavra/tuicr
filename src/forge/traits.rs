@@ -365,9 +365,60 @@ pub struct PullRequestReviewRecord {
     pub commit_oid: Option<String>,
 }
 
+/// A reviewer's latest response on a pull request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullRequestReviewStatus {
+    pub author: Option<String>,
+    pub state: String,
+    pub submitted_at: Option<DateTime<Utc>>,
+}
+
+/// A CI check or commit status attached to a pull request head.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullRequestCheckStatus {
+    pub name: String,
+    /// GitHub CheckRun status (`COMPLETED`, `IN_PROGRESS`, …) or empty for legacy contexts.
+    pub status: Option<String>,
+    /// Normalized outcome: `SUCCESS`, `FAILURE`, `PENDING`, etc.
+    pub conclusion: Option<String>,
+}
+
+/// Extended PR metadata for the in-app description panel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullRequestInfo {
+    pub details: PullRequestDetails,
+    pub review_decision: Option<String>,
+    pub mergeable: Option<String>,
+    pub merge_state: Option<String>,
+    pub requested_reviewers: Vec<String>,
+    pub latest_reviews: Vec<PullRequestReviewStatus>,
+    pub checks: Vec<PullRequestCheckStatus>,
+}
+
+impl PullRequestInfo {
+    /// Minimal panel info when a backend only exposes base PR details.
+    pub fn from_details(details: PullRequestDetails) -> Self {
+        Self {
+            details,
+            review_decision: None,
+            mergeable: None,
+            merge_state: None,
+            requested_reviewers: Vec::new(),
+            latest_reviews: Vec::new(),
+            checks: Vec::new(),
+        }
+    }
+}
+
 pub trait ForgeBackend {
     fn list_pull_requests(&self, query: PullRequestListQuery) -> Result<PagedPullRequests>;
     fn get_pull_request(&self, target: PullRequestTarget) -> Result<PullRequestDetails>;
+    /// Fetch PR metadata for the description panel. The default builds a
+    /// minimal [`PullRequestInfo`] from [`Self::get_pull_request`].
+    fn get_pull_request_info(&self, target: PullRequestTarget) -> Result<PullRequestInfo> {
+        let details = self.get_pull_request(target)?;
+        Ok(PullRequestInfo::from_details(details))
+    }
     fn get_pull_request_diff(&self, pr: &PullRequestDetails) -> Result<String>;
     /// Fetch the requested file lines from the forge for context expansion.
     /// Implementations may optimize by reading from a local checkout when

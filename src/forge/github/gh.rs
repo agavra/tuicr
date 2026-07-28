@@ -6,7 +6,8 @@ use crate::error::{Result, TuicrError};
 use crate::forge::remote_comments::{RemoteReviewSummary, RemoteReviewThread};
 use crate::forge::traits::{
     ForgeBackend, ForgeFileLinesRequest, ForgeRepository, GhCreateReviewResponse,
-    PagedPullRequests, PullRequestCommit, PullRequestDetails, PullRequestListQuery,
+    PagedPullRequests, PullRequestCommit, PullRequestDetails, PullRequestInfo,
+    PullRequestListQuery,
     PullRequestListScope, PullRequestTarget,
 };
 use crate::model::DiffLine;
@@ -15,7 +16,7 @@ use crate::process::{
 };
 use crate::vcs::slice_context_lines;
 
-use super::models::{GhPrCommit, GhPullRequestDetails, GhPullRequestSummary};
+use super::models::{GhPrCommit, GhPullRequestSummary};
 use super::review_summaries::{
     build_query as build_reviews_query, parse_graphql_page as parse_reviews_page,
 };
@@ -29,6 +30,12 @@ const PR_LIST_JSON_FIELDS: &str =
 const PR_VIEW_JSON_FIELDS: &str = concat!(
     "number,title,url,state,isDraft,author,headRefName,baseRefName,",
     "headRefOid,baseRefOid,body,updatedAt,closed,mergedAt"
+);
+const PR_INFO_JSON_FIELDS: &str = concat!(
+    "number,title,url,state,isDraft,author,headRefName,baseRefName,",
+    "headRefOid,baseRefOid,body,updatedAt,closed,mergedAt,",
+    "reviewDecision,mergeable,mergeStateStatus,reviewRequests,latestReviews,",
+    "statusCheckRollup"
 );
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -238,6 +245,10 @@ where
     }
 
     fn get_pull_request(&self, target: PullRequestTarget) -> Result<PullRequestDetails> {
+        Ok(self.get_pull_request_info(target)?.details)
+    }
+
+    fn get_pull_request_info(&self, target: PullRequestTarget) -> Result<PullRequestInfo> {
         let repository = self.resolve_repository(&target)?;
         let output = self.run_gh(
             vec![
@@ -247,12 +258,11 @@ where
                 "--repo".to_string(),
                 gh_repo_arg(&repository),
                 "--json".to_string(),
-                PR_VIEW_JSON_FIELDS.to_string(),
+                PR_INFO_JSON_FIELDS.to_string(),
             ],
             &repository.host,
         )?;
-        let pr: GhPullRequestDetails = serde_json::from_str(&output)?;
-        pr.into_details(&repository)
+        super::pr_info::parse_pull_request_info(&output, &repository)
     }
 
     fn get_pull_request_diff(&self, pr: &PullRequestDetails) -> Result<String> {

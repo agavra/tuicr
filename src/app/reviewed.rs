@@ -47,6 +47,9 @@ impl App {
     }
 
     pub fn current_file_path(&self) -> Option<&PathBuf> {
+        if self.is_cursor_in_overview() {
+            return None;
+        }
         self.current_file().map(|f| f.display_path())
     }
 
@@ -67,6 +70,9 @@ impl App {
     pub fn queue_editor_for_focused_item(&mut self) {
         match self.focused_panel {
             FocusedPanel::FileList => match self.get_selected_tree_item() {
+                Some(FileTreeItem::PrInfo) => {
+                    self.set_warning("PR description has no local file to open");
+                }
                 Some(FileTreeItem::File { file_idx, .. }) => {
                     self.queue_editor_for_file_idx(file_idx, None)
                 }

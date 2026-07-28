@@ -16,8 +16,8 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{Result, TuicrError};
 use crate::forge::traits::{
-    ForgeBackend, PrSessionKey, PullRequestCommit, PullRequestDetails, PullRequestReviewMetadata,
-    PullRequestTarget,
+    ForgeBackend, PrSessionKey, PullRequestCommit, PullRequestDetails, PullRequestInfo,
+    PullRequestReviewMetadata, PullRequestTarget,
 };
 use crate::model::{DiffFile, ReviewSession, SessionDiffSource};
 use crate::syntax::SyntaxHighlighter;
@@ -38,6 +38,8 @@ pub struct OpenedPullRequest {
     /// Best-effort metadata for detecting commits since the viewer's last
     /// submitted review. Empty when unsupported or unavailable.
     pub review_metadata: PullRequestReviewMetadata,
+    /// Extended PR metadata for the description panel.
+    pub pr_info: PullRequestInfo,
 }
 
 /// Open a PR target through a forge backend and prepare review state.
@@ -51,12 +53,13 @@ pub fn open_pull_request(
     local_checkout: Option<&Path>,
     highlighter: &SyntaxHighlighter,
 ) -> Result<OpenedPullRequest> {
-    let (details, patch, commits, review_metadata) = fetch_pr_data(backend, target)?;
+    let (details, patch, commits, review_metadata, pr_info) = fetch_pr_data(backend, target)?;
     prepare_open_pr(
         details,
         &patch,
         commits,
         review_metadata,
+        pr_info,
         local_checkout,
         highlighter,
     )
@@ -77,8 +80,10 @@ pub fn fetch_pr_data(
     String,
     Vec<PullRequestCommit>,
     PullRequestReviewMetadata,
+    PullRequestInfo,
 )> {
-    let details = backend.get_pull_request(target)?;
+    let pr_info = backend.get_pull_request_info(target)?;
+    let details = pr_info.details.clone();
     let patch = backend.get_pull_request_diff(&details)?;
     let commits = backend
         .list_pull_request_commits(&details)
@@ -86,7 +91,7 @@ pub fn fetch_pr_data(
     let review_metadata = backend
         .list_pull_request_review_metadata(&details)
         .unwrap_or_default();
-    Ok((details, patch, commits, review_metadata))
+    Ok((details, patch, commits, review_metadata, pr_info))
 }
 
 /// CPU-only half of the PR open path: parse the patch, apply
@@ -97,6 +102,7 @@ pub fn prepare_open_pr(
     patch: &str,
     commits: Vec<PullRequestCommit>,
     review_metadata: PullRequestReviewMetadata,
+    pr_info: PullRequestInfo,
     local_checkout: Option<&Path>,
     highlighter: &SyntaxHighlighter,
 ) -> Result<OpenedPullRequest> {
@@ -130,6 +136,7 @@ pub fn prepare_open_pr(
         key,
         commits,
         review_metadata,
+        pr_info,
     })
 }
 

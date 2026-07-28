@@ -10,6 +10,7 @@ pub mod help_popup;
 pub mod inline_commit_selector;
 pub mod row_height;
 pub mod selector;
+pub mod pr_info_panel;
 pub mod status_bar;
 pub mod styles;
 pub mod submit_modals;

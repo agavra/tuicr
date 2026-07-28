@@ -167,6 +167,20 @@ impl App {
 
     fn line_text_for_search(&self, line_idx: usize) -> Option<String> {
         match self.line_annotations.get(line_idx)? {
+            AnnotatedLine::PrInfoHeader => Some("PR Description".to_string()),
+            AnnotatedLine::PrInfoLine { line_idx } => {
+                let info = self.pr_info.as_ref()?;
+                let lines = crate::ui::pr_info_panel::build_pr_info_lines(
+                    info,
+                    self.diff_state.viewport_width.max(1),
+                );
+                lines.get(*line_idx).map(|line| {
+                    line.spans
+                        .iter()
+                        .map(|span| span.content.as_ref())
+                        .collect::<String>()
+                })
+            }
             AnnotatedLine::ReviewCommentsHeader => Some("Review comments".to_string()),
             AnnotatedLine::ReviewComment { comment_idx } => {
                 let comment = self.session.review_comments.get(*comment_idx)?;

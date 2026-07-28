@@ -114,8 +114,9 @@ fn profile_unit_result(result: &Result<()>) -> String {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileTreeItem {
+    PrInfo,
     Directory {
         path: String,
         depth: usize,
@@ -252,6 +253,10 @@ pub enum GapCursorHit {
 /// Describes what a rendered line represents - built once and used for O(1) cursor queries
 #[derive(Debug, Clone)]
 pub enum AnnotatedLine {
+    /// PR description section header line
+    PrInfoHeader,
+    /// A rendered line of [`App::pr_info`] content
+    PrInfoLine { line_idx: usize },
     /// Review comments section header line
     ReviewCommentsHeader,
     /// A review-level comment line (part of a multi-line comment box)
@@ -436,7 +441,9 @@ pub fn annotation_file_idx(annotation: &AnnotatedLine) -> Option<usize> {
         | AnnotatedLine::SideBySideLine { file_idx, .. }
         | AnnotatedLine::LineComment { file_idx, .. }
         | AnnotatedLine::BinaryOrEmpty { file_idx } => Some(*file_idx),
-        AnnotatedLine::ReviewCommentsHeader
+        AnnotatedLine::PrInfoHeader
+        | AnnotatedLine::PrInfoLine { .. }
+        | AnnotatedLine::ReviewCommentsHeader
         | AnnotatedLine::ReviewComment { .. }
         | AnnotatedLine::RemoteReviewSummaryLine { .. }
         | AnnotatedLine::Expander { .. }
@@ -782,6 +789,7 @@ pub enum PrOpenEvent {
                 String,
                 Vec<crate::forge::traits::PullRequestCommit>,
                 crate::forge::traits::PullRequestReviewMetadata,
+                crate::forge::traits::PullRequestInfo,
             ),
             String,
         >,
@@ -809,6 +817,7 @@ pub struct PrReloadRequest {
     pub head_sha: String,
     pub started_at: Instant,
     pub anchor: Option<PrCursorAnchor>,
+    pub restore_pr_info: bool,
 }
 
 /// Result delivered from the PR-reload background thread.
@@ -822,6 +831,7 @@ pub enum PrReloadEvent {
                 String,
                 Vec<crate::forge::traits::PullRequestCommit>,
                 crate::forge::traits::PullRequestReviewMetadata,
+                crate::forge::traits::PullRequestInfo,
             ),
             String,
         >,
@@ -1159,6 +1169,8 @@ pub struct App {
     /// open-time head so the stale-head warning never fires; PR 6 may refresh
     /// it via a pre-submit `gh pr view` to power the warning.
     pub current_pr_head: Option<String>,
+    /// Extended PR metadata rendered at the top of the diff view. Populated in PR mode.
+    pub pr_info: Option<crate::forge::traits::PullRequestInfo>,
 
     pub should_quit: bool,
     pub dirty: bool,

@@ -15,6 +15,7 @@ impl App {
             key,
             commits,
             review_metadata,
+            pr_info,
         } = opened;
 
         // Save the current session before transitioning so local-mode work
@@ -59,6 +60,7 @@ impl App {
         self.range_diff_files = None;
         self.saved_inline_selection = None;
         self.diff_state = DiffState::default();
+        self.pr_info = Some(pr_info);
 
         // PR mode populates the inline selector with the PR's commits when
         // there are at least two. Single-commit PRs hide the selector to
@@ -451,13 +453,19 @@ impl App {
             return Ok(()); // already in flight; the existing spinner is enough
         }
 
-        let anchor = self.capture_pr_cursor_anchor();
+        let restore_pr_info = crate::ui::pr_info_panel::is_cursor_in_pr_info(self);
+        let anchor = if restore_pr_info {
+            None
+        } else {
+            self.capture_pr_cursor_anchor()
+        };
         let request = PrReloadRequest {
             repository: current.key.repository.clone(),
             pr_number: current.key.number,
             head_sha: current.key.head_sha.clone(),
             started_at: Instant::now(),
             anchor,
+            restore_pr_info,
         };
         self.pr_reload_state = Some(request.clone());
 
@@ -505,10 +513,15 @@ impl App {
             return;
         }
         match result {
-            Ok((details, patch, commits, review_metadata)) => {
-                if let Err(e) =
-                    self.finish_pr_reload(details, patch, commits, review_metadata, &request)
-                {
+            Ok((details, patch, commits, review_metadata, pr_info)) => {
+                if let Err(e) = self.finish_pr_reload(
+                    details,
+                    patch,
+                    commits,
+                    review_metadata,
+                    pr_info,
+                    &request,
+                ) {
                     self.set_error(format!("Reload failed: {e}"));
                 }
             }
@@ -524,6 +537,7 @@ impl App {
         patch: String,
         commits: Vec<crate::forge::traits::PullRequestCommit>,
         review_metadata: crate::forge::traits::PullRequestReviewMetadata,
+        pr_info: crate::forge::traits::PullRequestInfo,
         request: &PrReloadRequest,
     ) -> Result<()> {
         use crate::forge::pr_open::prepare_open_pr;
@@ -538,6 +552,7 @@ impl App {
             &patch,
             commits,
             review_metadata,
+            pr_info,
             local_checkout.as_deref(),
             highlighter,
         )?;
@@ -559,6 +574,7 @@ impl App {
                 &opened.review_metadata,
             );
             self.diff_files = opened.diff_files;
+            self.pr_info = Some(opened.pr_info);
             self.clear_expanded_gaps();
             for file in &self.diff_files {
                 self.session.add_diff_file(file);
@@ -570,7 +586,9 @@ impl App {
             self.set_message("Reloaded PR (no new commits)".to_string());
         }
 
-        if let Some(anchor) = &request.anchor {
+        if request.restore_pr_info {
+            self.jump_to_pr_info();
+        } else if let Some(anchor) = &request.anchor {
             self.restore_pr_cursor_to_anchor(anchor);
         }
         Ok(())
@@ -641,6 +659,7 @@ impl App {
                 &opened.review_metadata,
             );
             self.diff_files = opened.diff_files;
+            self.pr_info = Some(opened.pr_info);
             self.clear_expanded_gaps();
             for file in &self.diff_files {
                 self.session.add_diff_file(file);
@@ -865,10 +884,15 @@ impl App {
                     return;
                 }
                 match result {
-                    Ok((details, patch, commits, review_metadata)) => {
-                        if let Err(e) =
-                            self.finish_pr_open(details, patch, commits, review_metadata, &request)
-                        {
+                    Ok((details, patch, commits, review_metadata, pr_info)) => {
+                        if let Err(e) = self.finish_pr_open(
+                            details,
+                            patch,
+                            commits,
+                            review_metadata,
+                            pr_info,
+                            &request,
+                        ) {
                             self.set_error(format!(
                                 "Failed to open PR #{}: {}",
                                 request.pr_number, e
@@ -893,6 +917,7 @@ impl App {
         patch: String,
         commits: Vec<crate::forge::traits::PullRequestCommit>,
         review_metadata: crate::forge::traits::PullRequestReviewMetadata,
+        pr_info: crate::forge::traits::PullRequestInfo,
         request: &PrOpenRequest,
     ) -> Result<()> {
         use crate::forge::pr_open::prepare_open_pr;
@@ -905,6 +930,7 @@ impl App {
             &patch,
             commits,
             review_metadata,
+            pr_info,
             local_checkout.as_deref(),
             highlighter,
         )?;

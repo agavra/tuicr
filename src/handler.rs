@@ -303,6 +303,10 @@ fn handle_left_click(app: &mut App, pos: Position) {
         app.file_list_state.select(idx);
         if let Some(item) = app.build_visible_items().get(idx).cloned() {
             match item {
+                FileTreeItem::PrInfo => {
+                    app.jump_to_pr_info();
+                    app.focused_panel = FocusedPanel::Diff;
+                }
                 FileTreeItem::Directory { path, .. } => app.toggle_directory(&path),
                 FileTreeItem::File { file_idx, .. } => {
                     app.jump_to_file(file_idx);
@@ -1301,6 +1305,10 @@ pub fn handle_file_list_action(app: &mut App, action: Action) {
         Action::SelectFile | Action::ToggleExpand => {
             if let Some(item) = app.get_selected_tree_item() {
                 match item {
+                    FileTreeItem::PrInfo => {
+                        app.jump_to_pr_info();
+                        app.focused_panel = FocusedPanel::Diff;
+                    }
                     FileTreeItem::Directory { path, .. } => app.toggle_directory(&path),
                     FileTreeItem::File { file_idx, .. } => {
                         app.jump_to_file(file_idx);
@@ -1312,6 +1320,8 @@ pub fn handle_file_list_action(app: &mut App, action: Action) {
         Action::ToggleReviewed => {
             if let Some(FileTreeItem::File { file_idx, .. }) = app.get_selected_tree_item() {
                 app.toggle_reviewed_for_file_idx(file_idx, false);
+            } else if matches!(app.get_selected_tree_item(), Some(FileTreeItem::PrInfo)) {
+                app.set_warning("PR description cannot be marked reviewed");
             } else {
                 app.set_warning("Select a file to toggle reviewed");
             }

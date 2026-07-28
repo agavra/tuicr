@@ -51,8 +51,8 @@ src/
 ├── forge/               # Remote forge integration (GitHub PR and GitLab MR review)
 │   ├── mod.rs           # Detect and parse GitHub/GitLab remotes
 │   ├── traits.rs        # ForgeBackend trait, ForgeRepository, PullRequestTarget,
-│   │                    # PullRequestDetails, PrSessionKey, CreateReviewRequest,
-│   │                    # GhCreateReviewResponse, ForgeFileLinesRequest
+│   │                    # PullRequestDetails, PullRequestInfo, PrSessionKey,
+│   │                    # CreateReviewRequest, GhCreateReviewResponse, ForgeFileLinesRequest
 │   ├── pr_open.rs       # Async pr-open flow: build session from details + diff
 │   ├── selector.rs      # Review target selector state (Local | Pull Requests tabs)
 │   ├── context.rs       # Remote context expansion via ForgeBackend::fetch_file_lines
@@ -63,6 +63,7 @@ src/
 │   │   ├── mod.rs       # GitHubGhBackend: ForgeBackend impl
 │   │   ├── gh.rs        # GhCommandRunner: spawn `gh`, parse output, error mapping
 │   │   ├── models.rs    # JSON parsing for `gh` REST + GraphQL responses
+│   │   ├── pr_info.rs   # Extended `gh pr view --json` parsing for PR description panel
 │   │   ├── review_threads.rs # GraphQL query for existing review threads
 │   │   ├── review_metadata.rs # GraphQL review commit metadata for since-last-review scoping
 │   │   └── submit.rs    # build_review_payload, create_review wiring
@@ -93,6 +94,7 @@ src/
 └── ui/
     ├── mod.rs
     ├── app_layout.rs    # Main render function, file list, diff view with inline comments
+    ├── pr_info_panel.rs # PR description panel (status, reviewers, checks, body)
     ├── comment_navigator.rs # Sidebar comment index for jumping local/remote comments
     ├── status_bar.rs    # Header, status bar, command line rendering
     ├── help_popup.rs    # Help overlay (? key)
@@ -110,7 +112,8 @@ Repository-managed agent integrations:
 
 - Central application state
 - Contains: `vcs` (Box<dyn VcsBackend>), `vcs_info`, `session`, `diff_files`, `input_mode`, scroll/cursor state
-- Methods: `scroll_down/up`, `next/prev_file`, `next/prev_hunk`, `go_to_source_line`, `toggle_reviewed`, `save_comment`
+- PR mode also carries `pr_info: Option<PullRequestInfo>` and `viewing_pr_info: bool` for the file-tree "PR Description" panel
+- Methods: `scroll_down/up`, `next/prev_file`, `next/prev_hunk`, `go_to_source_line`, `toggle_reviewed`, `save_comment`, `jump_to_pr_info`
 - Comment navigation uses `CommentNavigatorState` plus `CommentNavigatorItem` rows derived from `line_annotations`, so local comments and visible remote PR threads jump to the same annotations the diff renders.
 
 **VcsBackend** (`src/vcs/traits.rs`):
@@ -192,6 +195,7 @@ Forge review (`tuicr pr <target>`, `tuicr mr <target>`, or their explicit `tuicr
 
 - `list_pull_requests` — paged list for the selector's Pull Requests tab.
 - `get_pull_request` — details for a `PullRequestTarget` (resolves to `PullRequestDetails`).
+- `get_pull_request_info` — extended PR metadata for the description panel (`PullRequestInfo`). GitHub fetches `reviewDecision`, `mergeable`, `mergeStateStatus`, `reviewRequests`, `latestReviews`, and `statusCheckRollup` in the same `gh pr view` call; other backends default to `PullRequestInfo::from_details`.
 - `get_pull_request_diff` — the cumulative PR diff as a unified-diff string.
 - `list_pull_request_commits` — commits on the PR for the inline subset selector.
 - `list_pull_request_review_metadata` — best-effort viewer login + review commit OIDs used to preselect commits since the viewer's latest submitted review and mark already-reviewed commits in the inline selector.
