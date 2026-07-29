@@ -170,11 +170,7 @@ impl App {
         let first = scroll;
         let last = self.last_fully_visible_annotation(first);
         let mut cursor = cursor.clamp(first, last);
-        if self
-            .line_annotations
-            .get(cursor)
-            .is_some_and(is_decoration)
-        {
+        if self.line_annotations.get(cursor).is_some_and(is_decoration) {
             cursor = if moving_down {
                 let forward = skip_decoration_forward(&self.line_annotations, cursor, last);
                 if self
