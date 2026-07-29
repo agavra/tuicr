@@ -139,6 +139,8 @@ In command mode,
 | `:submit draft` | Submit a Draft review (pending on GitHub) |
 | `:set wrap` | Enable line wrap in diff view |
 | `:set wrap!` | Toggle line wrap in diff view |
+| `:set relativenumber` / `:set norelativenumber` | Enable / disable relative rendered-row numbers |
+| `:set relativenumber!` | Toggle relative rendered-row numbers |
 | `:set commits` | Show inline commit selector |
 | `:set nocommits` | Hide inline commit selector |
 | `:set commits!` | Toggle inline commit selector |

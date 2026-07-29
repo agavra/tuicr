@@ -75,6 +75,29 @@ pub(super) fn unified_line_number_field(dl: &DiffLine, lw: usize) -> String {
     }
 }
 
+pub(super) fn relative_line_number_field(
+    source_line: Option<u32>,
+    line_idx: usize,
+    current_line_idx: usize,
+    lw: usize,
+) -> String {
+    source_line
+        .map(|_| format!("{:>lw$} ", line_idx.abs_diff(current_line_idx)))
+        .unwrap_or_else(|| " ".repeat(lw + 1))
+}
+
+#[cfg(test)]
+mod relative_line_number_tests {
+    use super::relative_line_number_field;
+
+    #[test]
+    fn uses_rendered_row_distance_and_preserves_missing_sides() {
+        assert_eq!(relative_line_number_field(Some(100), 14, 10, 3), "  4 ");
+        assert_eq!(relative_line_number_field(Some(100), 10, 10, 3), "  0 ");
+        assert_eq!(relative_line_number_field(None, 14, 10, 3), "    ");
+    }
+}
+
 /// Single-cell origin marker for a unified diff line (`▌` for add/del,
 /// space for context). Callers append a trailing space of their own.
 pub(super) fn unified_line_origin_marker(dl: &DiffLine) -> &'static str {

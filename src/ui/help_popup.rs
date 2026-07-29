@@ -720,6 +720,20 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  :set relativenumber[!]",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  Enable/toggle relative rendered-row numbers"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :set norelativenumber",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  Disable relative rendered-row numbers"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  :set commits",
                 Style::default().add_modifier(Modifier::BOLD),
             ),

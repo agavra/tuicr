@@ -435,6 +435,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                 expanded_line,
                                 &app.theme,
                                 lw,
+                                app.relative_line_numbers,
                             );
                         }
                     }
@@ -510,6 +511,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                 expanded_line,
                                 &app.theme,
                                 lw,
+                                app.relative_line_numbers,
                             );
                         }
                     }
@@ -549,6 +551,13 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                         // line numbers, matching the side-by-side view.
                         let line_num_str = if file.is_commit_message {
                             " ".repeat(lw + 1)
+                        } else if app.relative_line_numbers {
+                            crate::ui::diff_view::relative_line_number_field(
+                                diff_line.new_lineno.or(diff_line.old_lineno),
+                                line_idx,
+                                current_line_idx,
+                                lw,
+                            )
                         } else {
                             crate::ui::diff_view::unified_line_number_field(diff_line, lw)
                         };
@@ -980,6 +989,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                             expanded_line,
                             &app.theme,
                             lw,
+                            app.relative_line_numbers,
                         );
                     }
                 }
@@ -1015,6 +1025,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                             expanded_line,
                             &app.theme,
                             lw,
+                            app.relative_line_numbers,
                         );
                     }
                 }
@@ -1303,9 +1314,19 @@ fn render_expanded_context_line(
     expanded_line: &crate::model::DiffLine,
     theme: &Theme,
     lw: usize,
+    relative_line_numbers: bool,
 ) {
     let indicator = cursor_indicator(*line_idx, current_line_idx);
-    let line_num = crate::ui::diff_view::expanded_context_lineno_field(expanded_line, lw);
+    let line_num = if relative_line_numbers {
+        crate::ui::diff_view::relative_line_number_field(
+            expanded_line.new_lineno,
+            *line_idx,
+            current_line_idx,
+            lw,
+        )
+    } else {
+        crate::ui::diff_view::expanded_context_lineno_field(expanded_line, lw)
+    };
     let line_spans = vec![
         Span::styled(indicator, styles::current_line_indicator_style(theme)),
         Span::styled(line_num, styles::expanded_context_style(theme)),

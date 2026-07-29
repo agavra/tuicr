@@ -39,6 +39,18 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     CommandSpec::new(&["set wrap"], CommandKind::SetWrap),
     CommandSpec::new(&["set wrap!"], CommandKind::ToggleWrap),
     CommandSpec::new(&["wrap"], CommandKind::ToggleWrap),
+    CommandSpec::new(
+        &["set relativenumber"],
+        CommandKind::SetRelativeLineNumbers(true),
+    ),
+    CommandSpec::new(
+        &["set norelativenumber"],
+        CommandKind::SetRelativeLineNumbers(false),
+    ),
+    CommandSpec::new(
+        &["set relativenumber!"],
+        CommandKind::ToggleRelativeLineNumbers,
+    ),
     CommandSpec::new(&["vim", "set vim!"], CommandKind::ToggleVim),
     CommandSpec::new(&["set vim"], CommandKind::SetVim(true)),
     CommandSpec::new(&["novim", "set novim"], CommandKind::SetVim(false)),
@@ -113,6 +125,8 @@ enum CommandKind {
     Update,
     SetWrap,
     ToggleWrap,
+    SetRelativeLineNumbers(bool),
+    ToggleRelativeLineNumbers,
     ToggleVim,
     SetVim(bool),
     SetCommitsVisible(bool),
@@ -559,6 +573,27 @@ fn command_spec_for(cmd: &str) -> Option<&'static CommandSpec> {
     COMMAND_SPECS.iter().find(|spec| spec.names.contains(&cmd))
 }
 
+#[cfg(test)]
+mod relative_line_number_command_tests {
+    use super::{CommandKind, command_spec_for};
+
+    #[test]
+    fn parses_relative_line_number_commands() {
+        assert_eq!(
+            command_spec_for("set relativenumber").map(|spec| spec.kind),
+            Some(CommandKind::SetRelativeLineNumbers(true))
+        );
+        assert_eq!(
+            command_spec_for("set norelativenumber").map(|spec| spec.kind),
+            Some(CommandKind::SetRelativeLineNumbers(false))
+        );
+        assert_eq!(
+            command_spec_for("set relativenumber!").map(|spec| spec.kind),
+            Some(CommandKind::ToggleRelativeLineNumbers)
+        );
+    }
+}
+
 /// CommandCompleter computes command-buffer replacements without mutating App.
 struct CommandCompleter<'a> {
     /// Registry whose command names are exposed as completion candidates.
@@ -792,6 +827,14 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
         }
         CommandKind::ToggleWrap => {
             app.toggle_diff_wrap();
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::SetRelativeLineNumbers(enabled) => {
+            app.relative_line_numbers = enabled;
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::ToggleRelativeLineNumbers => {
+            app.relative_line_numbers = !app.relative_line_numbers;
             CommandAfterDispatch::ExitCommandMode
         }
         CommandKind::ToggleVim => {

@@ -32,6 +32,7 @@ leader = ","
 comment_vim = false
 comment_tab_width = 4
 wrap = false
+relative_line_numbers = false
 cursor_line = true
 transparent_background = true
 scroll_offset = 5
@@ -79,6 +80,7 @@ legend = true
 | `comment_vim`              | `false`      | Vim modal editing in the comment box; toggle at runtime with `:vim`. When off, default emacs/readline bindings.                                            |
 | `comment_tab_width`        | `4`          | Spaces inserted by Tab while typing in the vim comment box (Insert mode).                                                                                  |
 | `wrap`                     | `false`      | Line wrap in the diff view. Toggle with `:set wrap!`.                                                                                                      |
+| `relative_line_numbers`    | `false`      | Show gutter numbers as rendered-row distances from the cursor. Toggle with `:set relativenumber!`.                                                         |
 | `cursor_line`              | `true`       | Highlight the current cursor line and visual selection.                                                                                                    |
 | `transparent_background`   | `true`       | Let the terminal background show through panels. `false` paints the theme's `panel_bg`.                                                                    |
 | `scroll_offset`            | `0`          | Minimum lines visible above and below the cursor when scrolling (like Vim's `scrolloff`).                                                                  |
