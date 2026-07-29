@@ -514,6 +514,7 @@ impl App {
             dirty: false,
             quit_warned: false,
             message: None,
+            message_details_return_mode: None,
             pending_confirm: None,
             supports_keyboard_enhancement: false,
             show_file_list: true,

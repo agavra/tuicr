@@ -494,7 +494,9 @@ pub fn handle_help_action(app: &mut App, action: Action) {
         Action::GoToBottom => app.help_scroll_to_bottom(),
         Action::MouseScrollDown(n) => app.help_scroll_down(n),
         Action::MouseScrollUp(n) => app.help_scroll_up(n),
-        Action::EnterSearchMode => app.enter_search_mode(),
+        Action::EnterSearchMode if app.message_details_return_mode.is_none() => {
+            app.enter_search_mode()
+        }
         Action::SearchNext => {
             app.search_next_in_help();
         }

@@ -25,6 +25,9 @@ impl App {
         message_type: MessageType,
         ttl: Option<Duration>,
     ) {
+        if message_type != MessageType::Error && self.message_details_return_mode.is_some() {
+            self.toggle_help();
+        }
         self.message = Some(Message {
             content: msg.into(),
             message_type,
@@ -73,11 +76,32 @@ impl App {
         self.input_mode == InputMode::Search && self.search_return_mode == InputMode::Help
     }
 
+    pub fn toggle_message_details(&mut self) {
+        if self.message_details_return_mode.is_some() {
+            self.toggle_help();
+            return;
+        }
+
+        if self
+            .message
+            .as_ref()
+            .is_some_and(|message| message.message_type == MessageType::Error)
+        {
+            self.message_details_return_mode = Some(self.input_mode);
+            self.input_mode = InputMode::Help;
+            self.help_state.scroll_offset = 0;
+        }
+    }
+
     pub fn toggle_help(&mut self) {
         if self.input_mode == InputMode::Help {
-            self.input_mode = InputMode::Normal;
+            self.input_mode = self
+                .message_details_return_mode
+                .take()
+                .unwrap_or(InputMode::Normal);
         } else {
             self.input_mode = InputMode::Help;
+            self.message_details_return_mode = None;
             self.help_state.scroll_offset = 0;
         }
     }

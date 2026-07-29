@@ -1164,6 +1164,8 @@ pub struct App {
     pub dirty: bool,
     pub quit_warned: bool,
     pub message: Option<Message>,
+    /// Previous mode while full-message popup reuses Help navigation and scrolling.
+    pub message_details_return_mode: Option<InputMode>,
     pub pending_confirm: Option<ConfirmAction>,
     pub supports_keyboard_enhancement: bool,
     pub show_file_list: bool,

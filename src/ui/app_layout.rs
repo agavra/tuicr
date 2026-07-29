@@ -47,7 +47,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     // Keep help visible while its search prompt is active.
     if app.input_mode == InputMode::Help || app.searching_help() {
-        help_popup::render_help(frame, app);
+        if app.message_details_return_mode.is_some() {
+            help_popup::render_message_details(frame, app);
+        } else {
+            help_popup::render_help(frame, app);
+        }
     }
 
     // Comment input is now rendered inline in the diff view

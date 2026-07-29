@@ -60,6 +60,7 @@ pub enum Action {
     EnterSearchMode,
     ExitMode,
     ToggleHelp,
+    ShowMessageDetails,
 
     // Text input
     InsertChar(char),
@@ -139,6 +140,10 @@ pub enum Action {
 }
 
 pub fn map_key_to_action(key: KeyEvent, mode: InputMode, leader_key: char) -> Action {
+    if key.code == KeyCode::F(2) && key.modifiers == KeyModifiers::NONE {
+        return Action::ShowMessageDetails;
+    }
+
     match mode {
         InputMode::Normal => map_normal_mode(key, leader_key),
         InputMode::Command => map_command_mode(key),
@@ -412,6 +417,10 @@ fn map_commit_select_mode(key: KeyEvent) -> Action {
 /// This is a sub-state of `InputMode::CommitSelect`; the dispatcher in
 /// `main.rs` routes here when `App::pr_filter_editing()` is true.
 pub fn map_target_filter_mode(key: KeyEvent) -> Action {
+    if key.code == KeyCode::F(2) && key.modifiers == KeyModifiers::NONE {
+        return Action::ShowMessageDetails;
+    }
+
     match (key.code, key.modifiers) {
         (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
         (KeyCode::Enter, KeyModifiers::NONE) => Action::SubmitInput,
@@ -501,9 +510,29 @@ mod tests {
     }
 
     #[test]
-    fn should_leave_lowercase_e_unbound_in_normal_mode() {
-        let action = map_normal_mode(key(KeyCode::Char('e')), DEFAULT_LEADER_KEY);
-        assert_eq!(action, Action::None);
+    fn should_map_f2_to_message_details_in_every_mode() {
+        for mode in [
+            InputMode::Normal,
+            InputMode::Command,
+            InputMode::Search,
+            InputMode::Comment,
+            InputMode::Help,
+            InputMode::Confirm,
+            InputMode::CommitSelect,
+            InputMode::VisualSelect,
+            InputMode::SubmitResolver,
+            InputMode::SubmitConfirm,
+            InputMode::SubmitActionPicker,
+        ] {
+            assert_eq!(
+                map_key_to_action(key(KeyCode::F(2)), mode, DEFAULT_LEADER_KEY),
+                Action::ShowMessageDetails
+            );
+        }
+        assert_eq!(
+            map_target_filter_mode(key(KeyCode::F(2))),
+            Action::ShowMessageDetails
+        );
     }
 
     #[test]
