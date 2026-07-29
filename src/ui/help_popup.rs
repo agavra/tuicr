@@ -6,7 +6,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 
-use crate::app::App;
+use crate::app::{App, InputMode};
 use crate::ui::styles;
 
 pub fn render_message_details(frame: &mut Frame, app: &mut App) {
@@ -15,7 +15,11 @@ pub fn render_message_details(frame: &mut Frame, app: &mut App) {
     };
     let content = message.content.clone();
     let theme = &app.theme;
-    let anchor = app.diff_area.unwrap_or(frame.area());
+    let anchor = if app.overlay_return_mode == InputMode::CommitSelect {
+        frame.area()
+    } else {
+        app.diff_area.unwrap_or(frame.area())
+    };
     let area = centered_rect(80, 70, anchor);
 
     frame.render_widget(Clear, area);
@@ -25,7 +29,7 @@ pub fn render_message_details(frame: &mut Frame, app: &mut App) {
         .border_style(styles::border_style(theme, true));
     let inner = block.inner(area);
 
-    let paragraph = Paragraph::new(content.clone())
+    let paragraph = Paragraph::new(content.as_str())
         .style(
             Style::default()
                 .fg(theme.message_error_fg)
@@ -34,7 +38,6 @@ pub fn render_message_details(frame: &mut Frame, app: &mut App) {
         .wrap(Wrap { trim: false });
     app.help_state.total_lines = paragraph.line_count(inner.width);
     app.help_state.viewport_height = inner.height as usize;
-    app.help_state.searchable_lines = content.lines().map(str::to_string).collect();
     let max_offset = app
         .help_state
         .total_lines
@@ -51,7 +54,7 @@ pub fn render_message_details(frame: &mut Frame, app: &mut App) {
     };
     frame.render_widget(
         block.title(format!(
-            " Error details (j/k scroll, F2/q/Esc close){scroll_indicator} "
+            " Error details (j/k scroll, q/Esc close){scroll_indicator} "
         )),
         area,
     );
@@ -159,13 +162,6 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("Search within diff (case-insensitive)"),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "  F2        ",
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("Open full details for the current error"),
         ]),
         Line::from(vec![
             Span::styled(
@@ -676,6 +672,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("Open this help screen"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :messages ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Open full details for the current error"),
         ]),
         Line::from(vec![
             Span::styled(

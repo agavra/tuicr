@@ -122,6 +122,7 @@ Repository-managed agent integrations:
 - `Comment` - typing a comment (Ctrl-S saves, Ctrl-C cancels)
 - `Search` - after pressing `/`, search pattern entry
 - `Help` - showing help popup
+- `MessageDetails` - showing the complete current error in a scrollable popup
 - `Confirm` - Y/N confirmation dialog
 - `CommitSelect` - selecting commits to review
 - `VisualSelect` - visual mode for range comments

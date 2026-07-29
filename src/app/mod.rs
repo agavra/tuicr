@@ -540,6 +540,8 @@ pub enum InputMode {
     Command,
     Search,
     Help,
+    /// Scrollable popup for the complete current error message.
+    MessageDetails,
     Confirm,
     CommitSelect,
     VisualSelect,
@@ -1028,9 +1030,11 @@ pub struct App {
     pub help_state: HelpState,
     pub command_buffer: String,
     pub(crate) command_completion: Option<CommandCompletionState>,
+    pub(crate) command_return_mode: InputMode,
     pub search_buffer: String,
     pub last_search_pattern: Option<String>,
     pub(crate) search_return_mode: InputMode,
+    pub(crate) overlay_return_mode: InputMode,
     pub comment_buffer: String,
     pub comment_cursor: usize,
     /// Config `comment_vim`: vim modal editing in the comment box.
@@ -1164,8 +1168,6 @@ pub struct App {
     pub dirty: bool,
     pub quit_warned: bool,
     pub message: Option<Message>,
-    /// Previous mode while full-message popup reuses Help navigation and scrolling.
-    pub message_details_return_mode: Option<InputMode>,
     pub pending_confirm: Option<ConfirmAction>,
     pub supports_keyboard_enhancement: bool,
     pub show_file_list: bool,

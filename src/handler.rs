@@ -34,6 +34,7 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     ),
     CommandSpec::new(&["clearc"], CommandKind::Clear(ClearScope::CommentsOnly)),
     CommandSpec::new(&["help", "h"], CommandKind::Help),
+    CommandSpec::new(&["messages"], CommandKind::MessageDetails),
     CommandSpec::new(&["version"], CommandKind::Version),
     CommandSpec::new(&["update"], CommandKind::Update),
     CommandSpec::new(&["set wrap"], CommandKind::SetWrap),
@@ -109,6 +110,7 @@ enum CommandKind {
     Export,
     Clear(ClearScope),
     Help,
+    MessageDetails,
     Version,
     Update,
     SetWrap,
@@ -152,7 +154,7 @@ pub fn handle_mouse_event(app: &mut App, event: MouseEvent) {
             let over_diff = app.diff_area.is_some_and(|r| r.contains(pos));
             let over_commit_list = app.commit_list_inner_area.is_some_and(|r| r.contains(pos));
             match app.input_mode {
-                InputMode::Help => handle_help_action(app, action),
+                InputMode::Help | InputMode::MessageDetails => handle_help_action(app, action),
                 InputMode::CommitSelect | InputMode::Normal if over_commit_list => {
                     wheel_commit_list(app, scroll_up);
                 }
@@ -494,9 +496,7 @@ pub fn handle_help_action(app: &mut App, action: Action) {
         Action::GoToBottom => app.help_scroll_to_bottom(),
         Action::MouseScrollDown(n) => app.help_scroll_down(n),
         Action::MouseScrollUp(n) => app.help_scroll_up(n),
-        Action::EnterSearchMode if app.message_details_return_mode.is_none() => {
-            app.enter_search_mode()
-        }
+        Action::EnterSearchMode => app.enter_search_mode(),
         Action::SearchNext => {
             app.search_next_in_help();
         }
@@ -778,6 +778,11 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
             // path resets `input_mode` to Normal, which would clobber Help.
             app.exit_command_mode();
             app.toggle_help();
+            CommandAfterDispatch::KeepMode
+        }
+        CommandKind::MessageDetails => {
+            app.exit_command_mode();
+            app.open_message_details();
             CommandAfterDispatch::KeepMode
         }
         CommandKind::Version => {
@@ -1121,6 +1126,7 @@ pub fn handle_commit_select_action(app: &mut App, action: Action) {
     match action {
         Action::TargetSelectorTabNext => app.cycle_target_tab(true),
         Action::TargetSelectorTabPrev => app.cycle_target_tab(false),
+        Action::EnterCommandMode => app.enter_command_mode(),
         Action::Quit => app.should_quit = true,
         Action::ExitMode => {
             // Esc during an in-flight PR open aborts the load and stays

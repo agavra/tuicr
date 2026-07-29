@@ -752,13 +752,8 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn dispatch_action(app: &mut App, action: Action) {
-    if action == Action::ShowMessageDetails {
-        app.toggle_message_details();
-        return;
-    }
-
     match app.input_mode {
-        InputMode::Help => handle_help_action(app, action),
+        InputMode::Help | InputMode::MessageDetails => handle_help_action(app, action),
         InputMode::Command => handle_command_action(app, action),
         InputMode::Search => handle_search_action(app, action),
         InputMode::Comment => handle_comment_action(app, action),
@@ -778,15 +773,9 @@ fn dispatch_action(app: &mut App, action: Action) {
 }
 
 /// Handle a comment-mode key while vim is active: app-level keys keep their
-/// semantics, everything else feeds the overlay.
+/// semantics, everything else feeds the overlay. Always returns `true`.
 fn handle_comment_vim_key(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
     use crossterm::event::{KeyCode, KeyModifiers};
-
-    // Let the global error-details shortcut reach the regular key mapper.
-    if key.code == KeyCode::F(2) && key.modifiers == KeyModifiers::NONE {
-        return false;
-    }
-
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
 
     // An open `:` command-line captures all input until Enter/Esc.
