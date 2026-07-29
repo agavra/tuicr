@@ -619,7 +619,7 @@ pub fn parse_github_remote_url(remote_url: &str) -> Option<ForgeRepository> {
         .map(|(_, rest)| rest)
         .unwrap_or(without_scheme);
     let (host, path) = without_user.split_once('/')?;
-    repository_from_path(host, path)
+    repository_from_path(strip_port(host), path)
 }
 
 fn parse_numeric_target(target: &str) -> Option<PullRequestTarget> {
@@ -809,6 +809,18 @@ fn trim_url_suffix(value: &str) -> &str {
         .next()
         .unwrap_or(value)
         .trim_end_matches('/')
+}
+
+/// Strip a trailing `:<port>` from a host, e.g. `example.com:2222` ->
+/// `example.com`. `ssh://` remotes commonly carry a non-default SSH port
+/// (GitHub Enterprise instances behind a custom port); that port is
+/// meaningless for the HTTPS API host used to build `--repo` arguments, and
+/// left in place it turns into a broken URL.
+fn strip_port(host: &str) -> &str {
+    match host.rsplit_once(':') {
+        Some((h, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => h,
+        _ => host,
+    }
 }
 
 fn strip_git_suffix(value: &str) -> &str {
@@ -1297,6 +1309,18 @@ index 1111111..2222222 100644
     fn parses_ssh_remote_url() {
         let repository =
             parse_github_remote_url("ssh://git@github.example.com/agavra/tuicr.git").unwrap();
+        assert_eq!(repository.host, "github.example.com");
+        assert_eq!(repository.slug(), "agavra/tuicr");
+    }
+
+    #[test]
+    fn parses_ssh_remote_url_with_custom_port() {
+        // GitHub Enterprise instances behind a non-default SSH port must not
+        // leak that port into the ForgeRepository host; it breaks `--repo`
+        // URL construction against the HTTPS API.
+        let repository =
+            parse_github_remote_url("ssh://git@github.example.com:2222/agavra/tuicr.git")
+                .unwrap();
         assert_eq!(repository.host, "github.example.com");
         assert_eq!(repository.slug(), "agavra/tuicr");
     }
