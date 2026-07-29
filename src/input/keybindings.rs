@@ -44,6 +44,7 @@ pub enum Action {
     /// Edit the comment at cursor with the text cursor at end (vim `A`).
     EditCommentAtEnd,
     PendingDCommand,
+    EditFile,
     SearchNext,
     SearchPrev,
 
@@ -206,6 +207,7 @@ fn map_normal_mode(key: KeyEvent, leader_key: char) -> Action {
         (KeyCode::Char('d'), KeyModifiers::NONE) => Action::PendingDCommand,
         (KeyCode::Char('v') | KeyCode::Char('V'), _) => Action::EnterVisualMode,
         (KeyCode::Char('y'), KeyModifiers::NONE) => Action::ExportToClipboard,
+        (KeyCode::Char('e'), KeyModifiers::NONE) => Action::EditFile,
         (KeyCode::Char('n'), KeyModifiers::NONE) => Action::SearchNext,
         (KeyCode::Char('N'), _) => Action::SearchPrev,
 
@@ -501,9 +503,9 @@ mod tests {
     }
 
     #[test]
-    fn should_leave_lowercase_e_unbound_in_normal_mode() {
+    fn should_map_lowercase_e_to_edit_file_in_normal_mode() {
         let action = map_normal_mode(key(KeyCode::Char('e')), DEFAULT_LEADER_KEY);
-        assert_eq!(action, Action::None);
+        assert_eq!(action, Action::EditFile);
     }
 
     #[test]

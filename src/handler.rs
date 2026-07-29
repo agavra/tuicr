@@ -1556,6 +1556,7 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
                 app.set_error(format!("Failed to load diff: {e}"));
             }
         }
+        Action::EditFile => app.queue_editor_for_focused_item(),
         _ => {}
     }
 }
