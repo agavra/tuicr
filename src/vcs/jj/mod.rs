@@ -485,6 +485,7 @@ mod tests {
     use crate::model::LineOrigin;
     use crate::vcs::RevisionDiffTarget;
     use std::fs;
+    use std::sync::Once;
 
     /// Check if jj command is available
     fn jj_available() -> bool {
@@ -495,9 +496,53 @@ mod tests {
             .unwrap_or(false)
     }
 
+    /// Point `JJ_CONFIG` at a throwaway config file that disables commit
+    /// signing, for the lifetime of this test process.
+    ///
+    /// `--config signing.behavior=drop` on `jj_cmd()`'s own invocations
+    /// isn't enough: `JjBackend` methods under test (e.g.
+    /// `get_working_tree_diff`) shell out to `jj` themselves via
+    /// `run_jj_command`, and that production code path must stay
+    /// unmodified so real users' signing config keeps working. Overriding
+    /// `JJ_CONFIG` on the test process's environment means every `jj`
+    /// child process spawned for the rest of this run inherits it,
+    /// including ones spawned by the backend under test, without ever
+    /// touching the developer's real `~/.config/jj`. This keeps
+    /// contributors with `signing.behavior = "own"` configured globally
+    /// from being prompted to sign throwaway commits in temp repos.
+    fn disable_jj_signing_for_tests() {
+        static INIT: Once = Once::new();
+        INIT.call_once(|| {
+            let config_path = std::env::temp_dir().join("tuicr-test-jj-config.toml");
+            fs::write(
+                &config_path,
+                "signing.behavior = \"drop\"\n\
+                 user.name = \"Tuicr Test\"\n\
+                 user.email = \"tuicr@example.com\"\n",
+            )
+            .expect("failed to write throwaway jj test config");
+            // SAFETY: guarded by `Once`, so this runs exactly once, before
+            // any test spawns a `jj` child process; nothing else in this
+            // crate reads or writes `JJ_CONFIG`.
+            unsafe {
+                std::env::set_var("JJ_CONFIG", &config_path);
+            }
+        });
+    }
+
+    /// `jj` invocation with commit signing disabled. Overrides any global
+    /// `signing.behavior = "own"` config so contributors who sign their own
+    /// commits aren't prompted to sign throwaway commits in these temp repos.
+    fn jj_cmd() -> Command {
+        disable_jj_signing_for_tests();
+        let mut cmd = Command::new("jj");
+        cmd.args(["--config", "signing.behavior=drop"]);
+        cmd
+    }
+
     /// Discover a Jujutsu repository from a specific directory
     fn discover_in(path: &Path) -> Result<JjBackend> {
-        let root_output = Command::new("jj")
+        let root_output = jj_cmd()
             .args(["root"])
             .current_dir(path)
             .output()
@@ -523,7 +568,7 @@ mod tests {
         let root = temp_dir.path();
 
         // Initialize jj repo (jj init creates a git-backed repo by default)
-        let output = Command::new("jj")
+        let output = jj_cmd()
             .args(["git", "init"])
             .current_dir(root)
             .output()
@@ -541,7 +586,7 @@ mod tests {
         fs::write(root.join("hello.txt"), "hello world\n").expect("Failed to write file");
 
         // Snapshot the changes (jj auto-tracks files)
-        Command::new("jj")
+        jj_cmd()
             .args(["commit", "-m", "Initial commit"])
             .current_dir(root)
             .output()
@@ -636,7 +681,7 @@ mod tests {
 
         fs::write(temp.path().join("hello.txt"), " hello world \n")
             .expect("Failed to write whitespace-only edit");
-        let output = Command::new("jj")
+        let output = jj_cmd()
             .args(["commit", "-m", "Whitespace commit"])
             .current_dir(temp.path())
             .output()
@@ -714,7 +759,7 @@ mod tests {
         let root = temp_dir.path();
 
         // Initialize jj repo
-        let output = Command::new("jj")
+        let output = jj_cmd()
             .args(["git", "init"])
             .current_dir(root)
             .output()
@@ -730,7 +775,7 @@ mod tests {
 
         // First commit
         fs::write(root.join("file1.txt"), "first file\n").expect("Failed to write file");
-        Command::new("jj")
+        jj_cmd()
             .args(["commit", "-m", "First commit"])
             .current_dir(root)
             .output()
@@ -738,7 +783,7 @@ mod tests {
 
         // Second commit
         fs::write(root.join("file2.txt"), "second file\n").expect("Failed to write file");
-        Command::new("jj")
+        jj_cmd()
             .args(["commit", "-m", "Second commit"])
             .current_dir(root)
             .output()
@@ -746,7 +791,7 @@ mod tests {
 
         // Third commit - modify first file
         fs::write(root.join("file1.txt"), "first file\nmodified\n").expect("Failed to write file");
-        Command::new("jj")
+        jj_cmd()
             .args(["commit", "-m", "Third commit"])
             .current_dir(root)
             .output()
@@ -853,7 +898,7 @@ mod tests {
         let root = temp_dir.path();
 
         // Initialize jj repo
-        let output = Command::new("jj")
+        let output = jj_cmd()
             .args(["git", "init"])
             .current_dir(root)
             .output()
@@ -865,7 +910,7 @@ mod tests {
 
         // Create and commit a file
         fs::write(root.join("original.txt"), "file content\n").expect("Failed to write file");
-        Command::new("jj")
+        jj_cmd()
             .args(["commit", "-m", "Add original file"])
             .current_dir(root)
             .output()
@@ -912,7 +957,7 @@ mod tests {
         let root = temp_dir.path();
 
         // Initialize jj repo
-        let output = Command::new("jj")
+        let output = jj_cmd()
             .args(["git", "init"])
             .current_dir(root)
             .output()
@@ -962,7 +1007,7 @@ mod tests {
         let root = temp.path();
 
         // Commit the binary file first
-        Command::new("jj")
+        jj_cmd()
             .args(["commit", "-m", "Add binary file"])
             .current_dir(root)
             .output()
@@ -997,7 +1042,7 @@ mod tests {
         let root = temp_dir.path();
 
         // Initialize jj repo
-        let output = Command::new("jj")
+        let output = jj_cmd()
             .args(["git", "init"])
             .current_dir(root)
             .output()
@@ -1009,14 +1054,14 @@ mod tests {
 
         // Create initial file and commit
         fs::write(root.join("file.txt"), "content\n").expect("Failed to write file");
-        Command::new("jj")
+        jj_cmd()
             .args(["commit", "-m", "Initial commit"])
             .current_dir(root)
             .output()
             .expect("Failed to commit");
 
         // Create a bookmark on @
-        Command::new("jj")
+        jj_cmd()
             .args(["bookmark", "create", "my-feature", "-r", "@"])
             .current_dir(root)
             .output()
@@ -1034,7 +1079,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
         let root = temp_dir.path();
 
-        let output = Command::new("jj")
+        let output = jj_cmd()
             .args(["git", "init"])
             .current_dir(root)
             .output()
@@ -1046,7 +1091,7 @@ mod tests {
         let initial = "<template>\n  <div>{{ msg }}</div>\n</template>\n\n<script setup>\nimport { ref } from 'vue'\nconst msg = ref('hi')\nconst other = 1\n</script>\n";
         fs::write(root.join("App.vue"), initial).expect("Failed to write Vue file");
 
-        Command::new("jj")
+        jj_cmd()
             .args(["commit", "-m", "Add Vue file"])
             .current_dir(root)
             .output()
@@ -1121,7 +1166,7 @@ mod tests {
         let root = temp_dir.path();
 
         // Initialize jj repo
-        let output = Command::new("jj")
+        let output = jj_cmd()
             .args(["git", "init"])
             .current_dir(root)
             .output()
@@ -1133,14 +1178,14 @@ mod tests {
 
         // Create initial file and commit
         fs::write(root.join("file.txt"), "content\n").expect("Failed to write file");
-        Command::new("jj")
+        jj_cmd()
             .args(["commit", "-m", "Initial commit"])
             .current_dir(root)
             .output()
             .expect("Failed to commit");
 
         // Create a bookmark on the commit we just made (now @-)
-        Command::new("jj")
+        jj_cmd()
             .args(["bookmark", "create", "main", "-r", "@-"])
             .current_dir(root)
             .output()
@@ -1148,7 +1193,7 @@ mod tests {
 
         // Make another commit so @ is ahead of the bookmark
         fs::write(root.join("file2.txt"), "more content\n").expect("Failed to write file");
-        Command::new("jj")
+        jj_cmd()
             .args(["commit", "-m", "Second commit"])
             .current_dir(root)
             .output()
@@ -1185,7 +1230,7 @@ mod tests {
         let root = temp_dir.path();
 
         // Initialize jj repo
-        let output = Command::new("jj")
+        let output = jj_cmd()
             .args(["git", "init"])
             .current_dir(root)
             .output()
@@ -1197,7 +1242,7 @@ mod tests {
 
         // Create initial file and commit (no bookmarks)
         fs::write(root.join("file.txt"), "content\n").expect("Failed to write file");
-        Command::new("jj")
+        jj_cmd()
             .args(["commit", "-m", "Initial commit"])
             .current_dir(root)
             .output()

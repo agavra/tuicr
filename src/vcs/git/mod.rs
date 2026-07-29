@@ -191,10 +191,18 @@ impl GitBackend {
 }
 
 fn run_git_command(workdir: &Path, args: &[&str]) -> Result<String> {
+    // `-c commit.gpgsign=false` is a no-op for the read-only `config`/`init`
+    // calls this makes in production, but it keeps the test-only `commit`
+    // calls below from prompting contributors with commit signing enabled
+    // globally to sign throwaway commits in temp repos.
+    let full_args: Vec<&str> = ["-c", "commit.gpgsign=false"]
+        .into_iter()
+        .chain(args.iter().copied())
+        .collect();
     run_command_output(
         "git",
         Some(workdir),
-        args.iter().map(|arg| OsStr::new(*arg)),
+        full_args.iter().map(|arg| OsStr::new(*arg)),
     )
     .map_err(git_command_error)
 }
