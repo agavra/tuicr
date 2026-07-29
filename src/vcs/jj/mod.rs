@@ -47,7 +47,7 @@ impl JjBackend {
         // Use `jj root` to find the repository root
         // This handles being called from subdirectories
         let root_output = Command::new("jj")
-            .args(["root"])
+            .args(["root", "--color=never"])
             .output()
             .map_err(|e| TuicrError::VcsCommand(format!("Failed to run jj: {}", e)))?;
 
@@ -458,6 +458,7 @@ where
 {
     let args: Vec<S> = args.into_iter().collect();
     let output = Command::new("jj")
+        .arg("--color=never")
         .current_dir(root)
         .args(args.iter().map(|arg| arg.as_ref()))
         .output()
@@ -498,7 +499,7 @@ mod tests {
     /// Discover a Jujutsu repository from a specific directory
     fn discover_in(path: &Path) -> Result<JjBackend> {
         let root_output = Command::new("jj")
-            .args(["root"])
+            .args(["root", "--color=never"])
             .current_dir(path)
             .output()
             .map_err(|e| TuicrError::VcsCommand(format!("Failed to run jj: {}", e)))?;
@@ -1222,5 +1223,47 @@ mod tests {
             "Expected no bookmark when none exist, got {:?}",
             info.branch_name
         );
+    }
+
+    #[test]
+    fn test_jj_revision_ids_are_not_colored() {
+        let Some(temp) = setup_test_repo_with_commits() else {
+            eprintln!("Skipping test: jj command not available");
+            return;
+        };
+
+        // Force color output regardless of whether stdout is a tty
+        let output = Command::new("jj")
+            .args(["config", "set", "--repo", "ui.color", "always"])
+            .current_dir(temp.path())
+            .output()
+            .expect("Failed to configure jj colors");
+
+        assert!(
+            output.status.success(),
+            "Failed to enable colors: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let backend = JjBackend::from_path(temp.path().to_path_buf(), DiffWhitespaceMode::Normal)
+            .expect("Failed to create backend");
+
+        let commits = backend
+            .get_recent_commits(0, 10)
+            .expect("Failed to get commits");
+
+        for commit in commits {
+            assert!(
+                !commit.id.contains('\x1b'),
+                "Commit id contains ANSI escapes: {:?}",
+                commit.id
+            );
+
+            assert!(
+                !commit.short_id.contains('\x1b'),
+                "Short id contains ANSI escapes: {:?}",
+                commit.short_id
+            );
+        }
     }
 }
