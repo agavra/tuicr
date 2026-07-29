@@ -1319,8 +1319,7 @@ index 1111111..2222222 100644
         // leak that port into the ForgeRepository host; it breaks `--repo`
         // URL construction against the HTTPS API.
         let repository =
-            parse_github_remote_url("ssh://git@github.example.com:2222/agavra/tuicr.git")
-                .unwrap();
+            parse_github_remote_url("ssh://git@github.example.com:2222/agavra/tuicr.git").unwrap();
         assert_eq!(repository.host, "github.example.com");
         assert_eq!(repository.slug(), "agavra/tuicr");
     }
