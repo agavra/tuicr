@@ -468,9 +468,18 @@ impl App {
         self.session.is_hunk_reviewed(&path, &key)
     }
 
-    /// Whether a reviewed file should currently hide its body. Summary jumps
-    /// may temporarily reveal one reviewed file in the continuous diff without
-    /// changing the persisted reviewed marker.
+    /// Whether a file should currently hide its body, leaving only its header
+    /// row.
+    ///
+    /// Two reasons a body hides. Reviewed files collapse so a long review
+    /// stream shrinks as it is worked through; summary jumps may temporarily
+    /// reveal one reviewed file without changing the persisted marker. Files
+    /// `.gitattributes` marks as code-generated collapse when collapse is on,
+    /// until `Space` expands one.
+    ///
+    /// The checks are ordered so a session with no generated files costs what
+    /// it did before: `collapse_generated` is a bare bool, and the generated
+    /// set lookup only runs for files that are not reviewed.
     pub fn should_collapse_file(&self, file_idx: usize) -> bool {
         if self.is_single_file_view {
             return false;
@@ -480,7 +489,12 @@ impl App {
             return false;
         };
         let path = file.display_path();
-        self.session.is_file_reviewed(path) && self.revealed_reviewed_file.as_ref() != Some(path)
+        if self.session.is_file_reviewed(path) {
+            return self.revealed_reviewed_file.as_ref() != Some(path);
+        }
+        self.collapse_generated
+            && self.generated_files.contains(path)
+            && !self.expanded_generated.contains(path)
     }
 
     pub(in crate::app) fn reveal_reviewed_file(&mut self, file_idx: usize) {
