@@ -171,7 +171,7 @@ impl App {
                 let info = self.pr_info.as_ref()?;
                 let lines = crate::ui::pr_info_panel::build_pr_info_lines(
                     info,
-                    self.diff_state.viewport_width.max(1),
+                    crate::ui::pr_info_panel::pr_info_content_width(self.diff_state.viewport_width),
                     &self.theme,
                 );
                 lines.get(*line_idx).map(|line| {

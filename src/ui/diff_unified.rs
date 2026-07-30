@@ -81,7 +81,6 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
         &mut lines,
         &mut line_idx,
         current_line_idx,
-        comment_width,
     );
 
     // The `═══ Review Comments ═══` label is redundant in single-file

@@ -242,7 +242,6 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
         &mut lines,
         &mut line_idx,
         ctx.current_line_idx,
-        ctx.panel_width.saturating_sub(1),
     );
 
     // The `═══ Review Comments ═══` label is redundant in single-file

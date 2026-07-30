@@ -75,7 +75,7 @@ impl App {
         if let Some(info) = &self.pr_info {
             let pr_line_count = crate::ui::pr_info_panel::build_pr_info_lines(
                 info,
-                self.diff_state.viewport_width.max(1),
+                crate::ui::pr_info_panel::pr_info_content_width(self.diff_state.viewport_width),
                 &self.theme,
             )
             .len();

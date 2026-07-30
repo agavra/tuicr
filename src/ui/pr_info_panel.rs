@@ -13,11 +13,31 @@ use crate::ui::comment_panel::{self, CommentTypePresentation};
 use crate::ui::diff_view::{HEADER_RULE, cursor_indicator, cursor_indicator_spaced};
 use crate::ui::styles;
 
+/// Every rendered PR-info line is prefixed with a two-column cursor indicator
+/// (`cursor_indicator_spaced`), so the wrapped body has that much less room.
+/// The annotation/height counters and the renderer MUST wrap
+/// `build_pr_info_lines` at this same width — otherwise `line_annotations`
+/// desyncs from the rendered `Vec<Line>` and cursor↔line mapping drifts for
+/// every row below the panel.
+pub(crate) const PR_INFO_INDICATOR_WIDTH: usize = 2;
+
+/// Width available for wrapped PR-info content at the given viewport width.
+pub(crate) fn pr_info_content_width(viewport_width: usize) -> usize {
+    viewport_width
+        .saturating_sub(PR_INFO_INDICATOR_WIDTH)
+        .max(1)
+}
+
 pub fn pr_info_render_height(app: &App) -> usize {
     app.pr_info
         .as_ref()
         .map(|info| {
-            build_pr_info_lines(info, app.diff_state.viewport_width.max(1), &app.theme).len()
+            build_pr_info_lines(
+                info,
+                pr_info_content_width(app.diff_state.viewport_width),
+                &app.theme,
+            )
+            .len()
         })
         .unwrap_or(0)
 }
@@ -52,12 +72,12 @@ pub fn append_pr_info_section(
     lines: &mut Vec<Line<'static>>,
     line_idx: &mut usize,
     current_line_idx: usize,
-    content_width: usize,
 ) {
     let Some(info) = app.pr_info.as_ref() else {
         return;
     };
 
+    let content_width = pr_info_content_width(app.diff_state.viewport_width);
     for mut pr_line in build_pr_info_lines(info, content_width, &app.theme) {
         let indicator = cursor_indicator_spaced(*line_idx, current_line_idx);
         pr_line.spans.insert(

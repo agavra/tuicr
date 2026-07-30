@@ -180,3 +180,36 @@ fn should_build_pr_info_panel_lines() {
         crate::ui::pr_info_panel::build_pr_info_lines(&sample_pr_info(), 80, &Theme::dark());
     assert!(lines.len() > 5);
 }
+
+#[test]
+fn should_keep_pr_info_annotations_in_sync_with_rendered_lines_at_wrap_boundary() {
+    // A description line exactly `width` columns wide fits on one line at
+    // `width` but wraps at `width - 1`. The counter (line_annotations) and
+    // the renderer must agree on the wrap width, or every row below the
+    // panel maps to the wrong annotation. Regression guard for the desync.
+    let width = 60usize;
+    let mut info = sample_pr_info();
+    info.details.body = format!("{} {}", "X".repeat(30), "Y".repeat(29)); // 30 + 1 + 29 = 60
+
+    let mut app = build_pr_app();
+    app.pr_info = Some(info);
+    app.diff_state.viewport_width = width;
+    app.rebuild_annotations();
+
+    let annotated = app
+        .line_annotations
+        .iter()
+        .filter(|line| matches!(line, crate::app::AnnotatedLine::PrInfoLine { .. }))
+        .count();
+
+    let mut lines = Vec::new();
+    let mut line_idx = 0usize;
+    crate::ui::pr_info_panel::append_pr_info_section(&app, &mut lines, &mut line_idx, usize::MAX);
+
+    assert!(annotated > 0, "expected PR-info annotations");
+    assert_eq!(
+        annotated,
+        lines.len(),
+        "PrInfoLine annotation count must equal the rendered PR-info line count"
+    );
+}

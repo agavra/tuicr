@@ -215,7 +215,9 @@ fn full_row_text(app: &App, annotation: &AnnotatedLine) -> String {
                 .and_then(|info| {
                     crate::ui::pr_info_panel::build_pr_info_lines(
                         info,
-                        app.diff_state.viewport_width,
+                        crate::ui::pr_info_panel::pr_info_content_width(
+                            app.diff_state.viewport_width,
+                        ),
                         &app.theme,
                     )
                     .into_iter()
