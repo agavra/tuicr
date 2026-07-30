@@ -8,8 +8,10 @@ use ratatui::{
 
 use crate::app::App;
 use crate::ui::styles;
+use crate::ui::text_utils::{key_label, shortcut_column};
 
 pub fn render_help(frame: &mut Frame, app: &mut App) {
+    let leader = key_label(app.leader_key);
     let theme = &app.theme;
     // Center over the diff pane (matches the submit-modal anchoring) so the
     // file list doesn't tug the popup's visual centre off to one side. Fall
@@ -135,35 +137,35 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
-                format!("  {}h/{}l     ", app.leader_key, app.leader_key),
+                shortcut_column(&format!("{leader}h/{leader}l")),
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("Focus file list/diff"),
         ]),
         Line::from(vec![
             Span::styled(
-                format!("  {}k/{}j     ", app.leader_key, app.leader_key),
+                shortcut_column(&format!("{leader}k/{leader}j")),
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("Move focus up/down between panes"),
         ]),
         Line::from(vec![
             Span::styled(
-                format!("  {}e        ", app.leader_key),
+                shortcut_column(&format!("{leader}e")),
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("Toggle file list visibility"),
         ]),
         Line::from(vec![
             Span::styled(
-                format!("  {}s        ", app.leader_key),
+                shortcut_column(&format!("{leader}s")),
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("Toggle commit selector visibility (also `:set commits!`)"),
         ]),
         Line::from(vec![
             Span::styled(
-                format!("  {}f        ", app.leader_key),
+                shortcut_column(&format!("{leader}f")),
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("Toggle single-file view (also `:focus` / `:f`)"),
@@ -188,7 +190,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(""),
         Line::from(Span::styled(
-            format!("Single-file view (`:focus`, `:f`, {}f)", app.leader_key),
+            format!("Single-file view (`:focus`, `:f`, {leader}f)"),
             Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
         )),
         Line::from(""),
@@ -411,7 +413,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
-                format!("  {}c        ", app.leader_key),
+                shortcut_column(&format!("{leader}c")),
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("Add review comment"),
@@ -634,10 +636,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  :focus    ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw(format!(
-                "Toggle single-file view (alias `:f`, {}f)",
-                app.leader_key
-            )),
+            Span::raw(format!("Toggle single-file view (alias `:f`, {leader}f)")),
         ]),
         Line::from(vec![
             Span::styled(

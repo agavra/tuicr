@@ -26,6 +26,29 @@ pub(super) fn truncate_or_pad(s: &str, width: usize) -> String {
     }
 }
 
+/// Display label for a key that has no visible glyph, so shortcuts stay
+/// readable when the leader is configured as whitespace.
+pub(super) fn key_label(key: char) -> String {
+    match key {
+        ' ' => "<space>".to_string(),
+        '\t' => "<tab>".to_string(),
+        other => other.to_string(),
+    }
+}
+
+const KEY_COLUMN_WIDTH: usize = 10;
+
+/// Help popup key gutter: two-space indent plus a padded key column, keeping
+/// at least one space before the description when a label overflows it.
+pub(super) fn shortcut_column(keys: &str) -> String {
+    let width = keys.width();
+    if width >= KEY_COLUMN_WIDTH {
+        format!("  {keys} ")
+    } else {
+        format!("  {keys}{}", " ".repeat(KEY_COLUMN_WIDTH - width))
+    }
+}
+
 /// Truncate or pad highlighted spans to a specific display width
 /// Uses unicode width to properly handle wide characters (CJK, emoji, etc.)
 /// Returns a vector of spans that fits exactly within the width
@@ -296,6 +319,57 @@ mod tests {
         // then
         assert!(result.ends_with("..."));
         assert!(result.is_char_boundary(result.len()));
+    }
+
+    #[test]
+    fn should_render_printable_key_as_itself() {
+        // given
+        let key = ';';
+        // when
+        let label = key_label(key);
+        // then
+        assert_eq!(label, ";");
+    }
+
+    #[test]
+    fn should_label_space_key_readably() {
+        // given - `leader = " "` in config.toml
+        let key = ' ';
+        // when
+        let label = key_label(key);
+        // then
+        assert_eq!(label, "<space>");
+    }
+
+    #[test]
+    fn should_label_tab_key_readably() {
+        // given
+        let key = '\t';
+        // when
+        let label = key_label(key);
+        // then
+        assert_eq!(label, "<tab>");
+    }
+
+    #[test]
+    fn should_pad_shortcut_column_to_gutter_width() {
+        // given - the default leader chord shown in the help popup
+        let keys = ";e";
+        // when
+        let column = shortcut_column(keys);
+        // then - two-space indent plus a 10-cell key field
+        assert_eq!(column, "  ;e        ");
+        assert_eq!(column.width(), 12);
+    }
+
+    #[test]
+    fn should_keep_a_separator_space_when_shortcut_overflows_gutter() {
+        // given - a chord built from two <space> labels blows past the gutter
+        let keys = "<space>h/<space>l";
+        // when
+        let column = shortcut_column(keys);
+        // then - nothing is dropped and the description stays detached
+        assert_eq!(column, "  <space>h/<space>l ");
     }
 
     #[test]
