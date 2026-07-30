@@ -180,6 +180,7 @@ The title shows the selected comment's position and the total (`Comments · 17/3
 |-----|--------|
 | `r` | Toggle file reviewed (on the PR description: mark it reviewed and collapse it to one row) |
 | `R` | Toggle hunk reviewed |
+| `Space` | Expand / collapse the generated file under the cursor (diff panel) |
 | `c` | Add line comment (or file comment if not on a diff line) |
 | `C` | Add file comment |
 | `<leader>c` | Add review comment |
@@ -305,6 +306,9 @@ In command mode,
 | `:set reviewed` | Show files already marked reviewed |
 | `:set noreviewed` | Hide files already marked reviewed |
 | `:set reviewed!` / `:reviewed` | Toggle files already marked reviewed |
+| `:set generated` | Collapse files marked generated in `.gitattributes` |
+| `:set nogenerated` | Show generated files |
+| `:set generated!`, `:generated` | Toggle generated file collapse |
 | `:set minimal` / `:set nominimal` | Enable / disable minimal UI (no header, idle footer, or diff frame) |
 | `:set minimal!` | Toggle minimal UI |
 | `:clear` | Clear all comments and reviewed marks |
