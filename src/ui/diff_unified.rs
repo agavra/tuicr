@@ -246,12 +246,14 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
             continue;
         }
         let path = file.display_path();
-        let is_reviewed = app.session.is_file_reviewed(path);
 
-        // The `═══ filename ═══` separator is redundant in single-file
-        // view: the status bar and file list already name the file, and
-        // the wide bar of `═` characters confuses horizontal scrolling.
+        // Multi-file and single-file view are mutually exclusive here, so
+        // this is one branch rather than two guarded conditions: each side
+        // then pays for only the file-state lookup it actually needs.
         if !app.is_single_file_view {
+            // The `═══ filename ═══` separator is redundant in single-file
+            // view: the status bar and file list already name the file, and
+            // the wide bar of `═` characters confuses horizontal scrolling.
             let indicator = cursor_indicator_spaced(line_idx, current_line_idx);
             let header_text = crate::ui::diff_view::file_header_prefix_text(app, file);
             lines.push(Line::from(vec![
@@ -263,15 +265,14 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                 ),
             ]));
             line_idx += 1;
-        }
 
-        // If file is reviewed (and we're in multi-file view), skip
-        // rendering the body. In single-file view the user explicitly
-        // focused this file, so show its content under a dimmed banner.
-        if is_reviewed && !app.is_single_file_view {
-            continue;
-        }
-        if is_reviewed && app.is_single_file_view {
+            // Collapsed files render as the header alone.
+            if app.is_file_collapsed(file) {
+                continue;
+            }
+        } else if app.session.is_file_reviewed(path) {
+            // Single-file view shows a reviewed file's content anyway --
+            // the user explicitly focused it -- under a dimmed banner.
             let indicator = cursor_indicator(line_idx, current_line_idx);
             lines.push(Line::from(vec![
                 Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),

@@ -273,6 +273,28 @@ impl App {
         }
     }
 
+    /// Whether a file's diff body is hidden, leaving only its header row.
+    ///
+    /// Reviewed files collapse so a long review stream shrinks as it is
+    /// worked through. The annotation builder, both diff renderers, and the
+    /// scroll-height math all have to agree on this or the cursor lands on
+    /// rows that aren't drawn, so they share this one predicate.
+    ///
+    /// Deliberately says nothing about single-file view: the call sites
+    /// disagree about it (`file_render_height` ignores it, the renderers
+    /// honor it), so each keeps its own gate rather than having one folded
+    /// in here.
+    ///
+    /// Both renderers and `hunk_positions` call this once per file per
+    /// frame, so it has to stay cheap — currently a single map lookup.
+    /// Callers reach it through a `!is_single_file_view` branch that is
+    /// exclusive with the reviewed-banner branch, so no site pays for two
+    /// lookups to decide one thing.
+    #[inline]
+    pub fn is_file_collapsed(&self, file: &DiffFile) -> bool {
+        self.session.is_file_reviewed(file.display_path())
+    }
+
     pub fn file_count(&self) -> usize {
         self.diff_files.len()
     }

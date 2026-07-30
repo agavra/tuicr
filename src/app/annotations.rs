@@ -163,10 +163,10 @@ impl App {
                     .push(AnnotatedLine::FileHeader { file_idx });
             }
 
-            // If reviewed, skip all content for this file. Single-file
-            // view ignores the reviewed-collapse since the user
-            // explicitly focused this file.
-            if self.session.is_file_reviewed(path) && !self.is_single_file_view {
+            // If collapsed, skip all content for this file. Single-file
+            // view ignores the collapse since the user explicitly focused
+            // this file.
+            if self.is_file_collapsed(file) && !self.is_single_file_view {
                 continue;
             }
 

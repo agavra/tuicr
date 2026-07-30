@@ -517,6 +517,42 @@ fn release_then_press_walks_when_keyboard_enhancement_supported() {
 }
 
 #[test]
+fn is_file_collapsed_tracks_reviewed_state() {
+    let files = vec![
+        file("a.rs", vec![hunk(1, 3)]),
+        file("b.rs", vec![hunk(1, 3)]),
+    ];
+    let mut app = app_with(files);
+
+    let a = app.diff_files[0].clone();
+    let b = app.diff_files[1].clone();
+    assert!(!app.is_file_collapsed(&a));
+    assert!(!app.is_file_collapsed(&b));
+
+    app.toggle_reviewed_for_file_idx(0, false);
+    assert!(app.is_file_collapsed(&a));
+    assert!(!app.is_file_collapsed(&b));
+}
+
+#[test]
+fn is_file_collapsed_ignores_single_file_view() {
+    // The predicate deliberately says nothing about single-file view: its
+    // consumers disagree about it (`file_render_height` ignores it, the
+    // renderers honor it), so each keeps its own gate. Locking that here
+    // stops a future change from folding the check in and silently
+    // altering `file_render_height`.
+    let files = vec![file("a.rs", vec![hunk(1, 3)])];
+    let mut app = app_with(files);
+    app.toggle_reviewed_for_file_idx(0, false);
+    let a = app.diff_files[0].clone();
+
+    app.is_single_file_view = false;
+    assert!(app.is_file_collapsed(&a));
+    app.is_single_file_view = true;
+    assert!(app.is_file_collapsed(&a));
+}
+
+#[test]
 fn effective_file_height_is_zero_for_non_current_in_single_file_view() {
     let files = vec![
         file("a.rs", vec![hunk(1, 3)]),
