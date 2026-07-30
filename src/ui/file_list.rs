@@ -67,7 +67,7 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
     }
     let scroll_x = app.file_list_state.scroll_x;
 
-    // When diff panel is focused, sync file list selection to current file
+    // When diff panel is focused, sync file list selection to current view
     // But preserve the current offset to not interfere with manual scrolling
     if app.focused_panel == FocusedPanel::Diff {
         let current_file_idx = app.diff_state.current_file_idx;

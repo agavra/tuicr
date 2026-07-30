@@ -302,9 +302,7 @@ fn main() -> anyhow::Result<()> {
         if cfg.single_file_view == Some(true) && !app.is_single_file_view {
             app.toggle_single_file_view();
         }
-        if cfg.export_legend == Some(false) {
-            app.export_legend = false;
-        }
+        app.export = cfg.resolved_export();
         if cfg.cursor_line == Some(false) {
             app.cursor_line_highlight = false;
         }

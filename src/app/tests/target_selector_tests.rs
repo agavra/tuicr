@@ -1214,6 +1214,7 @@ fn should_use_persisted_new_head_session_instead_of_carrying_old_head_state() {
         &two_file_patch("newer changed"),
         Vec::new(),
         PullRequestReviewMetadata::default(),
+        crate::forge::traits::PullRequestInfo::from_details(details_b.clone()),
         None,
         highlighter,
     )
@@ -1262,6 +1263,7 @@ fn should_error_on_corrupt_exact_session_file_when_reopening_pr() {
         &two_file_patch("new changed"),
         Vec::new(),
         PullRequestReviewMetadata::default(),
+        crate::forge::traits::PullRequestInfo::from_details(details.clone()),
         None,
         highlighter,
     )
@@ -1314,6 +1316,7 @@ fn should_keep_old_head_session_when_new_head_session_file_is_corrupt() {
         &two_file_patch("newer changed"),
         Vec::new(),
         PullRequestReviewMetadata::default(),
+        crate::forge::traits::PullRequestInfo::from_details(details_b.clone()),
         None,
         highlighter,
     )
@@ -1395,6 +1398,7 @@ fn should_ignore_exact_session_file_when_pr_session_key_does_not_match() {
         &two_file_patch("new changed"),
         Vec::new(),
         PullRequestReviewMetadata::default(),
+        crate::forge::traits::PullRequestInfo::from_details(details.clone()),
         None,
         highlighter,
     )
@@ -1704,11 +1708,13 @@ fn should_build_new_head_session_by_carrying_only_unchanged_reviewed_state() {
     let mut details_b = details_a.clone();
     details_b.head_sha = "bbbbbbbbbbbbbbbb".to_string();
     let highlighter = app.theme.syntax_highlighter();
+    let pr_info_b = crate::forge::traits::PullRequestInfo::from_details(details_b.clone());
     let opened = crate::forge::pr_open::prepare_open_pr(
         details_b,
         &two_file_patch("newer changed"),
         Vec::new(),
         PullRequestReviewMetadata::default(),
+        pr_info_b,
         None,
         highlighter,
     )
@@ -1759,11 +1765,13 @@ fn should_carry_unchanged_hunk_marks_inside_changed_file_when_pr_head_advances()
     let mut details_b = details_a.clone();
     details_b.head_sha = "bbbbbbbbbbbbbbbb".to_string();
     let highlighter = app.theme.syntax_highlighter();
+    let pr_info_b = crate::forge::traits::PullRequestInfo::from_details(details_b.clone());
     let opened = crate::forge::pr_open::prepare_open_pr(
         details_b,
         &two_hunk_pr_patch("newer second"),
         Vec::new(),
         PullRequestReviewMetadata::default(),
+        pr_info_b,
         None,
         highlighter,
     )
@@ -1804,16 +1812,18 @@ fn should_carry_reviewed_state_through_finish_pr_reload_when_head_advances() {
         head_sha: details_a.head_sha.clone(),
         started_at: Instant::now(),
         anchor: None,
+        restore_overview_cursor: None,
     };
 
     // when the async reload finish path applies head B
     let mut details_b = details_a.clone();
     details_b.head_sha = "bbbbbbbbbbbbbbbb".to_string();
     app.finish_pr_reload(
-        details_b,
+        details_b.clone(),
         two_file_patch("newer changed"),
         Vec::new(),
         PullRequestReviewMetadata::default(),
+        crate::forge::traits::PullRequestInfo::from_details(details_b),
         &request,
     )
     .unwrap();
@@ -1853,14 +1863,16 @@ fn should_keep_reviewed_state_through_finish_pr_reload_when_head_unchanged() {
         head_sha: details.head_sha.clone(),
         started_at: Instant::now(),
         anchor: None,
+        restore_overview_cursor: None,
     };
 
     // when the async reload finish path refreshes the same head
     app.finish_pr_reload(
-        details,
+        details.clone(),
         two_file_patch("new changed"),
         Vec::new(),
         PullRequestReviewMetadata::default(),
+        crate::forge::traits::PullRequestInfo::from_details(details),
         &request,
     )
     .unwrap();

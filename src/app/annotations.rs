@@ -72,6 +72,19 @@ impl App {
         // current inline selection are hidden. `None` => no selector, show all.
         let commit_set = self.selected_commit_set();
 
+        if let Some(info) = &self.pr_info {
+            let pr_line_count = crate::ui::pr_info_panel::build_pr_info_lines(
+                info,
+                crate::ui::pr_info_panel::pr_info_content_width(self.diff_state.viewport_width),
+                &self.theme,
+            )
+            .len();
+            for line_idx in 0..pr_line_count {
+                self.line_annotations
+                    .push(AnnotatedLine::PrInfoLine { line_idx });
+            }
+        }
+
         // The review-comments header is omitted in single-file view (see
         // the matching guard in `src/ui/diff_unified.rs`), so the
         // annotation list mirrors the render.
@@ -112,6 +125,25 @@ impl App {
                         self.line_annotations
                             .push(AnnotatedLine::RemoteThreadLine { thread_idx });
                     }
+                }
+            }
+        }
+
+        if let Some(info) = &self.pr_info
+            && !info.issue_comments.is_empty()
+        {
+            if !self.is_single_file_view {
+                self.line_annotations
+                    .push(AnnotatedLine::IssueCommentsHeader);
+            }
+            for (comment_idx, comment) in info.issue_comments.iter().enumerate() {
+                let comment_lines = crate::ui::pr_info_panel::issue_comment_display_lines(
+                    comment,
+                    self.diff_state.viewport_width,
+                );
+                for _ in 0..comment_lines {
+                    self.line_annotations
+                        .push(AnnotatedLine::IssueComment { comment_idx });
                 }
             }
         }

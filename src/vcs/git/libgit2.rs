@@ -216,8 +216,12 @@ mod tests {
     use std::process::Command;
 
     fn git(workdir: &Path, args: &[&str]) {
+        // `-c commit.gpgsign=false` overrides any global signing config so
+        // contributors with commit signing enabled aren't prompted to sign
+        // throwaway commits in these temp repos.
         let output = Command::new("git")
             .current_dir(workdir)
+            .args(["-c", "commit.gpgsign=false"])
             .args(args)
             .output()
             .expect("failed to run git");

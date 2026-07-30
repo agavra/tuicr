@@ -94,7 +94,7 @@ fn editor_family(program: &str) -> EditorFamily {
         .and_then(|name| name.to_str())
         .unwrap_or(program);
     match name {
-        "vi" | "vim" | "nvim" | "nano" => EditorFamily::PlusLine,
+        "vi" | "vim" | "nvim" | "nano" | "emacs" | "emacsclient" => EditorFamily::PlusLine,
         "code" | "code-insiders" | "codium" | "cursor" => EditorFamily::GotoLine,
         _ => EditorFamily::Plain,
     }
@@ -156,6 +156,22 @@ mod tests {
             assert_eq!(command.program, editor);
             assert_eq!(args(&command), vec!["+42", "/repo/src/main.rs"]);
         }
+    }
+
+    #[test]
+    fn emacs_receives_plus_line_before_path() {
+        for editor in ["emacs", "emacsclient"] {
+            let command = EditorCommand::from_editor(editor, &target(Some(42)));
+            assert_eq!(command.program, editor);
+            assert_eq!(args(&command), vec!["+42", "/repo/src/main.rs"]);
+        }
+    }
+
+    #[test]
+    fn emacs_args_are_preserved() {
+        let command = EditorCommand::from_editor("emacs -nw", &target(Some(42)));
+        assert_eq!(command.program, "emacs");
+        assert_eq!(args(&command), vec!["-nw", "+42", "/repo/src/main.rs"]);
     }
 
     #[test]

@@ -83,6 +83,7 @@ Shown below the file tree when local comments or visible remote PR threads exist
 | `dd` | Delete comment at cursor |
 | `i` | Edit comment at cursor (vim: text cursor at start) |
 | `A` | Edit comment at cursor with text cursor at end (vim mode only) |
+| `e` | Open focused file in `$EDITOR` |
 | `y` | Copy review to clipboard |
 
 ## Visual mode

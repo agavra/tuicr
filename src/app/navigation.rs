@@ -1,4 +1,5 @@
 use super::*;
+use crate::ui::row_height::annotation_row_height;
 
 impl App {
     pub fn cursor_down(&mut self, lines: usize) {
@@ -132,6 +133,88 @@ impl App {
         self.update_current_file_from_cursor();
     }
 
+    pub fn page_down(&mut self, row_budget: usize) {
+        let cursor_lines = self.page_lines_down(row_budget);
+        let viewport_lines = self.page_view_lines_down(row_budget);
+        let max_line = self.max_cursor_line();
+        let cursor = skip_decoration_forward(
+            &self.line_annotations,
+            (self.diff_state.cursor_line + cursor_lines).min(max_line),
+            max_line,
+        );
+        let scroll = (self.diff_state.scroll_offset + viewport_lines).min(self.max_scroll_offset());
+        self.apply_page_position(cursor, scroll, true);
+    }
+
+    pub fn page_up(&mut self, row_budget: usize) {
+        let cursor_lines = self.page_lines_up(row_budget);
+        let viewport_lines = self.page_view_lines_up(row_budget);
+        let cursor = skip_decoration_backward(
+            &self.line_annotations,
+            self.diff_state.cursor_line.saturating_sub(cursor_lines),
+        );
+        let scroll = self.diff_state.scroll_offset.saturating_sub(viewport_lines);
+        self.apply_page_position(cursor, scroll, false);
+    }
+
+    fn apply_page_position(&mut self, cursor: usize, scroll: usize, moving_down: bool) {
+        // A trailing Spacing annotation is not a valid cursor row. Do not let
+        // a page motion leave it alone at the top with the cursor off-screen.
+        let scroll = scroll.min(self.max_cursor_line());
+        self.diff_state.scroll_offset = scroll;
+
+        // Cursor and viewport consume their row budgets from different
+        // anchors. If a tall row causes their greedy walks to land on
+        // opposite sides of a wrap boundary, keep the independently
+        // calculated viewport position and clamp the cursor into it.
+        let first = scroll;
+        let last = self.last_fully_visible_annotation(first);
+        let mut cursor = cursor.clamp(first, last);
+        if self.line_annotations.get(cursor).is_some_and(is_decoration) {
+            cursor = if moving_down {
+                let forward = skip_decoration_forward(&self.line_annotations, cursor, last);
+                if self
+                    .line_annotations
+                    .get(forward)
+                    .is_some_and(|annotation| !is_decoration(annotation))
+                {
+                    forward
+                } else {
+                    skip_decoration_backward(&self.line_annotations, last).max(first)
+                }
+            } else {
+                let backward = skip_decoration_backward(&self.line_annotations, cursor).max(first);
+                if self
+                    .line_annotations
+                    .get(backward)
+                    .is_some_and(|annotation| !is_decoration(annotation))
+                {
+                    backward
+                } else {
+                    skip_decoration_forward(&self.line_annotations, first, last)
+                }
+            };
+        }
+
+        self.diff_state.cursor_line = cursor;
+        self.update_current_file_from_cursor();
+    }
+
+    fn last_fully_visible_annotation(&self, start: usize) -> usize {
+        let viewport = self.diff_state.viewport_height.max(1);
+        let mut used = 0;
+        let mut last = start;
+        for idx in start..self.line_annotations.len() {
+            let height = annotation_row_height(self, idx);
+            if used + height > viewport {
+                break;
+            }
+            used += height;
+            last = idx;
+        }
+        last
+    }
+
     pub fn scroll_view_down(&mut self, lines: usize) {
         let max_scroll = self.max_scroll_offset();
         self.diff_state.scroll_offset = (self.diff_state.scroll_offset + lines).min(max_scroll);
@@ -223,14 +306,76 @@ impl App {
         }
     }
 
+    pub(in crate::app) fn scroll_offset_for_rows_above(
+        &self,
+        anchor: usize,
+        row_budget: usize,
+    ) -> usize {
+        let mut result = anchor;
+        let mut acc: usize = 0;
+        let mut k = anchor;
+        while k > 0 {
+            k -= 1;
+            let h = annotation_row_height(self, k);
+            if acc + h > row_budget {
+                break;
+            }
+            acc += h;
+            result = k;
+        }
+        result
+    }
+
+    pub(crate) fn page_lines_down(&self, row_budget: usize) -> usize {
+        let anchor = self.diff_state.cursor_line;
+        let total = self.line_annotations.len();
+        let mut acc: usize = 0;
+        let mut count: usize = 0;
+        let mut k = anchor + 1;
+        while k < total {
+            let h = annotation_row_height(self, k);
+            if acc + h > row_budget {
+                break;
+            }
+            acc += h;
+            count += 1;
+            k += 1;
+        }
+        count.max(1)
+    }
+
+    pub(crate) fn page_lines_up(&self, row_budget: usize) -> usize {
+        let anchor = self.diff_state.cursor_line;
+        (anchor - self.scroll_offset_for_rows_above(anchor, row_budget)).max(1)
+    }
+
+    pub(crate) fn page_view_lines_down(&self, row_budget: usize) -> usize {
+        let total = self.line_annotations.len();
+        let mut used = 0;
+        let mut count = 0;
+        let mut idx = self.diff_state.scroll_offset;
+        while idx < total {
+            let height = annotation_row_height(self, idx);
+            if used + height > row_budget {
+                break;
+            }
+            used += height;
+            count += 1;
+            idx += 1;
+        }
+        count.max(1)
+    }
+
+    pub(crate) fn page_view_lines_up(&self, row_budget: usize) -> usize {
+        let anchor = self.diff_state.scroll_offset;
+        (anchor - self.scroll_offset_for_rows_above(anchor, row_budget)).max(1)
+    }
+
     pub fn center_cursor(&mut self) {
         let viewport = self.diff_state.viewport_height.max(1);
-        let half_viewport = viewport / 2;
         let max_scroll = self.max_scroll_offset();
         self.diff_state.scroll_offset = self
-            .diff_state
-            .cursor_line
-            .saturating_sub(half_viewport)
+            .scroll_offset_for_rows_above(self.diff_state.cursor_line, viewport / 2)
             .min(max_scroll);
     }
 
@@ -238,20 +383,18 @@ impl App {
         let scroll_margin = self.diff_state.effective_scroll_margin(self.scroll_offset);
         let max_scroll = self.max_scroll_offset();
         self.diff_state.scroll_offset = self
-            .diff_state
-            .cursor_line
-            .saturating_sub(scroll_margin)
+            .scroll_offset_for_rows_above(self.diff_state.cursor_line, scroll_margin)
             .min(max_scroll);
     }
 
     pub fn cursor_to_bottom(&mut self) {
-        let visible_lines = self.diff_state.effective_visible_lines();
+        let viewport = self.diff_state.viewport_height.max(1);
         let scroll_margin = self.diff_state.effective_scroll_margin(self.scroll_offset);
+        let cursor = self.diff_state.cursor_line;
+        let budget = viewport.saturating_sub(scroll_margin + annotation_row_height(self, cursor));
         let max_scroll = self.max_scroll_offset();
         self.diff_state.scroll_offset = self
-            .diff_state
-            .cursor_line
-            .saturating_sub(visible_lines.saturating_sub(1 + scroll_margin))
+            .scroll_offset_for_rows_above(cursor, budget)
             .min(max_scroll);
     }
 
@@ -381,8 +524,14 @@ impl App {
         let viewport = self.diff_state.viewport_height.max(1);
         if idx < self.diff_state.scroll_offset {
             self.diff_state.scroll_offset = idx;
-        } else if idx >= self.diff_state.scroll_offset + viewport {
-            self.diff_state.scroll_offset = idx + 1 - viewport;
+        } else {
+            let bottom_start = self.scroll_offset_for_rows_above(
+                idx,
+                viewport.saturating_sub(annotation_row_height(self, idx)),
+            );
+            if self.diff_state.scroll_offset < bottom_start {
+                self.diff_state.scroll_offset = bottom_start;
+            }
         }
     }
 
@@ -625,11 +774,20 @@ impl App {
         self.diff_state.cursor_line = max_line;
         // Position so the last navigable line is at the bottom of the viewport
         let viewport = self.diff_state.viewport_height.max(1);
-        self.diff_state.scroll_offset = (max_line + 1).saturating_sub(viewport);
+        self.diff_state.scroll_offset = self.scroll_offset_for_rows_above(
+            max_line,
+            viewport.saturating_sub(annotation_row_height(self, max_line)),
+        );
         self.update_current_file_from_cursor();
     }
 
     pub fn next_file(&mut self) {
+        if self.diff_state.cursor_line < self.review_comments_render_height() {
+            if !self.diff_files.is_empty() {
+                self.jump_to_file(0);
+            }
+            return;
+        }
         let visible_items = self.build_visible_items();
         let current_file_idx = self.diff_state.current_file_idx;
 
@@ -788,7 +946,7 @@ impl App {
         offset
     }
 
-    pub(in crate::app) fn review_comments_render_height(&self) -> usize {
+    pub(in crate::app) fn review_comments_section_height(&self) -> usize {
         // Header line is only rendered in multi-file view. See the guards
         // in `src/ui/diff_unified.rs` and `src/ui/diff_side_by_side.rs`.
         let mut height = if self.is_single_file_view { 0 } else { 1 };
@@ -823,6 +981,16 @@ impl App {
             height += 3;
         }
         height
+    }
+
+    pub(in crate::app) fn review_comments_render_height(&self) -> usize {
+        self.issue_comments_start_line()
+            + crate::ui::pr_info_panel::issue_comments_render_height(self)
+    }
+
+    pub(crate) fn issue_comments_start_line(&self) -> usize {
+        crate::ui::pr_info_panel::pr_info_render_height(self)
+            + self.review_comments_section_height()
     }
 
     pub(in crate::app) fn file_render_height(&self, file_idx: usize, file: &DiffFile) -> usize {

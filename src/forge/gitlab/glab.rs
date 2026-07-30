@@ -858,6 +858,7 @@ pub fn parse_gitlab_remote_url(remote_url: &str) -> Option<ForgeRepository> {
         .map(|(_, rest)| rest)
         .unwrap_or(without_scheme);
     let (host, path) = without_user.split_once('/')?;
+    let host = strip_port(host);
     if !is_gitlab_host(host) {
         return None;
     }
@@ -992,6 +993,18 @@ fn trim_url_suffix(value: &str) -> &str {
         .next()
         .unwrap_or(value)
         .trim_end_matches('/')
+}
+
+/// Strip a trailing `:<port>` from a host, e.g. `example.com:2222` ->
+/// `example.com`. `ssh://` remotes commonly carry a non-default SSH port
+/// (self-hosted instances, GitLab's SSH-over-443 setup); that port is
+/// meaningless for the HTTPS API host used to build `--repo` arguments, and
+/// left in place it turns into a broken URL (wrong port, TLS failure).
+fn strip_port(host: &str) -> &str {
+    match host.rsplit_once(':') {
+        Some((h, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => h,
+        _ => host,
+    }
 }
 
 fn strip_git_suffix(value: &str) -> &str {
@@ -2050,6 +2063,25 @@ mod tests {
     fn should_ignore_github_remote_url() {
         assert!(parse_gitlab_remote_url("https://github.com/owner/repo.git").is_none());
         assert!(parse_gitlab_remote_url("git@github.com:owner/repo.git").is_none());
+    }
+
+    #[test]
+    fn should_strip_ssh_port_from_self_hosted_ssh_scheme_remote() {
+        // `ssh://` remotes carrying a non-default SSH port (self-hosted
+        // instances behind a custom port) must not leak that port into the
+        // ForgeRepository host; it's meaningless for the HTTPS API and
+        // breaks `--repo` URL construction (wrong port, TLS failure).
+        let repo = parse_gitlab_remote_url(
+            "ssh://git@gitlab.example.com:2222/engineering/platform/widget-service.git",
+        )
+        .unwrap();
+        assert_eq!(repo.host, "gitlab.example.com");
+        assert_eq!(repo.owner, "engineering/platform");
+        assert_eq!(repo.name, "widget-service");
+        assert_eq!(
+            GitLabGlabBackend::<SystemGlabRunner>::repo_arg(&repo),
+            "https://gitlab.example.com/engineering/platform/widget-service"
+        );
     }
 
     #[test]

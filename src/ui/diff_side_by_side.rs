@@ -237,6 +237,13 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
     let is_review_comment_mode =
         app.input_mode == InputMode::Comment && app.comment_is_review_level;
 
+    crate::ui::pr_info_panel::append_pr_info_section(
+        app,
+        &mut lines,
+        &mut line_idx,
+        ctx.current_line_idx,
+    );
+
     // The `═══ Review Comments ═══` label is redundant in single-file
     // view -- see the matching guard in `src/ui/diff_unified.rs`.
     if !app.is_single_file_view {
@@ -247,7 +254,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                 styles::current_line_indicator_style(&app.theme),
             ),
             Span::styled(
-                "═══ Review Comments ",
+                crate::ui::diff_view::REVIEW_COMMENTS_HEADER_PREFIX,
                 styles::file_header_style(&app.theme),
             ),
             Span::styled(
@@ -382,6 +389,14 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
         }
     }
 
+    crate::ui::pr_info_panel::append_issue_comments_section(
+        app,
+        &mut lines,
+        &mut line_idx,
+        ctx.current_line_idx,
+        ctx.panel_width.saturating_sub(1),
+    );
+
     for (file_idx, file) in app.diff_files.iter().enumerate() {
         // Single-file view: hide everything except the cursor's file. See
         // src/ui/diff_unified.rs for the matching guard.
@@ -389,17 +404,11 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
             continue;
         }
         let path = file.display_path();
-        let status = file.status.as_char();
         let is_reviewed = app.session.is_file_reviewed(path);
 
         if !app.is_single_file_view {
             let indicator = cursor_indicator_spaced(line_idx, ctx.current_line_idx);
-            let review_mark = if is_reviewed { "✓ " } else { "" };
-            let header_text = if file.is_commit_message {
-                format!("═══ {}{} ", review_mark, path.display())
-            } else {
-                format!("═══ {}{} [{}] ", review_mark, path.display(), status)
-            };
+            let header_text = crate::ui::diff_view::file_header_prefix_text(app, file);
             lines.push(Line::from(vec![
                 Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
                 Span::styled(header_text, styles::file_header_style(&app.theme)),
@@ -536,25 +545,14 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
             }
         }
 
-        if file.is_too_large {
+        if file.is_too_large || file.is_binary || file.hunks.is_empty() {
             let indicator = cursor_indicator_spaced(line_idx, ctx.current_line_idx);
             lines.push(Line::from(vec![
                 Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
-                Span::styled("(file too large to display)", styles::dim_style(&app.theme)),
-            ]));
-            line_idx += 1;
-        } else if file.is_binary {
-            let indicator = cursor_indicator_spaced(line_idx, ctx.current_line_idx);
-            lines.push(Line::from(vec![
-                Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
-                Span::styled("(binary file)", styles::dim_style(&app.theme)),
-            ]));
-            line_idx += 1;
-        } else if file.hunks.is_empty() {
-            let indicator = cursor_indicator_spaced(line_idx, ctx.current_line_idx);
-            lines.push(Line::from(vec![
-                Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
-                Span::styled("(no changes)", styles::dim_style(&app.theme)),
+                Span::styled(
+                    crate::ui::diff_view::binary_or_empty_label(file),
+                    styles::dim_style(&app.theme),
+                ),
             ]));
             line_idx += 1;
         } else {

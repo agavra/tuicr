@@ -6,8 +6,8 @@ use crate::error::{Result, TuicrError};
 use crate::forge::remote_comments::{RemoteReviewSummary, RemoteReviewThread};
 use crate::forge::traits::{
     ForgeBackend, ForgeFileLinesRequest, ForgeRepository, GhCreateReviewResponse,
-    PagedPullRequests, PullRequestCommit, PullRequestDetails, PullRequestListQuery,
-    PullRequestListScope, PullRequestTarget,
+    PagedPullRequests, PullRequestCommit, PullRequestDetails, PullRequestInfo,
+    PullRequestListQuery, PullRequestListScope, PullRequestTarget,
 };
 use crate::model::DiffLine;
 use crate::process::{
@@ -15,7 +15,7 @@ use crate::process::{
 };
 use crate::vcs::slice_context_lines;
 
-use super::models::{GhPrCommit, GhPullRequestDetails, GhPullRequestSummary};
+use super::models::{GhPrCommit, GhPullRequestSummary};
 use super::review_summaries::{
     build_query as build_reviews_query, parse_graphql_page as parse_reviews_page,
 };
@@ -29,6 +29,12 @@ const PR_LIST_JSON_FIELDS: &str =
 const PR_VIEW_JSON_FIELDS: &str = concat!(
     "number,title,url,state,isDraft,author,headRefName,baseRefName,",
     "headRefOid,baseRefOid,body,updatedAt,closed,mergedAt"
+);
+const PR_INFO_JSON_FIELDS: &str = concat!(
+    "number,title,url,state,isDraft,author,headRefName,baseRefName,",
+    "headRefOid,baseRefOid,body,updatedAt,closed,mergedAt,",
+    "reviewDecision,mergeable,mergeStateStatus,reviewRequests,latestReviews,",
+    "statusCheckRollup,comments"
 );
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -238,6 +244,10 @@ where
     }
 
     fn get_pull_request(&self, target: PullRequestTarget) -> Result<PullRequestDetails> {
+        Ok(self.get_pull_request_info(target)?.details)
+    }
+
+    fn get_pull_request_info(&self, target: PullRequestTarget) -> Result<PullRequestInfo> {
         let repository = self.resolve_repository(&target)?;
         let output = self.run_gh(
             vec![
@@ -247,12 +257,11 @@ where
                 "--repo".to_string(),
                 gh_repo_arg(&repository),
                 "--json".to_string(),
-                PR_VIEW_JSON_FIELDS.to_string(),
+                PR_INFO_JSON_FIELDS.to_string(),
             ],
             &repository.host,
         )?;
-        let pr: GhPullRequestDetails = serde_json::from_str(&output)?;
-        pr.into_details(&repository)
+        super::pr_info::parse_pull_request_info(&output, &repository)
     }
 
     fn get_pull_request_diff(&self, pr: &PullRequestDetails) -> Result<String> {
@@ -619,7 +628,7 @@ pub fn parse_github_remote_url(remote_url: &str) -> Option<ForgeRepository> {
         .map(|(_, rest)| rest)
         .unwrap_or(without_scheme);
     let (host, path) = without_user.split_once('/')?;
-    repository_from_path(host, path)
+    repository_from_path(strip_port(host), path)
 }
 
 fn parse_numeric_target(target: &str) -> Option<PullRequestTarget> {
@@ -809,6 +818,18 @@ fn trim_url_suffix(value: &str) -> &str {
         .next()
         .unwrap_or(value)
         .trim_end_matches('/')
+}
+
+/// Strip a trailing `:<port>` from a host, e.g. `example.com:2222` ->
+/// `example.com`. `ssh://` remotes commonly carry a non-default SSH port
+/// (GitHub Enterprise instances behind a custom port); that port is
+/// meaningless for the HTTPS API host used to build `--repo` arguments, and
+/// left in place it turns into a broken URL.
+fn strip_port(host: &str) -> &str {
+    match host.rsplit_once(':') {
+        Some((h, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => h,
+        _ => host,
+    }
 }
 
 fn strip_git_suffix(value: &str) -> &str {
@@ -1297,6 +1318,17 @@ index 1111111..2222222 100644
     fn parses_ssh_remote_url() {
         let repository =
             parse_github_remote_url("ssh://git@github.example.com/agavra/tuicr.git").unwrap();
+        assert_eq!(repository.host, "github.example.com");
+        assert_eq!(repository.slug(), "agavra/tuicr");
+    }
+
+    #[test]
+    fn parses_ssh_remote_url_with_custom_port() {
+        // GitHub Enterprise instances behind a non-default SSH port must not
+        // leak that port into the ForgeRepository host; it breaks `--repo`
+        // URL construction against the HTTPS API.
+        let repository =
+            parse_github_remote_url("ssh://git@github.example.com:2222/agavra/tuicr.git").unwrap();
         assert_eq!(repository.host, "github.example.com");
         assert_eq!(repository.slug(), "agavra/tuicr");
     }

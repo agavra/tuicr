@@ -210,7 +210,18 @@ impl App {
     pub fn toggle_directory(&mut self, dir_path: &str) {
         if self.expanded_dirs.contains(dir_path) {
             self.expanded_dirs.remove(dir_path);
-            self.ensure_valid_tree_selection();
+            if let Some(tree_idx) = self
+                .build_visible_items()
+                .iter()
+                .position(|item| match item {
+                    FileTreeItem::Directory { path, .. } => path == dir_path,
+                    FileTreeItem::File { .. } => false,
+                })
+            {
+                self.file_list_state.select(tree_idx);
+            } else {
+                self.ensure_valid_tree_selection();
+            }
         } else {
             self.expanded_dirs.insert(dir_path.to_string());
         }

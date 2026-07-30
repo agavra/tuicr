@@ -104,6 +104,36 @@ fn app_with_root(root_path: PathBuf, files: Vec<DiffFile>) -> App {
 }
 
 #[test]
+fn collapsing_selected_directory_keeps_tree_selection() {
+    let mut app = app_with(vec![
+        file("README.md", vec![hunk(1, 1)]),
+        file("src/app.rs", vec![hunk(1, 1)]),
+        file("src/main.rs", vec![hunk(1, 1)]),
+    ]);
+    app.expand_all_dirs();
+
+    let tree_idx = app
+        .build_visible_items()
+        .iter()
+        .position(|item| {
+            matches!(
+                item,
+                FileTreeItem::Directory { path, .. } if path == "src"
+            )
+        })
+        .expect("src directory");
+    app.file_list_state.select(tree_idx);
+
+    app.toggle_directory("src");
+
+    assert_eq!(app.file_list_state.selected(), tree_idx);
+    assert!(matches!(
+        app.get_selected_tree_item(),
+        Some(FileTreeItem::Directory { path, .. }) if path == "src"
+    ));
+}
+
+#[test]
 fn editor_target_uses_selected_file_list_row() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("main.rs");

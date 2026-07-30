@@ -510,6 +510,7 @@ impl App {
             pr_submit_state: None,
             pr_submit_rx: None,
             current_pr_head: None,
+            pr_info: None,
             should_quit: false,
             dirty: false,
             quit_warned: false,
@@ -557,7 +558,7 @@ impl App {
             range_diff_files: None,
             saved_inline_selection: None,
             path_filter: path_filter.map(|s| s.to_string()),
-            export_legend: true,
+            export: ExportConfig::default(),
         };
         // Auto-hide file list when path filter matches exactly one file
         if app.path_filter.is_some() && app.diff_files.len() == 1 {
@@ -857,6 +858,7 @@ impl App {
         // Wire the forge backend so context expansion routes through it.
         app.forge_backend = Some(backend);
         app.forge_repository = Some(target_repo);
+        app.pr_info = Some(opened.pr_info);
         // PR open establishes the target repo directly; no further canonical
         // resolution needed on PR-tab entry (which won't happen anyway since
         // the user came straight from CLI into PR diff mode).

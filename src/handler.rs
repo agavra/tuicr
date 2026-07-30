@@ -352,7 +352,7 @@ fn handle_export(app: &mut App) {
             &app.session,
             &app.diff_source,
             &app.comment_types,
-            app.export_legend,
+            &app.export,
             &app.forge_review_threads,
             slug.as_deref(),
         ) {
@@ -367,7 +367,7 @@ fn handle_export(app: &mut App) {
             &app.session,
             &app.diff_source,
             &app.comment_types,
-            app.export_legend,
+            &app.export,
             &app.forge_review_threads,
             slug.as_deref(),
         ) {
@@ -1069,7 +1069,7 @@ pub fn handle_confirm_action(app: &mut App, action: Action) {
                         &app.session,
                         &app.diff_source,
                         &app.comment_types,
-                        app.export_legend,
+                        &app.export,
                         &app.forge_review_threads,
                         slug.as_deref(),
                     ) {
@@ -1081,7 +1081,7 @@ pub fn handle_confirm_action(app: &mut App, action: Action) {
                         &app.session,
                         &app.diff_source,
                         &app.comment_types,
-                        app.export_legend,
+                        &app.export,
                         &app.forge_review_threads,
                         slug.as_deref(),
                     ) {
@@ -1280,10 +1280,10 @@ pub fn handle_visual_action(app: &mut App, action: Action) {
         Action::Quit => app.should_quit = true,
         Action::ScrollViewDown(n) | Action::MouseScrollDown(n) => app.scroll_view_down(n),
         Action::ScrollViewUp(n) | Action::MouseScrollUp(n) => app.scroll_view_up(n),
-        Action::HalfPageDown => app.scroll_down(app.diff_state.viewport_height / 2),
-        Action::HalfPageUp => app.scroll_up(app.diff_state.viewport_height / 2),
-        Action::PageDown => app.scroll_down(app.diff_state.viewport_height),
-        Action::PageUp => app.scroll_up(app.diff_state.viewport_height),
+        Action::HalfPageDown => app.page_down(app.diff_state.viewport_height / 2),
+        Action::HalfPageUp => app.page_up(app.diff_state.viewport_height / 2),
+        Action::PageDown => app.page_down(app.diff_state.viewport_height),
+        Action::PageUp => app.page_up(app.diff_state.viewport_height),
         _ => {}
     }
     clear_visual_if_cursor_offscreen(app);
@@ -1440,10 +1440,10 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
             app.show_file_list = false;
             app.focused_panel = FocusedPanel::Diff;
         }
-        Action::HalfPageDown => app.scroll_down(app.diff_state.viewport_height / 2),
-        Action::HalfPageUp => app.scroll_up(app.diff_state.viewport_height / 2),
-        Action::PageDown => app.scroll_down(app.diff_state.viewport_height),
-        Action::PageUp => app.scroll_up(app.diff_state.viewport_height),
+        Action::HalfPageDown => app.page_down(app.diff_state.viewport_height / 2),
+        Action::HalfPageUp => app.page_up(app.diff_state.viewport_height / 2),
+        Action::PageDown => app.page_down(app.diff_state.viewport_height),
+        Action::PageUp => app.page_up(app.diff_state.viewport_height),
         Action::GoToTop => app.jump_to_file(0),
         Action::GoToBottom => app.jump_to_bottom(),
         Action::NextFile => app.next_file(),
@@ -1556,6 +1556,7 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
                 app.set_error(format!("Failed to load diff: {e}"));
             }
         }
+        Action::EditFile => app.queue_editor_for_focused_item(),
         _ => {}
     }
 }

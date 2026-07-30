@@ -47,6 +47,9 @@ impl App {
     }
 
     pub fn current_file_path(&self) -> Option<&PathBuf> {
+        if self.is_cursor_in_overview() {
+            return None;
+        }
         self.current_file().map(|f| f.display_path())
     }
 
