@@ -581,6 +581,14 @@ impl App {
         self.diff_files = diff_files;
         self.clear_expanded_gaps();
 
+        // Reload is the point where an edited `.gitattributes` should take
+        // effect, so discard the probe memo and re-detect eagerly — the height
+        // math below runs before `rebuild_annotations` would have done it.
+        // `expanded_generated` survives: it is the user's override, not
+        // detected state.
+        self.invalidate_generated_detection();
+        self.detect_generated_files();
+
         self.sort_files_by_directory(false);
         self.populate_file_line_count_cache();
         self.expand_all_dirs();

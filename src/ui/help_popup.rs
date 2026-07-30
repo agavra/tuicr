@@ -397,6 +397,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  Space     ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Expand / collapse a generated file"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  c         ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
@@ -745,6 +752,27 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("  Toggle inline commit selector"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :set generated",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  Collapse files marked generated in .gitattributes"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :set nogenerated",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  Show generated files"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :set generated!",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  Toggle generated file collapse"),
         ]),
         Line::from(vec![
             Span::styled(

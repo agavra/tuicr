@@ -76,6 +76,7 @@ Shown below the file tree when local comments or visible remote PR threads exist
 |-----|--------|
 | `r` | Toggle file reviewed |
 | `R` | Toggle hunk reviewed |
+| `Space` | Expand / collapse the generated file under the cursor (diff panel) |
 | `c` | Add line comment (or file comment if not on a diff line) |
 | `C` | Add file comment |
 | `<leader>c` | Add review comment |
@@ -143,6 +144,9 @@ In command mode,
 | `:set commits` | Show inline commit selector |
 | `:set nocommits` | Hide inline commit selector |
 | `:set commits!` | Toggle inline commit selector |
+| `:set generated` | Collapse files marked generated in `.gitattributes` |
+| `:set nogenerated` | Show generated files |
+| `:set generated!`, `:generated` | Toggle generated file collapse |
 | `:clear` | Clear all comments |
 | `:clearc` | Clear comments without clearing reviewed marks |
 | `:version` | Show tuicr version |

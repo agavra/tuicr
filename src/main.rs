@@ -303,6 +303,7 @@ fn main() -> anyhow::Result<()> {
             app.toggle_single_file_view();
         }
         app.export = cfg.resolved_export();
+        app.apply_generated_config(&cfg.generated.clone().unwrap_or_default());
         if cfg.cursor_line == Some(false) {
             app.cursor_line_highlight = false;
         }

@@ -94,6 +94,36 @@ impl ExportConfig {
     }
 }
 
+/// `[generated]` section settings for files that `.gitattributes` marks as
+/// code-generated (`linguist-generated` or `gitlab-generated`).
+///
+/// Both fields are optional so the shipped defaults stay distinguishable from
+/// an explicit setting, matching `[export]`. The defaults reproduce tuicr's
+/// behavior before generated-file support existed, so an absent section is
+/// exactly today's behavior — and skips attribute detection entirely.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct GeneratedConfig {
+    /// Whether to hide the diff body of generated files, leaving the header.
+    /// `Space` still expands an individual file.
+    pub collapse: Option<bool>,
+    /// Whether generated files count toward the reviewed/total progress
+    /// indicator. Deliberately independent of `collapse`: expanding a
+    /// generated file to peek at it must not add it to the denominator, or
+    /// review progress would regress as a side effect of looking.
+    pub count: Option<bool>,
+}
+
+impl GeneratedConfig {
+    pub fn collapse(&self) -> bool {
+        self.collapse.unwrap_or(false)
+    }
+
+    pub fn count(&self) -> bool {
+        self.count.unwrap_or(true)
+    }
+}
+
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct AppConfig {
@@ -146,6 +176,9 @@ pub struct AppConfig {
     /// `[export]` section settings. `None` means "no override"; downstream
     /// code should treat it as `ExportConfig::default()`.
     pub export: Option<ExportConfig>,
+    /// `[generated]` section settings. `None` means "no override"; downstream
+    /// code should treat it as `GeneratedConfig::default()`.
+    pub generated: Option<GeneratedConfig>,
 }
 
 impl AppConfig {
@@ -193,6 +226,7 @@ const KNOWN_KEYS: &[&str] = &[
     "username",
     "forge",
     "export",
+    "generated",
 ];
 
 const FORGE_KNOWN_KEYS: &[&str] = &["comment_type_prefix"];
@@ -205,6 +239,8 @@ const EXPORT_KNOWN_KEYS: &[&str] = &[
     "remote_comments_header",
     "legend",
 ];
+
+const GENERATED_KNOWN_KEYS: &[&str] = &["collapse", "count"];
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ConfigLoadOutcome {
@@ -431,6 +467,9 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         export: table
             .get("export")
             .and_then(|v| parse_export(v, &mut warnings)),
+        generated: table
+            .get("generated")
+            .and_then(|v| parse_generated(v, &mut warnings)),
     };
 
     for key in table.keys() {
@@ -506,6 +545,36 @@ fn parse_export(value: &Value, warnings: &mut Vec<String>) -> Option<ExportConfi
     };
 
     if cfg == ExportConfig::default() {
+        None
+    } else {
+        Some(cfg)
+    }
+}
+
+/// Parse the `[generated]` section. Returns `Some` only when at least one
+/// recognized key is set, so an absent or empty section leaves both defaults —
+/// and therefore skips attribute detection — untouched.
+fn parse_generated(value: &Value, warnings: &mut Vec<String>) -> Option<GeneratedConfig> {
+    let Some(table) = value.as_table() else {
+        warnings
+            .push("Warning: Config key 'generated' must be a table; ignoring value".to_string());
+        return None;
+    };
+
+    for key in table.keys() {
+        if !GENERATED_KNOWN_KEYS.contains(&key.as_str()) {
+            warnings.push(format!(
+                "Warning: Unknown config key 'generated.{key}', ignoring"
+            ));
+        }
+    }
+
+    let cfg = GeneratedConfig {
+        collapse: read_section_bool(table, "generated", "collapse", warnings),
+        count: read_section_bool(table, "generated", "count", warnings),
+    };
+
+    if cfg == GeneratedConfig::default() {
         None
     } else {
         Some(cfg)
@@ -1648,6 +1717,137 @@ scope_line = "no"
         assert_eq!(
             outcome.warnings,
             vec!["Warning: Config key 'export' must be a table; ignoring value".to_string()]
+        );
+    }
+
+    // generated
+
+    #[test]
+    fn generated_accessors_reproduce_pre_feature_behavior() {
+        // Both defaults are load-bearing: they are what makes an absent
+        // `[generated]` section behave exactly as tuicr did before generated
+        // files were recognized, and skip attribute detection entirely.
+        let cfg = GeneratedConfig::default();
+        assert!(!cfg.collapse());
+        assert!(cfg.count());
+    }
+
+    #[test]
+    fn should_default_generated_to_none_when_section_missing() {
+        let outcome = parse_config("");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.generated.clone()),
+            None
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_default_generated_to_none_when_section_is_empty_table() {
+        let outcome = parse_config("[generated]\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.generated.clone()),
+            None
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_parse_generated_section_overriding_defaults() {
+        let outcome = parse_config(
+            r#"[generated]
+collapse = true
+count = false
+"#,
+        );
+        let generated = outcome
+            .config
+            .as_ref()
+            .and_then(|cfg| cfg.generated.clone())
+            .expect("generated section should parse");
+        assert!(generated.collapse());
+        assert!(!generated.count());
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_leave_unset_generated_keys_as_none() {
+        let outcome = parse_config(
+            r#"[generated]
+collapse = true
+"#,
+        );
+        let generated = outcome
+            .config
+            .as_ref()
+            .and_then(|cfg| cfg.generated.clone())
+            .expect("generated section should parse");
+        assert_eq!(generated.count, None);
+        assert!(generated.count());
+    }
+
+    #[test]
+    fn should_warn_on_unknown_generated_keys() {
+        let outcome = parse_config(
+            r#"[generated]
+collapse = true
+patterns = ["*.pb.go"]
+"#,
+        );
+        let generated = outcome
+            .config
+            .as_ref()
+            .and_then(|cfg| cfg.generated.clone())
+            .expect("generated section should parse");
+        assert!(generated.collapse());
+        assert_eq!(
+            outcome.warnings,
+            vec!["Warning: Unknown config key 'generated.patterns', ignoring".to_string()]
+        );
+    }
+
+    #[test]
+    fn should_warn_and_ignore_generated_bool_with_invalid_type() {
+        let outcome = parse_config(
+            r#"[generated]
+collapse = "yes"
+"#,
+        );
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.generated.clone()),
+            None
+        );
+        assert_eq!(
+            outcome.warnings,
+            vec![
+                "Warning: Config key 'generated.collapse' must be a boolean; ignoring value"
+                    .to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn should_warn_when_generated_is_not_a_table() {
+        let outcome = parse_config("generated = true\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.generated.clone()),
+            None
+        );
+        assert_eq!(
+            outcome.warnings,
+            vec!["Warning: Config key 'generated' must be a table; ignoring value".to_string()]
         );
     }
 

@@ -58,6 +58,10 @@ pr_metadata = true
 comments_header = "## Local tuicr Comments"
 remote_comments_header = "## Existing GitHub Comments"
 legend = true
+
+[generated]
+collapse = false
+count = true
 ```
 
 ## Options
@@ -268,6 +272,45 @@ The example above produces an export that opens directly on the comment list:
 ### Relationship to `export_legend`
 
 The top-level `export_legend` key predates this section and still works. When both are set, `legend` wins. When `[export]` omits `legend`, `export_legend` stays in force, so adding an `[export]` block to trim the intro will not switch the legend back on.
+
+## Generated files
+
+Files marked as code-generated in `.gitattributes` can be collapsed so a review of hand-written code is not buried under regenerated protobufs, lockfiles, or API clients.
+
+A file counts as generated when `.gitattributes` sets either `linguist-generated` (GitHub's Linguist) or `gitlab-generated`. Both documented spellings work:
+
+```gitattributes
+*.pb.go linguist-generated=true
+schema.generated.ts gitlab-generated
+vendor/** linguist-generated=true
+```
+
+Resolution is delegated to git itself, so nested `.gitattributes` files, `.git/info/attributes`, `core.attributesFile`, and `[attr]` macros all behave the way `git check-attr` does. An explicit opt-out — `-linguist-generated` or `linguist-generated=false` — wins over an opt-in on the other attribute, so a directory-wide rule can be excepted per file.
+
+```toml
+[generated]
+collapse = true
+count = false
+```
+
+| Key        | Default | Description                                                                                                                       |
+| ---------- | ------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `collapse` | `false` | Hide the diff body of generated files, leaving the header row. `Space` expands one file; `:set generated!` toggles all of them.     |
+| `count`    | `true`  | Count generated files toward the `Files · reviewed/total` progress indicator. When `false`, the file list also reports `N generated`. |
+
+`count` is deliberately independent of `collapse`: expanding a generated file to look at it should not add it to the denominator, or review progress would drop as a side effect of looking. You can also exclude generated files from progress without collapsing them.
+
+Runtime commands:
+
+| Command             | Effect                                            |
+| ------------------- | ------------------------------------------------- |
+| `:set generated`    | Collapse generated files.                         |
+| `:set nogenerated`  | Show generated files.                             |
+| `:set generated!`, `:generated` | Toggle.                               |
+
+`.gitattributes` is read from the local worktree, so this needs a git repository: mercurial and non-colocated jujutsu repos report nothing as generated, and in pull request mode the attributes come from your local checkout rather than the pull request's head. Attributes are re-read on reload (`:e`), so editing `.gitattributes` mid-session takes effect without a restart.
+
+To hide files from a review entirely rather than collapse them, use `.tuicrignore` below.
 
 ## .tuicrignore
 
