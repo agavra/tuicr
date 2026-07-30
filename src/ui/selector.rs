@@ -878,7 +878,7 @@ mod selector_render_snapshot_tests {
     }
 
     #[test]
-    fn should_render_message_details_over_target_selector() {
+    fn should_render_full_screen_messages_from_target_selector() {
         let mut app = make_app(vec![commit(0)]);
         app.target_tab = crate::app::TargetTab::PullRequests;
         app.set_error("forge API failure detail");
@@ -892,8 +892,14 @@ mod selector_render_snapshot_tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        assert!(row_text(&buffer, TAB_STRIP_ROW).contains("Pull Requests"));
-        assert!(rendered.contains("Error details"), "got:\n{rendered}");
+        let width = buffer.area.width;
+        let height = buffer.area.height;
+        assert_eq!(buffer[(0, 0)].symbol(), "┌");
+        assert_eq!(buffer[(width - 1, 0)].symbol(), "┐");
+        assert_eq!(buffer[(0, height - 1)].symbol(), "└");
+        assert_eq!(buffer[(width - 1, height - 1)].symbol(), "┘");
+        assert!(!row_text(&buffer, TAB_STRIP_ROW).contains("Pull Requests"));
+        assert!(rendered.contains("Messages"), "got:\n{rendered}");
         assert!(
             rendered.contains("forge API failure detail"),
             "got:\n{rendered}"

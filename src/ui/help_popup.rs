@@ -6,7 +6,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 
-use crate::app::{App, InputMode};
+use crate::app::App;
 use crate::ui::styles;
 
 pub fn render_message_details(frame: &mut Frame, app: &mut App) {
@@ -15,17 +15,12 @@ pub fn render_message_details(frame: &mut Frame, app: &mut App) {
     };
     let content = message.content.clone();
     let theme = &app.theme;
-    let anchor = if app.overlay_return_mode == InputMode::CommitSelect {
-        frame.area()
-    } else {
-        app.diff_area.unwrap_or(frame.area())
-    };
-    let area = centered_rect(80, 70, anchor);
+    let area = frame.area();
 
     frame.render_widget(Clear, area);
     let block = Block::default()
         .borders(Borders::ALL)
-        .style(styles::popup_style(theme))
+        .style(styles::panel_style(theme))
         .border_style(styles::border_style(theme, true));
     let inner = block.inner(area);
 
@@ -54,7 +49,7 @@ pub fn render_message_details(frame: &mut Frame, app: &mut App) {
     };
     frame.render_widget(
         block.title(format!(
-            " Error details (j/k scroll, q/Esc close){scroll_indicator} "
+            " Messages (j/k scroll, q/Esc close){scroll_indicator} "
         )),
         area,
     );

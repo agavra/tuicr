@@ -22,10 +22,15 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         frame.area(),
     );
 
+    if app.input_mode == InputMode::MessageDetails {
+        help_popup::render_message_details(frame, app);
+        return;
+    }
+
     let selector_background = app.input_mode == InputMode::CommitSelect
         || (app.input_mode == InputMode::Command
             && app.command_return_mode == InputMode::CommitSelect)
-        || (matches!(app.input_mode, InputMode::Help | InputMode::MessageDetails)
+        || (app.input_mode == InputMode::Help
             && app.overlay_return_mode == InputMode::CommitSelect)
         || (app.searching_help() && app.overlay_return_mode == InputMode::CommitSelect);
     if selector_background {
@@ -41,9 +46,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             status_bar::render_status_bar(frame, app, footer);
             status_bar::render_command_completion_popup(frame, app, footer);
         }
-        if app.input_mode == InputMode::MessageDetails {
-            help_popup::render_message_details(frame, app);
-        } else if app.input_mode == InputMode::Help || app.searching_help() {
+        if app.input_mode == InputMode::Help || app.searching_help() {
             help_popup::render_help(frame, app);
         }
         return;
@@ -67,9 +70,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     status_bar::render_command_completion_popup(frame, app, chunks[2]);
 
     // Keep help visible while its search prompt is active.
-    if app.input_mode == InputMode::MessageDetails {
-        help_popup::render_message_details(frame, app);
-    } else if app.input_mode == InputMode::Help || app.searching_help() {
+    if app.input_mode == InputMode::Help || app.searching_help() {
         help_popup::render_help(frame, app);
     }
 

@@ -540,7 +540,7 @@ pub enum InputMode {
     Command,
     Search,
     Help,
-    /// Scrollable popup for the complete current error message.
+    /// Scrollable full-screen view for the complete current error message.
     MessageDetails,
     Confirm,
     CommitSelect,
