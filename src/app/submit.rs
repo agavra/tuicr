@@ -431,6 +431,14 @@ impl App {
         }
     }
 
+    /// Return the forge backing the active PR/MR diff, when reviewing one.
+    pub fn forge_kind(&self) -> Option<crate::forge::traits::ForgeKind> {
+        match &self.diff_source {
+            DiffSource::PullRequest(pr) => Some(pr.key.repository.kind),
+            _ => None,
+        }
+    }
+
     /// Apply the create-review result on the main thread. On success: flip
     /// each included `Comment` to `Submitted` (or `PushedDraft` for the
     /// draft event), stamp `remote_review_id`, save the session again, and

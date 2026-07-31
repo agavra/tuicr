@@ -47,9 +47,13 @@ pub(crate) fn annotation_row_height(app: &App, idx: usize) -> usize {
             .get(*summary_idx)
             .and_then(|summary| {
                 let row = repeated_annotation_row(app, idx, annotation);
-                comment_panel::format_remote_review_summary_lines(&app.theme, summary)
-                    .into_iter()
-                    .nth(row)
+                comment_panel::format_remote_review_summary_lines(
+                    &app.theme,
+                    summary,
+                    app.forge_kind(),
+                )
+                .into_iter()
+                .nth(row)
             })
             .map_or(1, |line| formatted_line_height(line, viewport_width)),
 
@@ -63,9 +67,14 @@ pub(crate) fn annotation_row_height(app: &App, idx: usize) -> usize {
                     .render_decision(thread)
                     .unwrap_or(false);
                 let row = repeated_annotation_row(app, idx, annotation);
-                comment_panel::format_remote_thread_lines(&app.theme, thread, muted)
-                    .into_iter()
-                    .nth(row)
+                comment_panel::format_remote_thread_lines(
+                    &app.theme,
+                    thread,
+                    muted,
+                    app.forge_kind(),
+                )
+                .into_iter()
+                .nth(row)
             })
             .map_or(1, |line| formatted_line_height(line, viewport_width)),
 
