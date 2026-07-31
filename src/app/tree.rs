@@ -130,7 +130,6 @@ impl App {
 
     pub(in crate::app) fn sort_files_by_directory(&mut self, reset_position: bool) {
         use std::collections::BTreeMap;
-        use std::path::Path;
 
         self.file_line_count_cache.clear();
 
@@ -140,7 +139,7 @@ impl App {
             None
         };
 
-        let mut dir_map: BTreeMap<String, Vec<DiffFile>> = BTreeMap::new();
+        let mut dir_map: BTreeMap<Vec<String>, Vec<DiffFile>> = BTreeMap::new();
         let mut commit_msg_files: Vec<DiffFile> = Vec::new();
 
         for file in self.diff_files.drain(..) {
@@ -148,16 +147,24 @@ impl App {
                 commit_msg_files.push(file);
                 continue;
             }
-            let path = file.display_path();
-            let dir = if let Some(parent) = path.parent() {
-                if parent == Path::new("") {
-                    ".".to_string()
-                } else {
-                    parent.to_string_lossy().to_string()
-                }
-            } else {
-                ".".to_string()
-            };
+            // Key on the parent's components, not on the joined parent
+            // string. `build_visible_items` emits a directory header only the
+            // first time it sees a directory, so every subtree has to come out
+            // of here contiguous. A flat string sort breaks that whenever a
+            // sibling shares a prefix, because '.' and '-' sort before '/':
+            // "ChronoStream.BuildTests" lands between "ChronoStream" and
+            // "ChronoStream/Subdir", and the orphaned half then renders
+            // indented under the sibling.
+            let dir: Vec<String> = file
+                .display_path()
+                .parent()
+                .map(|parent| {
+                    parent
+                        .components()
+                        .map(|c| c.as_os_str().to_string_lossy().to_string())
+                        .collect()
+                })
+                .unwrap_or_default();
 
             dir_map.entry(dir).or_default().push(file);
         }
