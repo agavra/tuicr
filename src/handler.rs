@@ -1396,10 +1396,14 @@ pub fn handle_comment_navigator_action(app: &mut App, action: Action) {
 /// right message when the comment is read-only or absent.
 fn edit_comment_at_cursor(app: &mut App, cursor_at_end: bool) {
     if app.cursor_on_locked_comment() {
-        app.set_message("Comment already pushed to GitHub — read only in tuicr");
+        let forge = app.forge_display_name();
+        app.set_message(format!(
+            "Comment already pushed to {forge} — read only in tuicr"
+        ));
     } else if !app.enter_edit_mode(cursor_at_end) {
         if app.cursor_on_remote_thread() {
-            app.set_message("GitHub comment — read only in tuicr");
+            let forge = app.forge_display_name();
+            app.set_message(format!("{forge} comment — read only in tuicr"));
         } else {
             app.set_message("No comment at cursor");
         }

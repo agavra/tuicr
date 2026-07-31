@@ -420,13 +420,11 @@ impl App {
     }
 
     /// Human-readable name of the forge backing the current PR/MR review.
-    /// Used to keep submit messaging accurate across GitHub and GitLab.
+    /// Used to keep submit messaging accurate across GitHub, GitLab, and
+    /// Bitbucket.
     pub fn forge_display_name(&self) -> &'static str {
         match &self.diff_source {
-            DiffSource::PullRequest(pr) => match pr.key.repository.kind {
-                crate::forge::traits::ForgeKind::GitHub => "GitHub",
-                crate::forge::traits::ForgeKind::GitLab => "GitLab",
-            },
+            DiffSource::PullRequest(pr) => pr.key.repository.kind.display_name(),
             _ => "forge",
         }
     }

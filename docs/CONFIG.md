@@ -208,7 +208,7 @@ comment_types = [
 
 ## Forge
 
-Settings under the `[forge]` section control how tuicr submits reviews to GitHub and GitLab.
+Settings under the `[forge]` section control how tuicr submits reviews to GitHub, GitLab, and Bitbucket.
 
 ```toml
 [forge]
@@ -235,7 +235,7 @@ Magic number should be a named constant
 This module could use a doc comment
 ```
 
-This applies to inline line comments, file-level comments, and review-level comments pushed via `:submit`. The prefix works the same way on GitLab MR submissions.
+This applies to inline line comments, file-level comments, and review-level comments pushed via `:submit`. The prefix works the same way on GitLab MR and Bitbucket PR submissions.
 
 ## Export
 

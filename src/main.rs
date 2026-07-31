@@ -190,7 +190,7 @@ fn main() -> anyhow::Result<()> {
                 repo_url_override: cli_args
                     .repo_url
                     .as_deref()
-                    .and_then(tuicr::forge::github::gh::parse_github_remote_url),
+                    .and_then(tuicr::forge::parse_any_remote_url),
             },
         )
     }) {
@@ -505,12 +505,16 @@ fn main() -> anyhow::Result<()> {
                         pending_d = false;
                         if key.code == crossterm::event::KeyCode::Char('d') {
                             if app.cursor_on_locked_comment() {
-                                app.set_message(
-                                    "Comment already pushed to GitHub — read only in tuicr",
-                                );
+                                let forge = app.forge_display_name();
+                                app.set_message(format!(
+                                    "Comment already pushed to {forge} — read only in tuicr"
+                                ));
                             } else if !app.delete_comment_at_cursor() {
                                 if app.cursor_on_remote_thread() {
-                                    app.set_message("GitHub comment — read only in tuicr");
+                                    let forge = app.forge_display_name();
+                                    app.set_message(format!(
+                                        "{forge} comment — read only in tuicr"
+                                    ));
                                 } else {
                                     app.set_message("No comment at cursor");
                                 }

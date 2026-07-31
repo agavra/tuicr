@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Features
+
+- **bitbucket:** Add Bitbucket Cloud support via the `bkt` CLI. Open and browse
+  pull requests, read existing inline threads and general comments, and push
+  reviews with `:submit` (Comment) and `:submit approve`. Request-changes and
+  draft reviews are not supported yet, and Bitbucket Data Center is out of
+  scope. See `docs/BITBUCKET.md`.
+
+### Bug Fixes
+
+- `--repo-url` validated against GitHub only, silently rejecting GitLab and
+  Bitbucket remotes. It now accepts any supported forge URL.
+
 ## [0.19.1] - 2026-07-13
 
 ### Bug Fixes

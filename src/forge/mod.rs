@@ -5,6 +5,7 @@
 //! instead of shelling out to forge-specific tools directly.
 #![allow(dead_code)]
 
+pub mod bitbucket;
 pub mod canonical;
 pub mod context;
 pub mod github;
@@ -19,6 +20,7 @@ use std::path::{Path, PathBuf};
 
 use git2::Repository;
 
+use crate::forge::bitbucket::bkt::parse_bitbucket_remote_url;
 use crate::forge::github::gh::parse_github_remote_url;
 use crate::forge::gitlab::glab::parse_gitlab_remote_url;
 use crate::forge::traits::ForgeRepository;
@@ -97,12 +99,15 @@ fn remote_urls(repo_root: &Path) -> Vec<String> {
 
 /// Parse `url` as a forge remote repository.
 ///
-/// Tries GitLab first — its parser already filters to "gitlab" hosts, so
-/// trying it first won't claim GitHub Enterprise remotes — then falls back
-/// to GitHub, which accepts any host (covers github.com and GHE hosts whose
-/// hostname does not literally contain "github").
-fn parse_any_remote_url(url: &str) -> Option<ForgeRepository> {
-    parse_gitlab_remote_url(url).or_else(|| parse_github_remote_url(url))
+/// Order matters. Bitbucket and GitLab both gate on the hostname, so trying
+/// them first won't claim GitHub Enterprise remotes. GitHub must stay last
+/// because its parser accepts *any* host (covers github.com and GHE hosts
+/// whose hostname does not literally contain "github") — it would otherwise
+/// swallow every Bitbucket and self-hosted GitLab remote.
+pub fn parse_any_remote_url(url: &str) -> Option<ForgeRepository> {
+    parse_bitbucket_remote_url(url)
+        .or_else(|| parse_gitlab_remote_url(url))
+        .or_else(|| parse_github_remote_url(url))
 }
 
 /// Detect the forge repository for the local checkout at `repo_root`.

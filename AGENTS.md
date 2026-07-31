@@ -48,8 +48,9 @@ src/
 │   └── jj/              # Jujutsu backend (always compiled)
 │       └── mod.rs       # JjBackend: uses jj CLI, parses with diff_parser::GitStyle
 │
-├── forge/               # Remote forge integration (GitHub PR and GitLab MR review)
-│   ├── mod.rs           # Detect and parse GitHub/GitLab remotes
+├── forge/               # Remote forge integration (GitHub PR, GitLab MR, Bitbucket PR review)
+│   ├── mod.rs           # Detect and parse GitHub/GitLab/Bitbucket remotes
+│                        # (parse_any_remote_url: Bitbucket, then GitLab, then GitHub)
 │   ├── traits.rs        # ForgeBackend trait, ForgeRepository, PullRequestTarget,
 │   │                    # PullRequestDetails, PullRequestInfo, PrSessionKey,
 │   │                    # CreateReviewRequest, GhCreateReviewResponse, ForgeFileLinesRequest
@@ -67,10 +68,14 @@ src/
 │   │   ├── review_threads.rs # GraphQL query for existing review threads
 │   │   ├── review_metadata.rs # GraphQL review commit metadata for since-last-review scoping
 │   │   └── submit.rs    # build_review_payload, create_review wiring
-│   └── gitlab/          # GitLab backend via `glab` CLI
-│       ├── mod.rs       # GitLabGlabBackend export
-│       ├── glab.rs      # ForgeBackend impl and glab command runner
-│       └── models.rs    # GitLab API response models
+│   ├── gitlab/          # GitLab backend via `glab` CLI
+│   │   ├── mod.rs       # GitLabGlabBackend export
+│   │   ├── glab.rs      # ForgeBackend impl and glab command runner
+│   │   └── models.rs    # GitLab API response models
+│   └── bitbucket/       # Bitbucket Cloud backend via `bkt` CLI (no Data Center)
+│       ├── mod.rs       # BitbucketBktBackend export
+│       ├── bkt.rs       # ForgeBackend impl and bkt command runner
+│       └── models.rs    # Bitbucket Cloud REST 2.0 response models
 │
 ├── model/
 │   ├── mod.rs
@@ -152,7 +157,7 @@ Repository-managed agent integrations:
 
 ### Data Flow
 
-1. **Startup**: Parse CLI args (invalid `--theme` exits non-zero). `tuicr update` exits before TUI setup: Homebrew, Cargo, Mise, and Nix profile installs delegate to their package manager; direct binaries fetch the matching GitHub release asset, verify its GitHub-provided SHA-256 digest, and replace the executable. `tuicr update <version>` installs an exact Cargo or direct-binary release for rollback and release testing; managers without a safe generic pin command return an error. With no subcommand, or with explicit `tuicr tui`, load config from `$XDG_CONFIG_HOME/tuicr/config.toml` (default `~/.config/tuicr/config.toml`, or `%APPDATA%\tuicr\config.toml` on Windows), ignore unknown config keys with startup warnings, resolve theme precedence (`--theme` > config > dark), then call `App::new()`. Theme selection first checks bundled names, then local theme files from `$XDG_CONFIG_HOME/tuicr/themes/` (default `~/.config/tuicr/themes/`, or `%APPDATA%\tuicr\themes\` on Windows). Local theme files may reference a local `.tmTheme` syntax theme. Some bat-compatible Base16 `.tmTheme` files encode ANSI palette slots as placeholders, and `src/syntax/mod.rs` translates those at render time. `App::new()` calls `detect_vcs()` (Jujutsu first, then Git, then Mercurial), using config `backend = "libgit2"` or `backend = "cli"` for Git. Normal Git repos default to libgit2; sparse checkout repos automatically use the Git CLI backend and show a startup warning when that overrides the default. It filters diff files via repo-root `.tuicrignore`, then enters commit selection mode by default. If staged/unstaged changes exist, the first selection rows are "Staged changes" and/or "Unstaged changes". The Pull Requests tab can toggle between all open PRs and forge PRs/MRs requesting the current user's review with `r`, which refetches page 1 using `gh pr list --search "review-requested:@me"` on GitHub or `glab mr list --reviewer=@me` on GitLab. With `-r/--revisions`, it opens the requested commit range directly. Config `show_file_list = false` hides the file list panel on startup (toggleable with `<leader>e`, where `leader` defaults to `;`). Config `diff_view = "side-by-side"` sets the default diff layout (toggleable with `:diff`). Config `wrap = true` enables line wrapping (toggleable with `:set wrap!`). Config `review_watch_interval_ms = 1000` controls persisted-session polling; set it to `0` to disable.
+1. **Startup**: Parse CLI args (invalid `--theme` exits non-zero). `tuicr update` exits before TUI setup: Homebrew, Cargo, Mise, and Nix profile installs delegate to their package manager; direct binaries fetch the matching GitHub release asset, verify its GitHub-provided SHA-256 digest, and replace the executable. `tuicr update <version>` installs an exact Cargo or direct-binary release for rollback and release testing; managers without a safe generic pin command return an error. With no subcommand, or with explicit `tuicr tui`, load config from `$XDG_CONFIG_HOME/tuicr/config.toml` (default `~/.config/tuicr/config.toml`, or `%APPDATA%\tuicr\config.toml` on Windows), ignore unknown config keys with startup warnings, resolve theme precedence (`--theme` > config > dark), then call `App::new()`. Theme selection first checks bundled names, then local theme files from `$XDG_CONFIG_HOME/tuicr/themes/` (default `~/.config/tuicr/themes/`, or `%APPDATA%\tuicr\themes\` on Windows). Local theme files may reference a local `.tmTheme` syntax theme. Some bat-compatible Base16 `.tmTheme` files encode ANSI palette slots as placeholders, and `src/syntax/mod.rs` translates those at render time. `App::new()` calls `detect_vcs()` (Jujutsu first, then Git, then Mercurial), using config `backend = "libgit2"` or `backend = "cli"` for Git. Normal Git repos default to libgit2; sparse checkout repos automatically use the Git CLI backend and show a startup warning when that overrides the default. It filters diff files via repo-root `.tuicrignore`, then enters commit selection mode by default. If staged/unstaged changes exist, the first selection rows are "Staged changes" and/or "Unstaged changes". The Pull Requests tab can toggle between all open PRs and forge PRs/MRs requesting the current user's review with `r`, which refetches page 1 using `gh pr list --search "review-requested:@me"` on GitHub, `glab mr list --reviewer=@me` on GitLab, or a `q=state="OPEN" AND reviewers.uuid="…"` filter on Bitbucket (the state clause must live inside `q`; Cloud ignores a standalone `state` parameter once `q` is present). With `-r/--revisions`, it opens the requested commit range directly. Config `show_file_list = false` hides the file list panel on startup (toggleable with `<leader>e`, where `leader` defaults to `;`). Config `diff_view = "side-by-side"` sets the default diff layout (toggleable with `:diff`). Config `wrap = true` enables line wrapping (toggleable with `:set wrap!`). Config `review_watch_interval_ms = 1000` controls persisted-session polling; set it to `0` to disable.
 2. **Render**: `ui::render()` draws the TUI based on `App` state. When rendered comments exist, the left sidebar splits vertically into file tree and comment navigator; the navigator is hidden when there are no rendered comment rows.
 3. **Input**: `crossterm` events → `map_key_to_action` → match on Action in main loop
 4. **Comments**: `App::save_comment()` builds an `AddCommentRequest` and calls `add_comment_to_session()` so TUI and library callers share insertion behavior. The TUI creates a persisted session file as soon as a review session becomes active, so `tuicr review add` can target it immediately. Successful comment submits autosave the session using a locked, atomic write that merges externally added comments first.
@@ -187,7 +192,9 @@ Repository-managed agent integrations:
 
 ## Forge integration
 
-Forge review (`tuicr pr <target>`, `tuicr mr <target>`, or their explicit `tuicr tui` forms) is the only feature in `src/forge/`. GitHub operations shell out to `gh`; GitLab operations shell out to `glab`.
+Forge review (`tuicr pr <target>`, `tuicr mr <target>`, or their explicit `tuicr tui` forms) is the only feature in `src/forge/`. GitHub operations shell out to `gh`; GitLab operations shell out to `glab`; Bitbucket Cloud operations shell out to `bkt`.
+
+Forge selection is host-driven: `parse_any_remote_url` tries Bitbucket (`bitbucket.org` only), then GitLab (host contains `gitlab`, or matches `glab config get host`), then GitHub. GitHub must stay last — its parser accepts any host, so it would otherwise claim every Bitbucket and self-hosted GitLab remote. Bitbucket Data Center is deliberately unsupported: it speaks REST 1.0, so those remotes are not claimed at all.
 
 ### ForgeBackend trait
 
@@ -199,7 +206,7 @@ Forge review (`tuicr pr <target>`, `tuicr mr <target>`, or their explicit `tuicr
 - `get_pull_request_diff` — the cumulative PR diff as a unified-diff string.
 - `list_pull_request_commits` — commits on the PR for the inline subset selector.
 - `list_pull_request_review_metadata` — best-effort viewer login + review commit OIDs used to preselect commits since the viewer's latest submitted review and mark already-reviewed commits in the inline selector.
-  GitHub uses review metadata; GitLab combines `/user`, MR diff versions, approvals, and discussions.
+  GitHub uses review metadata; GitLab combines `/user`, MR diff versions, approvals, and discussions; Bitbucket reads the PR's `participants` and reports account UUIDs (Cloud returns no usernames), with no commit OIDs since it does not record which commit an approval covered.
 - `get_pull_request_commit_range_diff` — cumulative diff for a contiguous subrange (`start_sha` is the parent of the first selected commit; `end_sha` is the last).
 - `list_review_threads` — existing forge comments + resolved/outdated state.
 - `fetch_file_lines` — remote context expansion in the diff view.
