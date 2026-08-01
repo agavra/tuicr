@@ -165,9 +165,16 @@ impl App {
 
             // If reviewed, skip all content for this file. Single-file
             // view ignores the reviewed-collapse since the user
-            // explicitly focused this file.
-            if self.session.is_file_reviewed(path) && !self.is_single_file_view {
-                continue;
+            // explicitly focused this file, and renders the body under a
+            // "Marked reviewed" banner instead — that banner is a rendered
+            // row, so it needs its own annotation slot to keep this stream
+            // index-parallel with the renderers.
+            if self.session.is_file_reviewed(path) {
+                if !self.is_single_file_view {
+                    continue;
+                }
+                self.line_annotations
+                    .push(AnnotatedLine::ReviewedBanner { file_idx });
             }
 
             // File comments

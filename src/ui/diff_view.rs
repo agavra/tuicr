@@ -22,6 +22,11 @@ pub(super) const HEADER_RULE: &str = "══════════════
 /// Shared text before `HEADER_RULE` for the synthetic review-comments banner.
 pub(super) const REVIEW_COMMENTS_HEADER_PREFIX: &str = "═══ Review Comments ";
 
+/// Banner shown in single-file view when the focused file is marked reviewed.
+/// Shared by both renderers and by `row_height` so the rendered row and its
+/// measured height cannot drift apart.
+pub(super) const REVIEWED_BANNER_TEXT: &str = "  Marked reviewed -- r to re-open";
+
 /// Text portion of a per-file section header, without the trailing
 /// `HEADER_RULE`. Callers concatenate `HEADER_RULE` themselves so the rule
 /// can be styled as a separate span (both renderers) or absorbed into a

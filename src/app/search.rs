@@ -306,7 +306,7 @@ impl App {
                 bodies.insert(0, format!("github {}", thread.path));
                 Some(bodies.join(" "))
             }
-            AnnotatedLine::Spacing => None,
+            AnnotatedLine::Spacing | AnnotatedLine::ReviewedBanner { .. } => None,
         }
     }
 }

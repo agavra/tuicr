@@ -331,6 +331,10 @@ fn full_row_text(app: &App, annotation: &AnnotatedLine) -> String {
             format!("{indicator}{l} {r}")
         }
 
+        AnnotatedLine::ReviewedBanner { .. } => {
+            format!("{indicator}{}", diff_view::REVIEWED_BANNER_TEXT)
+        }
+
         AnnotatedLine::BinaryOrEmpty { file_idx } => {
             let text = app
                 .diff_files
@@ -722,6 +726,7 @@ mod tests {
             AnnotatedLine::RemoteThreadLine { .. } => Some("RemoteThreadLine"),
             AnnotatedLine::Spacing => Some("Spacing"),
             AnnotatedLine::BinaryOrEmpty { .. } => Some("BinaryOrEmpty"),
+            AnnotatedLine::ReviewedBanner { .. } => Some("ReviewedBanner"),
             _ => None,
         }
     }

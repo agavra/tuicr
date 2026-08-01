@@ -267,6 +267,10 @@ pub enum AnnotatedLine {
     RemoteReviewSummaryLine { summary_idx: usize },
     /// File header line
     FileHeader { file_idx: usize },
+    /// "Marked reviewed" banner shown in single-file view when the focused
+    /// file is reviewed. Both renderers emit this row, so it needs an
+    /// annotation slot to keep `line_annotations` index-parallel with them.
+    ReviewedBanner { file_idx: usize },
     /// A file-level comment line (part of a multi-line comment box)
     FileComment { file_idx: usize, comment_idx: usize },
     /// Expander line showing hidden context with direction arrow
@@ -436,6 +440,7 @@ fn commits_since_last_review_selection(
 pub fn annotation_file_idx(annotation: &AnnotatedLine) -> Option<usize> {
     match annotation {
         AnnotatedLine::FileHeader { file_idx }
+        | AnnotatedLine::ReviewedBanner { file_idx }
         | AnnotatedLine::FileComment { file_idx, .. }
         | AnnotatedLine::HunkHeader { file_idx, .. }
         | AnnotatedLine::DiffLine { file_idx, .. }
@@ -519,7 +524,9 @@ pub fn find_source_line(
 fn is_decoration(annotation: &AnnotatedLine) -> bool {
     matches!(
         annotation,
-        AnnotatedLine::Spacing | AnnotatedLine::FileHeader { .. }
+        AnnotatedLine::Spacing
+            | AnnotatedLine::FileHeader { .. }
+            | AnnotatedLine::ReviewedBanner { .. }
     )
 }
 
