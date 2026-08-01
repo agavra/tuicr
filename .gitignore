@@ -5,8 +5,6 @@
 /.codex/
 /.agents/
 /.opencode/
-/.osc-guard/
-/.osc-workspace.json
 .DS_Store
 **/.DS_Store
 __pycache__/
