@@ -41,6 +41,37 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy -- -D warnings
 
+  static-linux:
+    name: Static Linux binary
+    if: github.event_name == 'pull_request'
+    needs: [check, fmt]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install musl toolchain
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: x86_64-unknown-linux-musl
+      - name: Build static binary
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+          CC_x86_64_unknown_linux_musl: musl-gcc
+        run: cargo build --release --target x86_64-unknown-linux-musl
+      - name: Verify static binary
+        run: |
+          binary=target/x86_64-unknown-linux-musl/release/tuicr
+          version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)
+          test "$("$binary" --version)" = "tuicr $version"
+          if readelf -lW "$binary" | grep -Eq '(^|[[:space:]])INTERP([[:space:]]|$)'; then
+            echo "Linux release binary contains a dynamic interpreter" >&2
+            readelf -lW "$binary" >&2
+            exit 1
+          fi
+
   test:
     name: Test
     needs: [check, fmt]

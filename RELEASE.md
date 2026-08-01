@@ -16,8 +16,8 @@ This project uses an automated release workflow via GitHub Actions.
    - Publishes to crates.io
    - Creates GitHub Release with release notes
    - Builds and uploads binaries for:
-     - `x86_64-unknown-linux-gnu` (Linux x64)
-     - `aarch64-unknown-linux-gnu` (Linux ARM64)
+     - `x86_64-unknown-linux-gnu` (Linux x64, static musl payload)
+     - `aarch64-unknown-linux-gnu` (Linux ARM64, static musl payload)
      - `x86_64-apple-darwin` (macOS x64)
      - `aarch64-apple-darwin` (macOS Apple Silicon)
      - `x86_64-pc-windows-msvc` (Windows x64)
@@ -34,6 +34,11 @@ If you need to rebuild binaries for an existing release:
 2. **Select action:** `build-binaries`
 3. **Enter version:** e.g., `0.1.1` (without the `v` prefix)
 4. **Click "Run workflow"**
+
+Linux binaries are built for the `x86_64-unknown-linux-musl` and
+`aarch64-unknown-linux-musl` targets. Their archives retain the existing
+`*-unknown-linux-gnu.tar.gz` names for compatibility with the install script
+and `tuicr update`.
 
 ## What Gets Updated
 
