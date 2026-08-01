@@ -9,6 +9,7 @@ homepage = "https://github.com/agavra/tuicr"
 readme = "README.md"
 keywords = ["tui", "git", "code-review", "diff", "cli"]
 categories = ["command-line-utilities", "development-tools"]
+exclude = ["/.osc-guard/**", "/.osc-workspace.json"]
 
 [dependencies]
 # TUI framework
