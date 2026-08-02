@@ -137,7 +137,7 @@ jobs:
           draft: false
 
   build-binaries:
-    name: Build ${{ matrix.target }}
+    name: Build ${{ matrix.build_target }}
     needs: [publish]
     if: |
       always() &&
@@ -149,20 +149,15 @@ jobs:
     strategy:
       matrix:
         include:
-          - target: x86_64-unknown-linux-gnu
-            build_target: x86_64-unknown-linux-musl
+          - build_target: x86_64-unknown-linux-musl
             os: ubuntu-latest
-          - target: aarch64-unknown-linux-gnu
-            build_target: aarch64-unknown-linux-musl
+          - build_target: aarch64-unknown-linux-musl
             os: ubuntu-24.04-arm
-          - target: x86_64-apple-darwin
-            build_target: x86_64-apple-darwin
+          - build_target: x86_64-apple-darwin
             os: macos-15-intel
-          - target: aarch64-apple-darwin
-            build_target: aarch64-apple-darwin
+          - build_target: aarch64-apple-darwin
             os: macos-latest
-          - target: x86_64-pc-windows-msvc
-            build_target: x86_64-pc-windows-msvc
+          - build_target: x86_64-pc-windows-msvc
             os: windows-latest
 
     steps:
@@ -213,13 +208,13 @@ jobs:
         if: runner.os != 'Windows'
         run: |
           cd target/${{ matrix.build_target }}/release
-          tar -czvf ../../../tuicr-${{ steps.version.outputs.version }}-${{ matrix.target }}.tar.gz tuicr
+          tar -czvf ../../../tuicr-${{ steps.version.outputs.version }}-${{ matrix.build_target }}.tar.gz tuicr
 
       - name: Package binary (windows)
         if: runner.os == 'Windows'
         run: |
           cd target/${{ matrix.build_target }}/release
-          7z a ../../../tuicr-${{ steps.version.outputs.version }}-${{ matrix.target }}.zip tuicr.exe
+          7z a ../../../tuicr-${{ steps.version.outputs.version }}-${{ matrix.build_target }}.zip tuicr.exe
 
       - name: Upload to release
         uses: softprops/action-gh-release@v2
