@@ -43,6 +43,12 @@ fn main() -> anyhow::Result<()> {
     // Parse CLI arguments and resolve theme
     // This also configures syntax highlighting colors before diff parsing
     let mut cli_args = profile::time("startup.parse_cli_args", parse_cli_args);
+    if let Some(shell) = cli_args.completions_shell {
+        let mut stdout = io::stdout();
+        tuicr::cli::render_completions(shell, &mut stdout);
+        stdout.flush()?;
+        return Ok(());
+    }
     if cli_args.update_command {
         let outcome = match cli_args.update_version.as_ref() {
             Some(version) => update::update_to_version(version)?,

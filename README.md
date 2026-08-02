@@ -69,6 +69,27 @@ binaries; use the package manager's pinning workflow for Homebrew, Mise, or Nix.
 invocation is temporary rather than installed; rerun it to use the current flake, or use
 `nix profile install github:agavra/tuicr` for an installation that `tuicr update` can upgrade.
 
+### Shell completions
+
+`tuicr completions <shell>` prints a completion script to stdout. It is generated from the live
+CLI definition, so it always matches the installed version.
+
+```bash
+# bash
+tuicr completions bash > /etc/bash_completion.d/tuicr
+# or, without root:
+echo 'source <(tuicr completions bash)' >> ~/.bashrc
+
+# zsh (any directory on $fpath works)
+tuicr completions zsh > "${fpath[1]}/_tuicr"
+
+# fish
+tuicr completions fish > ~/.config/fish/completions/tuicr.fish
+```
+
+Restart your shell (or `exec $SHELL`) to pick the completions up. On zsh, make sure
+`autoload -Uz compinit && compinit` runs in your `~/.zshrc`.
+
 ## Quick start
 
 ```bash
@@ -84,6 +105,7 @@ tuicr --stdout              # Pipe the review to stdout
 tuicr review list           # List saved local review sessions
 tuicr update                # Update the active installation
 tuicr update 0.18.0         # Install a known-good version
+tuicr completions zsh       # Print a shell completion script
 ```
 
 Inside tuicr, navigate with `j`/`k`, press `c` to comment, then `y` to copy the review or

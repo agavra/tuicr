@@ -5,7 +5,7 @@
 
 use std::path::PathBuf;
 
-use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
+use clap::{ArgAction, Args, CommandFactory, Parser, Subcommand, ValueEnum};
 
 use crate::theme::{AppearanceArg, ThemeArg};
 
@@ -38,6 +38,8 @@ pub struct CliArgs {
     pub update_command: bool,
     /// Exact version requested by `tuicr update`, if any.
     pub update_version: Option<semver::Version>,
+    /// Print a shell completion script and exit.
+    pub completions_shell: Option<CompletionShell>,
 }
 
 #[derive(Parser, Debug)]
@@ -151,6 +153,52 @@ enum Subcmd {
         #[arg(value_name = "VERSION")]
         version: Option<semver::Version>,
     },
+    /// Print a shell completion script to stdout.
+    #[command(after_help = COMPLETIONS_AFTER_HELP)]
+    Completions {
+        /// Shell to generate completions for.
+        #[arg(value_name = "SHELL")]
+        shell: CompletionShell,
+    },
+}
+
+const COMPLETIONS_AFTER_HELP: &str = "\
+Install (bash):  tuicr completions bash > /etc/bash_completion.d/tuicr
+     (or)        echo 'source <(tuicr completions bash)' >> ~/.bashrc
+Install (zsh):   tuicr completions zsh > \"${fpath[1]}/_tuicr\"
+Install (fish):  tuicr completions fish > ~/.config/fish/completions/tuicr.fish";
+
+/// Shells supported by `tuicr completions`.
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompletionShell {
+    Bash,
+    Zsh,
+    Fish,
+}
+
+impl From<CompletionShell> for clap_complete::Shell {
+    fn from(shell: CompletionShell) -> Self {
+        match shell {
+            CompletionShell::Bash => Self::Bash,
+            CompletionShell::Zsh => Self::Zsh,
+            CompletionShell::Fish => Self::Fish,
+        }
+    }
+}
+
+/// Write the completion script for `shell` to `out`.
+///
+/// Generated from the live clap command tree, so subcommands, flags, and
+/// value enums stay in sync with the parser without a regeneration step.
+pub fn render_completions(shell: CompletionShell, out: &mut impl std::io::Write) {
+    let mut command = Cli::command();
+    let bin_name = command.get_name().to_string();
+    clap_complete::generate(
+        clap_complete::Shell::from(shell),
+        &mut command,
+        bin_name,
+        out,
+    );
 }
 
 /// Explicit `tuicr tui` entrypoint. With no nested command, opens the local
@@ -275,6 +323,12 @@ pub enum LineSideArg {
 
 impl From<Cli> for CliArgs {
     fn from(cli: Cli) -> Self {
+        if let Some(Subcmd::Completions { shell }) = cli.command {
+            return Self {
+                completions_shell: Some(shell),
+                ..Self::default()
+            };
+        }
         let (options, pr_target, review_command, update_version, update_command) = match cli.command
         {
             Some(Subcmd::Tui(command)) => match command.command {
@@ -304,7 +358,7 @@ impl From<Cli> for CliArgs {
                 (TuiOptions::default(), None, Some(command), None, false)
             }
             Some(Subcmd::Update { version }) => (TuiOptions::default(), None, None, version, true),
-            None => (cli.tui_options, None, None, None, false),
+            Some(Subcmd::Completions { .. }) | None => (cli.tui_options, None, None, None, false),
         };
         Self {
             theme: options.theme,
@@ -321,6 +375,7 @@ impl From<Cli> for CliArgs {
             review_command,
             update_command,
             update_version,
+            completions_shell: None,
         }
     }
 }
@@ -375,6 +430,7 @@ impl Cli {
         match self.command {
             Some(Subcmd::Review { .. }) => Some("review"),
             Some(Subcmd::Update { .. }) => Some("update"),
+            Some(Subcmd::Completions { .. }) => Some("completions"),
             _ => None,
         }
     }
@@ -1006,6 +1062,78 @@ mod tests {
                 repo: PathBuf::from("."),
             })
         );
+    }
+
+    #[test]
+    fn should_parse_completions_command_for_each_supported_shell() {
+        for (arg, expected) in [
+            ("bash", CompletionShell::Bash),
+            ("zsh", CompletionShell::Zsh),
+            ("fish", CompletionShell::Fish),
+        ] {
+            let parsed =
+                parse_for_test(&["tuicr", "completions", arg]).expect("parse should succeed");
+            assert_eq!(parsed.completions_shell, Some(expected));
+            // Must not fall through into any other entrypoint.
+            assert!(!parsed.update_command);
+            assert_eq!(parsed.review_command, None);
+            assert_eq!(parsed.pr_target, None);
+        }
+    }
+
+    #[test]
+    fn should_reject_unsupported_completion_shell() {
+        let err =
+            parse_for_test(&["tuicr", "completions", "powershell"]).expect_err("parse should fail");
+        assert_eq!(err.kind(), ErrorKind::InvalidValue);
+    }
+
+    #[test]
+    fn should_require_shell_for_completions_command() {
+        let err = parse_for_test(&["tuicr", "completions"]).expect_err("parse should fail");
+        assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn should_reject_tui_options_with_completions_command() {
+        let err = parse_for_test(&["tuicr", "--theme", "dark", "completions", "bash"])
+            .expect_err("parse should fail");
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn should_leave_completions_shell_none_without_subcommand() {
+        let parsed = parse_for_test(&["tuicr"]).expect("parse should succeed");
+        assert_eq!(parsed.completions_shell, None);
+    }
+
+    #[test]
+    fn should_render_completion_scripts_covering_subcommands() {
+        for shell in [
+            CompletionShell::Bash,
+            CompletionShell::Zsh,
+            CompletionShell::Fish,
+        ] {
+            let mut out = Vec::new();
+            render_completions(shell, &mut out);
+            let script = String::from_utf8(out).expect("script should be UTF-8");
+            assert!(!script.is_empty(), "{shell:?} script should not be empty");
+            // Match on bare option names: bash/zsh emit `--theme`, fish emits
+            // `-l theme`, so the leading dashes are not portable to assert on.
+            for expected in [
+                "tuicr",
+                "review",
+                "update",
+                "completions",
+                "theme",
+                "working-tree",
+            ] {
+                assert!(
+                    script.contains(expected),
+                    "{shell:?} script should mention `{expected}`"
+                );
+            }
+        }
     }
 
     #[test]
