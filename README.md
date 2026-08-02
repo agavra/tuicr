@@ -26,7 +26,7 @@
 ```bash
 curl -fsSL tuicr.dev/install.sh | sh
 # or
-brew install agavra/tap/tuicr
+brew install tuicr
 ```
 
 <details>
