@@ -40,6 +40,7 @@ anyhow = "1.0"
 
 # CLI parsing
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
 
 # Utilities
 directories = "6.0"
