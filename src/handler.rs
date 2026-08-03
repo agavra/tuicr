@@ -1419,9 +1419,11 @@ pub fn handle_diff_action(app: &mut App, action: Action) {
         }
         // Space already means "expand what's under the cursor" in the file
         // list and the commit selector; in the diff panel it was unbound, so
-        // it takes on the same meaning for a collapsed generated file.
+        // it takes on the same meaning here: toggle whether the current
+        // file's diff body is shown, regardless of why it defaulted to
+        // collapsed or expanded.
         Action::ToggleExpand => {
-            if !app.toggle_generated_expansion() {
+            if !app.toggle_file_collapse() {
                 handle_shared_normal_action(app, action);
             }
         }

@@ -162,22 +162,24 @@ fn space_expansion_overrides_collapse() {
     let mut app = collapsing_app(&dir, &["api.pb.go"]);
     app.diff_state.current_file_idx = 0;
 
-    assert!(app.toggle_generated_expansion());
+    assert!(app.toggle_file_collapse());
     assert!(!app.is_file_collapsed(&file_named(&app, "api.pb.go")));
 
-    assert!(app.toggle_generated_expansion());
+    assert!(app.toggle_file_collapse());
     assert!(app.is_file_collapsed(&file_named(&app, "api.pb.go")));
 }
 
 #[test]
-fn space_is_inert_on_a_file_that_is_not_generated() {
-    // The diff panel's Space handler falls through to the shared action when
-    // this returns false, so it must not claim non-generated files.
+fn space_manually_collapses_a_file_that_is_not_generated() {
+    // Space is not scoped to generated files: it toggles any file's body,
+    // manually collapsing one that defaulted to expanded.
     let dir = repo();
     let mut app = collapsing_app(&dir, &["src/main.rs"]);
     app.diff_state.current_file_idx = 0;
 
-    assert!(!app.toggle_generated_expansion());
+    assert!(!app.is_file_collapsed(&file_named(&app, "src/main.rs")));
+    assert!(app.toggle_file_collapse());
+    assert!(app.is_file_collapsed(&file_named(&app, "src/main.rs")));
 }
 
 #[test]
@@ -239,10 +241,10 @@ fn toggling_collapse_off_returns_to_the_starting_appearance() {
 }
 
 #[test]
-fn count_exclusion_alone_still_labels_without_claiming_space() {
+fn count_exclusion_alone_still_labels_without_being_collapsed() {
     // `count = false, collapse = false` is a legitimate configuration: the
-    // files are surfaced and dropped from progress, but nothing is hidden, so
-    // there is nothing for `Space` to expand.
+    // file is surfaced and dropped from progress, but nothing is hidden by
+    // default.
     let dir = repo();
     let mut app = app_in(&dir, &["api.pb.go", "src/main.rs"]);
     app.apply_generated_config(&GeneratedConfig {
@@ -258,7 +260,6 @@ fn count_exclusion_alone_still_labels_without_claiming_space() {
     assert!(app.is_generated_file(Path::new("api.pb.go")));
     assert_eq!(app.generated_file_count(), 1);
     assert!(!app.is_file_collapsed(&file_named(&app, "api.pb.go")));
-    assert!(!app.toggle_generated_expansion());
 }
 
 #[test]
@@ -269,7 +270,7 @@ fn expansion_survives_a_diff_file_rebuild_that_shifts_indices() {
     let dir = repo();
     let mut app = collapsing_app(&dir, &["api.pb.go"]);
     app.diff_state.current_file_idx = 0;
-    app.toggle_generated_expansion();
+    app.toggle_file_collapse();
 
     app.diff_files = vec![file("src/main.rs"), file("api.pb.go")];
     app.rebuild_annotations();
@@ -279,6 +280,26 @@ fn expansion_survives_a_diff_file_rebuild_that_shifts_indices() {
         &PathBuf::from("api.pb.go")
     );
     assert!(!app.is_file_collapsed(&file_named(&app, "api.pb.go")));
+}
+
+#[test]
+fn space_expands_a_reviewed_file_without_un_reviewing_it() {
+    // The whole point of a per-file override: peeking at a reviewed file's
+    // diff must not touch its reviewed status, unlike the old behavior where
+    // `r` was the only way to see it again.
+    let dir = repo();
+    let mut app = app_in(&dir, &["src/main.rs"]);
+    app.diff_state.current_file_idx = 0;
+    app.toggle_reviewed();
+    assert!(app.is_file_collapsed(&file_named(&app, "src/main.rs")));
+
+    assert!(app.toggle_file_collapse());
+    assert!(!app.is_file_collapsed(&file_named(&app, "src/main.rs")));
+    assert!(app.session.is_file_reviewed(&PathBuf::from("src/main.rs")));
+
+    assert!(app.toggle_file_collapse());
+    assert!(app.is_file_collapsed(&file_named(&app, "src/main.rs")));
+    assert!(app.session.is_file_reviewed(&PathBuf::from("src/main.rs")));
 }
 
 #[test]

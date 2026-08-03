@@ -562,7 +562,7 @@ impl App {
             collapse_generated: false,
             count_generated: true,
             generated_files: HashSet::new(),
-            expanded_generated: HashSet::new(),
+            collapse_override: HashMap::new(),
             generated_probed: HashSet::new(),
         };
         // Auto-hide file list when path filter matches exactly one file

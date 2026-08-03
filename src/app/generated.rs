@@ -138,39 +138,6 @@ impl App {
         (reviewed, total)
     }
 
-    /// Toggle the collapsed state of the generated file under the cursor.
-    ///
-    /// Keyed by path rather than index so the override survives the reloads
-    /// and commit-selection changes that replace `diff_files` wholesale.
-    ///
-    /// Requires collapse to be on, not merely that the file is generated:
-    /// with `count = false` alone nothing is hidden, so claiming `Space` there
-    /// would report an expansion that changed nothing on screen.
-    pub fn toggle_generated_expansion(&mut self) -> bool {
-        if !self.collapse_generated {
-            return false;
-        }
-        let Some(path) = self
-            .current_file()
-            .map(|file| file.display_path().clone())
-            .filter(|path| self.is_generated_file(path))
-        else {
-            return false;
-        };
-
-        if self.expanded_generated.remove(&path) {
-            self.set_message("Generated file collapsed");
-        } else {
-            self.expanded_generated.insert(path);
-            self.set_message("Generated file expanded");
-        }
-        self.rebuild_annotations();
-        let file_idx = self.diff_state.current_file_idx;
-        self.diff_state.cursor_line = self.calculate_file_scroll_offset(file_idx);
-        self.ensure_cursor_visible();
-        true
-    }
-
     /// Set the runtime collapse toggle, running detection if it was skipped
     /// while both features were off.
     pub fn set_collapse_generated(&mut self, collapse: bool) {

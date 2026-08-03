@@ -275,10 +275,13 @@ impl App {
 
     /// Whether a file's diff body is hidden, leaving only its header row.
     ///
-    /// Two reasons a body hides. Reviewed files collapse so a long review
-    /// stream shrinks as it is worked through. Files `.gitattributes` marks
-    /// as code-generated collapse when the user opted in, until `Space`
-    /// expands one. The annotation builder, both diff renderers, and the
+    /// Checked in override order. `Space` sets an explicit per-file entry in
+    /// `collapse_override` that always wins, because it is what lets a
+    /// reviewed or generated file be peeked at (or re-hidden) without
+    /// touching either status. Failing that, reviewed files collapse so a
+    /// long review stream shrinks as it is worked through. Failing that,
+    /// files `.gitattributes` marks as code-generated collapse when the user
+    /// opted in. The annotation builder, both diff renderers, and the
     /// scroll-height math all have to agree on this or the cursor lands on
     /// rows that aren't drawn, so they share this one predicate.
     ///
@@ -289,19 +292,45 @@ impl App {
     ///
     /// Both renderers and `hunk_positions` call this once per file per frame,
     /// so it has to stay cheap. The checks are ordered so the default
-    /// configuration still costs exactly one map lookup: `collapse_generated`
-    /// is false unless the user opted in, and a bare bool test short-circuits
-    /// the rest. Opting in adds one hash lookup per non-reviewed file, and a
-    /// second only for the files that are actually generated.
+    /// configuration still costs exactly one map lookup: `collapse_override`
+    /// is empty unless the user has pressed `Space`, and `collapse_generated`
+    /// is false unless the user opted in, so a bare bool test short-circuits
+    /// the rest.
     #[inline]
     pub fn is_file_collapsed(&self, file: &DiffFile) -> bool {
         let path = file.display_path();
+        if let Some(&collapsed) = self.collapse_override.get(path) {
+            return collapsed;
+        }
         if self.session.is_file_reviewed(path) {
             return true;
         }
-        self.collapse_generated
-            && self.generated_files.contains(path)
-            && !self.expanded_generated.contains(path)
+        self.collapse_generated && self.generated_files.contains(path)
+    }
+
+    /// Toggle whether the file under the cursor shows its diff body,
+    /// independent of its reviewed or generated status — those only decide
+    /// the default before `Space` is pressed.
+    ///
+    /// Keyed by path rather than index so the override survives the reloads
+    /// and commit-selection changes that replace `diff_files` wholesale.
+    pub fn toggle_file_collapse(&mut self) -> bool {
+        let Some(file) = self.current_file() else {
+            return false;
+        };
+        let path = file.display_path().clone();
+        let currently_collapsed = self.is_file_collapsed(file);
+        self.collapse_override.insert(path, !currently_collapsed);
+        self.rebuild_annotations();
+        let file_idx = self.diff_state.current_file_idx;
+        self.diff_state.cursor_line = self.calculate_file_scroll_offset(file_idx);
+        self.ensure_cursor_visible();
+        self.set_message(if currently_collapsed {
+            "File expanded"
+        } else {
+            "File collapsed"
+        });
+        true
     }
 
     pub fn file_count(&self) -> usize {

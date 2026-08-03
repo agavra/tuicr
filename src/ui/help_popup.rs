@@ -400,7 +400,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  Space     ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Expand / collapse a generated file"),
+            Span::raw("Expand / collapse the current file"),
         ]),
         Line::from(vec![
             Span::styled(

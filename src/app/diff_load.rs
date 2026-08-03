@@ -584,7 +584,7 @@ impl App {
         // Reload is the point where an edited `.gitattributes` should take
         // effect, so discard the probe memo and re-detect eagerly — the height
         // math below runs before `rebuild_annotations` would have done it.
-        // `expanded_generated` survives: it is the user's override, not
+        // `collapse_override` survives: it is the user's override, not
         // detected state.
         self.invalidate_generated_detection();
         self.detect_generated_files();
