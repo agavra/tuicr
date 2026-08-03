@@ -143,7 +143,8 @@ required token scopes, and troubleshooting.
 
 ### To your coding agent
 
-`y` or `:clip` copies a structured markdown block to your clipboard. Each comment has a number
+`y` or `:clip` copies a structured markdown block to your clipboard. In PR mode, `:copy-url`
+copies the open pull request URL. Each comment has a number
 and a file/line anchor: 
 
 ```markdown
@@ -266,6 +267,7 @@ A first-session cheatsheet. Press `?` inside tuicr for the full reference.
 | `e` | Open focused file in `$EDITOR` |
 | `y` | Copy review to clipboard |
 | `:edit` | Open focused file in `$EDITOR` |
+| `:copy-url` | Copy the open PR URL (PR mode) |
 | `:submit` | Push review to GitHub, GitLab, or Bitbucket |
 | `Tab` in `:` prompt | Complete or cycle commands |
 | `?` | Toggle full help |

@@ -641,6 +641,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  :copy-url ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Copy the open PR URL to clipboard (PR mode)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  :wrap     ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
