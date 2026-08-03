@@ -149,8 +149,12 @@ jobs:
     strategy:
       matrix:
         include:
+          - build_target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
           - build_target: x86_64-unknown-linux-musl
             os: ubuntu-latest
+          - build_target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
           - build_target: aarch64-unknown-linux-musl
             os: ubuntu-24.04-arm
           - build_target: x86_64-apple-darwin
@@ -171,7 +175,7 @@ jobs:
         run: echo "version=${{ needs.publish.outputs.version || github.event.inputs.version }}" >> $GITHUB_OUTPUT
 
       - name: Install dependencies (Linux)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && endsWith(matrix.build_target, '-musl')
         run: |
           sudo apt-get update
           sudo apt-get install -y musl-tools
@@ -181,13 +185,18 @@ jobs:
           targets: ${{ matrix.build_target }}
 
       - name: Configure musl compiler
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && endsWith(matrix.build_target, '-musl')
         shell: bash
         run: |
           cargo_target=$(echo '${{ matrix.build_target }}' | tr '[:lower:]-' '[:upper:]_')
           cc_target=$(echo '${{ matrix.build_target }}' | tr '-' '_')
           echo "CARGO_TARGET_${cargo_target}_LINKER=musl-gcc" >> "$GITHUB_ENV"
           echo "CC_${cc_target}=musl-gcc" >> "$GITHUB_ENV"
+
+      - name: Configure static GNU runtime
+        if: runner.os == 'Linux' && endsWith(matrix.build_target, '-gnu')
+        shell: bash
+        run: echo 'RUSTFLAGS=-C target-feature=+crt-static' >> "$GITHUB_ENV"
 
       - name: Build
         run: cargo build --release --target ${{ matrix.build_target }}
