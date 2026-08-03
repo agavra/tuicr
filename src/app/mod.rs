@@ -1526,8 +1526,11 @@ pub struct App {
     /// every index. Empty whenever detection is disabled, which is what lets
     /// the render path short-circuit for free.
     pub generated_files: HashSet<PathBuf>,
-    /// Generated files the user expanded with `Space`, overriding collapse.
-    pub expanded_generated: HashSet<PathBuf>,
+    /// Per-file collapse override set with `Space`, taking precedence over
+    /// the reviewed/generated defaults `should_collapse_file` would otherwise
+    /// derive. Keyed by path rather than index so it survives the reloads
+    /// and commit-selection changes that replace `diff_files` wholesale.
+    pub collapse_override: HashMap<PathBuf, bool>,
     /// Display paths already looked up in `.gitattributes`.
     ///
     /// Doubles as the staleness test for detection: a diff file set with no

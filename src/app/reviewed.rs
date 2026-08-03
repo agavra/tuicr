@@ -471,15 +471,18 @@ impl App {
     /// Whether a file should currently hide its body, leaving only its header
     /// row.
     ///
-    /// Two reasons a body hides. Reviewed files collapse so a long review
-    /// stream shrinks as it is worked through; summary jumps may temporarily
-    /// reveal one reviewed file without changing the persisted marker. Files
-    /// `.gitattributes` marks as code-generated collapse when collapse is on,
-    /// until `Space` expands one.
+    /// Checked in override order. `Space` sets an explicit per-file entry in
+    /// `collapse_override` that always wins, because it is what lets a
+    /// reviewed or generated file be peeked at (or re-hidden) without
+    /// touching either status. Failing that, reviewed files collapse so a
+    /// long review stream shrinks as it is worked through; summary jumps may
+    /// temporarily reveal one reviewed file without changing the persisted
+    /// marker. Failing that, files `.gitattributes` marks as code-generated
+    /// collapse when collapse is on.
     ///
-    /// The checks are ordered so a session with no generated files costs what
-    /// it did before: `collapse_generated` is a bare bool, and the generated
-    /// set lookup only runs for files that are not reviewed.
+    /// The checks are ordered so a session with no overrides and no generated
+    /// files costs what it did before: `collapse_override` is empty unless the
+    /// user has pressed `Space`, and `collapse_generated` is a bare bool.
     pub fn should_collapse_file(&self, file_idx: usize) -> bool {
         if self.is_single_file_view {
             return false;
@@ -489,12 +492,41 @@ impl App {
             return false;
         };
         let path = file.display_path();
+        if let Some(&collapsed) = self.collapse_override.get(path) {
+            return collapsed;
+        }
         if self.session.is_file_reviewed(path) {
             return self.revealed_reviewed_file.as_ref() != Some(path);
         }
-        self.collapse_generated
-            && self.generated_files.contains(path)
-            && !self.expanded_generated.contains(path)
+        self.collapse_generated && self.generated_files.contains(path)
+    }
+
+    /// Toggle whether the file under the cursor shows its diff body,
+    /// independent of its reviewed or generated status — those only decide
+    /// the default before `Space` is pressed.
+    ///
+    /// Keyed by path rather than index so the override survives the reloads
+    /// and commit-selection changes that replace `diff_files` wholesale.
+    pub fn toggle_file_collapse(&mut self) -> bool {
+        let file_idx = self.diff_state.current_file_idx;
+        let Some(path) = self
+            .diff_files
+            .get(file_idx)
+            .map(|file| file.display_path().clone())
+        else {
+            return false;
+        };
+        let currently_collapsed = self.should_collapse_file(file_idx);
+        self.collapse_override.insert(path, !currently_collapsed);
+        self.rebuild_annotations();
+        self.diff_state.cursor_line = self.calculate_file_scroll_offset(file_idx);
+        self.ensure_cursor_visible();
+        self.set_message(if currently_collapsed {
+            "File expanded"
+        } else {
+            "File collapsed"
+        });
+        true
     }
 
     pub(in crate::app) fn reveal_reviewed_file(&mut self, file_idx: usize) {

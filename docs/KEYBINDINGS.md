@@ -168,7 +168,7 @@ Shown below the file tree when local comments or visible remote PR threads exist
 |-----|--------|
 | `r` | Toggle file reviewed (on the PR description: mark it reviewed and collapse it to one row) |
 | `R` | Toggle hunk reviewed |
-| `Space` | Expand / collapse the generated file under the cursor (diff panel) |
+| `Space` | Expand / collapse the file under the cursor, independent of reviewed/generated status (diff panel) |
 | `c` | Add line comment (or file comment if not on a diff line) |
 | `C` | Add file comment |
 | `<leader>c` | Add review comment |
