@@ -846,16 +846,15 @@ impl App {
                 continue;
             }
             let path = file.display_path();
-            let is_reviewed = self.session.is_file_reviewed(path);
 
+            // Mutually exclusive, so only one file-state lookup per file.
             if !single {
                 cumulative += 1; // File header
-            }
-            if !single && is_reviewed {
-                // multi-file collapsed: no body, no trailing spacing
-                continue;
-            }
-            if single && is_reviewed {
+                if self.is_file_collapsed(file) {
+                    // multi-file collapsed: no body, no trailing spacing
+                    continue;
+                }
+            } else if self.session.is_file_reviewed(path) {
                 cumulative += 1; // banner
             }
             if let Some(review) = self.session.files.get(path) {
@@ -999,7 +998,7 @@ impl App {
     }
 
     pub(in crate::app) fn file_render_height(&self, file_idx: usize, file: &DiffFile) -> usize {
-        if self.session.is_file_reviewed(file.display_path()) {
+        if self.is_file_collapsed(file) {
             return 1; // collapsed: header only
         }
         1 + self.file_render_body_height(file_idx, file) // header + body

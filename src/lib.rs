@@ -5,6 +5,7 @@ pub mod config;
 pub mod editor;
 pub mod error;
 pub mod forge;
+pub mod generated;
 pub mod handler;
 pub mod hash;
 pub mod input;

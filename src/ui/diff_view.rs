@@ -30,14 +30,22 @@ pub(super) fn file_header_prefix_text(app: &App, file: &DiffFile) -> String {
     let path = file.display_path();
     let is_reviewed = app.session.is_file_reviewed(path);
     let review_mark = if is_reviewed { "✓ " } else { "" };
+    // Shown whether or not the body is collapsed: once a generated file is
+    // expanded the label is the only thing left saying why it was hidden.
+    let generated_mark = if app.is_generated_file(path) {
+        " [generated]"
+    } else {
+        ""
+    };
     if file.is_commit_message || app.is_pristine_mode {
-        format!("═══ {}{} ", review_mark, path.display())
+        format!("═══ {}{}{} ", review_mark, path.display(), generated_mark)
     } else {
         format!(
-            "═══ {}{} [{}] ",
+            "═══ {}{} [{}]{} ",
             review_mark,
             path.display(),
-            file.status.as_char()
+            file.status.as_char(),
+            generated_mark
         )
     }
 }

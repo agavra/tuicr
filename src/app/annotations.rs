@@ -60,6 +60,13 @@ impl App {
         if self.file_line_count_cache.is_empty() {
             self.populate_file_line_count_cache();
         }
+        // Which files are code-generated has to be known before the walk
+        // below decides whose body to emit. Detection is hooked here rather
+        // than at each of the fifteen `self.diff_files = ...` assignments
+        // because every one of them rebuilds annotations afterwards, and a
+        // missed call site would desynchronize the annotations from the
+        // render. Repeat calls over an unchanged file set do no work.
+        self.detect_generated_files();
 
         self.line_annotations.clear();
 
@@ -163,10 +170,10 @@ impl App {
                     .push(AnnotatedLine::FileHeader { file_idx });
             }
 
-            // If reviewed, skip all content for this file. Single-file
-            // view ignores the reviewed-collapse since the user
-            // explicitly focused this file.
-            if self.session.is_file_reviewed(path) && !self.is_single_file_view {
+            // If collapsed, skip all content for this file. Single-file
+            // view ignores the collapse since the user explicitly focused
+            // this file.
+            if self.is_file_collapsed(file) && !self.is_single_file_view {
                 continue;
             }
 

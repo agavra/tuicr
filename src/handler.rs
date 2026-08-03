@@ -57,6 +57,15 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     CommandSpec::new(&["set commits"], CommandKind::SetCommitsVisible(true)),
     CommandSpec::new(&["set nocommits"], CommandKind::SetCommitsVisible(false)),
     CommandSpec::new(&["set commits!"], CommandKind::ToggleCommits),
+    CommandSpec::new(&["set generated"], CommandKind::SetGeneratedCollapsed(true)),
+    CommandSpec::new(
+        &["set nogenerated"],
+        CommandKind::SetGeneratedCollapsed(false),
+    ),
+    CommandSpec::new(
+        &["generated", "set generated!"],
+        CommandKind::ToggleGenerated,
+    ),
     CommandSpec::new(&["diff"], CommandKind::Diff),
     CommandSpec::new(&["focus", "f"], CommandKind::Focus),
     CommandSpec::new(&["stage"], CommandKind::Stage),
@@ -131,6 +140,8 @@ enum CommandKind {
     SetVim(bool),
     SetCommitsVisible(bool),
     ToggleCommits,
+    SetGeneratedCollapsed(bool),
+    ToggleGenerated,
     Diff,
     Focus,
     Stage,
@@ -853,6 +864,14 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
             app.toggle_commit_selector();
             CommandAfterDispatch::ExitCommandMode
         }
+        CommandKind::SetGeneratedCollapsed(collapse) => {
+            app.set_collapse_generated(collapse);
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::ToggleGenerated => {
+            app.toggle_collapse_generated();
+            CommandAfterDispatch::ExitCommandMode
+        }
         CommandKind::Diff => {
             app.toggle_diff_view_mode();
             CommandAfterDispatch::ExitCommandMode
@@ -1439,6 +1458,16 @@ pub fn handle_diff_action(app: &mut App, action: Action) {
                         app.collapse_gap(gap_id);
                     }
                 }
+            }
+        }
+        // Space already means "expand what's under the cursor" in the file
+        // list and the commit selector; in the diff panel it was unbound, so
+        // it takes on the same meaning here: toggle whether the current
+        // file's diff body is shown, regardless of why it defaulted to
+        // collapsed or expanded.
+        Action::ToggleExpand => {
+            if !app.toggle_file_collapse() {
+                handle_shared_normal_action(app, action);
             }
         }
         Action::SelectFileFull => {

@@ -6,7 +6,7 @@ use chrono::Utc;
 use ratatui::style::Color;
 
 use crate::comment_vim::CommentVimEditor;
-use crate::config::{CommentTypeConfig, ExportConfig};
+use crate::config::{CommentTypeConfig, ExportConfig, GeneratedConfig};
 use crate::editor::EditorTarget;
 use crate::error::{Result, TuicrError};
 use crate::forge::context::{ContextProvider, ForgeContextProvider, VcsContextProvider};
@@ -1290,6 +1290,36 @@ pub struct App {
     pub path_filter: Option<String>,
     /// Resolved `[export]` settings shaping the generated review markdown.
     pub export: ExportConfig,
+    /// Whether files `.gitattributes` marks as code-generated have their diff
+    /// body hidden. Seeded from `[generated] collapse`, flipped at runtime by
+    /// `:set generated!`. Off by default, so tuicr ships behaving as before.
+    pub collapse_generated: bool,
+    /// Whether generated files count toward review progress. Seeded from
+    /// `[generated] count`, which defaults to true. Independent of
+    /// `collapse_generated`: expanding a generated file to peek at it must
+    /// not add it to the denominator.
+    pub count_generated: bool,
+    /// Diff files that `.gitattributes` marks as code-generated, keyed by
+    /// display path.
+    ///
+    /// Path-keyed rather than index-keyed because reloads, watch ticks, and
+    /// commit-selection changes all replace `diff_files` wholesale and shift
+    /// every index. Empty whenever detection is disabled, which is what lets
+    /// the render path short-circuit for free.
+    pub generated_files: HashSet<PathBuf>,
+    /// Per-file collapse override set with `Space`, taking precedence over
+    /// the reviewed/generated defaults `is_file_collapsed` would otherwise
+    /// derive. Keyed by path rather than index so it survives the reloads
+    /// and commit-selection changes that replace `diff_files` wholesale.
+    pub collapse_override: HashMap<PathBuf, bool>,
+    /// Display paths already looked up in `.gitattributes`.
+    ///
+    /// Doubles as the staleness test for detection: a diff file set with no
+    /// unprobed path needs no work, which is how `rebuild_annotations` can
+    /// keep detection current without every `diff_files` assignment having to
+    /// remember to trigger it. Cleared on explicit reload so an edited
+    /// `.gitattributes` takes effect.
+    pub generated_probed: HashSet<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1504,6 +1534,7 @@ mod comments;
 mod commits;
 mod diff_load;
 mod gaps;
+mod generated;
 mod init;
 mod modes;
 mod navigation;

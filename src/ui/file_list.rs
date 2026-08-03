@@ -19,11 +19,13 @@ const UNREVIEWED_BOX: &str = "\u{25a2}"; // ▢
 pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focused_panel == FocusedPanel::FileList;
 
-    let title = format!(
-        " Files \u{00b7} {}/{} ",
-        app.reviewed_count(),
-        app.file_count()
-    );
+    let (reviewed, total) = app.review_progress();
+    let generated = app.generated_file_count();
+    let title = if generated == 0 {
+        format!(" Files \u{00b7} {reviewed}/{total} ")
+    } else {
+        format!(" Files \u{00b7} {reviewed}/{total} \u{00b7} {generated} generated ")
+    };
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
@@ -148,7 +150,19 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
                                 styles::file_status_style(&app.theme, status),
                             ));
                         }
-                        spans.push(Span::raw(filename.to_string()));
+                        // Generated files read as dimmed so the tree shows
+                        // what is skippable at a glance. Deliberately not a
+                        // glyph: `▶` already means "collapsed directory" in
+                        // this panel, and the ▣/▢ checkbox stays about
+                        // reviewed state alone.
+                        if app.is_generated_file(path) {
+                            spans.push(Span::styled(
+                                filename.to_string(),
+                                styles::dim_style(&app.theme),
+                            ));
+                        } else {
+                            spans.push(Span::raw(filename.to_string()));
+                        }
                         Line::from(spans)
                     }
                 }
