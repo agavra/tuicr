@@ -414,8 +414,9 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
             continue;
         }
         let path = file.display_path();
-        let is_reviewed = app.session.is_file_reviewed(path);
 
+        // Mutually exclusive branches, as in the unified renderer: each
+        // side pays for only the file-state lookup it actually needs.
         if !app.is_single_file_view {
             let indicator = cursor_indicator_spaced(line_idx, ctx.current_line_idx);
             let header_text = crate::ui::diff_view::file_header_prefix_text(app, file);
@@ -428,15 +429,14 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                 ),
             ]));
             line_idx += 1;
-        }
 
-        // If file is reviewed (and we're in multi-file view), skip the
-        // body. Single-file view keeps the focused file visible under a
-        // dimmed banner.
-        if is_reviewed && !app.is_single_file_view {
-            continue;
-        }
-        if is_reviewed && app.is_single_file_view {
+            // Collapsed files render as the header alone.
+            if app.is_file_collapsed(file) {
+                continue;
+            }
+        } else if app.session.is_file_reviewed(path) {
+            // Single-file view keeps the focused file visible under a
+            // dimmed banner.
             let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
             lines.push(Line::from(vec![
                 Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
