@@ -180,7 +180,7 @@ The title shows the selected comment's position and the total (`Comments · 17/3
 |-----|--------|
 | `r` | Toggle file reviewed (on the PR description: mark it reviewed and collapse it to one row) |
 | `R` | Toggle hunk reviewed |
-| `Space` | Expand / collapse the generated file under the cursor (diff panel) |
+| `Space` | Expand / collapse the file under the cursor, independent of reviewed/generated status (diff panel) |
 | `c` | Add line comment (or file comment if not on a diff line) |
 | `C` | Add file comment |
 | `<leader>c` | Add review comment |
