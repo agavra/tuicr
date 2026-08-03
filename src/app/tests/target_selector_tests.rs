@@ -4,6 +4,7 @@ use crate::forge::traits::{
     PullRequestReviewMetadata, PullRequestReviewRecord, PullRequestSummary,
 };
 use crate::model::FileStatus;
+use crate::vcs::detect_vcs_at;
 use crate::vcs::traits::{VcsChangeStatus, VcsType};
 
 struct TestReviewsDir {
@@ -571,6 +572,379 @@ fn should_enter_pr_mode_when_opening_pr_via_fake_backend() {
     assert_eq!(app.diff_files.len(), 1);
     // and the forge backend is wired for context expansion / submit
     assert!(app.forge_backend.is_some());
+}
+
+#[test]
+fn should_keep_real_agent_working_dir_when_entering_pr_mode() {
+    let checkout = tempfile::tempdir().expect("temp checkout");
+    let mut app = build_app();
+    let summary = sample_pr(42, "answer");
+    let backend = Box::new(FakeForgeBackend::open_pr_details(
+        test_pr_details(42, "answer"),
+        crate::forge::github::gh::tests_fixture::SIMPLE_PATCH.to_string(),
+    ));
+
+    app.open_pr_with_backend(&summary, backend, Some(checkout.path().to_path_buf()))
+        .unwrap();
+
+    assert_eq!(
+        app.session.repo_path,
+        PathBuf::from("forge:github.com/agavra/tuicr")
+    );
+    assert_eq!(app.vcs_info.root_path, app.session.repo_path);
+    assert_eq!(app.agent_working_dir, checkout.path());
+}
+
+fn run_git(root: &Path, args: &[&str]) -> std::process::Output {
+    let output = std::process::Command::new("git")
+        .current_dir(root)
+        .args(args)
+        .output()
+        .expect("git should run");
+    assert!(
+        output.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output
+}
+
+fn initialize_git_repo(root: &Path) -> PathBuf {
+    let repo = root.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    run_git(&repo, &["init"]);
+    run_git(&repo, &["config", "user.name", "Tuicr Test"]);
+    run_git(&repo, &["config", "user.email", "tuicr@example.com"]);
+    repo
+}
+
+fn commit_test_file(repo: &Path, contents: &str, message: &str) -> String {
+    std::fs::write(repo.join("file.txt"), contents).unwrap();
+    run_git(repo, &["add", "file.txt"]);
+    run_git(
+        repo,
+        &["-c", "commit.gpgsign=false", "commit", "-m", message],
+    );
+    let output = run_git(repo, &["rev-parse", "HEAD"]);
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+struct CommitRangeFixture {
+    vcs: Box<dyn VcsBackend>,
+    vcs_info: VcsInfo,
+    commit_ids: Vec<String>,
+    diff_files: Vec<DiffFile>,
+    file_path: PathBuf,
+    hunk_key: String,
+}
+
+fn commit_range_fixture(root: &Path) -> CommitRangeFixture {
+    let repo = initialize_git_repo(root);
+    let base = commit_test_file(&repo, "base\n", "base");
+    commit_test_file(&repo, "head\n", "head");
+
+    let vcs = detect_vcs_at(&repo, GitBackendPreference::Cli, DiffWhitespaceMode::Normal).unwrap();
+    let vcs_info = vcs.info().clone();
+    let revision = format!("{base}..HEAD");
+    let revision_range = vcs.resolve_revision_range(&revision).unwrap();
+    let commit_ids = revision_range.commit_ids.to_vec();
+    let diff_files = App::get_commit_range_diff_with_ignore(
+        vcs.as_ref(),
+        &vcs_info.root_path,
+        &revision_range,
+        Theme::dark().syntax_highlighter(),
+        None,
+    )
+    .unwrap();
+    let file_path = diff_files[0].display_path().clone();
+    let hunk_key = diff_files[0].hunk_review_keys().remove(0);
+
+    CommitRangeFixture {
+        vcs,
+        vcs_info,
+        commit_ids,
+        diff_files,
+        file_path,
+        hunk_key,
+    }
+}
+
+fn dirty_working_tree_session(root: &Path) -> (PathBuf, ReviewSession) {
+    let repo = initialize_git_repo(root);
+    let head = commit_test_file(&repo, "old\n", "initial");
+    std::fs::write(repo.join("file.txt"), "new\n").unwrap();
+
+    let session = ReviewSession::new(
+        repo.canonicalize().unwrap(),
+        head,
+        Some("main".to_string()),
+        SessionDiffSource::StagedAndUnstaged,
+    );
+    (repo, session)
+}
+
+fn write_test_session(path: &Path, session: &ReviewSession) {
+    std::fs::write(path, serde_json::to_string_pretty(session).unwrap()).unwrap();
+}
+
+fn open_forced_session(target: &str) -> App {
+    App::new(
+        Theme::dark(),
+        None,
+        false,
+        AppStartupOptions {
+            revisions: None,
+            working_tree: false,
+            path_filter: None,
+            file_path: None,
+            all_files: false,
+            git_backend_preference: GitBackendPreference::Cli,
+            diff_whitespace_mode: DiffWhitespaceMode::Normal,
+            commit_selection: CommitSelectionStart::All,
+            pr_target: None,
+            session_target: Some(target),
+            repo_url_override: None,
+        },
+    )
+    .unwrap()
+}
+
+#[test]
+fn should_force_open_local_session_from_json_path() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let (repo, session) = dirty_working_tree_session(temp.path());
+    let session_path = temp.path().join("session.json");
+    write_test_session(&session_path, &session);
+
+    let app = open_forced_session(session_path.to_str().unwrap());
+
+    assert_eq!(app.session.id, session.id);
+    assert!(matches!(app.diff_source, DiffSource::StagedAndUnstaged));
+    assert_eq!(app.diff_files.len(), 1);
+    assert_eq!(app.agent_working_dir, repo.canonicalize().unwrap());
+}
+
+#[test]
+fn should_save_force_opened_session_back_to_json_path() {
+    let _reviews = TestReviewsDir::new();
+    let temp = tempfile::tempdir().expect("temp dir");
+    let (_, session) = dirty_working_tree_session(temp.path());
+    let session_path = temp.path().join("session.json");
+    write_test_session(&session_path, &session);
+
+    let canonical_session_path = session_path.canonicalize().unwrap();
+    let mut app = open_forced_session(session_path.to_str().unwrap());
+    app.session.review_comments.push(Comment::new(
+        "persist here".to_string(),
+        CommentType::from_id("note"),
+        None,
+    ));
+
+    let saved_path = app.save_current_session_merging_external().unwrap();
+
+    assert_eq!(saved_path, canonical_session_path);
+    assert_eq!(
+        app.session_slug().as_deref(),
+        Some(canonical_session_path.to_str().unwrap())
+    );
+    let saved = crate::persistence::storage::load_session(&canonical_session_path).unwrap();
+    assert_eq!(saved.review_comments[0].content, "persist here");
+}
+
+#[test]
+fn should_advertise_resolvable_reviews_relative_session_path() {
+    let _reviews = TestReviewsDir::new();
+    let temp = tempfile::tempdir().expect("temp dir");
+    let (_, session) = dirty_working_tree_session(temp.path());
+    let session_path = crate::persistence::storage::save_session(&session).unwrap();
+    let reviews_dir = crate::persistence::storage::get_reviews_dir().unwrap();
+    let relative_target = session_path.strip_prefix(&reviews_dir).unwrap();
+    let relative_target = relative_target.to_str().unwrap();
+
+    let app = open_forced_session(relative_target);
+
+    let advertised = app.session_slug().expect("session reference");
+    assert_eq!(Path::new(&advertised), session_path);
+    let loaded = crate::review_store::ReviewStore::new()
+        .get_review(&crate::review_store::SessionRef::from_path(advertised))
+        .unwrap();
+    assert_eq!(loaded.id, session.id);
+
+    let slug = crate::persistence::storage::slug_for_session(&session)
+        .unwrap()
+        .to_string();
+    let reopened_by_slug = App::new_from_session_target(
+        Theme::dark(),
+        None,
+        false,
+        &slug,
+        DiffWhitespaceMode::Normal,
+        GitBackendPreference::Cli,
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        reopened_by_slug.session_slug().as_deref(),
+        Some(slug.as_str())
+    );
+}
+
+#[test]
+fn should_prefer_forced_revision_session_over_existing_context_session() {
+    let _reviews = TestReviewsDir::new();
+    let temp = tempfile::tempdir().expect("temp dir");
+    let CommitRangeFixture {
+        vcs_info,
+        commit_ids,
+        diff_files,
+        file_path,
+        hunk_key,
+        ..
+    } = commit_range_fixture(temp.path());
+
+    let mut current_session = ReviewSession::new(
+        vcs_info.root_path.clone(),
+        commit_ids.last().unwrap().clone(),
+        vcs_info.branch_name.clone(),
+        SessionDiffSource::CommitRange,
+    );
+    current_session.commit_range = Some(commit_ids.clone());
+    for file in &diff_files {
+        current_session.add_diff_file(file);
+    }
+    current_session
+        .files
+        .get_mut(&file_path)
+        .unwrap()
+        .reviewed_hunks
+        .insert(hunk_key.clone());
+    crate::persistence::storage::save_session(&current_session).unwrap();
+
+    let mut seed_session = ReviewSession::new(
+        vcs_info.root_path.clone(),
+        "saved-for-a-different-source".to_string(),
+        Some("saved-branch".to_string()),
+        SessionDiffSource::WorkingTree,
+    );
+    for file in &diff_files {
+        seed_session.add_diff_file(file);
+    }
+    seed_session
+        .files
+        .get_mut(&file_path)
+        .unwrap()
+        .add_file_comment(Comment::new(
+            "explicit session comment".to_string(),
+            CommentType::from_id("note"),
+            None,
+        ));
+    let seed_path = temp.path().join("seed-session.json");
+    write_test_session(&seed_path, &seed_session);
+
+    let (loaded_path, loaded_session) =
+        App::load_forced_local_session_for_selection(Some(seed_path.to_str().unwrap()), &vcs_info)
+            .unwrap()
+            .unwrap();
+
+    assert_eq!(loaded_path, seed_path.canonicalize().unwrap());
+    assert_eq!(loaded_session.id, seed_session.id);
+    assert_ne!(loaded_session.id, current_session.id);
+    assert_eq!(
+        loaded_session.files[&file_path].file_comments[0].content,
+        "explicit session comment"
+    );
+    assert!(!loaded_session.is_hunk_reviewed(&file_path, &hunk_key));
+}
+
+#[test]
+fn should_apply_forced_session_state_to_explicit_revision_range() {
+    let _reviews = TestReviewsDir::new();
+    let temp = tempfile::tempdir().expect("temp dir");
+    let CommitRangeFixture {
+        vcs,
+        vcs_info,
+        commit_ids,
+        diff_files,
+        file_path,
+        hunk_key,
+    } = commit_range_fixture(temp.path());
+
+    let mut session = ReviewSession::new(
+        vcs_info.root_path.clone(),
+        "saved-for-a-different-source".to_string(),
+        Some("saved-branch".to_string()),
+        SessionDiffSource::WorkingTree,
+    );
+    for file in &diff_files {
+        session.add_diff_file(file);
+    }
+    let review = session.files.get_mut(&file_path).unwrap();
+    review.reviewed = true;
+    review.reviewed_hunks.insert(hunk_key.clone());
+    review.add_file_comment(Comment::new(
+        "keep this comment".to_string(),
+        CommentType::from_id("note"),
+        None,
+    ));
+    let session_path = temp.path().join("session.json");
+    write_test_session(&session_path, &session);
+
+    let (loaded_path, loaded_session) = App::load_forced_local_session_for_selection(
+        Some(session_path.to_str().unwrap()),
+        &vcs_info,
+    )
+    .unwrap()
+    .unwrap();
+    let mut app = App::build(
+        vcs,
+        vcs_info,
+        Theme::dark(),
+        None,
+        false,
+        diff_files,
+        loaded_session,
+        DiffSource::CommitRange(commit_ids.clone()),
+        InputMode::Normal,
+        Vec::new(),
+        None,
+        None,
+    )
+    .unwrap();
+    app.bind_explicit_session_target(session_path.to_str().unwrap(), loaded_path.clone());
+
+    assert_eq!(app.session.id, session.id);
+    assert_eq!(app.session.diff_source, SessionDiffSource::WorkingTree);
+    assert_eq!(app.session.commit_range, None);
+    assert!(matches!(
+        &app.diff_source,
+        DiffSource::CommitRange(selected) if selected == &commit_ids
+    ));
+    assert_eq!(app.session_path.as_ref(), Some(&loaded_path));
+    assert!(app.session.is_file_reviewed(&file_path));
+    assert!(app.session.is_hunk_reviewed(&file_path, &hunk_key));
+    assert_eq!(
+        app.session.files[&file_path].file_comments[0].content,
+        "keep this comment"
+    );
+
+    app.session.review_comments.push(Comment::new(
+        "save to the explicit session".to_string(),
+        CommentType::from_id("note"),
+        None,
+    ));
+    assert_eq!(
+        app.save_current_session_merging_external().unwrap(),
+        loaded_path
+    );
+    let saved = crate::persistence::storage::load_session(&session_path).unwrap();
+    assert_eq!(saved.id, session.id);
+    assert_eq!(saved.diff_source, SessionDiffSource::WorkingTree);
+    assert_eq!(saved.commit_range, None);
+    assert_eq!(
+        saved.review_comments[0].content,
+        "save to the explicit session"
+    );
 }
 
 fn sample_pr_commit(oid: &str, summary: &str) -> crate::forge::traits::PullRequestCommit {

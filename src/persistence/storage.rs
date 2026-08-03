@@ -75,7 +75,7 @@ pub(crate) fn update_session_in_dir<T>(
     with_reviews_dir_lock(reviews_dir, || {
         let mut session = load_session(session_ref)?;
         let output = update(&mut session)?;
-        save_session_in_dir_unlocked(&session, reviews_dir)?;
+        save_session_to_path_in_dir_unlocked(&session, session_ref, reviews_dir)?;
         Ok((session, output))
     })
 }
@@ -96,14 +96,33 @@ pub(crate) fn save_session_by_identity_in_dir<T>(
     maybe_migrate(reviews_dir)?;
     with_reviews_dir_lock(reviews_dir, || {
         let path = session_path_in_dir(identity, reviews_dir)?;
-        let persisted = if path.exists() {
-            Some(load_session(&path)?)
-        } else {
-            None
-        };
+        let persisted = path.exists().then(|| load_session(&path)).transpose()?;
         let (session, output) = update(persisted)?;
         let saved_path = save_session_in_dir_unlocked(&session, reviews_dir)?;
         Ok((saved_path, session, output))
+    })
+}
+
+pub(crate) fn save_session_to_path<T>(
+    path: &Path,
+    update: impl FnOnce(Option<ReviewSession>) -> Result<(ReviewSession, T)>,
+) -> Result<(PathBuf, ReviewSession, T)> {
+    let reviews_dir = get_reviews_dir()?;
+    save_session_to_path_in_dir(path, &reviews_dir, update)
+}
+
+pub(crate) fn save_session_to_path_in_dir<T>(
+    path: &Path,
+    reviews_dir: &Path,
+    update: impl FnOnce(Option<ReviewSession>) -> Result<(ReviewSession, T)>,
+) -> Result<(PathBuf, ReviewSession, T)> {
+    maybe_migrate(reviews_dir)?;
+    with_reviews_dir_lock(reviews_dir, || {
+        let path = normalize_path_for_comparison(path);
+        let persisted = path.exists().then(|| load_session(&path)).transpose()?;
+        let (session, output) = update(persisted)?;
+        save_session_to_path_in_dir_unlocked(&session, &path, reviews_dir)?;
+        Ok((path, session, output))
     })
 }
 
@@ -167,10 +186,8 @@ pub(crate) fn delete_session_in_dir(path: &Path, reviews_dir: &Path) -> Result<b
 /// the reviews-dir lock and have loaded `session` from `path`.
 fn remove_session_at(path: &Path, reviews_dir: &Path, session: &ReviewSession) -> Result<()> {
     let slug = slug_for_session(session)?.to_string();
-    let relative = path
-        .strip_prefix(reviews_dir)
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|_| path.to_path_buf());
+    let relative =
+        managed_session_relative_path(path, reviews_dir).unwrap_or_else(|| path.to_path_buf());
 
     let mut manifest = manifest::load_manifest(reviews_dir).unwrap_or_default();
     if let Some(bucket) = manifest.entries.get_mut(&slug) {
@@ -198,7 +215,7 @@ pub(crate) fn mark_session_active_in_dir(
 ) -> Result<()> {
     maybe_migrate(reviews_dir)?;
     let slug = slug_for_session(session)?.to_string();
-    let path = normalize_active_path(path);
+    let path = normalize_path_for_comparison(path);
     with_reviews_dir_lock(reviews_dir, || {
         let mut active = load_active_sessions_unlocked(reviews_dir).unwrap_or_default();
         active.prune_stale();
@@ -238,7 +255,7 @@ pub(crate) fn active_session_paths_in_dir(reviews_dir: &Path) -> Result<HashSet<
         .sessions
         .into_iter()
         .filter(|entry| entry.is_fresh())
-        .map(|entry| normalize_active_path(&entry.path))
+        .map(|entry| normalize_path_for_comparison(&entry.path))
         .collect())
 }
 
@@ -323,32 +340,45 @@ fn save_active_sessions_unlocked(reviews_dir: &Path, active: &ActiveSessionsFile
     write_atomic(&active_sessions_path(reviews_dir), json.as_bytes())
 }
 
-fn normalize_active_path(path: &Path) -> PathBuf {
+pub(crate) fn normalize_path_for_comparison(path: &Path) -> PathBuf {
     fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
-pub(crate) fn normalize_path_for_comparison(path: &Path) -> PathBuf {
-    normalize_active_path(path)
+fn managed_session_relative_path(path: &Path, reviews_dir: &Path) -> Option<PathBuf> {
+    path.strip_prefix(reviews_dir)
+        .ok()
+        .or_else(|| {
+            fs::canonicalize(reviews_dir)
+                .ok()
+                .and_then(|root| path.strip_prefix(root).ok())
+        })
+        .map(Path::to_path_buf)
 }
 
 fn save_session_in_dir_unlocked(session: &ReviewSession, reviews_dir: &Path) -> Result<PathBuf> {
-    let slug = slug_for_session(session)?;
-    let relative = relative_path_for_slug(&slug, session)?;
-    let full_path = reviews_dir.join(&relative);
-
-    if let Some(parent) = full_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let json = serde_json::to_string_pretty(session)?;
-    write_atomic(&full_path, json.as_bytes())?;
-
-    let mut manifest = manifest::load_manifest(reviews_dir).unwrap_or_default();
-    let anchor = manifest_anchor_for(&slug);
-    let entry = manifest::entry_from_session(session, relative, anchor);
-    manifest.upsert(slug.to_string(), entry);
-    manifest::save_manifest(reviews_dir, &manifest)?;
-
+    let full_path = session_path_in_dir(session, reviews_dir)?;
+    save_session_to_path_in_dir_unlocked(session, &full_path, reviews_dir)?;
     Ok(full_path)
+}
+
+fn save_session_to_path_in_dir_unlocked(
+    session: &ReviewSession,
+    full_path: &Path,
+    reviews_dir: &Path,
+) -> Result<()> {
+    let json = serde_json::to_string_pretty(session)?;
+    write_atomic(full_path, json.as_bytes())?;
+
+    if let Some(relative) = managed_session_relative_path(full_path, reviews_dir) {
+        let slug = slug_for_session(session)?;
+        let mut manifest = manifest::load_manifest(reviews_dir).unwrap_or_default();
+        let anchor = manifest_anchor_for(&slug);
+        let entry = manifest::entry_from_session(session, relative, anchor);
+        manifest.upsert(slug.to_string(), entry);
+        manifest::save_manifest(reviews_dir, &manifest)?;
+    }
+
+    Ok(())
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -465,6 +495,46 @@ fn read_lock_owner_pid(path: &Path) -> Option<u32> {
 pub fn load_session(path: &Path) -> Result<ReviewSession> {
     let contents = fs::read_to_string(path)?;
     serde_json::from_str(&contents).map_err(|e| TuicrError::CorruptedSession(e.to_string()))
+}
+
+/// Load a session selected explicitly by the user. Existing filesystem paths
+/// win; otherwise the target is treated as an exact manifest slug.
+pub fn load_session_by_path_or_slug(target: &str) -> Result<(PathBuf, ReviewSession)> {
+    if target.trim().is_empty() {
+        return Err(TuicrError::InvalidInput(
+            "--session requires a session path or slug".to_string(),
+        ));
+    }
+
+    let path = Path::new(target);
+    let full_path = if path.exists() {
+        normalize_path_for_comparison(path)
+    } else {
+        let reviews_dir = get_reviews_dir()?;
+        maybe_migrate(&reviews_dir)?;
+
+        let relative_path = reviews_dir.join(target);
+        if relative_path.exists() {
+            relative_path
+        } else {
+            let manifest = manifest::load_manifest(&reviews_dir).unwrap_or_default();
+            match manifest.entries.get(target).map(Vec::as_slice) {
+                Some([entry]) => reviews_dir.join(&entry.path),
+                None | Some([]) => {
+                    return Err(TuicrError::InvalidInput(format!(
+                        "session target '{target}' was not found as a file or saved session slug"
+                    )));
+                }
+                Some(_) => {
+                    return Err(TuicrError::InvalidInput(format!(
+                        "session slug '{target}' is ambiguous across multiple checkouts; pass the session JSON path instead"
+                    )));
+                }
+            }
+        }
+    };
+
+    load_session(&full_path).map(|session| (full_path, session))
 }
 
 /// Look up the persisted local session that matches the requested context.
@@ -958,6 +1028,37 @@ mod tests {
     }
 
     #[test]
+    fn should_force_load_session_by_path() {
+        let _g = with_test_reviews_dir();
+        let session = make_local_session(
+            make_repo(),
+            "abc1234",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
+            None,
+        );
+        let path = save_session(&session).unwrap();
+
+        let (loaded_path, loaded) = load_session_by_path_or_slug(path.to_str().unwrap()).unwrap();
+
+        assert_eq!(loaded_path, fs::canonicalize(path).unwrap());
+        assert_eq!(loaded.id, session.id);
+    }
+
+    #[test]
+    fn should_force_load_session_by_slug() {
+        let _g = with_test_reviews_dir();
+        let session = make_pr_session(&make_pr_key(125, "headsha"));
+        let path = save_session(&session).unwrap();
+        let slug = slug_for_session(&session).unwrap().to_string();
+
+        let (loaded_path, loaded) = load_session_by_path_or_slug(&slug).unwrap();
+
+        assert_eq!(loaded_path, path);
+        assert_eq!(loaded.id, session.id);
+    }
+
+    #[test]
     fn should_mark_and_clear_active_session() {
         let _g = with_test_reviews_dir();
         let reviews_dir = get_reviews_dir().unwrap();
@@ -1144,6 +1245,82 @@ mod tests {
             .expect("entry exists");
         assert!(matches!(entry.kind, ManifestKind::Local));
         assert_eq!(entry.display.file_count, 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_update_manifest_for_canonical_session_in_symlinked_reviews_dir() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path().join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        let actual_reviews_dir = temp.path().join("actual-reviews");
+        fs::create_dir_all(&actual_reviews_dir).unwrap();
+        let reviews_dir = temp.path().join("linked-reviews");
+        std::os::unix::fs::symlink(&actual_reviews_dir, &reviews_dir).unwrap();
+
+        let session = make_local_session(
+            repo.clone(),
+            "abc1234",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
+            None,
+        );
+        let session_path = save_session_in_dir(&session, &reviews_dir).unwrap();
+        let canonical_session_path = fs::canonicalize(&session_path).unwrap();
+
+        save_session_to_path_in_dir(&canonical_session_path, &reviews_dir, |persisted| {
+            let mut session = persisted.unwrap();
+            session.review_comments.push(Comment::new(
+                "refresh the managed manifest".to_string(),
+                CommentType::from_id("note"),
+                None,
+            ));
+            Ok((session, ()))
+        })
+        .unwrap();
+
+        let manifest = manifest::load_manifest(&reviews_dir).unwrap();
+        let slug = slug_for_session(&session).unwrap();
+        let canonical_repo = fs::canonicalize(&repo).unwrap();
+        let entry = manifest
+            .get_local(&slug.to_string(), &canonical_repo)
+            .expect("managed session remains indexed");
+        assert_eq!(entry.display.comment_count, 1);
+        assert_eq!(entry.path, session_path.strip_prefix(&reviews_dir).unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_remove_manifest_for_canonical_session_in_symlinked_reviews_dir() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path().join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        let actual_reviews_dir = temp.path().join("actual-reviews");
+        fs::create_dir_all(&actual_reviews_dir).unwrap();
+        let reviews_dir = temp.path().join("linked-reviews");
+        std::os::unix::fs::symlink(&actual_reviews_dir, &reviews_dir).unwrap();
+
+        let session = make_local_session(
+            repo.clone(),
+            "abc1234",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
+            None,
+        );
+        let session_path = save_session_in_dir(&session, &reviews_dir).unwrap();
+        let canonical_session_path = fs::canonicalize(&session_path).unwrap();
+
+        assert!(delete_session_in_dir(&canonical_session_path, &reviews_dir).unwrap());
+
+        let manifest = manifest::load_manifest(&reviews_dir).unwrap();
+        let slug = slug_for_session(&session).unwrap();
+        let canonical_repo = fs::canonicalize(&repo).unwrap();
+        assert!(
+            manifest
+                .get_local(&slug.to_string(), &canonical_repo)
+                .is_none()
+        );
+        assert!(!canonical_session_path.exists());
     }
 
     // ---- Lookup ----

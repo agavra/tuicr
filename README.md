@@ -80,6 +80,8 @@ tuicr pr 125                # GitHub PR
 tuicr mr 125                # GitLab MR
 tuicr tui pr 125            # GitHub PR via explicit TUI subcommand
 tuicr tui mr 125            # GitLab MR via explicit TUI subcommand
+tuicr --session <path|slug> # Force-open a saved session
+tuicr -r main..HEAD --session <path|slug> # Use saved review state on this range
 tuicr --stdout              # Pipe the review to stdout
 tuicr review list           # List saved local review sessions
 tuicr update                # Update the active installation
@@ -91,6 +93,11 @@ Inside tuicr, navigate with `j`/`k`, press `c` to comment, then `y` to copy the 
 before, tuicr preselects commits newer than your latest submitted review when that metadata is
 available; commits already covered by that review are marked with `✓` in the inline selector.
 Auto-detects git, jj, or mercurial.
+
+`--session` accepts an existing session JSON path or an exact saved-session slug. By itself
+it reconstructs the saved diff before opening; with `-r`, the requested revision range owns
+the diff and the saved session supplies comments plus reviewed file/hunk state. PR sessions
+can be forced only while the remote PR head still matches the saved session head.
 
 ## How it compares
 

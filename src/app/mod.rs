@@ -27,6 +27,7 @@ use crate::vcs::traits::VcsType;
 use crate::vcs::{
     ChangeKind, CommitInfo, DiffWhitespaceMode, FileBackend, GitBackendPreference, PrNoopVcs,
     ResolvedRevisionRange, RevisionDiffTarget, VcsBackend, VcsChangeStatus, VcsInfo, detect_vcs,
+    detect_vcs_at,
 };
 
 const VISIBLE_COMMIT_COUNT: usize = 10;
@@ -1019,9 +1020,12 @@ pub struct App {
     pub theme: Theme,
     pub vcs: Box<dyn VcsBackend>,
     pub vcs_info: VcsInfo,
+    /// Real filesystem directory for agent launches, including PR reviews.
+    pub agent_working_dir: PathBuf,
     pub session: ReviewSession,
     pub(crate) persisted_session_snapshot: ReviewSession,
     pub(crate) session_path: Option<PathBuf>,
+    pub(in crate::app) explicit_session_ref: Option<String>,
     pub(crate) session_file_state: Option<SessionFileState>,
     pub review_watch_interval: Option<Duration>,
     pub next_review_watch_at: Instant,
@@ -1492,6 +1496,9 @@ pub struct AppStartupOptions<'a> {
     /// Direct PR target (`tuicr pr <target>`). Mutually exclusive with the
     /// other selectors above; the binary validates that before reaching here.
     pub pr_target: Option<&'a str>,
+    /// Saved session target. Alone it reconstructs the saved diff source;
+    /// with revisions it supplies comments and reviewed state for that range.
+    pub session_target: Option<&'a str>,
     /// `--repo-url` override for PR operations, already parsed into a
     /// `ForgeRepository`. When `Some`, the canonical resolver short-circuits
     /// the `gh api` parent lookup and uses this value directly.

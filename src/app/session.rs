@@ -1,14 +1,15 @@
 use super::*;
 
 impl App {
-    /// Slug for the currently active session, derived from the session's
-    /// embedded fields. Returns `None` if derivation fails (e.g., a local
-    /// session pointing at a non-existent path). The slug is cheap to derive
-    /// from PR sessions (no I/O) and a few stat calls for local sessions.
+    /// Resolvable reference for the active session. Explicit session paths or
+    /// slugs take precedence over a slug derived from the session fields.
+    /// Returns `None` when the session cannot be resolved.
     pub fn session_slug(&self) -> Option<String> {
-        crate::persistence::storage::slug_for_session(&self.session)
-            .ok()
-            .map(|s| s.to_string())
+        self.explicit_session_ref.clone().or_else(|| {
+            crate::persistence::storage::slug_for_session(&self.session)
+                .ok()
+                .map(|slug| slug.to_string())
+        })
     }
 
     pub fn set_review_watch_interval_ms(&mut self, interval_ms: u64) {
@@ -22,6 +23,7 @@ impl App {
     }
 
     pub(in crate::app) fn reset_persisted_session_tracking(&mut self) {
+        self.explicit_session_ref = None;
         self.session_path = crate::persistence::storage::session_path(&self.session).ok();
         self.session_file_state = self
             .session_path
@@ -107,19 +109,36 @@ impl App {
         self.should_quit = true;
     }
 
+    pub(in crate::app) fn bind_explicit_session_target(&mut self, target: &str, path: PathBuf) {
+        self.explicit_session_ref = Some(if Path::new(target).exists() || path.ends_with(target) {
+            path.display().to_string()
+        } else {
+            target.to_string()
+        });
+        self.session_file_state = SessionFileState::from_path(&path).ok();
+        self.persisted_session_snapshot = crate::persistence::storage::load_session(&path)
+            .unwrap_or_else(|_| self.session.clone());
+        self.session_path = Some(path);
+    }
+
     pub fn save_current_session_merging_external(&mut self) -> Result<PathBuf> {
-        let identity = self.session.clone();
         let current = self.session.clone();
         let base = self.persisted_session_snapshot.clone();
-        let (path, saved, _changed) =
-            crate::persistence::storage::save_session_by_identity(&identity, |persisted| {
-                let mut merged = current.clone();
-                if let Some(latest) = persisted.as_ref() {
-                    Self::merge_external_session_changes(&mut merged, &base, latest);
-                }
-                merged.updated_at = Utc::now();
-                Ok((merged, ()))
-            })?;
+        let merge_session = |persisted: Option<ReviewSession>| {
+            let mut merged = current;
+            if let Some(latest) = persisted.as_ref() {
+                Self::merge_external_session_changes(&mut merged, &base, latest);
+            }
+            merged.updated_at = Utc::now();
+            Ok((merged, ()))
+        };
+        let (path, saved, ()) = if self.explicit_session_ref.is_some()
+            && let Some(path) = self.session_path.as_deref()
+        {
+            crate::persistence::storage::save_session_to_path(path, merge_session)?
+        } else {
+            crate::persistence::storage::save_session_by_identity(&self.session, merge_session)?
+        };
         self.mark_session_saved(path.clone(), saved);
         self.mark_current_session_active_at(&path);
         self.rebuild_annotations();
@@ -457,6 +476,38 @@ impl App {
             session.updated_at = chrono::Utc::now();
         }
         session
+    }
+
+    pub(in crate::app) fn load_forced_local_session_for_selection(
+        target: Option<&str>,
+        vcs_info: &VcsInfo,
+    ) -> Result<Option<(PathBuf, ReviewSession)>> {
+        let Some(target) = target else {
+            return Ok(None);
+        };
+
+        let (path, session) = crate::persistence::storage::load_session_by_path_or_slug(target)?;
+        if session.pr_session_key.is_some()
+            || matches!(session.diff_source, SessionDiffSource::PullRequest)
+        {
+            return Err(TuicrError::InvalidInput(
+                "--session with -r requires a local review session".to_string(),
+            ));
+        }
+
+        let saved_root =
+            crate::persistence::storage::normalize_path_for_comparison(&session.repo_path);
+        let current_root =
+            crate::persistence::storage::normalize_path_for_comparison(&vcs_info.root_path);
+        if saved_root != current_root {
+            return Err(TuicrError::InvalidInput(format!(
+                "session belongs to {}, but the active checkout is {}",
+                saved_root.display(),
+                current_root.display()
+            )));
+        }
+
+        Ok(Some((path, session)))
     }
 
     pub(in crate::app) fn load_or_create_session(

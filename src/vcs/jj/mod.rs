@@ -61,7 +61,10 @@ impl JjBackend {
     }
 
     /// Create backend from a known path (used by discover and tests)
-    fn from_path(root_path: PathBuf, whitespace_mode: DiffWhitespaceMode) -> Result<Self> {
+    pub(crate) fn from_path(
+        root_path: PathBuf,
+        whitespace_mode: DiffWhitespaceMode,
+    ) -> Result<Self> {
         // Canonicalize to resolve symlinks (e.g., /var -> /private/var on macOS)
         let root_path = root_path.canonicalize().unwrap_or(root_path);
 

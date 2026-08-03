@@ -7,6 +7,25 @@ impl App {
         output_to_stdout: bool,
         options: AppStartupOptions<'_>,
     ) -> Result<Self> {
+        if options.session_target.is_some() && options.pr_target.is_some() {
+            return Err(TuicrError::InvalidInput(
+                "--session cannot be combined with `pr <target>`".to_string(),
+            ));
+        }
+        if let Some(target) = options.session_target
+            && options.revisions.is_none()
+        {
+            return Self::new_from_session_target(
+                theme,
+                comment_type_configs,
+                output_to_stdout,
+                target,
+                options.diff_whitespace_mode,
+                options.git_backend_preference,
+                options.repo_url_override,
+            );
+        }
+
         // `tuicr pr <target>` mode: enter PR review directly, skipping the
         // selector. Errors here surface before TUI startup like other
         // startup failures.
@@ -16,7 +35,7 @@ impl App {
                 comment_type_configs,
                 output_to_stdout,
                 target,
-                options.repo_url_override.clone(),
+                options.repo_url_override,
                 options.commit_selection,
             );
         }
@@ -41,7 +60,7 @@ impl App {
                 InputMode::Normal,
                 Vec::new(),
                 None, // no path_filter
-                options.repo_url_override.clone(),
+                options.repo_url_override,
             )?;
 
             // Hide the file list only when reviewing a single file; in
@@ -100,24 +119,10 @@ impl App {
                 InputMode::Normal,
                 Vec::new(),
                 None, // no path_filter
-                options.repo_url_override.clone(),
+                options.repo_url_override,
             )?;
 
-            app.is_pristine_mode = true;
-            app.focused_panel = FocusedPanel::Diff;
-            // Force unified view: pristine mode has no diff, so side-by-side
-            // would render two identical panes. The `:diff` command is gated
-            // separately so the user cannot toggle back.
-            app.diff_view_mode = DiffViewMode::Unified;
-            // Default `--all-files` to single-file view: every tracked file
-            // in one continuous scroll is overwhelming on large repos -- both
-            // visually and at startup, since pristine still loads the whole
-            // tree before render. `:focus` / `<leader>f` toggles back.
-            app.is_single_file_view = true;
-            // Snap the viewport to the first file's start.
-            let start = app.calculate_file_scroll_offset(app.diff_state.current_file_idx);
-            app.diff_state.scroll_offset = start;
-            app.diff_state.cursor_line = start;
+            app.configure_pristine_view();
 
             return Ok(app);
         }
@@ -144,135 +149,81 @@ impl App {
                 },
             )?;
             let commit_ids = revision_range.commit_ids.to_vec();
-
-            if options.working_tree {
-                // Combined: commit range + staged/unstaged changes
-                let diff_files = Self::get_working_tree_with_commits_diff_with_ignore(
+            let diff_files = if options.working_tree {
+                Self::get_working_tree_with_commits_diff_with_ignore(
                     vcs.as_ref(),
                     &vcs_info.root_path,
                     &commit_ids,
                     highlighter,
                     options.path_filter,
-                )?;
-                let session = Self::load_or_create_staged_unstaged_and_commits_session(
-                    &vcs_info,
-                    &commit_ids,
-                );
-                let review_commits: Vec<CommitInfo> = crate::profile::time_with(
-                    "startup.selected_commit_info",
-                    || vcs.get_commits_info(&commit_ids),
-                    profile_commit_result,
-                )?
-                .into_iter()
-                .rev()
-                .collect();
-                // Prepend staged/unstaged entries only when the backend supports them
+                )
+            } else {
+                Self::get_commit_range_diff_with_ignore(
+                    vcs.as_ref(),
+                    &vcs_info.root_path,
+                    &revision_range,
+                    highlighter,
+                    options.path_filter,
+                )
+            }?;
+            let (explicit_session_path, forced_session) =
+                Self::load_forced_local_session_for_selection(options.session_target, &vcs_info)?
+                    .unzip();
+            let session = forced_session.unwrap_or_else(|| {
+                if options.working_tree {
+                    Self::load_or_create_staged_unstaged_and_commits_session(&vcs_info, &commit_ids)
+                } else {
+                    Self::load_or_create_commit_range_session(&vcs_info, &commit_ids)
+                }
+            });
+            let mut review_commits: Vec<CommitInfo> = crate::profile::time_with(
+                "startup.selected_commit_info",
+                || vcs.get_commits_info(&commit_ids),
+                profile_commit_result,
+            )?
+            .into_iter()
+            .rev()
+            .collect();
+
+            if options.working_tree {
                 let change_status = Self::get_change_status_with_ignore(
                     vcs.as_ref(),
                     &vcs_info.root_path,
                     highlighter,
                     options.path_filter,
                 )?;
-                let mut all_commits = Vec::new();
-                if change_status.staged {
-                    all_commits.push(Self::staged_commit_entry());
-                }
-                if change_status.unstaged {
-                    all_commits.push(Self::unstaged_commit_entry());
-                }
-                all_commits.extend(review_commits);
-
-                let mut app = Self::build(
-                    vcs,
-                    vcs_info,
-                    theme,
-                    comment_type_configs.clone(),
-                    output_to_stdout,
-                    diff_files,
-                    session,
-                    DiffSource::StagedUnstagedAndCommits(commit_ids),
-                    InputMode::Normal,
-                    Vec::new(),
-                    options.path_filter,
-                    options.repo_url_override.clone(),
-                )?;
-
-                app.range_diff_files = Some(app.diff_files.clone());
-                app.commit_list = all_commits.clone();
-                let range = Self::initial_commit_range(options.commit_selection, all_commits.len());
-                app.commit_selection_range = range;
-                app.commit_list_cursor = range.map(|(start, _)| start).unwrap_or(0);
-                app.commit_list_scroll_offset = 0;
-                app.visible_commit_count = all_commits.len();
-                app.has_more_commit = false;
-                app.show_commit_selector = all_commits.len() > 1;
-                app.commit_diff_cache.clear();
-                app.review_commits = all_commits;
-                // `initial_commit_selection = oldest` scopes the review to a single
-                // commit; narrow the loaded diff to it.
-                if Self::is_strict_commit_selection(
-                    app.commit_selection_range,
-                    app.review_commits.len(),
-                ) {
-                    app.reload_inline_selection()?;
-                } else {
-                    app.insert_commit_message_if_single();
-                    app.sort_files_by_directory(true);
-                    app.expand_all_dirs();
-                    app.rebuild_annotations();
-                }
-
-                return Ok(app);
+                review_commits = Self::prepend_working_tree_commits(review_commits, change_status);
             }
 
-            // Resolve the revisions to commits and diff as a commit range
-            let diff_files = Self::get_commit_range_diff_with_ignore(
-                vcs.as_ref(),
-                &vcs_info.root_path,
-                &revision_range,
-                highlighter,
-                options.path_filter,
-            )?;
-            let session = Self::load_or_create_commit_range_session(&vcs_info, &commit_ids);
-            // Get commit info for the inline commit selector
-            let review_commits = crate::profile::time_with(
-                "startup.selected_commit_info",
-                || vcs.get_commits_info(&commit_ids),
-                profile_commit_result,
-            )?;
-            // Reverse to newest-first display order
-            let review_commits: Vec<CommitInfo> = review_commits.into_iter().rev().collect();
+            let diff_source = if options.working_tree {
+                DiffSource::StagedUnstagedAndCommits(commit_ids)
+            } else {
+                DiffSource::CommitRange(commit_ids)
+            };
 
             let mut app = Self::build(
                 vcs,
                 vcs_info,
                 theme,
-                comment_type_configs.clone(),
+                comment_type_configs,
                 output_to_stdout,
                 diff_files,
                 session,
-                DiffSource::CommitRange(commit_ids),
+                diff_source,
                 InputMode::Normal,
                 Vec::new(),
                 options.path_filter,
-                options.repo_url_override.clone(),
+                options.repo_url_override,
             )?;
-
-            // Set up inline commit selector for multi-commit reviews
-            if review_commits.len() > 1 {
-                app.range_diff_files = Some(app.diff_files.clone());
-                app.commit_list = review_commits.clone();
-                let range =
-                    Self::initial_commit_range(options.commit_selection, review_commits.len());
-                app.commit_selection_range = range;
-                app.commit_list_cursor = range.map(|(start, _)| start).unwrap_or(0);
-                app.commit_list_scroll_offset = 0;
-                app.visible_commit_count = review_commits.len();
-                app.has_more_commit = false;
-                app.show_commit_selector = true;
-                app.commit_diff_cache.clear();
+            if let (Some(target), Some(path)) = (options.session_target, explicit_session_path) {
+                app.bind_explicit_session_target(target, path);
             }
-            app.review_commits = review_commits;
+
+            if options.working_tree || review_commits.len() > 1 {
+                app.configure_inline_commit_selection(review_commits, options.commit_selection);
+            } else {
+                app.review_commits = review_commits;
+            }
             // `initial_commit_selection = oldest` opens the review scoped to a single
             // commit; narrow the loaded diff to it. Otherwise finalize the
             // full-range diff already loaded above.
@@ -282,10 +233,7 @@ impl App {
             ) {
                 app.reload_inline_selection()?;
             } else {
-                app.insert_commit_message_if_single();
-                app.sort_files_by_directory(true);
-                app.expand_all_dirs();
-                app.rebuild_annotations();
+                app.finish_loaded_commit_diff();
             }
 
             Ok(app)
@@ -312,7 +260,7 @@ impl App {
                 InputMode::Normal,
                 Vec::new(),
                 options.path_filter,
-                options.repo_url_override.clone(),
+                options.repo_url_override,
             )?;
 
             Ok(app)
@@ -382,7 +330,7 @@ impl App {
                 InputMode::CommitSelect,
                 commit_list,
                 options.path_filter,
-                options.repo_url_override.clone(),
+                options.repo_url_override,
             )?;
 
             app.has_more_commit = commits.len() >= VISIBLE_COMMIT_COUNT;
@@ -433,14 +381,17 @@ impl App {
             .filter(|path| path.exists())
             .and_then(|path| SessionFileState::from_path(path).ok());
         let persisted_session_snapshot = session.clone();
+        let agent_working_dir = Self::usable_agent_working_dir(Some(&vcs_info.root_path));
 
         let mut app = Self {
             theme,
             vcs,
             vcs_info,
+            agent_working_dir,
             session,
             persisted_session_snapshot,
             session_path,
+            explicit_session_ref: None,
             session_file_state,
             review_watch_interval: Some(Duration::from_millis(DEFAULT_REVIEW_WATCH_INTERVAL_MS)),
             next_review_watch_at: Instant::now()
@@ -746,6 +697,393 @@ impl App {
         }
     }
 
+    fn configure_pristine_view(&mut self) {
+        self.is_pristine_mode = true;
+        self.focused_panel = FocusedPanel::Diff;
+        // Pristine mode has no diff, so side-by-side would render identical
+        // panes. The `:diff` command is gated separately.
+        self.diff_view_mode = DiffViewMode::Unified;
+        // A full repository is easier to navigate one file at a time;
+        // `:focus` / `<leader>f` toggles back to the continuous view.
+        self.is_single_file_view = true;
+        let start = self.calculate_file_scroll_offset(self.diff_state.current_file_idx);
+        self.diff_state.scroll_offset = start;
+        self.diff_state.cursor_line = start;
+    }
+
+    fn finish_loaded_commit_diff(&mut self) {
+        self.insert_commit_message_if_single();
+        self.sort_files_by_directory(true);
+        self.expand_all_dirs();
+        self.rebuild_annotations();
+    }
+
+    fn prepend_working_tree_commits(
+        commits: Vec<CommitInfo>,
+        change_status: VcsChangeStatus,
+    ) -> Vec<CommitInfo> {
+        let mut all_commits = Vec::new();
+        if change_status.staged {
+            all_commits.push(Self::staged_commit_entry());
+        }
+        if change_status.unstaged {
+            all_commits.push(Self::unstaged_commit_entry());
+        }
+        all_commits.extend(commits);
+        all_commits
+    }
+
+    fn configure_inline_commit_selection(
+        &mut self,
+        commits: Vec<CommitInfo>,
+        selection: CommitSelectionStart,
+    ) {
+        self.range_diff_files = Some(self.diff_files.clone());
+        self.commit_list = commits.clone();
+        let range = Self::initial_commit_range(selection, commits.len());
+        self.commit_selection_range = range;
+        self.commit_list_cursor = range.map(|(start, _)| start).unwrap_or(0);
+        self.commit_list_scroll_offset = 0;
+        self.visible_commit_count = commits.len();
+        self.has_more_commit = false;
+        self.show_commit_selector = commits.len() > 1;
+        self.commit_diff_cache.clear();
+        self.review_commits = commits;
+    }
+
+    fn configure_opened_pr_state(
+        &mut self,
+        backend: Box<dyn ForgeBackend>,
+        repository: ForgeRepository,
+        head_sha: &str,
+        commits: Vec<crate::forge::traits::PullRequestCommit>,
+        review_metadata: crate::forge::traits::PullRequestReviewMetadata,
+    ) -> Option<String> {
+        self.forge_backend = Some(backend);
+        self.forge_repository = Some(repository);
+        self.canonical_resolved = true;
+        self.current_pr_head = Some(head_sha.to_owned());
+        self.apply_pr_commit_selector(commits, review_metadata)
+    }
+
+    pub(in crate::app) fn usable_agent_working_dir(preferred: Option<&Path>) -> PathBuf {
+        preferred
+            .filter(|path| path.is_dir())
+            .map(Path::to_path_buf)
+            .or_else(|| std::env::current_dir().ok().filter(|path| path.is_dir()))
+            .unwrap_or_else(|| PathBuf::from("."))
+    }
+
+    pub fn new_from_session_target(
+        theme: Theme,
+        comment_type_configs: Option<Vec<CommentTypeConfig>>,
+        output_to_stdout: bool,
+        target: &str,
+        diff_whitespace_mode: DiffWhitespaceMode,
+        git_backend_preference: GitBackendPreference,
+        repo_url_override: Option<ForgeRepository>,
+    ) -> Result<Self> {
+        let (path, session) = crate::persistence::storage::load_session_by_path_or_slug(target)?;
+        let mut app = match session.diff_source {
+            SessionDiffSource::PullRequest => Self::new_from_forced_pr_session(
+                theme,
+                comment_type_configs,
+                output_to_stdout,
+                session,
+                repo_url_override,
+            ),
+            SessionDiffSource::Pristine => Self::new_from_forced_pristine_session(
+                theme,
+                comment_type_configs,
+                output_to_stdout,
+                session,
+                repo_url_override,
+            ),
+            _ => Self::new_from_forced_local_session(
+                theme,
+                comment_type_configs,
+                output_to_stdout,
+                session,
+                diff_whitespace_mode,
+                git_backend_preference,
+                repo_url_override,
+            ),
+        }?;
+        app.bind_explicit_session_target(target, path);
+        Ok(app)
+    }
+
+    fn forced_session_commit_ids(session: &ReviewSession) -> Result<Vec<String>> {
+        match session.commit_range.as_deref() {
+            None => Err(TuicrError::CorruptedSession(
+                "forced commit session is missing commit_range".to_string(),
+            )),
+            Some([]) => Err(TuicrError::CorruptedSession(
+                "forced commit session has an empty commit_range".to_string(),
+            )),
+            Some(commit_ids) => Ok(commit_ids.to_vec()),
+        }
+    }
+
+    fn new_from_forced_local_session(
+        theme: Theme,
+        comment_type_configs: Option<Vec<CommentTypeConfig>>,
+        output_to_stdout: bool,
+        session: ReviewSession,
+        diff_whitespace_mode: DiffWhitespaceMode,
+        git_backend_preference: GitBackendPreference,
+        repo_url_override: Option<ForgeRepository>,
+    ) -> Result<Self> {
+        let vcs = detect_vcs_at(
+            &session.repo_path,
+            git_backend_preference,
+            diff_whitespace_mode,
+        )?;
+        let vcs_info = vcs.info().clone();
+        let highlighter = theme.syntax_highlighter();
+
+        let (diff_files, diff_source, review_commits) = match session.diff_source {
+            source @ (SessionDiffSource::WorkingTree | SessionDiffSource::StagedAndUnstaged) => {
+                let diff_source = if matches!(source, SessionDiffSource::StagedAndUnstaged) {
+                    DiffSource::StagedAndUnstaged
+                } else {
+                    DiffSource::WorkingTree
+                };
+                (
+                    Self::get_working_tree_diff_with_ignore(
+                        vcs.as_ref(),
+                        &vcs_info.root_path,
+                        highlighter,
+                        None,
+                    )?,
+                    diff_source,
+                    None,
+                )
+            }
+            SessionDiffSource::Staged => (
+                Self::get_staged_diff_with_ignore(
+                    vcs.as_ref(),
+                    &vcs_info.root_path,
+                    highlighter,
+                    None,
+                )?,
+                DiffSource::Staged,
+                None,
+            ),
+            SessionDiffSource::Unstaged => (
+                Self::get_unstaged_diff_with_ignore(
+                    vcs.as_ref(),
+                    &vcs_info.root_path,
+                    highlighter,
+                    None,
+                )?,
+                DiffSource::Unstaged,
+                None,
+            ),
+            SessionDiffSource::CommitRange | SessionDiffSource::StagedUnstagedAndCommits => {
+                let includes_working_tree = matches!(
+                    session.diff_source,
+                    SessionDiffSource::StagedUnstagedAndCommits
+                );
+                let commit_ids = Self::forced_session_commit_ids(&session)?;
+                let diff_files = if includes_working_tree {
+                    Self::get_working_tree_with_commits_diff_with_ignore(
+                        vcs.as_ref(),
+                        &vcs_info.root_path,
+                        &commit_ids,
+                        highlighter,
+                        None,
+                    )
+                } else {
+                    let revision_range = ResolvedRevisionRange::from_commit_ids(
+                        &commit_ids,
+                        RevisionDiffTarget::CommitList,
+                    );
+                    Self::get_commit_range_diff_with_ignore(
+                        vcs.as_ref(),
+                        &vcs_info.root_path,
+                        &revision_range,
+                        highlighter,
+                        None,
+                    )
+                }?;
+                let mut review_commits: Vec<CommitInfo> = vcs
+                    .get_commits_info(&commit_ids)?
+                    .into_iter()
+                    .rev()
+                    .collect();
+
+                if includes_working_tree {
+                    let change_status = Self::get_change_status_with_ignore(
+                        vcs.as_ref(),
+                        &vcs_info.root_path,
+                        highlighter,
+                        None,
+                    )?;
+                    review_commits =
+                        Self::prepend_working_tree_commits(review_commits, change_status);
+                }
+
+                let diff_source = if includes_working_tree {
+                    DiffSource::StagedUnstagedAndCommits(commit_ids)
+                } else {
+                    DiffSource::CommitRange(commit_ids)
+                };
+
+                (diff_files, diff_source, Some(review_commits))
+            }
+            SessionDiffSource::WorkingTreeAndCommits => {
+                return Err(TuicrError::UnsupportedOperation(
+                    "--session cannot reconstruct working_tree_and_commits sessions".to_string(),
+                ));
+            }
+            SessionDiffSource::PullRequest | SessionDiffSource::Pristine => unreachable!(),
+        };
+
+        let includes_working_tree = matches!(&diff_source, DiffSource::StagedUnstagedAndCommits(_));
+        let mut app = Self::build(
+            vcs,
+            vcs_info,
+            theme,
+            comment_type_configs,
+            output_to_stdout,
+            diff_files,
+            session,
+            diff_source,
+            InputMode::Normal,
+            Vec::new(),
+            None,
+            repo_url_override,
+        )?;
+        if let Some(review_commits) = review_commits {
+            if includes_working_tree || review_commits.len() > 1 {
+                app.configure_inline_commit_selection(review_commits, CommitSelectionStart::All);
+            } else {
+                app.review_commits = review_commits;
+            }
+            app.finish_loaded_commit_diff();
+        }
+        Ok(app)
+    }
+
+    fn new_from_forced_pristine_session(
+        theme: Theme,
+        comment_type_configs: Option<Vec<CommentTypeConfig>>,
+        output_to_stdout: bool,
+        session: ReviewSession,
+        repo_url_override: Option<ForgeRepository>,
+    ) -> Result<Self> {
+        let paths = crate::vcs::pristine::collect_tracked_paths(&session.repo_path)?;
+        let vcs = Box::new(FileBackend::new_pristine(paths, session.repo_path.clone())?);
+        let mut vcs_info = vcs.info().clone();
+        vcs_info.head_commit = session.base_commit.clone();
+        vcs_info.branch_name = session.branch_name.clone();
+        let highlighter = theme.syntax_highlighter();
+        let diff_files = vcs.get_working_tree_diff(highlighter)?;
+        let diff_files = Self::filter_ignored_diff_files(&session.repo_path, diff_files);
+        if diff_files.is_empty() {
+            return Err(TuicrError::NoChanges);
+        }
+
+        let mut app = Self::build(
+            vcs,
+            vcs_info,
+            theme,
+            comment_type_configs,
+            output_to_stdout,
+            diff_files,
+            session,
+            DiffSource::WorkingTree,
+            InputMode::Normal,
+            Vec::new(),
+            None,
+            repo_url_override,
+        )?;
+        app.configure_pristine_view();
+        Ok(app)
+    }
+
+    fn new_from_forced_pr_session(
+        theme: Theme,
+        comment_type_configs: Option<Vec<CommentTypeConfig>>,
+        output_to_stdout: bool,
+        session: ReviewSession,
+        repo_url_override: Option<ForgeRepository>,
+    ) -> Result<Self> {
+        use crate::forge::pr_open::open_pull_request;
+        use crate::forge::traits::PullRequestTarget;
+
+        let key = session.pr_session_key.clone().ok_or_else(|| {
+            TuicrError::CorruptedSession("PR session is missing pr_session_key".to_string())
+        })?;
+        let local_checkout = std::env::current_dir()
+            .ok()
+            .and_then(|root| crate::forge::local_checkout_for_repo(&root, &key.repository));
+        let backend = create_forge_backend(&key.repository, local_checkout.clone());
+        let target = PullRequestTarget::with_repository(
+            key.repository.clone(),
+            key.number,
+            key.number.to_string(),
+        );
+        let highlighter = theme.syntax_highlighter();
+        let opened = open_pull_request(
+            backend.as_ref(),
+            target,
+            local_checkout.as_deref(),
+            highlighter,
+        )?;
+        if opened.details.head_sha != key.head_sha {
+            return Err(TuicrError::InvalidInput(format!(
+                "saved PR session is for head {}, but the remote PR is currently at {}; that diff cannot be reconstructed",
+                key.head_sha, opened.details.head_sha
+            )));
+        }
+        let pr_source = PullRequestDiffSource::from_details(&opened.details);
+        let read_only_reason = pr_source.read_only_reason();
+        let diff_source = DiffSource::PullRequest(Box::new(pr_source));
+        let vcs_info = VcsInfo {
+            root_path: session.repo_path.clone(),
+            head_commit: opened.details.head_sha.clone(),
+            branch_name: Some(opened.details.head_ref_name.clone()),
+            vcs_type: VcsType::File,
+        };
+        let vcs: Box<dyn VcsBackend> = Box::new(PrNoopVcs::new(vcs_info.clone()));
+
+        let mut app = Self::build(
+            vcs,
+            vcs_info,
+            theme,
+            comment_type_configs,
+            output_to_stdout,
+            opened.diff_files,
+            session,
+            diff_source,
+            InputMode::Normal,
+            Vec::new(),
+            None,
+            repo_url_override,
+        )?;
+        app.agent_working_dir = Self::usable_agent_working_dir(local_checkout.as_deref());
+        let since_last_review_message = app.configure_opened_pr_state(
+            backend,
+            key.repository,
+            &opened.details.head_sha,
+            opened.commits,
+            opened.review_metadata,
+        );
+
+        if let Some(reason) = read_only_reason {
+            app.set_warning(format!("This PR is {reason} — review is read-only"));
+        } else if let Some(message) = since_last_review_message {
+            app.set_message(message);
+        }
+        app.spawn_pr_threads_fetch(&opened.details, local_checkout);
+        if Self::is_strict_commit_selection(app.commit_selection_range, app.pr_commits.len()) {
+            app.spawn_pr_range_reload();
+        }
+        Ok(app)
+    }
+
     /// Direct-entry PR open: `tuicr pr <target>`.
     pub fn new_from_pr_target(
         theme: Theme,
@@ -797,8 +1135,8 @@ impl App {
             .repository
             .clone()
             .or_else(|| repo_url_override.clone())
-            .or_else(|| canonical_repo.clone())
-            .or_else(|| detected_repo.clone())
+            .or(canonical_repo)
+            .or(detected_repo)
             .ok_or_else(|| {
                 TuicrError::Forge(
                     "tuicr pr <number> requires a local forge remote. \
@@ -825,6 +1163,7 @@ impl App {
         let opened = Self::opened_pr_with_persisted_session(opened)?;
 
         let pr_source = PullRequestDiffSource::from_details(&opened.details);
+        let read_only_reason = pr_source.read_only_reason();
         let diff_source = DiffSource::PullRequest(Box::new(pr_source));
         let vcs_info = VcsInfo {
             root_path: opened.session.repo_path.clone(),
@@ -836,11 +1175,6 @@ impl App {
         // routes through the forge backend, not the VCS box.
         let vcs: Box<dyn VcsBackend> = Box::new(PrNoopVcs::new(vcs_info.clone()));
 
-        // Snapshot the PR details before consuming `opened` so we can kick
-        // off the remote-thread fetch after `Self::build` returns.
-        let details_for_threads = opened.details.clone();
-        let commits_for_selector = opened.commits.clone();
-        let review_metadata = opened.review_metadata.clone();
         let mut app = Self::build(
             vcs,
             vcs_info,
@@ -856,36 +1190,28 @@ impl App {
             repo_url_override,
         )?;
 
-        // Wire the forge backend so context expansion routes through it.
-        app.forge_backend = Some(backend);
-        app.forge_repository = Some(target_repo);
         app.pr_info = Some(opened.pr_info);
-        // PR open establishes the target repo directly; no further canonical
-        // resolution needed on PR-tab entry (which won't happen anyway since
-        // the user came straight from CLI into PR diff mode).
-        app.canonical_resolved = true;
-        app.current_pr_head = Some(details_for_threads.head_sha.clone());
+        app.agent_working_dir =
+            Self::usable_agent_working_dir(local_checkout_for_target.as_deref());
         app.commit_selection_start = commit_selection;
-        let since_last_review_message =
-            app.apply_pr_commit_selector(commits_for_selector, review_metadata);
-        if matches!(&app.diff_source, DiffSource::PullRequest(_))
-            && let Some(range) = app.commit_selection_range
-            && !app.pr_commits.is_empty()
-            && (range.0 > 0 || range.1 + 1 < app.pr_commits.len())
-        {
+        let since_last_review_message = app.configure_opened_pr_state(
+            backend,
+            target_repo,
+            &opened.details.head_sha,
+            opened.commits,
+            opened.review_metadata,
+        );
+        if Self::is_strict_commit_selection(app.commit_selection_range, app.pr_commits.len()) {
             app.spawn_pr_range_reload();
         }
-        if let DiffSource::PullRequest(pr) = &app.diff_source.clone()
-            && pr.is_read_only()
-        {
-            let reason = pr.read_only_reason().unwrap_or("read only");
+        if let Some(reason) = read_only_reason {
             app.set_warning(format!("This PR is {reason} — review is read-only"));
         } else if let Some(message) = since_last_review_message {
             app.set_message(message);
         }
         // Spawn thread-fetch on startup; the main event loop will drain
         // the receiver via `poll_pr_threads_events` once it begins.
-        app.spawn_pr_threads_fetch(&details_for_threads, local_checkout_for_target);
+        app.spawn_pr_threads_fetch(&opened.details, local_checkout_for_target);
         Ok(app)
     }
 }

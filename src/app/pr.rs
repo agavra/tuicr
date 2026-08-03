@@ -87,11 +87,7 @@ impl App {
 
         // If the restored selection is a strict subset, fire an initial
         // range re-fetch so the diff matches the persisted scope.
-        if matches!(&self.diff_source, DiffSource::PullRequest(_))
-            && let Some(range) = self.commit_selection_range
-            && !self.pr_commits.is_empty()
-            && (range.0 > 0 || range.1 + 1 < self.pr_commits.len())
-        {
+        if preserve_hunks {
             self.spawn_pr_range_reload();
         }
 
@@ -1168,6 +1164,9 @@ impl App {
             .list_review_summaries(&opened.details)
             .unwrap_or_default();
         self.enter_pr_diff_mode(backend, opened)?;
+        if let Some(local_checkout) = local_checkout {
+            self.agent_working_dir = Self::usable_agent_working_dir(Some(&local_checkout));
+        }
         self.forge_review_threads = threads;
         self.forge_review_summaries = summaries;
         self.prune_locked_comments();
