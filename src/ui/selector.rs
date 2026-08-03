@@ -899,6 +899,60 @@ mod selector_render_snapshot_tests {
     }
 
     #[test]
+    fn should_render_full_screen_messages_from_target_selector() {
+        let mut app = make_app(vec![commit(0)]);
+        app.target_tab = crate::app::TargetTab::PullRequests;
+        app.set_error("forge API failure detail");
+        app.enter_command_mode();
+        app.command_buffer = "messages".to_string();
+        crate::handler::handle_command_action(&mut app, crate::input::Action::SubmitInput);
+
+        let buffer = draw(&mut app);
+        let rendered = (0..buffer.area.height)
+            .map(|y| row_text(&buffer, y))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let width = buffer.area.width;
+        let height = buffer.area.height;
+        assert_eq!(buffer[(0, 0)].symbol(), "┌");
+        assert_eq!(buffer[(width - 1, 0)].symbol(), "┐");
+        assert_eq!(buffer[(0, height - 1)].symbol(), "└");
+        assert_eq!(buffer[(width - 1, height - 1)].symbol(), "┘");
+        assert!(!row_text(&buffer, TAB_STRIP_ROW).contains("Pull Requests"));
+        assert!(rendered.contains("Messages"), "got:\n{rendered}");
+        assert!(
+            rendered.contains("forge API failure detail"),
+            "got:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn should_keep_target_selector_behind_command_and_help_overlays() {
+        let mut app = make_app(vec![commit(0)]);
+        app.target_tab = crate::app::TargetTab::PullRequests;
+
+        app.enter_command_mode();
+        app.command_buffer = "mes".to_string();
+        let command_buffer = draw(&mut app);
+        assert!(row_text(&command_buffer, TAB_STRIP_ROW).contains("Pull Requests"));
+        assert!(row_text(&command_buffer, command_buffer.area.height - 1).contains(":mes"));
+        crate::handler::handle_command_action(&mut app, crate::input::Action::ExitMode);
+        assert_eq!(app.input_mode, InputMode::CommitSelect);
+
+        app.toggle_help();
+        let help_buffer = draw(&mut app);
+        let rendered = (0..help_buffer.area.height)
+            .map(|y| row_text(&help_buffer, y))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(row_text(&help_buffer, TAB_STRIP_ROW).contains("Pull Requests"));
+        assert!(rendered.contains("Help"), "got:\n{rendered}");
+        app.toggle_help();
+        assert_eq!(app.input_mode, InputMode::CommitSelect);
+    }
+
+    #[test]
     fn should_render_loading_state_in_tab_strip_status_slot_when_pr_load_in_flight() {
         // given
         let mut app = make_app(vec![commit(0)]);

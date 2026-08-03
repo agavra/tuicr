@@ -246,6 +246,7 @@ A first-session cheatsheet. Press `?` inside tuicr for the full reference.
 | `[` / `]` | Previous / next hunk |
 | `m` / `M` | Next / previous comment |
 | `/` | Search the diff, or search help while help is open (case-insensitive) |
+| `:messages` | Open full details for the current error |
 | `c` / `C` | Add line / file comment |
 | `v` / `V` | Visual mode (range comment) |
 | `r` | Toggle file reviewed |

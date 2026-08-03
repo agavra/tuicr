@@ -34,6 +34,7 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     ),
     CommandSpec::new(&["clearc"], CommandKind::Clear(ClearScope::CommentsOnly)),
     CommandSpec::new(&["help", "h"], CommandKind::Help),
+    CommandSpec::new(&["messages"], CommandKind::MessageDetails),
     CommandSpec::new(&["version"], CommandKind::Version),
     CommandSpec::new(&["update"], CommandKind::Update),
     CommandSpec::new(&["set wrap"], CommandKind::SetWrap),
@@ -121,6 +122,7 @@ enum CommandKind {
     Export,
     Clear(ClearScope),
     Help,
+    MessageDetails,
     Version,
     Update,
     SetWrap,
@@ -166,7 +168,7 @@ pub fn handle_mouse_event(app: &mut App, event: MouseEvent) {
             let over_diff = app.diff_area.is_some_and(|r| r.contains(pos));
             let over_commit_list = app.commit_list_inner_area.is_some_and(|r| r.contains(pos));
             match app.input_mode {
-                InputMode::Help => handle_help_action(app, action),
+                InputMode::Help | InputMode::MessageDetails => handle_help_action(app, action),
                 InputMode::CommitSelect | InputMode::Normal if over_commit_list => {
                     wheel_commit_list(app, scroll_up);
                 }
@@ -813,6 +815,11 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
             app.toggle_help();
             CommandAfterDispatch::KeepMode
         }
+        CommandKind::MessageDetails => {
+            app.exit_command_mode();
+            app.open_message_details();
+            CommandAfterDispatch::KeepMode
+        }
         CommandKind::Version => {
             app.set_message(format!("tuicr v{}", env!("CARGO_PKG_VERSION")));
             CommandAfterDispatch::ExitCommandMode
@@ -1162,6 +1169,7 @@ pub fn handle_commit_select_action(app: &mut App, action: Action) {
     match action {
         Action::TargetSelectorTabNext => app.cycle_target_tab(true),
         Action::TargetSelectorTabPrev => app.cycle_target_tab(false),
+        Action::EnterCommandMode => app.enter_command_mode(),
         Action::Quit => app.should_quit = true,
         Action::ExitMode => {
             // Esc during an in-flight PR open aborts the load and stays

@@ -752,7 +752,7 @@ fn main() -> anyhow::Result<()> {
 
 fn dispatch_action(app: &mut App, action: Action) {
     match app.input_mode {
-        InputMode::Help => handle_help_action(app, action),
+        InputMode::Help | InputMode::MessageDetails => handle_help_action(app, action),
         InputMode::Command => handle_command_action(app, action),
         InputMode::Search => handle_search_action(app, action),
         InputMode::Comment => handle_comment_action(app, action),

@@ -22,9 +22,33 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         frame.area(),
     );
 
-    // Special handling for commit selection mode
-    if app.input_mode == InputMode::CommitSelect {
+    if app.input_mode == InputMode::MessageDetails {
+        help_popup::render_message_details(frame, app);
+        return;
+    }
+
+    let selector_background = app.input_mode == InputMode::CommitSelect
+        || (app.input_mode == InputMode::Command
+            && app.command_return_mode == InputMode::CommitSelect)
+        || (app.input_mode == InputMode::Help
+            && app.overlay_return_mode == InputMode::CommitSelect)
+        || (app.searching_help() && app.overlay_return_mode == InputMode::CommitSelect);
+    if selector_background {
         render_commit_select(frame, app);
+        let area = frame.area();
+        let footer = Rect::new(
+            area.x,
+            area.bottom().saturating_sub(1),
+            area.width,
+            area.height.min(1),
+        );
+        if matches!(app.input_mode, InputMode::Command | InputMode::Search) {
+            status_bar::render_status_bar(frame, app, footer);
+            status_bar::render_command_completion_popup(frame, app, footer);
+        }
+        if app.input_mode == InputMode::Help || app.searching_help() {
+            help_popup::render_help(frame, app);
+        }
         return;
     }
 

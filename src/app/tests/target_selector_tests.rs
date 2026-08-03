@@ -1989,6 +1989,29 @@ fn should_apply_initial_load_event_to_pr_tab() {
 }
 
 #[test]
+fn should_surface_initial_pr_list_error_to_message_bar() {
+    let mut app = build_app();
+    let repository = ForgeRepository::github("github.com", "agavra", "tuicr");
+    app.forge_repository = Some(repository.clone());
+    app.pr_tab = PullRequestsTab::new(Some(repository.clone()));
+    app.pr_tab.start_initial_load();
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.pr_load_rx = Some(rx);
+    tx.send(PrLoadEvent::Initial {
+        canonical: repository,
+        result: Err("forge API response body".to_string()),
+    })
+    .unwrap();
+    drop(tx);
+
+    app.poll_pr_load_events();
+
+    let message = app.message.as_ref().expect("expected PR-list error");
+    assert_eq!(message.message_type, MessageType::Error);
+    assert_eq!(message.content, "forge API response body");
+}
+
+#[test]
 fn should_promote_app_forge_repository_to_canonical_on_initial_load() {
     // given — origin is a fork; canonical from the background thread is upstream
     let origin = ForgeRepository::github("github.com", "agavra", "slatedb");
@@ -2287,6 +2310,7 @@ fn should_return_false_when_cancelling_with_no_in_flight_open() {
 fn should_surface_pr_open_error_to_message_bar_when_done_event_carries_error() {
     // given an app waiting on a synthetic open
     let mut app = build_app();
+    app.input_mode = InputMode::CommitSelect;
     app.forge_repository = Some(ForgeRepository::github("github.com", "agavra", "tuicr"));
     app.pr_tab = loaded_pr_tab(vec![sample_pr(42, "boom")]);
     app.target_tab = TargetTab::PullRequests;
@@ -2316,6 +2340,13 @@ fn should_surface_pr_open_error_to_message_bar_when_done_event_carries_error() {
         .expect("expected an error message on the bar");
     assert!(matches!(msg.message_type, MessageType::Error));
     assert!(msg.content.contains("auth failed"), "got {msg:?}");
+
+    app.enter_command_mode();
+    app.command_buffer = "messages".to_string();
+    crate::handler::handle_command_action(&mut app, crate::input::Action::SubmitInput);
+    assert_eq!(app.input_mode, InputMode::MessageDetails);
+    app.toggle_help();
+    assert_eq!(app.input_mode, InputMode::CommitSelect);
 }
 
 #[test]

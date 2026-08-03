@@ -772,9 +772,19 @@ impl App {
                     self.pr_tab.apply_canonical(canonical.clone());
                     self.forge_repository = Some(canonical);
                     self.canonical_resolved = true;
+                    let error = result.as_ref().err().cloned();
                     self.pr_tab.apply_initial_load(result);
+                    if let Some(error) = error {
+                        self.set_error(error);
+                    }
                 }
-                PrLoadEvent::LoadMore(result) => self.pr_tab.apply_load_more(result),
+                PrLoadEvent::LoadMore(result) => {
+                    let error = result.as_ref().err().cloned();
+                    self.pr_tab.apply_load_more(result);
+                    if let Some(error) = error {
+                        self.set_error(error);
+                    }
+                }
             }
         }
         self.pr_tab.clamp_cursor();
