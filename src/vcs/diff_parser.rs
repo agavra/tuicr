@@ -57,7 +57,7 @@ where
     // `next_line` instead of `lines.next()` to propagate I/O errors.
     while let Some(line) = next_line(&mut lines)? {
         if line.starts_with(header_prefix) {
-            let (mut old_path, mut new_path, status) = parse_file_header(&mut lines, format)?;
+            let (mut old_path, mut new_path, status) = parse_file_header(&mut lines)?;
 
             // For git-style diffs (jj, git patches), if parse_file_header didn't find
             // ---/+++ or rename/copy lines (e.g. empty new files, mode-only changes),
@@ -169,7 +169,6 @@ fn is_binary_patch_line(line: &str) -> bool {
 
 fn parse_file_header<'a, I>(
     lines: &mut std::iter::Peekable<I>,
-    format: DiffFormat,
 ) -> Result<(Option<PathBuf>, Option<PathBuf>, FileStatus)>
 where
     I: Iterator<Item = Result<Cow<'a, str>>>,
@@ -183,23 +182,17 @@ where
         if line.starts_with("---") {
             let path_str = line.trim_start_matches("--- ").trim_start_matches("a/");
             if path_str != "/dev/null" {
-                // Hg format may include timestamps after tab
-                let path = if format == DiffFormat::Hg {
-                    path_str.split('\t').next().unwrap_or(path_str)
-                } else {
-                    path_str
-                };
+                // Both Hg and unified-diff/git formats append a trailing
+                // tab (optionally followed by a timestamp) when the path
+                // contains whitespace, to disambiguate where it ends.
+                let path = path_str.split('\t').next().unwrap_or(path_str);
                 old_path = Some(PathBuf::from(path));
             }
             next_line(lines)?;
         } else if line.starts_with("+++") {
             let path_str = line.trim_start_matches("+++ ").trim_start_matches("b/");
             if path_str != "/dev/null" {
-                let path = if format == DiffFormat::Hg {
-                    path_str.split('\t').next().unwrap_or(path_str)
-                } else {
-                    path_str
-                };
+                let path = path_str.split('\t').next().unwrap_or(path_str);
                 new_path = Some(PathBuf::from(path));
             }
             next_line(lines)?;
@@ -829,6 +822,27 @@ copy to dest.rs
         assert_eq!(files[0].status, FileStatus::Modified);
         assert_eq!(files[0].hunks.len(), 1);
         assert_eq!(files[0].hunks[0].lines.len(), 4);
+    }
+
+    #[test]
+    fn should_strip_trailing_tab_from_git_style_path_with_spaces() {
+        // git/POSIX diff -u append a trailing tab after a "---"/"+++" path
+        // when the path contains whitespace, to mark unambiguously where
+        // the filename ends. This must be stripped for GitStyle diffs too,
+        // not just Hg, or the parsed path won't match the clean path
+        // returned by e.g. a forge's API (breaking remote-comment lookup).
+        let diff = "diff --git a/docs/my file.txt b/docs/my file.txt\n--- a/docs/my file.txt\t\n+++ b/docs/my file.txt\t\n@@ -1,1 +1,1 @@\n-old\n+new\n";
+        let files =
+            parse_unified_diff(diff, DiffFormat::GitStyle, &SyntaxHighlighter::default()).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(
+            files[0].new_path,
+            Some(PathBuf::from("docs/my file.txt"))
+        );
+        assert_eq!(
+            files[0].old_path,
+            Some(PathBuf::from("docs/my file.txt"))
+        );
     }
 
     #[test]
