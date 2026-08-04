@@ -141,6 +141,15 @@ comments, multi-line ranges included; review-level comments become general PR co
 Bitbucket Data Center is out of scope. See [docs/BITBUCKET.md](docs/BITBUCKET.md) for setup,
 required token scopes, and troubleshooting.
 
+### To Azure DevOps
+
+`:submit` offers Comment, Approve, or Request changes on an Azure DevOps PR. Inline comments post
+as PR comment threads; Approve/Request changes also cast a reviewer vote. Auth is a Personal
+Access Token in `AZURE_DEVOPS_EXT_PAT` (preferred — works with enterprise tenants), falling back
+to `az login` via the Azure CLI. Run tuicr from a local clone of the repo — Azure exposes no
+unified-diff API, so the diff is built with `git diff base...head`. See
+[docs/AZURE.md](docs/AZURE.md) for setup, supported URL forms, and MVP limitations.
+
 ### To your coding agent
 
 `y` or `:clip` copies a structured markdown block to your clipboard. Each comment has a number

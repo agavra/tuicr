@@ -38,7 +38,8 @@ pub const GAP_EXPAND_BATCH: usize = 20;
 
 /// Create a forge backend for the given repository.
 /// Routes to the GitHub backend (via `gh`), the GitLab backend (via `glab`),
-/// or the Bitbucket Cloud backend (via `bkt`) based on `repo.kind`.
+/// the Bitbucket Cloud backend (via `bkt`), or the Azure DevOps backend (via
+/// `az`) based on `repo.kind`.
 fn create_forge_backend(
     repo: &ForgeRepository,
     local_checkout: Option<PathBuf>,
@@ -57,6 +58,12 @@ fn create_forge_backend(
             use crate::forge::bitbucket::BitbucketBktBackend;
             Box::new(
                 BitbucketBktBackend::new(Some(repo.clone())).with_local_checkout(local_checkout),
+            )
+        }
+        ForgeKind::AzureDevOps => {
+            use crate::forge::azure::AzureDevOpsBackend;
+            Box::new(
+                AzureDevOpsBackend::new(Some(repo.clone())).with_local_checkout(local_checkout),
             )
         }
     }
