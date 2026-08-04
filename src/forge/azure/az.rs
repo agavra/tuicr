@@ -28,7 +28,7 @@ use crate::forge::submit::{GhSide, SubmitEvent};
 use crate::forge::traits::{
     CreateReviewRequest, ForgeBackend, ForgeFileLinesRequest, ForgeRepository,
     GhCreateReviewResponse, PagedPullRequests, PullRequestCommit, PullRequestDetails,
-    PullRequestListQuery, PullRequestTarget,
+    PullRequestListQuery, PullRequestListScope, PullRequestTarget,
 };
 use crate::model::DiffLine;
 use crate::process::{CommandOutputError, CommandOutputErrorKind, run_command_output};
@@ -409,11 +409,27 @@ impl AzureDevOpsBackend {
             .map_err(|err| map_http_error(err, &repo.host))
     }
 
-    /// Resolve the authenticated user's identity id (needed to PUT a vote).
+    /// GET a JSON endpoint that must NOT carry `?api-version`. `connectionData`
+    /// is such an endpoint — it rejects `api-version=7.1` with "the requested
+    /// version is under preview", so we call it version-less.
+    fn get_json_unversioned<T: serde::de::DeserializeOwned>(
+        &self,
+        repo: &ForgeRepository,
+        url: String,
+    ) -> Result<T> {
+        let output = self
+            .http
+            .request("GET", &url, None)
+            .map_err(|err| map_http_error(err, &repo.host))?;
+        Ok(serde_json::from_str(&output)?)
+    }
+
+    /// Resolve the authenticated user's identity id (needed to cast a vote and
+    /// to filter the PR list to review-requested).
     fn current_user_id(&self, repo: &ForgeRepository) -> Result<Option<String>> {
         let (org, _project) = azure_coords(repo)?;
         let url = format!("https://{}/{}/_apis/connectionData", repo.host, org);
-        let data: AzConnectionData = self.get_json(repo, url)?;
+        let data: AzConnectionData = self.get_json_unversioned(repo, url)?;
         Ok(data
             .authenticated_user
             .map(|u| u.id)
@@ -452,11 +468,18 @@ impl ForgeBackend for AzureDevOpsBackend {
         let page_size = query.page_size.max(1);
         let base = git_api_base(&query.repository);
         // Fetch one extra to detect a further page.
-        let url = format!(
+        let mut url = format!(
             "{base}/pullRequests?searchCriteria.status=active&$top={}&$skip={}",
             page_size + 1,
             query.already_loaded,
         );
+        // "Requested" scope → only PRs where the current user is a reviewer.
+        // Best-effort: if the user id can't be resolved, fall back to all active.
+        if query.scope == PullRequestListScope::ReviewRequested
+            && let Some(id) = self.current_user_id(&query.repository).ok().flatten()
+        {
+            url.push_str(&format!("&searchCriteria.reviewerId={id}"));
+        }
         let list: AzList<AzPullRequest> = self.get_json(&query.repository, url)?;
         let has_more = list.value.len() > page_size;
         let pull_requests = list
@@ -1185,9 +1208,61 @@ mod tests {
         assert!(calls[0].1.contains("/pullRequests/42?api-version="));
     }
 
-    fn _assert_backend_is_send_sync()
-    where
-        AzureDevOpsBackend: Send + Sync,
-    {
+    #[test]
+    fn list_open_scope_has_no_reviewer_filter() {
+        let shared = SharedHttp::new(vec![
+            r#"{"count":1,"value":[{"pullRequestId":1,"title":"t","status":"active"}]}"#.to_string(),
+        ]);
+        let backend =
+            AzureDevOpsBackend::with_transport(Some(azure_repo()), Box::new(shared.clone()));
+        let query = PullRequestListQuery::first_page_with_scope(
+            azure_repo(),
+            30,
+            PullRequestListScope::Open,
+        );
+        backend.list_pull_requests(query).unwrap();
+        let calls = shared.0.calls.lock().unwrap();
+        // Open scope: a single list call, no connectionData lookup, no filter.
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].1.contains("/pullRequests?searchCriteria.status=active"));
+        assert!(!calls[0].1.contains("reviewerId"));
+    }
+
+    #[test]
+    fn list_requested_scope_filters_by_reviewer_and_calls_connectiondata_unversioned() {
+        let shared = SharedHttp::new(vec![
+            r#"{"authenticatedUser":{"id":"user-guid"}}"#.to_string(),
+            r#"{"count":1,"value":[{"pullRequestId":1433,"title":"t","status":"active"}]}"#
+                .to_string(),
+        ]);
+        let backend =
+            AzureDevOpsBackend::with_transport(Some(azure_repo()), Box::new(shared.clone()));
+        let query = PullRequestListQuery::first_page_with_scope(
+            azure_repo(),
+            30,
+            PullRequestListScope::ReviewRequested,
+        );
+        let page = backend.list_pull_requests(query).unwrap();
+        assert_eq!(page.pull_requests.len(), 1);
+
+        let calls = shared.0.calls.lock().unwrap();
+        let conn = calls
+            .iter()
+            .find(|c| c.1.contains("/_apis/connectionData"))
+            .expect("connectionData lookup");
+        assert!(
+            !conn.1.contains("api-version"),
+            "connectionData must be version-less, got: {}",
+            conn.1
+        );
+        let list = calls
+            .iter()
+            .find(|c| c.1.contains("/pullRequests?"))
+            .expect("list call");
+        assert!(
+            list.1.contains("searchCriteria.reviewerId=user-guid"),
+            "expected reviewer filter, got: {}",
+            list.1
+        );
     }
 }
