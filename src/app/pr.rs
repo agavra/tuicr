@@ -1169,8 +1169,7 @@ impl App {
             .list_review_summaries(&opened.details)
             .unwrap_or_default();
         self.enter_pr_diff_mode(backend, opened)?;
-        self.forge_review_threads =
-            crate::forge::remote_comments::dedupe_threads(threads);
+        self.forge_review_threads = crate::forge::remote_comments::dedupe_threads(threads);
         self.forge_review_summaries = summaries;
         self.prune_locked_comments();
         self.rebuild_annotations();
