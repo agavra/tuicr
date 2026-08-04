@@ -1035,7 +1035,8 @@ impl App {
                 let mut threads_loaded = false;
                 match threads {
                     Ok(t) => {
-                        self.forge_review_threads = t;
+                        self.forge_review_threads =
+                            crate::forge::remote_comments::dedupe_threads(t);
                         threads_loaded = true;
                     }
                     Err(e) => {
@@ -1168,7 +1169,8 @@ impl App {
             .list_review_summaries(&opened.details)
             .unwrap_or_default();
         self.enter_pr_diff_mode(backend, opened)?;
-        self.forge_review_threads = threads;
+        self.forge_review_threads =
+            crate::forge::remote_comments::dedupe_threads(threads);
         self.forge_review_summaries = summaries;
         self.prune_locked_comments();
         self.rebuild_annotations();

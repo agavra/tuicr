@@ -2598,7 +2598,12 @@ fn should_apply_remote_threads_event_when_relevant() {
         repository: pr_key.repository.clone(),
         pr_number: pr_key.number,
         head_sha: pr_key.head_sha.clone(),
-        threads: Ok(vec![sample_thread(2, "delayed", false, false)]),
+        // The same forge thread can appear more than once in a malformed or
+        // overlapping paginated response; the UI must keep one copy.
+        threads: Ok(vec![
+            sample_thread(2, "delayed", false, false),
+            sample_thread(2, "duplicate", false, false),
+        ]),
         summaries: Ok(Vec::new()),
     })
     .unwrap();
