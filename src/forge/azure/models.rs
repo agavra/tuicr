@@ -463,7 +463,10 @@ mod tests {
         }"#;
         let pr: AzPullRequest = serde_json::from_str(json).unwrap();
         let summary = pr.into_summary(&azure_repo());
-        assert_eq!(summary.url, "https://dev.azure.com/o/p/_git/r/pullrequest/9");
+        assert_eq!(
+            summary.url,
+            "https://dev.azure.com/o/p/_git/r/pullrequest/9"
+        );
         assert_eq!(summary.state, "OPEN");
     }
 

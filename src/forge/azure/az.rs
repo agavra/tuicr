@@ -244,7 +244,9 @@ fn read_blob_with_repo(repo_root: &Path, sha: &str, path: &Path) -> Option<Strin
     let exists = run_command_output(
         "git",
         Some(repo_root),
-        ["cat-file", "-e", spec.as_str()].iter().map(|s| OsStr::new(*s)),
+        ["cat-file", "-e", spec.as_str()]
+            .iter()
+            .map(|s| OsStr::new(*s)),
     );
     if exists.is_err() {
         return None;
@@ -507,7 +509,10 @@ impl ForgeBackend for AzureDevOpsBackend {
     fn get_pull_request_diff(&self, pr: &PullRequestDetails) -> Result<String> {
         // 3-dot diff (merge-base..head) matches PR review semantics, like the
         // GitHub compare API. Sourced from the local clone.
-        let root = self.local_checkout.as_deref().ok_or_else(missing_checkout)?;
+        let root = self
+            .local_checkout
+            .as_deref()
+            .ok_or_else(missing_checkout)?;
         local_diff(root, &pr.base_sha, &pr.head_sha, "...").ok_or_else(|| {
             TuicrError::Forge(format!(
                 "Could not diff {}...{} in the local checkout. Fetch the PR's base and source \
@@ -524,7 +529,10 @@ impl ForgeBackend for AzureDevOpsBackend {
         start_sha: &str,
         end_sha: &str,
     ) -> Result<String> {
-        let root = self.local_checkout.as_deref().ok_or_else(missing_checkout)?;
+        let root = self
+            .local_checkout
+            .as_deref()
+            .ok_or_else(missing_checkout)?;
         local_diff(root, start_sha, end_sha, "..").ok_or_else(|| {
             TuicrError::UnsupportedOperation(
                 "Commit-range diff requires both commits in the local checkout for Azure DevOps"
@@ -655,7 +663,12 @@ impl ForgeBackend for AzureDevOpsBackend {
             })?;
             let url = format!("{base}/pullRequests/{}/reviewers/{}", pr.number, user_id);
             let payload = json!({ "vote": vote });
-            self.send(&pr.repository, "PUT", url, &serde_json::to_string(&payload)?)?;
+            self.send(
+                &pr.repository,
+                "PUT",
+                url,
+                &serde_json::to_string(&payload)?,
+            )?;
         }
 
         let state = match request.event {
@@ -706,9 +719,7 @@ fn map_http_error(error: AzHttpError, host: &str) -> TuicrError {
             TuicrError::Forge(format!("{hint}\n{}", trim_detail(&detail)))
         }
         AzHttpError::Failed { status, body } => {
-            let status = status
-                .map(|s| format!(" (HTTP {s})"))
-                .unwrap_or_default();
+            let status = status.map(|s| format!(" (HTTP {s})")).unwrap_or_default();
             TuicrError::Forge(format!(
                 "Azure DevOps request to {host} failed{status}: {}",
                 trim_detail(&body)
@@ -776,7 +787,9 @@ pub fn parse_azure_remote_url(remote_url: &str) -> Option<ForgeRepository> {
 /// Build the repository from an HTTPS path (everything after the host).
 fn azure_from_https_path(host: &str, path: &str) -> Option<ForgeRepository> {
     let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-    let git_idx = segments.iter().position(|&s| s.eq_ignore_ascii_case("_git"))?;
+    let git_idx = segments
+        .iter()
+        .position(|&s| s.eq_ignore_ascii_case("_git"))?;
     let repo = strip_git_suffix(segments.get(git_idx + 1)?);
     if repo.is_empty() {
         return None;
@@ -1064,7 +1077,9 @@ mod tests {
     struct SharedHttp(std::sync::Arc<RecordingHttp>);
     impl SharedHttp {
         fn new(responses: Vec<String>) -> Self {
-            Self(std::sync::Arc::new(RecordingHttp::with_responses(responses)))
+            Self(std::sync::Arc::new(RecordingHttp::with_responses(
+                responses,
+            )))
         }
     }
     impl AzHttp for SharedHttp {
@@ -1115,7 +1130,8 @@ mod tests {
     #[test]
     fn create_review_posts_inline_thread_with_right_context() {
         let shared = SharedHttp::new(vec![r#"{"id": 555}"#.to_string()]);
-        let backend = AzureDevOpsBackend::with_transport(Some(azure_repo()), Box::new(shared.clone()));
+        let backend =
+            AzureDevOpsBackend::with_transport(Some(azure_repo()), Box::new(shared.clone()));
         let request = CreateReviewRequest {
             event: SubmitEvent::Comment,
             commit_id: "head111",
@@ -1211,7 +1227,8 @@ mod tests {
     #[test]
     fn list_open_scope_has_no_reviewer_filter() {
         let shared = SharedHttp::new(vec![
-            r#"{"count":1,"value":[{"pullRequestId":1,"title":"t","status":"active"}]}"#.to_string(),
+            r#"{"count":1,"value":[{"pullRequestId":1,"title":"t","status":"active"}]}"#
+                .to_string(),
         ]);
         let backend =
             AzureDevOpsBackend::with_transport(Some(azure_repo()), Box::new(shared.clone()));
@@ -1224,7 +1241,11 @@ mod tests {
         let calls = shared.0.calls.lock().unwrap();
         // Open scope: a single list call, no connectionData lookup, no filter.
         assert_eq!(calls.len(), 1);
-        assert!(calls[0].1.contains("/pullRequests?searchCriteria.status=active"));
+        assert!(
+            calls[0]
+                .1
+                .contains("/pullRequests?searchCriteria.status=active")
+        );
         assert!(!calls[0].1.contains("reviewerId"));
     }
 
