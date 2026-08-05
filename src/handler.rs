@@ -9,7 +9,7 @@ use crate::forge::remote_comments::PrCommentsVisibility;
 use crate::forge::submit::SubmitEvent;
 use crate::input::Action;
 use crate::model::{ClearScope, LineSide};
-use crate::output::{export_to_clipboard, generate_export_content};
+use crate::output::{copy_text_to_clipboard, export_to_clipboard, generate_export_content};
 use crate::text_edit::{
     delete_char_before, delete_word_before, next_char_boundary, prev_char_boundary,
 };
@@ -28,6 +28,7 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     CommandSpec::new(&["e", "reload"], CommandKind::Reload),
     CommandSpec::new(&["edit"], CommandKind::Edit),
     CommandSpec::new(&["clip", "export"], CommandKind::Export),
+    CommandSpec::new(&["copy-url"], CommandKind::CopyUrl),
     CommandSpec::new(
         &["clear"],
         CommandKind::Clear(ClearScope::CommentsAndReviewed),
@@ -119,6 +120,7 @@ enum CommandKind {
     Reload,
     Edit,
     Export,
+    CopyUrl,
     Clear(ClearScope),
     Help,
     Version,
@@ -357,6 +359,20 @@ fn handle_left_click(app: &mut App, pos: Position) {
     }
 }
 
+fn handle_copy_pr_url(app: &mut App) {
+    let app::DiffSource::PullRequest(pr) = &app.diff_source else {
+        app.set_warning(":copy-url only applies in PR mode");
+        return;
+    };
+    let url = pr.url.clone();
+
+    match copy_text_to_clipboard(&url) {
+        Ok(true) => app.set_message("PR URL copied to clipboard (via terminal)"),
+        Ok(false) => app.set_message("PR URL copied to clipboard"),
+        Err(e) => app.set_warning(format!("Failed to copy PR URL: {e}")),
+    }
+}
+
 /// Export review: either to clipboard or set pending stdout output based on app.output_to_stdout.
 /// When output_to_stdout is true, stores the content and sets should_quit.
 fn handle_export(app: &mut App) {
@@ -573,27 +589,6 @@ fn command_spec_for(cmd: &str) -> Option<&'static CommandSpec> {
     COMMAND_SPECS.iter().find(|spec| spec.names.contains(&cmd))
 }
 
-#[cfg(test)]
-mod relative_line_number_command_tests {
-    use super::{CommandKind, command_spec_for};
-
-    #[test]
-    fn parses_relative_line_number_commands() {
-        assert_eq!(
-            command_spec_for("set relativenumber").map(|spec| spec.kind),
-            Some(CommandKind::SetRelativeLineNumbers(true))
-        );
-        assert_eq!(
-            command_spec_for("set norelativenumber").map(|spec| spec.kind),
-            Some(CommandKind::SetRelativeLineNumbers(false))
-        );
-        assert_eq!(
-            command_spec_for("set relativenumber!").map(|spec| spec.kind),
-            Some(CommandKind::ToggleRelativeLineNumbers)
-        );
-    }
-}
-
 /// CommandCompleter computes command-buffer replacements without mutating App.
 struct CommandCompleter<'a> {
     /// Registry whose command names are exposed as completion candidates.
@@ -800,6 +795,10 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
         }
         CommandKind::Export => {
             handle_export(app);
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::CopyUrl => {
+            handle_copy_pr_url(app);
             CommandAfterDispatch::ExitCommandMode
         }
         CommandKind::Clear(scope) => {
@@ -1689,5 +1688,34 @@ pub fn handle_submit_confirm_action(app: &mut App, action: Action) {
         }
         Action::Quit => app.should_quit = true,
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod command_tests {
+    use super::{CommandKind, command_spec_for};
+
+    #[test]
+    fn parses_relative_line_number_commands() {
+        assert_eq!(
+            command_spec_for("set relativenumber").map(|spec| spec.kind),
+            Some(CommandKind::SetRelativeLineNumbers(true))
+        );
+        assert_eq!(
+            command_spec_for("set norelativenumber").map(|spec| spec.kind),
+            Some(CommandKind::SetRelativeLineNumbers(false))
+        );
+        assert_eq!(
+            command_spec_for("set relativenumber!").map(|spec| spec.kind),
+            Some(CommandKind::ToggleRelativeLineNumbers)
+        );
+    }
+
+    #[test]
+    fn parses_copy_url_command() {
+        assert_eq!(
+            command_spec_for("copy-url").map(|spec| spec.kind),
+            Some(CommandKind::CopyUrl)
+        );
     }
 }
