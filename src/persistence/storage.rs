@@ -66,6 +66,23 @@ pub(crate) fn save_session_in_dir(session: &ReviewSession, reviews_dir: &Path) -
     })
 }
 
+pub(crate) fn reindex_session(session: &ReviewSession) -> Result<()> {
+    let reviews_dir = get_reviews_dir()?;
+    maybe_migrate(&reviews_dir)?;
+    with_reviews_dir_lock(&reviews_dir, || {
+        let slug = slug_for_session(session)?;
+        let relative = relative_path_for_slug(&slug, session)?;
+        let full_path = reviews_dir.join(&relative);
+        if !full_path.is_file() {
+            return Err(TuicrError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("session file not found: {}", full_path.display()),
+            )));
+        }
+        upsert_session_manifest(session, &reviews_dir, &slug, relative)
+    })
+}
+
 pub(crate) fn update_session_in_dir<T>(
     session_ref: &Path,
     reviews_dir: &Path,
@@ -342,13 +359,22 @@ fn save_session_in_dir_unlocked(session: &ReviewSession, reviews_dir: &Path) -> 
     let json = serde_json::to_string_pretty(session)?;
     write_atomic(&full_path, json.as_bytes())?;
 
-    let mut manifest = manifest::load_manifest(reviews_dir).unwrap_or_default();
-    let anchor = manifest_anchor_for(&slug);
-    let entry = manifest::entry_from_session(session, relative, anchor);
-    manifest.upsert(slug.to_string(), entry);
-    manifest::save_manifest(reviews_dir, &manifest)?;
+    upsert_session_manifest(session, reviews_dir, &slug, relative)?;
 
     Ok(full_path)
+}
+
+fn upsert_session_manifest(
+    session: &ReviewSession,
+    reviews_dir: &Path,
+    slug: &Slug,
+    relative: PathBuf,
+) -> Result<()> {
+    let mut manifest = manifest::load_manifest(reviews_dir).unwrap_or_default();
+    let anchor = manifest_anchor_for(slug);
+    let entry = manifest::entry_from_session(session, relative, anchor);
+    manifest.upsert(slug.to_string(), entry);
+    manifest::save_manifest(reviews_dir, &manifest)
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
