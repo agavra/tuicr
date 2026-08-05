@@ -250,12 +250,15 @@ A first-session cheatsheet. Press `?` inside tuicr for the full reference.
 | `v` / `V` | Visual mode (range comment) |
 | `r` | Toggle file reviewed |
 | `R` | Toggle hunk reviewed |
+| `t` (file list) | Toggle tree / flat file-list mode (remembered next launch) |
 | `e` | Open focused file in `$EDITOR` |
 | `y` | Copy review to clipboard |
 | `:edit` | Open focused file in `$EDITOR` |
 | `:submit` | Push review to GitHub or GitLab |
 | `Tab` in `:` prompt | Complete or cycle commands |
 | `?` | Toggle full help |
+
+Drag the separator between the file list and diff to resize the left panel; the width is remembered for the next launch.
 
 Full reference in [docs/KEYBINDINGS.md](docs/KEYBINDINGS.md).
 

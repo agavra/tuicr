@@ -336,6 +336,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  t         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Toggle tree / flat file-list mode"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  o         ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),

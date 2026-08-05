@@ -1038,18 +1038,35 @@ fn visual_rows_for_line(row_heights: &[usize], idx: usize) -> usize {
 
 /// Apply horizontal scroll to a line while preserving the first span (cursor indicator)
 pub(super) fn apply_horizontal_scroll(line: Line, scroll_x: usize) -> Line {
+    apply_horizontal_scroll_after_prefix(line, scroll_x, 1)
+}
+
+/// Apply horizontal scroll to a line without retaining a fixed prefix.
+///
+/// File-tree rows begin with indentation rather than the diff's cursor
+/// indicator, so retaining their first span leaves an ever-present blank area
+/// at the left edge while the rest of the row scrolls.
+pub(super) fn apply_horizontal_scroll_without_prefix(line: Line, scroll_x: usize) -> Line {
+    apply_horizontal_scroll_after_prefix(line, scroll_x, 0)
+}
+
+fn apply_horizontal_scroll_after_prefix(
+    line: Line,
+    scroll_x: usize,
+    prefix_span_count: usize,
+) -> Line {
     if scroll_x == 0 || line.spans.is_empty() {
         return line;
     }
 
     let mut spans: Vec<Span> = line.spans.into_iter().collect();
 
-    // Preserve the first span (indicator)
-    let indicator = spans.remove(0);
+    let protected_count = prefix_span_count.min(spans.len());
+    let protected = spans.drain(..protected_count);
 
     // Skip scroll_x characters from the remaining spans
     let mut chars_to_skip = scroll_x;
-    let mut new_spans = vec![indicator];
+    let mut new_spans: Vec<Span> = protected.collect();
 
     for span in spans {
         let content = span.content.to_string();

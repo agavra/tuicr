@@ -17,6 +17,7 @@ fn make_file(path: &str) -> DiffFile {
 struct TreeTestHarness {
     diff_files: Vec<DiffFile>,
     expanded_dirs: HashSet<String>,
+    flat: bool,
 }
 
 impl TreeTestHarness {
@@ -24,6 +25,7 @@ impl TreeTestHarness {
         Self {
             diff_files: paths.iter().map(|p| make_file(p)).collect(),
             expanded_dirs: HashSet::new(),
+            flat: false,
         }
     }
 
@@ -56,6 +58,14 @@ impl TreeTestHarness {
 
     fn build_visible_items(&self) -> Vec<FileTreeItem> {
         use std::path::Path;
+        if self.flat {
+            return self
+                .diff_files
+                .iter()
+                .enumerate()
+                .map(|(file_idx, _)| FileTreeItem::File { file_idx, depth: 0 })
+                .collect();
+        }
         let mut items = Vec::new();
         let mut seen_dirs: HashSet<String> = HashSet::new();
 
@@ -185,4 +195,20 @@ fn test_sibling_dirs_independent() {
     h.toggle("src"); // collapse src
 
     assert_eq!(h.visible_file_count(), 1); // only tests/test.rs
+}
+
+#[test]
+fn test_flat_mode_shows_every_file_without_directories() {
+    let mut h = TreeTestHarness::new(&["src/ui/app.rs", "tests/test.rs", "README.md"]);
+    h.flat = true;
+
+    let items = h.build_visible_items();
+    assert_eq!(items.len(), 3);
+    assert_eq!(h.visible_file_count(), 3);
+    assert_eq!(h.visible_dir_count(), 0);
+    assert!(
+        items
+            .iter()
+            .all(|item| matches!(item, FileTreeItem::File { depth: 0, .. }))
+    );
 }

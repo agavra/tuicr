@@ -315,6 +315,13 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
+    if let Some(width) = config::load_file_list_width() {
+        app.file_list_width = width;
+    }
+    if let Some(flat) = config::load_file_list_flat() {
+        app.file_list_flat = flat;
+    }
+
     // On narrow terminals, start with only the diff panel visible.
     if let Ok((width, _)) = crossterm::terminal::size()
         && width < MIN_WIDTH_FOR_FILE_LIST

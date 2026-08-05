@@ -197,6 +197,18 @@ pub fn handle_mouse_event(app: &mut App, event: MouseEvent) {
             }
         }
         MouseEventKind::Down(MouseButton::Left)
+            if matches!(app.input_mode, InputMode::Normal | InputMode::VisualSelect)
+                && app.is_file_list_resize_handle(pos.x, pos.y) =>
+        {
+            app.focused_panel = FocusedPanel::FileList;
+            if app.input_mode == InputMode::VisualSelect {
+                app.exit_visual_mode();
+            }
+            app.visual_selection = None;
+            app.file_list_resize_active = true;
+            app.resize_file_list_to(pos.x);
+        }
+        MouseEventKind::Down(MouseButton::Left)
             if matches!(app.input_mode, InputMode::Normal | InputMode::VisualSelect) =>
         {
             // Set focus based on the outer panel area (includes the
@@ -229,6 +241,9 @@ pub fn handle_mouse_event(app: &mut App, event: MouseEvent) {
                 handle_commit_select_action(app, Action::ToggleCommitSelect);
             }
         }
+        MouseEventKind::Drag(MouseButton::Left) if app.file_list_resize_active => {
+            app.resize_file_list_to(pos.x);
+        }
         MouseEventKind::Drag(MouseButton::Left)
             if matches!(app.input_mode, InputMode::Normal | InputMode::VisualSelect) =>
         {
@@ -260,6 +275,9 @@ pub fn handle_mouse_event(app: &mut App, event: MouseEvent) {
             {
                 app.move_cursor_to_annotation(head.annotation_idx);
             }
+        }
+        MouseEventKind::Up(MouseButton::Left) if app.file_list_resize_active => {
+            app.finish_file_list_resize();
         }
         MouseEventKind::Up(MouseButton::Left)
             if matches!(app.input_mode, InputMode::Normal | InputMode::VisualSelect) =>
@@ -1352,6 +1370,7 @@ pub fn handle_file_list_action(app: &mut App, action: Action) {
                 }
             }
         }
+        Action::ToggleFileListMode => app.toggle_file_list_mode(),
         Action::ToggleReviewed => {
             if let Some(FileTreeItem::File { file_idx, .. }) = app.get_selected_tree_item() {
                 app.toggle_reviewed_for_file_idx(file_idx, false);

@@ -222,6 +222,58 @@ pub fn themes_dir() -> Result<PathBuf> {
     Ok(config_dir()?.join("themes"))
 }
 
+const UI_STATE_FILE: &str = "ui_state.toml";
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct UiState {
+    pub file_list_width: Option<u16>,
+    pub file_list_flat: Option<bool>,
+}
+
+/// Load UI-only state that is changed interactively rather than authored in
+/// `config.toml`.
+pub fn load_ui_state() -> UiState {
+    let Ok(dir) = config_dir() else {
+        return UiState::default();
+    };
+    let Ok(content) = fs::read_to_string(dir.join(UI_STATE_FILE)) else {
+        return UiState::default();
+    };
+    toml::from_str(&content).unwrap_or_default()
+}
+
+/// Persist UI state. This sidecar keeps the user's
+/// hand-written `config.toml` comments and formatting untouched.
+fn save_ui_state(state: &UiState) -> Result<()> {
+    let dir = config_dir()?;
+    fs::create_dir_all(&dir)?;
+    fs::write(dir.join(UI_STATE_FILE), toml::to_string(state)?)?;
+    Ok(())
+}
+
+pub fn load_file_list_width() -> Option<u16> {
+    load_ui_state()
+        .file_list_width
+        .filter(|width| (15..=50).contains(width))
+}
+
+pub fn load_file_list_flat() -> Option<bool> {
+    load_ui_state().file_list_flat
+}
+
+pub fn save_file_list_width(width: u16) -> Result<()> {
+    let mut state = load_ui_state();
+    state.file_list_width = Some(width);
+    save_ui_state(&state)
+}
+
+pub fn save_file_list_flat(flat: bool) -> Result<()> {
+    let mut state = load_ui_state();
+    state.file_list_flat = Some(flat);
+    save_ui_state(&state)
+}
+
 fn config_path_env_parts() -> (Option<PathBuf>, Option<PathBuf>, Option<PathBuf>) {
     (
         std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from),
@@ -746,6 +798,18 @@ mod tests {
         let outcome = load_config_from_path(&path).expect("missing config should not fail");
         assert_eq!(outcome.config, None);
         assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_round_trip_file_list_ui_state() {
+        let state = UiState {
+            file_list_width: Some(35),
+            file_list_flat: Some(true),
+        };
+
+        let serialized = toml::to_string(&state).expect("state should serialize");
+        let restored: UiState = toml::from_str(&serialized).expect("state should deserialize");
+        assert_eq!(restored, state);
     }
 
     #[test]

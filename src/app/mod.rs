@@ -1182,6 +1182,13 @@ pub struct App {
     pub pending_confirm: Option<ConfirmAction>,
     pub supports_keyboard_enhancement: bool,
     pub show_file_list: bool,
+    /// Horizontal file-list width as a percentage of the main content area.
+    pub file_list_width: u16,
+    /// True while the mouse is dragging the separator between file list/diff.
+    pub file_list_resize_active: bool,
+    /// When true, the file list shows every file as a single flat row rather
+    /// than rendering directory nodes and indentation.
+    pub file_list_flat: bool,
     /// `true` when the session was opened via `--all-files`. Drives the
     /// `PRISTINE · N files` chip in the status bar and prevents that chip
     /// from showing in the regular `--file <dir>` directory mode.

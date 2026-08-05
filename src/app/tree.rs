@@ -1,6 +1,62 @@
 use super::*;
 
 impl App {
+    /// Whether a mouse position is on the separator between the file list and
+    /// diff panels. The one-column tolerance makes the handle usable even
+    /// when the terminal reports a border cell inconsistently.
+    pub fn is_file_list_resize_handle(&self, x: u16, y: u16) -> bool {
+        let Some(file_list) = self.file_list_area else {
+            return false;
+        };
+        let Some(diff) = self.diff_area else {
+            return false;
+        };
+        y >= diff.y
+            && y < diff.y.saturating_add(diff.height)
+            && x.abs_diff(diff.x) <= 1
+            && diff.x > file_list.x
+    }
+
+    /// Update the file-list width from a mouse x-coordinate. Width is bounded
+    /// so neither panel can become unusably narrow.
+    pub fn resize_file_list_to(&mut self, x: u16) {
+        let Some(file_list) = self.file_list_area else {
+            return;
+        };
+        let Some(diff) = self.diff_area else {
+            return;
+        };
+        let total = u32::from(
+            diff.x
+                .saturating_add(diff.width)
+                .saturating_sub(file_list.x),
+        );
+        if total == 0 {
+            return;
+        }
+        let relative = u32::from(x.saturating_sub(file_list.x));
+        let percent = ((relative * 100 + total / 2) / total).clamp(15, 50) as u16;
+        if percent != self.file_list_width {
+            self.file_list_width = percent;
+            self.file_list_resize_active = true;
+        }
+    }
+
+    /// Finish a resize gesture and persist the selected width for the next
+    /// launch. Errors are non-fatal because the current session keeps the
+    /// in-memory width.
+    pub fn finish_file_list_resize(&mut self) {
+        if !self.file_list_resize_active {
+            return;
+        }
+        self.file_list_resize_active = false;
+        if let Err(error) = crate::config::save_file_list_width(self.file_list_width) {
+            self.set_warning(format!("Failed to save file-list width: {error}"));
+        } else {
+            self.set_message(format!("File list width: {}%", self.file_list_width));
+        }
+    }
+
     pub fn file_list_down(&mut self, n: usize) {
         let visible_items = self.build_visible_items();
         let max_idx = visible_items.len().saturating_sub(1);
@@ -105,6 +161,24 @@ impl App {
             "hidden"
         };
         self.set_message(format!("File list: {status}"));
+    }
+
+    /// Toggle between the hierarchical file tree and a flat list of all
+    /// changed files. Keep the currently focused file selected when possible.
+    pub fn toggle_file_list_mode(&mut self) {
+        let current_file_idx = self.diff_state.current_file_idx;
+        self.file_list_flat = !self.file_list_flat;
+        self.ensure_valid_tree_selection();
+        if let Some(tree_idx) = self.file_idx_to_tree_idx(current_file_idx) {
+            self.file_list_state.select(tree_idx);
+        }
+        *self.file_list_state.list_state.offset_mut() = 0;
+        let mode = if self.file_list_flat { "flat" } else { "tree" };
+        if let Err(error) = crate::config::save_file_list_flat(self.file_list_flat) {
+            self.set_warning(format!("Failed to save file-list mode: {error}"));
+        } else {
+            self.set_message(format!("File list mode: {mode}"));
+        }
     }
 
     /// Toggle single-file view. When on, the diff panel renders only the
@@ -270,6 +344,15 @@ impl App {
 
     pub fn build_visible_items(&self) -> Vec<FileTreeItem> {
         use std::path::Path;
+
+        if self.file_list_flat {
+            return self
+                .diff_files
+                .iter()
+                .enumerate()
+                .map(|(file_idx, _)| FileTreeItem::File { file_idx, depth: 0 })
+                .collect();
+        }
 
         let mut items = Vec::new();
         let mut seen_dirs: HashSet<String> = HashSet::new();

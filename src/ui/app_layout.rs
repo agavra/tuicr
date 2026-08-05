@@ -104,8 +104,8 @@ fn render_main_content(frame: &mut Frame, app: &mut App, area: Rect) {
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
-                Constraint::Percentage(20), // File list
-                Constraint::Percentage(80), // Diff view
+                Constraint::Percentage(app.file_list_width), // File list
+                Constraint::Percentage(100u16.saturating_sub(app.file_list_width)), // Diff view
             ])
             .split(content_area);
 
