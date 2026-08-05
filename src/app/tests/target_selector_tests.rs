@@ -1189,7 +1189,7 @@ fn should_keep_saved_pr_session_through_quit_reopen_and_same_head_reload() {
 }
 
 #[test]
-fn should_use_persisted_new_head_session_instead_of_carrying_old_head_state() {
+fn should_use_and_reindex_persisted_new_head_session() {
     // given an old-head PR session with reviewed state
     let _reviews = TestReviewsDir::new();
     let mut app = build_app();
@@ -1229,7 +1229,10 @@ fn should_use_persisted_new_head_session_instead_of_carrying_old_head_state() {
             CommentType::from_id("note"),
             None,
         ));
+    let persisted_path = crate::persistence::storage::session_path(&persisted_b).unwrap();
+    let slug = crate::slug::Slug::from(persisted_b.pr_session_key.as_ref().unwrap()).to_string();
     write_session_file_without_manifest(&persisted_b);
+    let persisted_contents = std::fs::read(&persisted_path).unwrap();
 
     // when the PR reload advances to that head
     let backend_b = Box::new(FakeForgeBackend::open_pr_details(
@@ -1248,6 +1251,12 @@ fn should_use_persisted_new_head_session_instead_of_carrying_old_head_state() {
     let changed_review = app.session.files.get(&changed_path).unwrap();
     assert_eq!(changed_review.file_comments.len(), 1);
     assert_eq!(changed_review.file_comments[0].content, "new-head draft");
+    let resolved = crate::review_store::ReviewStore::new()
+        .resolve_pr_session(&slug)
+        .unwrap()
+        .unwrap();
+    assert_eq!(resolved.path(), persisted_path);
+    assert_eq!(std::fs::read(&persisted_path).unwrap(), persisted_contents);
 }
 
 #[test]
