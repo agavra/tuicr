@@ -2,21 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
-
-### Features
-
-- **bitbucket:** Add Bitbucket Cloud support via the `bkt` CLI. Open and browse
-  pull requests, read existing inline threads and general comments, and push
-  reviews with `:submit` (Comment) and `:submit approve`. Request-changes and
-  draft reviews are not supported yet, and Bitbucket Data Center is out of
-  scope. See `docs/BITBUCKET.md`.
+## [0.21.0] - 2026-08-05
 
 ### Bug Fixes
 
-- `--repo-url` validated against GitHub only, silently rejecting GitLab and
-  Bitbucket remotes. It now accepts any supported forge URL.
+- **tree:** Keep a directory's files together when a sibling shares its prefix (#528)
+- Label remote comments by forge (#530)
+- **ui:** Give the reviewed banner an annotation slot in single-file view (#535)
+- Deduplicate remote review threads (#550)
+- Cover Bitbucket variant in forge_badge_label (#564)
 
+### Documentation
+
+- Use official homebrew-core formula (#522) (#541)
+- Document remaining config keys (#527)
+
+### Features
+
+- **ui:** Always show the commit under review in the header (#529)
+- **ui:** Filter the file tree by include/exclude regex (#497)
+- **forge:** Add Bitbucket backend (#533)
 ## [0.20.0] - 2026-08-02
 
 ### Bug Fixes
@@ -46,7 +51,6 @@ All notable changes to this project will be documented in this file.
 ### Diff
 
 - Render commit message as prose, not a diff (#471)
-
 ## [0.19.1] - 2026-07-13
 
 ### Bug Fixes
