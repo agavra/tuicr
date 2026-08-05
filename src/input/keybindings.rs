@@ -209,7 +209,9 @@ fn map_normal_mode(key: KeyEvent, leader_key: char) -> Action {
         (KeyCode::Char('i'), KeyModifiers::NONE) => Action::EditComment,
         (KeyCode::Char('A'), _) => Action::EditCommentAtEnd,
         (KeyCode::Char('d'), KeyModifiers::NONE) => Action::PendingDCommand,
-        (KeyCode::Char('v') | KeyCode::Char('V'), KeyModifiers::NONE | KeyModifiers::SHIFT) => Action::EnterVisualMode,
+        (KeyCode::Char('v') | KeyCode::Char('V'), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+            Action::EnterVisualMode
+        }
         (KeyCode::Char(' '), KeyModifiers::CONTROL) => Action::EnterVisualMode,
         (KeyCode::Char('y'), KeyModifiers::NONE) => Action::ExportToClipboard,
         (KeyCode::Char('e'), KeyModifiers::NONE) => Action::EditFile,
