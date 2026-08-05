@@ -1189,7 +1189,7 @@ fn should_keep_saved_pr_session_through_quit_reopen_and_same_head_reload() {
 }
 
 #[test]
-fn should_use_and_reindex_persisted_new_head_session() {
+fn should_reindex_recovered_pr_session() {
     // given an old-head PR session with reviewed state
     let _reviews = TestReviewsDir::new();
     let mut app = build_app();
@@ -1230,7 +1230,8 @@ fn should_use_and_reindex_persisted_new_head_session() {
             None,
         ));
     let persisted_path = crate::persistence::storage::session_path(&persisted_b).unwrap();
-    let slug = crate::slug::Slug::from(persisted_b.pr_session_key.as_ref().unwrap()).to_string();
+    let pr_session_key = persisted_b.pr_session_key.as_ref().unwrap();
+    let slug = crate::slug::Slug::from(pr_session_key).to_string();
     write_session_file_without_manifest(&persisted_b);
     let persisted_contents = std::fs::read(&persisted_path).unwrap();
 
