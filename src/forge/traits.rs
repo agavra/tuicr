@@ -12,6 +12,20 @@ use crate::model::{DiffLine, FileStatus};
 pub enum ForgeKind {
     GitHub,
     GitLab,
+    /// Bitbucket Cloud only. Data Center speaks an unrelated REST 1.0 API and
+    /// is rejected during remote-URL parsing.
+    Bitbucket,
+}
+
+impl ForgeKind {
+    /// Brand name as users expect to see it, for messages and export headers.
+    pub fn display_name(self) -> &'static str {
+        match self {
+            ForgeKind::GitHub => "GitHub",
+            ForgeKind::GitLab => "GitLab",
+            ForgeKind::Bitbucket => "Bitbucket",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,12 +63,26 @@ impl ForgeRepository {
         }
     }
 
+    /// `owner` carries the Bitbucket Cloud workspace.
+    pub fn bitbucket(
+        host: impl Into<String>,
+        owner: impl Into<String>,
+        name: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind: ForgeKind::Bitbucket,
+            host: host.into(),
+            owner: owner.into(),
+            name: name.into(),
+        }
+    }
+
     pub fn slug(&self) -> String {
         format!("{}/{}", self.owner, self.name)
     }
 
     pub fn display_name(&self) -> String {
-        if self.host == "github.com" || self.host == "gitlab.com" {
+        if self.host == "github.com" || self.host == "gitlab.com" || self.host == "bitbucket.org" {
             self.slug()
         } else {
             format!("{}/{}", self.host, self.slug())

@@ -1,5 +1,6 @@
 use crate::app::*;
-use crate::model::{DiffFile, FileStatus};
+use crate::model::{DiffFile, DiffLine, FileStatus};
+use crate::vcs::traits::{VcsBackend, VcsInfo, VcsType};
 
 fn make_file(path: &str) -> DiffFile {
     DiffFile {
@@ -185,4 +186,111 @@ fn test_sibling_dirs_independent() {
     h.toggle("src"); // collapse src
 
     assert_eq!(h.visible_file_count(), 1); // only tests/test.rs
+}
+
+struct StubVcs(VcsInfo);
+impl VcsBackend for StubVcs {
+    fn info(&self) -> &VcsInfo {
+        &self.0
+    }
+    fn get_working_tree_diff(
+        &self,
+        _hl: &crate::syntax::SyntaxHighlighter,
+    ) -> crate::error::Result<Vec<DiffFile>> {
+        Ok(Vec::new())
+    }
+    fn fetch_context_lines(
+        &self,
+        _path: &std::path::Path,
+        _status: FileStatus,
+        _ref_commit: Option<&str>,
+        _start: u32,
+        _end: u32,
+    ) -> crate::error::Result<Vec<DiffLine>> {
+        Ok(Vec::new())
+    }
+    fn file_line_count(
+        &self,
+        _path: &std::path::Path,
+        _status: FileStatus,
+        _ref_commit: Option<&str>,
+    ) -> crate::error::Result<u32> {
+        Ok(0)
+    }
+}
+
+fn app_with(paths: &[&str]) -> App {
+    let vcs_info = VcsInfo {
+        root_path: PathBuf::from("/tmp"),
+        head_commit: "head".into(),
+        branch_name: Some("main".into()),
+        vcs_type: VcsType::Git,
+    };
+    let session = ReviewSession::new(
+        vcs_info.root_path.clone(),
+        vcs_info.head_commit.clone(),
+        vcs_info.branch_name.clone(),
+        SessionDiffSource::WorkingTree,
+    );
+    App::build(
+        Box::new(StubVcs(vcs_info.clone())),
+        vcs_info,
+        crate::theme::Theme::dark(),
+        None,
+        false,
+        paths.iter().map(|p| make_file(p)).collect(),
+        session,
+        DiffSource::WorkingTree,
+        InputMode::Normal,
+        Vec::new(),
+        None,
+        None,
+    )
+    .expect("build app")
+}
+
+/// Renders the visible tree as (label, depth) pairs, with directories
+/// suffixed by '/' so a mis-parented file is obvious in the assertion.
+fn rendered_tree(app: &App) -> Vec<(String, usize)> {
+    app.build_visible_items()
+        .iter()
+        .map(|item| match item {
+            FileTreeItem::Directory { path, depth, .. } => (format!("{path}/"), *depth),
+            FileTreeItem::File { file_idx, depth } => (
+                app.diff_files[*file_idx]
+                    .display_path()
+                    .to_string_lossy()
+                    .to_string(),
+                *depth,
+            ),
+        })
+        .collect()
+}
+
+#[test]
+fn test_interleaved_paths_stay_under_own_directory() {
+    // A sibling directory sharing a prefix used to sort between a directory
+    // and its own subdirectory, because '.' sorts before '/'. That split the
+    // ChronoStream subtree in two, and since build_visible_items emits a
+    // directory header only once, ChronoStream/Subdir rendered indented under
+    // ChronoStream.BuildTests.
+    let mut app = app_with(&[
+        "ChronoStream/Subdir/file.cs",
+        "ChronoStream.BuildTests/test.cs",
+        "ChronoStream/root.cs",
+    ]);
+    app.sort_files_by_directory(true);
+    app.expand_all_dirs();
+
+    assert_eq!(
+        rendered_tree(&app),
+        vec![
+            ("ChronoStream/".to_string(), 0),
+            ("ChronoStream/root.cs".to_string(), 1),
+            ("ChronoStream/Subdir/".to_string(), 1),
+            ("ChronoStream/Subdir/file.cs".to_string(), 2),
+            ("ChronoStream.BuildTests/".to_string(), 0),
+            ("ChronoStream.BuildTests/test.cs".to_string(), 1),
+        ]
+    );
 }

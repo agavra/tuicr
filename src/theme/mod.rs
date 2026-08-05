@@ -813,6 +813,64 @@ impl Theme {
         }
     }
 
+    /// GitHub dark theme (matches the github.com dark mode diff palette: Primer dark tokens)
+    pub fn github_dark_colorblind() -> Self {
+        Self {
+            highlighter: OnceLock::new(),
+            panel_bg: Color::Rgb(0x0d, 0x11, 0x17),
+            bg_highlight: Color::Rgb(0x1e, 0x42, 0x73),
+            fg_primary: Color::Rgb(0xf0, 0xf6, 0xfc),
+            fg_secondary: Color::Rgb(0x91, 0x98, 0xa1),
+            fg_dim: Color::Rgb(0x65, 0x6c, 0x76),
+
+            diff_add: Color::Rgb(0x58, 0xa6, 0xff),
+            diff_add_bg: Color::Rgb(0x18, 0x30, 0x51),
+            diff_del: Color::Rgb(0xf0, 0x88, 0x3e),
+            diff_del_bg: Color::Rgb(0x41, 0x28, 0x1b),
+            diff_context: Color::Rgb(0xf0, 0xf6, 0xfc),
+            diff_hunk_header: Color::Rgb(0x44, 0x93, 0xf8),
+            expanded_context_fg: Color::Rgb(0x65, 0x6c, 0x76),
+
+            syntax_add_bg: Color::Rgb(0x1e, 0x42, 0x73),
+            syntax_del_bg: Color::Rgb(0x5f, 0x36, 0x1e),
+
+            syntax_theme: SyntaxThemeSource::Embedded(EmbeddedThemeName::OneHalfDark),
+
+            file_added: Color::Rgb(0x58, 0xa6, 0xff),
+            file_modified: Color::Rgb(0xd2, 0x99, 0x22),
+            file_deleted: Color::Rgb(0xf0, 0x88, 0x3e),
+            file_renamed: Color::Rgb(0xab, 0x7d, 0xf8),
+
+            reviewed: Color::Rgb(0x58, 0xa6, 0xff),
+            pending: Color::Rgb(0xd2, 0x99, 0x22),
+
+            comment_note: Color::Rgb(0x44, 0x93, 0xf8),
+            comment_suggestion: Color::Rgb(0x56, 0xd4, 0xdd),
+            comment_issue: Color::Rgb(0xf0, 0x88, 0x3e),
+            comment_praise: Color::Rgb(0x79, 0xc0, 0xff),
+
+            border_focused: Color::Rgb(0x44, 0x93, 0xf8),
+            border_unfocused: Color::Rgb(0x2a, 0x31, 0x3c),
+            status_bar_bg: Color::Rgb(0x01, 0x04, 0x09),
+            cursor_color: Color::Rgb(0xd2, 0x99, 0x22),
+            cursor_line_bg: Color::Rgb(0x15, 0x1b, 0x23),
+            branch_name: Color::Rgb(0xab, 0x7d, 0xf8),
+            help_indicator: Color::Rgb(0x65, 0x6c, 0x76),
+
+            message_info_fg: Color::Rgb(0x01, 0x04, 0x09),
+            message_info_bg: Color::Rgb(0x44, 0x93, 0xf8),
+            message_warning_fg: Color::Rgb(0x01, 0x04, 0x09),
+            message_warning_bg: Color::Rgb(0xd2, 0x99, 0x22),
+            message_error_fg: Color::Rgb(0x01, 0x04, 0x09),
+            message_error_bg: Color::Rgb(0xf0, 0x88, 0x3e),
+            update_badge_fg: Color::Rgb(0x01, 0x04, 0x09),
+            update_badge_bg: Color::Rgb(0xd2, 0x99, 0x22),
+
+            mode_fg: Color::Rgb(0x01, 0x04, 0x09),
+            mode_bg: Color::Rgb(0x39, 0xc5, 0xcf),
+        }
+    }
+
     /// Tokyo Night Storm (folke/tokyonight.nvim "storm" variant)
     pub fn tokyo_night_storm() -> Self {
         let bg = Color::Rgb(36, 40, 59); // #24283b
@@ -1550,6 +1608,7 @@ pub enum ThemeArg {
     Onedark,
     GithubLight,
     GithubDark,
+    GithubDarkColorblind,
     CatppuccinLatte,
     CatppuccinFrappe,
     CatppuccinMacchiato,
@@ -1568,7 +1627,7 @@ pub enum ThemeArg {
     EverforestLight,
 }
 
-const THEME_CHOICES: [(&str, ThemeArg); 23] = [
+const THEME_CHOICES: [(&str, ThemeArg); 24] = [
     ("dark", ThemeArg::Dark),
     ("light", ThemeArg::Light),
     ("ayu-light", ThemeArg::AyuLight),
@@ -1576,6 +1635,7 @@ const THEME_CHOICES: [(&str, ThemeArg); 23] = [
     ("onedark", ThemeArg::Onedark),
     ("github-light", ThemeArg::GithubLight),
     ("github-dark", ThemeArg::GithubDark),
+    ("github-dark-colorblind", ThemeArg::GithubDarkColorblind),
     ("catppuccin-latte", ThemeArg::CatppuccinLatte),
     ("catppuccin-frappe", ThemeArg::CatppuccinFrappe),
     ("catppuccin-macchiato", ThemeArg::CatppuccinMacchiato),
@@ -1693,6 +1753,7 @@ pub fn resolve_theme(arg: ThemeArg) -> Theme {
         ThemeArg::Onedark => Theme::onedark(),
         ThemeArg::GithubLight => Theme::github_light(),
         ThemeArg::GithubDark => Theme::github_dark(),
+        ThemeArg::GithubDarkColorblind => Theme::github_dark_colorblind(),
         ThemeArg::CatppuccinLatte => Theme::catppuccin_latte(),
         ThemeArg::CatppuccinFrappe => Theme::catppuccin_frappe(),
         ThemeArg::CatppuccinMacchiato => Theme::catppuccin_macchiato(),

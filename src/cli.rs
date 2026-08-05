@@ -396,16 +396,16 @@ fn non_empty_theme_name(s: &str) -> Result<String, String> {
     }
 }
 
-/// Reject `--repo-url` values that don't parse as a GitHub remote URL so the
-/// failure is surfaced at startup rather than when the PR tab is opened.
+/// Reject `--repo-url` values that don't parse as a supported forge remote URL
+/// so the failure is surfaced at startup rather than when the PR tab is opened.
 fn parse_repo_url(s: &str) -> Result<String, String> {
-    if crate::forge::github::gh::parse_github_remote_url(s).is_some() {
+    if crate::forge::parse_any_remote_url(s).is_some() {
         Ok(s.to_string())
     } else {
         Err(format!(
-            "--repo-url value '{s}' is not a recognized GitHub URL. \
-             Expected forms: https://github.com/owner/repo, git@github.com:owner/repo, \
-             or ssh://git@github.com/owner/repo"
+            "--repo-url value '{s}' is not a recognized GitHub, GitLab, or Bitbucket URL. \
+             Expected forms: https://github.com/owner/repo, git@gitlab.com:owner/repo, \
+             https://bitbucket.org/workspace/repo, or ssh://git@github.com/owner/repo"
         ))
     }
 }
@@ -852,7 +852,27 @@ mod tests {
         let err =
             parse_for_test(&["tuicr", "--repo-url", "not-a-url"]).expect_err("parse should fail");
         assert_eq!(err.kind(), ErrorKind::ValueValidation);
-        assert!(err.to_string().contains("not a recognized GitHub URL"));
+        assert!(
+            err.to_string()
+                .contains("not a recognized GitHub, GitLab, or Bitbucket URL"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn should_accept_repo_url_for_every_supported_forge() {
+        // `--repo-url` used to validate against GitHub only, which silently
+        // rejected GitLab and Bitbucket remotes.
+        for url in [
+            "https://github.com/slatedb/slatedb.git",
+            "https://gitlab.com/owner/repo.git",
+            "https://bitbucket.org/example-workspace/repo.git",
+            "git@bitbucket.org:example-workspace/repo.git",
+        ] {
+            let parsed = parse_for_test(&["tuicr", "--repo-url", url])
+                .unwrap_or_else(|err| panic!("{url} should parse: {err}"));
+            assert_eq!(parsed.repo_url, Some(url.to_string()));
+        }
     }
 
     #[test]

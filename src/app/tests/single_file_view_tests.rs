@@ -530,3 +530,36 @@ fn effective_file_height_is_zero_for_non_current_in_single_file_view() {
     let current = &app.diff_files[0].clone();
     assert!(app.effective_file_height(0, current) > 0);
 }
+
+#[test]
+fn reviewed_banner_keeps_annotations_aligned_with_rendered_rows() {
+    let mut app = app_with(vec![file("a.rs", vec![hunk(1, 3)])]);
+    app.toggle_single_file_view();
+
+    let before = app.line_annotations.len();
+    app.toggle_reviewed();
+
+    // Single-file view renders the focused file under a "Marked reviewed"
+    // banner, so both the annotation stream and the height model grow by
+    // exactly that one row.
+    assert!(app.session.is_file_reviewed(&PathBuf::from("a.rs")));
+    assert_eq!(app.line_annotations.len(), before + 1);
+    assert_eq!(app.line_annotations.len(), app.total_lines());
+    assert!(matches!(
+        app.line_annotations.first(),
+        Some(AnnotatedLine::ReviewedBanner { file_idx: 0 })
+    ));
+    assert!(matches!(
+        app.line_annotations.get(1),
+        Some(AnnotatedLine::HunkHeader { .. })
+    ));
+
+    // With the banner occupying row 0, moving down from it lands on the
+    // hunk header the renderer draws directly beneath it.
+    app.diff_state.cursor_line = 0;
+    app.cursor_down(1);
+    assert!(matches!(
+        app.line_annotations.get(app.diff_state.cursor_line),
+        Some(AnnotatedLine::HunkHeader { .. })
+    ));
+}

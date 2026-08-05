@@ -2,8 +2,8 @@ use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Position;
 
 use crate::app::{
-    self, App, CommandCompletionState, ExpandDirection, FileTreeItem, FocusedPanel, GapCursorHit,
-    InputMode, TargetTab, VisualSelection,
+    self, App, CommandCompletionState, ExpandDirection, FileTreeItem, FileTreePrompt, FocusedPanel,
+    GapCursorHit, InputMode, TargetTab, VisualSelection,
 };
 use crate::forge::remote_comments::PrCommentsVisibility;
 use crate::forge::submit::SubmitEvent;
@@ -1333,7 +1333,27 @@ pub fn handle_visual_action(app: &mut App, action: Action) {
 
 /// Handle actions when file list panel is focused
 pub fn handle_file_list_action(app: &mut App, action: Action) {
+    // An open `i`/`e`/`/` prompt owns keyboard input until it is submitted or
+    // cancelled. The wheel still scrolls the list underneath it.
+    if app.file_tree_prompt_editing()
+        && !matches!(
+            action,
+            Action::MouseScrollDown(_) | Action::MouseScrollUp(_)
+        )
+    {
+        handle_file_tree_prompt_action(app, action);
+        return;
+    }
     match action {
+        Action::FileTreeFilterInclude => app.begin_file_tree_prompt(FileTreePrompt::Include),
+        Action::FileTreeFilterExclude => app.begin_file_tree_prompt(FileTreePrompt::Exclude),
+        Action::FileTreeClearInclude => app.clear_include_filter(),
+        Action::FileTreeClearExclude => app.clear_exclude_filter(),
+        Action::FileTreeSearch => app.begin_file_tree_prompt(FileTreePrompt::Search),
+        // With a tree search active, n/N step file matches. Otherwise they
+        // fall through to the diff search so the shared binding still works.
+        Action::SearchNext if app.file_tree_search_active() => app.file_tree_search_next(),
+        Action::SearchPrev if app.file_tree_search_active() => app.file_tree_search_prev(),
         Action::CursorDown(n) => app.file_list_down(n),
         Action::CursorUp(n) => app.file_list_up(n),
         Action::ScrollLeft(n) => app.file_list_state.scroll_left(n),
@@ -1359,6 +1379,21 @@ pub fn handle_file_list_action(app: &mut App, action: Action) {
             }
         }
         _ => handle_shared_normal_action(app, action),
+    }
+}
+
+/// Handle input while a file-tree prompt (`i` include, `e` exclude, `/`
+/// search) is open. Mirrors `handle_pr_filter_action` for the target selector.
+fn handle_file_tree_prompt_action(app: &mut App, action: Action) {
+    match action {
+        Action::InsertChar(c) => app.file_tree_prompt_insert_char(c),
+        Action::Paste(text) => app.file_tree_prompt_insert_str(&text),
+        Action::DeleteChar => app.file_tree_prompt_delete_char(),
+        Action::DeleteWord => app.file_tree_prompt_delete_word(),
+        Action::ClearLine => app.file_tree_prompt_clear_line(),
+        Action::SubmitInput => app.commit_file_tree_prompt(),
+        Action::ExitMode => app.cancel_file_tree_prompt(),
+        _ => {}
     }
 }
 
@@ -1395,10 +1430,14 @@ pub fn handle_comment_navigator_action(app: &mut App, action: Action) {
 /// right message when the comment is read-only or absent.
 fn edit_comment_at_cursor(app: &mut App, cursor_at_end: bool) {
     if app.cursor_on_locked_comment() {
-        app.set_message("Comment already pushed to GitHub — read only in tuicr");
+        let forge = app.forge_display_name();
+        app.set_message(format!(
+            "Comment already pushed to {forge} — read only in tuicr"
+        ));
     } else if !app.enter_edit_mode(cursor_at_end) {
         if app.cursor_on_remote_thread() {
-            app.set_message("GitHub comment — read only in tuicr");
+            let forge = app.forge_display_name();
+            app.set_message(format!("{forge} comment — read only in tuicr"));
         } else {
             app.set_message("No comment at cursor");
         }

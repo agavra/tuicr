@@ -8,7 +8,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph},
 };
 
-use crate::app::{App, DiffSource, InputMode, Message, MessageType};
+use crate::app::{App, DiffSource, FocusedPanel, InputMode, Message, MessageType};
 use crate::theme::Theme;
 use crate::ui::commit_row::CURSOR_GLYPH;
 use crate::ui::styles;
@@ -158,14 +158,39 @@ pub fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-/// Short, lowercase description of the active review source. Returns `None`
-/// for plain working-tree review (no extra label needed beyond `vcs:branch`).
+/// Short form of the HEAD sha, or `None` when there is no real commit to name.
+///
+/// Pristine sessions store a synthetic `pristine:<head>:<hash>` key rather than
+/// a sha, and that mode already renders its own chip further down the header.
+/// An empty repository has no HEAD at all.
+fn head_commit_label(app: &App) -> Option<String> {
+    if app.is_pristine_mode {
+        return None;
+    }
+    let head = app.vcs_info.head_commit.as_str();
+    (!head.is_empty()).then(|| head[..7.min(head.len())].to_string())
+}
+
+/// Suffix a working-tree label with the commit being diffed against.
+fn with_head_commit(label: &str, app: &App) -> String {
+    match head_commit_label(app) {
+        Some(head) => format!("{label} \u{00b7} commit {head}"),
+        None => label.to_string(),
+    }
+}
+
+/// Short, lowercase description of the active review source, including the
+/// commit it is diffed against. Returns `None` only when there is nothing to
+/// add beyond `vcs:branch`, which now means an empty repository.
 fn header_source_chunk(app: &App) -> Option<String> {
     match &app.diff_source {
-        DiffSource::WorkingTree => None,
-        DiffSource::Staged => Some("staged".to_string()),
-        DiffSource::Unstaged => Some("unstaged".to_string()),
-        DiffSource::StagedAndUnstaged => Some("staged + unstaged".to_string()),
+        // The working-tree family all diff against HEAD but never named it, so
+        // the commit under review was only visible via `-r <sha>`. The
+        // commit-range arms below already identify their own revision.
+        DiffSource::WorkingTree => head_commit_label(app).map(|head| format!("commit {head}")),
+        DiffSource::Staged => Some(with_head_commit("staged", app)),
+        DiffSource::Unstaged => Some(with_head_commit("unstaged", app)),
+        DiffSource::StagedAndUnstaged => Some(with_head_commit("staged + unstaged", app)),
         DiffSource::CommitRange(commits) => {
             if commits.len() == 1 {
                 Some(format!("commit {}", &commits[0][..7.min(commits[0].len())]))
@@ -263,8 +288,16 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
 
         let hints: Cow<'static, str> = if app.message.is_some() {
             Cow::Borrowed("")
+        } else if app.file_tree_prompt_editing() {
+            // File-tree prompts are a sub-state of Normal, so the mode chip
+            // still reads NORMAL; the hint is what tells the user Enter/Esc
+            // are the way out.
+            Cow::Borrowed("   \u{21b5} apply \u{00b7} esc cancel")
         } else {
             match app.input_mode {
+                InputMode::Normal if app.focused_panel == FocusedPanel::FileList => Cow::Borrowed(
+                    "   j/k move \u{00b7} \u{21b5} open \u{00b7} i/e filter \u{00b7} I/E clear \u{00b7} / search \u{00b7} r reviewed",
+                ),
                 InputMode::Normal => Cow::Borrowed(
                     "   j/k scroll \u{00b7} {/} file \u{00b7} m/M comment \u{00b7} r file \u{00b7} R hunk \u{00b7} c comment \u{00b7} ? help",
                 ),
@@ -526,7 +559,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod pr_header_snapshot_tests {
+mod header_snapshot_tests {
     //! Render-snapshot coverage for the status bar header in PR mode.
     //! Drives the full `render_header` against ratatui's `TestBackend`
     //! and asserts on the produced character grid.
@@ -803,5 +836,93 @@ mod pr_header_snapshot_tests {
         // assertion at all proves the truncation no longer panics)
         let line = row_text(&buffer, 0);
         assert!(line.contains("agavra/tuicr#125"), "got: {line:?}");
+    }
+    fn build_local_app(diff_source: DiffSource, head_commit: &str) -> App {
+        let vcs_info = VcsInfo {
+            root_path: PathBuf::from("/repo"),
+            head_commit: head_commit.to_string(),
+            branch_name: Some("main".to_string()),
+            vcs_type: VcsType::Git,
+        };
+        let session = ReviewSession::new(
+            vcs_info.root_path.clone(),
+            vcs_info.head_commit.clone(),
+            vcs_info.branch_name.clone(),
+            SessionDiffSource::WorkingTree,
+        );
+        App::build(
+            Box::new(NoopVcs {
+                info: vcs_info.clone(),
+            }),
+            vcs_info,
+            Theme::dark(),
+            None,
+            false,
+            Vec::new(),
+            session,
+            diff_source,
+            InputMode::Normal,
+            Vec::new(),
+            None,
+            None,
+        )
+        .expect("build local app")
+    }
+
+    #[test]
+    fn should_show_head_commit_when_reviewing_the_working_tree() {
+        let app = build_local_app(DiffSource::WorkingTree, "abcdef0123456789");
+        assert_eq!(
+            super::header_source_chunk(&app),
+            Some("commit abcdef0".to_string())
+        );
+    }
+
+    #[test]
+    fn should_show_head_commit_alongside_staged_labels() {
+        let staged = build_local_app(DiffSource::Staged, "abcdef0123456789");
+        assert_eq!(
+            super::header_source_chunk(&staged),
+            Some("staged \u{00b7} commit abcdef0".to_string())
+        );
+
+        let both = build_local_app(DiffSource::StagedAndUnstaged, "abcdef0123456789");
+        assert_eq!(
+            super::header_source_chunk(&both),
+            Some("staged + unstaged \u{00b7} commit abcdef0".to_string())
+        );
+    }
+
+    #[test]
+    fn should_omit_head_commit_when_repository_has_no_head() {
+        let app = build_local_app(DiffSource::WorkingTree, "");
+        assert_eq!(super::header_source_chunk(&app), None);
+
+        let staged = build_local_app(DiffSource::Staged, "");
+        assert_eq!(
+            super::header_source_chunk(&staged),
+            Some("staged".to_string())
+        );
+    }
+
+    #[test]
+    fn should_not_duplicate_commit_for_a_revision_review() {
+        // `-r <sha>` already names its own revision; HEAD must not be appended.
+        let app = build_local_app(
+            DiffSource::CommitRange(vec!["fedcba9876543210".to_string()]),
+            "abcdef0123456789",
+        );
+        assert_eq!(
+            super::header_source_chunk(&app),
+            Some("commit fedcba9".to_string())
+        );
+    }
+
+    #[test]
+    fn should_render_head_commit_in_the_header() {
+        let app = build_local_app(DiffSource::WorkingTree, "abcdef0123456789");
+        let buffer = draw_header(&app);
+        let line = row_text(&buffer, 0);
+        assert!(line.contains("commit abcdef0"), "got: {line:?}");
     }
 }

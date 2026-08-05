@@ -276,7 +276,11 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
     }
 
     for summary in &app.forge_review_summaries {
-        let summary_lines = comment_panel::format_remote_review_summary_lines(&app.theme, summary);
+        let summary_lines = comment_panel::format_remote_review_summary_lines(
+            &app.theme,
+            summary,
+            app.forge_kind(),
+        );
         for mut summary_line in summary_lines {
             let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
             summary_line.spans.insert(
@@ -355,8 +359,12 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                 let Some(muted) = visibility.render_decision(thread) else {
                     continue;
                 };
-                let thread_lines =
-                    comment_panel::format_remote_thread_lines(&app.theme, thread, muted);
+                let thread_lines = comment_panel::format_remote_thread_lines(
+                    &app.theme,
+                    thread,
+                    muted,
+                    app.forge_kind(),
+                );
                 for mut comment_line in thread_lines {
                     let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
                     comment_line.spans.insert(
@@ -413,6 +421,10 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
         if app.is_single_file_view && file_idx != app.diff_state.current_file_idx {
             continue;
         }
+        // See the matching filter guard in src/ui/diff_unified.rs.
+        if !app.file_passes_filter(file) {
+            continue;
+        }
         let path = file.display_path();
         let is_reviewed = app.session.is_file_reviewed(path);
 
@@ -441,7 +453,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
             lines.push(Line::from(vec![
                 Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
                 Span::styled(
-                    "  Marked reviewed -- r to re-open",
+                    crate::ui::diff_view::REVIEWED_BANNER_TEXT,
                     Style::default()
                         .fg(app.theme.fg_secondary)
                         .add_modifier(Modifier::DIM),
@@ -1742,7 +1754,12 @@ fn add_remote_threads_to_line(
         if !matches_side {
             continue;
         }
-        let thread_lines = comment_panel::format_remote_thread_lines(ctx.theme, thread, muted);
+        let thread_lines = comment_panel::format_remote_thread_lines(
+            ctx.theme,
+            thread,
+            muted,
+            ctx.app.forge_kind(),
+        );
         let box_top_row = line_idx;
         for mut comment_line in thread_lines {
             let indicator = cursor_indicator(line_idx, ctx.current_line_idx);

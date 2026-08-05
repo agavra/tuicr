@@ -19,7 +19,10 @@ use tuicr::handler::{
     handle_search_action, handle_submit_action_picker_action, handle_submit_confirm_action,
     handle_submit_resolver_action, handle_visual_action,
 };
-use tuicr::input::{Action, map_key_to_action, map_target_filter_mode};
+use tuicr::input::{
+    Action, map_file_tree_mode, map_file_tree_prompt_mode, map_key_to_action,
+    map_target_filter_mode,
+};
 use tuicr::terminal_state::{TerminalFeatures, TerminalSession};
 use tuicr::theme::resolve_theme_with_config;
 use tuicr::vcs::{DiffWhitespaceMode, GitBackendPreference};
@@ -190,7 +193,7 @@ fn main() -> anyhow::Result<()> {
                 repo_url_override: cli_args
                     .repo_url
                     .as_deref()
-                    .and_then(tuicr::forge::github::gh::parse_github_remote_url),
+                    .and_then(tuicr::forge::parse_any_remote_url),
             },
         )
     }) {
@@ -505,12 +508,16 @@ fn main() -> anyhow::Result<()> {
                         pending_d = false;
                         if key.code == crossterm::event::KeyCode::Char('d') {
                             if app.cursor_on_locked_comment() {
-                                app.set_message(
-                                    "Comment already pushed to GitHub — read only in tuicr",
-                                );
+                                let forge = app.forge_display_name();
+                                app.set_message(format!(
+                                    "Comment already pushed to {forge} — read only in tuicr"
+                                ));
                             } else if !app.delete_comment_at_cursor() {
                                 if app.cursor_on_remote_thread() {
-                                    app.set_message("GitHub comment — read only in tuicr");
+                                    let forge = app.forge_display_name();
+                                    app.set_message(format!(
+                                        "{forge} comment — read only in tuicr"
+                                    ));
                                 } else {
                                     app.set_message("No comment at cursor");
                                 }
@@ -587,12 +594,24 @@ fn main() -> anyhow::Result<()> {
                     // route through the filter-specific key map so typed
                     // characters update the filter buffer rather than driving
                     // commit-list navigation.
-                    let mut action =
-                        if app.input_mode == InputMode::CommitSelect && app.pr_filter_editing() {
-                            map_target_filter_mode(key)
-                        } else {
-                            map_key_to_action(key, app.input_mode, app.leader_key)
-                        };
+                    let mut action = if app.input_mode == InputMode::CommitSelect
+                        && app.pr_filter_editing()
+                    {
+                        map_target_filter_mode(key)
+                    } else if app.input_mode == InputMode::Normal && app.file_tree_prompt_editing()
+                    {
+                        // An open file-tree prompt (`i`/`e`/`/`) captures all
+                        // input until Enter/Esc, like the PR filter above.
+                        map_file_tree_prompt_mode(key)
+                    } else if app.input_mode == InputMode::Normal
+                        && app.focused_panel == FocusedPanel::FileList
+                    {
+                        // The tree claims i/e/I/E and `/` for filtering; the
+                        // diff keeps its own meanings for those keys.
+                        map_file_tree_mode(key, app.leader_key)
+                    } else {
+                        map_key_to_action(key, app.input_mode, app.leader_key)
+                    };
 
                     // Handle pending command setters (these work in any mode)
                     match action {

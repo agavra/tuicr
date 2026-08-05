@@ -106,7 +106,11 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
     }
 
     for summary in &app.forge_review_summaries {
-        let summary_lines = comment_panel::format_remote_review_summary_lines(&app.theme, summary);
+        let summary_lines = comment_panel::format_remote_review_summary_lines(
+            &app.theme,
+            summary,
+            app.forge_kind(),
+        );
         for mut summary_line in summary_lines {
             let indicator = cursor_indicator(line_idx, current_line_idx);
             summary_line.spans.insert(
@@ -186,8 +190,12 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                 let Some(muted) = visibility.render_decision(thread) else {
                     continue;
                 };
-                let thread_lines =
-                    comment_panel::format_remote_thread_lines(&app.theme, thread, muted);
+                let thread_lines = comment_panel::format_remote_thread_lines(
+                    &app.theme,
+                    thread,
+                    muted,
+                    app.forge_kind(),
+                );
                 for mut comment_line in thread_lines {
                     let indicator = cursor_indicator(line_idx, current_line_idx);
                     comment_line.spans.insert(
@@ -245,6 +253,12 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
         if app.is_single_file_view && file_idx != app.diff_state.current_file_idx {
             continue;
         }
+        // File-tree include/exclude filters hide files from the diff too.
+        // Must stay in lockstep with `App::file_render_height`, which counts
+        // these files as zero lines.
+        if !app.file_passes_filter(file) {
+            continue;
+        }
         let path = file.display_path();
         let is_reviewed = app.session.is_file_reviewed(path);
 
@@ -276,7 +290,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
             lines.push(Line::from(vec![
                 Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
                 Span::styled(
-                    "  Marked reviewed -- r to re-open",
+                    crate::ui::diff_view::REVIEWED_BANNER_TEXT,
                     Style::default()
                         .fg(app.theme.fg_secondary)
                         .add_modifier(Modifier::DIM),
@@ -1299,7 +1313,8 @@ fn render_remote_threads_for_anchor(
 
         // Render the entire thread as one fused box so it reads as a
         // single discussion unit.
-        let thread_lines = comment_panel::format_remote_thread_lines(&app.theme, thread, muted);
+        let thread_lines =
+            comment_panel::format_remote_thread_lines(&app.theme, thread, muted, app.forge_kind());
         let box_top_row = *line_idx;
         for mut comment_line in thread_lines {
             let indicator = cursor_indicator(*line_idx, current_line_idx);
@@ -1359,7 +1374,7 @@ fn render_expanded_context_line(
 mod remote_comments_snapshot_tests {
     //! Render-snapshot tests for inline remote review threads in the
     //! unified diff. We drive `ui::render` against `TestBackend` and check
-    //! for the `[github @author]` badge text on the expected row.
+    //! for the provider badge text on the expected row.
     use crate::app::{App, DiffSource, InputMode, PullRequestDiffSource};
     use crate::error::Result as TuicrResult;
     use crate::error::TuicrError;

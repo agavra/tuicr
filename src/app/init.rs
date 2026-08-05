@@ -457,6 +457,7 @@ impl App {
             comment_navigator_state: CommentNavigatorState::default(),
             diff_state: DiffState::default(),
             help_state: HelpState::default(),
+            file_filter: FileTreeFilter::default(),
             command_buffer: String::new(),
             command_completion: None,
             search_buffer: String::new(),
@@ -755,14 +756,18 @@ impl App {
         repo_url_override: Option<ForgeRepository>,
         commit_selection: CommitSelectionStart,
     ) -> Result<Self> {
+        use crate::forge::bitbucket::bkt::parse_pull_request_target_bitbucket;
         use crate::forge::github::gh::parse_pull_request_target;
         use crate::forge::gitlab::glab::parse_pull_request_target_gitlab;
         use crate::forge::pr_open::open_pull_request;
         use crate::forge::traits::ForgeKind;
 
-        // Try GitHub-style target first (numeric, GitHub URL, owner/repo#N).
-        // If it embeds a GitLab URL, the GitLab parser picks it up.
-        let parsed = parse_pull_request_target(target)
+        // Bitbucket first: its URL shape (`/pull-requests/<n>`) is distinct,
+        // and the GitHub parser would otherwise claim the host. GitHub then
+        // handles numeric / `owner/repo#N` / GitHub URLs, with GitLab as the
+        // final fallback for `/-/merge_requests/<n>`.
+        let parsed = parse_pull_request_target_bitbucket(target)
+            .or_else(|_| parse_pull_request_target(target))
             .or_else(|_| parse_pull_request_target_gitlab(target))?;
 
         // Resolution order when the target lacks an explicit repo

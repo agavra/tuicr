@@ -22,7 +22,7 @@ pub fn render_submit_action_picker(frame: &mut Frame, app: &App) {
     frame.render_widget(Clear, area);
 
     let block = Block::default()
-        .title(" Submit review to GitHub? ")
+        .title(format!(" Submit review to {}? ", app.forge_display_name()))
         .title_alignment(Alignment::Center)
         .borders(Borders::ALL)
         .style(styles::popup_style(theme))

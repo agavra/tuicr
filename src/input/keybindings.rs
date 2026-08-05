@@ -135,6 +135,19 @@ pub enum Action {
     CollapseAll,
     SelectFileFull,
 
+    // File tree filters (only produced while the file tree is focused, see
+    // `map_file_tree_mode`)
+    /// `i` — open the include-regex prompt.
+    FileTreeFilterInclude,
+    /// `e` — open the exclude-regex prompt.
+    FileTreeFilterExclude,
+    /// `I` — drop the include filter.
+    FileTreeClearInclude,
+    /// `E` — drop the exclude filter.
+    FileTreeClearExclude,
+    /// `/` — open the file-tree search prompt.
+    FileTreeSearch,
+
     // No-op
     None,
 }
@@ -410,6 +423,44 @@ fn map_commit_select_mode(key: KeyEvent) -> Action {
     }
 }
 
+/// Key map used when the file tree holds focus in `InputMode::Normal`.
+///
+/// Only the keys the tree claims for itself are listed; everything else
+/// delegates to `map_normal_mode` so shared bindings keep working. `i` is the
+/// notable override — in the diff it edits the comment at the cursor, in the
+/// tree it opens the include filter.
+pub fn map_file_tree_mode(key: KeyEvent, leader_key: char) -> Action {
+    // The leader key wins: `;e` (toggle file list) must not be swallowed by
+    // the exclude-filter binding.
+    if key.code == KeyCode::Char(leader_key) && key.modifiers == KeyModifiers::NONE {
+        return map_normal_mode(key, leader_key);
+    }
+    match (key.code, key.modifiers) {
+        (KeyCode::Char('i'), KeyModifiers::NONE) => Action::FileTreeFilterInclude,
+        (KeyCode::Char('e'), KeyModifiers::NONE) => Action::FileTreeFilterExclude,
+        (KeyCode::Char('I'), _) => Action::FileTreeClearInclude,
+        (KeyCode::Char('E'), _) => Action::FileTreeClearExclude,
+        (KeyCode::Char('/'), _) => Action::FileTreeSearch,
+        _ => map_normal_mode(key, leader_key),
+    }
+}
+
+/// Key map used while a file-tree prompt (`i`/`e`/`/`) is collecting input.
+/// A sub-state of `InputMode::Normal`; the dispatcher in `main.rs` routes here
+/// when `App::file_tree_prompt_editing()` is true.
+pub fn map_file_tree_prompt_mode(key: KeyEvent) -> Action {
+    match (key.code, key.modifiers) {
+        (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
+        (KeyCode::Enter, KeyModifiers::NONE) => Action::SubmitInput,
+        (KeyCode::Backspace, mods) if mods.contains(KeyModifiers::ALT) => Action::DeleteWord,
+        (KeyCode::Backspace, KeyModifiers::NONE) => Action::DeleteChar,
+        (KeyCode::Char('w'), KeyModifiers::CONTROL) => Action::DeleteWord,
+        (KeyCode::Char('u'), KeyModifiers::CONTROL) => Action::ClearLine,
+        (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => Action::InsertChar(c),
+        _ => Action::None,
+    }
+}
+
 /// Key map used while the user is editing the PR-tab local filter.
 /// This is a sub-state of `InputMode::CommitSelect`; the dispatcher in
 /// `main.rs` routes here when `App::pr_filter_editing()` is true.
@@ -453,6 +504,92 @@ mod tests {
 
     fn key_shift(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::SHIFT)
+    }
+
+    #[test]
+    fn should_map_filter_keys_when_the_file_tree_is_focused() {
+        assert_eq!(
+            map_file_tree_mode(key(KeyCode::Char('i')), DEFAULT_LEADER_KEY),
+            Action::FileTreeFilterInclude
+        );
+        assert_eq!(
+            map_file_tree_mode(key(KeyCode::Char('e')), DEFAULT_LEADER_KEY),
+            Action::FileTreeFilterExclude
+        );
+        assert_eq!(
+            map_file_tree_mode(key_shift('I'), DEFAULT_LEADER_KEY),
+            Action::FileTreeClearInclude
+        );
+        assert_eq!(
+            map_file_tree_mode(key_shift('E'), DEFAULT_LEADER_KEY),
+            Action::FileTreeClearExclude
+        );
+        assert_eq!(
+            map_file_tree_mode(key(KeyCode::Char('/')), DEFAULT_LEADER_KEY),
+            Action::FileTreeSearch
+        );
+    }
+
+    #[test]
+    fn should_leave_diff_bindings_alone_when_the_tree_is_not_focused() {
+        // `i` edits the comment at the cursor in the diff; only the tree
+        // reinterprets it as the include filter.
+        assert_eq!(
+            map_normal_mode(key(KeyCode::Char('i')), DEFAULT_LEADER_KEY),
+            Action::EditComment
+        );
+        assert_eq!(
+            map_normal_mode(key(KeyCode::Char('/')), DEFAULT_LEADER_KEY),
+            Action::EnterSearchMode
+        );
+    }
+
+    #[test]
+    fn should_delegate_unclaimed_keys_to_normal_mode_in_file_tree_mode() {
+        for code in [
+            KeyCode::Char('j'),
+            KeyCode::Char('r'),
+            KeyCode::Char('c'),
+            KeyCode::Char(' '),
+            KeyCode::Enter,
+        ] {
+            assert_eq!(
+                map_file_tree_mode(key(code), DEFAULT_LEADER_KEY),
+                map_normal_mode(key(code), DEFAULT_LEADER_KEY),
+                "{code:?} should keep its normal-mode meaning in the tree"
+            );
+        }
+    }
+
+    #[test]
+    fn should_let_the_leader_key_win_over_a_filter_binding() {
+        // `leader = "e"` would otherwise be swallowed by the exclude filter.
+        assert_eq!(
+            map_file_tree_mode(key(KeyCode::Char('e')), 'e'),
+            Action::PendingLeaderCommand
+        );
+    }
+
+    #[test]
+    fn should_route_typed_chars_to_insert_in_file_tree_prompt_mode() {
+        assert_eq!(
+            map_file_tree_prompt_mode(key(KeyCode::Char('a'))),
+            Action::InsertChar('a')
+        );
+        // Keys that would otherwise act (q quits, / filters) are just text
+        // while the prompt is open.
+        assert_eq!(
+            map_file_tree_prompt_mode(key(KeyCode::Char('q'))),
+            Action::InsertChar('q')
+        );
+        assert_eq!(
+            map_file_tree_prompt_mode(key(KeyCode::Enter)),
+            Action::SubmitInput
+        );
+        assert_eq!(
+            map_file_tree_prompt_mode(key(KeyCode::Esc)),
+            Action::ExitMode
+        );
     }
 
     #[test]

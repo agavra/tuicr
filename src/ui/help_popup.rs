@@ -348,6 +348,37 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
             ),
             Span::raw("Collapse all directories"),
         ]),
+        Line::from(vec![
+            Span::styled(
+                "  i         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Filter to files matching a regex (hides others from tree + diff)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  e         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Filter out files matching a regex"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  I/E       ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Clear the include/exclude filter"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  /         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Search file paths; n/N step matches (selection only)"),
+        ]),
+        Line::from(Span::raw(
+            "  Patterns are case-insensitive and match the whole relative path.",
+        )),
         Line::from(""),
         Line::from(Span::styled(
             "Comment Navigator",

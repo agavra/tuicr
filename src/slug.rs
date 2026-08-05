@@ -110,6 +110,7 @@ impl fmt::Display for PrSlug {
         let kind = match self.forge {
             ForgeKind::GitHub => "gh",
             ForgeKind::GitLab => "gl",
+            ForgeKind::Bitbucket => "bb",
         };
         write!(
             f,
@@ -179,6 +180,7 @@ impl FromStr for Slug {
             let forge = match kind {
                 "gh" => ForgeKind::GitHub,
                 "gl" => ForgeKind::GitLab,
+                "bb" => ForgeKind::Bitbucket,
                 other => return Err(SlugParseError::UnknownForge(other.to_string())),
             };
             return parse_pr(forge, rest).map(Slug::Pr);
