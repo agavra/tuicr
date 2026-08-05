@@ -800,6 +800,22 @@ impl App {
         Ok(())
     }
 
+    /// The diff for commit rows `start..=end`, when it is already in memory.
+    /// `None` means it has to be fetched.
+    ///
+    /// There are two caches. `range_diff_files` holds the every-row selection,
+    /// loaded once when the review opened, so it is checked first.
+    /// `commit_diff_cache` fills up with narrower selections as the user
+    /// cycles through them.
+    fn cached_selection_diff(&self, start: usize, end: usize) -> Option<Vec<DiffFile>> {
+        // `end + 1 == len`, not `end == len - 1`: an empty list underflows.
+        let whole_range = start == 0 && end + 1 == self.review_commits.len();
+        if whole_range && let Some(files) = &self.range_diff_files {
+            return Some(files.clone());
+        }
+        self.commit_diff_cache.get(&(start, end)).cloned()
+    }
+
     /// Reload the diff for the currently selected inline commit subrange.
     pub fn reload_inline_selection(&mut self) -> Result<()> {
         let Some((start, end)) = self.commit_selection_range else {
@@ -807,62 +823,47 @@ impl App {
             return Ok(());
         };
 
-        // Check if all commits selected -> use cached range_diff_files
-        if start == 0
-            && end == self.review_commits.len() - 1
-            && let Some(ref files) = self.range_diff_files
-        {
-            self.diff_files = files.clone();
-            let wrap = self.diff_state.wrap_lines;
-            self.diff_state = DiffState::default();
-            self.diff_state.wrap_lines = wrap;
-            self.file_list_state = FileListState::default();
-            self.expanded_top.clear();
-            self.expanded_bottom.clear();
-            self.insert_commit_message_if_single();
-            self.sort_files_by_directory(true);
-            self.expand_all_dirs();
-            self.rebuild_annotations();
-            return Ok(());
-        }
-
-        // Check cache for this subrange
-        if let Some(files) = self.commit_diff_cache.get(&(start, end)) {
-            self.diff_files = files.clone();
-            let wrap = self.diff_state.wrap_lines;
-            self.diff_state = DiffState::default();
-            self.diff_state.wrap_lines = wrap;
-            self.file_list_state = FileListState::default();
-            self.expanded_top.clear();
-            self.expanded_bottom.clear();
-            self.insert_commit_message_if_single();
-            self.sort_files_by_directory(true);
-            self.expand_all_dirs();
-            self.rebuild_annotations();
-            return Ok(());
-        }
-
-        // Load diff for selected subrange. `source_for_commit_subrange` holds
-        // the one copy of "which diff does this selection mean", shared with
-        // `narrowed_fetch_source` so a reload and the selector can never
-        // disagree about it. An empty result is not an error here: a subrange
-        // can legitimately contain no changes.
-        let fetch_source = Self::source_for_commit_subrange(&self.review_commits, start, end);
-        let highlighter = self.theme.syntax_highlighter();
-        let diff_files = match Self::fetch_diff_files_for_source(
-            self.vcs.as_ref(),
-            &self.vcs_info.root_path,
-            &fetch_source,
-            highlighter,
-            self.path_filter.as_deref(),
-        ) {
-            Ok(files) => files,
-            Err(TuicrError::NoChanges) => Vec::new(),
-            Err(e) => return Err(e),
+        // Each branch decides only where the files come from. The install runs
+        // once, below, so no branch can forget a step of it. Session
+        // registration went missing that way.
+        let diff_files = match self.cached_selection_diff(start, end) {
+            Some(files) => files,
+            // Load diff for selected subrange. `source_for_commit_subrange`
+            // holds the one copy of "which diff does this selection mean",
+            // shared with `narrowed_fetch_source` so a reload and the selector
+            // can never disagree about it. An empty result is not an error
+            // here: a subrange can legitimately contain no changes.
+            None => {
+                let fetch_source =
+                    Self::source_for_commit_subrange(&self.review_commits, start, end);
+                let highlighter = self.theme.syntax_highlighter();
+                let fetched = match Self::fetch_diff_files_for_source(
+                    self.vcs.as_ref(),
+                    &self.vcs_info.root_path,
+                    &fetch_source,
+                    highlighter,
+                    self.path_filter.as_deref(),
+                ) {
+                    Ok(files) => files,
+                    Err(TuicrError::NoChanges) => Vec::new(),
+                    Err(e) => return Err(e),
+                };
+                self.commit_diff_cache.insert((start, end), fetched.clone());
+                fetched
+            }
         };
-        self.commit_diff_cache
-            .insert((start, end), diff_files.clone());
+
         self.diff_files = diff_files;
+
+        // Register the files in the session. `r`, `R` and the comment path all
+        // look a file up here, so a file reachable only through a narrowed
+        // commit selection could not be marked reviewed or commented on.
+        //
+        // Hunk marks are preserved rather than pruned, for the same reason
+        // `reload_pr_inline_selection` preserves them: a narrowed selection is
+        // a partial view of a wider review, and hunks it does not show are
+        // still reviewed in that wider scope.
+        Self::register_diff_files(&mut self.session, &self.diff_files, true);
 
         // Reset navigation, rebuild file tree + annotations
         let wrap = self.diff_state.wrap_lines;
