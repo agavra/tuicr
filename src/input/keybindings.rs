@@ -131,6 +131,8 @@ pub enum Action {
     SubmitPickerConfirm,
 
     ToggleExpand,
+    /// Toggle the left file list between tree and flat modes (`t`).
+    ToggleFileListMode,
     ExpandAll,
     CollapseAll,
     SelectFileFull,
@@ -221,6 +223,7 @@ fn map_normal_mode(key: KeyEvent, leader_key: char) -> Action {
         (KeyCode::Char('q'), KeyModifiers::NONE) => Action::Quit,
 
         (KeyCode::Char(' '), KeyModifiers::NONE) => Action::ToggleExpand,
+        (KeyCode::Char('t'), KeyModifiers::NONE) => Action::ToggleFileListMode,
         (KeyCode::Char('o'), KeyModifiers::NONE) => Action::ExpandAll,
         (KeyCode::Char('O'), _) => Action::CollapseAll,
 
@@ -477,6 +480,14 @@ mod tests {
         assert_eq!(
             map_normal_mode(key_shift('A'), DEFAULT_LEADER_KEY),
             Action::EditCommentAtEnd
+        );
+    }
+
+    #[test]
+    fn should_map_t_to_toggle_file_list_mode() {
+        assert_eq!(
+            map_normal_mode(key(KeyCode::Char('t')), DEFAULT_LEADER_KEY),
+            Action::ToggleFileListMode
         );
     }
 

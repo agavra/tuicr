@@ -86,6 +86,34 @@ pub fn file_status_style(theme: &Theme, status: char) -> Style {
     Style::default().fg(color)
 }
 
+/// Color-coded text badges in the flat file list. These use the terminal's
+/// standard palette so they remain readable across custom tuicr themes.
+pub fn file_type_badge_style(badge: &str) -> Style {
+    let color = match badge {
+        "[JS]" => Color::Yellow,
+        "[TS]" => Color::Blue,
+        "[VUE]" => Color::Green,
+        "[JAVA]" => Color::Red,
+        "[SQL]" => Color::LightBlue,
+        "[MD]" => Color::Cyan,
+        "[PY]" => Color::LightYellow,
+        "[RS]" => Color::LightRed,
+        "[GO]" => Color::LightCyan,
+        "[RB]" | "[PHP]" => Color::Magenta,
+        "[HTML]" => Color::LightRed,
+        "[CSS]" => Color::LightMagenta,
+        "[JSON]" | "[YAML]" | "[TOML]" => Color::LightYellow,
+        "[SH]" => Color::LightGreen,
+        "[C]" | "[C++]" | "[C#]" => Color::LightBlue,
+        "[KT]" | "[SWIFT]" => Color::LightMagenta,
+        "[XML]" => Color::LightCyan,
+        "[DOCKER]" => Color::Blue,
+        "[MAKE]" | "[LOCK]" | "[FILE]" => Color::DarkGray,
+        _ => Color::Gray,
+    };
+    Style::default().fg(color).add_modifier(Modifier::BOLD)
+}
+
 pub fn current_line_indicator_style(theme: &Theme) -> Style {
     Style::default().fg(theme.border_focused)
 }

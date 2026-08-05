@@ -44,8 +44,11 @@ Press `?` to open help.
 |-----|--------|
 | `Space` | Toggle expand directory |
 | `Enter` | Expand directory / jump to file in diff |
+| `t` | Toggle tree / flat file-list mode (remembered next launch) |
 | `o` | Expand all directories |
 | `O` | Collapse all directories |
+
+Drag the vertical separator between the file list and diff to resize the left panel. The width is saved for the next launch.
 
 ## Panel focus
 
