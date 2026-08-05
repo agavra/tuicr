@@ -8,7 +8,7 @@ use std::path::Path;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, FileTreeItem, FocusedPanel};
-use crate::ui::diff_view::apply_horizontal_scroll;
+use crate::ui::diff_view::apply_horizontal_scroll_without_prefix;
 use crate::ui::styles;
 
 const EXPANDED_GLYPH: &str = "\u{25bc}"; // ▼
@@ -154,7 +154,7 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
                 }
             };
 
-            ListItem::new(apply_horizontal_scroll(line, scroll_x))
+            ListItem::new(apply_horizontal_scroll_without_prefix(line, scroll_x))
         })
         .collect();
 
@@ -167,4 +167,29 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
         .block(block);
 
     frame.render_stateful_widget(list, area, &mut app.file_list_state.list_state);
+}
+
+#[cfg(test)]
+mod tests {
+    use ratatui::text::{Line, Span};
+
+    use super::apply_horizontal_scroll_without_prefix;
+
+    #[test]
+    fn horizontal_scroll_removes_file_tree_indentation() {
+        let line = Line::from(vec![
+            Span::raw("    "),
+            Span::raw("▢ M "),
+            Span::raw("nested.rs"),
+        ]);
+
+        let scrolled = apply_horizontal_scroll_without_prefix(line, 4);
+        let content: String = scrolled
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+
+        assert_eq!(content, "▢ M nested.rs");
+    }
 }
