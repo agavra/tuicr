@@ -457,6 +457,7 @@ impl App {
             comment_navigator_state: CommentNavigatorState::default(),
             diff_state: DiffState::default(),
             help_state: HelpState::default(),
+            file_filter: FileTreeFilter::default(),
             command_buffer: String::new(),
             command_completion: None,
             search_buffer: String::new(),

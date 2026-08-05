@@ -17,6 +17,36 @@ All notable changes to this project will be documented in this file.
 - `--repo-url` validated against GitHub only, silently rejecting GitLab and
   Bitbucket remotes. It now accepts any supported forge URL.
 
+## [0.20.0] - 2026-08-02
+
+### Bug Fixes
+
+- Users can set diff.mnemonicPrefix = true in their git config which breaks diff parsing, override this setting in tuicr (#470)
+- Update README and docs with GitLab Support (#393) (#485)
+- **ui:** Make scroll and cursor jumps wrap-aware (#477)
+- Status messages don't show on commit selection screen (#101) (#490)
+- Keep tree selection when collapsing directories (#492)
+- Keep Escape from hiding file panel (#493)
+- **jj:** Remove ANSI escape sequences by disabling revision ids coloring (#510)
+- Option for relative line numbers in the diff gutter (#509) (#517)
+- Jj worktree support (#328) (#531)
+
+### Features
+
+- Add search to help popup (#474)
+- Add installation-aware updates and rollbacks (#473)
+- **export:** Make the review export preamble configurable (#496)
+- **skill:** Add Herdr launcher support (#502)
+- Show github PR description & top-level comments (#495)
+
+### Ci
+
+- Remove flaky "Update command" job (#539)
+
+### Diff
+
+- Render commit message as prose, not a diff (#471)
+
 ## [0.19.1] - 2026-07-13
 
 ### Bug Fixes

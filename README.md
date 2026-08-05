@@ -26,7 +26,7 @@
 ```bash
 curl -fsSL tuicr.dev/install.sh | sh
 # or
-brew install agavra/tap/tuicr
+brew install tuicr
 ```
 
 <details>
@@ -256,7 +256,9 @@ A first-session cheatsheet. Press `?` inside tuicr for the full reference.
 | `{` / `}` | Previous / next file |
 | `[` / `]` | Previous / next hunk |
 | `m` / `M` | Next / previous comment |
-| `/` | Search the diff, or search help while help is open (case-insensitive) |
+| `/` | Search the diff, the file tree, or help — whichever is focused/open (case-insensitive) |
+| `i` / `e` (file tree) | Filter files in / out by regex; narrows the tree **and** the diff |
+| `I` / `E` (file tree) | Clear the include / exclude filter |
 | `c` / `C` | Add line / file comment |
 | `v` / `V` | Visual mode (range comment) |
 | `r` | Toggle file reviewed |

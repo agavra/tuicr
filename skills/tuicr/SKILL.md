@@ -80,6 +80,11 @@ When the user needs an interactive tuicr pane and no active session exists:
 If more than one multiplexer marker is set, prefer the innermost multiplexer if
 that is clear; otherwise ask.
 
+tuicr supports both git and Jujutsu (jj) repositories, and jj workspaces may
+have no `.git` directory at all. Do not pre-check the directory with
+`git rev-parse` or refuse to launch because git does not recognize it; always
+run the wrapper and let it validate the repository.
+
 Wrapper paths are relative to this skill directory:
 
 ```bash

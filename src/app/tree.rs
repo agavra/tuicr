@@ -275,6 +275,12 @@ impl App {
         let mut seen_dirs: HashSet<String> = HashSet::new();
 
         for (file_idx, file) in self.diff_files.iter().enumerate() {
+            // Filtered-out files contribute no row and no ancestor
+            // directories, so a directory whose children are all hidden
+            // disappears with them.
+            if !self.file_passes_filter(file) {
+                continue;
+            }
             let path = file.display_path();
 
             let mut ancestors: Vec<String> = Vec::new();

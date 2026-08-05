@@ -245,6 +245,12 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
         if app.is_single_file_view && file_idx != app.diff_state.current_file_idx {
             continue;
         }
+        // File-tree include/exclude filters hide files from the diff too.
+        // Must stay in lockstep with `App::file_render_height`, which counts
+        // these files as zero lines.
+        if !app.file_passes_filter(file) {
+            continue;
+        }
         let path = file.display_path();
         let is_reviewed = app.session.is_file_reviewed(path);
 

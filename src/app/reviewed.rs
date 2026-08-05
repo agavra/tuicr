@@ -273,24 +273,54 @@ impl App {
         }
     }
 
+    /// Files currently shown. Excludes anything hidden by the file-tree
+    /// include/exclude filters so the header and tree title describe what is
+    /// actually on screen.
     pub fn file_count(&self) -> usize {
+        if !self.file_filter_active() {
+            return self.diff_files.len();
+        }
+        self.filtered_file_indices().len()
+    }
+
+    /// Total files in the diff, ignoring filters. Used to report how much a
+    /// filter is hiding.
+    pub fn unfiltered_file_count(&self) -> usize {
         self.diff_files.len()
     }
 
     pub fn reviewed_count(&self) -> usize {
-        self.session.reviewed_count()
+        if !self.file_filter_active() {
+            return self.session.reviewed_count();
+        }
+        // Counting the whole session here would read as `12/5` next to a
+        // filtered total, so count only reviewed files that survive.
+        self.filtered_file_indices()
+            .into_iter()
+            .filter(|&idx| {
+                self.diff_files
+                    .get(idx)
+                    .is_some_and(|file| self.session.is_file_reviewed(file.display_path()))
+            })
+            .count()
     }
 
-    /// Returns `(total_files, total_additions, total_deletions)` across all diff files.
+    /// Returns `(total_files, total_additions, total_deletions)` across the
+    /// files currently shown (filters applied).
     pub fn diff_stat(&self) -> (usize, usize, usize) {
         let mut additions = 0;
         let mut deletions = 0;
+        let mut files = 0;
         for file in &self.diff_files {
+            if !self.file_passes_filter(file) {
+                continue;
+            }
+            files += 1;
             let (a, d) = file.stat();
             additions += a;
             deletions += d;
         }
-        (self.diff_files.len(), additions, deletions)
+        (files, additions, deletions)
     }
 
     /// Returns true when the cursor is in the review comments area above all files.

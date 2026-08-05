@@ -1,6 +1,6 @@
 [package]
 name = "tuicr"
-version = "0.19.1"
+version = "0.20.0"
 edition = "2024"
 description = "Review AI-generated diffs like a GitHub pull request, right from your terminal."
 license = "MIT"
@@ -49,6 +49,8 @@ uuid = { version = "1.0", features = ["v4"] }
 arboard = { version = "3.4", features = ["wayland-data-control"] }
 base64 = "0.22"
 ignore = "0.4"
+# User-supplied include/exclude patterns for the file tree filter.
+regex = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt"] }
 shlex = "1.3"

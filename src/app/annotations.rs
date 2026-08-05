@@ -155,6 +155,11 @@ impl App {
             if self.is_single_file_view && file_idx != self.diff_state.current_file_idx {
                 continue;
             }
+            // Hidden by an include/exclude filter: emit no annotations, the
+            // same way the renderers emit no lines.
+            if !self.file_passes_filter(file) {
+                continue;
+            }
             let path = file.display_path();
 
             // File header (only when shown — same gate as the renderer).

@@ -34,10 +34,10 @@ usage() {
   cat << EOF
 Usage: $(basename "$0") [directory]
 
-Launch tuicr in a zellij split pane to review git changes.
+Launch tuicr in a zellij split pane to review changes.
 
 Arguments:
-  directory    Git repository directory to review (default: current directory)
+  directory    Git or jj repository directory to review (default: current directory)
 
 Environment variables:
   TUICR_PANE_DIRECTION  Split direction: down or right or stacked (default: stacked)
@@ -71,13 +71,17 @@ check_tuicr_stdout_support() {
   tuicr --help 2>&1 | grep -q -- '--stdout'
 }
 
-check_git_repo() {
+check_repo() {
   local dir="$1"
-  if ! git -C "$dir" rev-parse --git-dir &> /dev/null; then
-    log_error "Not a git repository: $dir"
-    return 1
+  if git -C "$dir" rev-parse --git-dir &> /dev/null; then
+    return 0
   fi
-  return 0
+  if command -v jj &> /dev/null \
+    && jj --repository "$dir" --ignore-working-copy root &> /dev/null; then
+    return 0
+  fi
+  log_error "Not a git or jj repository: $dir"
+  return 1
 }
 
 check_tuicr_running() {
@@ -180,8 +184,8 @@ main() {
   local target_dir="${1:-.}"
   target_dir=$(cd "$target_dir" && pwd)  # Get absolute path
 
-  # Verify it's a git repo
-  if ! check_git_repo "$target_dir"; then
+  # Verify it's a git or jj repo
+  if ! check_repo "$target_dir"; then
     exit 1
   fi
 

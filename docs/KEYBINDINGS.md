@@ -46,6 +46,42 @@ Press `?` to open help.
 | `Enter` | Expand directory / jump to file in diff |
 | `o` | Expand all directories |
 | `O` | Collapse all directories |
+| `i` | Filter to files matching a regex (include) |
+| `e` | Filter out files matching a regex (exclude) |
+| `I` | Clear the include filter |
+| `E` | Clear the exclude filter |
+| `/` | Search file paths (substring) |
+| `n` / `N` | Next / previous file-path match |
+
+These keys are only active while the file tree is focused — in the diff, `i` still
+edits the comment at the cursor and `/` still searches the diff.
+
+### Filtering
+
+`i` and `e` take case-insensitive regexes matched against each file's **full
+relative path** (`^src/`, `\.rs$`, `test|spec`). Both can be active at once:
+include runs first, then exclude removes from what's left.
+
+A filter is not just a tree view — hidden files also disappear from the diff
+pane, from `{`/`}` file navigation, `[`/`]` hunk navigation, and from the file
+and `+/-` counts in the header. The tree title reports how much is hidden
+(`Files · 2/12 · 12 of 58`), and the active patterns show in its bottom border.
+
+Enter applies, `Esc` cancels, `Ctrl-u` clears the line. Reopening a prompt
+pre-fills the pattern already applied, so submitting an emptied buffer is the
+same as `I` / `E`. An invalid regex reports the error and leaves the prompt open
+so it can be fixed. Comments on hidden files are not deleted and still export —
+filters are a view, not an edit.
+
+Filters are session-local: they are not written to the review session and reset
+when tuicr restarts, but they survive a `:e` reload.
+
+### Search
+
+`/` moves only the tree selection to the next matching path, expanding collapsed
+parents as needed, and leaves the diff viewport where it was — press `Enter` to
+jump the diff there. `n` / `N` step matches and wrap around. Search only ever
+considers files that pass the active filters.
 
 ## Panel focus
 

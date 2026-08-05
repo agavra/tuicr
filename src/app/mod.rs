@@ -1045,6 +1045,8 @@ pub struct App {
     pub comment_navigator_state: CommentNavigatorState,
     pub diff_state: DiffState,
     pub help_state: HelpState,
+    /// File-tree include/exclude filters and `/` search.
+    pub file_filter: FileTreeFilter,
     pub command_buffer: String,
     pub(crate) command_completion: Option<CommandCompletionState>,
     pub search_buffer: String,
@@ -1456,6 +1458,67 @@ impl Default for DiffState {
     }
 }
 
+/// Which file-tree prompt is currently collecting input. All three share
+/// one draft buffer because only one can be open at a time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileTreePrompt {
+    /// `i` — keep only files whose path matches (regex).
+    Include,
+    /// `e` — drop files whose path matches (regex).
+    Exclude,
+    /// `/` — jump the tree selection to a matching file (substring).
+    Search,
+}
+
+impl FileTreePrompt {
+    /// Prefix shown before the buffer in the prompt line, mirroring the
+    /// key that opened it.
+    pub fn sigil(self) -> char {
+        match self {
+            FileTreePrompt::Include => 'i',
+            FileTreePrompt::Exclude => 'e',
+            FileTreePrompt::Search => '/',
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            FileTreePrompt::Include => "include",
+            FileTreePrompt::Exclude => "exclude",
+            FileTreePrompt::Search => "search",
+        }
+    }
+}
+
+/// An in-progress prompt. `Some` in `FileTreeFilter::draft` makes the file
+/// tree a text-input sub-state of `InputMode::Normal`, the same way
+/// `pr_filter_draft` does for the target selector.
+#[derive(Debug, Clone)]
+pub struct FileTreeDraft {
+    pub prompt: FileTreePrompt,
+    pub buffer: String,
+}
+
+/// An applied regex filter plus the pattern the user typed, kept so the
+/// prompt can be reopened pre-seeded and the UI can echo the source.
+pub struct FilePattern {
+    pub source: String,
+    pub regex: regex::Regex,
+}
+
+/// Include/exclude/search state for the file tree. Filters narrow both the
+/// tree and the diff pane (see `App::file_passes_filter`); search only moves
+/// the tree selection.
+#[derive(Default)]
+pub struct FileTreeFilter {
+    pub include: Option<FilePattern>,
+    pub exclude: Option<FilePattern>,
+    /// Applied `/` query. Persists after the prompt closes so `n`/`N` can
+    /// keep stepping matches.
+    pub search: Option<String>,
+    pub draft: Option<FileTreeDraft>,
+}
+
 #[derive(Debug, Default)]
 pub struct HelpState {
     pub scroll_offset: usize,
@@ -1509,6 +1572,7 @@ mod comment_vim;
 mod comments;
 mod commits;
 mod diff_load;
+mod file_filter;
 mod gaps;
 mod init;
 mod modes;
