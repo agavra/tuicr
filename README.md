@@ -143,8 +143,7 @@ required token scopes, and troubleshooting.
 
 ### To your coding agent
 
-`y` or `:clip` copies a structured markdown block to your clipboard. In PR mode, `:copy-url`
-copies the open pull request URL. Each comment has a number
+`y` or `:clip` copies a structured markdown block to your clipboard. Each comment has a number
 and a file/line anchor: 
 
 ```markdown
