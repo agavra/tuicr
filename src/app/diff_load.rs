@@ -272,7 +272,7 @@ impl App {
         if path_filter.is_none() {
             match vcs.get_change_status() {
                 Ok(status) => {
-                    if !crate::tuicrignore::has_ignore_rules(repo_root) {
+                    if !crate::tuicrignore::has_tuicrignore(repo_root) {
                         return Ok(status);
                     }
                     return Self::verify_status_against_ignore(
