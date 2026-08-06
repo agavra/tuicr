@@ -232,9 +232,12 @@ impl VcsBackend for GitCliBackend {
     }
 
     fn get_change_status(&self) -> Result<VcsChangeStatus> {
-        // Tracked changes have cheap exact probes. Untracked files require a
-        // working-tree scan, so only pay that cost when tracked unstaged changes
-        // have not already proven the "unstaged" row should be shown.
+        if self.repo_mode == GitRepoMode::Standard {
+            return get_cli_change_status(&self.root_path);
+        }
+
+        // Limit untracked discovery to sparse-checkout cones. Plain `git status`
+        // reports untracked files outside the cone.
         let staged = has_diff_changes(&self.root_path, &["diff", "--quiet", "--cached", "--"])?;
         let tracked_unstaged = has_diff_changes(&self.root_path, &["diff", "--quiet", "--"])?;
         let untracked_pathspecs = if tracked_unstaged {
@@ -453,6 +456,40 @@ fn parse_git_runtime_flags(output: &str) -> (bool, bool) {
     // `feature.manyFiles` makes core.untrackedCache default to true, but
     // `git config --get core.untrackedCache` does not print that implied value.
     (untracked_cache.unwrap_or(many_files), fsmonitor)
+}
+
+fn get_cli_change_status(workdir: &Path) -> Result<VcsChangeStatus> {
+    let output = Command::new("git")
+        .current_dir(workdir)
+        .args(["status", "--porcelain=v1", "-z"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| TuicrError::VcsCommand(format!("Failed to run git: {e}")))?;
+
+    if !output.status.success() {
+        return Err(TuicrError::VcsCommand(
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        ));
+    }
+
+    Ok(parse_porcelain_status(&output.stdout))
+}
+
+fn parse_porcelain_status(output: &[u8]) -> VcsChangeStatus {
+    let mut status = VcsChangeStatus::default();
+    let mut entries = output.split(|byte| *byte == 0);
+    while let Some(entry) = entries.next() {
+        if entry.len() < 2 {
+            continue;
+        }
+        status.staged |= !matches!(entry[0], b' ' | b'?');
+        status.unstaged |= entry[1] != b' ';
+        if matches!(entry[0], b'R' | b'C') || matches!(entry[1], b'R' | b'C') {
+            entries.next();
+        }
+    }
+    status
 }
 
 fn has_diff_changes(workdir: &Path, args: &[&str]) -> Result<bool> {
@@ -1183,6 +1220,18 @@ mod tests {
             args.join(" "),
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    #[test]
+    fn parses_porcelain_status_sides() {
+        assert_eq!(
+            parse_porcelain_status(b"M  staged\0 M unstaged\0?? untracked\0"),
+            VcsChangeStatus {
+                staged: true,
+                unstaged: true,
+            }
+        );
+        assert_eq!(parse_porcelain_status(b""), VcsChangeStatus::default());
     }
 
     fn write_file(workdir: &Path, path: &str, content: &str) {
