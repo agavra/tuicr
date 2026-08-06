@@ -6,7 +6,7 @@ use std::{
     fs,
     path::{Component, Path},
     process::Command,
-    sync::OnceLock,
+    sync::{Arc, OnceLock},
 };
 
 use ratatui::style::Color;
@@ -24,8 +24,10 @@ pub enum SyntaxThemeSource {
 
 /// Complete color theme for the application
 pub struct Theme {
-    /// Cached syntax highlighter (lazily initialized)
-    highlighter: OnceLock<SyntaxHighlighter>,
+    /// Cached syntax highlighter (lazily initialized). `Arc`-wrapped so a
+    /// diff-watch worker thread can hold a cloned handle without rebuilding
+    /// the grammar set, which is most of the cost this cache exists to avoid.
+    highlighter: OnceLock<Arc<SyntaxHighlighter>>,
 
     // Base colors
     pub panel_bg: Color,
@@ -2354,7 +2356,24 @@ pub fn resolve_theme_with_config(
 impl Theme {
     /// Get the syntax highlighter for this theme (lazily initialized, cached)
     pub fn syntax_highlighter(&self) -> &SyntaxHighlighter {
-        self.highlighter.get_or_init(|| match &self.syntax_theme {
+        self.highlighter
+            .get_or_init(|| Arc::new(self.build_highlighter()))
+    }
+
+    /// Cloned handle to the same cached highlighter `syntax_highlighter`
+    /// returns. `Arc::clone` is a refcount bump, not a rebuild, so a
+    /// diff-watch worker thread can carry one across `thread::spawn` (the
+    /// highlighter itself is not `&'static` and `Theme` lives on `App`,
+    /// which the worker cannot borrow).
+    pub(crate) fn syntax_highlighter_arc(&self) -> Arc<SyntaxHighlighter> {
+        Arc::clone(
+            self.highlighter
+                .get_or_init(|| Arc::new(self.build_highlighter())),
+        )
+    }
+
+    fn build_highlighter(&self) -> SyntaxHighlighter {
+        match &self.syntax_theme {
             SyntaxThemeSource::Embedded(theme) => {
                 SyntaxHighlighter::new(*theme, self.syntax_add_bg, self.syntax_del_bg)
             }
@@ -2363,7 +2382,7 @@ impl Theme {
                 self.syntax_add_bg,
                 self.syntax_del_bg,
             ),
-        })
+        }
     }
 
     #[cfg(test)]

@@ -58,7 +58,7 @@ impl DiffWhitespaceMode {
 }
 
 /// Commit information for commit selection UI
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommitInfo {
     pub id: String,
     pub short_id: String,

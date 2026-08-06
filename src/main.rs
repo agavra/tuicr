@@ -316,6 +316,9 @@ fn main() -> anyhow::Result<()> {
         if let Some(interval_ms) = cfg.review_watch_interval_ms {
             app.set_review_watch_interval_ms(interval_ms as u64);
         }
+        if let Some(interval_ms) = cfg.diff_watch_interval_ms {
+            app.set_diff_watch_interval_ms(interval_ms as u64);
+        }
     }
 
     // On narrow terminals, start with only the diff panel visible.
@@ -379,6 +382,7 @@ fn main() -> anyhow::Result<()> {
         app.poll_pr_threads_events();
         app.poll_pr_submit_events();
         needs_redraw |= app.poll_persisted_session_changes();
+        needs_redraw |= app.poll_diff_watch_changes();
         needs_redraw |= pr_pending;
 
         if needs_redraw {

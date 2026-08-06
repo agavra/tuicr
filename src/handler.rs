@@ -573,27 +573,6 @@ fn command_spec_for(cmd: &str) -> Option<&'static CommandSpec> {
     COMMAND_SPECS.iter().find(|spec| spec.names.contains(&cmd))
 }
 
-#[cfg(test)]
-mod relative_line_number_command_tests {
-    use super::{CommandKind, command_spec_for};
-
-    #[test]
-    fn parses_relative_line_number_commands() {
-        assert_eq!(
-            command_spec_for("set relativenumber").map(|spec| spec.kind),
-            Some(CommandKind::SetRelativeLineNumbers(true))
-        );
-        assert_eq!(
-            command_spec_for("set norelativenumber").map(|spec| spec.kind),
-            Some(CommandKind::SetRelativeLineNumbers(false))
-        );
-        assert_eq!(
-            command_spec_for("set relativenumber!").map(|spec| spec.kind),
-            Some(CommandKind::ToggleRelativeLineNumbers)
-        );
-    }
-}
-
 /// CommandCompleter computes command-buffer replacements without mutating App.
 struct CommandCompleter<'a> {
     /// Registry whose command names are exposed as completion candidates.
@@ -1689,5 +1668,26 @@ pub fn handle_submit_confirm_action(app: &mut App, action: Action) {
         }
         Action::Quit => app.should_quit = true,
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod relative_line_number_command_tests {
+    use super::{CommandKind, command_spec_for};
+
+    #[test]
+    fn parses_relative_line_number_commands() {
+        assert_eq!(
+            command_spec_for("set relativenumber").map(|spec| spec.kind),
+            Some(CommandKind::SetRelativeLineNumbers(true))
+        );
+        assert_eq!(
+            command_spec_for("set norelativenumber").map(|spec| spec.kind),
+            Some(CommandKind::SetRelativeLineNumbers(false))
+        );
+        assert_eq!(
+            command_spec_for("set relativenumber!").map(|spec| spec.kind),
+            Some(CommandKind::ToggleRelativeLineNumbers)
+        );
     }
 }

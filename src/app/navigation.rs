@@ -5,7 +5,6 @@ impl App {
     pub fn cursor_down(&mut self, lines: usize) {
         let max_line = self.max_cursor_line();
         let prev_cursor = self.diff_state.cursor_line;
-        let prev_scroll = self.diff_state.scroll_offset;
         let target = self.diff_state.cursor_line + lines;
         // Single-file view: first overflow press arms `primed_walk_next`
         // and parks the cursor on max. On kitty terminals the walk
@@ -48,13 +47,10 @@ impl App {
         }
         self.diff_state.cursor_line = target.min(max_line);
         if self.diff_state.cursor_line != prev_cursor {
+            // Nothing caps how far the scroll moves. When lines wrap, one
+            // logical line covers several rows, so a single `j` can need a
+            // multi-row jump to bring the cursor back into view.
             self.ensure_cursor_visible();
-            // Cap scroll change to cursor movement to prevent multi-line jumps
-            // when the view is catching up from a non-steady-state position.
-            let cursor_moved = self.diff_state.cursor_line - prev_cursor;
-            if self.diff_state.scroll_offset > prev_scroll + cursor_moved {
-                self.diff_state.scroll_offset = prev_scroll + cursor_moved;
-            }
         }
         self.update_current_file_from_cursor();
     }

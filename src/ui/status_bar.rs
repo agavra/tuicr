@@ -16,6 +16,8 @@ use crate::ui::styles;
 /// Maximum visible completion candidates in the command prompt popup.
 const COMMAND_COMPLETION_MAX_ROWS: usize = 7;
 
+const DIFF_WATCH_GLYPH: &str = "\u{25c9}"; // ◉
+
 pub fn build_message_span(message: Option<&Message>, theme: &Theme) -> (Span<'static>, usize) {
     if let Some(msg) = message {
         let (fg, bg) = match msg.message_type {
@@ -332,8 +334,9 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
 
     // Right-aligned slot priority: active message > pr-flow spinners
     // (submit/reload/range) > remote-comments loading hint > modified
-    // indicator. Surfaces the most important transient state without
-    // crowding the hints on the left.
+    // indicator > diff-watch badge. Surfaces the most important transient
+    // state without crowding the hints on the left. The watch badge sits
+    // last so a dirty tree always keeps the "modified" indicator visible.
     let (right_span, right_width) = if app.message.is_some() {
         build_message_span(app.message.as_ref(), theme)
     } else if let Some(submit) = app.pr_submit_state.as_ref() {
@@ -395,6 +398,13 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         let width = content.chars().count();
         (
             Span::styled(content, Style::default().fg(theme.pending)),
+            width,
+        )
+    } else if app.diff_watch_interval.is_some() {
+        let content = format!(" {DIFF_WATCH_GLYPH} watching ");
+        let width = content.chars().count();
+        (
+            Span::styled(content, Style::default().fg(theme.fg_dim)),
             width,
         )
     } else {
@@ -924,5 +934,149 @@ mod header_snapshot_tests {
         let buffer = draw_header(&app);
         let line = row_text(&buffer, 0);
         assert!(line.contains("commit abcdef0"), "got: {line:?}");
+    }
+}
+
+#[cfg(test)]
+mod diff_watch_badge_snapshot_tests {
+    //! Render-snapshot coverage for the "watching" badge. The badge arm is
+    //! inline in `render_status_bar` and `app.diff_watch_interval` is its only
+    //! input, so a snapshot is the only way to reach it.
+
+    use crate::app::{App, DiffSource, InputMode};
+    use crate::error::Result as TuicrResult;
+    use crate::error::TuicrError;
+    use crate::model::{DiffFile, DiffLine, FileStatus, ReviewSession, SessionDiffSource};
+    use crate::syntax::SyntaxHighlighter;
+    use crate::theme::Theme;
+    use crate::vcs::traits::{VcsBackend, VcsInfo, VcsType};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+    use std::path::{Path, PathBuf};
+    use std::time::Duration;
+
+    struct NoopVcs {
+        info: VcsInfo,
+    }
+    impl VcsBackend for NoopVcs {
+        fn info(&self) -> &VcsInfo {
+            &self.info
+        }
+        fn get_working_tree_diff(
+            &self,
+            _highlighter: &SyntaxHighlighter,
+        ) -> TuicrResult<Vec<DiffFile>> {
+            Err(TuicrError::NoChanges)
+        }
+        fn fetch_context_lines(
+            &self,
+            _file_path: &Path,
+            _file_status: FileStatus,
+            _ref_commit: Option<&str>,
+            _start_line: u32,
+            _end_line: u32,
+        ) -> TuicrResult<Vec<DiffLine>> {
+            Ok(Vec::new())
+        }
+        fn file_line_count(
+            &self,
+            _file_path: &Path,
+            _file_status: FileStatus,
+            _ref_commit: Option<&str>,
+        ) -> TuicrResult<u32> {
+            Ok(0)
+        }
+    }
+
+    fn build_app() -> App {
+        let vcs_info = VcsInfo {
+            root_path: PathBuf::from("/tmp/diff-watch-badge-test"),
+            head_commit: "abc123".to_string(),
+            branch_name: Some("main".to_string()),
+            vcs_type: VcsType::Git,
+        };
+        let session = ReviewSession::new(
+            vcs_info.root_path.clone(),
+            vcs_info.head_commit.clone(),
+            vcs_info.branch_name.clone(),
+            SessionDiffSource::WorkingTree,
+        );
+        App::build(
+            Box::new(NoopVcs {
+                info: vcs_info.clone(),
+            }),
+            vcs_info,
+            Theme::dark(),
+            None,
+            false,
+            Vec::new(),
+            session,
+            DiffSource::WorkingTree,
+            InputMode::Normal,
+            Vec::new(),
+            None,
+            None,
+        )
+        .expect("build app")
+    }
+
+    fn draw_status_bar(app: &App) -> Buffer {
+        let backend = TestBackend::new(140, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                super::render_status_bar(frame, app, area);
+            })
+            .expect("draw frame");
+        terminal.backend().buffer().clone()
+    }
+
+    fn row_text(buffer: &Buffer) -> String {
+        (0..buffer.area.width)
+            .map(|x| buffer[(x, 0)].symbol().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn should_render_watching_badge_when_diff_watch_is_enabled() {
+        // given a clean-tree app with the diff watcher armed and no
+        // higher-priority right-slot state (message, PR spinners, dirty)
+        let mut app = build_app();
+        app.diff_watch_interval = Some(Duration::from_millis(500));
+        // when
+        let buffer = draw_status_bar(&app);
+        // then
+        let line = row_text(&buffer);
+        assert!(line.contains("watching"), "got: {line:?}");
+    }
+
+    #[test]
+    fn should_not_render_watching_badge_when_diff_watch_is_disabled() {
+        // given the same app with the watcher off (the default)
+        let app = build_app();
+        // when
+        let buffer = draw_status_bar(&app);
+        // then
+        let line = row_text(&buffer);
+        assert!(!line.contains("watching"), "got: {line:?}");
+    }
+
+    /// The watch badge is deliberately last in the right-slot chain so it can
+    /// never take the slot from the "modified" indicator. Reordering the two
+    /// arms passes both tests above, so the precedence needs its own.
+    #[test]
+    fn should_prefer_the_modified_badge_over_the_watching_badge() {
+        // given both a dirty tree and an armed watcher
+        let mut app = build_app();
+        app.dirty = true;
+        app.diff_watch_interval = Some(Duration::from_millis(500));
+        // when
+        let buffer = draw_status_bar(&app);
+        // then
+        let line = row_text(&buffer);
+        assert!(line.contains("modified"), "got: {line:?}");
+        assert!(!line.contains("watching"), "got: {line:?}");
     }
 }
