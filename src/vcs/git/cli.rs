@@ -236,8 +236,8 @@ impl VcsBackend for GitCliBackend {
             return get_cli_change_status(&self.root_path);
         }
 
-        // Limit untracked discovery to sparse-checkout cones. Plain `git status`
-        // reports untracked files outside the cone.
+        // Keep sparse probes pathspec-scoped. Plain `git status` reports
+        // out-of-cone untracked files and would show an empty Unstaged row.
         let staged = has_diff_changes(&self.root_path, &["diff", "--quiet", "--cached", "--"])?;
         let tracked_unstaged = has_diff_changes(&self.root_path, &["diff", "--quiet", "--"])?;
         let untracked_pathspecs = if tracked_unstaged {
@@ -476,6 +476,9 @@ fn get_cli_change_status(workdir: &Path) -> Result<VcsChangeStatus> {
     Ok(parse_porcelain_status(&output.stdout))
 }
 
+/// Parse NUL-delimited porcelain v1 records into staged and unstaged flags.
+/// The first two bytes are the index and worktree states. Rename and copy
+/// records include a second pathname record, which the parser skips.
 fn parse_porcelain_status(output: &[u8]) -> VcsChangeStatus {
     let mut status = VcsChangeStatus::default();
     let mut entries = output.split(|byte| *byte == 0);
