@@ -55,6 +55,8 @@ pub enum Action {
     // Session
     Quit,
     ExportToClipboard,
+    /// Copy just the comment under the cursor (`Y`), not the whole review.
+    CopyCommentAtCursor,
 
     // Mode changes
     EnterCommandMode,
@@ -220,6 +222,7 @@ fn map_normal_mode(key: KeyEvent, leader_key: char) -> Action {
         (KeyCode::Char('d'), KeyModifiers::NONE) => Action::PendingDCommand,
         (KeyCode::Char('v') | KeyCode::Char('V'), _) => Action::EnterVisualMode,
         (KeyCode::Char('y'), KeyModifiers::NONE) => Action::ExportToClipboard,
+        (KeyCode::Char('Y'), _) => Action::CopyCommentAtCursor,
         (KeyCode::Char('e'), KeyModifiers::NONE) => Action::EditFile,
         (KeyCode::Char('n'), KeyModifiers::NONE) => Action::SearchNext,
         (KeyCode::Char('N'), _) => Action::SearchPrev,
@@ -614,6 +617,18 @@ mod tests {
         assert_eq!(
             map_normal_mode(key_shift('A'), DEFAULT_LEADER_KEY),
             Action::EditCommentAtEnd
+        );
+    }
+
+    #[test]
+    fn should_map_lowercase_and_uppercase_y_to_separate_yank_actions() {
+        assert_eq!(
+            map_normal_mode(key(KeyCode::Char('y')), DEFAULT_LEADER_KEY),
+            Action::ExportToClipboard
+        );
+        assert_eq!(
+            map_normal_mode(key_shift('Y'), DEFAULT_LEADER_KEY),
+            Action::CopyCommentAtCursor
         );
     }
 

@@ -121,6 +121,7 @@ Shown below the file tree when local comments or visible remote PR threads exist
 | `A` | Edit comment at cursor with text cursor at end (vim mode only) |
 | `e` | Open focused file in `$EDITOR` |
 | `y` | Copy review to clipboard |
+| `Y` | Copy the comment at cursor to clipboard |
 
 ## Visual mode
 
