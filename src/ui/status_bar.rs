@@ -273,6 +273,7 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             InputMode::Comment => " COMMENT ".to_string(),
             InputMode::Help => " HELP ".to_string(),
             InputMode::MessageDetails => " ERROR ".to_string(),
+            InputMode::Summary => " SUMMARY ".to_string(),
             InputMode::Confirm => " CONFIRM ".to_string(),
             InputMode::CommitSelect => " SELECT ".to_string(),
             InputMode::VisualSelect => {
@@ -315,6 +316,9 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                 InputMode::Comment => Cow::Borrowed("   ctrl-s save \u{00b7} esc cancel"),
                 InputMode::Help => Cow::Borrowed("   / search · n/N match · q/?/esc close"),
                 InputMode::MessageDetails => Cow::Borrowed("   j/k scroll · q/esc close"),
+                InputMode::Summary => {
+                    Cow::Borrowed("   j/k select \u{00b7} \u{21b5} jump \u{00b7} q/esc close")
+                }
                 InputMode::Confirm => Cow::Borrowed("   y yes \u{00b7} n no"),
                 InputMode::CommitSelect => Cow::Borrowed(
                     "   j/k navigate \u{00b7} space select \u{00b7} \u{21b5} confirm \u{00b7} esc back",

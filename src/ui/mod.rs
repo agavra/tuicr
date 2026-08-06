@@ -14,6 +14,7 @@ pub mod selector;
 pub mod status_bar;
 pub mod styles;
 pub mod submit_modals;
+pub mod summary_popup;
 pub mod text_utils;
 
 pub use app_layout::render;

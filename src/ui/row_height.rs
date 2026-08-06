@@ -403,6 +403,7 @@ mod tests {
     use super::*;
     use crate::app::{
         App, DiffSource, DiffViewMode, ExpandDirection, GapId, InputMode, PullRequestDiffSource,
+        SummaryCommentTarget,
     };
     use crate::error::Result as TuicrResult;
     use crate::error::TuicrError;
@@ -931,6 +932,109 @@ mod tests {
         }
         for i in 0..app.line_annotations.len() {
             assert_eq!(annotation_row_height(&app, i), 1);
+        }
+    }
+
+    #[test]
+    fn summary_jump_reveals_reviewed_comment_in_continuous_view_with_height_parity() {
+        for (mode, width) in [(DiffViewMode::Unified, 40), (DiffViewMode::SideBySide, 60)] {
+            let mut app = make_app();
+            app.diff_view_mode = mode;
+            app.set_diff_wrap(true);
+
+            let path = PathBuf::from("src/lib.rs");
+            let file_idx = app
+                .diff_files
+                .iter()
+                .position(|file| file.display_path() == &path)
+                .expect("commented file present");
+            let hunk_key = app.diff_files[file_idx]
+                .hunk_review_key(0)
+                .expect("first hunk has review key");
+            let comment_id = app.session.files[&path].line_comments[&31][0].id.clone();
+            let review = app
+                .session
+                .get_file_mut(&path)
+                .expect("commented file registered");
+            review.reviewed = true;
+            review.reviewed_hunks.insert(hunk_key);
+
+            // Begin where a normal focused reviewed file would be: the file
+            // body is available, but the reviewed target hunk is folded.
+            app.diff_state.current_file_idx = file_idx;
+            app.is_single_file_view = true;
+            app.input_mode = InputMode::Summary;
+            app.rebuild_annotations();
+            assert!(app.is_hunk_reviewed(file_idx, 0));
+            assert!(app.line_annotations.iter().all(|annotation| !matches!(
+                annotation,
+                AnnotatedLine::LineComment {
+                    file_idx: candidate_file,
+                    line: 31,
+                    side: LineSide::New,
+                    comment_idx: 0,
+                } if *candidate_file == file_idx
+            )));
+
+            assert!(app.jump_to_summary_comment(SummaryCommentTarget::Line {
+                path: path.clone(),
+                line: 31,
+                side: LineSide::New,
+                comment_id,
+            }));
+
+            assert_eq!(app.input_mode, InputMode::Normal);
+            assert!(!app.is_single_file_view, "mode {mode:?}");
+            assert!(app.session.is_file_reviewed(&path), "mode {mode:?}");
+            assert!(app.is_hunk_reviewed(file_idx, 0), "mode {mode:?}");
+            assert!(!app.should_collapse_file(file_idx), "mode {mode:?}");
+            assert!(!app.should_collapse_hunk(file_idx, 0), "mode {mode:?}");
+            assert!(matches!(
+                app.line_annotations.get(app.diff_state.cursor_line),
+                Some(AnnotatedLine::LineComment {
+                    file_idx: candidate_file,
+                    line: 31,
+                    side: LineSide::New,
+                    comment_idx: 0,
+                }) if *candidate_file == file_idx
+            ));
+            assert!(
+                app.diff_files.iter().enumerate().all(|(candidate, _)| app
+                    .line_annotations
+                    .iter()
+                    .any(|annotation| matches!(
+                        annotation,
+                        AnnotatedLine::FileHeader { file_idx } if *file_idx == candidate
+                    ))),
+                "continuous view should contain every file header in {mode:?}"
+            );
+            assert!(
+                app.line_annotations
+                    .iter()
+                    .all(|annotation| !matches!(annotation, AnnotatedLine::ReviewedBanner { .. })),
+                "continuous view must not emit the focused-view reviewed banner in {mode:?}"
+            );
+            assert_eq!(
+                app.total_lines(),
+                app.line_annotations.len(),
+                "logical-height parity after summary jump in {mode:?}"
+            );
+
+            // Render from the top in a viewport tall enough to include every
+            // annotation. This catches drift between the collapse/reveal
+            // predicates used by annotation building, height calculation, and
+            // the two concrete renderers.
+            app.diff_state.scroll_offset = 0;
+            render_diff(&mut app, mode, width, 400);
+            assert_parity(&app);
+            let computed_rows: usize = (0..app.line_annotations.len())
+                .map(|idx| annotation_row_height(&app, idx))
+                .sum();
+            assert_eq!(
+                app.diff_row_to_annotation.len(),
+                computed_rows,
+                "full renderer/annotation row parity after summary jump in {mode:?}"
+            );
         }
     }
 }

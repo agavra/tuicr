@@ -191,6 +191,7 @@ impl App {
             return;
         };
 
+        self.revealed_reviewed_file = None;
         if let Some(review) = self.session.get_file_mut(&path) {
             review.reviewed = !review.reviewed;
             self.dirty = true;
@@ -262,11 +263,49 @@ impl App {
         self.session.is_hunk_reviewed(&path, &key)
     }
 
+    /// Whether a reviewed file should currently hide its body. Summary jumps
+    /// may temporarily reveal one reviewed file in the continuous diff without
+    /// changing the persisted reviewed marker.
+    pub fn should_collapse_file(&self, file_idx: usize) -> bool {
+        if self.is_single_file_view {
+            return false;
+        }
+
+        let Some(file) = self.diff_files.get(file_idx) else {
+            return false;
+        };
+        let path = file.display_path();
+        self.session.is_file_reviewed(path) && self.revealed_reviewed_file.as_ref() != Some(path)
+    }
+
+    pub(in crate::app) fn reveal_reviewed_file(&mut self, file_idx: usize) {
+        self.revealed_reviewed_file = self
+            .diff_files
+            .get(file_idx)
+            .map(|file| file.display_path().clone());
+    }
+
+    /// Whether a reviewed hunk should currently hide its body. Summary jumps
+    /// may temporarily reveal one reviewed hunk without changing the persisted
+    /// reviewed marker used by [`Self::is_hunk_reviewed`].
+    pub fn should_collapse_hunk(&self, file_idx: usize, hunk_idx: usize) -> bool {
+        if !self.is_hunk_reviewed(file_idx, hunk_idx) {
+            return false;
+        }
+
+        self.hunk_review_target(file_idx, hunk_idx)
+            .is_none_or(|target| self.revealed_reviewed_hunk.as_ref() != Some(&target))
+    }
+
+    pub(in crate::app) fn reveal_reviewed_hunk(&mut self, file_idx: usize, hunk_idx: usize) {
+        self.revealed_reviewed_hunk = self.hunk_review_target(file_idx, hunk_idx);
+    }
+
     pub fn should_render_gap_before_hunk(&self, file_idx: usize, hunk_idx: usize) -> bool {
         // Reviewed hunks collapse as a complete review unit: their body and
         // adjoining hidden-context controls disappear with the header.
-        !self.is_hunk_reviewed(file_idx, hunk_idx)
-            && (hunk_idx == 0 || !self.is_hunk_reviewed(file_idx, hunk_idx - 1))
+        !self.should_collapse_hunk(file_idx, hunk_idx)
+            && (hunk_idx == 0 || !self.should_collapse_hunk(file_idx, hunk_idx - 1))
     }
 
     pub fn toggle_hunk_reviewed(&mut self) {
@@ -274,6 +313,7 @@ impl App {
             self.set_warning("Move cursor to a hunk to toggle reviewed");
             return;
         };
+        self.revealed_reviewed_hunk = None;
 
         let Some((path, key)) = self.hunk_review_target(file_idx, hunk_idx) else {
             self.set_warning("Move cursor to a hunk to toggle reviewed");

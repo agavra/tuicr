@@ -2143,6 +2143,41 @@ fn should_treat_commits_as_alias_for_local_target_selector() {
 }
 
 #[test]
+fn should_open_pending_comment_summary_from_command_mode() {
+    let mut app = build_app();
+    app.input_mode = InputMode::Command;
+    app.command_buffer = "summary".to_string();
+
+    crate::handler::handle_command_action(&mut app, crate::input::Action::SubmitInput);
+
+    assert_eq!(app.input_mode, InputMode::Summary);
+    assert!(app.command_buffer.is_empty());
+    assert_eq!(app.summary_state.selected_comment, 0);
+    assert_eq!(app.summary_state.scroll_offset, 0);
+
+    app.summary_state.selected_comment = 5;
+    app.summary_state.scroll_offset = 15;
+    app.enter_summary_mode();
+    assert_eq!(app.summary_state.selected_comment, 0);
+    assert_eq!(app.summary_state.scroll_offset, 0);
+
+    crate::handler::handle_summary_action(&mut app, crate::input::Action::ExitMode);
+    assert_eq!(app.input_mode, InputMode::Normal);
+}
+
+#[test]
+fn should_complete_summary_command() {
+    let mut app = build_app();
+    app.input_mode = InputMode::Command;
+    app.command_buffer = "summ".to_string();
+
+    crate::handler::handle_command_action(&mut app, crate::input::Action::CompleteCommand);
+
+    assert_eq!(app.command_buffer, "summary");
+    assert!(app.command_completion.is_none());
+}
+
+#[test]
 fn should_complete_command_when_only_one_candidate_matches() {
     // given
     let mut app = build_app();
@@ -2160,7 +2195,7 @@ fn should_extend_to_common_command_prefix_before_cycling() {
     // given
     let mut app = build_app();
     app.input_mode = InputMode::Command;
-    app.command_buffer = "su".to_string();
+    app.command_buffer = "sub".to_string();
     // when
     crate::handler::handle_command_action(&mut app, crate::input::Action::CompleteCommand);
     // then

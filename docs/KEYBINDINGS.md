@@ -175,6 +175,7 @@ In command mode,
 | `:edit` | Open focused file in `$EDITOR` |
 | `:clip` (`:export`) | Copy review to clipboard |
 | `:copy-url` | Copy the open PR URL to clipboard (PR mode) |
+| `:summary` | Show all pending local-draft comments; `j`/`k` select and `Enter` jumps |
 | `:diff` | Toggle diff view (unified / side-by-side) |
 | `:vim` / `:novim` (`:set vim` / `:set novim`) | Enable/toggle/disable vim modal editing in the comment box (overrides `comment_vim`) |
 | `:commits` | Select commits to review |
@@ -201,6 +202,13 @@ In command mode,
 | `ZQ` | Quit without saving |
 | `?` | Toggle help |
 | `q` | Quick quit |
+
+The summary replaces the diff while leaving the file sidebar visible when it is open. The first
+pending comment is selected when the summary opens. Use `j`/`k` to select the next
+or previous comment; the view scrolls automatically to keep the selection visible. `Enter` returns
+to the continuous diff and jumps to the selected comment, leaving single-file view if necessary,
+while `Esc` returns without jumping. Reviewed files and hunks are revealed for the jump without
+losing their reviewed state.
 
 `draft` applies to GitHub only. `comment` and `approve` work on GitHub, GitLab, and Bitbucket.
 `request-changes` works on GitHub and GitLab, but not Bitbucket yet.

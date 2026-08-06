@@ -166,6 +166,7 @@ pub fn map_key_to_action(key: KeyEvent, mode: InputMode, leader_key: char) -> Ac
             Action::EnterSearchMode | Action::SearchNext | Action::SearchPrev => Action::None,
             action => action,
         },
+        InputMode::Summary => map_summary_mode(key),
         InputMode::Confirm => map_confirm_mode(key),
         InputMode::CommitSelect => map_commit_select_mode(key),
         InputMode::VisualSelect => map_visual_mode(key),
@@ -371,6 +372,26 @@ fn map_help_mode(key: KeyEvent) -> Action {
         (KeyCode::Char('/'), _) => Action::EnterSearchMode,
         (KeyCode::Char('n'), KeyModifiers::NONE) => Action::SearchNext,
         (KeyCode::Char('N'), _) => Action::SearchPrev,
+        _ => Action::None,
+    }
+}
+
+fn map_summary_mode(key: KeyEvent) -> Action {
+    match (key.code, key.modifiers) {
+        (KeyCode::Esc, KeyModifiers::NONE) | (KeyCode::Char('q'), KeyModifiers::NONE) => {
+            Action::ExitMode
+        }
+        (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => Action::CursorDown(1),
+        (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => Action::CursorUp(1),
+        (KeyCode::Enter, KeyModifiers::NONE) => Action::SubmitInput,
+        (KeyCode::Char('d'), KeyModifiers::CONTROL) => Action::HalfPageDown,
+        (KeyCode::Char('u'), KeyModifiers::CONTROL) => Action::HalfPageUp,
+        (KeyCode::Char('f'), KeyModifiers::CONTROL) => Action::PageDown,
+        (KeyCode::Char('b'), KeyModifiers::CONTROL) => Action::PageUp,
+        (KeyCode::PageDown, KeyModifiers::NONE) => Action::PageDown,
+        (KeyCode::PageUp, KeyModifiers::NONE) => Action::PageUp,
+        (KeyCode::Char('g'), KeyModifiers::NONE) => Action::GoToTop,
+        (KeyCode::Char('G'), _) => Action::GoToBottom,
         _ => Action::None,
     }
 }
@@ -674,6 +695,22 @@ mod tests {
                 Action::None
             );
         }
+    }
+
+    #[test]
+    fn should_map_summary_navigation_and_escape() {
+        assert_eq!(map_summary_mode(key(KeyCode::Esc)), Action::ExitMode);
+        assert_eq!(map_summary_mode(key(KeyCode::Char('q'))), Action::ExitMode);
+        assert_eq!(
+            map_summary_mode(key(KeyCode::Char('j'))),
+            Action::CursorDown(1)
+        );
+        assert_eq!(
+            map_summary_mode(key(KeyCode::Char('k'))),
+            Action::CursorUp(1)
+        );
+        assert_eq!(map_summary_mode(key(KeyCode::Enter)), Action::SubmitInput);
+        assert_eq!(map_summary_mode(key_shift('G')), Action::GoToBottom);
     }
 
     #[test]
