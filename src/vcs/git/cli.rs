@@ -461,7 +461,7 @@ fn parse_git_runtime_flags(output: &str) -> (bool, bool) {
 fn get_cli_change_status(workdir: &Path) -> Result<VcsChangeStatus> {
     let output = Command::new("git")
         .current_dir(workdir)
-        .args(["status", "--porcelain=v1", "-z"])
+        .args(["status", "--porcelain=v1", "-z", "--untracked-files=normal"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
@@ -1516,6 +1516,29 @@ mod tests {
     fn detects_change_status_without_loading_diff() {
         let (temp_dir, backend, _ids) = setup_sparse_index_repo();
         write_file(temp_dir.path(), "keep/file.txt", "keep modified\n");
+
+        let status = backend
+            .get_change_status()
+            .expect("failed to get change status");
+
+        assert_eq!(
+            status,
+            VcsChangeStatus {
+                staged: false,
+                unstaged: true,
+            }
+        );
+    }
+
+    #[test]
+    fn detects_untracked_files_when_git_status_hides_them() {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let workdir = temp_dir.path();
+        git(workdir, &["init"]);
+        git(workdir, &["config", "status.showUntrackedFiles", "no"]);
+        write_file(workdir, "untracked.txt", "untracked\n");
+        let backend = GitCliBackend::discover_from(workdir, DiffWhitespaceMode::Normal)
+            .expect("failed to discover cli backend");
 
         let status = backend
             .get_change_status()
