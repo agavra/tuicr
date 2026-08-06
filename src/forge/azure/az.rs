@@ -42,7 +42,7 @@ use super::models::{
 const API_VERSION: &str = "7.1";
 /// Well-known Azure DevOps AAD application (resource) id. `az rest --resource`
 /// uses it to acquire a token for the Azure DevOps audience.
-const AZ_RESOURCE: &str = "499b84ac-1338-4d5a-8da7-b3f17d64c7c2";
+const AZ_RESOURCE: &str = "499b84ac-1321-427f-aa17-267ca6975798";
 /// Canonical Azure DevOps cloud host. `*.visualstudio.com` URLs are normalized
 /// to this so all API URLs share one shape.
 const DEFAULT_AZURE_HOST: &str = "dev.azure.com";
