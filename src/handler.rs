@@ -9,7 +9,7 @@ use crate::forge::remote_comments::PrCommentsVisibility;
 use crate::forge::submit::SubmitEvent;
 use crate::input::Action;
 use crate::model::{ClearScope, LineSide};
-use crate::output::{export_to_clipboard, generate_export_content};
+use crate::output::{copy_text_to_clipboard, export_to_clipboard, generate_export_content};
 use crate::text_edit::{
     delete_char_before, delete_word_before, next_char_boundary, prev_char_boundary,
 };
@@ -388,6 +388,26 @@ fn handle_export(app: &mut App) {
             Ok(msg) => app.set_message(msg),
             Err(e) => app.set_warning(format!("{e}")),
         }
+    }
+}
+
+/// Copy just the comment under the cursor (`Y`). Unlike `y`, the rest of the
+/// review stays out of the clipboard, so a single comment can go straight into
+/// a chat message or an agent prompt.
+fn handle_copy_comment_at_cursor(app: &mut App) {
+    let Some(content) = app.comment_content_at_cursor() else {
+        if app.cursor_on_remote_thread() {
+            let forge = app.forge_display_name();
+            app.set_message(format!("Y copies local comments; this one is on {forge}"));
+        } else {
+            app.set_message("No comment at cursor");
+        }
+        return;
+    };
+    match copy_text_to_clipboard(&content) {
+        Ok(true) => app.set_message("Comment copied to clipboard (via terminal)"),
+        Ok(false) => app.set_message("Comment copied to clipboard"),
+        Err(e) => app.set_warning(format!("{e}")),
     }
 }
 
@@ -1602,6 +1622,7 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
         // `A` (vim only) edits with the text cursor at end-of-line.
         Action::EditCommentAtEnd if app.comment_vim_enabled => edit_comment_at_cursor(app, true),
         Action::ExportToClipboard => handle_export(app),
+        Action::CopyCommentAtCursor => handle_copy_comment_at_cursor(app),
         Action::SearchNext => {
             app.search_next_in_diff();
         }

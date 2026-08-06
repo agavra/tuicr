@@ -470,6 +470,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  Y         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Copy comment at cursor to clipboard"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  e         ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),

@@ -1135,3 +1135,58 @@ fn should_detect_locked_comment_under_cursor_for_dd_path() {
     app.diff_state.cursor_line = idx;
     assert!(app.cursor_on_locked_comment());
 }
+
+#[test]
+fn should_yank_only_the_comment_under_the_cursor() {
+    // given two line comments in the same file, `Y` on the second one
+    // resolves to that comment's content and not the first.
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    let mut first = line_comment(LineSide::New, Some(10), None);
+    first.content = "first comment".to_string();
+    add_line_comment(&mut app, "src/lib.rs", 10, first);
+    let mut second = line_comment(LineSide::New, Some(11), None);
+    second.content = "second comment".to_string();
+    add_line_comment(&mut app, "src/lib.rs", 11, second);
+    app.rebuild_annotations();
+
+    // A comment box spans several annotation rows, so anchor on the line the
+    // comment belongs to rather than counting rows.
+    let row_for_line = |app: &App, target: u32| {
+        app.line_annotations
+            .iter()
+            .position(|a| matches!(a, AnnotatedLine::LineComment { line, .. } if *line == target))
+            .expect("expected an annotation for the comment")
+    };
+
+    app.diff_state.cursor_line = row_for_line(&app, 11);
+    assert_eq!(
+        app.comment_content_at_cursor(),
+        Some("second comment".to_string())
+    );
+
+    app.diff_state.cursor_line = row_for_line(&app, 10);
+    assert_eq!(
+        app.comment_content_at_cursor(),
+        Some("first comment".to_string())
+    );
+}
+
+#[test]
+fn should_yank_nothing_when_cursor_is_not_on_a_comment() {
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    add_line_comment(
+        &mut app,
+        "src/lib.rs",
+        11,
+        line_comment(LineSide::New, Some(11), None),
+    );
+    app.rebuild_annotations();
+
+    let idx = app
+        .line_annotations
+        .iter()
+        .position(|a| matches!(a, AnnotatedLine::DiffLine { .. }))
+        .expect("expected a diff line annotation");
+    app.diff_state.cursor_line = idx;
+    assert_eq!(app.comment_content_at_cursor(), None);
+}
