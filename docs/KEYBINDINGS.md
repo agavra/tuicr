@@ -3,6 +3,7 @@
 Full reference. Press `?` inside tuicr for an in-app version of this list.
 
 `<leader>` defaults to `;`. Override it with `leader = ","` in `~/.config/tuicr/config.toml`.
+Whitespace leaders such as `leader = " "` show up as `<space>` (or `<tab>`) in the in-app help.
 
 ## Navigation
 
