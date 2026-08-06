@@ -111,17 +111,17 @@ fn build_scroll_app(n: usize, viewport: usize, scroll_offset_config: usize) -> A
 
 #[test]
 fn zz_on_last_line_centers_cursor() {
-    // 40 diff lines + 4 overhead = 44 total. max_cursor = 42. Viewport = 20.
+    // 40 diff lines + 3 overhead = 43 total. max_cursor = 41. Viewport = 20.
     let mut app = build_scroll_app(40, 20, 5);
-    assert_eq!(app.total_lines(), 44);
-    let last = app.max_cursor_line(); // 42
+    assert_eq!(app.total_lines(), 43);
+    let last = app.max_cursor_line(); // 41
 
     app.diff_state.cursor_line = last;
     app.center_cursor();
 
-    // scroll = cursor - viewport/2 = 42 - 10 = 32
-    assert_eq!(app.diff_state.scroll_offset, 32);
-    assert_eq!(app.diff_state.cursor_line, 42);
+    // scroll = cursor - viewport/2 = 41 - 10 = 31
+    assert_eq!(app.diff_state.scroll_offset, 31);
+    assert_eq!(app.diff_state.cursor_line, 41);
 }
 
 #[test]

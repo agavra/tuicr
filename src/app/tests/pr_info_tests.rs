@@ -128,7 +128,14 @@ fn should_not_add_pr_info_to_file_tree() {
 
 #[test]
 fn should_order_overview_sections_before_file_diffs() {
-    let app = build_pr_app();
+    let mut app = build_pr_app();
+    // The review-comments header only renders once the section has content.
+    app.session.review_comments.push(crate::model::Comment::new(
+        "review-level".to_string(),
+        crate::model::CommentType::from_id("note"),
+        None,
+    ));
+    app.rebuild_annotations();
     assert!(matches!(
         app.line_annotations.first(),
         Some(crate::app::AnnotatedLine::PrInfoLine { line_idx: 0 })

@@ -85,10 +85,11 @@ impl App {
             }
         }
 
-        // The review-comments header is omitted in single-file view (see
-        // the matching guard in `src/ui/diff_unified.rs`), so the
-        // annotation list mirrors the render.
-        if !self.is_single_file_view {
+        // The review-comments header is omitted in single-file view and
+        // until the section has content (see the matching guard in
+        // `src/ui/diff_unified.rs`), so the annotation list mirrors the
+        // render.
+        if self.show_review_comments_header() {
             self.line_annotations
                 .push(AnnotatedLine::ReviewCommentsHeader);
         }
