@@ -61,6 +61,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
     // off-screen rows. In Comment mode the scroll offset may be adjusted after
     // building, so fall back to a full build there.
     let (visible_start, visible_end) = crate::ui::diff_view::diff_visible_range(app, inner);
+    let search_style = styles::search_match_style(&app.theme);
 
     // Track cursor position for IME when in Comment mode
     // Store the logical line index and column where the cursor should be
@@ -457,6 +458,9 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                 line_idx += 1;
                                 continue;
                             }
+                            let line_search = app
+                                .search_paint_at(line_idx)
+                                .map(|needle| (needle, search_style));
                             render_expanded_context_line(
                                 &mut lines,
                                 &mut line_idx,
@@ -465,6 +469,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                 &app.theme,
                                 lw,
                                 app.relative_line_numbers,
+                                line_search,
                             );
                         }
                     }
@@ -533,6 +538,9 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                 line_idx += 1;
                                 continue;
                             }
+                            let line_search = app
+                                .search_paint_at(line_idx)
+                                .map(|needle| (needle, search_style));
                             render_expanded_context_line(
                                 &mut lines,
                                 &mut line_idx,
@@ -541,6 +549,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                 &app.theme,
                                 lw,
                                 app.relative_line_numbers,
+                                line_search,
                             );
                         }
                     }
@@ -604,6 +613,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                             Span::styled(line_num_str, line_num_style),
                             Span::styled(format!("{prefix} "), style),
                         ];
+                        let content_start = line_spans.len();
 
                         if let Some(ref highlighted) = diff_line.highlighted_spans {
                             for (span_style, span_text) in highlighted {
@@ -615,10 +625,11 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
 
                         // Mark add/del lines with their effective EOL style so we can paint full
                         // row backgrounds later (including wrapped visual rows).
-                        if matches!(
+                        let eol_marker = matches!(
                             diff_line.origin,
                             LineOrigin::Addition | LineOrigin::Deletion
-                        ) {
+                        )
+                        .then(|| {
                             let eol_style = match diff_line.highlighted_spans.as_ref() {
                                 // For syntax-highlighted lines (including empty highlighted lines),
                                 // use syntax diff background so row fill matches code spans.
@@ -635,8 +646,18 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                 None => line_spans.last().map(|s| s.style).unwrap_or(style),
                             };
                             // Zero-width marker span carrying the background style.
-                            line_spans.push(Span::styled(String::new(), eol_style));
+                            Span::styled(String::new(), eol_style)
+                        });
+
+                        if let Some(needle) = app.search_paint_at(line_idx) {
+                            let content_spans = line_spans.split_off(content_start);
+                            line_spans.extend(crate::ui::text_utils::apply_search_highlight_spans(
+                                content_spans,
+                                needle,
+                                search_style,
+                            ));
                         }
+                        line_spans.extend(eol_marker);
 
                         lines.push(Line::from(line_spans));
                         line_idx += 1;
@@ -1011,6 +1032,9 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                 // Render top expanded lines (↓ direction)
                 if let Some(top) = top_lines {
                     for expanded_line in top {
+                        let line_search = app
+                            .search_paint_at(line_idx)
+                            .map(|needle| (needle, search_style));
                         render_expanded_context_line(
                             &mut lines,
                             &mut line_idx,
@@ -1019,6 +1043,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                             &app.theme,
                             lw,
                             app.relative_line_numbers,
+                            line_search,
                         );
                     }
                 }
@@ -1047,6 +1072,9 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                 // Render bottom expanded lines
                 if let Some(bot) = bot_lines {
                     for expanded_line in bot {
+                        let line_search = app
+                            .search_paint_at(line_idx)
+                            .map(|needle| (needle, search_style));
                         render_expanded_context_line(
                             &mut lines,
                             &mut line_idx,
@@ -1055,6 +1083,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                             &app.theme,
                             lw,
                             app.relative_line_numbers,
+                            line_search,
                         );
                     }
                 }
@@ -1337,6 +1366,7 @@ fn render_remote_threads_for_anchor(
 }
 
 /// Render a single expanded context line (shared by unified + side-by-side via unified path)
+#[allow(clippy::too_many_arguments)]
 fn render_expanded_context_line(
     lines: &mut Vec<Line<'_>>,
     line_idx: &mut usize,
@@ -1345,6 +1375,7 @@ fn render_expanded_context_line(
     theme: &Theme,
     lw: usize,
     relative_line_numbers: bool,
+    search: Option<(&str, Style)>,
 ) {
     let indicator = cursor_indicator(*line_idx, current_line_idx);
     let line_num = if relative_line_numbers {
@@ -1357,15 +1388,24 @@ fn render_expanded_context_line(
     } else {
         crate::ui::diff_view::expanded_context_lineno_field(expanded_line, lw)
     };
-    let line_spans = vec![
+    let mut line_spans = vec![
         Span::styled(indicator, styles::current_line_indicator_style(theme)),
         Span::styled(line_num, styles::expanded_context_style(theme)),
         Span::styled("  ", styles::expanded_context_style(theme)),
-        Span::styled(
-            expanded_line.content.clone(),
-            styles::expanded_context_style(theme),
-        ),
     ];
+    let content_start = line_spans.len();
+    line_spans.push(Span::styled(
+        expanded_line.content.clone(),
+        styles::expanded_context_style(theme),
+    ));
+    if let Some((needle, hl)) = search {
+        let content_spans = line_spans.split_off(content_start);
+        line_spans.extend(crate::ui::text_utils::apply_search_highlight_spans(
+            content_spans,
+            needle,
+            hl,
+        ));
+    }
     lines.push(Line::from(line_spans));
     *line_idx += 1;
 }

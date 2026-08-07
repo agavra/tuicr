@@ -73,6 +73,7 @@ pub struct Theme {
     pub status_bar_bg: Color,
     pub cursor_color: Color,
     pub cursor_line_bg: Color,
+    pub search_match_bg: Color,
     pub branch_name: Color,
     pub help_indicator: Color,
 
@@ -148,6 +149,7 @@ impl Theme {
             status_bar_bg: Color::Rgb(30, 30, 30),
             cursor_color: Color::Rgb(255, 210, 90),
             cursor_line_bg: Color::Rgb(40, 40, 45),
+            search_match_bg: Color::Rgb(105, 89, 46),
             branch_name: Color::Rgb(90, 220, 240),
             help_indicator: Color::Rgb(110, 110, 110),
 
@@ -218,6 +220,7 @@ impl Theme {
             status_bar_bg: Color::Rgb(210, 210, 220),
             cursor_color: Color::Rgb(140, 80, 0),
             cursor_line_bg: Color::Rgb(225, 225, 235),
+            search_match_bg: Color::Rgb(245, 224, 141),
             branch_name: Color::Rgb(0, 100, 120),
             help_indicator: Color::Rgb(90, 90, 90),
 
@@ -293,6 +296,7 @@ impl Theme {
             status_bar_bg: base2,
             cursor_color: orange,
             cursor_line_bg: Color::Rgb(225, 222, 200),
+            search_match_bg: Color::Rgb(228, 208, 148),
             branch_name: cyan,
             help_indicator: base01,
 
@@ -365,6 +369,7 @@ impl Theme {
             status_bar_bg: base02,
             cursor_color: orange,
             cursor_line_bg: Color::Rgb(15, 60, 75),
+            search_match_bg: Color::Rgb(63, 76, 35),
             branch_name: cyan,
             help_indicator: base00,
 
@@ -527,6 +532,7 @@ impl Theme {
             status_bar_bg: Color::Rgb(255, 255, 255),
             cursor_color: Color::Rgb(255, 106, 0),
             cursor_line_bg: Color::Rgb(235, 237, 240),
+            search_match_bg: Color::Rgb(247, 230, 160),
             branch_name: Color::Rgb(54, 163, 217),
             help_indicator: Color::Rgb(171, 176, 182),
 
@@ -610,6 +616,7 @@ impl Theme {
             status_bar_bg: bg_dark,
             cursor_color: orange,
             cursor_line_bg: bg_panel,
+            search_match_bg: Color::Rgb(109, 95, 67),
             branch_name: cyan,
             help_indicator: comment,
 
@@ -676,6 +683,7 @@ impl Theme {
             status_bar_bg: Color::Rgb(33, 37, 43),
             cursor_color: Color::Rgb(229, 192, 123),
             cursor_line_bg: Color::Rgb(44, 49, 58),
+            search_match_bg: Color::Rgb(106, 96, 77),
             branch_name: Color::Rgb(86, 182, 194),
             help_indicator: Color::Rgb(92, 99, 112),
 
@@ -737,6 +745,7 @@ impl Theme {
             status_bar_bg: Color::Rgb(246, 248, 250),
             cursor_color: Color::Rgb(154, 103, 0),
             cursor_line_bg: Color::Rgb(221, 244, 255),
+            search_match_bg: Color::Rgb(255, 248, 197),
             branch_name: Color::Rgb(9, 105, 218),
             help_indicator: Color::Rgb(110, 119, 129),
 
@@ -796,6 +805,7 @@ impl Theme {
             status_bar_bg: Color::Rgb(22, 27, 34),
             cursor_color: Color::Rgb(210, 153, 34),
             cursor_line_bg: Color::Rgb(22, 27, 34),
+            search_match_bg: Color::Rgb(75, 58, 15),
             branch_name: Color::Rgb(88, 166, 255),
             help_indicator: Color::Rgb(139, 148, 158),
 
@@ -854,6 +864,7 @@ impl Theme {
             status_bar_bg: Color::Rgb(0x01, 0x04, 0x09),
             cursor_color: Color::Rgb(0xd2, 0x99, 0x22),
             cursor_line_bg: Color::Rgb(0x15, 0x1b, 0x23),
+            search_match_bg: Color::Rgb(0x4b, 0x3a, 0x0f),
             branch_name: Color::Rgb(0xab, 0x7d, 0xf8),
             help_indicator: Color::Rgb(0x65, 0x6c, 0x76),
 
@@ -930,6 +941,7 @@ impl Theme {
             status_bar_bg: bg_dark,
             cursor_color: orange,
             cursor_line_bg: bg_highlight,
+            search_match_bg: Color::Rgb(61, 89, 161),
             branch_name: cyan,
             help_indicator: comment,
 
@@ -1008,6 +1020,7 @@ impl Theme {
             status_bar_bg: bg_dark,
             cursor_color: orange,
             cursor_line_bg: bg_highlight,
+            search_match_bg: Color::Rgb(120, 144, 221),
             branch_name: cyan,
             help_indicator: comment,
 
@@ -1377,6 +1390,7 @@ fn catppuccin_theme(flavor: CatppuccinFlavor, syntect_theme: EmbeddedThemeName) 
         status_bar_bg: flavor.mantle,
         cursor_color: flavor.peach,
         cursor_line_bg: flavor.surface1,
+        search_match_bg: blend(flavor.base, flavor.yellow, 30),
         branch_name: flavor.teal,
         help_indicator: flavor.overlay0,
 
@@ -1452,6 +1466,7 @@ fn gruvbox_theme(flavor: GruvboxFlavor) -> Theme {
         status_bar_bg: flavor.bg1,
         cursor_color: flavor.orange,
         cursor_line_bg: flavor.selected_bg,
+        search_match_bg: blend(flavor.bg0, flavor.yellow, 30),
         branch_name: flavor.aqua,
         help_indicator: flavor.grey0,
 
@@ -1516,6 +1531,7 @@ fn everforest_theme(flavor: EverforestFlavor) -> Theme {
         status_bar_bg: flavor.bg1,
         cursor_color: flavor.orange,
         cursor_line_bg: flavor.bg1,
+        search_match_bg: blend(flavor.bg0, flavor.yellow, 30),
         branch_name: flavor.aqua,
         help_indicator: flavor.grey0,
 
@@ -1580,6 +1596,7 @@ fn nord_theme(flavor: NordFlavor) -> Theme {
         status_bar_bg: flavor.bg2,
         cursor_color: flavor.frost2,
         cursor_line_bg: flavor.bg2,
+        search_match_bg: blend(flavor.bg0, flavor.yellow, 30),
         branch_name: flavor.frost0,
         help_indicator: flavor.bg3,
 
@@ -2122,6 +2139,14 @@ fn load_local_theme_from_path(path: &Path) -> Result<(Theme, Vec<String>), Strin
     }
 
     let panel_bg = require_local_theme_color(table, "panel_bg")?;
+    let pending = require_local_theme_color(table, "pending")?;
+    let search_match_bg = blend(panel_bg, pending, 30);
+    if !matches!((panel_bg, pending), (Color::Rgb(..), Color::Rgb(..))) {
+        warnings.push(format!(
+            "Warning: search match highlight in '{}' uses the raw 'pending' color; set 'panel_bg' and 'pending' to #RRGGBB values for a blended background",
+            path.display()
+        ));
+    }
     let syntax_theme = parse_optional_local_theme_string(table, "syntax_theme")?;
     let syntax_theme = match syntax_theme.as_deref() {
         Some(value) => SyntaxThemeSource::Custom(Box::new(load_custom_syntect_theme(path, value)?)),
@@ -2150,7 +2175,7 @@ fn load_local_theme_from_path(path: &Path) -> Result<(Theme, Vec<String>), Strin
         file_deleted: require_local_theme_color(table, "file_deleted")?,
         file_renamed: require_local_theme_color(table, "file_renamed")?,
         reviewed: require_local_theme_color(table, "reviewed")?,
-        pending: require_local_theme_color(table, "pending")?,
+        pending,
         comment_note: require_local_theme_color(table, "comment_note")?,
         comment_suggestion: require_local_theme_color(table, "comment_suggestion")?,
         comment_issue: require_local_theme_color(table, "comment_issue")?,
@@ -2160,6 +2185,7 @@ fn load_local_theme_from_path(path: &Path) -> Result<(Theme, Vec<String>), Strin
         status_bar_bg: require_local_theme_color(table, "status_bar_bg")?,
         cursor_color: require_local_theme_color(table, "cursor_color")?,
         cursor_line_bg: require_local_theme_color(table, "cursor_line_bg")?,
+        search_match_bg,
         branch_name: require_local_theme_color(table, "branch_name")?,
         help_indicator: require_local_theme_color(table, "help_indicator")?,
         message_info_fg: require_local_theme_color(table, "message_info_fg")?,
@@ -2633,6 +2659,17 @@ mode_bg = "#82aaff"
     }
 
     #[test]
+    fn should_derive_search_match_bg_for_local_themes() {
+        let dir = tempdir().expect("failed to create temp dir");
+        let path = write_local_theme(dir.path(), "local-teal", &sample_local_theme_body(""));
+
+        let (theme, warnings) =
+            load_local_theme_from_path(&path).expect("local theme should load successfully");
+        assert!(warnings.is_empty());
+        assert_eq!(theme.search_match_bg, Color::Rgb(68, 78, 68));
+    }
+
+    #[test]
     fn should_load_checked_in_tuicr_teal_example() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("examples")
@@ -2643,6 +2680,7 @@ mode_bg = "#82aaff"
         assert!(warnings.is_empty());
         assert_eq!(theme.panel_bg, Color::Rgb(6, 40, 50));
         assert_eq!(theme.mode_bg, Color::Rgb(78, 227, 255));
+        assert_eq!(theme.search_match_bg, Color::Rgb(76, 86, 67));
         assert!(theme.uses_custom_syntax_theme());
     }
 
