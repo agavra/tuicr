@@ -725,3 +725,27 @@ fn move_cursor_to_annotation_wrap_on_scrolls_target_fully_into_view() {
         "already-visible target should not change scroll_offset"
     );
 }
+
+#[test]
+fn cursor_down_with_stale_cursor_past_end_does_not_underflow() {
+    // Regression: a PR reload can shrink the diff and leave `cursor_line`
+    // parked past the new `max_cursor_line`. The next `cursor_down` clamps
+    // the cursor *up* to the new max (below `prev_cursor`), which used to
+    // underflow the `cursor_line - prev_cursor` usize subtraction and panic
+    // (`attempt to subtract with overflow` at navigation.rs).
+    let mut app = build_scroll_app(10, 20, 0);
+    // Overview (multi-file) path exercises the `cursor_line - prev_cursor`
+    // subtraction; the single-file walk branch clamps separately.
+    app.is_single_file_view = false;
+    let max = app.max_cursor_line();
+
+    // Simulate the stale post-reload state: cursor beyond the new end.
+    app.diff_state.cursor_line = max + 50;
+
+    app.cursor_down(1); // must not panic
+
+    assert_eq!(
+        app.diff_state.cursor_line, max,
+        "cursor should be clamped to the current max line"
+    );
+}

@@ -594,6 +594,12 @@ impl App {
         } else if let Some(anchor) = &request.anchor {
             self.restore_pr_cursor_to_anchor(anchor);
         }
+        // A reload can shrink the diff; a stale cursor left past the new end
+        // (same-head branch, or a restored overview line captured from the
+        // taller old diff) makes the next `cursor_down` clamp upward and
+        // panic. Clamp into the current bounds.
+        self.diff_state.cursor_line = self.diff_state.cursor_line.min(self.max_cursor_line());
+        self.ensure_cursor_visible();
         Ok(())
     }
 
@@ -671,6 +677,10 @@ impl App {
             self.expand_all_dirs();
             self.rebuild_annotations();
         }
+
+        // Same-head reload keeps the old cursor; clamp it into the (possibly
+        // shorter) new diff so a following `cursor_down` can't underflow.
+        self.diff_state.cursor_line = self.diff_state.cursor_line.min(self.max_cursor_line());
 
         Ok(head_changed)
     }
