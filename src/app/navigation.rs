@@ -51,7 +51,10 @@ impl App {
             self.ensure_cursor_visible();
             // Cap scroll change to cursor movement to prevent multi-line jumps
             // when the view is catching up from a non-steady-state position.
-            let cursor_moved = self.diff_state.cursor_line - prev_cursor;
+            // `saturating_sub`: a reload can shrink the diff and clamp
+            // `cursor_line` (line 49) below `prev_cursor`, which would
+            // otherwise underflow this usize subtraction.
+            let cursor_moved = self.diff_state.cursor_line.saturating_sub(prev_cursor);
             if self.diff_state.scroll_offset > prev_scroll + cursor_moved {
                 self.diff_state.scroll_offset = prev_scroll + cursor_moved;
             }
