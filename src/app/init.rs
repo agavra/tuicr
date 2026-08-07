@@ -11,7 +11,7 @@ impl App {
         // selector. Errors here surface before TUI startup like other
         // startup failures.
         if let Some(target) = options.pr_target {
-            return Self::new_from_pr_target_with_pr_checks(
+            return Self::new_from_pr_target_with_pr_display_options(
                 theme,
                 comment_type_configs,
                 output_to_stdout,
@@ -19,6 +19,7 @@ impl App {
                 options.repo_url_override.clone(),
                 options.commit_selection,
                 options.show_pr_checks,
+                options.show_pr_comments,
             );
         }
 
@@ -515,6 +516,7 @@ impl App {
             current_pr_head: None,
             pr_info: None,
             show_pr_checks: true,
+            show_pr_comments: true,
             should_quit: false,
             dirty: false,
             quit_warned: false,
@@ -758,7 +760,7 @@ impl App {
         repo_url_override: Option<ForgeRepository>,
         commit_selection: CommitSelectionStart,
     ) -> Result<Self> {
-        Self::new_from_pr_target_with_pr_checks(
+        Self::new_from_pr_target_with_pr_display_options(
             theme,
             comment_type_configs,
             output_to_stdout,
@@ -766,10 +768,11 @@ impl App {
             repo_url_override,
             commit_selection,
             true,
+            true,
         )
     }
 
-    fn new_from_pr_target_with_pr_checks(
+    fn new_from_pr_target_with_pr_display_options(
         theme: Theme,
         comment_type_configs: Option<Vec<CommentTypeConfig>>,
         output_to_stdout: bool,
@@ -777,6 +780,7 @@ impl App {
         repo_url_override: Option<ForgeRepository>,
         commit_selection: CommitSelectionStart,
         show_pr_checks: bool,
+        show_pr_comments: bool,
     ) -> Result<Self> {
         use crate::forge::bitbucket::bkt::parse_pull_request_target_bitbucket;
         use crate::forge::github::gh::parse_pull_request_target;
@@ -845,6 +849,7 @@ impl App {
             &target_repo,
             local_checkout_for_target.clone(),
             show_pr_checks,
+            show_pr_comments,
         );
         let highlighter = theme.syntax_highlighter();
         let opened = open_pull_request(
@@ -887,6 +892,7 @@ impl App {
             repo_url_override,
         )?;
         app.show_pr_checks = show_pr_checks;
+        app.show_pr_comments = show_pr_comments;
 
         // Wire the forge backend so context expansion routes through it.
         app.forge_backend = Some(backend);

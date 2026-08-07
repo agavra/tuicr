@@ -107,6 +107,9 @@ pub struct AppConfig {
     /// Whether pull-request CI checks are fetched and shown. Defaults to
     /// true; set to false to omit potentially large check rollups.
     pub show_pr_checks: Option<bool>,
+    /// Whether pull-request conversation comments are fetched and shown.
+    /// Defaults to true; set to false to omit large bot comments.
+    pub show_pr_comments: Option<bool>,
     /// Whether the inline commit selector pane is visible on startup for
     /// multi-commit reviews. Defaults to true; toggle at runtime with
     /// `<leader>s` or `:set commits!`.
@@ -178,6 +181,7 @@ const KNOWN_KEYS: &[&str] = &[
     "comment_types",
     "show_file_list",
     "show_pr_checks",
+    "show_pr_comments",
     "show_commits",
     "diff_view",
     "commit_order",
@@ -399,6 +403,7 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
             .and_then(|v| parse_comment_types(v, &mut warnings)),
         show_file_list: read_bool(table, "show_file_list", &mut warnings),
         show_pr_checks: read_bool(table, "show_pr_checks", &mut warnings),
+        show_pr_comments: read_bool(table, "show_pr_comments", &mut warnings),
         show_commits: read_bool(table, "show_commits", &mut warnings),
         diff_view: read_enum(
             table,
@@ -924,6 +929,31 @@ mod tests {
         assert_eq!(
             outcome.warnings,
             vec!["Warning: Config key 'show_pr_checks' must be a boolean; ignoring value"]
+        );
+    }
+
+    // show_pr_comments
+
+    #[test]
+    fn should_parse_show_pr_comments_false() {
+        let outcome = parse_config("show_pr_comments = false\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.show_pr_comments),
+            Some(false)
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_warn_and_ignore_show_pr_comments_with_invalid_type() {
+        let outcome = parse_config("show_pr_comments = \"no\"\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.show_pr_comments),
+            None
+        );
+        assert_eq!(
+            outcome.warnings,
+            vec!["Warning: Config key 'show_pr_comments' must be a boolean; ignoring value"]
         );
     }
 

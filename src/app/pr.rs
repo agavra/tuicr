@@ -326,8 +326,14 @@ impl App {
         let head_sha = current.key.head_sha.clone();
         let base_sha = current.base_sha.clone();
         let show_pr_checks = self.show_pr_checks;
+        let show_pr_comments = self.show_pr_comments;
         std::thread::spawn(move || {
-            let backend = create_forge_backend(&repository, local_checkout, show_pr_checks);
+            let backend = create_forge_backend(
+                &repository,
+                local_checkout,
+                show_pr_checks,
+                show_pr_comments,
+            );
             let details = crate::forge::traits::PullRequestDetails {
                 repository: repository.clone(),
                 number: pr_number,
@@ -483,8 +489,14 @@ impl App {
         let repository = current.key.repository.clone();
         let pr_number = current.key.number;
         let show_pr_checks = self.show_pr_checks;
+        let show_pr_comments = self.show_pr_comments;
         std::thread::spawn(move || {
-            let backend = create_forge_backend(&repository, local_checkout, show_pr_checks);
+            let backend = create_forge_backend(
+                &repository,
+                local_checkout,
+                show_pr_checks,
+                show_pr_comments,
+            );
             let target =
                 PullRequestTarget::with_repository(repository, pr_number, pr_number.to_string());
             let outcome = fetch_pr_data(backend.as_ref(), target).map_err(|e| e.to_string());
@@ -569,6 +581,7 @@ impl App {
                 &request.repository,
                 local_checkout.clone(),
                 self.show_pr_checks,
+                self.show_pr_comments,
             );
             let previous_message = self.message.clone();
             self.enter_pr_diff_mode(backend, opened)?;
@@ -622,6 +635,7 @@ impl App {
             &current.key.repository,
             local_checkout.clone(),
             self.show_pr_checks,
+            self.show_pr_comments,
         );
         self.reload_pull_request_with_backend(backend, local_checkout)
     }
@@ -707,6 +721,7 @@ impl App {
         self.pr_load_rx = Some(rx);
 
         let show_pr_checks = self.show_pr_checks;
+        let show_pr_comments = self.show_pr_comments;
         std::thread::spawn(move || {
             // Canonical resolution (fork parent lookup) is GitHub-only.
             let canonical = if skip_resolution || origin.kind != ForgeKind::GitHub {
@@ -717,7 +732,7 @@ impl App {
                 let runner = SystemGhRunner;
                 resolve_canonical_repository(&origin, override_repo.as_ref(), &runner)
             };
-            let backend = create_forge_backend(&canonical, None, show_pr_checks);
+            let backend = create_forge_backend(&canonical, None, show_pr_checks, show_pr_comments);
             let query =
                 PullRequestListQuery::first_page_with_scope(canonical.clone(), PR_PAGE_SIZE, scope);
             let result = backend
@@ -742,8 +757,9 @@ impl App {
         self.pr_load_rx = Some(rx);
 
         let show_pr_checks = self.show_pr_checks;
+        let show_pr_comments = self.show_pr_comments;
         std::thread::spawn(move || {
-            let backend = create_forge_backend(&repository, None, show_pr_checks);
+            let backend = create_forge_backend(&repository, None, show_pr_checks, show_pr_comments);
             let query = PullRequestListQuery {
                 repository,
                 already_loaded,
@@ -860,8 +876,10 @@ impl App {
         let summary_repo = summary.repository.clone();
         let pr_number = summary.number;
         let show_pr_checks = self.show_pr_checks;
+        let show_pr_comments = self.show_pr_comments;
         std::thread::spawn(move || {
-            let backend = create_forge_backend(&summary_repo, None, show_pr_checks);
+            let backend =
+                create_forge_backend(&summary_repo, None, show_pr_checks, show_pr_comments);
             let target =
                 PullRequestTarget::with_repository(summary_repo, pr_number, pr_number.to_string());
             let outcome = fetch_pr_data(backend.as_ref(), target).map_err(|e| e.to_string());
@@ -955,6 +973,7 @@ impl App {
             &request.repository,
             local_checkout.clone(),
             self.show_pr_checks,
+            self.show_pr_comments,
         );
         let previous_message = self.message.clone();
         self.enter_pr_diff_mode(backend, opened)?;
@@ -990,9 +1009,15 @@ impl App {
         let pr_number = details.number;
         let head_sha = details.head_sha.clone();
         let show_pr_checks = self.show_pr_checks;
+        let show_pr_comments = self.show_pr_comments;
 
         std::thread::spawn(move || {
-            let backend = create_forge_backend(&repository, local_checkout, show_pr_checks);
+            let backend = create_forge_backend(
+                &repository,
+                local_checkout,
+                show_pr_checks,
+                show_pr_comments,
+            );
             let threads = backend
                 .list_review_threads(&details_clone)
                 .map_err(|e| e.to_string());

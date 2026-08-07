@@ -41,6 +41,17 @@ const PR_INFO_JSON_FIELDS_WITHOUT_CHECKS: &str = concat!(
     "headRefOid,baseRefOid,body,updatedAt,closed,mergedAt,",
     "reviewDecision,mergeable,mergeStateStatus,reviewRequests,latestReviews,comments"
 );
+const PR_INFO_JSON_FIELDS_WITHOUT_COMMENTS: &str = concat!(
+    "number,title,url,state,isDraft,author,headRefName,baseRefName,",
+    "headRefOid,baseRefOid,body,updatedAt,closed,mergedAt,",
+    "reviewDecision,mergeable,mergeStateStatus,reviewRequests,latestReviews,",
+    "statusCheckRollup"
+);
+const PR_INFO_JSON_FIELDS_WITHOUT_CHECKS_OR_COMMENTS: &str = concat!(
+    "number,title,url,state,isDraft,author,headRefName,baseRefName,",
+    "headRefOid,baseRefOid,body,updatedAt,closed,mergedAt,",
+    "reviewDecision,mergeable,mergeStateStatus,reviewRequests,latestReviews"
+);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GhCommandError {
@@ -153,6 +164,9 @@ pub struct GitHubGhBackend<R = SystemGhRunner> {
     /// Whether `get_pull_request_info` requests the potentially large
     /// `statusCheckRollup` response from GitHub.
     show_pr_checks: bool,
+    /// Whether `get_pull_request_info` requests pull-request conversation
+    /// comments from GitHub.
+    show_pr_comments: bool,
 }
 
 impl GitHubGhBackend<SystemGhRunner> {
@@ -162,6 +176,7 @@ impl GitHubGhBackend<SystemGhRunner> {
             runner: SystemGhRunner,
             local_checkout: None,
             show_pr_checks: true,
+            show_pr_comments: true,
         }
     }
 
@@ -181,6 +196,7 @@ where
             runner,
             local_checkout: None,
             show_pr_checks: true,
+            show_pr_comments: true,
         }
     }
 
@@ -190,6 +206,11 @@ where
 
     pub fn with_pr_checks(mut self, show_pr_checks: bool) -> Self {
         self.show_pr_checks = show_pr_checks;
+        self
+    }
+
+    pub fn with_pr_comments(mut self, show_pr_comments: bool) -> Self {
+        self.show_pr_comments = show_pr_comments;
         self
     }
 
@@ -272,11 +293,12 @@ where
                 "--repo".to_string(),
                 gh_repo_arg(&repository),
                 "--json".to_string(),
-                (if self.show_pr_checks {
-                    PR_INFO_JSON_FIELDS
-                } else {
-                    PR_INFO_JSON_FIELDS_WITHOUT_CHECKS
-                })
+                match (self.show_pr_checks, self.show_pr_comments) {
+                    (true, true) => PR_INFO_JSON_FIELDS,
+                    (false, true) => PR_INFO_JSON_FIELDS_WITHOUT_CHECKS,
+                    (true, false) => PR_INFO_JSON_FIELDS_WITHOUT_COMMENTS,
+                    (false, false) => PR_INFO_JSON_FIELDS_WITHOUT_CHECKS_OR_COMMENTS,
+                }
                 .to_string(),
             ],
             &repository.host,
@@ -1682,6 +1704,31 @@ Match host github-work
                 .last()
                 .expect("expected --json field list")
                 .contains("statusCheckRollup")
+        );
+    }
+
+    #[test]
+    fn can_skip_pull_request_conversation_comments() {
+        let runner = FakeGhRunner::default();
+        let backend = GitHubGhBackend::with_runner(Some(repo()), runner).with_pr_comments(false);
+
+        let info = backend
+            .get_pull_request_info(parse_pull_request_target("125").unwrap())
+            .unwrap();
+
+        assert!(info.issue_comments.is_empty());
+        let calls = backend.runner.calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0].last().map(String::as_str),
+            Some(PR_INFO_JSON_FIELDS_WITHOUT_COMMENTS)
+        );
+        assert!(
+            !calls[0]
+                .last()
+                .expect("expected --json field list")
+                .split(',')
+                .any(|field| field == "comments")
         );
     }
 

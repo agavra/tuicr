@@ -191,6 +191,11 @@ fn main() -> anyhow::Result<()> {
                     .as_ref()
                     .and_then(|cfg| cfg.show_pr_checks)
                     .unwrap_or(true),
+                show_pr_comments: config_outcome
+                    .config
+                    .as_ref()
+                    .and_then(|cfg| cfg.show_pr_comments)
+                    .unwrap_or(true),
                 git_backend_preference,
                 diff_whitespace_mode,
                 commit_selection,
@@ -285,6 +290,7 @@ fn main() -> anyhow::Result<()> {
     // Apply config-driven defaults
     if let Some(ref cfg) = config_outcome.config {
         app.show_pr_checks = cfg.show_pr_checks.unwrap_or(true);
+        app.show_pr_comments = cfg.show_pr_comments.unwrap_or(true);
         if cfg.show_file_list == Some(false) {
             app.show_file_list = false;
             app.focused_panel = FocusedPanel::Diff;
