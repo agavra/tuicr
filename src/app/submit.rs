@@ -349,9 +349,10 @@ impl App {
         let event = in_flight.event;
         let mappable = in_flight.mappable.clone();
         let commit_id = state.commit_id.clone();
+        let show_pr_checks = self.show_pr_checks;
 
         std::thread::spawn(move || {
-            let backend = create_forge_backend(&repository, local_checkout);
+            let backend = create_forge_backend(&repository, local_checkout, show_pr_checks);
             // Need PR details for repo/owner routing; refetch lightly via
             // the same target the user opened with.
             let target = PullRequestTarget::with_repository(

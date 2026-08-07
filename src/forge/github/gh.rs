@@ -36,6 +36,11 @@ const PR_INFO_JSON_FIELDS: &str = concat!(
     "reviewDecision,mergeable,mergeStateStatus,reviewRequests,latestReviews,",
     "statusCheckRollup,comments"
 );
+const PR_INFO_JSON_FIELDS_WITHOUT_CHECKS: &str = concat!(
+    "number,title,url,state,isDraft,author,headRefName,baseRefName,",
+    "headRefOid,baseRefOid,body,updatedAt,closed,mergedAt,",
+    "reviewDecision,mergeable,mergeStateStatus,reviewRequests,latestReviews,comments"
+);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GhCommandError {
@@ -145,6 +150,9 @@ pub struct GitHubGhBackend<R = SystemGhRunner> {
     /// to `gh api`. It is **never** used as the source of truth for PR
     /// contents; the source of truth is always GitHub.
     local_checkout: Option<PathBuf>,
+    /// Whether `get_pull_request_info` requests the potentially large
+    /// `statusCheckRollup` response from GitHub.
+    show_pr_checks: bool,
 }
 
 impl GitHubGhBackend<SystemGhRunner> {
@@ -153,6 +161,7 @@ impl GitHubGhBackend<SystemGhRunner> {
             default_repository,
             runner: SystemGhRunner,
             local_checkout: None,
+            show_pr_checks: true,
         }
     }
 
@@ -171,11 +180,17 @@ where
             default_repository,
             runner,
             local_checkout: None,
+            show_pr_checks: true,
         }
     }
 
     pub fn set_local_checkout(&mut self, checkout: Option<PathBuf>) {
         self.local_checkout = checkout;
+    }
+
+    pub fn with_pr_checks(mut self, show_pr_checks: bool) -> Self {
+        self.show_pr_checks = show_pr_checks;
+        self
     }
 
     pub fn local_checkout(&self) -> Option<&Path> {
@@ -257,7 +272,12 @@ where
                 "--repo".to_string(),
                 gh_repo_arg(&repository),
                 "--json".to_string(),
-                PR_INFO_JSON_FIELDS.to_string(),
+                (if self.show_pr_checks {
+                    PR_INFO_JSON_FIELDS
+                } else {
+                    PR_INFO_JSON_FIELDS_WITHOUT_CHECKS
+                })
+                .to_string(),
             ],
             &repository.host,
         )?;
@@ -1639,6 +1659,30 @@ Match host github-work
         assert_eq!(details.number, 125);
         assert_eq!(details.head_sha, "abcdef1234567890");
         assert!(!details.is_read_only());
+    }
+
+    #[test]
+    fn can_skip_pull_request_check_rollup() {
+        let runner = FakeGhRunner::default();
+        let backend = GitHubGhBackend::with_runner(Some(repo()), runner).with_pr_checks(false);
+
+        let info = backend
+            .get_pull_request_info(parse_pull_request_target("125").unwrap())
+            .unwrap();
+
+        assert!(info.checks.is_empty());
+        let calls = backend.runner.calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0].last().map(String::as_str),
+            Some(PR_INFO_JSON_FIELDS_WITHOUT_CHECKS)
+        );
+        assert!(
+            !calls[0]
+                .last()
+                .expect("expected --json field list")
+                .contains("statusCheckRollup")
+        );
     }
 
     #[test]

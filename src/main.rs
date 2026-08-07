@@ -186,6 +186,11 @@ fn main() -> anyhow::Result<()> {
                 path_filter: cli_args.path_filter.as_deref(),
                 file_path: cli_args.file_path.as_deref(),
                 all_files: cli_args.all_files,
+                show_pr_checks: config_outcome
+                    .config
+                    .as_ref()
+                    .and_then(|cfg| cfg.show_pr_checks)
+                    .unwrap_or(true),
                 git_backend_preference,
                 diff_whitespace_mode,
                 commit_selection,
@@ -279,6 +284,7 @@ fn main() -> anyhow::Result<()> {
 
     // Apply config-driven defaults
     if let Some(ref cfg) = config_outcome.config {
+        app.show_pr_checks = cfg.show_pr_checks.unwrap_or(true);
         if cfg.show_file_list == Some(false) {
             app.show_file_list = false;
             app.focused_panel = FocusedPanel::Diff;
