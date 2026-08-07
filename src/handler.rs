@@ -1608,6 +1608,7 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
         Action::SearchPrev => {
             app.search_prev_in_diff();
         }
+        Action::ClearSearchHighlight => app.clear_search_highlight(),
         Action::EnterVisualMode => {
             if app.get_line_at_cursor().is_some() {
                 app.enter_visual_mode_at_cursor();

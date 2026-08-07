@@ -310,6 +310,9 @@ fn main() -> anyhow::Result<()> {
         if cfg.cursor_line == Some(false) {
             app.cursor_line_highlight = false;
         }
+        if cfg.search_highlight == Some(false) {
+            app.search_highlight_enabled = false;
+        }
         if let Some(scroll_offset) = cfg.scroll_offset {
             app.scroll_offset = scroll_offset;
         }

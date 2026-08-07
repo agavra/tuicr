@@ -2,6 +2,7 @@ mod change_status_tests;
 mod commit_scoped_comment_tests;
 mod commit_selection_tests;
 mod decoration_skip_tests;
+mod diff_search_tests;
 mod diff_source_tests;
 mod expand_gap_tests;
 mod file_filter_tests;

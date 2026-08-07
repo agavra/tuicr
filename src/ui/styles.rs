@@ -163,6 +163,10 @@ pub fn visual_selection_style(theme: &Theme) -> Style {
     Style::default().bg(theme.bg_highlight)
 }
 
+pub fn search_match_style(theme: &Theme) -> Style {
+    Style::default().bg(theme.search_match_bg)
+}
+
 pub fn help_indicator_style(theme: &Theme) -> Style {
     Style::default().fg(theme.help_indicator).bg(theme.panel_bg)
 }

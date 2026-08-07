@@ -20,8 +20,9 @@ Full reference. Press `?` inside tuicr for an in-app version of this list.
 | `{` / `}` | Jump to previous / next file |
 | `[` / `]` | Jump to previous / next hunk |
 | `m` / `M` | Jump to next / previous comment |
-| `/` | Search within diff (case-insensitive) |
-| `n` / `N` | Next / previous search match |
+| `/` | Search within diff (case-insensitive); matches on diff content are highlighted and the status bar shows the `[current/total]` position (headers, comments, and PR info are searchable but not highlighted) |
+| `n` / `N` | Next / previous search match (wraps around) |
+| `Esc` | Clear search-match highlighting; the pattern is kept so `n` / `N` still work |
 | `Enter` | Expand or collapse hidden context between hunks |
 | `zt` | Scroll cursor to top of screen |
 | `zz` | Center cursor on screen |

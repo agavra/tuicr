@@ -389,6 +389,8 @@ impl App {
             // Spacing line
             self.line_annotations.push(AnnotatedLine::Spacing);
         }
+
+        self.refresh_search_matches();
     }
 
     fn push_comments(

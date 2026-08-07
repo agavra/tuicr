@@ -121,6 +121,7 @@ pub struct AppConfig {
     pub relative_line_numbers: Option<bool>,
     pub export_legend: Option<bool>,
     pub cursor_line: Option<bool>,
+    pub search_highlight: Option<bool>,
     pub mouse: Option<bool>,
     /// Enable vim-style modal editing in the review comment text box. When
     /// unset/false the comment box uses the default emacs/readline bindings.
@@ -183,6 +184,7 @@ const KNOWN_KEYS: &[&str] = &[
     "relative_line_numbers",
     "export_legend",
     "cursor_line",
+    "search_highlight",
     "mouse",
     "comment_vim",
     "comment_tab_width",
@@ -418,6 +420,7 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         wrap: read_bool(table, "wrap", &mut warnings),
         export_legend: read_bool(table, "export_legend", &mut warnings),
         cursor_line: read_bool(table, "cursor_line", &mut warnings),
+        search_highlight: read_bool(table, "search_highlight", &mut warnings),
         mouse: read_bool(table, "mouse", &mut warnings),
         comment_vim: read_bool(table, "comment_vim", &mut warnings),
         comment_tab_width: read_usize(table, "comment_tab_width", &mut warnings),

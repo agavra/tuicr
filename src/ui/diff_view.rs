@@ -639,13 +639,28 @@ pub(super) fn paint_cursor_line_highlight(
     if !app.cursor_line_highlight {
         return;
     }
-    paint_unified_diff_rows_with(
-        frame,
+    let preserve_bg = app
+        .search_paint_at(app.diff_state.cursor_line)
+        .map(|_| app.theme.search_match_bg);
+    let cursor_style = Style::default().bg(app.theme.cursor_line_bg);
+    let buf = frame.buffer_mut();
+    for_each_styled_row(
         inner,
         visible_lines_unscrolled,
         row_heights,
-        |idx, _line| {
-            is_line_highlighted(app, idx).then(|| Style::default().bg(app.theme.cursor_line_bg))
+        |idx, _line| is_line_highlighted(app, idx).then_some(cursor_style),
+        |row_rect, row_style| match preserve_bg {
+            None => buf.set_style(row_rect, row_style),
+            Some(keep) => {
+                for y in row_rect.top()..row_rect.bottom() {
+                    for x in row_rect.left()..row_rect.right() {
+                        let cell = &mut buf[(x, y)];
+                        if cell.bg != keep {
+                            cell.set_style(row_style);
+                        }
+                    }
+                }
+            }
         },
     );
 }
@@ -658,6 +673,25 @@ pub(super) fn paint_unified_diff_rows_with<F>(
     style_for: F,
 ) where
     F: Fn(usize, &Line) -> Option<Style>,
+{
+    for_each_styled_row(
+        inner,
+        visible_lines_unscrolled,
+        row_heights,
+        style_for,
+        |row_rect, row_style| frame.buffer_mut().set_style(row_rect, row_style),
+    );
+}
+
+fn for_each_styled_row<F, P>(
+    inner: Rect,
+    visible_lines_unscrolled: &[Line],
+    row_heights: &[usize],
+    style_for: F,
+    mut paint: P,
+) where
+    F: Fn(usize, &Line) -> Option<Style>,
+    P: FnMut(Rect, Style),
 {
     let mut visual_row: usize = 0;
 
@@ -679,7 +713,7 @@ pub(super) fn paint_unified_diff_rows_with<F>(
                     width: inner.width,
                     height: 1,
                 };
-                frame.buffer_mut().set_style(row_rect, row_style);
+                paint(row_rect, row_style);
                 visual_row += 1;
             }
         } else {

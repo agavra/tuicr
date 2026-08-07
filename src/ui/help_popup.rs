@@ -110,7 +110,14 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  n/N       ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Next/prev search match"),
+            Span::raw("Next/prev search match (wraps)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  Esc       ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Clear search highlighting"),
         ]),
         Line::from(vec![
             Span::styled(
