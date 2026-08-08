@@ -111,6 +111,7 @@ impl fmt::Display for PrSlug {
             ForgeKind::GitHub => "gh",
             ForgeKind::GitLab => "gl",
             ForgeKind::Bitbucket => "bb",
+            ForgeKind::AzureDevOps => "az",
         };
         write!(
             f,
@@ -181,6 +182,7 @@ impl FromStr for Slug {
                 "gh" => ForgeKind::GitHub,
                 "gl" => ForgeKind::GitLab,
                 "bb" => ForgeKind::Bitbucket,
+                "az" => ForgeKind::AzureDevOps,
                 other => return Err(SlugParseError::UnknownForge(other.to_string())),
             };
             return parse_pr(forge, rest).map(Slug::Pr);
@@ -190,17 +192,26 @@ impl FromStr for Slug {
 }
 
 fn parse_pr(forge: ForgeKind, rest: &str) -> Result<PrSlug, SlugParseError> {
+    // Shape: `<owner>/<repo>/pr/<number>`. `<owner>` may itself contain
+    // slashes (GitLab subgroups, Azure DevOps `org/project`), so anchor on the
+    // trailing `pr/<number>` and treat everything before `<repo>` as the owner.
     let parts: Vec<&str> = rest.split('/').collect();
-    if parts.len() != 4 || parts[2] != "pr" || parts[0].is_empty() || parts[1].is_empty() {
+    let n = parts.len();
+    if n < 4 || parts[n - 2] != "pr" {
         return Err(SlugParseError::InvalidShape(rest.to_string()));
     }
-    let number: u64 = parts[3]
+    let number: u64 = parts[n - 1]
         .parse()
-        .map_err(|_| SlugParseError::InvalidPrNumber(parts[3].to_string()))?;
+        .map_err(|_| SlugParseError::InvalidPrNumber(parts[n - 1].to_string()))?;
+    let repo = parts[n - 3];
+    let owner = parts[..n - 3].join("/");
+    if owner.is_empty() || repo.is_empty() {
+        return Err(SlugParseError::InvalidShape(rest.to_string()));
+    }
     Ok(PrSlug {
         forge,
-        owner: parts[0].to_string(),
-        repo: parts[1].to_string(),
+        owner,
+        repo: repo.to_string(),
         number,
     })
 }
@@ -653,6 +664,23 @@ mod tests {
     fn should_roundtrip_pr_slug() {
         assert_roundtrip("gh:agavra/tuicr/pr/125");
         assert_roundtrip("gh:org/svc/pr/9999");
+    }
+
+    #[test]
+    fn should_roundtrip_azure_pr_slug_with_org_project_owner() {
+        // Azure packs `org/project` into the owner, so the PR slug carries an
+        // extra `/`. parse_pr must anchor on the trailing `pr/<n>`.
+        assert_roundtrip("az:myorg/myproject/myrepo/pr/42");
+        let parsed: Slug = "az:myorg/myproject/myrepo/pr/42".parse().unwrap();
+        match parsed {
+            Slug::Pr(pr) => {
+                assert_eq!(pr.forge, ForgeKind::AzureDevOps);
+                assert_eq!(pr.owner, "myorg/myproject");
+                assert_eq!(pr.repo, "myrepo");
+                assert_eq!(pr.number, 42);
+            }
+            other => panic!("expected PR slug, got {other:?}"),
+        }
     }
 
     // ---------- Parse errors ----------

@@ -254,8 +254,8 @@ fn themes_dir_from_parts(
 }
 
 fn config_dir_from_parts(
-    xdg_config_home: Option<PathBuf>,
-    home: Option<PathBuf>,
+    _xdg_config_home: Option<PathBuf>,
+    _home: Option<PathBuf>,
     _appdata: Option<PathBuf>,
 ) -> Result<PathBuf> {
     #[cfg(windows)]
@@ -268,11 +268,11 @@ fn config_dir_from_parts(
 
     #[cfg(not(windows))]
     {
-        if let Some(base) = xdg_config_home.filter(|p| !p.as_os_str().is_empty()) {
+        if let Some(base) = _xdg_config_home.filter(|p| !p.as_os_str().is_empty()) {
             return Ok(base.join("tuicr"));
         }
 
-        let home = home
+        let home = _home
             .filter(|p| !p.as_os_str().is_empty())
             .ok_or_else(|| anyhow!("Could not determine HOME for config directory"))?;
         Ok(home.join(".config").join("tuicr"))

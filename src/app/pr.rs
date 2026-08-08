@@ -847,8 +847,16 @@ impl App {
 
         let summary_repo = summary.repository.clone();
         let pr_number = summary.number;
+        // Resolve the local checkout up front (git remote read, cheap) so the
+        // diff-fetching backend can use it. Azure DevOps sources its diff from
+        // a local clone; without this it errors with "needs a local clone" even
+        // when tuicr is launched from inside the clone. GitHub/GitLab ignore
+        // the checkout for diffs, so this only ever helps. Mirrors the CLI path
+        // (`new_from_pr_target`) and `finish_pr_open`.
+        let local_checkout =
+            crate::forge::local_checkout_for_repo(&self.vcs_info.root_path, &summary.repository);
         std::thread::spawn(move || {
-            let backend = create_forge_backend(&summary_repo, None);
+            let backend = create_forge_backend(&summary_repo, local_checkout);
             let target =
                 PullRequestTarget::with_repository(summary_repo, pr_number, pr_number.to_string());
             let outcome = fetch_pr_data(backend.as_ref(), target).map_err(|e| e.to_string());
