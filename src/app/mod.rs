@@ -7,7 +7,7 @@ use ratatui::style::Color;
 
 use crate::comment_vim::CommentVimEditor;
 use crate::config::{CommentTypeConfig, ExportConfig};
-use crate::editor::EditorTarget;
+use crate::editor::{EditorLaunch, EditorTarget};
 use crate::error::{Result, TuicrError};
 use crate::forge::context::{ContextProvider, ForgeContextProvider, VcsContextProvider};
 use crate::forge::selector::PullRequestsTab;
@@ -1042,6 +1042,9 @@ pub struct App {
     pub diff_files: Vec<DiffFile>,
     pub diff_source: DiffSource,
     pub pending_editor_target: Option<EditorTarget>,
+    /// Windowed editors that have not exited yet; polled by
+    /// `poll_editor_launches`.
+    pub(crate) editor_launches: Vec<EditorLaunch>,
 
     pub input_mode: InputMode,
     pub focused_panel: FocusedPanel,

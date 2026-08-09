@@ -449,6 +449,7 @@ impl App {
             diff_files,
             diff_source,
             pending_editor_target: None,
+            editor_launches: Vec::new(),
             input_mode,
             focused_panel: FocusedPanel::Diff,
             diff_view_mode: DiffViewMode::Unified,

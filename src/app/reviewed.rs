@@ -1,3 +1,5 @@
+use crate::editor::{EditorError, LaunchState};
+
 use super::*;
 
 impl App {
@@ -60,6 +62,34 @@ impl App {
     /// because `App` does not own terminal state.
     pub fn take_pending_editor_target(&mut self) -> Option<EditorTarget> {
         self.pending_editor_target.take()
+    }
+
+    /// Tracks a launched windowed editor so it gets cleaned up once it exits
+    /// and a failed launch gets reported.
+    pub fn track_editor_launch(&mut self, launch: EditorLaunch) {
+        self.editor_launches.push(launch);
+    }
+
+    /// Cleans up exited windowed editors and reports the ones that never
+    /// started.
+    ///
+    /// Returns whether a message was set.
+    pub fn poll_editor_launches(&mut self) -> bool {
+        let mut failures = Vec::new();
+        self.editor_launches
+            .retain_mut(|launch| match launch.poll() {
+                LaunchState::Running => true,
+                LaunchState::Exited => false,
+                LaunchState::FailedToLaunch(status) => {
+                    failures.push(status);
+                    false
+                }
+            });
+        let reported = !failures.is_empty();
+        for status in failures {
+            self.set_error(EditorError::Exit(status).to_string());
+        }
+        reported
     }
 
     /// Resolves the currently focused UI item into an editor target.

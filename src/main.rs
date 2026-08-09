@@ -11,7 +11,7 @@ use crossterm::{
 
 use tuicr::app::{self, App, AppStartupOptions, FocusedPanel, InputMode};
 use tuicr::cli::parse_cli_args;
-use tuicr::editor::{EditorError, EditorTarget};
+use tuicr::editor::{EditorCommand, EditorError, EditorLaunch, EditorSurface, EditorTarget};
 use tuicr::handler::{
     handle_command_action, handle_comment_action, handle_comment_navigator_action,
     handle_commit_select_action, handle_commit_selector_action, handle_confirm_action,
@@ -378,6 +378,7 @@ fn main() -> anyhow::Result<()> {
         app.poll_pr_range_reload_events();
         app.poll_pr_threads_events();
         app.poll_pr_submit_events();
+        needs_redraw |= app.poll_editor_launches();
         needs_redraw |= app.poll_persisted_session_changes();
         needs_redraw |= pr_pending;
 
@@ -693,7 +694,18 @@ fn main() -> anyhow::Result<()> {
                     dispatch_action(&mut app, action);
                     if let Some(target) = app.take_pending_editor_target() {
                         match run_editor_from_tui(&mut terminal, &target) {
-                            Ok(Ok(())) => {
+                            // The editor is still open, so there is nothing to
+                            // pick up yet; the user reloads once they are done.
+                            Ok(Ok(EditorOutcome::Detached(launch))) => {
+                                app.track_editor_launch(launch);
+                                let hint = if app.diff_source.includes_worktree_changes() {
+                                    " (:e to reload)"
+                                } else {
+                                    ""
+                                };
+                                app.set_message(format!("Opened {}{hint}", target.path.display()));
+                            }
+                            Ok(Ok(EditorOutcome::Finished)) => {
                                 if app.diff_source.includes_worktree_changes() {
                                     match app.reload_diff_files() {
                                         Ok((count, invalidated)) => {
@@ -867,12 +879,27 @@ fn handle_comment_vim_key(app: &mut App, key: crossterm::event::KeyEvent) -> boo
     true
 }
 
+/// How the editor handoff ended, so the caller knows whether the file could
+/// already have been edited.
+enum EditorOutcome {
+    /// A terminal editor ran to completion.
+    Finished,
+    /// A windowed editor was launched and is still open.
+    Detached(EditorLaunch),
+}
+
 fn run_editor_from_tui<W: Write>(
     terminal: &mut TerminalSession<W>,
     target: &EditorTarget,
-) -> anyhow::Result<Result<(), EditorError>> {
+) -> anyhow::Result<Result<EditorOutcome, EditorError>> {
+    let command = EditorCommand::from_env(target);
+    // Windowed editors never draw on our terminal, so suspending would only
+    // blank the TUI for as long as the editor takes to come up.
+    if command.surface() == EditorSurface::Gui {
+        return Ok(tuicr::editor::launch_editor(&command).map(EditorOutcome::Detached));
+    }
     let suspension = terminal.suspend()?;
-    let editor_result = tuicr::editor::run_editor(target);
+    let editor_result = tuicr::editor::run_editor(&command);
     suspension.resume()?;
-    Ok(editor_result)
+    Ok(editor_result.map(|()| EditorOutcome::Finished))
 }
