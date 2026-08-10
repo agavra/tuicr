@@ -1,5 +1,11 @@
 use super::*;
 
+#[derive(Clone, Copy)]
+struct PrDisplayOptions {
+    show_checks: bool,
+    show_comments: bool,
+}
+
 impl App {
     pub fn new(
         theme: Theme,
@@ -18,8 +24,10 @@ impl App {
                 target,
                 options.repo_url_override.clone(),
                 options.commit_selection,
-                options.show_pr_checks,
-                options.show_pr_comments,
+                PrDisplayOptions {
+                    show_checks: options.show_pr_checks,
+                    show_comments: options.show_pr_comments,
+                },
             );
         }
 
@@ -767,8 +775,10 @@ impl App {
             target,
             repo_url_override,
             commit_selection,
-            true,
-            true,
+            PrDisplayOptions {
+                show_checks: true,
+                show_comments: true,
+            },
         )
     }
 
@@ -779,8 +789,7 @@ impl App {
         target: &str,
         repo_url_override: Option<ForgeRepository>,
         commit_selection: CommitSelectionStart,
-        show_pr_checks: bool,
-        show_pr_comments: bool,
+        display_options: PrDisplayOptions,
     ) -> Result<Self> {
         use crate::forge::bitbucket::bkt::parse_pull_request_target_bitbucket;
         use crate::forge::github::gh::parse_pull_request_target;
@@ -848,8 +857,8 @@ impl App {
         let backend = create_forge_backend(
             &target_repo,
             local_checkout_for_target.clone(),
-            show_pr_checks,
-            show_pr_comments,
+            display_options.show_checks,
+            display_options.show_comments,
         );
         let highlighter = theme.syntax_highlighter();
         let opened = open_pull_request(
@@ -891,8 +900,8 @@ impl App {
             None,
             repo_url_override,
         )?;
-        app.show_pr_checks = show_pr_checks;
-        app.show_pr_comments = show_pr_comments;
+        app.show_pr_checks = display_options.show_checks;
+        app.show_pr_comments = display_options.show_comments;
 
         // Wire the forge backend so context expansion routes through it.
         app.forge_backend = Some(backend);
