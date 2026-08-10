@@ -161,8 +161,7 @@ pub struct GitHubGhBackend<R = SystemGhRunner> {
     /// to `gh api`. It is **never** used as the source of truth for PR
     /// contents; the source of truth is always GitHub.
     local_checkout: Option<PathBuf>,
-    /// Whether `get_pull_request_info` requests the potentially large
-    /// `statusCheckRollup` response from GitHub.
+    /// Whether `get_pull_request_info` requests the `statusCheckRollup` response from GitHub.
     show_pr_checks: bool,
     /// Whether `get_pull_request_info` requests pull-request conversation
     /// comments from GitHub.

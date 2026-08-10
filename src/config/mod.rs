@@ -104,11 +104,11 @@ pub struct AppConfig {
     pub backend: Option<String>,
     pub comment_types: Option<Vec<CommentTypeConfig>>,
     pub show_file_list: Option<bool>,
-    /// Whether pull-request CI checks are fetched and shown. Defaults to
-    /// true; set to false to omit potentially large check rollups.
+    /// Whether pull-request CI checks are fetched and shown.
+    /// Defaults to true.
     pub show_pr_checks: Option<bool>,
     /// Whether pull-request conversation comments are fetched and shown.
-    /// Defaults to true; set to false to omit large bot comments.
+    /// Defaults to true.
     pub show_pr_comments: Option<bool>,
     /// Whether the inline commit selector pane is visible on startup for
     /// multi-commit reviews. Defaults to true; toggle at runtime with
