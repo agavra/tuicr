@@ -1039,6 +1039,15 @@ pub struct App {
     pub theme: Theme,
     pub vcs: Box<dyn VcsBackend>,
     pub vcs_info: VcsInfo,
+    /// The on-disk repo root tuicr was launched in, when there is one.
+    ///
+    /// Entering PR mode replaces `vcs_info.root_path` with the synthetic
+    /// `forge:host/owner/repo` session identity, so it can't be used to find
+    /// the local clone once a PR is open. This field is set once at startup
+    /// and never swapped, which is what lets a *second* PR opened from the PR
+    /// tab still resolve the checkout (`.tuicrignore` filtering, local file
+    /// context, and Azure DevOps diffs, which have no unified-diff API).
+    pub(crate) local_repo_root: Option<PathBuf>,
     pub session: ReviewSession,
     pub(crate) persisted_session_snapshot: ReviewSession,
     pub(crate) session_path: Option<PathBuf>,
