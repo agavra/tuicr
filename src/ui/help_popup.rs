@@ -383,6 +383,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
             ),
             Span::raw("Search file paths; n/N step matches (selection only)"),
         ]),
+        Line::from(vec![
+            Span::styled(
+                "  H         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Show/hide files already marked reviewed (:set reviewed!)"),
+        ]),
         Line::from(Span::raw(
             "  Patterns are case-insensitive and match the whole relative path.",
         )),

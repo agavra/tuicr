@@ -17,14 +17,15 @@ use super::*;
 use regex::RegexBuilder;
 
 impl App {
-    /// True when a filtered-out file should be hidden from the tree, the
-    /// diff, and the navigation/scroll math.
+    /// True when `file` survives the `i`/`e` patterns, ignoring whether it is
+    /// reviewed. This is the *review population*: what the tree title's
+    /// `reviewed/total` fraction counts and what a `/` search walks.
     ///
     /// Commit-message pseudo-files are matched like any other row: their
     /// display path is `Commit Message (<sha>)`, so `i \.rs$` hides them
     /// along with every other non-Rust entry. That keeps "include" meaning
     /// exactly what it says instead of carving out a silent exception.
-    pub fn file_passes_filter(&self, file: &DiffFile) -> bool {
+    pub fn file_matches_patterns(&self, file: &DiffFile) -> bool {
         let path = file.display_path().to_string_lossy().to_string();
         if let Some(include) = &self.file_filter.include
             && !include.regex.is_match(&path)
@@ -39,6 +40,20 @@ impl App {
         true
     }
 
+    /// True when a file should appear in the tree, the diff, and the
+    /// navigation/scroll math. This is the predicate every consumer that walks
+    /// files asks — the patterns *plus* the reviewed-files toggle.
+    ///
+    /// Kept distinct from `file_matches_patterns` because "what is on screen"
+    /// and "how much am I reviewing" stop being the same question once
+    /// reviewed files can be hidden: counting a hidden reviewed file as
+    /// not-shown would collapse the progress fraction to `0/n`.
+    pub fn file_passes_filter(&self, file: &DiffFile) -> bool {
+        self.file_matches_patterns(file)
+            && (self.file_filter.show_reviewed
+                || !self.session.is_file_reviewed(file.display_path()))
+    }
+
     /// `file_passes_filter` by index, for the loops that only carry an index.
     pub fn file_idx_passes_filter(&self, file_idx: usize) -> bool {
         self.diff_files
@@ -48,6 +63,57 @@ impl App {
 
     pub fn file_filter_active(&self) -> bool {
         self.file_filter.include.is_some() || self.file_filter.exclude.is_some()
+    }
+
+    // ---- hiding reviewed files -------------------------------------------
+
+    pub fn show_reviewed(&self) -> bool {
+        self.file_filter.show_reviewed
+    }
+
+    pub fn toggle_show_reviewed(&mut self) {
+        self.set_show_reviewed(!self.file_filter.show_reviewed);
+    }
+
+    /// Apply the `show_reviewed` config default at startup, without the status
+    /// message the interactive toggles set.
+    ///
+    /// Still re-derives everything: `App::build` builds annotations before the
+    /// config is applied, so a bare field assignment would leave the diff
+    /// renderer and the cursor reading rows the filter has since dropped.
+    pub fn init_show_reviewed(&mut self, show: bool) {
+        self.file_filter.show_reviewed = show;
+        self.apply_file_filter_change();
+    }
+
+    pub fn set_show_reviewed(&mut self, show: bool) {
+        self.file_filter.show_reviewed = show;
+        self.apply_file_filter_change();
+        self.report_show_reviewed();
+    }
+
+    /// Say what just happened to the rows, and — when everything is hidden —
+    /// how to get them back. `H` is file-tree only, so the message names
+    /// `:set reviewed` too, which works from any pane.
+    fn report_show_reviewed(&mut self) {
+        let total = self.file_count();
+        if self.file_filter.show_reviewed {
+            self.set_message(format!("Showing all {total} files"));
+            return;
+        }
+        let hidden = self.reviewed_count();
+        if hidden == 0 {
+            self.set_message("Hiding reviewed files \u{00b7} none reviewed yet");
+        } else if hidden == total {
+            self.set_message(format!(
+                "All {total} files reviewed \u{00b7} H or :set reviewed shows them again"
+            ));
+        } else {
+            self.set_message(format!(
+                "Hiding {hidden} reviewed \u{00b7} {} of {total} shown",
+                total - hidden
+            ));
+        }
     }
 
     /// Indices of the files surviving the current filters, in tree order.

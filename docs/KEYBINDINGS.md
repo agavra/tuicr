@@ -53,9 +53,13 @@ Press `?` to open help.
 | `E` | Clear the exclude filter |
 | `/` | Search file paths (substring) |
 | `n` / `N` | Next / previous file-path match |
+| `H` | Show / hide files already marked reviewed |
 
 These keys are only active while the file tree is focused — in the diff, `i` still
-edits the comment at the cursor and `/` still searches the diff.
+edits the comment at the cursor and `/` still searches the diff. `H` rather than
+`h` carries the reviewed toggle because `h` / `l` pan the tree horizontally, which
+is how long nested paths are read in a narrow panel; `:set reviewed!` toggles from
+any pane.
 
 ### Filtering
 
@@ -76,6 +80,25 @@ filters are a view, not an edit.
 
 Filters are session-local: they are not written to the review session and reset
 when tuicr restarts, but they survive a `:e` reload.
+
+### Hiding reviewed files
+
+`H` (file tree) and `:set reviewed!` / `:set noreviewed` / `:set reviewed` hide or
+show files already marked reviewed with `r`. Like `i` / `e`, hidden files leave
+the tree, the diff pane, `{`/`}` and `[`/`]` navigation, `/` search, and the
+`+/-` counts in the header — so the header reports the diff still left to review.
+
+Two things stay deliberately unaffected. The tree title keeps counting reviewed
+files in its `reviewed/total` fraction, since scoping it to the visible rows would
+collapse it to `0/n` exactly when progress matters most; the bottom border carries
+a `reviewed hidden` cue instead. And a file whose hunks are individually marked
+with `R` is not hidden — only the file-level `r` flag counts.
+
+While hiding, `r` becomes a burn-down loop: marking the file you are reading moves
+you to the next unreviewed file, wrapping at the end. A hidden file cannot be
+un-reviewed, because `r` can no longer reach it — `H` or `:set reviewed` brings it
+back. Start a session with them hidden via `show_reviewed = false` in
+`config.toml`.
 
 ### Search
 
@@ -190,6 +213,9 @@ In command mode,
 | `:set commits` | Show inline commit selector |
 | `:set nocommits` | Hide inline commit selector |
 | `:set commits!` | Toggle inline commit selector |
+| `:set reviewed` | Show files already marked reviewed |
+| `:set noreviewed` | Hide files already marked reviewed |
+| `:set reviewed!` / `:reviewed` | Toggle files already marked reviewed (also `H` in the file tree) |
 | `:clear` | Clear all comments |
 | `:clearc` | Clear comments without clearing reviewed marks |
 | `:version` | Show tuicr version |

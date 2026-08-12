@@ -1531,7 +1531,6 @@ pub struct FilePattern {
 /// Include/exclude/search state for the file tree. Filters narrow both the
 /// tree and the diff pane (see `App::file_passes_filter`); search only moves
 /// the tree selection.
-#[derive(Default)]
 pub struct FileTreeFilter {
     pub include: Option<FilePattern>,
     pub exclude: Option<FilePattern>,
@@ -1539,6 +1538,23 @@ pub struct FileTreeFilter {
     /// keep stepping matches.
     pub search: Option<String>,
     pub draft: Option<FileTreeDraft>,
+    /// False hides files marked reviewed from the tree and the diff (`H`,
+    /// `:set noreviewed`, config `show_reviewed`).
+    pub show_reviewed: bool,
+}
+
+impl Default for FileTreeFilter {
+    /// Hand-written because `show_reviewed` defaults to *true*: a derived
+    /// `bool` default would silently boot with reviewed files hidden.
+    fn default() -> Self {
+        Self {
+            include: None,
+            exclude: None,
+            search: None,
+            draft: None,
+            show_reviewed: true,
+        }
+    }
 }
 
 #[derive(Debug, Default)]

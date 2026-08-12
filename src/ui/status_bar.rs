@@ -296,7 +296,7 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         } else {
             match app.input_mode {
                 InputMode::Normal if app.focused_panel == FocusedPanel::FileList => Cow::Borrowed(
-                    "   j/k move \u{00b7} \u{21b5} open \u{00b7} i/e filter \u{00b7} I/E clear \u{00b7} / search \u{00b7} r reviewed",
+                    "   j/k move \u{00b7} \u{21b5} open \u{00b7} i/e filter \u{00b7} I/E clear \u{00b7} / search \u{00b7} r reviewed \u{00b7} H hide reviewed",
                 ),
                 InputMode::Normal => Cow::Borrowed(
                     "   j/k scroll \u{00b7} {/} file \u{00b7} m/M comment \u{00b7} r file \u{00b7} R hunk \u{00b7} c comment \u{00b7} ? help",

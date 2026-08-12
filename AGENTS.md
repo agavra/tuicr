@@ -131,17 +131,33 @@ Repository-managed agent integrations:
 - Implementations: `GitBackend`, `HgBackend`, `JjBackend` (all always compiled)
 
 **FileTreeFilter** (`src/app/mod.rs`, impls in `src/app/file_filter.rs`):
-- File-tree `i` include / `e` exclude regex filters plus the `/` path search
+- File-tree `i` include / `e` exclude regex filters, the `/` path search, and the
+  `show_reviewed` flag (`H`, `:set reviewed!`, config `show_reviewed`) that hides files
+  already marked reviewed
 - A filter is a *view* over `diff_files`, never a mutation: `file_idx` stays an absolute
   index, so nothing downstream needs remapping. `App::file_passes_filter()` is the single
   predicate, consulted by `build_visible_items`, `rebuild_annotations`,
   `file_render_height`/`effective_file_height` (0 lines for hidden files), `hunk_positions`,
   and both diff renderers. Add a gate anywhere a new loop walks `diff_files`.
+- **Two predicates, deliberately.** `file_matches_patterns()` is `i`/`e` only — the review
+  *population*, used by `file_count()`, `reviewed_count()`, and `/` search.
+  `file_passes_filter()` is that plus `show_reviewed` — what is actually on screen. Scoping
+  the counts to the visible rows would render the tree title's progress fraction as `0/n`
+  whenever reviewed files are hidden. Only the file-level `reviewed` flag hides: a file
+  whose hunks are individually `R`-marked stays visible (and `is_hunk_reviewed` hashes every
+  hunk in the file, so it must not be called speculatively).
+- `FileTreeFilter` has a hand-written `Default` because `show_reviewed` defaults to *true*;
+  a derived `bool` default would silently boot with reviewed files hidden.
+- Marking a file reviewed while hiding deletes the row the cursor sits on, so
+  `toggle_reviewed_for_file_idx` calls `advance_past_hidden_file()` to land on the next
+  visible file (wrapping, then parking at the overview once the queue empties). It runs
+  regardless of the `adjust_cursor` argument — the tree selection has to move either way.
 - `file_filter.draft` makes the tree a text-input sub-state of `InputMode::Normal`, the same
   shape as `pr_filter_draft` for the target selector; `main.rs` routes to
   `map_file_tree_prompt_mode` while it is `Some`
-- Keys are focus-scoped via `map_file_tree_mode`: the tree claims `i`/`e`/`I`/`E`/`/`, the
-  diff keeps `i` = edit comment and `/` = search diff
+- Keys are focus-scoped via `map_file_tree_mode`: the tree claims `i`/`e`/`I`/`E`/`/`/`H`, the
+  diff keeps `i` = edit comment and `/` = search diff. `H` rather than `h` carries the
+  reviewed toggle because `h`/`l` pan the tree horizontally.
 
 **InputMode** (`src/app.rs`):
 
@@ -298,6 +314,8 @@ When adding user-facing features, update the relevant documentation:
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | `README.md`            | Keybindings, commands (`:*`), CLI flags, features list, installation methods, agent integration setup, forge limitations |
 | `src/ui/help_popup.rs` | Keybindings or commands (update the `help_text` vector)                                                                  |
+| `src/ui/status_bar.rs` | Keybindings worth advertising in the per-pane hint line                                                                  |
+| `docs/KEYBINDINGS.md`  | Any keybinding or `:` command: add a row to the pane's key table and the `:` command table, plus prose for new behavior  |
 | `AGENTS.md`            | Module structure, repo-managed agent integrations, key types, data flow, dependencies, forge invariants and gotchas      |
 | `docs/CONFIG.md`       | Any `config.toml` key: add a row to the Options table and a line to the Full example block                               |
 

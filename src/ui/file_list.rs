@@ -242,6 +242,21 @@ fn filter_footer(app: &App) -> Option<Line<'static>> {
     if let Some(exclude) = app.file_filter.exclude.as_ref() {
         push('e', exclude.source.clone());
     }
+    // Hiding reviewed files has no pattern to show, and the title fraction
+    // deliberately keeps counting them, so this line is the only persistent
+    // cue that rows are missing.
+    if !app.show_reviewed() {
+        if !spans.is_empty() {
+            spans.push(Span::styled(
+                " \u{00b7} ",
+                Style::default().fg(theme.fg_dim),
+            ));
+        }
+        spans.push(Span::styled(
+            "reviewed hidden",
+            Style::default().fg(theme.fg_secondary),
+        ));
+    }
 
     if spans.is_empty() {
         return None;
@@ -412,6 +427,51 @@ mod tests {
         assert!(
             !text.contains("i:") && !text.contains("e:"),
             "unfiltered tree should not advertise filters, got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn should_announce_hidden_reviewed_files_in_the_border() {
+        let mut app = app_with(&["src/main.rs", "README.md"]);
+        app.set_show_reviewed(false);
+
+        let text = buffer_text(&draw(&mut app));
+
+        assert!(
+            text.contains("reviewed hidden"),
+            "expected the reviewed-hidden cue in the tree border, got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn should_keep_the_progress_fraction_in_the_title_while_hiding_reviewed_files() {
+        let mut app = app_with(&["src/main.rs", "README.md"]);
+        let reviewed = app
+            .diff_files
+            .iter()
+            .position(|file| file.display_path().display().to_string() == "README.md")
+            .expect("README.md in the diff");
+        app.toggle_reviewed_for_file_idx(reviewed, false);
+
+        app.set_show_reviewed(false);
+
+        let text = buffer_text(&draw(&mut app));
+        // Counting the hidden row as not-shown would render `0/1` here.
+        assert!(
+            text.contains("1/2"),
+            "expected progress over the whole population, got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn should_not_advertise_hiding_when_reviewed_files_are_shown() {
+        let mut app = app_with(&["src/main.rs"]);
+
+        let text = buffer_text(&draw(&mut app));
+
+        assert!(
+            !text.contains("reviewed hidden"),
+            "default state should not advertise hiding, got:\n{text}"
         );
     }
 }

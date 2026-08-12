@@ -150,6 +150,8 @@ pub enum Action {
     FileTreeClearExclude,
     /// `/` — open the file-tree search prompt.
     FileTreeSearch,
+    /// `H` — show/hide files already marked reviewed.
+    ToggleShowReviewed,
 
     // No-op
     None,
@@ -433,6 +435,9 @@ fn map_commit_select_mode(key: KeyEvent) -> Action {
 /// delegates to `map_normal_mode` so shared bindings keep working. `i` is the
 /// notable override — in the diff it edits the comment at the cursor, in the
 /// tree it opens the include filter.
+///
+/// `H` (not `h`) toggles hiding reviewed files: `h`/`l` pan the tree
+/// horizontally, which is how long nested paths are read in a narrow panel.
 pub fn map_file_tree_mode(key: KeyEvent, leader_key: char) -> Action {
     // The leader key wins: `;e` (toggle file list) must not be swallowed by
     // the exclude-filter binding.
@@ -445,6 +450,7 @@ pub fn map_file_tree_mode(key: KeyEvent, leader_key: char) -> Action {
         (KeyCode::Char('I'), _) => Action::FileTreeClearInclude,
         (KeyCode::Char('E'), _) => Action::FileTreeClearExclude,
         (KeyCode::Char('/'), _) => Action::FileTreeSearch,
+        (KeyCode::Char('H'), _) => Action::ToggleShowReviewed,
         _ => map_normal_mode(key, leader_key),
     }
 }
@@ -531,6 +537,30 @@ mod tests {
         assert_eq!(
             map_file_tree_mode(key(KeyCode::Char('/')), DEFAULT_LEADER_KEY),
             Action::FileTreeSearch
+        );
+    }
+
+    #[test]
+    fn should_map_shift_h_to_the_reviewed_toggle_only_in_the_file_tree() {
+        assert_eq!(
+            map_file_tree_mode(key_shift('H'), DEFAULT_LEADER_KEY),
+            Action::ToggleShowReviewed
+        );
+        // The diff pane leaves `H` unbound: `:set reviewed!` is the way to
+        // toggle from there.
+        assert_eq!(
+            map_normal_mode(key_shift('H'), DEFAULT_LEADER_KEY),
+            Action::None
+        );
+    }
+
+    #[test]
+    fn should_keep_lowercase_h_panning_when_the_file_tree_is_focused() {
+        // The reviewed toggle deliberately took `H` rather than `h`, so long
+        // nested paths can still be panned into view.
+        assert_eq!(
+            map_file_tree_mode(key(KeyCode::Char('h')), DEFAULT_LEADER_KEY),
+            Action::ScrollLeft(4)
         );
     }
 

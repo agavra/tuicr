@@ -291,6 +291,12 @@ fn main() -> anyhow::Result<()> {
                 app.focused_panel = FocusedPanel::Diff;
             }
         }
+        // Start with files already marked reviewed hidden. `init_` rather than
+        // `set_` so startup leaves no status message behind; `H` /
+        // `:set reviewed!` toggle from here.
+        if cfg.show_reviewed == Some(false) {
+            app.init_show_reviewed(false);
+        }
         // Pristine mode has no diff, so side-by-side would render two
         // identical panes. Honor the config for every other mode.
         if cfg.diff_view.as_deref() == Some("side-by-side") && !app.is_pristine_mode {
