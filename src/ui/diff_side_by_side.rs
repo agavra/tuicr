@@ -17,7 +17,7 @@ use crate::ui::diff_view::{
     apply_horizontal_scroll, comment_type_presentation, cursor_indicator, cursor_indicator_spaced,
     diff_stat_title, hunk_header_text_and_style, paint_cursor_line_highlight,
     paint_visual_selection_overlay, populate_row_to_annotation, render_expander_line,
-    render_hidden_lines, scroll_comment_input_into_view,
+    render_hidden_lines, scroll_comment_input_into_view, skip_comment_box,
 };
 use crate::ui::styles;
 use crate::ui::text_utils::{
@@ -204,6 +204,11 @@ impl SideBySideContext<'_> {
         line_idx >= self.visible_start && line_idx < self.visible_end
     }
 
+    /// Same question for a multi-row comment box: does any of it land on screen?
+    fn box_visible(&self, top: usize, rows: usize) -> bool {
+        crate::ui::diff_view::comment_box_visible(top, rows, (self.visible_start, self.visible_end))
+    }
+
     fn search_for(&self, line_idx: usize) -> Option<(&str, Style)> {
         let needle = self.app.search_paint_at(line_idx)?;
         Some((needle, self.search_style))
@@ -369,6 +374,11 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                 line_idx += 1;
             }
         } else {
+            let rows = App::comment_display_lines(comment, ctx.panel_width);
+            if !ctx.box_visible(line_idx, rows) {
+                skip_comment_box(&mut lines, &mut line_idx, rows);
+                continue;
+            }
             let comment_lines = comment_panel::format_comment_lines(
                 &app.theme,
                 comment_type_presentation(app, &comment.comment_type),
@@ -456,6 +466,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
         &mut line_idx,
         ctx.current_line_idx,
         ctx.panel_width.saturating_sub(1),
+        (ctx.visible_start, ctx.visible_end),
     );
 
     for (file_idx, file) in app.diff_files.iter().enumerate() {
@@ -554,6 +565,11 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                         line_idx += 1;
                     }
                 } else {
+                    let rows = App::comment_display_lines(comment, ctx.panel_width);
+                    if !ctx.box_visible(line_idx, rows) {
+                        skip_comment_box(&mut lines, &mut line_idx, rows);
+                        continue;
+                    }
                     let comment_lines = comment_panel::format_comment_lines(
                         &app.theme,
                         comment_type_presentation(app, &comment.comment_type),
@@ -1928,26 +1944,33 @@ fn add_comments_to_line(
                     let line_range = comment
                         .line_range
                         .or_else(|| Some(LineRange::single(line_num)));
-                    let comment_lines = comment_panel::format_comment_lines(
-                        ctx.theme,
-                        comment_type_presentation(ctx.app, &comment.comment_type),
-                        &comment.content,
-                        line_range,
-                        ctx.panel_width.saturating_sub(1),
-                        (comment.author != ctx.app.username).then_some(comment.author.as_str()),
-                    );
                     let box_top_row = line_idx;
-                    for mut comment_line in comment_lines {
-                        let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
-                        comment_line.spans.insert(
-                            0,
-                            Span::styled(
-                                indicator,
-                                styles::current_line_indicator_style(ctx.theme),
-                            ),
+                    let rows = App::comment_display_lines(comment, ctx.panel_width);
+                    // The bar is recorded either way: it is painted above the
+                    // box, so it can be on screen while the box itself is not.
+                    if !ctx.box_visible(line_idx, rows) {
+                        skip_comment_box(lines, &mut line_idx, rows);
+                    } else {
+                        let comment_lines = comment_panel::format_comment_lines(
+                            ctx.theme,
+                            comment_type_presentation(ctx.app, &comment.comment_type),
+                            &comment.content,
+                            line_range,
+                            ctx.panel_width.saturating_sub(1),
+                            (comment.author != ctx.app.username).then_some(comment.author.as_str()),
                         );
-                        lines.push(comment_line);
-                        line_idx += 1;
+                        for mut comment_line in comment_lines {
+                            let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
+                            comment_line.spans.insert(
+                                0,
+                                Span::styled(
+                                    indicator,
+                                    styles::current_line_indicator_style(ctx.theme),
+                                ),
+                            );
+                            lines.push(comment_line);
+                            line_idx += 1;
+                        }
                     }
                     crate::ui::diff_view::push_comment_bar(
                         &mut ctx.comment_bars.borrow_mut(),
@@ -2134,6 +2157,10 @@ mod remote_comments_side_by_side_snapshot_tests {
     }
 
     fn make_pr_app() -> App {
+        make_pr_app_with(vec![sample_diff_file()])
+    }
+
+    fn make_pr_app_with(diff_files: Vec<DiffFile>) -> App {
         let pr = PullRequestDiffSource {
             key: PrSessionKey::new(repo(), 125, "headsha".to_string()),
             base_sha: "basesha".to_string(),
@@ -2166,7 +2193,7 @@ mod remote_comments_side_by_side_snapshot_tests {
             Theme::dark(),
             None,
             false,
-            vec![sample_diff_file()],
+            diff_files,
             session,
             DiffSource::PullRequest(Box::new(pr)),
             InputMode::Normal,
@@ -2197,6 +2224,77 @@ mod remote_comments_side_by_side_snapshot_tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// Side-by-side mirror of the unified culling test: the skip/emit wiring
+    /// here goes through `ctx.box_visible` and a by-value `line_idx`, so it
+    /// needs its own coverage.
+    #[test]
+    fn should_cull_comment_boxes_outside_the_viewport() {
+        use crate::app::AnnotatedLine;
+        use crate::model::{Comment, CommentType};
+
+        const NEEDLE: &str = "far-below-the-fold";
+
+        let lines: Vec<DiffLine> = (1..=120)
+            .map(|n| DiffLine {
+                origin: LineOrigin::Addition,
+                content: format!("line {n}"),
+                old_lineno: None,
+                new_lineno: Some(n),
+                highlighted_spans: None,
+            })
+            .collect();
+        let hunks = vec![DiffHunk {
+            header: "@@ -0,0 +1,120 @@".to_string(),
+            lines,
+            old_start: 0,
+            old_count: 0,
+            new_start: 1,
+            new_count: 120,
+        }];
+        let content_hash = DiffFile::compute_content_hash(&hunks);
+        let path = PathBuf::from("src/lib.rs");
+        let file = DiffFile {
+            old_path: Some(path.clone()),
+            new_path: Some(path.clone()),
+            status: FileStatus::Modified,
+            hunks,
+            is_binary: false,
+            is_too_large: false,
+            is_commit_message: false,
+            content_hash,
+        };
+
+        let mut app = make_pr_app_with(vec![file]);
+        app.session
+            .get_file_mut(&path)
+            .expect("file registered in session")
+            .add_line_comment(
+                100,
+                Comment::new(NEEDLE.to_string(), CommentType::from_id("note"), None),
+            );
+        app.rebuild_annotations();
+
+        let body = body_text(&draw(&mut app));
+        assert!(
+            !body.contains(NEEDLE),
+            "off-screen comment should not be visible:\n{body}"
+        );
+
+        let comment_row = app
+            .line_annotations
+            .iter()
+            .position(|a| matches!(a, AnnotatedLine::LineComment { .. }))
+            .expect("comment annotated in the document");
+        app.diff_state.scroll_offset = comment_row;
+        app.diff_state.cursor_line = comment_row;
+
+        let body = body_text(&draw(&mut app));
+        assert!(
+            body.contains(NEEDLE),
+            "comment scrolled into view should render at its annotated row:\n{body}"
+        );
     }
 
     #[test]

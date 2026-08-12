@@ -15,11 +15,11 @@ use crate::model::{FileStatus, LineOrigin, LineRange, LineSide};
 use crate::theme::Theme;
 use crate::ui::comment_panel;
 use crate::ui::diff_view::{
-    apply_horizontal_scroll, comment_type_presentation, cursor_indicator, cursor_indicator_spaced,
-    diff_stat_title, hunk_header_text_and_style, paint_cursor_line_highlight,
-    paint_unified_diff_rows_with, paint_visual_selection_overlay, populate_row_to_annotation,
-    push_comment_bar, render_expander_line, render_hidden_lines, scroll_comment_input_into_view,
-    unified_line_bg_style,
+    apply_horizontal_scroll, comment_box_visible, comment_type_presentation, cursor_indicator,
+    cursor_indicator_spaced, diff_stat_title, hunk_header_text_and_style,
+    paint_cursor_line_highlight, paint_unified_diff_rows_with, paint_visual_selection_overlay,
+    populate_row_to_annotation, push_comment_bar, render_expander_line, render_hidden_lines,
+    scroll_comment_input_into_view, skip_comment_box, unified_line_bg_style,
 };
 use crate::ui::styles;
 use crate::vcs::git::calculate_gap;
@@ -158,6 +158,11 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                 line_idx += 1;
             }
         } else {
+            let rows = App::comment_display_lines(comment, inner.width as usize);
+            if !comment_box_visible(line_idx, rows, (visible_start, visible_end)) {
+                skip_comment_box(&mut lines, &mut line_idx, rows);
+                continue;
+            }
             let comment_lines = comment_panel::format_comment_lines(
                 &app.theme,
                 comment_type_presentation(app, &comment.comment_type),
@@ -245,6 +250,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
         &mut line_idx,
         current_line_idx,
         comment_width,
+        (visible_start, visible_end),
     );
 
     for (file_idx, file) in app.diff_files.iter().enumerate() {
@@ -352,6 +358,11 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                         line_idx += 1;
                     }
                 } else {
+                    let rows = App::comment_display_lines(comment, inner.width as usize);
+                    if !comment_box_visible(line_idx, rows, (visible_start, visible_end)) {
+                        skip_comment_box(&mut lines, &mut line_idx, rows);
+                        continue;
+                    }
                     let comment_lines = comment_panel::format_comment_lines(
                         &app.theme,
                         comment_type_presentation(app, &comment.comment_type),
@@ -740,30 +751,49 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                         let line_range = comment
                                             .line_range
                                             .or_else(|| Some(LineRange::single(old_ln)));
-                                        let comment_lines = comment_panel::format_comment_lines(
-                                            &app.theme,
-                                            comment_type_presentation(app, &comment.comment_type),
-                                            &comment.content,
-                                            line_range,
-                                            comment_width,
-                                            (comment.author != app.username)
-                                                .then_some(comment.author.as_str()),
-                                        );
                                         let box_top_row = line_idx;
-                                        for mut comment_line in comment_lines {
-                                            let is_current = line_idx == current_line_idx;
-                                            let indicator = if is_current { "▶" } else { " " };
-                                            comment_line.spans.insert(
-                                                0,
-                                                Span::styled(
-                                                    indicator,
-                                                    styles::current_line_indicator_style(
-                                                        &app.theme,
-                                                    ),
+                                        let rows = App::comment_display_lines(
+                                            comment,
+                                            inner.width as usize,
+                                        );
+                                        // The bar is recorded either way: it is
+                                        // painted above the box, so it can be on
+                                        // screen while the box itself is not.
+                                        if !comment_box_visible(
+                                            line_idx,
+                                            rows,
+                                            (visible_start, visible_end),
+                                        ) {
+                                            skip_comment_box(&mut lines, &mut line_idx, rows);
+                                        } else {
+                                            let comment_lines = comment_panel::format_comment_lines(
+                                                &app.theme,
+                                                comment_type_presentation(
+                                                    app,
+                                                    &comment.comment_type,
                                                 ),
+                                                &comment.content,
+                                                line_range,
+                                                comment_width,
+                                                (comment.author != app.username)
+                                                    .then_some(comment.author.as_str()),
                                             );
-                                            lines.push(comment_line);
-                                            line_idx += 1;
+                                            for mut comment_line in comment_lines {
+                                                let is_current = line_idx == current_line_idx;
+                                                let indicator =
+                                                    if is_current { "▶" } else { " " };
+                                                comment_line.spans.insert(
+                                                    0,
+                                                    Span::styled(
+                                                        indicator,
+                                                        styles::current_line_indicator_style(
+                                                            &app.theme,
+                                                        ),
+                                                    ),
+                                                );
+                                                lines.push(comment_line);
+                                                line_idx += 1;
+                                            }
                                         }
                                         push_comment_bar(
                                             &mut comment_bars,
@@ -907,30 +937,48 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                         let line_range = comment
                                             .line_range
                                             .or_else(|| Some(LineRange::single(new_ln)));
-                                        let comment_lines = comment_panel::format_comment_lines(
-                                            &app.theme,
-                                            comment_type_presentation(app, &comment.comment_type),
-                                            &comment.content,
-                                            line_range,
-                                            comment_width,
-                                            (comment.author != app.username)
-                                                .then_some(comment.author.as_str()),
-                                        );
                                         let box_top_row = line_idx;
-                                        for mut comment_line in comment_lines {
-                                            let indicator =
-                                                cursor_indicator(line_idx, current_line_idx);
-                                            comment_line.spans.insert(
-                                                0,
-                                                Span::styled(
-                                                    indicator,
-                                                    styles::current_line_indicator_style(
-                                                        &app.theme,
-                                                    ),
+                                        let rows = App::comment_display_lines(
+                                            comment,
+                                            inner.width as usize,
+                                        );
+                                        // The bar is recorded either way: it is
+                                        // painted above the box, so it can be on
+                                        // screen while the box itself is not.
+                                        if !comment_box_visible(
+                                            line_idx,
+                                            rows,
+                                            (visible_start, visible_end),
+                                        ) {
+                                            skip_comment_box(&mut lines, &mut line_idx, rows);
+                                        } else {
+                                            let comment_lines = comment_panel::format_comment_lines(
+                                                &app.theme,
+                                                comment_type_presentation(
+                                                    app,
+                                                    &comment.comment_type,
                                                 ),
+                                                &comment.content,
+                                                line_range,
+                                                comment_width,
+                                                (comment.author != app.username)
+                                                    .then_some(comment.author.as_str()),
                                             );
-                                            lines.push(comment_line);
-                                            line_idx += 1;
+                                            for mut comment_line in comment_lines {
+                                                let indicator =
+                                                    cursor_indicator(line_idx, current_line_idx);
+                                                comment_line.spans.insert(
+                                                    0,
+                                                    Span::styled(
+                                                        indicator,
+                                                        styles::current_line_indicator_style(
+                                                            &app.theme,
+                                                        ),
+                                                    ),
+                                                );
+                                                lines.push(comment_line);
+                                                line_idx += 1;
+                                            }
                                         }
                                         push_comment_bar(
                                             &mut comment_bars,
@@ -1953,6 +2001,89 @@ mod remote_comments_snapshot_tests {
             app.diff_state.visible_line_count > 0 && app.diff_state.visible_line_count < 20,
             "expected logical visible_line_count 1..20, got {}",
             app.diff_state.visible_line_count
+        );
+    }
+
+    /// Comment boxes outside the viewport are replaced with blank placeholder
+    /// rows instead of being formatted. The rows still have to be there, and in
+    /// the right number, or every row below the comment would shift — so this
+    /// also scrolls to the row `line_annotations` assigned the comment and
+    /// expects the box to be there.
+    #[test]
+    fn should_cull_comment_boxes_outside_the_viewport() {
+        use crate::app::AnnotatedLine;
+        use crate::model::{Comment, CommentType};
+
+        const NEEDLE: &str = "far-below-the-fold";
+
+        let lines: Vec<DiffLine> = (1..=120)
+            .map(|n| DiffLine {
+                origin: LineOrigin::Addition,
+                content: format!("line {n}"),
+                old_lineno: None,
+                new_lineno: Some(n),
+                highlighted_spans: None,
+            })
+            .collect();
+        let hunks = vec![DiffHunk {
+            header: "@@ -0,0 +1,120 @@".to_string(),
+            lines,
+            old_start: 0,
+            old_count: 0,
+            new_start: 1,
+            new_count: 120,
+        }];
+        let content_hash = DiffFile::compute_content_hash(&hunks);
+        let path = PathBuf::from("src/lib.rs");
+        let file = DiffFile {
+            old_path: Some(path.clone()),
+            new_path: Some(path.clone()),
+            status: FileStatus::Modified,
+            hunks,
+            is_binary: false,
+            is_too_large: false,
+            is_commit_message: false,
+            content_hash,
+        };
+
+        let mut app = make_revision_app(vec![file]);
+        app.session
+            .get_file_mut(&path)
+            .expect("file registered in session")
+            .add_line_comment(
+                100,
+                Comment::new(NEEDLE.to_string(), CommentType::from_id("note"), None),
+            );
+        app.rebuild_annotations();
+
+        // Top of the file: the comment is ~100 rows below a 12-row viewport.
+        let buffer = draw_unified_diff(&mut app);
+        let body = body_text(&buffer);
+        assert!(
+            !body.contains(NEEDLE),
+            "off-screen comment should not be visible:\n{body}"
+        );
+        assert!(
+            body.contains("line 1"),
+            "diff content should still render:\n{body}"
+        );
+
+        // Scroll to the row the annotation builder says the comment occupies.
+        // If the culled box had emitted the wrong number of placeholder rows,
+        // this index would point somewhere else and the body would not appear.
+        let comment_row = app
+            .line_annotations
+            .iter()
+            .position(|a| matches!(a, AnnotatedLine::LineComment { .. }))
+            .expect("comment annotated in the document");
+        app.diff_state.scroll_offset = comment_row;
+        app.diff_state.cursor_line = comment_row;
+
+        let buffer = draw_unified_diff(&mut app);
+        let body = body_text(&buffer);
+        assert!(
+            body.contains(NEEDLE),
+            "comment scrolled into view should render at its annotated row:\n{body}"
         );
     }
 

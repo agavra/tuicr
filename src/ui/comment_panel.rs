@@ -584,6 +584,55 @@ mod tests {
         Theme::default()
     }
 
+    /// The renderer replaces off-screen comment boxes with exactly
+    /// `App::comment_display_lines` blank rows, and the annotation builder sizes
+    /// every comment the same way. If that count ever drifted from what
+    /// `format_comment_lines` actually emits, the document would desync — the
+    /// cursor would land on the wrong row and culled boxes would leave the wrong
+    /// number of gaps. Pin the two together.
+    #[test]
+    fn comment_display_lines_matches_rendered_box_height() {
+        let theme = test_theme();
+        let bodies = [
+            "",
+            "single line",
+            "first\nsecond\nthird",
+            "trailing newline\n",
+            "\n\nleading blanks",
+            &"x".repeat(300),
+            &"日本語のテキストです ".repeat(20),
+            "`code` **bold** and a very long tail that will need to wrap at least once or twice",
+        ];
+        // Viewport widths, including degenerate ones narrower than the box chrome.
+        for viewport_width in [9usize, 12, 40, 80, 120] {
+            for body in bodies {
+                let comment = crate::model::Comment::new(
+                    body.to_string(),
+                    crate::model::CommentType::from_id("note"),
+                    None,
+                );
+                let rendered = format_comment_lines(
+                    &theme,
+                    CommentTypePresentation {
+                        label: "NOTE".to_string(),
+                        color: Color::Blue,
+                    },
+                    &comment.content,
+                    None,
+                    // What every call site passes: the viewport minus the
+                    // cursor-indicator column.
+                    viewport_width.saturating_sub(1),
+                    None,
+                );
+                assert_eq!(
+                    App::comment_display_lines(&comment, viewport_width),
+                    rendered.len(),
+                    "width={viewport_width} body={body:?}"
+                );
+            }
+        }
+    }
+
     // -- wrap_segments tests --
 
     #[test]

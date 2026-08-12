@@ -788,6 +788,24 @@ pub(super) struct CommentBarAnchor {
     pub height: usize,
 }
 
+/// Whether a comment box `rows` tall starting at logical row `top` overlaps the
+/// range being fully built this frame.
+pub(super) fn comment_box_visible(top: usize, rows: usize, visible: (usize, usize)) -> bool {
+    let (visible_start, visible_end) = visible;
+    top < visible_end && top.saturating_add(rows) > visible_start
+}
+
+/// Stand in for an off-screen comment box with `rows` blank rows, so
+/// `lines.len()` and `line_idx` stay exact without paying for its spans.
+///
+/// `rows` comes from `App::comment_display_lines`, the same mirror the
+/// annotation builder uses to keep `line_annotations` aligned with the rendered
+/// document — if it were ever wrong, navigation would already be broken.
+pub(super) fn skip_comment_box(lines: &mut Vec<Line<'_>>, line_idx: &mut usize, rows: usize) {
+    lines.extend(std::iter::repeat_with(Line::default).take(rows));
+    *line_idx += rows;
+}
+
 /// Per-call-site helper: record a bar anchor if the comment has a line
 /// range. No-op for file-level / review-level comments which don't anchor
 /// to a covered line span.
