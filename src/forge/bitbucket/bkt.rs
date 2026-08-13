@@ -970,6 +970,7 @@ mod tests {
             counterpart_line: None,
             start_line,
             start_side: start_line.map(|_| side),
+            range_anchors: None,
             old_path: None,
             body: "a note".to_string(),
             comment_id: "local-1".to_string(),

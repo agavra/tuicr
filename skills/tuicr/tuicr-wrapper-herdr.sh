@@ -96,8 +96,16 @@ launch_tuicr_pane() {
 
   local completion_suffix="_DONE_$$_${RANDOM}__"
   local completion_token="__TUICR${completion_suffix}"
+  # `herdr pane run` injects this string into the pane's *interactive* shell,
+  # which is not necessarily bash: `$?` and `VAR=value` are both parse errors
+  # under fish. Wrap the payload in `bash -c` so the pane's shell only has to
+  # forward one single-quoted argument -- single-quote semantics are identical
+  # in bash, zsh and fish. bash (not sh) because $quoted_tuicr carries bash's
+  # printf %q quoting, which can emit non-POSIX $'...' forms.
+  # $completion_suffix needs no quoting: it is built from $$ and $RANDOM, so it
+  # is digits and underscores by construction.
   local pane_command
-  pane_command="$quoted_tuicr; tuicr_status=\$?; printf '\\n__TUICR%s:%s\\n' '$completion_suffix' \"\$tuicr_status\""
+  pane_command="bash -c '$quoted_tuicr; printf \"\\n__TUICR%s:%s\\n\" $completion_suffix \$?'"
 
   "$HERDR_BIN" pane run "$new_pane_id" "$pane_command" >/dev/null
 

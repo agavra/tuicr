@@ -213,7 +213,7 @@ fn editor_family(program: &str) -> EditorFamily {
         .and_then(|name| name.to_str())
         .unwrap_or(program);
     match name {
-        "vi" | "vim" | "nvim" | "nano" | "emacs" | "emacsclient" => EditorFamily::PlusLine,
+        "vi" | "vim" | "nvim" | "nano" | "emacs" | "emacsclient" | "hx" => EditorFamily::PlusLine,
         "code" | "code-insiders" | "codium" | "cursor" => EditorFamily::GotoLine,
         _ => EditorFamily::Plain,
     }
@@ -274,7 +274,7 @@ mod tests {
 
     #[test]
     fn plus_line_editors_receive_line_before_path() {
-        for editor in ["vi", "vim", "nvim", "nano"] {
+        for editor in ["vi", "vim", "nvim", "nano", "hx"] {
             let command = EditorCommand::from_editor(editor, &target(Some(42)));
             assert_eq!(command.program, editor);
             assert_eq!(args(&command), vec!["+42", "/repo/src/main.rs"]);

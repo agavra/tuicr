@@ -3,11 +3,64 @@ use ratatui::{
     layout::{Constraint, Flex, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 
 use crate::app::App;
 use crate::ui::styles;
+
+pub fn render_message_details(frame: &mut Frame, app: &mut App) {
+    let Some(message) = app.message.as_ref() else {
+        return;
+    };
+    let content = message.content.clone();
+    let theme = &app.theme;
+    let area = frame.area();
+
+    frame.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .style(styles::panel_style(theme))
+        .border_style(styles::border_style(theme, true));
+    let inner = block.inner(area);
+
+    let paragraph = Paragraph::new(content.as_str())
+        .style(
+            Style::default()
+                .fg(theme.message_error_fg)
+                .bg(theme.panel_bg),
+        )
+        .wrap(Wrap { trim: false });
+    app.help_state.total_lines = paragraph.line_count(inner.width);
+    app.help_state.viewport_height = inner.height as usize;
+    let max_offset = app
+        .help_state
+        .total_lines
+        .saturating_sub(app.help_state.viewport_height);
+    app.help_state.scroll_offset = app.help_state.scroll_offset.min(max_offset);
+    let scroll_indicator = match (
+        app.help_state.scroll_offset > 0,
+        app.help_state.scroll_offset < max_offset,
+    ) {
+        (true, true) => " ↑↓",
+        (true, false) => " ↑",
+        (false, true) => " ↓",
+        (false, false) => "",
+    };
+    frame.render_widget(
+        block.title(format!(
+            " Messages (j/k scroll, q/Esc close){scroll_indicator} "
+        )),
+        area,
+    );
+    frame.render_widget(
+        paragraph.scroll((
+            app.help_state.scroll_offset.min(u16::MAX as usize) as u16,
+            0,
+        )),
+        inner,
+    );
+}
 
 pub fn render_help(frame: &mut Frame, app: &mut App) {
     let theme = &app.theme;
@@ -673,6 +726,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("Open this help screen"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :messages ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Open full details for the current error"),
         ]),
         Line::from(vec![
             Span::styled(

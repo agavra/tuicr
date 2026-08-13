@@ -104,6 +104,12 @@ pub struct AppConfig {
     pub backend: Option<String>,
     pub comment_types: Option<Vec<CommentTypeConfig>>,
     pub show_file_list: Option<bool>,
+    /// Whether pull-request CI checks are fetched and shown.
+    /// Defaults to false.
+    pub show_pr_checks: Option<bool>,
+    /// Whether pull-request conversation comments are fetched and shown.
+    /// Defaults to true.
+    pub show_pr_comments: Option<bool>,
     /// Whether the inline commit selector pane is visible on startup for
     /// multi-commit reviews. Defaults to true; toggle at runtime with
     /// `<leader>s` or `:set commits!`.
@@ -133,6 +139,9 @@ pub struct AppConfig {
     pub transparent_background: Option<bool>,
     pub scroll_offset: Option<usize>,
     pub review_watch_interval_ms: Option<usize>,
+    /// Disabled by default, and `0` disables it too. Ignored for
+    /// pull-request reviews and `--all-files` mode.
+    pub diff_watch_interval_ms: Option<usize>,
     pub no_update_check: Option<bool>,
     /// Render single-file and pristine views in full-width mode by default.
     /// Pristine `--all-files` mode already defaults to true regardless of
@@ -175,6 +184,8 @@ const KNOWN_KEYS: &[&str] = &[
     "backend",
     "comment_types",
     "show_file_list",
+    "show_pr_checks",
+    "show_pr_comments",
     "show_commits",
     "diff_view",
     "commit_order",
@@ -192,6 +203,7 @@ const KNOWN_KEYS: &[&str] = &[
     "transparent_background",
     "scroll_offset",
     "review_watch_interval_ms",
+    "diff_watch_interval_ms",
     "no_update_check",
     "single_file_view",
     "username",
@@ -396,6 +408,8 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
             .get("comment_types")
             .and_then(|v| parse_comment_types(v, &mut warnings)),
         show_file_list: read_bool(table, "show_file_list", &mut warnings),
+        show_pr_checks: read_bool(table, "show_pr_checks", &mut warnings),
+        show_pr_comments: read_bool(table, "show_pr_comments", &mut warnings),
         show_commits: read_bool(table, "show_commits", &mut warnings),
         diff_view: read_enum(
             table,
@@ -428,6 +442,7 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         transparent_background: read_bool(table, "transparent_background", &mut warnings),
         scroll_offset: read_usize(table, "scroll_offset", &mut warnings),
         review_watch_interval_ms: read_usize(table, "review_watch_interval_ms", &mut warnings),
+        diff_watch_interval_ms: read_usize(table, "diff_watch_interval_ms", &mut warnings),
         no_update_check: read_bool(table, "no_update_check", &mut warnings),
         single_file_view: read_bool(table, "single_file_view", &mut warnings),
         username: read_string(table, "username", &mut warnings),
@@ -900,6 +915,56 @@ mod tests {
         assert_eq!(outcome.warnings.len(), 1);
     }
 
+    // show_pr_checks
+
+    #[test]
+    fn should_parse_show_pr_checks_false() {
+        let outcome = parse_config("show_pr_checks = false\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.show_pr_checks),
+            Some(false)
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_warn_and_ignore_show_pr_checks_with_invalid_type() {
+        let outcome = parse_config("show_pr_checks = \"no\"\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.show_pr_checks),
+            None
+        );
+        assert_eq!(
+            outcome.warnings,
+            vec!["Warning: Config key 'show_pr_checks' must be a boolean; ignoring value"]
+        );
+    }
+
+    // show_pr_comments
+
+    #[test]
+    fn should_parse_show_pr_comments_false() {
+        let outcome = parse_config("show_pr_comments = false\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.show_pr_comments),
+            Some(false)
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_warn_and_ignore_show_pr_comments_with_invalid_type() {
+        let outcome = parse_config("show_pr_comments = \"no\"\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.show_pr_comments),
+            None
+        );
+        assert_eq!(
+            outcome.warnings,
+            vec!["Warning: Config key 'show_pr_comments' must be a boolean; ignoring value"]
+        );
+    }
+
     // show_commits
 
     #[test]
@@ -1167,6 +1232,65 @@ mod tests {
         assert_eq!(
             outcome.warnings[0],
             "Warning: Config key 'review_watch_interval_ms' must be a non-negative integer; ignoring value"
+        );
+    }
+
+    // diff_watch_interval_ms
+
+    #[test]
+    fn should_parse_diff_watch_interval_ms() {
+        let outcome = parse_config("diff_watch_interval_ms = 250\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.diff_watch_interval_ms),
+            Some(250)
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    /// Unlike `review_watch_interval_ms`, this feature must default to off:
+    /// an absent key must parse to `None`, not a positive interval.
+    #[test]
+    fn should_default_diff_watch_interval_ms_to_none_when_absent() {
+        let outcome = parse_config("theme = \"dark\"\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.diff_watch_interval_ms),
+            None
+        );
+    }
+
+    #[test]
+    fn should_parse_zero_diff_watch_interval_ms_to_allow_disable() {
+        let outcome = parse_config("diff_watch_interval_ms = 0\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.diff_watch_interval_ms),
+            Some(0)
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_warn_and_ignore_negative_diff_watch_interval_ms() {
+        let outcome = parse_config("diff_watch_interval_ms = -1\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.diff_watch_interval_ms),
+            None
+        );
+        assert_eq!(outcome.warnings.len(), 1);
+        assert_eq!(
+            outcome.warnings[0],
+            "Warning: Config key 'diff_watch_interval_ms' must be a non-negative integer; ignoring value"
         );
     }
 

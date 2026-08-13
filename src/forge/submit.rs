@@ -12,7 +12,7 @@ use std::path::PathBuf;
 
 use crate::config::ForgeConfig;
 use crate::model::comment::Comment;
-use crate::model::{DiffFile, FileStatus, LineRange, LineSide};
+use crate::model::{DiffFile, FileStatus, LineOrigin, LineRange, LineSide};
 
 /// Which forge review event a `:submit*` command corresponds to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,6 +75,27 @@ impl From<LineSide> for GhSide {
     }
 }
 
+/// A diff line addressed in both files' line counters, plus how it changed.
+///
+/// GitLab identifies a diff line by `line_code` — `sha1(path)_<old>_<new>`
+/// built from the running counters at that point in the diff, so an added line
+/// still carries the old-side counter it was inserted at, and a deleted line
+/// the new-side counter it sits before. Neither is recoverable from a single
+/// line number, which is why range endpoints carry this instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiffAnchor {
+    pub old_line: u32,
+    pub new_line: u32,
+    pub origin: LineOrigin,
+}
+
+/// Both ends of a multi-line selection, addressed in both line counters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RangeAnchors {
+    pub start: DiffAnchor,
+    pub end: DiffAnchor,
+}
+
 /// A single inline review comment ready to be serialized into GitHub's
 /// `comments` array. Bodies already include the `[TYPE]` prefix when the
 /// active `ForgeConfig` enables it.
@@ -91,6 +112,10 @@ pub struct InlineComment {
     /// Multi-line range start. `None` for single-line comments.
     pub start_line: Option<u32>,
     pub start_side: Option<GhSide>,
+    /// Both ends of the range in old/new counters. GitLab's `line_range` needs
+    /// a `line_code` per endpoint, which `line`/`start_line` alone cannot
+    /// produce. `None` for single-line comments; GitHub ignores it.
+    pub range_anchors: Option<RangeAnchors>,
     /// Old (base-side) path when the file was renamed. `None` for unchanged
     /// names; consumers should fall back to `path` for both sides. GitLab
     /// positions need both `old_path` and `new_path`; GitHub uses only
@@ -226,6 +251,7 @@ pub fn map_comment(
                     counterpart_line,
                     start_line: None,
                     start_side: None,
+                    range_anchors: None,
                     old_path,
                     body: build_inline_body(comment, true, config),
                     comment_id: comment.id.clone(),
@@ -258,6 +284,7 @@ pub fn map_comment(
                 counterpart_line,
                 start_line: None,
                 start_side: None,
+                range_anchors: None,
                 old_path,
                 body: build_inline_body(comment, false, config),
                 comment_id: comment.id.clone(),
@@ -309,6 +336,47 @@ fn find_line_with_counterpart(
     None
 }
 
+/// Locate `line` on `side` and report both of its diff counters.
+///
+/// Counters come from the per-line numbers the diff parser recorded, so
+/// expanded context lines stay correct. Only the side a line does not occupy
+/// has to be inferred: an addition sits at the old counter following the last
+/// old-bearing line, a deletion at the new counter following the last
+/// new-bearing one. The hunk header supplies the seed when a hunk opens on a
+/// changed line.
+fn find_diff_anchor(file: &DiffFile, line: u32, side: LineSide) -> Option<DiffAnchor> {
+    for hunk in &file.hunks {
+        let mut last_old: Option<u32> = None;
+        let mut last_new: Option<u32> = None;
+        for dl in &hunk.lines {
+            let old_line = dl
+                .old_lineno
+                .unwrap_or_else(|| last_old.map_or(hunk.old_start, |l| l + 1));
+            let new_line = dl
+                .new_lineno
+                .unwrap_or_else(|| last_new.map_or(hunk.new_start, |l| l + 1));
+            let candidate = match side {
+                LineSide::New => dl.new_lineno,
+                LineSide::Old => dl.old_lineno,
+            };
+            if candidate == Some(line) {
+                return Some(DiffAnchor {
+                    old_line,
+                    new_line,
+                    origin: dl.origin,
+                });
+            }
+            if dl.old_lineno.is_some() {
+                last_old = dl.old_lineno;
+            }
+            if dl.new_lineno.is_some() {
+                last_new = dl.new_lineno;
+            }
+        }
+    }
+    None
+}
+
 /// Map a multi-line range comment, validating that the range sits on a
 /// single diff side.
 fn map_range(
@@ -343,27 +411,38 @@ fn map_range(
     }
 
     let old_path = renamed_old_path(file);
+    // A range anchored on a context line must name both sides in the position,
+    // exactly like a single-line comment on that same line.
+    let counterpart_of =
+        |line: u32| find_line_with_counterpart(file, line, side).and_then(|(_, cp)| cp);
+
     if range.is_single() {
         return MappedComment::Inline(InlineComment {
             path,
             line: range.start,
             side: side.into(),
-            counterpart_line: None,
+            counterpart_line: counterpart_of(range.start),
             start_line: None,
             start_side: None,
+            range_anchors: None,
             old_path,
             body: build_inline_body(comment, false, config),
             comment_id: comment.id.clone(),
         });
     }
 
+    let range_anchors = find_diff_anchor(file, range.start, side)
+        .zip(find_diff_anchor(file, range.end, side))
+        .map(|(start, end)| RangeAnchors { start, end });
+
     MappedComment::Inline(InlineComment {
         path,
         line: range.end,
         side: side.into(),
-        counterpart_line: None,
+        counterpart_line: counterpart_of(range.end),
         start_line: Some(range.start),
         start_side: Some(side.into()),
+        range_anchors,
         old_path,
         body: build_inline_body(comment, false, config),
         comment_id: comment.id.clone(),
@@ -787,6 +866,69 @@ mod tests {
                 assert_eq!(inline.line, 15);
                 assert_eq!(inline.start_line, None);
                 assert_eq!(inline.start_side, None);
+            }
+            other => panic!("expected Inline, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn should_anchor_range_endpoints_in_both_line_counters() {
+        // An added line still sits at an old-side counter: GitLab's line code
+        // for line 11 here is built from (10, 11), not (0, 11).
+        let file = file_with_hunks(vec![hunk(vec![
+            line(LineOrigin::Context, Some(9), Some(9)),
+            line(LineOrigin::Addition, Some(10), None),
+            line(LineOrigin::Addition, Some(11), None),
+        ])]);
+        let comment = comment_range(LineSide::New, LineRange::new(10, 11));
+        let mapped = map_comment(&comment, anchor_from(&comment), &file, &default_config());
+        match mapped {
+            MappedComment::Inline(inline) => {
+                let anchors = inline.range_anchors.expect("range anchors");
+                assert_eq!(
+                    anchors.start,
+                    DiffAnchor {
+                        old_line: 10,
+                        new_line: 10,
+                        origin: LineOrigin::Addition
+                    }
+                );
+                assert_eq!(
+                    anchors.end,
+                    DiffAnchor {
+                        old_line: 10,
+                        new_line: 11,
+                        origin: LineOrigin::Addition
+                    }
+                );
+            }
+            other => panic!("expected Inline, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn should_populate_counterpart_line_for_range_ending_on_context_line() {
+        // GitLab needs both old_line and new_line in the position when the
+        // anchor is a context line, range comments included.
+        let file = file_with_hunks(vec![hunk(vec![
+            line(LineOrigin::Addition, Some(10), None),
+            line(LineOrigin::Addition, Some(11), None),
+            line(LineOrigin::Context, Some(12), Some(7)),
+        ])]);
+        let comment = comment_range(LineSide::New, LineRange::new(10, 12));
+        let mapped = map_comment(&comment, anchor_from(&comment), &file, &default_config());
+        match mapped {
+            MappedComment::Inline(inline) => {
+                assert_eq!(inline.counterpart_line, Some(7));
+                let anchors = inline.range_anchors.expect("range anchors");
+                assert_eq!(
+                    anchors.end,
+                    DiffAnchor {
+                        old_line: 7,
+                        new_line: 12,
+                        origin: LineOrigin::Context
+                    }
+                );
             }
             other => panic!("expected Inline, got {other:?}"),
         }

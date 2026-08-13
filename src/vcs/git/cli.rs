@@ -232,9 +232,12 @@ impl VcsBackend for GitCliBackend {
     }
 
     fn get_change_status(&self) -> Result<VcsChangeStatus> {
-        // Tracked changes have cheap exact probes. Untracked files require a
-        // working-tree scan, so only pay that cost when tracked unstaged changes
-        // have not already proven the "unstaged" row should be shown.
+        if self.repo_mode == GitRepoMode::Standard {
+            return get_cli_change_status(&self.root_path);
+        }
+
+        // Keep sparse probes pathspec-scoped. Plain `git status` reports
+        // out-of-cone untracked files and would show an empty Unstaged row.
         let staged = has_diff_changes(&self.root_path, &["diff", "--quiet", "--cached", "--"])?;
         let tracked_unstaged = has_diff_changes(&self.root_path, &["diff", "--quiet", "--"])?;
         let untracked_pathspecs = if tracked_unstaged {
@@ -453,6 +456,43 @@ fn parse_git_runtime_flags(output: &str) -> (bool, bool) {
     // `feature.manyFiles` makes core.untrackedCache default to true, but
     // `git config --get core.untrackedCache` does not print that implied value.
     (untracked_cache.unwrap_or(many_files), fsmonitor)
+}
+
+fn get_cli_change_status(workdir: &Path) -> Result<VcsChangeStatus> {
+    let output = Command::new("git")
+        .current_dir(workdir)
+        .args(["status", "--porcelain=v1", "-z", "--untracked-files=normal"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| TuicrError::VcsCommand(format!("Failed to run git: {e}")))?;
+
+    if !output.status.success() {
+        return Err(TuicrError::VcsCommand(
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        ));
+    }
+
+    Ok(parse_porcelain_status(&output.stdout))
+}
+
+/// Parse NUL-delimited porcelain v1 records into staged and unstaged flags.
+/// The first two bytes are the index and worktree states. Rename and copy
+/// records include a second pathname record, which the parser skips.
+fn parse_porcelain_status(output: &[u8]) -> VcsChangeStatus {
+    let mut status = VcsChangeStatus::default();
+    let mut entries = output.split(|byte| *byte == 0);
+    while let Some(entry) = entries.next() {
+        if entry.len() < 2 {
+            continue;
+        }
+        status.staged |= !matches!(entry[0], b' ' | b'?');
+        status.unstaged |= entry[1] != b' ';
+        if matches!(entry[0], b'R' | b'C') || matches!(entry[1], b'R' | b'C') {
+            entries.next();
+        }
+    }
+    status
 }
 
 fn has_diff_changes(workdir: &Path, args: &[&str]) -> Result<bool> {
@@ -1185,6 +1225,18 @@ mod tests {
         );
     }
 
+    #[test]
+    fn parses_porcelain_status_sides() {
+        assert_eq!(
+            parse_porcelain_status(b"M  staged\0 M unstaged\0?? untracked\0"),
+            VcsChangeStatus {
+                staged: true,
+                unstaged: true,
+            }
+        );
+        assert_eq!(parse_porcelain_status(b""), VcsChangeStatus::default());
+    }
+
     fn write_file(workdir: &Path, path: &str, content: &str) {
         let full_path = workdir.join(path);
         fs::create_dir_all(full_path.parent().expect("test path should have parent"))
@@ -1464,6 +1516,29 @@ mod tests {
     fn detects_change_status_without_loading_diff() {
         let (temp_dir, backend, _ids) = setup_sparse_index_repo();
         write_file(temp_dir.path(), "keep/file.txt", "keep modified\n");
+
+        let status = backend
+            .get_change_status()
+            .expect("failed to get change status");
+
+        assert_eq!(
+            status,
+            VcsChangeStatus {
+                staged: false,
+                unstaged: true,
+            }
+        );
+    }
+
+    #[test]
+    fn detects_untracked_files_when_git_status_hides_them() {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let workdir = temp_dir.path();
+        git(workdir, &["init"]);
+        git(workdir, &["config", "status.showUntrackedFiles", "no"]);
+        write_file(workdir, "untracked.txt", "untracked\n");
+        let backend = GitCliBackend::discover_from(workdir, DiffWhitespaceMode::Normal)
+            .expect("failed to discover cli backend");
 
         let status = backend
             .get_change_status()

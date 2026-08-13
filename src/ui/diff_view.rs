@@ -376,8 +376,11 @@ pub(super) fn scroll_comment_input_into_view(
         }
     }
 
-    // Clamp so we never scroll past the last line.
-    let max_scroll = total_lines.saturating_sub(viewport_height);
+    // Clamp so we never scroll past the last line. This must match
+    // `App::max_scroll_offset`, which allows empty space below the content:
+    // clamping to `total_lines - viewport_height` instead would undo a `zz`
+    // centering near EOF every frame the input box is rendered.
+    let max_scroll = total_lines.saturating_sub(1);
     if *scroll_offset > max_scroll {
         *scroll_offset = max_scroll;
     }
@@ -1160,8 +1163,29 @@ mod tests {
         let mut scroll = 200;
         // when
         scroll_comment_input_into_view(&mut scroll, Some((95, 97)), Some(96), 10, 100);
-        // then: clamped to max_scroll = 100 - 10 = 90
-        assert_eq!(scroll, 90);
+        // then: pulled back so the box is the first visible line
+        assert_eq!(scroll, 95);
+    }
+
+    #[test]
+    fn should_clamp_to_last_line_when_box_sits_past_the_content() {
+        // given: a box range beyond the rendered content
+        let mut scroll = 0;
+        // when
+        scroll_comment_input_into_view(&mut scroll, Some((150, 152)), Some(151), 10, 100);
+        // then: clamped to max_scroll = 100 - 1 = 99, matching App::max_scroll_offset
+        assert_eq!(scroll, 99);
+    }
+
+    #[test]
+    fn should_keep_cursor_centered_when_opening_comment_near_eof() {
+        // given: `zz` centered line 98 of a 100-line diff in a 40-row viewport,
+        // leaving blank rows below the content, then a 4-line input box opened
+        let mut scroll = 78;
+        // when
+        scroll_comment_input_into_view(&mut scroll, Some((99, 102)), Some(100), 40, 104);
+        // then: the box is already visible, so the centering must survive
+        assert_eq!(scroll, 78);
     }
 
     #[test]
