@@ -6,8 +6,8 @@ use chrono::Utc;
 use ratatui::style::Color;
 
 use crate::comment_vim::CommentVimEditor;
-use crate::config::CommentTypeConfig;
-use crate::editor::EditorTarget;
+use crate::config::{CommentTypeConfig, ExportConfig};
+use crate::editor::{EditorLaunch, EditorTarget};
 use crate::error::{Result, TuicrError};
 use crate::forge::context::{ContextProvider, ForgeContextProvider, VcsContextProvider};
 use crate::forge::selector::PullRequestsTab;
@@ -37,21 +37,41 @@ pub const UNSTAGED_SELECTION_ID: &str = "__tuicr_unstaged__";
 pub const GAP_EXPAND_BATCH: usize = 20;
 
 /// Create a forge backend for the given repository.
-/// Routes to the GitHub backend (via `gh`) or the GitLab backend (via `glab`)
-/// based on `repo.kind`.
+/// Routes to the GitHub backend (via `gh`), the GitLab backend (via `glab`),
+/// the Bitbucket Cloud backend (via `bkt`), or the Azure DevOps backend (via
+/// `az`) based on `repo.kind`.
 fn create_forge_backend(
     repo: &ForgeRepository,
     local_checkout: Option<PathBuf>,
+    show_pr_checks: bool,
+    show_pr_comments: bool,
 ) -> Box<dyn ForgeBackend> {
     use crate::forge::traits::ForgeKind;
     match repo.kind {
         ForgeKind::GitHub => {
             use crate::forge::github::gh::GitHubGhBackend;
-            Box::new(GitHubGhBackend::new(Some(repo.clone())).with_local_checkout(local_checkout))
+            Box::new(
+                GitHubGhBackend::new(Some(repo.clone()))
+                    .with_local_checkout(local_checkout)
+                    .with_pr_checks(show_pr_checks)
+                    .with_pr_comments(show_pr_comments),
+            )
         }
         ForgeKind::GitLab => {
             use crate::forge::gitlab::GitLabGlabBackend;
             Box::new(GitLabGlabBackend::new(Some(repo.clone())).with_local_checkout(local_checkout))
+        }
+        ForgeKind::Bitbucket => {
+            use crate::forge::bitbucket::BitbucketBktBackend;
+            Box::new(
+                BitbucketBktBackend::new(Some(repo.clone())).with_local_checkout(local_checkout),
+            )
+        }
+        ForgeKind::AzureDevOps => {
+            use crate::forge::azure::AzureDevOpsBackend;
+            Box::new(
+                AzureDevOpsBackend::new(Some(repo.clone())).with_local_checkout(local_checkout),
+            )
         }
     }
 }
@@ -114,7 +134,7 @@ fn profile_unit_result(result: &Result<()>) -> String {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileTreeItem {
     Directory {
         path: String,
@@ -252,6 +272,12 @@ pub enum GapCursorHit {
 /// Describes what a rendered line represents - built once and used for O(1) cursor queries
 #[derive(Debug, Clone)]
 pub enum AnnotatedLine {
+    /// A rendered line of [`App::pr_info`] content
+    PrInfoLine { line_idx: usize },
+    /// Top-level PR conversation comments section header
+    IssueCommentsHeader,
+    /// A rendered line of a top-level PR issue comment box
+    IssueComment { comment_idx: usize },
     /// Review comments section header line
     ReviewCommentsHeader,
     /// A review-level comment line (part of a multi-line comment box)
@@ -261,6 +287,10 @@ pub enum AnnotatedLine {
     RemoteReviewSummaryLine { summary_idx: usize },
     /// File header line
     FileHeader { file_idx: usize },
+    /// "Marked reviewed" banner shown in single-file view when the focused
+    /// file is reviewed. Both renderers emit this row, so it needs an
+    /// annotation slot to keep `line_annotations` index-parallel with them.
+    ReviewedBanner { file_idx: usize },
     /// A file-level comment line (part of a multi-line comment box)
     FileComment { file_idx: usize, comment_idx: usize },
     /// Expander line showing hidden context with direction arrow
@@ -430,13 +460,17 @@ fn commits_since_last_review_selection(
 pub fn annotation_file_idx(annotation: &AnnotatedLine) -> Option<usize> {
     match annotation {
         AnnotatedLine::FileHeader { file_idx }
+        | AnnotatedLine::ReviewedBanner { file_idx }
         | AnnotatedLine::FileComment { file_idx, .. }
         | AnnotatedLine::HunkHeader { file_idx, .. }
         | AnnotatedLine::DiffLine { file_idx, .. }
         | AnnotatedLine::SideBySideLine { file_idx, .. }
         | AnnotatedLine::LineComment { file_idx, .. }
         | AnnotatedLine::BinaryOrEmpty { file_idx } => Some(*file_idx),
-        AnnotatedLine::ReviewCommentsHeader
+        AnnotatedLine::PrInfoLine { .. }
+        | AnnotatedLine::IssueCommentsHeader
+        | AnnotatedLine::IssueComment { .. }
+        | AnnotatedLine::ReviewCommentsHeader
         | AnnotatedLine::ReviewComment { .. }
         | AnnotatedLine::RemoteReviewSummaryLine { .. }
         | AnnotatedLine::Expander { .. }
@@ -510,7 +544,9 @@ pub fn find_source_line(
 fn is_decoration(annotation: &AnnotatedLine) -> bool {
     matches!(
         annotation,
-        AnnotatedLine::Spacing | AnnotatedLine::FileHeader { .. }
+        AnnotatedLine::Spacing
+            | AnnotatedLine::FileHeader { .. }
+            | AnnotatedLine::ReviewedBanner { .. }
     )
 }
 
@@ -784,6 +820,7 @@ pub enum PrOpenEvent {
                 String,
                 Vec<crate::forge::traits::PullRequestCommit>,
                 crate::forge::traits::PullRequestReviewMetadata,
+                crate::forge::traits::PullRequestInfo,
             ),
             String,
         >,
@@ -811,6 +848,7 @@ pub struct PrReloadRequest {
     pub head_sha: String,
     pub started_at: Instant,
     pub anchor: Option<PrCursorAnchor>,
+    pub restore_overview_cursor: Option<usize>,
 }
 
 /// Result delivered from the PR-reload background thread.
@@ -824,6 +862,7 @@ pub enum PrReloadEvent {
                 String,
                 Vec<crate::forge::traits::PullRequestCommit>,
                 crate::forge::traits::PullRequestReviewMetadata,
+                crate::forge::traits::PullRequestInfo,
             ),
             String,
         >,
@@ -852,6 +891,48 @@ pub enum PrRangeReloadEvent {
         request: PrRangeReloadRequest,
         result: std::result::Result<String, String>,
     },
+}
+
+/// Identity snapshot for an in-flight diff-watch reload, captured when the
+/// fetch is spawned. Compared against the live `App` state when the result
+/// lands so a fetch that outlives a diff-source switch, a commit-selection
+/// change, or a mode change (see `apply_diff_files`'s invariant comment) is
+/// discarded instead of applied.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiffWatchReloadRequest {
+    pub diff_source: DiffSource,
+    pub commit_selection_range: Option<(usize, usize)>,
+}
+
+/// Result delivered from the diff-watch background thread. `Ok(None)` means
+/// the fetch ran but found nothing new to show (unchanged, or the VCS
+/// reported no changes); `Ok(Some(_))` carries a fully fetched, highlighted
+/// diff ready for `apply_diff_files`.
+#[derive(Debug)]
+pub enum DiffWatchReloadEvent {
+    Done {
+        request: DiffWatchReloadRequest,
+        result: std::result::Result<Option<Vec<DiffFile>>, String>,
+        /// Commits re-read during the same tick, so a commit written while
+        /// tuicr is open reaches the inline pane. `None` means the worker did
+        /// not ask: either a narrowing was active when it spawned, or the
+        /// backend does not list commits.
+        commits: Option<Vec<CommitInfo>>,
+        /// Whether each of staged and unstaged holds anything, read during the
+        /// same tick. Decides which of the two synthetic rows the pane should
+        /// carry. `None` means the backend could not say, and the rows are
+        /// left exactly as they are.
+        change_status: Option<VcsChangeStatus>,
+    },
+}
+
+/// An in-flight diff-watch reload: the channel the worker will answer on,
+/// paired with the snapshot of what the user was looking at when it was
+/// spawned. Held together so neither can exist without the other.
+#[derive(Debug)]
+pub struct DiffWatchReload {
+    pub request: DiffWatchReloadRequest,
+    pub rx: std::sync::mpsc::Receiver<DiffWatchReloadEvent>,
 }
 
 /// Snapshot of the submit state needed to lock the matching local comments
@@ -1015,24 +1096,56 @@ pub struct App {
     pub(crate) session_file_state: Option<SessionFileState>,
     pub review_watch_interval: Option<Duration>,
     pub next_review_watch_at: Instant,
+    /// `None` by default: the diff watch is opt-in. A `0` interval in config
+    /// also means disabled.
+    pub diff_watch_interval: Option<Duration>,
+    pub next_diff_watch_at: Instant,
+    /// Last diff-watch error text, so a sustained failure warns once instead of
+    /// once per tick. Cleared on the next successful fetch.
+    last_diff_watch_error: Option<String>,
+    /// In-flight diff-watch reload spawned by a tick. Guards against a second
+    /// tick spawning while one is already running, and carries the identity
+    /// snapshot checked on receipt. The channel and the snapshot live in one
+    /// value on purpose: as two independent `Option`s they could disagree,
+    /// and a snapshot left behind without its channel blocks every future
+    /// tick from ever spawning again.
+    pub diff_watch_reload: Option<DiffWatchReload>,
+    /// Everything `detect_vcs` needs to open a backend the same way the
+    /// startup one was opened. The diff-watch worker opens its own, because
+    /// `git2::Repository` is `Send` but not `Sync` and so cannot share
+    /// `App::vcs`, and `AppStartupOptions` is dropped by the end of
+    /// `App::new`. Kept as one value so a future setting is added in one
+    /// place rather than at every construction path.
+    vcs_open_options: VcsOpenOptions,
     pub(crate) ephemeral_session_paths: HashSet<PathBuf>,
     pub diff_files: Vec<DiffFile>,
     pub diff_source: DiffSource,
     pub pending_editor_target: Option<EditorTarget>,
+    /// Windowed editors that have not exited yet; polled by
+    /// `poll_editor_launches`.
+    pub(crate) editor_launches: Vec<EditorLaunch>,
 
     pub input_mode: InputMode,
     pub focused_panel: FocusedPanel,
     pub diff_view_mode: DiffViewMode,
+    pub relative_line_numbers: bool,
 
     pub file_list_state: FileListState,
     pub comment_navigator_state: CommentNavigatorState,
     pub diff_state: DiffState,
     pub help_state: HelpState,
+    /// File-tree include/exclude filters and `/` search.
+    pub file_filter: FileTreeFilter,
     pub command_buffer: String,
     pub(crate) command_completion: Option<CommandCompletionState>,
     pub(crate) command_return_mode: InputMode,
     pub search_buffer: String,
     pub last_search_pattern: Option<String>,
+    pub(crate) search_needle_lower: Option<String>,
+    pub(crate) search_matches: Vec<usize>,
+    pub(crate) search_matches_stale: bool,
+    pub(crate) search_highlight_visible: bool,
+    pub search_highlight_enabled: bool,
     pub(crate) search_return_mode: InputMode,
     pub(crate) overlay_return_mode: InputMode,
     pub comment_buffer: String,
@@ -1163,6 +1276,14 @@ pub struct App {
     /// open-time head so the stale-head warning never fires; PR 6 may refresh
     /// it via a pre-submit `gh pr view` to power the warning.
     pub current_pr_head: Option<String>,
+    /// Extended PR metadata rendered at the top of the diff view. Populated in PR mode.
+    pub pr_info: Option<crate::forge::traits::PullRequestInfo>,
+    /// Whether pull-request CI checks are fetched and rendered. Defaults to
+    /// false; configured before the first direct PR load.
+    pub show_pr_checks: bool,
+    /// Whether pull-request conversation comments are fetched and rendered.
+    /// Defaults to true; configured before the first direct PR load.
+    pub show_pr_comments: bool,
 
     pub should_quit: bool,
     pub dirty: bool,
@@ -1277,8 +1398,8 @@ pub struct App {
     pub saved_inline_selection: Option<(usize, usize)>,
     /// Path filter for scoping diff to a specific file or directory
     pub path_filter: Option<String>,
-    /// Whether to include the "Comment types:" legend line in export
-    pub export_legend: bool,
+    /// Resolved `[export]` settings shaping the generated review markdown.
+    pub export: ExportConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1439,6 +1560,67 @@ impl Default for DiffState {
     }
 }
 
+/// Which file-tree prompt is currently collecting input. All three share
+/// one draft buffer because only one can be open at a time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileTreePrompt {
+    /// `i` — keep only files whose path matches (regex).
+    Include,
+    /// `e` — drop files whose path matches (regex).
+    Exclude,
+    /// `/` — jump the tree selection to a matching file (substring).
+    Search,
+}
+
+impl FileTreePrompt {
+    /// Prefix shown before the buffer in the prompt line, mirroring the
+    /// key that opened it.
+    pub fn sigil(self) -> char {
+        match self {
+            FileTreePrompt::Include => 'i',
+            FileTreePrompt::Exclude => 'e',
+            FileTreePrompt::Search => '/',
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            FileTreePrompt::Include => "include",
+            FileTreePrompt::Exclude => "exclude",
+            FileTreePrompt::Search => "search",
+        }
+    }
+}
+
+/// An in-progress prompt. `Some` in `FileTreeFilter::draft` makes the file
+/// tree a text-input sub-state of `InputMode::Normal`, the same way
+/// `pr_filter_draft` does for the target selector.
+#[derive(Debug, Clone)]
+pub struct FileTreeDraft {
+    pub prompt: FileTreePrompt,
+    pub buffer: String,
+}
+
+/// An applied regex filter plus the pattern the user typed, kept so the
+/// prompt can be reopened pre-seeded and the UI can echo the source.
+pub struct FilePattern {
+    pub source: String,
+    pub regex: regex::Regex,
+}
+
+/// Include/exclude/search state for the file tree. Filters narrow both the
+/// tree and the diff pane (see `App::file_passes_filter`); search only moves
+/// the tree selection.
+#[derive(Default)]
+pub struct FileTreeFilter {
+    pub include: Option<FilePattern>,
+    pub exclude: Option<FilePattern>,
+    /// Applied `/` query. Persists after the prompt closes so `n`/`N` can
+    /// keep stepping matches.
+    pub search: Option<String>,
+    pub draft: Option<FileTreeDraft>,
+}
+
 #[derive(Debug, Default)]
 pub struct HelpState {
     pub scroll_offset: usize,
@@ -1466,6 +1648,26 @@ enum CommentLocation {
     },
 }
 
+/// What `detect_vcs` needs to open a backend. Bundled because these two
+/// always travel together: they are chosen once at startup and then replayed
+/// verbatim by the diff-watch worker when it opens its own backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct VcsOpenOptions {
+    git_backend_preference: GitBackendPreference,
+    diff_whitespace_mode: DiffWhitespaceMode,
+}
+
+impl Default for VcsOpenOptions {
+    /// What every non-Git start uses: `--file`, `--all-files`, and PR reviews
+    /// never reopen a backend, so their options are never read.
+    fn default() -> Self {
+        Self {
+            git_backend_preference: GitBackendPreference::Libgit2,
+            diff_whitespace_mode: DiffWhitespaceMode::default(),
+        }
+    }
+}
+
 pub struct AppStartupOptions<'a> {
     pub revisions: Option<&'a str>,
     pub working_tree: bool,
@@ -1474,6 +1676,10 @@ pub struct AppStartupOptions<'a> {
     /// Whole-repo annotation mode (`--all-files`). Mutually exclusive with
     /// the other selectors; the binary validates that before reaching here.
     pub all_files: bool,
+    /// Whether pull-request CI checks are fetched and rendered.
+    pub show_pr_checks: bool,
+    /// Whether pull-request conversation comments are fetched and rendered.
+    pub show_pr_comments: bool,
     pub git_backend_preference: GitBackendPreference,
     pub diff_whitespace_mode: DiffWhitespaceMode,
     /// Which commits are selected when a multi-commit review first opens.
@@ -1487,11 +1693,23 @@ pub struct AppStartupOptions<'a> {
     pub repo_url_override: Option<ForgeRepository>,
 }
 
+impl AppStartupOptions<'_> {
+    /// The subset `detect_vcs` needs, so an `App` can reopen a backend later
+    /// without holding on to the whole options struct.
+    fn vcs_open_options(&self) -> VcsOpenOptions {
+        VcsOpenOptions {
+            git_backend_preference: self.git_backend_preference,
+            diff_whitespace_mode: self.diff_whitespace_mode,
+        }
+    }
+}
+
 mod annotations;
 mod comment_vim;
 mod comments;
 mod commits;
 mod diff_load;
+mod file_filter;
 mod gaps;
 mod init;
 mod modes;

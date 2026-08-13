@@ -11,7 +11,7 @@ use crossterm::{
 
 use tuicr::app::{self, App, AppStartupOptions, FocusedPanel, InputMode};
 use tuicr::cli::parse_cli_args;
-use tuicr::editor::{EditorError, EditorTarget};
+use tuicr::editor::{EditorCommand, EditorError, EditorLaunch, EditorSurface, EditorTarget};
 use tuicr::handler::{
     handle_command_action, handle_comment_action, handle_comment_navigator_action,
     handle_commit_select_action, handle_commit_selector_action, handle_confirm_action,
@@ -19,7 +19,10 @@ use tuicr::handler::{
     handle_search_action, handle_submit_action_picker_action, handle_submit_confirm_action,
     handle_submit_resolver_action, handle_visual_action,
 };
-use tuicr::input::{Action, map_key_to_action, map_target_filter_mode};
+use tuicr::input::{
+    Action, map_file_tree_mode, map_file_tree_prompt_mode, map_key_to_action,
+    map_target_filter_mode,
+};
 use tuicr::terminal_state::{TerminalFeatures, TerminalSession};
 use tuicr::theme::resolve_theme_with_config;
 use tuicr::vcs::{DiffWhitespaceMode, GitBackendPreference};
@@ -183,6 +186,16 @@ fn main() -> anyhow::Result<()> {
                 path_filter: cli_args.path_filter.as_deref(),
                 file_path: cli_args.file_path.as_deref(),
                 all_files: cli_args.all_files,
+                show_pr_checks: config_outcome
+                    .config
+                    .as_ref()
+                    .and_then(|cfg| cfg.show_pr_checks)
+                    .unwrap_or(false),
+                show_pr_comments: config_outcome
+                    .config
+                    .as_ref()
+                    .and_then(|cfg| cfg.show_pr_comments)
+                    .unwrap_or(true),
                 git_backend_preference,
                 diff_whitespace_mode,
                 commit_selection,
@@ -190,7 +203,7 @@ fn main() -> anyhow::Result<()> {
                 repo_url_override: cli_args
                     .repo_url
                     .as_deref()
-                    .and_then(tuicr::forge::github::gh::parse_github_remote_url),
+                    .and_then(tuicr::forge::parse_any_remote_url),
             },
         )
     }) {
@@ -276,6 +289,8 @@ fn main() -> anyhow::Result<()> {
 
     // Apply config-driven defaults
     if let Some(ref cfg) = config_outcome.config {
+        app.show_pr_checks = cfg.show_pr_checks.unwrap_or(false);
+        app.show_pr_comments = cfg.show_pr_comments.unwrap_or(true);
         if cfg.show_file_list == Some(false) {
             app.show_file_list = false;
             app.focused_panel = FocusedPanel::Diff;
@@ -296,23 +311,28 @@ fn main() -> anyhow::Result<()> {
         if let Some(wrap) = cfg.wrap {
             app.diff_state.wrap_lines = wrap;
         }
+        app.relative_line_numbers = cfg.relative_line_numbers.unwrap_or(false);
         // Open in single-file view when the user opts in. Pristine
         // `--all-files` already turned it on inside `App::new`, so we
         // only toggle if it's still off.
         if cfg.single_file_view == Some(true) && !app.is_single_file_view {
             app.toggle_single_file_view();
         }
-        if cfg.export_legend == Some(false) {
-            app.export_legend = false;
-        }
+        app.export = cfg.resolved_export();
         if cfg.cursor_line == Some(false) {
             app.cursor_line_highlight = false;
+        }
+        if cfg.search_highlight == Some(false) {
+            app.search_highlight_enabled = false;
         }
         if let Some(scroll_offset) = cfg.scroll_offset {
             app.scroll_offset = scroll_offset;
         }
         if let Some(interval_ms) = cfg.review_watch_interval_ms {
             app.set_review_watch_interval_ms(interval_ms as u64);
+        }
+        if let Some(interval_ms) = cfg.diff_watch_interval_ms {
+            app.set_diff_watch_interval_ms(interval_ms as u64);
         }
     }
 
@@ -376,7 +396,9 @@ fn main() -> anyhow::Result<()> {
         app.poll_pr_range_reload_events();
         app.poll_pr_threads_events();
         app.poll_pr_submit_events();
+        needs_redraw |= app.poll_editor_launches();
         needs_redraw |= app.poll_persisted_session_changes();
+        needs_redraw |= app.poll_diff_watch_changes();
         needs_redraw |= pr_pending;
 
         if needs_redraw {
@@ -506,12 +528,16 @@ fn main() -> anyhow::Result<()> {
                         pending_d = false;
                         if key.code == crossterm::event::KeyCode::Char('d') {
                             if app.cursor_on_locked_comment() {
-                                app.set_message(
-                                    "Comment already pushed to GitHub — read only in tuicr",
-                                );
+                                let forge = app.forge_display_name();
+                                app.set_message(format!(
+                                    "Comment already pushed to {forge} — read only in tuicr"
+                                ));
                             } else if !app.delete_comment_at_cursor() {
                                 if app.cursor_on_remote_thread() {
-                                    app.set_message("GitHub comment — read only in tuicr");
+                                    let forge = app.forge_display_name();
+                                    app.set_message(format!(
+                                        "{forge} comment — read only in tuicr"
+                                    ));
                                 } else {
                                     app.set_message("No comment at cursor");
                                 }
@@ -588,12 +614,24 @@ fn main() -> anyhow::Result<()> {
                     // route through the filter-specific key map so typed
                     // characters update the filter buffer rather than driving
                     // commit-list navigation.
-                    let mut action =
-                        if app.input_mode == InputMode::CommitSelect && app.pr_filter_editing() {
-                            map_target_filter_mode(key)
-                        } else {
-                            map_key_to_action(key, app.input_mode, app.leader_key)
-                        };
+                    let mut action = if app.input_mode == InputMode::CommitSelect
+                        && app.pr_filter_editing()
+                    {
+                        map_target_filter_mode(key)
+                    } else if app.input_mode == InputMode::Normal && app.file_tree_prompt_editing()
+                    {
+                        // An open file-tree prompt (`i`/`e`/`/`) captures all
+                        // input until Enter/Esc, like the PR filter above.
+                        map_file_tree_prompt_mode(key)
+                    } else if app.input_mode == InputMode::Normal
+                        && app.focused_panel == FocusedPanel::FileList
+                    {
+                        // The tree claims i/e/I/E and `/` for filtering; the
+                        // diff keeps its own meanings for those keys.
+                        map_file_tree_mode(key, app.leader_key)
+                    } else {
+                        map_key_to_action(key, app.input_mode, app.leader_key)
+                    };
 
                     // Handle pending command setters (these work in any mode)
                     match action {
@@ -675,7 +713,18 @@ fn main() -> anyhow::Result<()> {
                     dispatch_action(&mut app, action);
                     if let Some(target) = app.take_pending_editor_target() {
                         match run_editor_from_tui(&mut terminal, &target) {
-                            Ok(Ok(())) => {
+                            // The editor is still open, so there is nothing to
+                            // pick up yet; the user reloads once they are done.
+                            Ok(Ok(EditorOutcome::Detached(launch))) => {
+                                app.track_editor_launch(launch);
+                                let hint = if app.diff_source.includes_worktree_changes() {
+                                    " (:e to reload)"
+                                } else {
+                                    ""
+                                };
+                                app.set_message(format!("Opened {}{hint}", target.path.display()));
+                            }
+                            Ok(Ok(EditorOutcome::Finished)) => {
                                 if app.diff_source.includes_worktree_changes() {
                                     match app.reload_diff_files() {
                                         Ok((count, invalidated)) => {
@@ -849,12 +898,27 @@ fn handle_comment_vim_key(app: &mut App, key: crossterm::event::KeyEvent) -> boo
     true
 }
 
+/// How the editor handoff ended, so the caller knows whether the file could
+/// already have been edited.
+enum EditorOutcome {
+    /// A terminal editor ran to completion.
+    Finished,
+    /// A windowed editor was launched and is still open.
+    Detached(EditorLaunch),
+}
+
 fn run_editor_from_tui<W: Write>(
     terminal: &mut TerminalSession<W>,
     target: &EditorTarget,
-) -> anyhow::Result<Result<(), EditorError>> {
+) -> anyhow::Result<Result<EditorOutcome, EditorError>> {
+    let command = EditorCommand::from_env(target);
+    // Windowed editors never draw on our terminal, so suspending would only
+    // blank the TUI for as long as the editor takes to come up.
+    if command.surface() == EditorSurface::Gui {
+        return Ok(tuicr::editor::launch_editor(&command).map(EditorOutcome::Detached));
+    }
     let suspension = terminal.suspend()?;
-    let editor_result = tuicr::editor::run_editor(target);
+    let editor_result = tuicr::editor::run_editor(&command);
     suspension.resume()?;
-    Ok(editor_result)
+    Ok(editor_result.map(|()| EditorOutcome::Finished))
 }

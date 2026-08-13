@@ -53,6 +53,9 @@ impl App {
         };
 
         if path.exists() {
+            if self.session.pr_session_key.is_some() {
+                crate::persistence::storage::reindex_session(&self.session)?;
+            }
             if self.ephemeral_session_paths.contains(&path) {
                 let saved_path = self.save_current_session_merging_external()?;
                 return Ok(Some(saved_path));

@@ -72,6 +72,19 @@ impl App {
         // current inline selection are hidden. `None` => no selector, show all.
         let commit_set = self.selected_commit_set();
 
+        if let Some(info) = &self.pr_info {
+            let pr_line_count = crate::ui::pr_info_panel::build_pr_info_lines(
+                info,
+                crate::ui::pr_info_panel::pr_info_content_width(self.diff_state.viewport_width),
+                &self.theme,
+            )
+            .len();
+            for line_idx in 0..pr_line_count {
+                self.line_annotations
+                    .push(AnnotatedLine::PrInfoLine { line_idx });
+            }
+        }
+
         // The review-comments header is omitted in single-file view (see
         // the matching guard in `src/ui/diff_unified.rs`), so the
         // annotation list mirrors the render.
@@ -116,11 +129,35 @@ impl App {
             }
         }
 
+        if let Some(info) = &self.pr_info
+            && !info.issue_comments.is_empty()
+        {
+            if !self.is_single_file_view {
+                self.line_annotations
+                    .push(AnnotatedLine::IssueCommentsHeader);
+            }
+            for (comment_idx, comment) in info.issue_comments.iter().enumerate() {
+                let comment_lines = crate::ui::pr_info_panel::issue_comment_display_lines(
+                    comment,
+                    self.diff_state.viewport_width,
+                );
+                for _ in 0..comment_lines {
+                    self.line_annotations
+                        .push(AnnotatedLine::IssueComment { comment_idx });
+                }
+            }
+        }
+
         for (file_idx, file) in self.diff_files.iter().enumerate() {
             // Single-file view renders only the currently focused file,
             // so the annotation stream must skip every other file or
             // click handling lands on lines that aren't visible.
             if self.is_single_file_view && file_idx != self.diff_state.current_file_idx {
+                continue;
+            }
+            // Hidden by an include/exclude filter: emit no annotations, the
+            // same way the renderers emit no lines.
+            if !self.file_passes_filter(file) {
                 continue;
             }
             let path = file.display_path();
@@ -133,9 +170,16 @@ impl App {
 
             // If reviewed, skip all content for this file. Single-file
             // view ignores the reviewed-collapse since the user
-            // explicitly focused this file.
-            if self.session.is_file_reviewed(path) && !self.is_single_file_view {
-                continue;
+            // explicitly focused this file, and renders the body under a
+            // "Marked reviewed" banner instead — that banner is a rendered
+            // row, so it needs its own annotation slot to keep this stream
+            // index-parallel with the renderers.
+            if self.session.is_file_reviewed(path) {
+                if !self.is_single_file_view {
+                    continue;
+                }
+                self.line_annotations
+                    .push(AnnotatedLine::ReviewedBanner { file_idx });
             }
 
             // File comments
@@ -345,6 +389,8 @@ impl App {
             // Spacing line
             self.line_annotations.push(AnnotatedLine::Spacing);
         }
+
+        self.refresh_search_matches();
     }
 
     fn push_comments(

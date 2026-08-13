@@ -12,6 +12,23 @@ use crate::model::{DiffLine, FileStatus};
 pub enum ForgeKind {
     GitHub,
     GitLab,
+    /// Bitbucket Cloud only. Data Center speaks an unrelated REST 1.0 API and
+    /// is rejected during remote-URL parsing.
+    Bitbucket,
+    #[serde(rename = "azure_devops")]
+    AzureDevOps,
+}
+
+impl ForgeKind {
+    /// Brand name as users expect to see it, for messages and export headers.
+    pub fn display_name(self) -> &'static str {
+        match self {
+            ForgeKind::GitHub => "GitHub",
+            ForgeKind::GitLab => "GitLab",
+            ForgeKind::Bitbucket => "Bitbucket",
+            ForgeKind::AzureDevOps => "Azure DevOps",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,12 +66,50 @@ impl ForgeRepository {
         }
     }
 
+    /// `owner` carries the Bitbucket Cloud workspace.
+    pub fn bitbucket(
+        host: impl Into<String>,
+        owner: impl Into<String>,
+        name: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind: ForgeKind::Bitbucket,
+            host: host.into(),
+            owner: owner.into(),
+            name: name.into(),
+        }
+    }
+
+    /// Build an Azure DevOps repository coordinate.
+    ///
+    /// Azure repos live under `organization/project/repository` — one level
+    /// deeper than GitHub/GitLab. We pack `organization/project` into `owner`
+    /// (the same trick GitLab uses for nested subgroups) and keep `name` as the
+    /// bare repository. `crate::forge::azure::az::azure_coords` splits `owner`
+    /// back into `(organization, project)`.
+    pub fn azure(
+        host: impl Into<String>,
+        owner: impl Into<String>,
+        name: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind: ForgeKind::AzureDevOps,
+            host: host.into(),
+            owner: owner.into(),
+            name: name.into(),
+        }
+    }
+
     pub fn slug(&self) -> String {
         format!("{}/{}", self.owner, self.name)
     }
 
     pub fn display_name(&self) -> String {
-        if self.host == "github.com" || self.host == "gitlab.com" {
+        if self.host == "github.com"
+            || self.host == "gitlab.com"
+            || self.host == "bitbucket.org"
+            || self.host == "dev.azure.com"
+        {
             self.slug()
         } else {
             format!("{}/{}", self.host, self.slug())
@@ -365,9 +420,73 @@ pub struct PullRequestReviewRecord {
     pub commit_oid: Option<String>,
 }
 
+/// A reviewer's latest response on a pull request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullRequestReviewStatus {
+    pub author: Option<String>,
+    pub state: String,
+    pub submitted_at: Option<DateTime<Utc>>,
+}
+
+/// A CI check or commit status attached to a pull request head.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullRequestCheckStatus {
+    pub name: String,
+    /// GitHub CheckRun status (`COMPLETED`, `IN_PROGRESS`, …) or empty for legacy contexts.
+    pub status: Option<String>,
+    /// Normalized outcome: `SUCCESS`, `FAILURE`, `PENDING`, etc.
+    pub conclusion: Option<String>,
+    /// Link to the check run or legacy status context, when available.
+    pub url: Option<String>,
+}
+
+/// A top-level PR conversation comment (issue comment), not tied to a review or diff line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullRequestIssueComment {
+    pub author: Option<String>,
+    pub body: String,
+    pub url: Option<String>,
+    pub created_at: Option<DateTime<Utc>>,
+}
+
+/// Extended PR metadata rendered at the top of the diff view.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullRequestInfo {
+    pub details: PullRequestDetails,
+    pub review_decision: Option<String>,
+    pub mergeable: Option<String>,
+    pub merge_state: Option<String>,
+    pub requested_reviewers: Vec<String>,
+    pub latest_reviews: Vec<PullRequestReviewStatus>,
+    pub checks: Vec<PullRequestCheckStatus>,
+    pub issue_comments: Vec<PullRequestIssueComment>,
+}
+
+impl PullRequestInfo {
+    /// Minimal panel info when a backend only exposes base PR details.
+    pub fn from_details(details: PullRequestDetails) -> Self {
+        Self {
+            details,
+            review_decision: None,
+            mergeable: None,
+            merge_state: None,
+            requested_reviewers: Vec::new(),
+            latest_reviews: Vec::new(),
+            checks: Vec::new(),
+            issue_comments: Vec::new(),
+        }
+    }
+}
+
 pub trait ForgeBackend {
     fn list_pull_requests(&self, query: PullRequestListQuery) -> Result<PagedPullRequests>;
     fn get_pull_request(&self, target: PullRequestTarget) -> Result<PullRequestDetails>;
+    /// Fetch PR metadata for the description panel. The default builds a
+    /// minimal [`PullRequestInfo`] from [`Self::get_pull_request`].
+    fn get_pull_request_info(&self, target: PullRequestTarget) -> Result<PullRequestInfo> {
+        let details = self.get_pull_request(target)?;
+        Ok(PullRequestInfo::from_details(details))
+    }
     fn get_pull_request_diff(&self, pr: &PullRequestDetails) -> Result<String>;
     /// Fetch the requested file lines from the forge for context expansion.
     /// Implementations may optimize by reading from a local checkout when

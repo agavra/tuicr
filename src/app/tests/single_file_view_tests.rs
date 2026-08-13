@@ -104,6 +104,36 @@ fn app_with_root(root_path: PathBuf, files: Vec<DiffFile>) -> App {
 }
 
 #[test]
+fn collapsing_selected_directory_keeps_tree_selection() {
+    let mut app = app_with(vec![
+        file("README.md", vec![hunk(1, 1)]),
+        file("src/app.rs", vec![hunk(1, 1)]),
+        file("src/main.rs", vec![hunk(1, 1)]),
+    ]);
+    app.expand_all_dirs();
+
+    let tree_idx = app
+        .build_visible_items()
+        .iter()
+        .position(|item| {
+            matches!(
+                item,
+                FileTreeItem::Directory { path, .. } if path == "src"
+            )
+        })
+        .expect("src directory");
+    app.file_list_state.select(tree_idx);
+
+    app.toggle_directory("src");
+
+    assert_eq!(app.file_list_state.selected(), tree_idx);
+    assert!(matches!(
+        app.get_selected_tree_item(),
+        Some(FileTreeItem::Directory { path, .. }) if path == "src"
+    ));
+}
+
+#[test]
 fn editor_target_uses_selected_file_list_row() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("main.rs");
@@ -499,4 +529,37 @@ fn effective_file_height_is_zero_for_non_current_in_single_file_view() {
     assert_eq!(app.effective_file_height(1, other), 0);
     let current = &app.diff_files[0].clone();
     assert!(app.effective_file_height(0, current) > 0);
+}
+
+#[test]
+fn reviewed_banner_keeps_annotations_aligned_with_rendered_rows() {
+    let mut app = app_with(vec![file("a.rs", vec![hunk(1, 3)])]);
+    app.toggle_single_file_view();
+
+    let before = app.line_annotations.len();
+    app.toggle_reviewed();
+
+    // Single-file view renders the focused file under a "Marked reviewed"
+    // banner, so both the annotation stream and the height model grow by
+    // exactly that one row.
+    assert!(app.session.is_file_reviewed(&PathBuf::from("a.rs")));
+    assert_eq!(app.line_annotations.len(), before + 1);
+    assert_eq!(app.line_annotations.len(), app.total_lines());
+    assert!(matches!(
+        app.line_annotations.first(),
+        Some(AnnotatedLine::ReviewedBanner { file_idx: 0 })
+    ));
+    assert!(matches!(
+        app.line_annotations.get(1),
+        Some(AnnotatedLine::HunkHeader { .. })
+    ));
+
+    // With the banner occupying row 0, moving down from it lands on the
+    // hunk header the renderer draws directly beneath it.
+    app.diff_state.cursor_line = 0;
+    app.cursor_down(1);
+    assert!(matches!(
+        app.line_annotations.get(app.diff_state.cursor_line),
+        Some(AnnotatedLine::HunkHeader { .. })
+    ));
 }

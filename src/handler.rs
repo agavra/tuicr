@@ -2,14 +2,14 @@ use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Position;
 
 use crate::app::{
-    self, App, CommandCompletionState, ExpandDirection, FileTreeItem, FocusedPanel, GapCursorHit,
-    InputMode, TargetTab, VisualSelection,
+    self, App, CommandCompletionState, ExpandDirection, FileTreeItem, FileTreePrompt, FocusedPanel,
+    GapCursorHit, InputMode, TargetTab, VisualSelection,
 };
 use crate::forge::remote_comments::PrCommentsVisibility;
 use crate::forge::submit::SubmitEvent;
 use crate::input::Action;
 use crate::model::{ClearScope, LineSide};
-use crate::output::{export_to_clipboard, generate_export_content};
+use crate::output::{copy_text_to_clipboard, export_to_clipboard, generate_export_content};
 use crate::text_edit::{
     delete_char_before, delete_word_before, next_char_boundary, prev_char_boundary,
 };
@@ -28,6 +28,7 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     CommandSpec::new(&["e", "reload"], CommandKind::Reload),
     CommandSpec::new(&["edit"], CommandKind::Edit),
     CommandSpec::new(&["clip", "export"], CommandKind::Export),
+    CommandSpec::new(&["copy-url"], CommandKind::CopyUrl),
     CommandSpec::new(
         &["clear"],
         CommandKind::Clear(ClearScope::CommentsAndReviewed),
@@ -40,6 +41,18 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     CommandSpec::new(&["set wrap"], CommandKind::SetWrap),
     CommandSpec::new(&["set wrap!"], CommandKind::ToggleWrap),
     CommandSpec::new(&["wrap"], CommandKind::ToggleWrap),
+    CommandSpec::new(
+        &["set relativenumber"],
+        CommandKind::SetRelativeLineNumbers(true),
+    ),
+    CommandSpec::new(
+        &["set norelativenumber"],
+        CommandKind::SetRelativeLineNumbers(false),
+    ),
+    CommandSpec::new(
+        &["set relativenumber!"],
+        CommandKind::ToggleRelativeLineNumbers,
+    ),
     CommandSpec::new(&["vim", "set vim!"], CommandKind::ToggleVim),
     CommandSpec::new(&["set vim"], CommandKind::SetVim(true)),
     CommandSpec::new(&["novim", "set novim"], CommandKind::SetVim(false)),
@@ -108,6 +121,7 @@ enum CommandKind {
     Reload,
     Edit,
     Export,
+    CopyUrl,
     Clear(ClearScope),
     Help,
     MessageDetails,
@@ -115,6 +129,8 @@ enum CommandKind {
     Update,
     SetWrap,
     ToggleWrap,
+    SetRelativeLineNumbers(bool),
+    ToggleRelativeLineNumbers,
     ToggleVim,
     SetVim(bool),
     SetCommitsVisible(bool),
@@ -345,6 +361,20 @@ fn handle_left_click(app: &mut App, pos: Position) {
     }
 }
 
+fn handle_copy_pr_url(app: &mut App) {
+    let app::DiffSource::PullRequest(pr) = &app.diff_source else {
+        app.set_warning(":copy-url only applies in PR mode");
+        return;
+    };
+    let url = pr.url.clone();
+
+    match copy_text_to_clipboard(&url) {
+        Ok(true) => app.set_message("PR URL copied to clipboard (via terminal)"),
+        Ok(false) => app.set_message("PR URL copied to clipboard"),
+        Err(e) => app.set_warning(format!("Failed to copy PR URL: {e}")),
+    }
+}
+
 /// Export review: either to clipboard or set pending stdout output based on app.output_to_stdout.
 /// When output_to_stdout is true, stores the content and sets should_quit.
 fn handle_export(app: &mut App) {
@@ -354,7 +384,7 @@ fn handle_export(app: &mut App) {
             &app.session,
             &app.diff_source,
             &app.comment_types,
-            app.export_legend,
+            &app.export,
             &app.forge_review_threads,
             slug.as_deref(),
         ) {
@@ -369,13 +399,33 @@ fn handle_export(app: &mut App) {
             &app.session,
             &app.diff_source,
             &app.comment_types,
-            app.export_legend,
+            &app.export,
             &app.forge_review_threads,
             slug.as_deref(),
         ) {
             Ok(msg) => app.set_message(msg),
             Err(e) => app.set_warning(format!("{e}")),
         }
+    }
+}
+
+/// Copy just the comment under the cursor (`Y`). Unlike `y`, the rest of the
+/// review stays out of the clipboard, so a single comment can go straight into
+/// a chat message or an agent prompt.
+fn handle_copy_comment_at_cursor(app: &mut App) {
+    let Some(content) = app.comment_content_at_cursor() else {
+        if app.cursor_on_remote_thread() {
+            let forge = app.forge_display_name();
+            app.set_message(format!("Y copies local comments; this one is on {forge}"));
+        } else {
+            app.set_message("No comment at cursor");
+        }
+        return;
+    };
+    match copy_text_to_clipboard(&content) {
+        Ok(true) => app.set_message("Comment copied to clipboard (via terminal)"),
+        Ok(false) => app.set_message("Comment copied to clipboard"),
+        Err(e) => app.set_warning(format!("{e}")),
     }
 }
 
@@ -769,6 +819,10 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
             handle_export(app);
             CommandAfterDispatch::ExitCommandMode
         }
+        CommandKind::CopyUrl => {
+            handle_copy_pr_url(app);
+            CommandAfterDispatch::ExitCommandMode
+        }
         CommandKind::Clear(scope) => {
             app.clear_comments(scope);
             CommandAfterDispatch::ExitCommandMode
@@ -799,6 +853,14 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
         }
         CommandKind::ToggleWrap => {
             app.toggle_diff_wrap();
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::SetRelativeLineNumbers(enabled) => {
+            app.relative_line_numbers = enabled;
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::ToggleRelativeLineNumbers => {
+            app.relative_line_numbers = !app.relative_line_numbers;
             CommandAfterDispatch::ExitCommandMode
         }
         CommandKind::ToggleVim => {
@@ -1076,7 +1138,7 @@ pub fn handle_confirm_action(app: &mut App, action: Action) {
                         &app.session,
                         &app.diff_source,
                         &app.comment_types,
-                        app.export_legend,
+                        &app.export,
                         &app.forge_review_threads,
                         slug.as_deref(),
                     ) {
@@ -1088,7 +1150,7 @@ pub fn handle_confirm_action(app: &mut App, action: Action) {
                         &app.session,
                         &app.diff_source,
                         &app.comment_types,
-                        app.export_legend,
+                        &app.export,
                         &app.forge_review_threads,
                         slug.as_deref(),
                     ) {
@@ -1288,10 +1350,10 @@ pub fn handle_visual_action(app: &mut App, action: Action) {
         Action::Quit => app.should_quit = true,
         Action::ScrollViewDown(n) | Action::MouseScrollDown(n) => app.scroll_view_down(n),
         Action::ScrollViewUp(n) | Action::MouseScrollUp(n) => app.scroll_view_up(n),
-        Action::HalfPageDown => app.scroll_down(app.diff_state.viewport_height / 2),
-        Action::HalfPageUp => app.scroll_up(app.diff_state.viewport_height / 2),
-        Action::PageDown => app.scroll_down(app.diff_state.viewport_height),
-        Action::PageUp => app.scroll_up(app.diff_state.viewport_height),
+        Action::HalfPageDown => app.page_down(app.diff_state.viewport_height / 2),
+        Action::HalfPageUp => app.page_up(app.diff_state.viewport_height / 2),
+        Action::PageDown => app.page_down(app.diff_state.viewport_height),
+        Action::PageUp => app.page_up(app.diff_state.viewport_height),
         _ => {}
     }
     clear_visual_if_cursor_offscreen(app);
@@ -1299,7 +1361,27 @@ pub fn handle_visual_action(app: &mut App, action: Action) {
 
 /// Handle actions when file list panel is focused
 pub fn handle_file_list_action(app: &mut App, action: Action) {
+    // An open `i`/`e`/`/` prompt owns keyboard input until it is submitted or
+    // cancelled. The wheel still scrolls the list underneath it.
+    if app.file_tree_prompt_editing()
+        && !matches!(
+            action,
+            Action::MouseScrollDown(_) | Action::MouseScrollUp(_)
+        )
+    {
+        handle_file_tree_prompt_action(app, action);
+        return;
+    }
     match action {
+        Action::FileTreeFilterInclude => app.begin_file_tree_prompt(FileTreePrompt::Include),
+        Action::FileTreeFilterExclude => app.begin_file_tree_prompt(FileTreePrompt::Exclude),
+        Action::FileTreeClearInclude => app.clear_include_filter(),
+        Action::FileTreeClearExclude => app.clear_exclude_filter(),
+        Action::FileTreeSearch => app.begin_file_tree_prompt(FileTreePrompt::Search),
+        // With a tree search active, n/N step file matches. Otherwise they
+        // fall through to the diff search so the shared binding still works.
+        Action::SearchNext if app.file_tree_search_active() => app.file_tree_search_next(),
+        Action::SearchPrev if app.file_tree_search_active() => app.file_tree_search_prev(),
         Action::CursorDown(n) => app.file_list_down(n),
         Action::CursorUp(n) => app.file_list_up(n),
         Action::ScrollLeft(n) => app.file_list_state.scroll_left(n),
@@ -1325,6 +1407,21 @@ pub fn handle_file_list_action(app: &mut App, action: Action) {
             }
         }
         _ => handle_shared_normal_action(app, action),
+    }
+}
+
+/// Handle input while a file-tree prompt (`i` include, `e` exclude, `/`
+/// search) is open. Mirrors `handle_pr_filter_action` for the target selector.
+fn handle_file_tree_prompt_action(app: &mut App, action: Action) {
+    match action {
+        Action::InsertChar(c) => app.file_tree_prompt_insert_char(c),
+        Action::Paste(text) => app.file_tree_prompt_insert_str(&text),
+        Action::DeleteChar => app.file_tree_prompt_delete_char(),
+        Action::DeleteWord => app.file_tree_prompt_delete_word(),
+        Action::ClearLine => app.file_tree_prompt_clear_line(),
+        Action::SubmitInput => app.commit_file_tree_prompt(),
+        Action::ExitMode => app.cancel_file_tree_prompt(),
+        _ => {}
     }
 }
 
@@ -1361,10 +1458,14 @@ pub fn handle_comment_navigator_action(app: &mut App, action: Action) {
 /// right message when the comment is read-only or absent.
 fn edit_comment_at_cursor(app: &mut App, cursor_at_end: bool) {
     if app.cursor_on_locked_comment() {
-        app.set_message("Comment already pushed to GitHub — read only in tuicr");
+        let forge = app.forge_display_name();
+        app.set_message(format!(
+            "Comment already pushed to {forge} — read only in tuicr"
+        ));
     } else if !app.enter_edit_mode(cursor_at_end) {
         if app.cursor_on_remote_thread() {
-            app.set_message("GitHub comment — read only in tuicr");
+            let forge = app.forge_display_name();
+            app.set_message(format!("{forge} comment — read only in tuicr"));
         } else {
             app.set_message("No comment at cursor");
         }
@@ -1448,10 +1549,10 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
             app.show_file_list = false;
             app.focused_panel = FocusedPanel::Diff;
         }
-        Action::HalfPageDown => app.scroll_down(app.diff_state.viewport_height / 2),
-        Action::HalfPageUp => app.scroll_up(app.diff_state.viewport_height / 2),
-        Action::PageDown => app.scroll_down(app.diff_state.viewport_height),
-        Action::PageUp => app.scroll_up(app.diff_state.viewport_height),
+        Action::HalfPageDown => app.page_down(app.diff_state.viewport_height / 2),
+        Action::HalfPageUp => app.page_up(app.diff_state.viewport_height / 2),
+        Action::PageDown => app.page_down(app.diff_state.viewport_height),
+        Action::PageUp => app.page_up(app.diff_state.viewport_height),
         Action::GoToTop => app.jump_to_file(0),
         Action::GoToBottom => app.jump_to_bottom(),
         Action::NextFile => app.next_file(),
@@ -1528,12 +1629,14 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
         // `A` (vim only) edits with the text cursor at end-of-line.
         Action::EditCommentAtEnd if app.comment_vim_enabled => edit_comment_at_cursor(app, true),
         Action::ExportToClipboard => handle_export(app),
+        Action::CopyCommentAtCursor => handle_copy_comment_at_cursor(app),
         Action::SearchNext => {
             app.search_next_in_diff();
         }
         Action::SearchPrev => {
             app.search_prev_in_diff();
         }
+        Action::ClearSearchHighlight => app.clear_search_highlight(),
         Action::EnterVisualMode => {
             if app.get_line_at_cursor().is_some() {
                 app.enter_visual_mode_at_cursor();
@@ -1564,6 +1667,7 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
                 app.set_error(format!("Failed to load diff: {e}"));
             }
         }
+        Action::EditFile => app.queue_editor_for_focused_item(),
         _ => {}
     }
 }
@@ -1614,5 +1718,34 @@ pub fn handle_submit_confirm_action(app: &mut App, action: Action) {
         }
         Action::Quit => app.should_quit = true,
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod command_tests {
+    use super::{CommandKind, command_spec_for};
+
+    #[test]
+    fn parses_relative_line_number_commands() {
+        assert_eq!(
+            command_spec_for("set relativenumber").map(|spec| spec.kind),
+            Some(CommandKind::SetRelativeLineNumbers(true))
+        );
+        assert_eq!(
+            command_spec_for("set norelativenumber").map(|spec| spec.kind),
+            Some(CommandKind::SetRelativeLineNumbers(false))
+        );
+        assert_eq!(
+            command_spec_for("set relativenumber!").map(|spec| spec.kind),
+            Some(CommandKind::ToggleRelativeLineNumbers)
+        );
+    }
+
+    #[test]
+    fn parses_copy_url_command() {
+        assert_eq!(
+            command_spec_for("copy-url").map(|spec| spec.kind),
+            Some(CommandKind::CopyUrl)
+        );
     }
 }

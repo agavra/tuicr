@@ -41,6 +41,37 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy -- -D warnings
 
+  static-linux:
+    name: Static Linux binary
+    if: github.event_name == 'pull_request'
+    needs: [check, fmt]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install musl toolchain
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: x86_64-unknown-linux-musl
+      - name: Build static binary
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+          CC_x86_64_unknown_linux_musl: musl-gcc
+        run: cargo build --release --target x86_64-unknown-linux-musl
+      - name: Verify static binary
+        run: |
+          binary=target/x86_64-unknown-linux-musl/release/tuicr
+          version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)
+          test "$("$binary" --version)" = "tuicr $version"
+          if readelf -lW "$binary" | grep -Eq '(^|[[:space:]])INTERP([[:space:]]|$)'; then
+            echo "Linux release binary contains a dynamic interpreter" >&2
+            readelf -lW "$binary" >&2
+            exit 1
+          fi
+
   test:
     name: Test
     needs: [check, fmt]
@@ -56,64 +87,3 @@ jobs:
       - name: Install Jujutsu (if missing)
         run: command -v jj || cargo binstall --strategies crate-meta-data jj-cli --no-confirm
       - run: cargo test
-
-  update-test:
-    name: Update command (${{ matrix.os }})
-    needs: [check, fmt]
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Test manager and direct upgrade/rollback matrix
-        run: cargo test 'update::'
-      - name: Test live direct upgrade and rollback
-        shell: bash
-        env:
-          ROLLBACK_VERSION: 0.19.0
-        run: |
-          set -euo pipefail
-          extension=""
-          if [[ "$RUNNER_OS" == "Windows" ]]; then
-            extension=".exe"
-          fi
-
-          cargo build --bin tuicr
-          rollback_candidate="$RUNNER_TEMP/tuicr-rollback-candidate$extension"
-          cp "target/debug/tuicr$extension" "$rollback_candidate"
-
-          # Use separate candidates because v0.19.0 predates `tuicr update`.
-          cp Cargo.toml "$RUNNER_TEMP/tuicr-Cargo.toml"
-          cp Cargo.lock "$RUNNER_TEMP/tuicr-Cargo.lock"
-          trap 'cp "$RUNNER_TEMP/tuicr-Cargo.toml" Cargo.toml; cp "$RUNNER_TEMP/tuicr-Cargo.lock" Cargo.lock' EXIT
-          python - <<'PY'
-          from pathlib import Path
-          import re
-
-          manifest = Path("Cargo.toml")
-          updated, count = re.subn(
-              r'(?m)^version = "[^"]+"$',
-              'version = "0.0.0"',
-              manifest.read_text(),
-              count=1,
-          )
-          if count != 1:
-              raise SystemExit("could not set the test package version")
-          manifest.write_text(updated)
-          PY
-          cargo build --bin tuicr
-          upgrade_candidate="$RUNNER_TEMP/tuicr-upgrade-candidate$extension"
-          cp "target/debug/tuicr$extension" "$upgrade_candidate"
-          cp "$RUNNER_TEMP/tuicr-Cargo.toml" Cargo.toml
-          cp "$RUNNER_TEMP/tuicr-Cargo.lock" Cargo.lock
-
-          test "$("$upgrade_candidate" --version)" = "tuicr 0.0.0"
-          "$upgrade_candidate" update
-          test "$("$upgrade_candidate" --version)" != "tuicr 0.0.0"
-
-          "$rollback_candidate" update "$ROLLBACK_VERSION"
-          test "$("$rollback_candidate" --version)" = "tuicr $ROLLBACK_VERSION"
-          test -z "$(find "$RUNNER_TEMP" -maxdepth 1 -name '.tuicr-update-*' -print)"

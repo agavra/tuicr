@@ -137,7 +137,7 @@ jobs:
           draft: false
 
   build-binaries:
-    name: Build ${{ matrix.target }}
+    name: Build ${{ matrix.build_target }}
     needs: [publish]
     if: |
       always() &&
@@ -149,15 +149,19 @@ jobs:
     strategy:
       matrix:
         include:
-          - target: x86_64-unknown-linux-gnu
+          - build_target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
-          - target: aarch64-unknown-linux-gnu
+          - build_target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+          - build_target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
-          - target: x86_64-apple-darwin
+          - build_target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+          - build_target: x86_64-apple-darwin
             os: macos-15-intel
-          - target: aarch64-apple-darwin
+          - build_target: aarch64-apple-darwin
             os: macos-latest
-          - target: x86_64-pc-windows-msvc
+          - build_target: x86_64-pc-windows-msvc
             os: windows-latest
 
     steps:
@@ -171,27 +175,55 @@ jobs:
         run: echo "version=${{ needs.publish.outputs.version || github.event.inputs.version }}" >> $GITHUB_OUTPUT
 
       - name: Install dependencies (Linux)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && endsWith(matrix.build_target, '-musl')
         run: |
           sudo apt-get update
-          sudo apt-get install -y libssl-dev pkg-config
+          sudo apt-get install -y musl-tools
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.build_target }}
+
+      - name: Configure musl compiler
+        if: runner.os == 'Linux' && endsWith(matrix.build_target, '-musl')
+        shell: bash
+        run: |
+          cargo_target=$(echo '${{ matrix.build_target }}' | tr '[:lower:]-' '[:upper:]_')
+          cc_target=$(echo '${{ matrix.build_target }}' | tr '-' '_')
+          echo "CARGO_TARGET_${cargo_target}_LINKER=musl-gcc" >> "$GITHUB_ENV"
+          echo "CC_${cc_target}=musl-gcc" >> "$GITHUB_ENV"
+
+      - name: Configure static GNU runtime
+        if: runner.os == 'Linux' && endsWith(matrix.build_target, '-gnu')
+        shell: bash
+        run: echo 'RUSTFLAGS=-C target-feature=+crt-static' >> "$GITHUB_ENV"
 
       - name: Build
-        run: cargo build --release
+        run: cargo build --release --target ${{ matrix.build_target }}
+
+      - name: Verify static Linux binary
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          binary=target/${{ matrix.build_target }}/release/tuicr
+          test "$("$binary" --version)" = "tuicr ${{ steps.version.outputs.version }}"
+          if readelf -lW "$binary" | grep -Eq '(^|[[:space:]])INTERP([[:space:]]|$)'; then
+            echo "Linux release binary contains a dynamic interpreter" >&2
+            readelf -lW "$binary" >&2
+            exit 1
+          fi
 
       - name: Package binary (unix)
         if: runner.os != 'Windows'
         run: |
-          cd target/release
-          tar -czvf ../../tuicr-${{ steps.version.outputs.version }}-${{ matrix.target }}.tar.gz tuicr
+          cd target/${{ matrix.build_target }}/release
+          tar -czvf ../../../tuicr-${{ steps.version.outputs.version }}-${{ matrix.build_target }}.tar.gz tuicr
 
       - name: Package binary (windows)
         if: runner.os == 'Windows'
         run: |
-          cd target/release
-          7z a ../../tuicr-${{ steps.version.outputs.version }}-${{ matrix.target }}.zip tuicr.exe
+          cd target/${{ matrix.build_target }}/release
+          7z a ../../../tuicr-${{ steps.version.outputs.version }}-${{ matrix.build_target }}.zip tuicr.exe
 
       - name: Upload to release
         uses: softprops/action-gh-release@v2

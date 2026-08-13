@@ -20,8 +20,9 @@ Full reference. Press `?` inside tuicr for an in-app version of this list.
 | `{` / `}` | Jump to previous / next file |
 | `[` / `]` | Jump to previous / next hunk |
 | `m` / `M` | Jump to next / previous comment |
-| `/` | Search within diff (case-insensitive) |
-| `n` / `N` | Next / previous search match |
+| `/` | Search within diff (case-insensitive); matches on diff content are highlighted and the status bar shows the `[current/total]` position (headers, comments, and PR info are searchable but not highlighted) |
+| `n` / `N` | Next / previous search match (wraps around) |
+| `Esc` | Clear search-match highlighting; the pattern is kept so `n` / `N` still work |
 | `Enter` | Expand or collapse hidden context between hunks |
 | `zt` | Scroll cursor to top of screen |
 | `zz` | Center cursor on screen |
@@ -46,6 +47,42 @@ Press `?` to open help.
 | `Enter` | Expand directory / jump to file in diff |
 | `o` | Expand all directories |
 | `O` | Collapse all directories |
+| `i` | Filter to files matching a regex (include) |
+| `e` | Filter out files matching a regex (exclude) |
+| `I` | Clear the include filter |
+| `E` | Clear the exclude filter |
+| `/` | Search file paths (substring) |
+| `n` / `N` | Next / previous file-path match |
+
+These keys are only active while the file tree is focused — in the diff, `i` still
+edits the comment at the cursor and `/` still searches the diff.
+
+### Filtering
+
+`i` and `e` take case-insensitive regexes matched against each file's **full
+relative path** (`^src/`, `\.rs$`, `test|spec`). Both can be active at once:
+include runs first, then exclude removes from what's left.
+
+A filter is not just a tree view — hidden files also disappear from the diff
+pane, from `{`/`}` file navigation, `[`/`]` hunk navigation, and from the file
+and `+/-` counts in the header. The tree title reports how much is hidden
+(`Files · 2/12 · 12 of 58`), and the active patterns show in its bottom border.
+
+Enter applies, `Esc` cancels, `Ctrl-u` clears the line. Reopening a prompt
+pre-fills the pattern already applied, so submitting an emptied buffer is the
+same as `I` / `E`. An invalid regex reports the error and leaves the prompt open
+so it can be fixed. Comments on hidden files are not deleted and still export —
+filters are a view, not an edit.
+
+Filters are session-local: they are not written to the review session and reset
+when tuicr restarts, but they survive a `:e` reload.
+
+### Search
+
+`/` moves only the tree selection to the next matching path, expanding collapsed
+parents as needed, and leaves the diff viewport where it was — press `Enter` to
+jump the diff there. `n` / `N` step matches and wrap around. Search only ever
+considers files that pass the active filters.
 
 ## Panel focus
 
@@ -83,7 +120,15 @@ Shown below the file tree when local comments or visible remote PR threads exist
 | `dd` | Delete comment at cursor |
 | `i` | Edit comment at cursor (vim: text cursor at start) |
 | `A` | Edit comment at cursor with text cursor at end (vim mode only) |
+| `e` | Open focused file in `$EDITOR` |
 | `y` | Copy review to clipboard |
+| `Y` | Copy the comment at cursor to clipboard |
+
+`e` opens the file at the cursor's line. Terminal editors (`vim`, `nvim`, `nano`, …)
+take over the screen and tuicr reloads the diff once they exit. Windowed editors
+(`code`, `cursor`, `zed`, `subl`, …) open in their own window while tuicr stays on
+screen; reload with `:e` after editing. Adding `--wait` to `$EDITOR` opts a windowed
+editor back into the blocking behaviour.
 
 ## Visual mode
 
@@ -129,6 +174,7 @@ In command mode,
 | `:e` (`:reload`) | Reload diff files |
 | `:edit` | Open focused file in `$EDITOR` |
 | `:clip` (`:export`) | Copy review to clipboard |
+| `:copy-url` | Copy the open PR URL to clipboard (PR mode) |
 | `:diff` | Toggle diff view (unified / side-by-side) |
 | `:vim` / `:novim` (`:set vim` / `:set novim`) | Enable/toggle/disable vim modal editing in the comment box (overrides `comment_vim`) |
 | `:commits` | Select commits to review |
@@ -139,6 +185,8 @@ In command mode,
 | `:submit draft` | Submit a Draft review (pending on GitHub) |
 | `:set wrap` | Enable line wrap in diff view |
 | `:set wrap!` | Toggle line wrap in diff view |
+| `:set relativenumber` / `:set norelativenumber` | Enable / disable relative rendered-row numbers |
+| `:set relativenumber!` | Toggle relative rendered-row numbers |
 | `:set commits` | Show inline commit selector |
 | `:set nocommits` | Hide inline commit selector |
 | `:set commits!` | Toggle inline commit selector |
@@ -154,8 +202,8 @@ In command mode,
 | `?` | Toggle help |
 | `q` | Quick quit |
 
-`draft` applies to GitHub only. `comment`, `approve`, and `request-changes` work on both GitHub and
-GitLab MRs.
+`draft` applies to GitHub only. `comment` and `approve` work on GitHub, GitLab, and Bitbucket.
+`request-changes` works on GitHub and GitLab, but not Bitbucket yet.
 
 ## Commit selection / review target selector
 
@@ -174,7 +222,8 @@ GitLab MRs.
 Shown at the top of the diff when reviewing multiple commits. Focus it with `<leader>k` or `Tab`.
 When opening a GitHub PR or GitLab MR you have reviewed before, tuicr may preselect only commits
 newer than your latest submitted review; commits already covered by that review are marked with
-`✓`. Use `Space` / `Enter` here to expand or adjust the range.
+`✓`. Use `Space` / `Enter` here to expand or adjust the range. Bitbucket does not record which
+commit an approval covered, so no commits are preselected there.
 
 | Key | Action |
 |-----|--------|

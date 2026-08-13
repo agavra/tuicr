@@ -16,12 +16,17 @@ This project uses an automated release workflow via GitHub Actions.
    - Publishes to crates.io
    - Creates GitHub Release with release notes
    - Builds and uploads binaries for:
-     - `x86_64-unknown-linux-gnu` (Linux x64)
-     - `aarch64-unknown-linux-gnu` (Linux ARM64)
+     - `x86_64-unknown-linux-gnu` (Linux x64, static glibc)
+     - `x86_64-unknown-linux-musl` (Linux x64, static musl)
+     - `aarch64-unknown-linux-gnu` (Linux ARM64, static glibc)
+     - `aarch64-unknown-linux-musl` (Linux ARM64, static musl)
      - `x86_64-apple-darwin` (macOS x64)
      - `aarch64-apple-darwin` (macOS Apple Silicon)
      - `x86_64-pc-windows-msvc` (Windows x64)
-6. **Update Homebrew tap** (manual, see below)
+
+The Homebrew formula lives in [homebrew-core](https://github.com/Homebrew/homebrew-core)
+and is updated automatically by Homebrew's autobump bot after each release — no manual
+step required.
 
 ## Build Binaries for Existing Release
 
@@ -31,6 +36,10 @@ If you need to rebuild binaries for an existing release:
 2. **Select action:** `build-binaries`
 3. **Enter version:** e.g., `0.1.1` (without the `v` prefix)
 4. **Click "Run workflow"**
+
+Linux binaries are built for both GNU and musl targets, and their archive names
+use the matching target triples. The static GNU archives preserve compatibility
+with existing `tuicr update` installations.
 
 ## What Gets Updated
 
@@ -53,21 +62,11 @@ For meaningful changelogs, use conventional commits:
 | `test:` | Testing | `test: add integration tests` |
 | `chore:` | Miscellaneous | `chore: update dependencies` |
 
-## Update Homebrew Tap
+## Homebrew
 
-After binaries are uploaded, update the Homebrew formula:
-
-```bash
-# Get SHA256 checksums for the new version
-VERSION=X.Y.Z
-curl -sL "https://github.com/agavra/tuicr/releases/download/v${VERSION}/tuicr-${VERSION}-x86_64-apple-darwin.tar.gz" | shasum -a 256
-curl -sL "https://github.com/agavra/tuicr/releases/download/v${VERSION}/tuicr-${VERSION}-aarch64-apple-darwin.tar.gz" | shasum -a 256
-curl -sL "https://github.com/agavra/tuicr/releases/download/v${VERSION}/tuicr-${VERSION}-x86_64-unknown-linux-gnu.tar.gz" | shasum -a 256
-curl -sL "https://github.com/agavra/tuicr/releases/download/v${VERSION}/tuicr-${VERSION}-aarch64-unknown-linux-gnu.tar.gz" | shasum -a 256
-
-# Update homebrew-tap/Formula/tuicr.rb with new version and checksums
-# Then commit and push to homebrew-tap repo
-```
+The formula lives in [homebrew-core](https://github.com/Homebrew/homebrew-core)
+(`brew install tuicr`) and is bumped automatically by Homebrew's autobump bot when a
+new release is published — no manual action is needed.
 
 ## Required Secrets
 

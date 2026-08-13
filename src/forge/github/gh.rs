@@ -6,8 +6,8 @@ use crate::error::{Result, TuicrError};
 use crate::forge::remote_comments::{RemoteReviewSummary, RemoteReviewThread};
 use crate::forge::traits::{
     ForgeBackend, ForgeFileLinesRequest, ForgeRepository, GhCreateReviewResponse,
-    PagedPullRequests, PullRequestCommit, PullRequestDetails, PullRequestListQuery,
-    PullRequestListScope, PullRequestTarget,
+    PagedPullRequests, PullRequestCommit, PullRequestDetails, PullRequestInfo,
+    PullRequestListQuery, PullRequestListScope, PullRequestTarget,
 };
 use crate::model::DiffLine;
 use crate::process::{
@@ -15,7 +15,7 @@ use crate::process::{
 };
 use crate::vcs::slice_context_lines;
 
-use super::models::{GhPrCommit, GhPullRequestDetails, GhPullRequestSummary};
+use super::models::{GhPrCommit, GhPullRequestSummary};
 use super::review_summaries::{
     build_query as build_reviews_query, parse_graphql_page as parse_reviews_page,
 };
@@ -29,6 +29,28 @@ const PR_LIST_JSON_FIELDS: &str =
 const PR_VIEW_JSON_FIELDS: &str = concat!(
     "number,title,url,state,isDraft,author,headRefName,baseRefName,",
     "headRefOid,baseRefOid,body,updatedAt,closed,mergedAt"
+);
+const PR_INFO_JSON_FIELDS: &str = concat!(
+    "number,title,url,state,isDraft,author,headRefName,baseRefName,",
+    "headRefOid,baseRefOid,body,updatedAt,closed,mergedAt,",
+    "reviewDecision,mergeable,mergeStateStatus,reviewRequests,latestReviews,",
+    "statusCheckRollup,comments"
+);
+const PR_INFO_JSON_FIELDS_WITHOUT_CHECKS: &str = concat!(
+    "number,title,url,state,isDraft,author,headRefName,baseRefName,",
+    "headRefOid,baseRefOid,body,updatedAt,closed,mergedAt,",
+    "reviewDecision,mergeable,mergeStateStatus,reviewRequests,latestReviews,comments"
+);
+const PR_INFO_JSON_FIELDS_WITHOUT_COMMENTS: &str = concat!(
+    "number,title,url,state,isDraft,author,headRefName,baseRefName,",
+    "headRefOid,baseRefOid,body,updatedAt,closed,mergedAt,",
+    "reviewDecision,mergeable,mergeStateStatus,reviewRequests,latestReviews,",
+    "statusCheckRollup"
+);
+const PR_INFO_JSON_FIELDS_WITHOUT_CHECKS_OR_COMMENTS: &str = concat!(
+    "number,title,url,state,isDraft,author,headRefName,baseRefName,",
+    "headRefOid,baseRefOid,body,updatedAt,closed,mergedAt,",
+    "reviewDecision,mergeable,mergeStateStatus,reviewRequests,latestReviews"
 );
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -139,6 +161,11 @@ pub struct GitHubGhBackend<R = SystemGhRunner> {
     /// to `gh api`. It is **never** used as the source of truth for PR
     /// contents; the source of truth is always GitHub.
     local_checkout: Option<PathBuf>,
+    /// Whether `get_pull_request_info` requests the `statusCheckRollup` response from GitHub.
+    show_pr_checks: bool,
+    /// Whether `get_pull_request_info` requests pull-request conversation
+    /// comments from GitHub.
+    show_pr_comments: bool,
 }
 
 impl GitHubGhBackend<SystemGhRunner> {
@@ -147,6 +174,8 @@ impl GitHubGhBackend<SystemGhRunner> {
             default_repository,
             runner: SystemGhRunner,
             local_checkout: None,
+            show_pr_checks: false,
+            show_pr_comments: true,
         }
     }
 
@@ -165,11 +194,23 @@ where
             default_repository,
             runner,
             local_checkout: None,
+            show_pr_checks: false,
+            show_pr_comments: true,
         }
     }
 
     pub fn set_local_checkout(&mut self, checkout: Option<PathBuf>) {
         self.local_checkout = checkout;
+    }
+
+    pub fn with_pr_checks(mut self, show_pr_checks: bool) -> Self {
+        self.show_pr_checks = show_pr_checks;
+        self
+    }
+
+    pub fn with_pr_comments(mut self, show_pr_comments: bool) -> Self {
+        self.show_pr_comments = show_pr_comments;
+        self
     }
 
     pub fn local_checkout(&self) -> Option<&Path> {
@@ -238,6 +279,10 @@ where
     }
 
     fn get_pull_request(&self, target: PullRequestTarget) -> Result<PullRequestDetails> {
+        Ok(self.get_pull_request_info(target)?.details)
+    }
+
+    fn get_pull_request_info(&self, target: PullRequestTarget) -> Result<PullRequestInfo> {
         let repository = self.resolve_repository(&target)?;
         let output = self.run_gh(
             vec![
@@ -247,12 +292,17 @@ where
                 "--repo".to_string(),
                 gh_repo_arg(&repository),
                 "--json".to_string(),
-                PR_VIEW_JSON_FIELDS.to_string(),
+                match (self.show_pr_checks, self.show_pr_comments) {
+                    (true, true) => PR_INFO_JSON_FIELDS,
+                    (false, true) => PR_INFO_JSON_FIELDS_WITHOUT_CHECKS,
+                    (true, false) => PR_INFO_JSON_FIELDS_WITHOUT_COMMENTS,
+                    (false, false) => PR_INFO_JSON_FIELDS_WITHOUT_CHECKS_OR_COMMENTS,
+                }
+                .to_string(),
             ],
             &repository.host,
         )?;
-        let pr: GhPullRequestDetails = serde_json::from_str(&output)?;
-        pr.into_details(&repository)
+        super::pr_info::parse_pull_request_info(&output, &repository)
     }
 
     fn get_pull_request_diff(&self, pr: &PullRequestDetails) -> Result<String> {
@@ -619,7 +669,7 @@ pub fn parse_github_remote_url(remote_url: &str) -> Option<ForgeRepository> {
         .map(|(_, rest)| rest)
         .unwrap_or(without_scheme);
     let (host, path) = without_user.split_once('/')?;
-    repository_from_path(host, path)
+    repository_from_path(strip_port(host), path)
 }
 
 fn parse_numeric_target(target: &str) -> Option<PullRequestTarget> {
@@ -809,6 +859,18 @@ fn trim_url_suffix(value: &str) -> &str {
         .next()
         .unwrap_or(value)
         .trim_end_matches('/')
+}
+
+/// Strip a trailing `:<port>` from a host, e.g. `example.com:2222` ->
+/// `example.com`. `ssh://` remotes commonly carry a non-default SSH port
+/// (GitHub Enterprise instances behind a custom port); that port is
+/// meaningless for the HTTPS API host used to build `--repo` arguments, and
+/// left in place it turns into a broken URL.
+fn strip_port(host: &str) -> &str {
+    match host.rsplit_once(':') {
+        Some((h, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => h,
+        _ => host,
+    }
 }
 
 fn strip_git_suffix(value: &str) -> &str {
@@ -1302,6 +1364,17 @@ index 1111111..2222222 100644
     }
 
     #[test]
+    fn parses_ssh_remote_url_with_custom_port() {
+        // GitHub Enterprise instances behind a non-default SSH port must not
+        // leak that port into the ForgeRepository host; it breaks `--repo`
+        // URL construction against the HTTPS API.
+        let repository =
+            parse_github_remote_url("ssh://git@github.example.com:2222/agavra/tuicr.git").unwrap();
+        assert_eq!(repository.host, "github.example.com");
+        assert_eq!(repository.slug(), "agavra/tuicr");
+    }
+
+    #[test]
     fn resolve_ssh_hostname_resolves_alias_to_configured_hostname() {
         // (case name, alias, config, expected hostname)
         let cases: &[(&str, &str, &str, &str)] = &[
@@ -1610,6 +1683,57 @@ Match host github-work
     }
 
     #[test]
+    fn can_skip_pull_request_check_rollup() {
+        let runner = FakeGhRunner::default();
+        let backend = GitHubGhBackend::with_runner(Some(repo()), runner).with_pr_checks(false);
+
+        let info = backend
+            .get_pull_request_info(parse_pull_request_target("125").unwrap())
+            .unwrap();
+
+        assert!(info.checks.is_empty());
+        let calls = backend.runner.calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0].last().map(String::as_str),
+            Some(PR_INFO_JSON_FIELDS_WITHOUT_CHECKS)
+        );
+        assert!(
+            !calls[0]
+                .last()
+                .expect("expected --json field list")
+                .contains("statusCheckRollup")
+        );
+    }
+
+    #[test]
+    fn can_skip_pull_request_conversation_comments() {
+        let runner = FakeGhRunner::default();
+        let backend = GitHubGhBackend::with_runner(Some(repo()), runner)
+            .with_pr_checks(true)
+            .with_pr_comments(false);
+
+        let info = backend
+            .get_pull_request_info(parse_pull_request_target("125").unwrap())
+            .unwrap();
+
+        assert!(info.issue_comments.is_empty());
+        let calls = backend.runner.calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0].last().map(String::as_str),
+            Some(PR_INFO_JSON_FIELDS_WITHOUT_COMMENTS)
+        );
+        assert!(
+            !calls[0]
+                .last()
+                .expect("expected --json field list")
+                .split(',')
+                .any(|field| field == "comments")
+        );
+    }
+
+    #[test]
     fn get_pull_request_requires_repository() {
         let runner = FakeGhRunner::default();
         let backend = GitHubGhBackend::with_runner(None, runner);
@@ -1835,6 +1959,7 @@ Match host github-work
             counterpart_line: None,
             start_line: None,
             start_side: None,
+            range_anchors: None,
             old_path: None,
             body: body.to_string(),
             comment_id: format!("cid-{line}"),

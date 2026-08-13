@@ -129,10 +129,13 @@ mod tests {
             .args(["add", "-A"])
             .output()
             .expect("git add");
+        // `-c commit.gpgsign=false` overrides any global signing config so
+        // contributors with commit signing enabled aren't prompted to sign
+        // this throwaway commit in the temp repo.
         Command::new("git")
             .args(["-C"])
             .arg(dir)
-            .args(["commit", "-q", "-m", "init"])
+            .args(["-c", "commit.gpgsign=false", "commit", "-q", "-m", "init"])
             .output()
             .expect("git commit");
     }

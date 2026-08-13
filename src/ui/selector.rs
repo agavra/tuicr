@@ -437,7 +437,7 @@ fn render_target_selector_footer(frame: &mut Frame, app: &App, area: Rect) {
         _ => 0,
     };
 
-    let (right_span, right_width) = if let (Some(_), _) = (&app.message, ()) {
+    let (right_span, right_width) = if app.message.is_some() {
         status_bar::build_message_span(app.message.as_ref(), theme)
     } else if selected_count > 0 {
         let text = format!(" {selected_count} selected ");
@@ -446,9 +446,16 @@ fn render_target_selector_footer(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         (Span::raw(""), 0)
     };
+    let (left_spans, right_span, right_width) = if app.message.is_some() {
+        // Render the message next to the mode label so selector hints cannot
+        // push it beyond the visible footer.
+        (vec![mode_span, right_span], Span::raw(""), 0)
+    } else {
+        (vec![mode_span, hints_span], right_span, right_width)
+    };
 
     let spans = status_bar::build_right_aligned_spans(
-        vec![mode_span, hints_span],
+        left_spans,
         right_span,
         right_width,
         area.width as usize,
@@ -681,7 +688,7 @@ mod selector_render_snapshot_tests {
         // then — tab strip carries the disabled reason in its right slot
         let strip = row_text(&buffer, TAB_STRIP_ROW);
         assert!(
-            strip.contains("No GitHub remote on this repo"),
+            strip.contains("remote on this repo"),
             "expected disabled hint in tab strip, got: {strip:?}"
         );
     }
@@ -782,6 +789,20 @@ mod selector_render_snapshot_tests {
         assert!(
             footer.contains("r all PRs"),
             "expected footer toggle hint, got: {footer:?}"
+        );
+    }
+
+    #[test]
+    fn should_render_status_message_in_commit_selector_footer() {
+        let mut app = make_app(vec![commit(0), commit(1)]);
+        app.set_error("Failed to load commits");
+
+        let buffer = draw(&mut app);
+
+        let footer = row_text(&buffer, buffer.area.height - 1);
+        assert!(
+            footer.contains("Failed to load commits"),
+            "expected status message in selector footer, got: {footer:?}"
         );
     }
 

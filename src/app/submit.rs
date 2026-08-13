@@ -349,9 +349,16 @@ impl App {
         let event = in_flight.event;
         let mappable = in_flight.mappable.clone();
         let commit_id = state.commit_id.clone();
+        let show_pr_checks = self.show_pr_checks;
+        let show_pr_comments = self.show_pr_comments;
 
         std::thread::spawn(move || {
-            let backend = create_forge_backend(&repository, local_checkout);
+            let backend = create_forge_backend(
+                &repository,
+                local_checkout,
+                show_pr_checks,
+                show_pr_comments,
+            );
             // Need PR details for repo/owner routing; refetch lightly via
             // the same target the user opened with.
             let target = PullRequestTarget::with_repository(
@@ -420,14 +427,20 @@ impl App {
     }
 
     /// Human-readable name of the forge backing the current PR/MR review.
-    /// Used to keep submit messaging accurate across GitHub and GitLab.
+    /// Used to keep submit messaging accurate across GitHub, GitLab, Bitbucket,
+    /// and Azure DevOps.
     pub fn forge_display_name(&self) -> &'static str {
         match &self.diff_source {
-            DiffSource::PullRequest(pr) => match pr.key.repository.kind {
-                crate::forge::traits::ForgeKind::GitHub => "GitHub",
-                crate::forge::traits::ForgeKind::GitLab => "GitLab",
-            },
+            DiffSource::PullRequest(pr) => pr.key.repository.kind.display_name(),
             _ => "forge",
+        }
+    }
+
+    /// Return the forge backing the active PR/MR diff, when reviewing one.
+    pub fn forge_kind(&self) -> Option<crate::forge::traits::ForgeKind> {
+        match &self.diff_source {
+            DiffSource::PullRequest(pr) => Some(pr.key.repository.kind),
+            _ => None,
         }
     }
 

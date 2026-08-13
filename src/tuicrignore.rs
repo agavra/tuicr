@@ -39,6 +39,10 @@ pub fn has_ignore_rules(repo_root: &Path) -> bool {
     repo_root.join(".gitignore").is_file() || repo_root.join(".tuicrignore").is_file()
 }
 
+pub fn has_tuicrignore(repo_root: &Path) -> bool {
+    repo_root.join(".tuicrignore").is_file()
+}
+
 fn load_matcher(repo_root: &Path) -> Option<ignore::gitignore::Gitignore> {
     let gitignore_file = repo_root.join(".gitignore");
     let tuicrignore_file = repo_root.join(".tuicrignore");

@@ -163,7 +163,14 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  n/N       ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Next/prev search match"),
+            Span::raw("Next/prev search match (wraps)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  Esc       ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Clear search highlighting"),
         ]),
         Line::from(vec![
             Span::styled(
@@ -401,6 +408,37 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
             ),
             Span::raw("Collapse all directories"),
         ]),
+        Line::from(vec![
+            Span::styled(
+                "  i         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Filter to files matching a regex (hides others from tree + diff)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  e         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Filter out files matching a regex"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  I/E       ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Clear the include/exclude filter"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  /         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Search file paths; n/N step matches (selection only)"),
+        ]),
+        Line::from(Span::raw(
+            "  Patterns are case-insensitive and match the whole relative path.",
+        )),
         Line::from(""),
         Line::from(Span::styled(
             "Comment Navigator",
@@ -489,6 +527,20 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("Yank: mouse selection if any, else review to clipboard"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  Y         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Copy comment at cursor to clipboard"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  e         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Open focused file in $EDITOR"),
         ]),
         Line::from(vec![
             Span::styled(
@@ -656,6 +708,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  :copy-url ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Copy the open PR URL to clipboard (PR mode)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  :wrap     ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
@@ -777,6 +836,20 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("  Push a pending (draft) review to the forge"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :set relativenumber[!]",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  Enable/toggle relative rendered-row numbers"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :set norelativenumber",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  Disable relative rendered-row numbers"),
         ]),
         Line::from(vec![
             Span::styled(

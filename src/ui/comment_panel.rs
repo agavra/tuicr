@@ -8,6 +8,7 @@ use ratatui::{
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::App;
+use crate::forge::traits::ForgeKind;
 use crate::model::LineRange;
 use crate::theme::Theme;
 use crate::ui::styles;
@@ -295,13 +296,14 @@ pub fn format_comment_input_lines(
 /// box; replies appear as `├─ ↳ @author ──` separator headers within the
 /// same box; the bottom rule appears once at the end.
 ///
-/// Visually distinct from local drafts: the `[github @author]` badge on
+/// Visually distinct from local drafts: the `[forge @author]` badge on
 /// the root header, and a muted palette throughout for resolved/outdated
 /// threads.
 pub fn format_remote_thread_lines(
     theme: &Theme,
     thread: &crate::forge::remote_comments::RemoteReviewThread,
     muted: bool,
+    forge_kind: Option<ForgeKind>,
 ) -> Vec<Line<'static>> {
     let (badge_fg, border_fg, body_fg) = if muted {
         (theme.fg_dim, theme.fg_dim, theme.fg_dim)
@@ -332,7 +334,7 @@ pub fn format_remote_thread_lines(
     while let Some(comment) = iter.next() {
         let author = comment.author.as_deref().unwrap_or("unknown");
         if is_first {
-            let mut badge_text = format!("[github @{author}");
+            let mut badge_text = format!("[{} @{author}", forge_badge_label(forge_kind));
             if thread.is_resolved {
                 badge_text.push_str(" resolved");
             } else if thread.is_outdated {
@@ -373,11 +375,12 @@ pub fn format_remote_thread_lines(
 }
 
 /// Format a remote review summary (the body of a `PullRequestReview`) as a
-/// box with a `[github @author <state>]` header. Renders at review scope —
+/// box with a `[forge @author <state>]` header. Renders at review scope —
 /// no line anchor — so the top corner is `╭`, not the line-anchored `├`.
 pub fn format_remote_review_summary_lines(
     theme: &Theme,
     summary: &crate::forge::remote_comments::RemoteReviewSummary,
+    forge_kind: Option<ForgeKind>,
 ) -> Vec<Line<'static>> {
     let badge_fg = theme.diff_hunk_header;
     let border_fg = theme.diff_hunk_header;
@@ -388,7 +391,7 @@ pub fn format_remote_review_summary_lines(
     let body_style = Style::default().fg(body_fg);
 
     let author = summary.author.as_deref().unwrap_or("unknown");
-    let mut badge_text = format!("[github @{author}");
+    let mut badge_text = format!("[{} @{author}", forge_badge_label(forge_kind));
     if let Some(state_label) = summary.state.badge_label() {
         badge_text.push(' ');
         badge_text.push_str(state_label);
@@ -417,11 +420,21 @@ pub fn format_remote_review_summary_lines(
     result
 }
 
+fn forge_badge_label(kind: Option<ForgeKind>) -> &'static str {
+    match kind {
+        Some(ForgeKind::GitHub) => "github",
+        Some(ForgeKind::GitLab) => "gitlab",
+        Some(ForgeKind::Bitbucket) => "bitbucket",
+        Some(ForgeKind::AzureDevOps) => "azure",
+        None => "forge",
+    }
+}
+
 /// Format a comment as multiple lines with a box border (themed version).
 ///
 /// `author` advertises the comment's author in the top-row badge and tints
 /// the box border. Callers pass `Some(name)` for non-self comments — the
-/// resulting badge reads `[TYPE @name]`, mirroring the `[github @author]`
+/// resulting badge reads `[TYPE @name]`, mirroring the remote forge badge
 /// format used for remote PR threads. `None` keeps the existing neutral
 /// `[TYPE]` badge and theme border.
 /// Render `content` as markdown-highlighted, border-prefixed, pre-wrapped lines
@@ -932,5 +945,58 @@ mod tests {
             content_spans > 1,
             "expected markdown highlighting to split the line, got {content_spans} span(s)"
         );
+    }
+
+    #[test]
+    fn remote_thread_badge_uses_gitlab_for_gitlab_comments() {
+        let thread = crate::forge::remote_comments::RemoteReviewThread {
+            id: "thread".to_string(),
+            path: "src/lib.rs".to_string(),
+            line: Some(1),
+            side: crate::forge::remote_comments::RemoteCommentSide::Right,
+            is_resolved: false,
+            is_outdated: false,
+            comments: vec![crate::forge::remote_comments::RemoteReviewComment {
+                id: "comment".to_string(),
+                author: Some("alice".to_string()),
+                body: "body".to_string(),
+                created_at: None,
+                in_reply_to: None,
+                url: String::new(),
+            }],
+        };
+
+        let lines =
+            format_remote_thread_lines(&test_theme(), &thread, false, Some(ForgeKind::GitLab));
+        let header = lines[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+
+        assert!(header.contains("[gitlab @alice]"));
+        assert!(!header.contains("[github @alice]"));
+    }
+
+    #[test]
+    fn remote_summary_badge_uses_github_for_github_comments() {
+        let summary = crate::forge::remote_comments::RemoteReviewSummary {
+            id: "summary".to_string(),
+            author: Some("alice".to_string()),
+            body: "body".to_string(),
+            state: crate::forge::remote_comments::RemoteReviewState::Commented,
+            created_at: None,
+            url: String::new(),
+        };
+
+        let lines =
+            format_remote_review_summary_lines(&test_theme(), &summary, Some(ForgeKind::GitHub));
+        let header = lines[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+
+        assert!(header.contains("[github @alice]"));
     }
 }

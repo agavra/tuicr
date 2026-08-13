@@ -1,3 +1,5 @@
+use crate::editor::{EditorError, LaunchState};
+
 use super::*;
 
 impl App {
@@ -47,6 +49,9 @@ impl App {
     }
 
     pub fn current_file_path(&self) -> Option<&PathBuf> {
+        if self.is_cursor_in_overview() {
+            return None;
+        }
         self.current_file().map(|f| f.display_path())
     }
 
@@ -57,6 +62,34 @@ impl App {
     /// because `App` does not own terminal state.
     pub fn take_pending_editor_target(&mut self) -> Option<EditorTarget> {
         self.pending_editor_target.take()
+    }
+
+    /// Tracks a launched windowed editor so it gets cleaned up once it exits
+    /// and a failed launch gets reported.
+    pub fn track_editor_launch(&mut self, launch: EditorLaunch) {
+        self.editor_launches.push(launch);
+    }
+
+    /// Cleans up exited windowed editors and reports the ones that never
+    /// started.
+    ///
+    /// Returns whether a message was set.
+    pub fn poll_editor_launches(&mut self) -> bool {
+        let mut failures = Vec::new();
+        self.editor_launches
+            .retain_mut(|launch| match launch.poll() {
+                LaunchState::Running => true,
+                LaunchState::Exited => false,
+                LaunchState::FailedToLaunch(status) => {
+                    failures.push(status);
+                    false
+                }
+            });
+        let reported = !failures.is_empty();
+        for status in failures {
+            self.set_error(EditorError::Exit(status).to_string());
+        }
+        reported
     }
 
     /// Resolves the currently focused UI item into an editor target.
@@ -270,24 +303,54 @@ impl App {
         }
     }
 
+    /// Files currently shown. Excludes anything hidden by the file-tree
+    /// include/exclude filters so the header and tree title describe what is
+    /// actually on screen.
     pub fn file_count(&self) -> usize {
+        if !self.file_filter_active() {
+            return self.diff_files.len();
+        }
+        self.filtered_file_indices().len()
+    }
+
+    /// Total files in the diff, ignoring filters. Used to report how much a
+    /// filter is hiding.
+    pub fn unfiltered_file_count(&self) -> usize {
         self.diff_files.len()
     }
 
     pub fn reviewed_count(&self) -> usize {
-        self.session.reviewed_count()
+        if !self.file_filter_active() {
+            return self.session.reviewed_count();
+        }
+        // Counting the whole session here would read as `12/5` next to a
+        // filtered total, so count only reviewed files that survive.
+        self.filtered_file_indices()
+            .into_iter()
+            .filter(|&idx| {
+                self.diff_files
+                    .get(idx)
+                    .is_some_and(|file| self.session.is_file_reviewed(file.display_path()))
+            })
+            .count()
     }
 
-    /// Returns `(total_files, total_additions, total_deletions)` across all diff files.
+    /// Returns `(total_files, total_additions, total_deletions)` across the
+    /// files currently shown (filters applied).
     pub fn diff_stat(&self) -> (usize, usize, usize) {
         let mut additions = 0;
         let mut deletions = 0;
+        let mut files = 0;
         for file in &self.diff_files {
+            if !self.file_passes_filter(file) {
+                continue;
+            }
+            files += 1;
             let (a, d) = file.stat();
             additions += a;
             deletions += d;
         }
-        (self.diff_files.len(), additions, deletions)
+        (files, additions, deletions)
     }
 
     /// Returns true when the cursor is in the review comments area above all files.

@@ -243,6 +243,19 @@ pub fn group_threads_by_path(
     groups
 }
 
+/// Remove duplicate forge threads while preserving the first occurrence.
+///
+/// A thread's forge-assigned ID is stable across pagination and refreshes, so
+/// duplicate IDs are never separate discussions. Keeping this invariant at
+/// the cache boundary prevents one API anomaly from rendering a comment twice.
+pub fn dedupe_threads(threads: Vec<RemoteReviewThread>) -> Vec<RemoteReviewThread> {
+    let mut seen = std::collections::HashSet::new();
+    threads
+        .into_iter()
+        .filter(|thread| thread.id.is_empty() || seen.insert(thread.id.clone()))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -329,6 +342,21 @@ mod tests {
         assert_eq!(unresolved.len(), 2);
         assert_eq!(unresolved[0].id, "a");
         assert_eq!(unresolved[1].id, "c");
+    }
+
+    #[test]
+    fn should_dedupe_threads_by_forge_id_preserving_order() {
+        // given
+        let first = make_thread("same", "src/lib.rs", Some(10), false, false);
+        let duplicate = make_thread("same", "src/lib.rs", Some(20), false, false);
+        let other = make_thread("other", "src/main.rs", Some(30), false, false);
+        // when
+        let deduped = dedupe_threads(vec![first, duplicate, other]);
+        // then
+        assert_eq!(deduped.len(), 2);
+        assert_eq!(deduped[0].id, "same");
+        assert_eq!(deduped[0].line, Some(10));
+        assert_eq!(deduped[1].id, "other");
     }
 
     #[test]

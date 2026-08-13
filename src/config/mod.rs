@@ -34,6 +34,66 @@ impl Default for ForgeConfig {
     }
 }
 
+const DEFAULT_EXPORT_INTRO: &str =
+    "I reviewed your code and have the following comments. Please address them.";
+const DEFAULT_EXPORT_COMMENTS_HEADER: &str = "## Local tuicr Comments";
+const DEFAULT_EXPORT_REMOTE_COMMENTS_HEADER: &str = "## Existing GitHub Comments";
+
+/// `[export]` section settings shaping the generated review markdown.
+///
+/// Every field is optional so "unset" stays distinguishable from "set to the
+/// default". That distinction is load-bearing for `legend`, which the older
+/// top-level `export_legend` key also feeds: `[export]` may only override it
+/// when the section actually names the key.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct ExportConfig {
+    /// Intro line above the comment list. An empty string omits it.
+    pub intro: Option<String>,
+    /// Whether to emit the `Reviewing <scope>` line.
+    pub scope_line: Option<bool>,
+    /// Whether to emit the `URL:`/`Head:` lines in pull request mode. Kept
+    /// separate from `scope_line` because they carry addressable metadata
+    /// rather than framing, so trimming the preamble need not drop them.
+    pub pr_metadata: Option<bool>,
+    /// Heading above locally authored comments. An empty string omits it.
+    pub comments_header: Option<String>,
+    /// Heading above unresolved remote threads. An empty string omits it.
+    pub remote_comments_header: Option<String>,
+    /// Whether to emit the `Comment types:` legend.
+    pub legend: Option<bool>,
+}
+
+impl ExportConfig {
+    pub fn intro(&self) -> &str {
+        self.intro.as_deref().unwrap_or(DEFAULT_EXPORT_INTRO)
+    }
+
+    pub fn scope_line(&self) -> bool {
+        self.scope_line.unwrap_or(true)
+    }
+
+    pub fn pr_metadata(&self) -> bool {
+        self.pr_metadata.unwrap_or(true)
+    }
+
+    pub fn comments_header(&self) -> &str {
+        self.comments_header
+            .as_deref()
+            .unwrap_or(DEFAULT_EXPORT_COMMENTS_HEADER)
+    }
+
+    pub fn remote_comments_header(&self) -> &str {
+        self.remote_comments_header
+            .as_deref()
+            .unwrap_or(DEFAULT_EXPORT_REMOTE_COMMENTS_HEADER)
+    }
+
+    pub fn legend(&self) -> bool {
+        self.legend.unwrap_or(true)
+    }
+}
+
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct AppConfig {
@@ -44,6 +104,12 @@ pub struct AppConfig {
     pub backend: Option<String>,
     pub comment_types: Option<Vec<CommentTypeConfig>>,
     pub show_file_list: Option<bool>,
+    /// Whether pull-request CI checks are fetched and shown.
+    /// Defaults to false.
+    pub show_pr_checks: Option<bool>,
+    /// Whether pull-request conversation comments are fetched and shown.
+    /// Defaults to true.
+    pub show_pr_comments: Option<bool>,
     /// Whether the inline commit selector pane is visible on startup for
     /// multi-commit reviews. Defaults to true; toggle at runtime with
     /// `<leader>s` or `:set commits!`.
@@ -58,8 +124,10 @@ pub struct AppConfig {
     pub initial_commit_selection: Option<String>,
     pub ignore_whitespace: Option<bool>,
     pub wrap: Option<bool>,
+    pub relative_line_numbers: Option<bool>,
     pub export_legend: Option<bool>,
     pub cursor_line: Option<bool>,
+    pub search_highlight: Option<bool>,
     pub mouse: Option<bool>,
     /// Enable vim-style modal editing in the review comment text box. When
     /// unset/false the comment box uses the default emacs/readline bindings.
@@ -71,6 +139,9 @@ pub struct AppConfig {
     pub transparent_background: Option<bool>,
     pub scroll_offset: Option<usize>,
     pub review_watch_interval_ms: Option<usize>,
+    /// Disabled by default, and `0` disables it too. Ignored for
+    /// pull-request reviews and `--all-files` mode.
+    pub diff_watch_interval_ms: Option<usize>,
     pub no_update_check: Option<bool>,
     /// Render single-file and pristine views in full-width mode by default.
     /// Pristine `--all-files` mode already defaults to true regardless of
@@ -83,6 +154,25 @@ pub struct AppConfig {
     /// `[forge]` section settings. Always present; `None` means "no override"
     /// and downstream code should treat it as `ForgeConfig::default()`.
     pub forge: Option<ForgeConfig>,
+    /// `[export]` section settings. `None` means "no override"; downstream
+    /// code should treat it as `ExportConfig::default()`.
+    pub export: Option<ExportConfig>,
+}
+
+impl AppConfig {
+    /// Effective export settings, layering `[export]` over the older
+    /// top-level `export_legend`.
+    ///
+    /// `[export]` wins only for keys it actually names, so a section that
+    /// sets just `intro` leaves a configured `export_legend` in force
+    /// instead of resetting the legend to its default.
+    pub fn resolved_export(&self) -> ExportConfig {
+        let mut export = self.export.clone().unwrap_or_default();
+        if export.legend.is_none() {
+            export.legend = self.export_legend;
+        }
+        export
+    }
 }
 
 /// Known top-level config keys. Used to warn about typos.
@@ -94,14 +184,18 @@ const KNOWN_KEYS: &[&str] = &[
     "backend",
     "comment_types",
     "show_file_list",
+    "show_pr_checks",
+    "show_pr_comments",
     "show_commits",
     "diff_view",
     "commit_order",
     "initial_commit_selection",
     "ignore_whitespace",
     "wrap",
+    "relative_line_numbers",
     "export_legend",
     "cursor_line",
+    "search_highlight",
     "mouse",
     "comment_vim",
     "comment_tab_width",
@@ -109,13 +203,24 @@ const KNOWN_KEYS: &[&str] = &[
     "transparent_background",
     "scroll_offset",
     "review_watch_interval_ms",
+    "diff_watch_interval_ms",
     "no_update_check",
     "single_file_view",
     "username",
     "forge",
+    "export",
 ];
 
 const FORGE_KNOWN_KEYS: &[&str] = &["comment_type_prefix"];
+
+const EXPORT_KNOWN_KEYS: &[&str] = &[
+    "intro",
+    "scope_line",
+    "pr_metadata",
+    "comments_header",
+    "remote_comments_header",
+    "legend",
+];
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ConfigLoadOutcome {
@@ -163,8 +268,8 @@ fn themes_dir_from_parts(
 }
 
 fn config_dir_from_parts(
-    xdg_config_home: Option<PathBuf>,
-    home: Option<PathBuf>,
+    _xdg_config_home: Option<PathBuf>,
+    _home: Option<PathBuf>,
     _appdata: Option<PathBuf>,
 ) -> Result<PathBuf> {
     #[cfg(windows)]
@@ -177,11 +282,11 @@ fn config_dir_from_parts(
 
     #[cfg(not(windows))]
     {
-        if let Some(base) = xdg_config_home.filter(|p| !p.as_os_str().is_empty()) {
+        if let Some(base) = _xdg_config_home.filter(|p| !p.as_os_str().is_empty()) {
             return Ok(base.join("tuicr"));
         }
 
-        let home = home
+        let home = _home
             .filter(|p| !p.as_os_str().is_empty())
             .ok_or_else(|| anyhow!("Could not determine HOME for config directory"))?;
         Ok(home.join(".config").join("tuicr"))
@@ -303,6 +408,8 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
             .get("comment_types")
             .and_then(|v| parse_comment_types(v, &mut warnings)),
         show_file_list: read_bool(table, "show_file_list", &mut warnings),
+        show_pr_checks: read_bool(table, "show_pr_checks", &mut warnings),
+        show_pr_comments: read_bool(table, "show_pr_comments", &mut warnings),
         show_commits: read_bool(table, "show_commits", &mut warnings),
         diff_view: read_enum(
             table,
@@ -310,6 +417,7 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
             &["unified", "side-by-side"],
             &mut warnings,
         ),
+        relative_line_numbers: read_bool(table, "relative_line_numbers", &mut warnings),
         commit_order: read_enum(
             table,
             "commit_order",
@@ -326,6 +434,7 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         wrap: read_bool(table, "wrap", &mut warnings),
         export_legend: read_bool(table, "export_legend", &mut warnings),
         cursor_line: read_bool(table, "cursor_line", &mut warnings),
+        search_highlight: read_bool(table, "search_highlight", &mut warnings),
         mouse: read_bool(table, "mouse", &mut warnings),
         comment_vim: read_bool(table, "comment_vim", &mut warnings),
         comment_tab_width: read_usize(table, "comment_tab_width", &mut warnings),
@@ -333,12 +442,16 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         transparent_background: read_bool(table, "transparent_background", &mut warnings),
         scroll_offset: read_usize(table, "scroll_offset", &mut warnings),
         review_watch_interval_ms: read_usize(table, "review_watch_interval_ms", &mut warnings),
+        diff_watch_interval_ms: read_usize(table, "diff_watch_interval_ms", &mut warnings),
         no_update_check: read_bool(table, "no_update_check", &mut warnings),
         single_file_view: read_bool(table, "single_file_view", &mut warnings),
         username: read_string(table, "username", &mut warnings),
         forge: table
             .get("forge")
             .and_then(|v| parse_forge(v, &mut warnings)),
+        export: table
+            .get("export")
+            .and_then(|v| parse_export(v, &mut warnings)),
     };
 
     for key in table.keys() {
@@ -374,7 +487,7 @@ fn parse_forge(value: &Value, warnings: &mut Vec<String>) -> Option<ForgeConfig>
     let mut cfg = defaults.clone();
     let mut any_override = false;
 
-    if let Some(v) = read_forge_bool(table, "comment_type_prefix", warnings) {
+    if let Some(v) = read_section_bool(table, "forge", "comment_type_prefix", warnings) {
         cfg.comment_type_prefix = v;
         any_override = true;
     }
@@ -382,15 +495,76 @@ fn parse_forge(value: &Value, warnings: &mut Vec<String>) -> Option<ForgeConfig>
     if any_override { Some(cfg) } else { None }
 }
 
-/// Like `read_bool`, but emits a `forge.<key>` qualified warning so the user
-/// can locate the misconfigured field.
-fn read_forge_bool(table: &toml::Table, key: &str, warnings: &mut Vec<String>) -> Option<bool> {
+/// Parse the `[export]` section. Returns `Some` only when at least one
+/// recognized key is set, so an absent or empty section leaves every default —
+/// and the older top-level `export_legend` — untouched.
+fn parse_export(value: &Value, warnings: &mut Vec<String>) -> Option<ExportConfig> {
+    let Some(table) = value.as_table() else {
+        warnings.push("Warning: Config key 'export' must be a table; ignoring value".to_string());
+        return None;
+    };
+
+    for key in table.keys() {
+        if !EXPORT_KNOWN_KEYS.contains(&key.as_str()) {
+            warnings.push(format!(
+                "Warning: Unknown config key 'export.{key}', ignoring"
+            ));
+        }
+    }
+
+    let cfg = ExportConfig {
+        intro: read_section_string(table, "export", "intro", warnings),
+        scope_line: read_section_bool(table, "export", "scope_line", warnings),
+        pr_metadata: read_section_bool(table, "export", "pr_metadata", warnings),
+        comments_header: read_section_string(table, "export", "comments_header", warnings),
+        remote_comments_header: read_section_string(
+            table,
+            "export",
+            "remote_comments_header",
+            warnings,
+        ),
+        legend: read_section_bool(table, "export", "legend", warnings),
+    };
+
+    if cfg == ExportConfig::default() {
+        None
+    } else {
+        Some(cfg)
+    }
+}
+
+/// Like `read_bool`, but emits a `<section>.<key>` qualified warning so the
+/// user can locate the misconfigured field.
+fn read_section_bool(
+    table: &toml::Table,
+    section: &str,
+    key: &str,
+    warnings: &mut Vec<String>,
+) -> Option<bool> {
     let val = table.get(key)?;
     if let Some(b) = val.as_bool() {
         Some(b)
     } else {
         warnings.push(format!(
-            "Warning: Config key 'forge.{key}' must be a boolean; ignoring value"
+            "Warning: Config key '{section}.{key}' must be a boolean; ignoring value"
+        ));
+        None
+    }
+}
+
+/// Like `read_string`, but emits a `<section>.<key>` qualified warning.
+fn read_section_string(
+    table: &toml::Table,
+    section: &str,
+    key: &str,
+    warnings: &mut Vec<String>,
+) -> Option<String> {
+    let val = table.get(key)?;
+    if let Some(s) = val.as_str() {
+        Some(s.to_string())
+    } else {
+        warnings.push(format!(
+            "Warning: Config key '{section}.{key}' must be a string; ignoring value"
         ));
         None
     }
@@ -741,6 +915,56 @@ mod tests {
         assert_eq!(outcome.warnings.len(), 1);
     }
 
+    // show_pr_checks
+
+    #[test]
+    fn should_parse_show_pr_checks_false() {
+        let outcome = parse_config("show_pr_checks = false\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.show_pr_checks),
+            Some(false)
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_warn_and_ignore_show_pr_checks_with_invalid_type() {
+        let outcome = parse_config("show_pr_checks = \"no\"\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.show_pr_checks),
+            None
+        );
+        assert_eq!(
+            outcome.warnings,
+            vec!["Warning: Config key 'show_pr_checks' must be a boolean; ignoring value"]
+        );
+    }
+
+    // show_pr_comments
+
+    #[test]
+    fn should_parse_show_pr_comments_false() {
+        let outcome = parse_config("show_pr_comments = false\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.show_pr_comments),
+            Some(false)
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_warn_and_ignore_show_pr_comments_with_invalid_type() {
+        let outcome = parse_config("show_pr_comments = \"no\"\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.show_pr_comments),
+            None
+        );
+        assert_eq!(
+            outcome.warnings,
+            vec!["Warning: Config key 'show_pr_comments' must be a boolean; ignoring value"]
+        );
+    }
+
     // show_commits
 
     #[test]
@@ -761,6 +985,19 @@ mod tests {
             None
         );
         assert_eq!(outcome.warnings.len(), 1);
+    }
+
+    #[test]
+    fn should_parse_relative_line_numbers() {
+        let outcome = parse_config("relative_line_numbers = true\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.relative_line_numbers),
+            Some(true)
+        );
+        assert!(outcome.warnings.is_empty());
     }
 
     // diff_view
@@ -995,6 +1232,65 @@ mod tests {
         assert_eq!(
             outcome.warnings[0],
             "Warning: Config key 'review_watch_interval_ms' must be a non-negative integer; ignoring value"
+        );
+    }
+
+    // diff_watch_interval_ms
+
+    #[test]
+    fn should_parse_diff_watch_interval_ms() {
+        let outcome = parse_config("diff_watch_interval_ms = 250\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.diff_watch_interval_ms),
+            Some(250)
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    /// Unlike `review_watch_interval_ms`, this feature must default to off:
+    /// an absent key must parse to `None`, not a positive interval.
+    #[test]
+    fn should_default_diff_watch_interval_ms_to_none_when_absent() {
+        let outcome = parse_config("theme = \"dark\"\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.diff_watch_interval_ms),
+            None
+        );
+    }
+
+    #[test]
+    fn should_parse_zero_diff_watch_interval_ms_to_allow_disable() {
+        let outcome = parse_config("diff_watch_interval_ms = 0\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.diff_watch_interval_ms),
+            Some(0)
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_warn_and_ignore_negative_diff_watch_interval_ms() {
+        let outcome = parse_config("diff_watch_interval_ms = -1\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.diff_watch_interval_ms),
+            None
+        );
+        assert_eq!(outcome.warnings.len(), 1);
+        assert_eq!(
+            outcome.warnings[0],
+            "Warning: Config key 'diff_watch_interval_ms' must be a non-negative integer; ignoring value"
         );
     }
 
@@ -1323,6 +1619,219 @@ comment_type_prefix = "yes"
         assert_eq!(comment_types[0].id, "note");
         assert_eq!(comment_types[0].color, None);
         assert_eq!(outcome.warnings.len(), 1);
+    }
+
+    // export
+
+    #[test]
+    fn export_accessors_fall_back_to_shipped_defaults() {
+        // Locks the defaults to the strings tuicr has always emitted, so a
+        // config-layer change cannot silently alter existing exports.
+        let cfg = ExportConfig::default();
+        assert_eq!(
+            cfg.intro(),
+            "I reviewed your code and have the following comments. Please address them."
+        );
+        assert!(cfg.scope_line());
+        assert!(cfg.pr_metadata());
+        assert_eq!(cfg.comments_header(), "## Local tuicr Comments");
+        assert_eq!(cfg.remote_comments_header(), "## Existing GitHub Comments");
+        assert!(cfg.legend());
+    }
+
+    #[test]
+    fn should_default_export_to_none_when_section_missing() {
+        let outcome = parse_config("");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.export.clone()),
+            None
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_default_export_to_none_when_section_is_empty_table() {
+        let outcome = parse_config("[export]\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.export.clone()),
+            None
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_parse_export_section_overriding_defaults() {
+        // `r###` because the TOML contains `"##`, which would close `r#"…"#`.
+        let outcome = parse_config(
+            r###"[export]
+intro = "Code review comments:"
+scope_line = false
+pr_metadata = false
+comments_header = "## Comments"
+remote_comments_header = "## Upstream"
+legend = false
+"###,
+        );
+        let export = outcome
+            .config
+            .as_ref()
+            .and_then(|cfg| cfg.export.clone())
+            .expect("export section should parse");
+        assert_eq!(export.intro(), "Code review comments:");
+        assert!(!export.scope_line());
+        assert!(!export.pr_metadata());
+        assert_eq!(export.comments_header(), "## Comments");
+        assert_eq!(export.remote_comments_header(), "## Upstream");
+        assert!(!export.legend());
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_treat_empty_export_strings_as_explicit_overrides() {
+        // An empty string means "omit this line", which is distinct from the
+        // key being absent. The accessor must not fall back to the default.
+        let outcome = parse_config(
+            r#"[export]
+intro = ""
+comments_header = ""
+"#,
+        );
+        let export = outcome
+            .config
+            .as_ref()
+            .and_then(|cfg| cfg.export.clone())
+            .expect("export section should parse");
+        assert_eq!(export.intro(), "");
+        assert_eq!(export.comments_header(), "");
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_leave_unset_export_keys_as_none_for_legacy_precedence() {
+        // Setting only `intro` must not materialize a `legend` value, or the
+        // top-level `export_legend` key would be silently overridden.
+        let outcome = parse_config(
+            r#"export_legend = false
+
+[export]
+intro = "Notes:"
+"#,
+        );
+        let cfg = outcome.config.as_ref().expect("config should parse");
+        let export = cfg.export.clone().expect("export section should parse");
+        assert_eq!(export.legend, None);
+        assert_eq!(cfg.export_legend, Some(false));
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_warn_on_unknown_export_keys() {
+        let outcome = parse_config(
+            r#"[export]
+intro = "Notes:"
+preamble = "typo"
+"#,
+        );
+        let export = outcome
+            .config
+            .as_ref()
+            .and_then(|cfg| cfg.export.clone())
+            .expect("export section should parse");
+        assert_eq!(export.intro(), "Notes:");
+        assert_eq!(
+            outcome.warnings,
+            vec!["Warning: Unknown config key 'export.preamble', ignoring".to_string()]
+        );
+    }
+
+    #[test]
+    fn should_warn_and_ignore_export_string_with_invalid_type() {
+        let outcome = parse_config(
+            r#"[export]
+intro = 42
+"#,
+        );
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.export.clone()),
+            None
+        );
+        assert_eq!(
+            outcome.warnings,
+            vec!["Warning: Config key 'export.intro' must be a string; ignoring value".to_string()]
+        );
+    }
+
+    #[test]
+    fn should_warn_and_ignore_export_bool_with_invalid_type() {
+        let outcome = parse_config(
+            r#"[export]
+scope_line = "no"
+"#,
+        );
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.export.clone()),
+            None
+        );
+        assert_eq!(
+            outcome.warnings,
+            vec![
+                "Warning: Config key 'export.scope_line' must be a boolean; ignoring value"
+                    .to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn should_warn_when_export_is_not_a_table() {
+        let outcome = parse_config("export = true\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.export.clone()),
+            None
+        );
+        assert_eq!(
+            outcome.warnings,
+            vec!["Warning: Config key 'export' must be a table; ignoring value".to_string()]
+        );
+    }
+
+    // resolved export precedence
+
+    #[test]
+    fn should_default_resolved_export_to_shipped_behavior() {
+        let cfg = parse_config("").config.expect("config should parse");
+        let export = cfg.resolved_export();
+        assert!(export.legend());
+        assert!(export.scope_line());
+        assert!(export.pr_metadata());
+    }
+
+    #[test]
+    fn should_resolve_export_legend_from_the_legacy_flat_key() {
+        let cfg = parse_config("export_legend = false\n")
+            .config
+            .expect("config should parse");
+        assert!(!cfg.resolved_export().legend());
+    }
+
+    #[test]
+    fn should_let_export_section_override_the_legacy_legend_key() {
+        let cfg = parse_config("export_legend = false\n\n[export]\nlegend = true\n")
+            .config
+            .expect("config should parse");
+        assert!(cfg.resolved_export().legend());
+    }
+
+    #[test]
+    fn should_keep_legacy_legend_when_export_section_omits_it() {
+        // Guards the regression a fully-populated overrides struct would
+        // cause: adding `[export]` just to trim the intro must not switch
+        // the legend back on.
+        let cfg = parse_config("export_legend = false\n\n[export]\nintro = \"\"\n")
+            .config
+            .expect("config should parse");
+        let export = cfg.resolved_export();
+        assert!(!export.legend());
+        assert_eq!(export.intro(), "");
     }
 
     // config path resolution
