@@ -1,6 +1,6 @@
 ---
 name: tuicr
-description: Use tuicr's review CLI to read and add comments in active TUI review sessions, and launch tuicr in tmux, Zellij, or Herdr when a user needs an interactive review pane.
+description: Use tuicr's review CLI to read and add comments in active TUI review sessions, and launch tuicr in cmux, tmux, Zellij, or Herdr when a user needs an interactive review pane.
 ---
 
 # tuicr Review Workflow
@@ -72,13 +72,15 @@ When the user needs an interactive tuicr pane and no active session exists:
 
 | Environment | Action |
 |-------------|--------|
+| `$CMUX_WORKSPACE_ID` is set | Run `tuicr-wrapper-cmux.sh /path/to/repo` |
 | `$TMUX` is set | Run `tuicr-wrapper.sh /path/to/repo` |
 | `$ZELLIJ` is set | Run `tuicr-wrapper-zellij.sh /path/to/repo` |
 | `$HERDR_ENV` is `1` | Run `tuicr-wrapper-herdr.sh /path/to/repo` |
 | None is set | Tell the user you are waiting for them to start `tuicr` in the repo, then attach with `tuicr review list` after they say it is ready |
 
 If more than one multiplexer marker is set, prefer the innermost multiplexer if
-that is clear; otherwise ask.
+that is clear; otherwise ask. cmux hosts a Ghostty terminal, so `$TERM_PROGRAM`
+reads `ghostty` inside cmux — check `$CMUX_WORKSPACE_ID`, not the terminal name.
 
 tuicr supports both git and Jujutsu (jj) repositories, and jj workspaces may
 have no `.git` directory at all. Do not pre-check the directory with
@@ -88,6 +90,7 @@ run the wrapper and let it validate the repository.
 Wrapper paths are relative to this skill directory:
 
 ```bash
+<skill-directory>/tuicr-wrapper-cmux.sh /path/to/repo
 <skill-directory>/tuicr-wrapper.sh /path/to/repo
 <skill-directory>/tuicr-wrapper-zellij.sh /path/to/repo
 <skill-directory>/tuicr-wrapper-herdr.sh /path/to/repo
@@ -96,11 +99,19 @@ Wrapper paths are relative to this skill directory:
 The Herdr wrapper requires `jq` to read pane IDs and completion results from
 Herdr's JSON responses.
 
+The cmux wrapper accepts pass-through tuicr arguments after `--`, which is how
+you scope the review — for example `-- -w` for uncommitted working-tree changes
+or `-- -r <revset>` for a commit range.
+
 If your tool supports command timeouts, use a long timeout, such as 10 minutes,
-because the wrappers wait for the TUI to exit. Once the TUI creates its active
-session, use `tuicr review list --repo /path/to/repo` to capture the slug. If
-your environment cannot run another command while the wrapper is waiting, read
-the comments after the user exits tuicr.
+because the tmux, Zellij, and Herdr wrappers wait for the TUI to exit. The cmux
+wrapper is the exception: it returns as soon as the pane is running and prints
+the new surface ref between `=== TUICR SURFACE ===` markers. Capture that ref —
+it is how you close the pane later with `cmux close-surface --surface <ref>`.
+Once the TUI creates its active session, use
+`tuicr review list --repo /path/to/repo` to capture the slug. If your
+environment cannot run another command while a blocking wrapper is waiting,
+read the comments after the user exits tuicr.
 
 ## Read User Comments
 
@@ -202,6 +213,13 @@ comments are unavailable.
 
 ## Multiplexer Tips
 
+cmux:
+
+- Switch panes: click the pane, or `cmux focus-pane --pane <ref>`
+- Close tuicr: press `q`; the pane closes itself. Force it with `cmux close-surface --surface <ref>`
+- List panes: `cmux list-panes`
+- Read a pane without focusing it: `cmux read-screen --surface <ref>`
+
 tmux:
 
 - Switch panes: `Ctrl-b` then arrow keys
@@ -227,8 +245,9 @@ Herdr:
 | Situation | Action |
 |-----------|--------|
 | Multiple plausible active sessions | Ask which session slug to use |
-| No active session, tmux/Zellij/Herdr available | Start a new tuicr pane with the matching wrapper |
+| No active session, cmux/tmux/Zellij/Herdr available | Start a new tuicr pane with the matching wrapper |
 | No active session, no multiplexer | Tell the user you are waiting for them to start `tuicr` |
+| cmux wrapper printed no surface ref | Run `cmux list-panes` to find the pane, or ask the user to start `tuicr` themselves |
 | `tuicr` not installed | Tell the user to install tuicr |
 | Not a repository | Ask for the correct repo directory |
 | Comments are empty | Confirm the selected session or ask the user to save/add comments |
