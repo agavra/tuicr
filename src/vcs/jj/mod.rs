@@ -173,7 +173,7 @@ impl VcsBackend for JjBackend {
             return Ok(Vec::new());
         }
 
-        let path_str = file_path.to_string_lossy();
+        let path_str = quote_fileset(file_path);
         let content = if let Some(commit) = ref_commit {
             run_jj_command(
                 &self.info.root_path,
@@ -197,7 +197,7 @@ impl VcsBackend for JjBackend {
         file_status: FileStatus,
         ref_commit: Option<&str>,
     ) -> Result<u32> {
-        let path_str = file_path.to_string_lossy();
+        let path_str = quote_fileset(file_path);
         let content = if let Some(commit) = ref_commit {
             run_jj_command(
                 &self.info.root_path,
@@ -440,14 +440,20 @@ fn jj_show_batch(root: &Path, rev: &str, paths: &[PathBuf]) -> Result<HashMap<Pa
         return Ok(HashMap::new());
     }
     let template = format!("\"\\n{BATCH_BOUNDARY}\\n\" ++ path ++ \"\\n\"");
-    let path_strs: Vec<String> = paths
-        .iter()
-        .map(|p| p.to_string_lossy().into_owned())
-        .collect();
+    let path_strs: Vec<String> = paths.iter().map(|p| quote_fileset(p)).collect();
     let mut args: Vec<&str> = vec!["file", "show", "-r", rev, "-T", &template];
     args.extend(path_strs.iter().map(String::as_str));
     let output = run_jj_command(root, &args)?;
     Ok(parse_batched_files(&output))
+}
+
+/// Quote a path for jj's fileset argument syntax and escape quotations and backslashes
+fn quote_fileset(path: &Path) -> String {
+    let escaped = path
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    format!("\"{escaped}\"")
 }
 
 /// Run a jj command and return its stdout.
