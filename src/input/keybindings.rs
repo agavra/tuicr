@@ -47,6 +47,7 @@ pub enum Action {
     EditFile,
     SearchNext,
     SearchPrev,
+    ClearSearchHighlight,
 
     // Visual selection mode
     EnterVisualMode,
@@ -55,6 +56,8 @@ pub enum Action {
     // Session
     Quit,
     ExportToClipboard,
+    /// Copy just the comment under the cursor (`Y`), not the whole review.
+    CopyCommentAtCursor,
 
     // Mode changes
     EnterCommandMode,
@@ -220,6 +223,7 @@ fn map_normal_mode(key: KeyEvent, leader_key: char) -> Action {
         (KeyCode::Char('d'), KeyModifiers::NONE) => Action::PendingDCommand,
         (KeyCode::Char('v') | KeyCode::Char('V'), _) => Action::EnterVisualMode,
         (KeyCode::Char('y'), KeyModifiers::NONE) => Action::ExportToClipboard,
+        (KeyCode::Char('Y'), _) => Action::CopyCommentAtCursor,
         (KeyCode::Char('e'), KeyModifiers::NONE) => Action::EditFile,
         (KeyCode::Char('n'), KeyModifiers::NONE) => Action::SearchNext,
         (KeyCode::Char('N'), _) => Action::SearchPrev,
@@ -228,7 +232,7 @@ fn map_normal_mode(key: KeyEvent, leader_key: char) -> Action {
         (KeyCode::Char(':'), _) => Action::EnterCommandMode,
         (KeyCode::Char('/'), _) => Action::EnterSearchMode,
         (KeyCode::Char('?'), _) => Action::ToggleHelp,
-        (KeyCode::Esc, KeyModifiers::NONE) => Action::None,
+        (KeyCode::Esc, KeyModifiers::NONE) => Action::ClearSearchHighlight,
 
         // Quick quit
         (KeyCode::Char('q'), KeyModifiers::NONE) => Action::Quit,
@@ -618,6 +622,18 @@ mod tests {
     }
 
     #[test]
+    fn should_map_lowercase_and_uppercase_y_to_separate_yank_actions() {
+        assert_eq!(
+            map_normal_mode(key(KeyCode::Char('y')), DEFAULT_LEADER_KEY),
+            Action::ExportToClipboard
+        );
+        assert_eq!(
+            map_normal_mode(key_shift('Y'), DEFAULT_LEADER_KEY),
+            Action::CopyCommentAtCursor
+        );
+    }
+
+    #[test]
     fn should_map_uppercase_g_to_go_to_bottom_in_normal_mode() {
         let action = map_normal_mode(key_shift('G'), DEFAULT_LEADER_KEY);
         assert_eq!(action, Action::GoToBottom);
@@ -646,9 +662,9 @@ mod tests {
     }
 
     #[test]
-    fn should_leave_escape_unbound_in_normal_mode() {
+    fn should_map_escape_to_clear_search_highlight_in_normal_mode() {
         let action = map_normal_mode(key(KeyCode::Esc), DEFAULT_LEADER_KEY);
-        assert_eq!(action, Action::None);
+        assert_eq!(action, Action::ClearSearchHighlight);
     }
 
     #[test]

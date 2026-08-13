@@ -110,7 +110,14 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  n/N       ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Next/prev search match"),
+            Span::raw("Next/prev search match (wraps)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  Esc       ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Clear search highlighting"),
         ]),
         Line::from(vec![
             Span::styled(
@@ -470,6 +477,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  Y         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Copy comment at cursor to clipboard"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  e         ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
@@ -638,6 +652,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("Copy review to clipboard"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :copy-url ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Copy the open PR URL to clipboard (PR mode)"),
         ]),
         Line::from(vec![
             Span::styled(

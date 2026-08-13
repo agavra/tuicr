@@ -5,6 +5,7 @@
 //! instead of shelling out to forge-specific tools directly.
 #![allow(dead_code)]
 
+pub mod azure;
 pub mod bitbucket;
 pub mod canonical;
 pub mod context;
@@ -20,6 +21,7 @@ use std::path::{Path, PathBuf};
 
 use git2::Repository;
 
+use crate::forge::azure::az::parse_azure_remote_url;
 use crate::forge::bitbucket::bkt::parse_bitbucket_remote_url;
 use crate::forge::github::gh::parse_github_remote_url;
 use crate::forge::gitlab::glab::parse_gitlab_remote_url;
@@ -97,16 +99,27 @@ fn remote_urls(repo_root: &Path) -> Vec<String> {
     all_urls
 }
 
+/// Try to detect an Azure DevOps forge repository for the local checkout at
+/// `repo_root`. Looks at `origin` first, then any remote whose URL parses as an
+/// Azure DevOps host. Returns `None` when no Azure remote is configured.
+pub fn detect_azure_repository(repo_root: &Path) -> Option<ForgeRepository> {
+    remote_urls(repo_root)
+        .iter()
+        .find_map(|url| parse_azure_remote_url(url))
+}
+
 /// Parse `url` as a forge remote repository.
 ///
 /// Order matters. Bitbucket and GitLab both gate on the hostname, so trying
-/// them first won't claim GitHub Enterprise remotes. GitHub must stay last
-/// because its parser accepts *any* host (covers github.com and GHE hosts
+/// them first won't claim GitHub Enterprise remotes. Azure next — its parser
+/// filters to `dev.azure.com` / `*.visualstudio.com` hosts. GitHub must stay
+/// last because its parser accepts *any* host (covers github.com and GHE hosts
 /// whose hostname does not literally contain "github") — it would otherwise
-/// swallow every Bitbucket and self-hosted GitLab remote.
+/// swallow every Bitbucket, self-hosted GitLab, and Azure remote.
 pub fn parse_any_remote_url(url: &str) -> Option<ForgeRepository> {
     parse_bitbucket_remote_url(url)
         .or_else(|| parse_gitlab_remote_url(url))
+        .or_else(|| parse_azure_remote_url(url))
         .or_else(|| parse_github_remote_url(url))
 }
 

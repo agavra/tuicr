@@ -688,7 +688,7 @@ mod selector_render_snapshot_tests {
         // then — tab strip carries the disabled reason in its right slot
         let strip = row_text(&buffer, TAB_STRIP_ROW);
         assert!(
-            strip.contains("No GitHub, GitLab, or Bitbucket remote on this repo"),
+            strip.contains("remote on this repo"),
             "expected disabled hint in tab strip, got: {strip:?}"
         );
     }

@@ -419,6 +419,41 @@ impl App {
         }
     }
 
+    /// Content of the comment at the current cursor position, if any.
+    /// Resolves through the same lookup `dd` and `i` use, so `Y` yanks
+    /// exactly the comment the cursor is sitting on.
+    pub fn comment_content_at_cursor(&self) -> Option<String> {
+        match self.find_comment_at_cursor()? {
+            CommentLocation::Review { index } => self
+                .session
+                .review_comments
+                .get(index)
+                .map(|c| c.content.clone()),
+            CommentLocation::File { path, index } => self
+                .session
+                .files
+                .get(&path)
+                .and_then(|review| review.file_comments.get(index))
+                .map(|c| c.content.clone()),
+            CommentLocation::Line {
+                path,
+                line,
+                side,
+                index,
+            } => self
+                .session
+                .files
+                .get(&path)
+                .and_then(|review| review.line_comments.get(&line))
+                .and_then(|comments| comments.get(index))
+                // Same side guard as the delete path: the annotation index is
+                // absolute into the stored Vec, so confirm we landed on the
+                // side the cursor is actually showing.
+                .filter(|c| c.side.unwrap_or(LineSide::New) == side)
+                .map(|c| c.content.clone()),
+        }
+    }
+
     /// Delete the comment at the current cursor position, if any
     /// Returns true if a comment was deleted
     pub fn delete_comment_at_cursor(&mut self) -> bool {

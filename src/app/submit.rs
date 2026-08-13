@@ -427,8 +427,8 @@ impl App {
     }
 
     /// Human-readable name of the forge backing the current PR/MR review.
-    /// Used to keep submit messaging accurate across GitHub, GitLab, and
-    /// Bitbucket.
+    /// Used to keep submit messaging accurate across GitHub, GitLab, Bitbucket,
+    /// and Azure DevOps.
     pub fn forge_display_name(&self) -> &'static str {
         match &self.diff_source {
             DiffSource::PullRequest(pr) => pr.key.repository.kind.display_name(),

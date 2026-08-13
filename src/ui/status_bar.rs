@@ -327,7 +327,17 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         };
         let hints_span = Span::styled(hints, Style::default().fg(theme.fg_secondary));
 
-        vec![mode_span, hints_span]
+        let mut spans = vec![mode_span, hints_span];
+        if app.input_mode == InputMode::Normal
+            && app.message.is_none()
+            && let Some((current, total)) = app.search_match_position()
+        {
+            spans.push(Span::styled(
+                format!("   [{current}/{total}]"),
+                Style::default().fg(theme.fg_secondary),
+            ));
+        }
+        spans
     };
 
     // Right-aligned slot priority: active message > pr-flow spinners

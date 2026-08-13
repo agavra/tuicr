@@ -120,6 +120,7 @@ Repository-managed agent integrations:
 - Contains: `vcs` (Box<dyn VcsBackend>), `vcs_info`, `session`, `diff_files`, `input_mode`, scroll/cursor state
 - PR mode also carries `pr_info: Option<PullRequestInfo>` and `viewing_pr_info: bool` for the file-tree "PR Description" panel
 - Methods: `scroll_down/up`, `next/prev_file`, `next/prev_hunk`, `go_to_source_line`, `toggle_reviewed`, `save_comment`, `jump_to_pr_info`
+- Diff search state lives on `App` (`search_matches`, `search_highlight_visible`, see `app/search.rs`); rendering patches `theme.search_match_bg` over content spans via `ui::text_utils::apply_search_highlight_*`
 - Comment navigation uses `CommentNavigatorState` plus `CommentNavigatorItem` rows derived from `line_annotations`, so local comments and visible remote PR threads jump to the same annotations the diff renders.
 
 **VcsBackend** (`src/vcs/traits.rs`):

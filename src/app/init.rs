@@ -459,6 +459,7 @@ impl App {
             diff_files,
             diff_source,
             pending_editor_target: None,
+            editor_launches: Vec::new(),
             input_mode,
             focused_panel: FocusedPanel::Diff,
             diff_view_mode: DiffViewMode::Unified,
@@ -472,6 +473,11 @@ impl App {
             command_completion: None,
             search_buffer: String::new(),
             last_search_pattern: None,
+            search_needle_lower: None,
+            search_matches: Vec::new(),
+            search_matches_stale: false,
+            search_highlight_visible: false,
+            search_highlight_enabled: true,
             search_return_mode: InputMode::Normal,
             comment_buffer: String::new(),
             comment_cursor: 0,
@@ -791,6 +797,7 @@ impl App {
         commit_selection: CommitSelectionStart,
         display_options: PrDisplayOptions,
     ) -> Result<Self> {
+        use crate::forge::azure::az::parse_pull_request_target_azure;
         use crate::forge::bitbucket::bkt::parse_pull_request_target_bitbucket;
         use crate::forge::github::gh::parse_pull_request_target;
         use crate::forge::gitlab::glab::parse_pull_request_target_gitlab;
@@ -799,11 +806,13 @@ impl App {
 
         // Bitbucket first: its URL shape (`/pull-requests/<n>`) is distinct,
         // and the GitHub parser would otherwise claim the host. GitHub then
-        // handles numeric / `owner/repo#N` / GitHub URLs, with GitLab as the
-        // final fallback for `/-/merge_requests/<n>`.
+        // handles numeric / `owner/repo#N` / GitHub URLs, GitLab handles
+        // `/-/merge_requests/<n>`, and an Azure DevOps PR URL falls through to
+        // the Azure parser last.
         let parsed = parse_pull_request_target_bitbucket(target)
             .or_else(|_| parse_pull_request_target(target))
-            .or_else(|_| parse_pull_request_target_gitlab(target))?;
+            .or_else(|_| parse_pull_request_target_gitlab(target))
+            .or_else(|_| parse_pull_request_target_azure(target))?;
 
         // Resolution order when the target lacks an explicit repo
         // (`tuicr pr 125`):

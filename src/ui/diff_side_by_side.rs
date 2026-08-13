@@ -20,7 +20,10 @@ use crate::ui::diff_view::{
     render_hidden_lines, scroll_comment_input_into_view,
 };
 use crate::ui::styles;
-use crate::ui::text_utils::{truncate_or_pad, truncate_or_pad_spans, wrap_spans};
+use crate::ui::text_utils::{
+    apply_search_highlight_pairs, apply_search_highlight_spans, apply_search_highlight_text,
+    truncate_or_pad, truncate_or_pad_pairs_by_chars, truncate_or_pad_spans, wrap_spans,
+};
 use crate::vcs::git::calculate_gap;
 
 #[derive(Clone, Default)]
@@ -37,17 +40,50 @@ fn content_spans_for_diff_line(
     theme: &Theme,
     dl: &DiffLine,
     origin: LineOrigin,
+    search: Option<(&str, Style)>,
 ) -> Vec<Span<'static>> {
     let base = match origin {
         LineOrigin::Context => styles::diff_context_style(theme),
         LineOrigin::Addition => styles::diff_add_style(theme),
         LineOrigin::Deletion => styles::diff_del_style(theme),
     };
-    if let Some(ref h) = dl.highlighted_spans {
+    let spans: Vec<Span<'static>> = if let Some(ref h) = dl.highlighted_spans {
         h.iter().map(|(s, t)| Span::styled(t.clone(), *s)).collect()
     } else {
         vec![Span::styled(dl.content.clone(), base)]
+    };
+    match search {
+        Some((needle, hl)) => apply_search_highlight_spans(spans, needle, hl),
+        None => spans,
     }
+}
+
+fn searched_cell_spans(
+    pairs: &[(Style, String)],
+    width: usize,
+    pad_style: Style,
+    search: Option<(&str, Style)>,
+) -> Vec<Span<'static>> {
+    if let Some((needle, hl)) = search
+        && let Some(highlighted) = apply_search_highlight_pairs(pairs, needle, hl)
+    {
+        return truncate_or_pad_spans(&highlighted, width, pad_style);
+    }
+    truncate_or_pad_spans(pairs, width, pad_style)
+}
+
+fn plain_cell_spans(
+    content: &str,
+    style: Style,
+    width: usize,
+    search: Option<(&str, Style)>,
+) -> Vec<Span<'static>> {
+    if let Some((needle, hl)) = search
+        && let Some(highlighted) = apply_search_highlight_text(content, style, needle, hl)
+    {
+        return truncate_or_pad_pairs_by_chars(&highlighted, width, style);
+    }
+    vec![Span::styled(truncate_or_pad(content, width), style)]
 }
 
 fn column_pad_style(theme: &Theme, dl: &DiffLine, origin: LineOrigin) -> Style {
@@ -160,11 +196,17 @@ struct SideBySideContext<'a> {
     // half-open range; off-screen rows push `Line::default()` placeholders.
     visible_start: usize,
     visible_end: usize,
+    search_style: Style,
 }
 
 impl SideBySideContext<'_> {
     fn is_visible(&self, line_idx: usize) -> bool {
         line_idx >= self.visible_start && line_idx < self.visible_end
+    }
+
+    fn search_for(&self, line_idx: usize) -> Option<(&str, Style)> {
+        let needle = self.app.search_paint_at(line_idx)?;
+        Some((needle, self.search_style))
     }
 
     fn display_lineno(&self, source_line: Option<u32>, line_idx: usize) -> Option<u32> {
@@ -230,6 +272,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
         sbs_meta: std::cell::RefCell::new(std::collections::HashMap::new()),
         visible_start,
         visible_end,
+        search_style: styles::search_match_style(&app.theme),
     };
 
     // Build all diff lines for side-by-side view
@@ -1034,22 +1077,24 @@ fn render_sbs_expanded_context_line(
         .map(|n| format!("{n:>lw$} "))
         .unwrap_or_else(|| " ".repeat(lw + 1));
     let ec_style = styles::expanded_context_style(theme);
-    let line_spans = vec![
+    let content_cell = plain_cell_spans(
+        &expanded_line.content,
+        ec_style,
+        content_width,
+        ctx.search_for(*line_idx),
+    );
+    let mut line_spans = vec![
         Span::styled(indicator, styles::current_line_indicator_style(theme)),
         Span::styled(old_line_num.clone(), ec_style),
         Span::styled(" ", ec_style),
-        Span::styled(
-            truncate_or_pad(&expanded_line.content, content_width),
-            ec_style,
-        ),
+    ];
+    line_spans.extend(content_cell.clone());
+    line_spans.extend([
         Span::styled(" │ ", styles::dim_style(theme)),
         Span::styled(new_line_num.clone(), ec_style),
         Span::styled(" ", ec_style),
-        Span::styled(
-            truncate_or_pad(&expanded_line.content, content_width),
-            ec_style,
-        ),
-    ];
+    ]);
+    line_spans.extend(content_cell);
     lines.push(Line::from(line_spans));
 
     let dim = styles::dim_style(theme);
@@ -1063,7 +1108,10 @@ fn render_sbs_expanded_context_line(
         Span::styled(new_line_num, ec_style),
         Span::styled(" ", ec_style),
     ];
-    let content = vec![Span::styled(expanded_line.content.clone(), ec_style)];
+    let mut content = vec![Span::styled(expanded_line.content.clone(), ec_style)];
+    if let Some((needle, hl)) = ctx.search_for(*line_idx) {
+        content = apply_search_highlight_spans(content, needle, hl);
+    }
     ctx.sbs_meta.borrow_mut().insert(
         *line_idx,
         SbsRowMeta {
@@ -1201,18 +1249,25 @@ fn render_context_line_side_by_side(
             Span::styled(" ".to_string(), styles::diff_context_style(ctx.theme)),
         ];
 
-        // Left side content - use syntax highlighting if available
-        if let Some(ref highlighted) = diff_line.highlighted_spans {
-            let content_spans = truncate_or_pad_spans(
+        let search = ctx.search_for(line_idx);
+        let content_cell = if let Some(ref highlighted) = diff_line.highlighted_spans {
+            searched_cell_spans(
                 highlighted,
                 ctx.content_width,
                 styles::diff_context_style(ctx.theme),
-            );
-            spans.extend(content_spans);
+                search,
+            )
         } else {
-            let content = truncate_or_pad(&diff_line.content, ctx.content_width);
-            spans.push(Span::styled(content, styles::diff_context_style(ctx.theme)));
-        }
+            plain_cell_spans(
+                &diff_line.content,
+                styles::diff_context_style(ctx.theme),
+                ctx.content_width,
+                search,
+            )
+        };
+
+        // Left side content - use syntax highlighting if available
+        spans.extend(content_cell.clone());
 
         // Separator
         spans.push(Span::styled(" │ ", styles::dim_style(ctx.theme)));
@@ -1226,21 +1281,12 @@ fn render_context_line_side_by_side(
         ));
 
         // Right side content - use same highlighting
-        if let Some(ref highlighted) = diff_line.highlighted_spans {
-            let content_spans = truncate_or_pad_spans(
-                highlighted,
-                ctx.content_width,
-                styles::diff_context_style(ctx.theme),
-            );
-            spans.extend(content_spans);
-        } else {
-            let content = truncate_or_pad(&diff_line.content, ctx.content_width);
-            spans.push(Span::styled(content, styles::diff_context_style(ctx.theme)));
-        }
+        spans.extend(content_cell);
 
         lines.push(Line::from(spans));
 
-        let content = content_spans_for_diff_line(ctx.theme, diff_line, LineOrigin::Context);
+        let content =
+            content_spans_for_diff_line(ctx.theme, diff_line, LineOrigin::Context, search);
         let ctx_style = styles::diff_context_style(ctx.theme);
         let (lp, rp) = sbs_row_prefixes(
             ctx.theme,
@@ -1352,6 +1398,7 @@ fn render_deletion_addition_pair_side_by_side(
                     ctx.content_width,
                     ctx.lineno_width,
                     ctx.display_lineno(del_line.old_lineno, line_idx),
+                    ctx.search_for(line_idx),
                 );
             } else {
                 add_empty_column_spans(&mut spans, ctx.content_width, ctx.lineno_width);
@@ -1368,6 +1415,7 @@ fn render_deletion_addition_pair_side_by_side(
                     ctx.content_width,
                     ctx.lineno_width,
                     ctx.display_lineno(add_line.new_lineno, line_idx),
+                    ctx.search_for(line_idx),
                 );
             } else {
                 add_empty_column_spans(&mut spans, ctx.content_width, ctx.lineno_width);
@@ -1379,7 +1427,12 @@ fn render_deletion_addition_pair_side_by_side(
             let (left_content, left_pad, left_marker, left_lineno, left_marker_style) =
                 match del_opt {
                     Some(dl) => (
-                        content_spans_for_diff_line(ctx.theme, dl, LineOrigin::Deletion),
+                        content_spans_for_diff_line(
+                            ctx.theme,
+                            dl,
+                            LineOrigin::Deletion,
+                            ctx.search_for(line_idx),
+                        ),
                         column_pad_style(ctx.theme, dl, LineOrigin::Deletion),
                         "▌",
                         ctx.display_lineno(dl.old_lineno, line_idx),
@@ -1390,7 +1443,12 @@ fn render_deletion_addition_pair_side_by_side(
             let (right_content, right_pad, right_marker, right_lineno, right_marker_style) =
                 match add_opt {
                     Some(al) => (
-                        content_spans_for_diff_line(ctx.theme, al, LineOrigin::Addition),
+                        content_spans_for_diff_line(
+                            ctx.theme,
+                            al,
+                            LineOrigin::Addition,
+                            ctx.search_for(line_idx),
+                        ),
                         column_pad_style(ctx.theme, al, LineOrigin::Addition),
                         "▌",
                         ctx.display_lineno(al.new_lineno, line_idx),
@@ -1517,12 +1575,18 @@ fn render_standalone_addition_side_by_side(
             ctx.content_width,
             ctx.lineno_width,
             ctx.display_lineno(diff_line.new_lineno, line_idx),
+            ctx.search_for(line_idx),
         );
 
         lines.push(Line::from(spans));
 
         let w = ctx.lineno_width;
-        let right_content = content_spans_for_diff_line(ctx.theme, diff_line, LineOrigin::Addition);
+        let right_content = content_spans_for_diff_line(
+            ctx.theme,
+            diff_line,
+            LineOrigin::Addition,
+            ctx.search_for(line_idx),
+        );
         let right_pad = column_pad_style(ctx.theme, diff_line, LineOrigin::Addition);
         let (lp, rp) = sbs_row_prefixes(
             ctx.theme,
@@ -1652,6 +1716,7 @@ fn add_deletion_spans(
     content_width: usize,
     lw: usize,
     display_lineno: Option<u32>,
+    search: Option<(&str, Style)>,
 ) {
     let line_num = display_lineno
         .map(|n| format!("{n:>lw$}"))
@@ -1666,12 +1731,16 @@ fn add_deletion_spans(
     // Use syntax highlighting if available
     if let Some(ref highlighted) = diff_line.highlighted_spans {
         let syntax_pad_style = Style::default().fg(theme.diff_del).bg(theme.syntax_del_bg);
-        let content_spans = truncate_or_pad_spans(highlighted, content_width, syntax_pad_style);
+        let content_spans =
+            searched_cell_spans(highlighted, content_width, syntax_pad_style, search);
         spans.extend(content_spans);
     } else {
-        // Fall back to plain text
-        let content = truncate_or_pad(&diff_line.content, content_width);
-        spans.push(Span::styled(content, styles::diff_del_style(theme)));
+        spans.extend(plain_cell_spans(
+            &diff_line.content,
+            styles::diff_del_style(theme),
+            content_width,
+            search,
+        ));
     }
 }
 
@@ -1683,6 +1752,7 @@ fn add_addition_spans(
     content_width: usize,
     lw: usize,
     display_lineno: Option<u32>,
+    search: Option<(&str, Style)>,
 ) {
     let line_num = display_lineno
         .map(|n| format!("{n:>lw$}"))
@@ -1697,12 +1767,16 @@ fn add_addition_spans(
     // Use syntax highlighting if available
     if let Some(ref highlighted) = diff_line.highlighted_spans {
         let syntax_pad_style = Style::default().fg(theme.diff_add).bg(theme.syntax_add_bg);
-        let content_spans = truncate_or_pad_spans(highlighted, content_width, syntax_pad_style);
+        let content_spans =
+            searched_cell_spans(highlighted, content_width, syntax_pad_style, search);
         spans.extend(content_spans);
     } else {
-        // Fall back to plain text
-        let content = truncate_or_pad(&diff_line.content, content_width);
-        spans.push(Span::styled(content, styles::diff_add_style(theme)));
+        spans.extend(plain_cell_spans(
+            &diff_line.content,
+            styles::diff_add_style(theme),
+            content_width,
+            search,
+        ));
     }
 }
 

@@ -7,7 +7,7 @@ use ratatui::style::Color;
 
 use crate::comment_vim::CommentVimEditor;
 use crate::config::{CommentTypeConfig, ExportConfig};
-use crate::editor::EditorTarget;
+use crate::editor::{EditorLaunch, EditorTarget};
 use crate::error::{Result, TuicrError};
 use crate::forge::context::{ContextProvider, ForgeContextProvider, VcsContextProvider};
 use crate::forge::selector::PullRequestsTab;
@@ -38,7 +38,8 @@ pub const GAP_EXPAND_BATCH: usize = 20;
 
 /// Create a forge backend for the given repository.
 /// Routes to the GitHub backend (via `gh`), the GitLab backend (via `glab`),
-/// or the Bitbucket Cloud backend (via `bkt`) based on `repo.kind`.
+/// the Bitbucket Cloud backend (via `bkt`), or the Azure DevOps backend (via
+/// `az`) based on `repo.kind`.
 fn create_forge_backend(
     repo: &ForgeRepository,
     local_checkout: Option<PathBuf>,
@@ -64,6 +65,12 @@ fn create_forge_backend(
             use crate::forge::bitbucket::BitbucketBktBackend;
             Box::new(
                 BitbucketBktBackend::new(Some(repo.clone())).with_local_checkout(local_checkout),
+            )
+        }
+        ForgeKind::AzureDevOps => {
+            use crate::forge::azure::AzureDevOpsBackend;
+            Box::new(
+                AzureDevOpsBackend::new(Some(repo.clone())).with_local_checkout(local_checkout),
             )
         }
     }
@@ -1049,6 +1056,9 @@ pub struct App {
     pub diff_files: Vec<DiffFile>,
     pub diff_source: DiffSource,
     pub pending_editor_target: Option<EditorTarget>,
+    /// Windowed editors that have not exited yet; polled by
+    /// `poll_editor_launches`.
+    pub(crate) editor_launches: Vec<EditorLaunch>,
 
     pub input_mode: InputMode,
     pub focused_panel: FocusedPanel,
@@ -1065,6 +1075,11 @@ pub struct App {
     pub(crate) command_completion: Option<CommandCompletionState>,
     pub search_buffer: String,
     pub last_search_pattern: Option<String>,
+    pub(crate) search_needle_lower: Option<String>,
+    pub(crate) search_matches: Vec<usize>,
+    pub(crate) search_matches_stale: bool,
+    pub(crate) search_highlight_visible: bool,
+    pub search_highlight_enabled: bool,
     pub(crate) search_return_mode: InputMode,
     pub comment_buffer: String,
     pub comment_cursor: usize,

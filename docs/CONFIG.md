@@ -36,6 +36,7 @@ comment_tab_width = 4
 wrap = false
 relative_line_numbers = false
 cursor_line = true
+search_highlight = true
 transparent_background = true
 scroll_offset = 5
 no_update_check = false
@@ -88,6 +89,7 @@ legend = true
 | `wrap`                     | `false`      | Line wrap in the diff view. Toggle with `:set wrap!`.                                                                                                      |
 | `relative_line_numbers`    | `false`      | Show gutter numbers as rendered-row distances from the cursor. Toggle with `:set relativenumber!`.                                                         |
 | `cursor_line`              | `true`       | Highlight the current cursor line and visual selection.                                                                                                    |
+| `search_highlight`         | `true`       | Highlight `/` search matches in the diff view. Clear at runtime with `Esc`; `n` / `N` re-enable.                                                           |
 | `transparent_background`   | `true`       | Let the terminal background show through panels. `false` paints the theme's `panel_bg`.                                                                    |
 | `scroll_offset`            | `0`          | Minimum lines visible above and below the cursor when scrolling (like Vim's `scrolloff`).                                                                  |
 | `no_update_check`          | `false`      | Skip startup update check when `true`.                                                                                                                     |

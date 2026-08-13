@@ -20,8 +20,9 @@ Full reference. Press `?` inside tuicr for an in-app version of this list.
 | `{` / `}` | Jump to previous / next file |
 | `[` / `]` | Jump to previous / next hunk |
 | `m` / `M` | Jump to next / previous comment |
-| `/` | Search within diff (case-insensitive) |
-| `n` / `N` | Next / previous search match |
+| `/` | Search within diff (case-insensitive); matches on diff content are highlighted and the status bar shows the `[current/total]` position (headers, comments, and PR info are searchable but not highlighted) |
+| `n` / `N` | Next / previous search match (wraps around) |
+| `Esc` | Clear search-match highlighting; the pattern is kept so `n` / `N` still work |
 | `Enter` | Expand or collapse hidden context between hunks |
 | `zt` | Scroll cursor to top of screen |
 | `zz` | Center cursor on screen |
@@ -121,6 +122,13 @@ Shown below the file tree when local comments or visible remote PR threads exist
 | `A` | Edit comment at cursor with text cursor at end (vim mode only) |
 | `e` | Open focused file in `$EDITOR` |
 | `y` | Copy review to clipboard |
+| `Y` | Copy the comment at cursor to clipboard |
+
+`e` opens the file at the cursor's line. Terminal editors (`vim`, `nvim`, `nano`, …)
+take over the screen and tuicr reloads the diff once they exit. Windowed editors
+(`code`, `cursor`, `zed`, `subl`, …) open in their own window while tuicr stays on
+screen; reload with `:e` after editing. Adding `--wait` to `$EDITOR` opts a windowed
+editor back into the blocking behaviour.
 
 ## Visual mode
 
@@ -166,6 +174,7 @@ In command mode,
 | `:e` (`:reload`) | Reload diff files |
 | `:edit` | Open focused file in `$EDITOR` |
 | `:clip` (`:export`) | Copy review to clipboard |
+| `:copy-url` | Copy the open PR URL to clipboard (PR mode) |
 | `:diff` | Toggle diff view (unified / side-by-side) |
 | `:vim` / `:novim` (`:set vim` / `:set novim`) | Enable/toggle/disable vim modal editing in the comment box (overrides `comment_vim`) |
 | `:commits` | Select commits to review |

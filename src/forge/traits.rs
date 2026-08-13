@@ -15,6 +15,8 @@ pub enum ForgeKind {
     /// Bitbucket Cloud only. Data Center speaks an unrelated REST 1.0 API and
     /// is rejected during remote-URL parsing.
     Bitbucket,
+    #[serde(rename = "azure_devops")]
+    AzureDevOps,
 }
 
 impl ForgeKind {
@@ -24,6 +26,7 @@ impl ForgeKind {
             ForgeKind::GitHub => "GitHub",
             ForgeKind::GitLab => "GitLab",
             ForgeKind::Bitbucket => "Bitbucket",
+            ForgeKind::AzureDevOps => "Azure DevOps",
         }
     }
 }
@@ -77,12 +80,36 @@ impl ForgeRepository {
         }
     }
 
+    /// Build an Azure DevOps repository coordinate.
+    ///
+    /// Azure repos live under `organization/project/repository` — one level
+    /// deeper than GitHub/GitLab. We pack `organization/project` into `owner`
+    /// (the same trick GitLab uses for nested subgroups) and keep `name` as the
+    /// bare repository. `crate::forge::azure::az::azure_coords` splits `owner`
+    /// back into `(organization, project)`.
+    pub fn azure(
+        host: impl Into<String>,
+        owner: impl Into<String>,
+        name: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind: ForgeKind::AzureDevOps,
+            host: host.into(),
+            owner: owner.into(),
+            name: name.into(),
+        }
+    }
+
     pub fn slug(&self) -> String {
         format!("{}/{}", self.owner, self.name)
     }
 
     pub fn display_name(&self) -> String {
-        if self.host == "github.com" || self.host == "gitlab.com" || self.host == "bitbucket.org" {
+        if self.host == "github.com"
+            || self.host == "gitlab.com"
+            || self.host == "bitbucket.org"
+            || self.host == "dev.azure.com"
+        {
             self.slug()
         } else {
             format!("{}/{}", self.host, self.slug())

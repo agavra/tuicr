@@ -613,6 +613,12 @@ impl App {
         } else if let Some(anchor) = &request.anchor {
             self.restore_pr_cursor_to_anchor(anchor);
         }
+        // A reload can shrink the diff; a stale cursor left past the new end
+        // (same-head branch, or a restored overview line captured from the
+        // taller old diff) makes the next `cursor_down` clamp upward and
+        // panic. Clamp into the current bounds.
+        self.diff_state.cursor_line = self.diff_state.cursor_line.min(self.max_cursor_line());
+        self.ensure_cursor_visible();
         Ok(())
     }
 
@@ -695,6 +701,10 @@ impl App {
             self.expand_all_dirs();
             self.rebuild_annotations();
         }
+
+        // Same-head reload keeps the old cursor; clamp it into the (possibly
+        // shorter) new diff so a following `cursor_down` can't underflow.
+        self.diff_state.cursor_line = self.diff_state.cursor_line.min(self.max_cursor_line());
 
         Ok(head_changed)
     }
@@ -875,11 +885,19 @@ impl App {
 
         let summary_repo = summary.repository.clone();
         let pr_number = summary.number;
+        // Resolve the local checkout up front so Azure DevOps can source its
+        // diff from the clone when opening a PR from the selector.
+        let local_checkout =
+            crate::forge::local_checkout_for_repo(&self.vcs_info.root_path, &summary.repository);
         let show_pr_checks = self.show_pr_checks;
         let show_pr_comments = self.show_pr_comments;
         std::thread::spawn(move || {
-            let backend =
-                create_forge_backend(&summary_repo, None, show_pr_checks, show_pr_comments);
+            let backend = create_forge_backend(
+                &summary_repo,
+                local_checkout,
+                show_pr_checks,
+                show_pr_comments,
+            );
             let target =
                 PullRequestTarget::with_repository(summary_repo, pr_number, pr_number.to_string());
             let outcome = fetch_pr_data(backend.as_ref(), target).map_err(|e| e.to_string());

@@ -123,8 +123,8 @@ struct TuiOptions {
     #[arg(long = "no-update-check", action = ArgAction::SetTrue)]
     no_update_check: bool,
 
-    /// Override the GitHub repo for PR operations (HTTPS, SCP-style SSH,
-    /// or ssh:// URLs accepted).
+    /// Override the forge repo for PR operations. Accepts GitHub, GitLab, or
+    /// Azure DevOps URLs (HTTPS, SCP-style SSH, or ssh:// forms).
     #[arg(
         long = "repo-url",
         value_name = "URL",
@@ -397,15 +397,17 @@ fn non_empty_theme_name(s: &str) -> Result<String, String> {
 }
 
 /// Reject `--repo-url` values that don't parse as a supported forge remote URL
-/// so the failure is surfaced at startup rather than when the PR tab is opened.
+/// (GitHub, GitLab, Bitbucket, or Azure DevOps) so the failure is surfaced at
+/// startup rather than when the PR tab is opened.
 fn parse_repo_url(s: &str) -> Result<String, String> {
     if crate::forge::parse_any_remote_url(s).is_some() {
         Ok(s.to_string())
     } else {
         Err(format!(
-            "--repo-url value '{s}' is not a recognized GitHub, GitLab, or Bitbucket URL. \
-             Expected forms: https://github.com/owner/repo, git@gitlab.com:owner/repo, \
-             https://bitbucket.org/workspace/repo, or ssh://git@github.com/owner/repo"
+            "--repo-url value '{s}' is not a recognized GitHub, GitLab, Bitbucket, or Azure \
+             DevOps URL. Expected forms like: https://github.com/owner/repo, \
+             git@gitlab.com:owner/repo, https://bitbucket.org/workspace/repo, or \
+             https://dev.azure.com/org/project/_git/repo"
         ))
     }
 }
@@ -854,7 +856,7 @@ mod tests {
         assert_eq!(err.kind(), ErrorKind::ValueValidation);
         assert!(
             err.to_string()
-                .contains("not a recognized GitHub, GitLab, or Bitbucket URL"),
+                .contains("not a recognized GitHub, GitLab, Bitbucket, or Azure"),
             "unexpected error: {err}"
         );
     }
@@ -862,12 +864,13 @@ mod tests {
     #[test]
     fn should_accept_repo_url_for_every_supported_forge() {
         // `--repo-url` used to validate against GitHub only, which silently
-        // rejected GitLab and Bitbucket remotes.
+        // rejected GitLab, Bitbucket, and Azure DevOps remotes.
         for url in [
             "https://github.com/slatedb/slatedb.git",
             "https://gitlab.com/owner/repo.git",
             "https://bitbucket.org/example-workspace/repo.git",
             "git@bitbucket.org:example-workspace/repo.git",
+            "https://dev.azure.com/org/project/_git/repo",
         ] {
             let parsed = parse_for_test(&["tuicr", "--repo-url", url])
                 .unwrap_or_else(|err| panic!("{url} should parse: {err}"));

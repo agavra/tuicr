@@ -127,6 +127,7 @@ pub struct AppConfig {
     pub relative_line_numbers: Option<bool>,
     pub export_legend: Option<bool>,
     pub cursor_line: Option<bool>,
+    pub search_highlight: Option<bool>,
     pub mouse: Option<bool>,
     /// Enable vim-style modal editing in the review comment text box. When
     /// unset/false the comment box uses the default emacs/readline bindings.
@@ -191,6 +192,7 @@ const KNOWN_KEYS: &[&str] = &[
     "relative_line_numbers",
     "export_legend",
     "cursor_line",
+    "search_highlight",
     "mouse",
     "comment_vim",
     "comment_tab_width",
@@ -262,8 +264,8 @@ fn themes_dir_from_parts(
 }
 
 fn config_dir_from_parts(
-    xdg_config_home: Option<PathBuf>,
-    home: Option<PathBuf>,
+    _xdg_config_home: Option<PathBuf>,
+    _home: Option<PathBuf>,
     _appdata: Option<PathBuf>,
 ) -> Result<PathBuf> {
     #[cfg(windows)]
@@ -276,11 +278,11 @@ fn config_dir_from_parts(
 
     #[cfg(not(windows))]
     {
-        if let Some(base) = xdg_config_home.filter(|p| !p.as_os_str().is_empty()) {
+        if let Some(base) = _xdg_config_home.filter(|p| !p.as_os_str().is_empty()) {
             return Ok(base.join("tuicr"));
         }
 
-        let home = home
+        let home = _home
             .filter(|p| !p.as_os_str().is_empty())
             .ok_or_else(|| anyhow!("Could not determine HOME for config directory"))?;
         Ok(home.join(".config").join("tuicr"))
@@ -428,6 +430,7 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         wrap: read_bool(table, "wrap", &mut warnings),
         export_legend: read_bool(table, "export_legend", &mut warnings),
         cursor_line: read_bool(table, "cursor_line", &mut warnings),
+        search_highlight: read_bool(table, "search_highlight", &mut warnings),
         mouse: read_bool(table, "mouse", &mut warnings),
         comment_vim: read_bool(table, "comment_vim", &mut warnings),
         comment_tab_width: read_usize(table, "comment_tab_width", &mut warnings),
