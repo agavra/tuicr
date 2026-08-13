@@ -1958,6 +1958,84 @@ mod remote_comments_snapshot_tests {
     }
 
     #[test]
+    fn should_reach_last_line_scrolling_down_through_wrapped_content() {
+        // Many long lines that wrap to several visual rows each, so far fewer
+        // logical lines fit per screen than the viewport height. This is
+        // what makes `visible_line_count` (wrap-aware) diverge sharply from
+        // `viewport_height`. A short, uniquely-named last line lets us detect
+        // whether repeated `j` ever scrolls it into view.
+        let long: String = "x".repeat(200);
+        let mut lines: Vec<DiffLine> = (0..30)
+            .map(|i| DiffLine {
+                origin: LineOrigin::Addition,
+                content: long.clone(),
+                old_lineno: None,
+                new_lineno: Some(i + 1),
+                highlighted_spans: None,
+            })
+            .collect();
+        lines.push(DiffLine {
+            origin: LineOrigin::Addition,
+            content: "LASTLINEMARKER".to_string(),
+            old_lineno: None,
+            new_lineno: Some(31),
+            highlighted_spans: None,
+        });
+        let hunk = DiffHunk {
+            header: "@@ -0,0 +1,31 @@".to_string(),
+            lines,
+            old_start: 0,
+            old_count: 0,
+            new_start: 1,
+            new_count: 31,
+        };
+        let hunks = vec![hunk];
+        let content_hash = DiffFile::compute_content_hash(&hunks);
+        let file = DiffFile {
+            old_path: Some(PathBuf::from("src/lib.rs")),
+            new_path: Some(PathBuf::from("src/lib.rs")),
+            status: FileStatus::Modified,
+            hunks,
+            is_binary: false,
+            is_too_large: false,
+            is_commit_message: false,
+            content_hash,
+        };
+        let mut app = make_revision_app(vec![file]);
+        app.set_diff_wrap(true);
+        app.rebuild_annotations();
+
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        // Drive `j` one keypress at a time, re-rendering between presses so
+        // `visible_line_count` is refreshed the way it would be in the real
+        // render loop. Far more presses than there are logical lines, so a
+        // working implementation has ample opportunity to reach the end.
+        let max_presses = app.total_lines() * 3;
+        for _ in 0..max_presses {
+            terminal
+                .draw(|frame| super::render_unified_diff(frame, &mut app, Rect::new(0, 0, 80, 20)))
+                .expect("draw");
+            app.cursor_down(1);
+        }
+        terminal
+            .draw(|frame| super::render_unified_diff(frame, &mut app, Rect::new(0, 0, 80, 20)))
+            .expect("draw");
+        let body = body_text(terminal.backend().buffer());
+
+        assert_eq!(
+            app.diff_state.cursor_line,
+            app.max_cursor_line(),
+            "cursor should saturate at the last navigable line"
+        );
+        assert!(
+            body.contains("LASTLINEMARKER"),
+            "scrolling down should eventually reveal the last line; view got stuck:\n{body}"
+        );
+    }
+
+    #[test]
     fn should_extend_comment_bar_over_wrapped_rows_when_wrap_enabled() {
         use crate::model::{Comment, CommentType};
 

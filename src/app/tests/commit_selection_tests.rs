@@ -269,3 +269,181 @@ fn commit_selection_summary_shows_position_for_single_and_count_for_range() {
         Some("2 of 3 commits")
     );
 }
+
+/// A file that lives only inside a commit, never in the working tree.
+fn commit_only_file(path: &Path, hunks: Vec<DiffHunk>) -> DiffFile {
+    DiffFile {
+        old_path: None,
+        new_path: Some(path.to_path_buf()),
+        status: FileStatus::Modified,
+        hunks,
+        is_binary: false,
+        is_too_large: false,
+        is_commit_message: false,
+        content_hash: 7,
+    }
+}
+
+fn one_line_hunk() -> DiffHunk {
+    DiffHunk {
+        header: "@@ -1,1 +1,1 @@".to_string(),
+        lines: vec![DiffLine {
+            origin: LineOrigin::Addition,
+            content: "let x = 1;".to_string(),
+            old_lineno: None,
+            new_lineno: Some(1),
+            highlighted_spans: None,
+        }],
+        old_start: 1,
+        old_count: 1,
+        new_start: 1,
+        new_count: 1,
+    }
+}
+
+/// The index of `path` in the loaded diff. A single-commit selection also gets
+/// a synthetic commit-message row, so the real file is not always first.
+fn loaded_file_idx(app: &App, path: &Path) -> usize {
+    app.diff_files
+        .iter()
+        .position(|file| file.display_path() == path)
+        .expect("the commit's file should be loaded")
+}
+
+/// Marking a file reviewed with `r` must work for a file that only exists in a
+/// selected commit, not just for staged and unstaged ones.
+///
+/// `toggle_reviewed_for_file_idx` looks the file up in `session.files` and
+/// returns silently when it is absent. Only files that were registered with
+/// `session.add_diff_file` are in there. Staged and unstaged files get
+/// registered by the initial working-tree load, so they toggle. Files reached
+/// by narrowing the inline commit pane never did.
+#[test]
+fn should_mark_a_commit_only_file_reviewed_after_narrowing_the_commit_pane() {
+    let mut app = build_app(vec![normal_commit("c2"), normal_commit("c1")]);
+    app.review_commits = app.commit_list.clone();
+    let path = PathBuf::from("src/only_in_commit.rs");
+    app.commit_diff_cache
+        .insert((0, 0), vec![commit_only_file(&path, Vec::new())]);
+
+    // Narrow the pane to c2 alone and load its diff.
+    app.commit_selection_range = Some((0, 0));
+    app.reload_inline_selection()
+        .expect("reload should succeed");
+
+    // when: the user presses `r` on it
+    app.toggle_reviewed_for_file_idx(loaded_file_idx(&app, &path), true);
+
+    // then
+    assert!(
+        app.session.is_file_reviewed(&path),
+        "pressing r on a commit-only file must mark it reviewed"
+    );
+}
+
+/// The hunk-level mark (`R`) has the same dependency on session registration as
+/// the file-level one, so it failed in the same place for the same reason.
+#[test]
+fn should_mark_a_hunk_reviewed_in_a_commit_only_file_after_narrowing_the_commit_pane() {
+    let mut app = build_app(vec![normal_commit("c2"), normal_commit("c1")]);
+    app.review_commits = app.commit_list.clone();
+    let path = PathBuf::from("src/only_in_commit.rs");
+    app.commit_diff_cache
+        .insert((0, 0), vec![commit_only_file(&path, vec![one_line_hunk()])]);
+
+    app.commit_selection_range = Some((0, 0));
+    app.reload_inline_selection()
+        .expect("reload should succeed");
+    let file_idx = loaded_file_idx(&app, &path);
+
+    // when: the user puts the cursor on the hunk header and presses `R`
+    let header_line = app
+        .hunk_header_line(file_idx, 0)
+        .expect("the hunk should have a header line");
+    app.diff_state.cursor_line = header_line;
+    app.toggle_hunk_reviewed();
+
+    // then
+    assert!(
+        app.is_hunk_reviewed(file_idx, 0),
+        "pressing R on a hunk in a commit-only file must mark it reviewed"
+    );
+}
+
+/// Selecting every commit takes a different route to its files: the
+/// whole-range copy in `range_diff_files`, not the subrange cache. So it needs
+/// its own test. The two above would pass with that wider route still broken.
+#[test]
+fn should_mark_a_commit_only_file_reviewed_when_every_commit_is_selected() {
+    let mut app = build_app(vec![normal_commit("c2"), normal_commit("c1")]);
+    app.review_commits = app.commit_list.clone();
+    let path = PathBuf::from("src/only_in_commit.rs");
+    app.range_diff_files = Some(vec![commit_only_file(&path, Vec::new())]);
+
+    app.commit_selection_range = Some((0, 1));
+    app.reload_inline_selection()
+        .expect("reload should succeed");
+
+    // when
+    app.toggle_reviewed_for_file_idx(loaded_file_idx(&app, &path), true);
+
+    // then
+    assert!(
+        app.session.is_file_reviewed(&path),
+        "pressing r must work when the whole commit range is selected"
+    );
+}
+
+/// Leaving a comment needs the same session registration the review marks need,
+/// because `add_comment_to_session` looks the file up the same way. It fails
+/// loudly where `r` and `R` fail silently, so this asserts on the error rather
+/// than on a missing mark.
+#[test]
+fn should_comment_on_a_commit_only_file_after_narrowing_the_commit_pane() {
+    use crate::model::comment::{CommentType, LineSide};
+    use crate::review_store::{AddCommentRequest, CommentTarget, add_comment_to_session};
+
+    let mut app = build_app(vec![normal_commit("c2"), normal_commit("c1")]);
+    app.review_commits = app.commit_list.clone();
+    let path = PathBuf::from("src/only_in_commit.rs");
+    app.commit_diff_cache
+        .insert((0, 0), vec![commit_only_file(&path, vec![one_line_hunk()])]);
+
+    app.commit_selection_range = Some((0, 0));
+    app.reload_inline_selection()
+        .expect("reload should succeed");
+
+    // when: the user writes a line comment on the commit-only file
+    let saved = add_comment_to_session(
+        &mut app.session,
+        AddCommentRequest {
+            target: CommentTarget::Line {
+                path: path.clone(),
+                line: 1,
+                side: LineSide::New,
+            },
+            content: "this landed two commits ago".to_string(),
+            comment_type: CommentType::from_id("note"),
+            author: "user".to_string(),
+            commit_id: None,
+        },
+    );
+
+    // then
+    assert!(
+        saved.is_ok(),
+        "commenting on a commit-only file must not fail: {:?}",
+        saved.err()
+    );
+    assert_eq!(
+        app.session
+            .files
+            .get(&path)
+            .expect("the file should be in the session")
+            .line_comments
+            .get(&1)
+            .map(Vec::len),
+        Some(1),
+        "the comment must be stored against the file"
+    );
+}

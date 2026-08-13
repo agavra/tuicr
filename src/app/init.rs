@@ -205,7 +205,8 @@ impl App {
                     Vec::new(),
                     options.path_filter,
                     options.repo_url_override.clone(),
-                )?;
+                )?
+                .with_vcs_open_options(options.vcs_open_options());
 
                 app.range_diff_files = Some(app.diff_files.clone());
                 app.commit_list = all_commits.clone();
@@ -266,7 +267,8 @@ impl App {
                 Vec::new(),
                 options.path_filter,
                 options.repo_url_override.clone(),
-            )?;
+            )?
+            .with_vcs_open_options(options.vcs_open_options());
 
             // Set up inline commit selector for multi-commit reviews
             if review_commits.len() > 1 {
@@ -323,7 +325,8 @@ impl App {
                 Vec::new(),
                 options.path_filter,
                 options.repo_url_override.clone(),
-            )?;
+            )?
+            .with_vcs_open_options(options.vcs_open_options());
 
             Ok(app)
         } else {
@@ -393,12 +396,20 @@ impl App {
                 commit_list,
                 options.path_filter,
                 options.repo_url_override.clone(),
-            )?;
+            )?
+            .with_vcs_open_options(options.vcs_open_options());
 
             app.has_more_commit = commits.len() >= VISIBLE_COMMIT_COUNT;
             app.visible_commit_count = app.commit_list.len();
             Ok(app)
         }
+    }
+
+    /// Records how `detect_vcs` opened the backend, so the diff-watch worker
+    /// can open its own the same way.
+    fn with_vcs_open_options(mut self, vcs_open_options: VcsOpenOptions) -> Self {
+        self.vcs_open_options = vcs_open_options;
+        self
     }
 
     /// Shared constructor: all `App::new` paths converge here.
@@ -455,6 +466,11 @@ impl App {
             review_watch_interval: Some(Duration::from_millis(DEFAULT_REVIEW_WATCH_INTERVAL_MS)),
             next_review_watch_at: Instant::now()
                 + Duration::from_millis(DEFAULT_REVIEW_WATCH_INTERVAL_MS),
+            diff_watch_interval: None,
+            next_diff_watch_at: Instant::now(),
+            last_diff_watch_error: None,
+            diff_watch_reload: None,
+            vcs_open_options: VcsOpenOptions::default(),
             ephemeral_session_paths: HashSet::new(),
             diff_files,
             diff_source,

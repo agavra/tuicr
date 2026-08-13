@@ -229,9 +229,6 @@ mouse = true
 leader = ";"                  # configurable prefix for leader shortcuts
 comment_vim = false           # vim modal editing in the review comment box
 relative_line_numbers = false # show rendered-row distances in the diff gutter
-review_watch_interval_ms = 1000 # set to 0 to disable persisted-review polling
-show_pr_checks = false          # skip fetching and showing PR CI checks
-show_pr_comments = false        # skip fetching and showing PR conversation comments
 
 [[comment_types]]
 id = "issue"
