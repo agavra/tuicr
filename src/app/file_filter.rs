@@ -93,8 +93,7 @@ impl App {
     }
 
     /// Say what just happened to the rows, and — when everything is hidden —
-    /// how to get them back. `H` is file-tree only, so the message names
-    /// `:set reviewed` too, which works from any pane.
+    /// name the command that brings them back.
     fn report_show_reviewed(&mut self) {
         let total = self.file_count();
         if self.file_filter.show_reviewed {
@@ -106,7 +105,7 @@ impl App {
             self.set_message("Hiding reviewed files \u{00b7} none reviewed yet");
         } else if hidden == total {
             self.set_message(format!(
-                "All {total} files reviewed \u{00b7} H or :set reviewed shows them again"
+                "All {total} files reviewed \u{00b7} :set reviewed shows them again"
             ));
         } else {
             self.set_message(format!(

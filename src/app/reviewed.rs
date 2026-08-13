@@ -237,13 +237,12 @@ impl App {
             None => {
                 // Nothing left to review. Park at the overview so the diff
                 // pane shows its empty state rather than a stale offset, and
-                // name both ways back — `H` is file-tree only, `:set reviewed`
-                // works from anywhere.
+                // name the command that brings the rows back.
                 self.diff_state.current_file_idx = 0;
                 self.diff_state.cursor_line = 0;
                 self.diff_state.scroll_offset = 0;
                 self.file_list_state.select(0);
-                self.set_message("All files reviewed \u{00b7} H or :set reviewed shows them again");
+                self.set_message("All files reviewed \u{00b7} :set reviewed shows them again");
             }
         }
     }

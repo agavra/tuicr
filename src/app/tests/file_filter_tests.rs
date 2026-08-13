@@ -635,16 +635,47 @@ fn should_burn_down_through_the_file_list_handler_while_hiding() {
     assert_eq!(selected_path(&app), "b.rs");
 }
 
+/// Type `command` at the `:` prompt and submit it, the way a user would.
+/// Command mode is the only entry point for reviewed-file visibility.
+fn run_command(app: &mut App, command: &str) {
+    app.enter_command_mode();
+    app.command_buffer.push_str(command);
+    crate::handler::handle_command_action(app, Action::SubmitInput);
+}
+
 #[test]
-fn should_toggle_hiding_through_the_file_list_handler() {
+fn should_hide_reviewed_files_via_the_set_noreviewed_command() {
     let mut app = app_with(&["a.rs", "b.rs"]);
-    app.focused_panel = FocusedPanel::FileList;
     mark_reviewed(&mut app, "a.rs");
 
-    crate::handler::handle_file_list_action(&mut app, Action::ToggleShowReviewed);
+    run_command(&mut app, "set noreviewed");
 
     assert!(!app.show_reviewed());
     assert_eq!(visible_paths(&app), vec!["b.rs"]);
+}
+
+#[test]
+fn should_show_reviewed_files_via_the_set_reviewed_command() {
+    let mut app = app_with(&["a.rs", "b.rs"]);
+    mark_reviewed(&mut app, "a.rs");
+    run_command(&mut app, "set noreviewed");
+
+    run_command(&mut app, "set reviewed");
+
+    assert!(app.show_reviewed());
+    assert_eq!(visible_paths(&app), vec!["a.rs", "b.rs"]);
+}
+
+#[test]
+fn should_toggle_reviewed_visibility_via_the_bare_reviewed_command() {
+    let mut app = app_with(&["a.rs", "b.rs"]);
+    mark_reviewed(&mut app, "a.rs");
+
+    run_command(&mut app, "reviewed");
+    assert_eq!(visible_paths(&app), vec!["b.rs"]);
+
+    run_command(&mut app, "reviewed");
+    assert_eq!(visible_paths(&app), vec!["a.rs", "b.rs"]);
 }
 
 #[test]

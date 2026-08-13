@@ -269,7 +269,6 @@ A first-session cheatsheet. Press `?` inside tuicr for the full reference.
 | `n` / `N` | Next / previous search match (wraps); matches stay highlighted — `Esc` clears |
 | `i` / `e` (file tree) | Filter files in / out by regex; narrows the tree **and** the diff |
 | `I` / `E` (file tree) | Clear the include / exclude filter |
-| `H` (file tree) | Show / hide files already marked reviewed; narrows the tree **and** the diff |
 | `c` / `C` | Add line / file comment |
 | `v` / `V` | Visual mode (range comment) |
 | `r` | Toggle file reviewed |
@@ -277,6 +276,7 @@ A first-session cheatsheet. Press `?` inside tuicr for the full reference.
 | `e` | Open focused file in `$EDITOR` |
 | `y` | Copy review to clipboard |
 | `:edit` | Open focused file in `$EDITOR` |
+| `:set noreviewed` / `:set reviewed` / `:reviewed` | Hide / show / toggle files already marked reviewed; narrows the tree **and** the diff |
 | `:copy-url` | Copy the open PR URL (PR mode) |
 | `:submit` | Push review to GitHub, GitLab, or Bitbucket |
 | `Tab` in `:` prompt | Complete or cycle commands |

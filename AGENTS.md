@@ -132,8 +132,9 @@ Repository-managed agent integrations:
 
 **FileTreeFilter** (`src/app/mod.rs`, impls in `src/app/file_filter.rs`):
 - File-tree `i` include / `e` exclude regex filters, the `/` path search, and the
-  `show_reviewed` flag (`H`, `:set reviewed!`, config `show_reviewed`) that hides files
-  already marked reviewed
+  `show_reviewed` flag (`:set reviewed!`, config `show_reviewed`) that hides files already
+  marked reviewed. `show_reviewed` is deliberately **command-only** — no single-key binding.
+  The project reserves single-stroke keys for vim motions, so do not add one for it.
 - A filter is a *view* over `diff_files`, never a mutation: `file_idx` stays an absolute
   index, so nothing downstream needs remapping. `App::file_passes_filter()` is the single
   predicate, consulted by `build_visible_items`, `rebuild_annotations`,
@@ -155,9 +156,8 @@ Repository-managed agent integrations:
 - `file_filter.draft` makes the tree a text-input sub-state of `InputMode::Normal`, the same
   shape as `pr_filter_draft` for the target selector; `main.rs` routes to
   `map_file_tree_prompt_mode` while it is `Some`
-- Keys are focus-scoped via `map_file_tree_mode`: the tree claims `i`/`e`/`I`/`E`/`/`/`H`, the
-  diff keeps `i` = edit comment and `/` = search diff. `H` rather than `h` carries the
-  reviewed toggle because `h`/`l` pan the tree horizontally.
+- Keys are focus-scoped via `map_file_tree_mode`: the tree claims `i`/`e`/`I`/`E`/`/`, the
+  diff keeps `i` = edit comment and `/` = search diff
 
 **InputMode** (`src/app.rs`):
 

@@ -1414,7 +1414,6 @@ pub fn handle_file_list_action(app: &mut App, action: Action) {
                 app.set_warning("Select a file to toggle reviewed");
             }
         }
-        Action::ToggleShowReviewed => app.toggle_show_reviewed(),
         _ => handle_shared_normal_action(app, action),
     }
 }
