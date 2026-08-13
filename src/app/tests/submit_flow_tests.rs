@@ -622,6 +622,7 @@ fn make_in_flight(
             counterpart_line: None,
             start_line: None,
             start_side: None,
+            range_anchors: None,
             old_path: None,
             body: "x".to_string(),
             comment_id: (*id).to_string(),

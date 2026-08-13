@@ -12,7 +12,7 @@ use crate::forge::traits::{
     PagedPullRequests, PullRequestCommit, PullRequestDetails, PullRequestListQuery,
     PullRequestListScope, PullRequestReviewMetadata, PullRequestReviewRecord, PullRequestTarget,
 };
-use crate::model::DiffLine;
+use crate::model::{DiffLine, LineOrigin};
 use crate::process::{
     CommandOutputError, CommandOutputErrorKind, run_command_output, run_command_output_with_stdin,
 };
@@ -22,7 +22,7 @@ use super::models::{
     GlabApprovalState, GlabCommit, GlabDiscussion, GlabMrDetails, GlabMrSummary, GlabMrVersion,
     GlabUser,
 };
-use crate::forge::submit::{GhSide, SubmitEvent};
+use crate::forge::submit::{DiffAnchor, GhSide, SubmitEvent};
 use crate::forge::traits::CreateReviewRequest;
 
 const DEFAULT_GITLAB_HOST: &str = "gitlab.com";
@@ -649,14 +649,13 @@ where
             }
             // Multi-line range comments need an explicit `line_range` so
             // GitLab anchors the discussion across the full selection
-            // instead of collapsing to the end line.
-            if let Some(start_line) = comment.start_line {
-                let start_side = comment.start_side.unwrap_or(comment.side);
-                let start_endpoint = gl_range_endpoint(&new_path, start_side, start_line);
-                let end_endpoint = gl_range_endpoint(&new_path, comment.side, comment.line);
+            // instead of collapsing to the end line. Without anchors the
+            // endpoints' line codes cannot be built, so fall back to a
+            // single-line comment on the end line rather than fail the submit.
+            if let Some(anchors) = comment.range_anchors {
                 position["line_range"] = serde_json::json!({
-                    "start": start_endpoint,
-                    "end": end_endpoint,
+                    "start": gl_range_endpoint(&new_path, anchors.start),
+                    "end": gl_range_endpoint(&new_path, anchors.end),
                 });
             }
             let body_json = if is_draft {
@@ -1147,22 +1146,23 @@ fn gl_line_code(file_path: &str, old_line: u32, new_line: u32) -> String {
 
 /// Build one endpoint of a GitLab `line_range` position entry.
 ///
-/// GitLab expects each endpoint to carry the `type` ("new" / "old"), the
-/// integer line number on that side, and the `line_code` so the server can
-/// anchor the range without re-walking the diff.
-fn gl_range_endpoint(new_path: &str, side: GhSide, line: u32) -> serde_json::Value {
-    match side {
-        GhSide::Right => serde_json::json!({
-            "type": "new",
-            "new_line": line,
-            "line_code": gl_line_code(new_path, 0, line),
-        }),
-        GhSide::Left => serde_json::json!({
-            "type": "old",
-            "old_line": line,
-            "line_code": gl_line_code(new_path, line, 0),
-        }),
+/// The position schema allows an endpoint only `line_code` and `type`; adding
+/// the line number rejects the whole note with `position => ["must be a valid
+/// json schema"]`. `type` names the side a *changed* line belongs to and must
+/// be omitted for context lines, which belong to both.
+fn gl_range_endpoint(path: &str, anchor: DiffAnchor) -> serde_json::Value {
+    let mut endpoint = serde_json::json!({
+        "line_code": gl_line_code(path, anchor.old_line, anchor.new_line),
+    });
+    let line_type = match anchor.origin {
+        LineOrigin::Addition => Some("new"),
+        LineOrigin::Deletion => Some("old"),
+        LineOrigin::Context => None,
+    };
+    if let Some(line_type) = line_type {
+        endpoint["type"] = serde_json::Value::String(line_type.to_string());
     }
+    endpoint
 }
 
 /// Inspect a `glab api graphql` response for logical errors.
@@ -1265,7 +1265,7 @@ mod tests {
     use std::cell::RefCell;
 
     use super::*;
-    use crate::forge::submit::{GhSide, InlineComment};
+    use crate::forge::submit::{DiffAnchor, GhSide, InlineComment, RangeAnchors};
     use crate::forge::traits::{
         CreateReviewRequest, ForgeRepository, PullRequestDetails, PullRequestListQuery,
         PullRequestListScope,
@@ -1473,6 +1473,7 @@ mod tests {
             counterpart_line: None,
             start_line: None,
             start_side: None,
+            range_anchors: None,
             old_path: None,
             body: "nice work".to_string(),
             comment_id: "c1".to_string(),
@@ -1534,6 +1535,7 @@ mod tests {
             counterpart_line: None,
             start_line: None,
             start_side: None,
+            range_anchors: None,
             old_path: None,
             body: "old code".to_string(),
             comment_id: "c2".to_string(),
@@ -1579,6 +1581,18 @@ mod tests {
             counterpart_line: None,
             start_line: Some(25),
             start_side: Some(GhSide::Right),
+            range_anchors: Some(RangeAnchors {
+                start: DiffAnchor {
+                    old_line: 20,
+                    new_line: 25,
+                    origin: LineOrigin::Addition,
+                },
+                end: DiffAnchor {
+                    old_line: 20,
+                    new_line: 30,
+                    origin: LineOrigin::Addition,
+                },
+            }),
             old_path: None,
             body: "range comment".to_string(),
             comment_id: "c-range".to_string(),
@@ -1597,19 +1611,75 @@ mod tests {
         let (_, stdin) = &calls[0];
         let body: serde_json::Value = serde_json::from_str(stdin.as_ref().unwrap()).unwrap();
         let position = &body["position"];
-        assert_eq!(position["line_range"]["start"]["type"], "new");
+        // Endpoints carry the line code built from both counters plus `type`.
+        // A line number here makes GitLab reject the position outright.
         assert_eq!(
-            position["line_range"]["start"]["new_line"],
-            serde_json::Value::Number(25.into())
+            position["line_range"]["start"],
+            serde_json::json!({
+                "type": "new",
+                "line_code": super::gl_line_code("src/lib.rs", 20, 25),
+            })
         );
-        assert_eq!(position["line_range"]["end"]["type"], "new");
         assert_eq!(
-            position["line_range"]["end"]["new_line"],
-            serde_json::Value::Number(30.into())
+            position["line_range"]["end"],
+            serde_json::json!({
+                "type": "new",
+                "line_code": super::gl_line_code("src/lib.rs", 20, 30),
+            })
         );
-        // line_code is required by GitLab to anchor the endpoint.
-        assert!(position["line_range"]["start"]["line_code"].is_string());
-        assert!(position["line_range"]["end"]["line_code"].is_string());
+    }
+
+    #[test]
+    fn should_omit_endpoint_type_for_context_line_in_range() {
+        // A context line belongs to both sides, so declaring a `type` for it
+        // makes GitLab reject the position as an invalid schema.
+        let repo = ForgeRepository::gitlab("gitlab.com", "owner", "repo");
+        let pr = make_pr_details(repo.clone());
+        let inline = InlineComment {
+            path: "src/lib.rs".into(),
+            line: 84,
+            side: GhSide::Right,
+            counterpart_line: Some(70),
+            start_line: Some(78),
+            start_side: Some(GhSide::Right),
+            range_anchors: Some(RangeAnchors {
+                start: DiffAnchor {
+                    old_line: 64,
+                    new_line: 78,
+                    origin: LineOrigin::Addition,
+                },
+                end: DiffAnchor {
+                    old_line: 70,
+                    new_line: 84,
+                    origin: LineOrigin::Context,
+                },
+            }),
+            old_path: None,
+            body: "range ending on context".to_string(),
+            comment_id: "c-range-ctx".to_string(),
+        };
+        let response = r#"{"id":"disc-range-ctx","individual_note":false}"#.to_string();
+        let runner = RecordingRunner::new_with_responses(vec![response]);
+        let backend = GitLabGlabBackend::with_runner(Some(repo), runner);
+        let request = CreateReviewRequest {
+            event: crate::forge::submit::SubmitEvent::Comment,
+            commit_id: "headsha1",
+            body: "",
+            comments: &[inline],
+        };
+        backend.create_review(&pr, request).unwrap();
+        let calls = backend.runner.calls.borrow();
+        let (_, stdin) = &calls[0];
+        let body: serde_json::Value = serde_json::from_str(stdin.as_ref().unwrap()).unwrap();
+        let position = &body["position"];
+        assert_eq!(
+            position["line_range"]["end"],
+            serde_json::json!({ "line_code": super::gl_line_code("src/lib.rs", 70, 84) }),
+            "context endpoints carry only a line code"
+        );
+        // A range ending on a context line must name both sides in the position.
+        assert_eq!(position["old_line"], serde_json::Value::Number(70.into()));
+        assert_eq!(position["new_line"], serde_json::Value::Number(84.into()));
     }
 
     #[test]
@@ -1626,6 +1696,7 @@ mod tests {
             counterpart_line: None,
             start_line: None,
             start_side: None,
+            range_anchors: None,
             old_path: Some("src/old_name.rs".into()),
             body: "renamed file comment".to_string(),
             comment_id: "c-rename".to_string(),
@@ -1662,6 +1733,7 @@ mod tests {
             counterpart_line: Some(18), // old_lineno for this context line
             start_line: None,
             start_side: None,
+            range_anchors: None,
             old_path: None,
             body: "context comment".to_string(),
             comment_id: "c3".to_string(),
@@ -1703,6 +1775,7 @@ mod tests {
             counterpart_line: None,
             start_line: None,
             start_side: None,
+            range_anchors: None,
             old_path: None,
             body: "looks good".to_string(),
             comment_id: "c-approve".to_string(),
@@ -1744,6 +1817,7 @@ mod tests {
             counterpart_line: None,
             start_line: None,
             start_side: None,
+            range_anchors: None,
             old_path: None,
             body: "please change this".to_string(),
             comment_id: "c-rc".to_string(),
@@ -1822,6 +1896,7 @@ mod tests {
             counterpart_line: None,
             start_line: None,
             start_side: None,
+            range_anchors: None,
             old_path: None,
             body: "please change this".to_string(),
             comment_id: "c-rc-err".to_string(),
@@ -1887,6 +1962,7 @@ mod tests {
             counterpart_line: Some(12),
             start_line: None,
             start_side: None,
+            range_anchors: None,
             old_path: None,
             body: "inline draft".to_string(),
             comment_id: "c1".to_string(),
@@ -1967,6 +2043,7 @@ mod tests {
             counterpart_line: None,
             start_line: None,
             start_side: None,
+            range_anchors: None,
             old_path: None,
             body: "inline draft".to_string(),
             comment_id: "c1".to_string(),
@@ -2008,6 +2085,7 @@ mod tests {
             counterpart_line: None,
             start_line: None,
             start_side: None,
+            range_anchors: None,
             old_path: None,
             body: "inline comment".to_string(),
             comment_id: "c1".to_string(),
