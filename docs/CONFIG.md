@@ -27,6 +27,8 @@ theme_light = "gruvbox-light"
 diff_view = "side-by-side"
 ignore_whitespace = false
 show_file_list = true
+show_pr_checks = false
+show_pr_comments = true
 show_reviewed = true
 mouse = true
 leader = ","
@@ -42,6 +44,7 @@ no_update_check = false
 review_watch_interval_ms = 1000
 single_file_view = false
 username = "user"
+diff_watch_interval_ms = 0
 
 backend = "libgit2"
 
@@ -78,6 +81,8 @@ legend = true
 | `initial_commit_selection` | `all`        | Which commits are selected when a multi-commit review first opens: `all`, or `oldest` to start on just the oldest commit and walk forward with `(` / `)`.  |
 | `ignore_whitespace`        | `false`      | Ignore all whitespace in local Git, jj, and hg diffs. PR diffs are unchanged.                                                                              |
 | `show_file_list`           | `true`       | Whether the file list panel is visible on startup. Toggle with `<leader>e`.                                                                                |
+| `show_pr_checks`           | `false`      | Whether PR CI checks are fetched and shown. Set to `true` to include GitHub check rollups.                                                           |
+| `show_pr_comments`         | `true`       | Whether PR conversation comments are fetched and shown. Set to `false` to skip PR comments.                                                         |
 | `show_commits`             | `true`       | Whether the inline commit selector pane is visible on startup for multi-commit reviews. Toggle with `<leader>s` or `:set commits!`.                        |
 | `show_reviewed`            | `true`       | Whether files already marked reviewed appear in the file tree and the diff. Set `false` to start a session showing only what is left. Toggle with `:set reviewed!`. |
 | `mouse`                    | `true`       | Wheel scrolling, clicks, and drag-to-select.                                                                                                               |
@@ -94,6 +99,7 @@ legend = true
 | `review_watch_interval_ms` | `1000`       | Poll interval for persisted review-session changes. Set to `0` to disable automatic local-session reloads.                                                 |
 | `single_file_view`         | `false`      | Start in single-file view for supported review targets. Pristine `--all-files` mode always starts in single-file view.                                     |
 | `username`                 | `"user"`     | Display name stamped on local comments and used as the viewer identity for local comment coloring.                                                         |
+| `diff_watch_interval_ms`   | `0`          | Poll interval for re-reading the local diff so uncommitted changes show without `:e`. The same tick refreshes the commit pane, including the "Staged changes" and "Unstaged changes" rows. `0` (default) disables it. Ignored for PR and `--all-files` reviews. |
 | `backend`                  | `libgit2`    | Git backend: `libgit2` or `cli`. Sparse-checkout repos auto-route to `cli`.                                                                                |
 | `comment_types`            | (none)       | Comment categories. Untyped by default. See [Comment types](#comment-types).                                                                               |
 | `export_legend`            | `true`       | Include the `Comment types:` legend in the exported review. Superseded by `legend` under [Export](#export).                                                |

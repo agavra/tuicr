@@ -165,8 +165,8 @@ I reviewed your code and have the following comments. Please address them.
 
 Paste it back to any coding agent (Claude, Codex, Cursor, etc).
 
-For an agent-driven workflow where your agent opens tuicr in a tmux, Zellij, or Herdr
-split pane, see [skills/tuicr/SKILL.md](skills/tuicr/SKILL.md).
+For an agent-driven workflow where your agent opens tuicr in a cmux, tmux, Zellij, or
+Herdr split pane, see [skills/tuicr/SKILL.md](skills/tuicr/SKILL.md).
 
 ### To stdout
 
@@ -229,7 +229,6 @@ mouse = true
 leader = ";"                  # configurable prefix for leader shortcuts
 comment_vim = false           # vim modal editing in the review comment box
 relative_line_numbers = false # show rendered-row distances in the diff gutter
-review_watch_interval_ms = 1000 # set to 0 to disable persisted-review polling
 
 [[comment_types]]
 id = "issue"

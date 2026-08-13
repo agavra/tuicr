@@ -7,6 +7,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
 };
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, DiffSource, FocusedPanel, InputMode, Message, MessageType};
 use crate::theme::Theme;
@@ -23,8 +24,13 @@ pub fn build_message_span(message: Option<&Message>, theme: &Theme) -> (Span<'st
             MessageType::Warning => (theme.message_warning_fg, theme.message_warning_bg),
             MessageType::Error => (theme.message_error_fg, theme.message_error_bg),
         };
-        let content = format!(" {} ", msg.content);
-        let width = content.len();
+        let detail = msg.content.replace(['\n', '\r'], " ");
+        let content = if msg.message_type == MessageType::Error {
+            format!(" [:messages] {detail} ")
+        } else {
+            format!(" {detail} ")
+        };
+        let width = content.width();
         (
             Span::styled(
                 content,
@@ -43,7 +49,7 @@ pub fn build_right_aligned_spans<'a>(
     message_width: usize,
     total_width: usize,
 ) -> Vec<Span<'a>> {
-    let left_width: usize = left_spans.iter().map(|s| s.content.len()).sum();
+    let left_width: usize = left_spans.iter().map(|s| s.content.width()).sum();
     let padding_width = total_width.saturating_sub(left_width + message_width);
     let padding = Span::raw(" ".repeat(padding_width));
 
@@ -266,6 +272,7 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             InputMode::Search => " SEARCH ".to_string(),
             InputMode::Comment => " COMMENT ".to_string(),
             InputMode::Help => " HELP ".to_string(),
+            InputMode::MessageDetails => " ERROR ".to_string(),
             InputMode::Confirm => " CONFIRM ".to_string(),
             InputMode::CommitSelect => " SELECT ".to_string(),
             InputMode::VisualSelect => {
@@ -307,6 +314,7 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                 InputMode::Search => Cow::Borrowed("   \u{21b5} search \u{00b7} esc cancel"),
                 InputMode::Comment => Cow::Borrowed("   ctrl-s save \u{00b7} esc cancel"),
                 InputMode::Help => Cow::Borrowed("   / search · n/N match · q/?/esc close"),
+                InputMode::MessageDetails => Cow::Borrowed("   j/k scroll · q/esc close"),
                 InputMode::Confirm => Cow::Borrowed("   y yes \u{00b7} n no"),
                 InputMode::CommitSelect => Cow::Borrowed(
                     "   j/k navigate \u{00b7} space select \u{00b7} \u{21b5} confirm \u{00b7} esc back",
@@ -683,10 +691,165 @@ mod header_snapshot_tests {
         terminal.backend().buffer().clone()
     }
 
+    fn draw_app(app: &mut App, width: u16, height: u16) -> Buffer {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| crate::ui::render(frame, app))
+            .expect("draw frame");
+        terminal.backend().buffer().clone()
+    }
+
     fn row_text(buffer: &Buffer, y: u16) -> String {
         (0..buffer.area.width)
             .map(|x| buffer[(x, y)].symbol().to_string())
             .collect()
+    }
+
+    #[test]
+    fn should_make_full_long_error_accessible_from_status_bar() {
+        let mut app = build_pr_app(pr_source(false, false));
+        app.set_error(
+            "Submit failed: GitHub command failed: gh: Unprocessable Entity (HTTP 422)\n\
+             {\"message\":\"Unprocessable Entity\",\"errors\":[\"Review Can not approve your own pull request\"]}",
+        );
+
+        let status = draw_app(&mut app, 60, 12);
+        assert!(
+            row_text(&status, 11).contains("[:messages]"),
+            "status bar should advertise full error details"
+        );
+
+        app.open_message_details();
+        let buffer = draw_app(&mut app, 60, 12);
+        let rendered = (0..buffer.area.height)
+            .map(|y| row_text(&buffer, y))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let compact = rendered
+            .replace('│', " ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        assert!(
+            compact.contains("Submit failed: GitHub command failed: gh: Unprocessable Entity"),
+            "error prefix should remain visible, got:\n{rendered}"
+        );
+
+        app.help_scroll_to_bottom();
+        let buffer = draw_app(&mut app, 60, 12);
+        let rendered = (0..buffer.area.height)
+            .map(|y| row_text(&buffer, y))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let compact = rendered
+            .replace('│', " ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            compact.contains("Review Can not approve your own pull request"),
+            "full error detail should remain reachable, got:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn should_scroll_to_end_of_oversized_error_details() {
+        let mut app = build_pr_app(pr_source(false, false));
+        app.set_error(format!(
+            "Submit failed: {}UNIQUE_END",
+            "long error ".repeat(200)
+        ));
+        app.open_message_details();
+
+        let _ = draw_app(&mut app, 60, 12);
+        app.help_scroll_to_bottom();
+        let buffer = draw_app(&mut app, 60, 12);
+        let rendered = (0..buffer.area.height)
+            .map(|y| row_text(&buffer, y))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            rendered.contains("UNIQUE_END"),
+            "last error detail should be reachable, got:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn should_scroll_error_details_with_mouse_wheel() {
+        let mut app = build_pr_app(pr_source(false, false));
+        app.set_error(format!("failed: {}", "long error ".repeat(200)));
+        app.open_message_details();
+        let _ = draw_app(&mut app, 60, 12);
+
+        crate::handler::handle_mouse_event(
+            &mut app,
+            crossterm::event::MouseEvent {
+                kind: crossterm::event::MouseEventKind::ScrollDown,
+                column: 0,
+                row: 0,
+                modifiers: crossterm::event::KeyModifiers::NONE,
+            },
+        );
+
+        assert!(app.help_state.scroll_offset > 0);
+    }
+
+    #[test]
+    fn should_open_error_details_with_messages_command_and_close_to_normal_mode() {
+        let mut app = build_pr_app(pr_source(false, false));
+        app.input_mode = InputMode::Command;
+        app.command_buffer = "messages".to_string();
+        app.set_error("failed to load target");
+
+        crate::handler::handle_command_action(&mut app, crate::input::Action::SubmitInput);
+        assert_eq!(app.input_mode, InputMode::MessageDetails);
+        app.toggle_help();
+
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn should_reset_scroll_when_another_error_replaces_the_open_message() {
+        let mut app = build_pr_app(pr_source(false, false));
+        app.set_error(format!("failed: {}", "long error ".repeat(200)));
+        app.open_message_details();
+        let _ = draw_app(&mut app, 60, 12);
+        app.help_scroll_to_bottom();
+        assert!(app.help_state.scroll_offset > 0);
+
+        app.set_error("replacement error");
+
+        assert_eq!(app.input_mode, InputMode::MessageDetails);
+        assert_eq!(app.help_state.scroll_offset, 0);
+    }
+
+    #[test]
+    fn should_report_when_messages_command_has_no_current_error() {
+        let mut app = build_pr_app(pr_source(false, false));
+        app.input_mode = InputMode::Command;
+        app.command_buffer = "messages".to_string();
+
+        crate::handler::handle_command_action(&mut app, crate::input::Action::SubmitInput);
+
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert_eq!(
+            app.message.as_ref().map(|message| message.content.as_str()),
+            Some("No current error")
+        );
+    }
+
+    #[test]
+    fn should_close_error_details_when_a_non_error_replaces_the_message() {
+        let mut app = build_pr_app(pr_source(false, false));
+        app.set_error("request failed");
+        app.open_message_details();
+
+        app.set_message("request recovered");
+
+        assert_eq!(app.input_mode, InputMode::Normal);
     }
 
     #[test]

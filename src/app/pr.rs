@@ -325,8 +325,15 @@ impl App {
         let pr_number = current.key.number;
         let head_sha = current.key.head_sha.clone();
         let base_sha = current.base_sha.clone();
+        let show_pr_checks = self.show_pr_checks;
+        let show_pr_comments = self.show_pr_comments;
         std::thread::spawn(move || {
-            let backend = create_forge_backend(&repository, local_checkout);
+            let backend = create_forge_backend(
+                &repository,
+                local_checkout,
+                show_pr_checks,
+                show_pr_comments,
+            );
             let details = crate::forge::traits::PullRequestDetails {
                 repository: repository.clone(),
                 number: pr_number,
@@ -481,8 +488,15 @@ impl App {
 
         let repository = current.key.repository.clone();
         let pr_number = current.key.number;
+        let show_pr_checks = self.show_pr_checks;
+        let show_pr_comments = self.show_pr_comments;
         std::thread::spawn(move || {
-            let backend = create_forge_backend(&repository, local_checkout);
+            let backend = create_forge_backend(
+                &repository,
+                local_checkout,
+                show_pr_checks,
+                show_pr_comments,
+            );
             let target =
                 PullRequestTarget::with_repository(repository, pr_number, pr_number.to_string());
             let outcome = fetch_pr_data(backend.as_ref(), target).map_err(|e| e.to_string());
@@ -563,7 +577,12 @@ impl App {
         if head_changed {
             let details_for_threads = opened.details.clone();
             let opened = self.opened_pr_with_new_head_session(opened)?;
-            let backend = create_forge_backend(&request.repository, local_checkout.clone());
+            let backend = create_forge_backend(
+                &request.repository,
+                local_checkout.clone(),
+                self.show_pr_checks,
+                self.show_pr_comments,
+            );
             let previous_message = self.message.clone();
             self.enter_pr_diff_mode(backend, opened)?;
             self.spawn_pr_threads_fetch(&details_for_threads, local_checkout);
@@ -618,7 +637,12 @@ impl App {
             .forge_backend
             .as_deref()
             .and_then(|backend| backend.local_checkout_path());
-        let backend = create_forge_backend(&current.key.repository, local_checkout.clone());
+        let backend = create_forge_backend(
+            &current.key.repository,
+            local_checkout.clone(),
+            self.show_pr_checks,
+            self.show_pr_comments,
+        );
         self.reload_pull_request_with_backend(backend, local_checkout)
     }
 
@@ -706,6 +730,8 @@ impl App {
         let (tx, rx) = std::sync::mpsc::channel();
         self.pr_load_rx = Some(rx);
 
+        let show_pr_checks = self.show_pr_checks;
+        let show_pr_comments = self.show_pr_comments;
         std::thread::spawn(move || {
             // Canonical resolution (fork parent lookup) is GitHub-only.
             let canonical = if skip_resolution || origin.kind != ForgeKind::GitHub {
@@ -716,7 +742,7 @@ impl App {
                 let runner = SystemGhRunner;
                 resolve_canonical_repository(&origin, override_repo.as_ref(), &runner)
             };
-            let backend = create_forge_backend(&canonical, None);
+            let backend = create_forge_backend(&canonical, None, show_pr_checks, show_pr_comments);
             let query =
                 PullRequestListQuery::first_page_with_scope(canonical.clone(), PR_PAGE_SIZE, scope);
             let result = backend
@@ -740,8 +766,10 @@ impl App {
         let (tx, rx) = std::sync::mpsc::channel();
         self.pr_load_rx = Some(rx);
 
+        let show_pr_checks = self.show_pr_checks;
+        let show_pr_comments = self.show_pr_comments;
         std::thread::spawn(move || {
-            let backend = create_forge_backend(&repository, None);
+            let backend = create_forge_backend(&repository, None, show_pr_checks, show_pr_comments);
             let query = PullRequestListQuery {
                 repository,
                 already_loaded,
@@ -782,9 +810,19 @@ impl App {
                     self.pr_tab.apply_canonical(canonical.clone());
                     self.forge_repository = Some(canonical);
                     self.canonical_resolved = true;
+                    let error = result.as_ref().err().cloned();
                     self.pr_tab.apply_initial_load(result);
+                    if let Some(error) = error {
+                        self.set_error(error);
+                    }
                 }
-                PrLoadEvent::LoadMore(result) => self.pr_tab.apply_load_more(result),
+                PrLoadEvent::LoadMore(result) => {
+                    let error = result.as_ref().err().cloned();
+                    self.pr_tab.apply_load_more(result);
+                    if let Some(error) = error {
+                        self.set_error(error);
+                    }
+                }
             }
         }
         self.pr_tab.clamp_cursor();
@@ -857,16 +895,19 @@ impl App {
 
         let summary_repo = summary.repository.clone();
         let pr_number = summary.number;
-        // Resolve the local checkout up front (git remote read, cheap) so the
-        // diff-fetching backend can use it. Azure DevOps sources its diff from
-        // a local clone; without this it errors with "needs a local clone" even
-        // when tuicr is launched from inside the clone. GitHub/GitLab ignore
-        // the checkout for diffs, so this only ever helps. Mirrors the CLI path
-        // (`new_from_pr_target`) and `finish_pr_open`.
+        // Resolve the local checkout up front so Azure DevOps can source its
+        // diff from the clone when opening a PR from the selector.
         let local_checkout =
             crate::forge::local_checkout_for_repo(&self.vcs_info.root_path, &summary.repository);
+        let show_pr_checks = self.show_pr_checks;
+        let show_pr_comments = self.show_pr_comments;
         std::thread::spawn(move || {
-            let backend = create_forge_backend(&summary_repo, local_checkout);
+            let backend = create_forge_backend(
+                &summary_repo,
+                local_checkout,
+                show_pr_checks,
+                show_pr_comments,
+            );
             let target =
                 PullRequestTarget::with_repository(summary_repo, pr_number, pr_number.to_string());
             let outcome = fetch_pr_data(backend.as_ref(), target).map_err(|e| e.to_string());
@@ -956,7 +997,12 @@ impl App {
             highlighter,
         )?;
         let opened = Self::opened_pr_with_persisted_session(opened)?;
-        let backend = create_forge_backend(&request.repository, local_checkout.clone());
+        let backend = create_forge_backend(
+            &request.repository,
+            local_checkout.clone(),
+            self.show_pr_checks,
+            self.show_pr_comments,
+        );
         let previous_message = self.message.clone();
         self.enter_pr_diff_mode(backend, opened)?;
         // Kick the remote-thread fetch off on a fresh background thread.
@@ -990,9 +1036,16 @@ impl App {
         let repository = details.repository.clone();
         let pr_number = details.number;
         let head_sha = details.head_sha.clone();
+        let show_pr_checks = self.show_pr_checks;
+        let show_pr_comments = self.show_pr_comments;
 
         std::thread::spawn(move || {
-            let backend = create_forge_backend(&repository, local_checkout);
+            let backend = create_forge_backend(
+                &repository,
+                local_checkout,
+                show_pr_checks,
+                show_pr_comments,
+            );
             let threads = backend
                 .list_review_threads(&details_clone)
                 .map_err(|e| e.to_string());

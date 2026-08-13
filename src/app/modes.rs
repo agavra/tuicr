@@ -25,6 +25,13 @@ impl App {
         message_type: MessageType,
         ttl: Option<Duration>,
     ) {
+        if self.input_mode == InputMode::MessageDetails {
+            if message_type == MessageType::Error {
+                self.help_state.scroll_offset = 0;
+            } else {
+                self.input_mode = self.overlay_return_mode;
+            }
+        }
         self.message = Some(Message {
             content: msg.into(),
             message_type,
@@ -47,13 +54,14 @@ impl App {
     }
 
     pub fn enter_command_mode(&mut self) {
+        self.command_return_mode = self.input_mode;
         self.input_mode = InputMode::Command;
         self.command_buffer.clear();
         self.command_completion = None;
     }
 
     pub fn exit_command_mode(&mut self) {
-        self.input_mode = InputMode::Normal;
+        self.input_mode = self.command_return_mode;
         self.command_buffer.clear();
         self.command_completion = None;
     }
@@ -73,12 +81,30 @@ impl App {
         self.input_mode == InputMode::Search && self.search_return_mode == InputMode::Help
     }
 
-    pub fn toggle_help(&mut self) {
-        if self.input_mode == InputMode::Help {
-            self.input_mode = InputMode::Normal;
-        } else {
-            self.input_mode = InputMode::Help;
+    pub fn open_message_details(&mut self) {
+        if self
+            .message
+            .as_ref()
+            .is_some_and(|message| message.message_type == MessageType::Error)
+        {
+            self.overlay_return_mode = self.input_mode;
+            self.input_mode = InputMode::MessageDetails;
             self.help_state.scroll_offset = 0;
+        } else {
+            self.set_message("No current error");
+        }
+    }
+
+    pub fn toggle_help(&mut self) {
+        match self.input_mode {
+            InputMode::Help | InputMode::MessageDetails => {
+                self.input_mode = self.overlay_return_mode;
+            }
+            _ => {
+                self.overlay_return_mode = self.input_mode;
+                self.input_mode = InputMode::Help;
+                self.help_state.scroll_offset = 0;
+            }
         }
     }
 
