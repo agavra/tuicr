@@ -23,6 +23,58 @@ type CommentEntry<'a> = (
     Option<&'a str>,
 );
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CopyMethod {
+    // macOS system pasteboard
+    Pbcopy,
+    // xclip / wl-copy — direct Wayland/X11 clipboard
+    SubProcess,
+    // library clipboard
+    Arboard,
+    // tmux load-buffer -w / OSC 52
+    TerminalRelay,
+}
+
+/// Environment inputs that decide clipboard strategy.
+struct ClipboardEnv {
+    is_macos: bool,
+    ssh_tty: bool,
+    tmux: bool,
+    zellij: bool,
+}
+
+impl ClipboardEnv {
+    fn detect() -> Self {
+        Self {
+            is_macos: cfg!(target_os = "macos"),
+            ssh_tty: std::env::var_os("SSH_TTY").is_some(),
+            tmux: std::env::var_os("TMUX").is_some(),
+            zellij: std::env::var_os("ZELLIJ").is_some(),
+        }
+    }
+}
+
+fn copy_method_order(env: &ClipboardEnv) -> Vec<CopyMethod> {
+    if env.is_macos {
+        return vec![
+            CopyMethod::Pbcopy,
+            CopyMethod::Arboard,
+            CopyMethod::TerminalRelay,
+        ];
+    }
+    if env.ssh_tty {
+        return vec![CopyMethod::TerminalRelay];
+    }
+    if env.tmux || env.zellij {
+        return vec![CopyMethod::SubProcess, CopyMethod::TerminalRelay];
+    }
+    vec![
+        CopyMethod::SubProcess,
+        CopyMethod::Arboard,
+        CopyMethod::TerminalRelay,
+    ]
+}
+
 /// Generate markdown content from the review session.
 /// Returns the markdown string or an error if there are no comments.
 pub fn generate_export_content(
@@ -76,30 +128,29 @@ pub fn export_to_clipboard(
 }
 
 /// Copy arbitrary text to the system clipboard. Returns `Ok(true)` if the
-/// terminal-based fallback (tmux/OSC 52) was used, `Ok(false)` if the
-/// platform clipboard handled it.
+/// terminal relay (tmux / OSC 52) was used, `Ok(false)` if a direct system
+/// clipboard handled it.
 pub fn copy_text_to_clipboard(text: &str) -> Result<bool> {
-    // On macOS, pbcopy writes straight to the system pasteboard and works even
-    // inside tmux/SSH. OSC 52 (preferred below) instead relies on the outer
-    // terminal honoring the escape, which Terminal.app does not, so the copy
-    // would only reach the tmux buffer. Prefer pbcopy unconditionally here.
-    if cfg!(target_os = "macos") && try_clipboard_cmd("pbcopy", &[], text) {
-        return Ok(false);
-    }
-    if should_prefer_osc52() {
-        copy_osc52(text)?;
-        return Ok(true);
-    }
-    if try_copy_via_subprocess(text) {
-        return Ok(false);
-    }
-    match Clipboard::new().and_then(|mut cb| cb.set_text(text)) {
-        Ok(_) => Ok(false),
-        Err(_) => {
-            copy_osc52(text)?;
-            Ok(true)
+    for method in copy_method_order(&ClipboardEnv::detect()) {
+        match method {
+            CopyMethod::Pbcopy if try_clipboard_cmd("pbcopy", &[], text) => return Ok(false),
+            CopyMethod::SubProcess if try_copy_via_subprocess(text) => return Ok(false),
+            CopyMethod::Arboard
+                if Clipboard::new()
+                    .and_then(|mut cb| cb.set_text(text))
+                    .is_ok() =>
+            {
+                return Ok(false);
+            }
+            CopyMethod::TerminalRelay => {
+                copy_osc52(text)?;
+                return Ok(true);
+            }
+            _ => {}
         }
     }
+    // Breaks loudly if a future branch forgets to add it
+    unreachable!("copy_method_order must end with TerminalRelay")
 }
 
 /// Try xclip (X11) then wl-copy (Wayland). Returns true if either succeeds.
@@ -139,16 +190,6 @@ fn try_clipboard_cmd(program: &str, args: &[&str], text: &str) -> bool {
     matches!(child.wait(), Ok(s) if s.success())
 }
 
-/// Returns true if we should prefer OSC 52 over the system clipboard.
-///
-/// In tmux or SSH sessions, arboard may "succeed" but copy to an inaccessible
-/// X11 clipboard, so we use OSC 52 which works reliably in these environments.
-fn should_prefer_osc52() -> bool {
-    std::env::var("TMUX").is_ok()
-        || std::env::var("SSH_TTY").is_ok()
-        || std::env::var("ZELLIJ").is_ok()
-}
-
 /// Copy text to clipboard using OSC 52 escape sequence.
 /// In tmux, raw OSC 52 is intercepted and may not reach the outer terminal.
 /// We use `tmux load-buffer -w` which tells tmux to handle the clipboard copy itself.
@@ -162,7 +203,24 @@ fn copy_osc52(text: &str) -> Result<()> {
 }
 
 /// Copy text to the system clipboard via `tmux load-buffer -w -`.
-/// The `-w` flag tells tmux to also forward to the outer terminal's clipboard via OSC 52.
+///
+/// The `-w` flag stores the text in tmux's buffer and forwards it to the outer
+/// terminal's clipboard via OSC 52. If any of the following is missing, the copy
+/// only reaches tmux's buffer — the usual cause of "clipboard empty inside tmux":
+///
+/// 1. `set -g set-clipboard on` in `~/.tmux.conf`. `external` and `off` both
+///    stop the outward OSC 52 and the copy fails.
+/// 2. tmux must know the terminal supports the `Ms` clipboard capability. In
+///    tmux 3.2+, add `set -as terminal-features ',*:clipboard'`. Without it,
+///    tmux drops the passthrough even with `set-clipboard on`.
+/// 3. The outer terminal must allow OSC 52 writes. On by default in kitty,
+///    WezTerm, iTerm2, and foot; off or opt-in in many VTE terminals and xterm.
+///
+/// Some terminals cap OSC 52 payload size, so large reviews can truncate silently.
+///
+/// On a local Linux desktop this relay is unnecessary: xclip/wl-copy write to
+/// the display server directly. See `copy_method_order`; the relay is the
+/// fallback and the preferred path only for SSH.
 fn copy_via_tmux(text: &str) -> Result<()> {
     use std::process::{Command, Stdio};
 
@@ -193,8 +251,12 @@ fn copy_via_tmux(text: &str) -> Result<()> {
     Ok(())
 }
 
-/// Write OSC 52 escape sequence to the given writer.
-/// Separated for testability.
+/// Write the OSC 52 clipboard escape sequence to `writer`.
+///
+/// The direct (non-tmux) relay: the escape travels the terminal stream and the
+/// outer terminal sets the clipboard. Only works when that terminal allows OSC 52
+/// writes (see `copy_via_tmux` for which terminals do). Separated from I/O for
+/// testability.
 fn write_osc52<W: IoWrite>(writer: &mut W, text: &str) -> Result<()> {
     let encoded = BASE64.encode(text);
     write!(writer, "\x1b]52;c;{encoded}\x07")
@@ -1908,5 +1970,41 @@ mod tests {
 
         assert!(markdown.contains("Comment types: QUESTION (ask for clarification)"));
         assert!(!markdown.contains("ISSUE"));
+    }
+
+    #[test]
+    fn should_prefer_local_tools_over_terminal_relay_in_linux_tmux() {
+        let env = ClipboardEnv {
+            is_macos: false,
+            ssh_tty: false,
+            tmux: true,
+            zellij: false,
+        };
+        let order = copy_method_order(&env);
+        let sub = order.iter().position(|m| *m == CopyMethod::SubProcess);
+        let relay = order.iter().position(|m| *m == CopyMethod::TerminalRelay);
+        assert!(sub < relay, "local tmux prefer direct tools: {order:?}");
+    }
+
+    #[test]
+    fn should_use_terminal_relay_over_ssh() {
+        let env = ClipboardEnv {
+            is_macos: false,
+            ssh_tty: true,
+            tmux: true,
+            zellij: false,
+        };
+        assert_eq!(copy_method_order(&env), vec![CopyMethod::TerminalRelay]);
+    }
+
+    #[test]
+    fn should_prefer_pbcopy_on_macos() {
+        let env = ClipboardEnv {
+            is_macos: true,
+            ssh_tty: false,
+            tmux: true,
+            zellij: false,
+        };
+        assert_eq!(copy_method_order(&env)[0], CopyMethod::Pbcopy);
     }
 }
