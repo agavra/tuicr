@@ -585,6 +585,16 @@ pub enum InputMode {
     SubmitActionPicker,
 }
 
+/// A pending write against a remote discussion thread, held while the comment
+/// editor is open so `save_comment` knows to call the forge instead of the
+/// session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteThreadEdit {
+    pub thread_id: String,
+    /// Note being rewritten. `None` means the text becomes a new reply.
+    pub comment_id: Option<String>,
+}
+
 /// CommandCompletionState keeps one Tab-completion run anchored to the text
 /// the user typed before cycling began.
 ///
@@ -1175,6 +1185,15 @@ pub struct App {
     /// Background-thread channel that delivers remote-thread fetch results.
     /// `Receiver` is only present while a fetch is in flight.
     pub pr_threads_rx: Option<std::sync::mpsc::Receiver<PrThreadsEvent>>,
+    /// Forge login of the authenticated user for the open PR, from the forge
+    /// itself rather than the local `username` config. Editing and deleting
+    /// remote notes is gated on it, since forges only allow authors to do
+    /// either. `None` when the forge did not report an identity.
+    pub pr_viewer_login: Option<String>,
+    /// Remote thread comment the editor is currently composing against, set
+    /// while replying to or editing a forge thread. `None` for local drafts,
+    /// which `save_comment` writes to the session instead.
+    pub remote_thread_edit: Option<RemoteThreadEdit>,
 
     /// `[forge]` section settings resolved at startup. Drives the body/footer
     /// formatting on submit. Defaults to `ForgeConfig::default()` when the
@@ -1600,6 +1619,7 @@ mod init;
 mod modes;
 mod navigation;
 mod pr;
+mod remote_threads;
 mod reviewed;
 mod search;
 mod session;

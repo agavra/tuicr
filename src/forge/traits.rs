@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use crate::error::Result;
+use crate::error::{Result, TuicrError};
 use crate::forge::remote_comments::RemoteReviewThread;
 use crate::forge::submit::SubmitEvent;
 use crate::model::{DiffLine, FileStatus};
@@ -552,6 +552,60 @@ pub trait ForgeBackend {
         pr: &PullRequestDetails,
         request: CreateReviewRequest<'_>,
     ) -> Result<GhCreateReviewResponse>;
+
+    /// Whether the four thread-mutation methods below are implemented. Callers
+    /// check this before offering the operations in the UI, rather than letting
+    /// the user compose a reply only to have it rejected on submit.
+    fn supports_thread_mutations(&self) -> bool {
+        false
+    }
+
+    /// Mark an existing discussion thread resolved or unresolved. `thread_id`
+    /// is the `RemoteReviewThread::id` the backend itself produced.
+    fn set_thread_resolved(
+        &self,
+        _pr: &PullRequestDetails,
+        _thread_id: &str,
+        _resolved: bool,
+    ) -> Result<()> {
+        Err(unsupported_thread_mutation("resolving threads"))
+    }
+
+    /// Append a reply to an existing discussion thread.
+    fn reply_to_thread(
+        &self,
+        _pr: &PullRequestDetails,
+        _thread_id: &str,
+        _body: &str,
+    ) -> Result<()> {
+        Err(unsupported_thread_mutation("replying to threads"))
+    }
+
+    /// Rewrite the body of one comment in a thread. `comment_id` is the
+    /// `RemoteReviewComment::id` from the same backend.
+    fn edit_thread_comment(
+        &self,
+        _pr: &PullRequestDetails,
+        _thread_id: &str,
+        _comment_id: &str,
+        _body: &str,
+    ) -> Result<()> {
+        Err(unsupported_thread_mutation("editing thread comments"))
+    }
+
+    /// Delete one comment from a thread.
+    fn delete_thread_comment(
+        &self,
+        _pr: &PullRequestDetails,
+        _thread_id: &str,
+        _comment_id: &str,
+    ) -> Result<()> {
+        Err(unsupported_thread_mutation("deleting thread comments"))
+    }
+}
+
+fn unsupported_thread_mutation(action: &str) -> TuicrError {
+    TuicrError::UnsupportedOperation(format!("This forge backend does not support {action}"))
 }
 
 #[cfg(test)]

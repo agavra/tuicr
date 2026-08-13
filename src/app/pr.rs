@@ -45,6 +45,8 @@ impl App {
         self.forge_review_summaries = Vec::new();
         self.forge_review_threads_loading = false;
         self.pr_threads_rx = None;
+        self.pr_viewer_login = review_metadata.viewer_login.clone();
+        self.remote_thread_edit = None;
         // Latest known remote head — equal to the session head at open time;
         // refreshed by future `gh pr view` calls in PR 6.
         self.current_pr_head = Some(details.head_sha.clone());
