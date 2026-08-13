@@ -174,7 +174,7 @@ impl GitHubGhBackend<SystemGhRunner> {
             default_repository,
             runner: SystemGhRunner,
             local_checkout: None,
-            show_pr_checks: true,
+            show_pr_checks: false,
             show_pr_comments: true,
         }
     }
@@ -194,7 +194,7 @@ where
             default_repository,
             runner,
             local_checkout: None,
-            show_pr_checks: true,
+            show_pr_checks: false,
             show_pr_comments: true,
         }
     }
@@ -1709,7 +1709,9 @@ Match host github-work
     #[test]
     fn can_skip_pull_request_conversation_comments() {
         let runner = FakeGhRunner::default();
-        let backend = GitHubGhBackend::with_runner(Some(repo()), runner).with_pr_comments(false);
+        let backend = GitHubGhBackend::with_runner(Some(repo()), runner)
+            .with_pr_checks(true)
+            .with_pr_comments(false);
 
         let info = backend
             .get_pull_request_info(parse_pull_request_target("125").unwrap())

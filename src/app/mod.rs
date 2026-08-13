@@ -1212,7 +1212,7 @@ pub struct App {
     /// Extended PR metadata rendered at the top of the diff view. Populated in PR mode.
     pub pr_info: Option<crate::forge::traits::PullRequestInfo>,
     /// Whether pull-request CI checks are fetched and rendered. Defaults to
-    /// true; configured before the first direct PR load.
+    /// false; configured before the first direct PR load.
     pub show_pr_checks: bool,
     /// Whether pull-request conversation comments are fetched and rendered.
     /// Defaults to true; configured before the first direct PR load.

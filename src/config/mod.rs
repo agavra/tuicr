@@ -105,7 +105,7 @@ pub struct AppConfig {
     pub comment_types: Option<Vec<CommentTypeConfig>>,
     pub show_file_list: Option<bool>,
     /// Whether pull-request CI checks are fetched and shown.
-    /// Defaults to true.
+    /// Defaults to false.
     pub show_pr_checks: Option<bool>,
     /// Whether pull-request conversation comments are fetched and shown.
     /// Defaults to true.

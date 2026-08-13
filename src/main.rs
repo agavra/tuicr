@@ -190,7 +190,7 @@ fn main() -> anyhow::Result<()> {
                     .config
                     .as_ref()
                     .and_then(|cfg| cfg.show_pr_checks)
-                    .unwrap_or(true),
+                    .unwrap_or(false),
                 show_pr_comments: config_outcome
                     .config
                     .as_ref()
@@ -289,7 +289,7 @@ fn main() -> anyhow::Result<()> {
 
     // Apply config-driven defaults
     if let Some(ref cfg) = config_outcome.config {
-        app.show_pr_checks = cfg.show_pr_checks.unwrap_or(true);
+        app.show_pr_checks = cfg.show_pr_checks.unwrap_or(false);
         app.show_pr_comments = cfg.show_pr_comments.unwrap_or(true);
         if cfg.show_file_list == Some(false) {
             app.show_file_list = false;

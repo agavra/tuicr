@@ -529,7 +529,7 @@ impl App {
             pr_submit_rx: None,
             current_pr_head: None,
             pr_info: None,
-            show_pr_checks: true,
+            show_pr_checks: false,
             show_pr_comments: true,
             should_quit: false,
             dirty: false,
@@ -782,7 +782,7 @@ impl App {
             repo_url_override,
             commit_selection,
             PrDisplayOptions {
-                show_checks: true,
+                show_checks: false,
                 show_comments: true,
             },
         )
