@@ -67,7 +67,7 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
                     .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or("?");
-                depth * 2 + 4 + filename.width()
+                depth * 2 + 4 + filename.width() + file_stat_width(file, app.show_file_line_stats)
             }
         })
         .max()
@@ -165,6 +165,7 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
                             ));
                         }
                         spans.push(Span::raw(filename.to_string()));
+                        spans.extend(file_stat_spans(file, &app.theme, app.show_file_line_stats));
                         Line::from(spans)
                     }
                 }
@@ -193,6 +194,35 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
             y: area.y + area.height.saturating_sub(1),
         });
     }
+}
+
+/// Width of the GitHub-style ` +N -N` suffix for a normal file row.
+fn file_stat_width(file: &crate::model::DiffFile, show_file_line_stats: bool) -> usize {
+    if !show_file_line_stats || file.is_commit_message {
+        return 0;
+    }
+
+    let (additions, deletions) = file.stat();
+    format!(" +{additions} -{deletions}").width()
+}
+
+/// Coloured GitHub-style line counts shown after a file name.
+fn file_stat_spans(
+    file: &crate::model::DiffFile,
+    theme: &crate::theme::Theme,
+    show_file_line_stats: bool,
+) -> Vec<Span<'static>> {
+    if !show_file_line_stats || file.is_commit_message {
+        return Vec::new();
+    }
+
+    let (additions, deletions) = file.stat();
+    vec![
+        Span::raw(" "),
+        Span::styled(format!("+{additions}"), Style::default().fg(theme.diff_add)),
+        Span::raw(" "),
+        Span::styled(format!("-{deletions}"), Style::default().fg(theme.diff_del)),
+    ]
 }
 
 /// Leading `│` border plus one space before the prompt sigil.
@@ -256,7 +286,9 @@ mod tests {
     //! Render checks for the filter status/prompt line in the file tree's
     //! bottom border, driven through the real `ui::render`.
     use crate::app::{App, DiffSource, FileTreePrompt, FocusedPanel, InputMode};
-    use crate::model::{DiffFile, DiffLine, FileStatus, ReviewSession, SessionDiffSource};
+    use crate::model::{
+        DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin, ReviewSession, SessionDiffSource,
+    };
     use crate::vcs::traits::{VcsBackend, VcsInfo, VcsType};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -358,6 +390,60 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn should_render_colored_added_and_removed_line_counts_for_each_file() {
+        let mut app = app_with(&["src/main.rs"]);
+        app.diff_files[0].hunks = vec![DiffHunk {
+            header: "@@ -1,1 +1,2 @@".into(),
+            lines: vec![
+                DiffLine {
+                    origin: LineOrigin::Deletion,
+                    content: "old".into(),
+                    old_lineno: Some(1),
+                    new_lineno: None,
+                    highlighted_spans: None,
+                },
+                DiffLine {
+                    origin: LineOrigin::Addition,
+                    content: "new".into(),
+                    old_lineno: None,
+                    new_lineno: Some(1),
+                    highlighted_spans: None,
+                },
+                DiffLine {
+                    origin: LineOrigin::Addition,
+                    content: "another new line".into(),
+                    old_lineno: None,
+                    new_lineno: Some(2),
+                    highlighted_spans: None,
+                },
+            ],
+            old_start: 1,
+            old_count: 1,
+            new_start: 1,
+            new_count: 2,
+        }];
+
+        let spans = super::file_stat_spans(&app.diff_files[0], &app.theme, true);
+        assert_eq!(spans[1].content, "+2");
+        assert_eq!(spans[1].style.fg, Some(app.theme.diff_add));
+        assert_eq!(spans[3].content, "-1");
+        assert_eq!(spans[3].style.fg, Some(app.theme.diff_del));
+
+        let text = buffer_text(&draw(&mut app));
+        assert!(
+            text.contains("main.rs +2 -1"),
+            "expected file line counts in the file list, got:\n{text}"
+        );
+
+        app.show_file_line_stats = false;
+        let text = buffer_text(&draw(&mut app));
+        assert!(
+            !text.contains("main.rs +2 -1"),
+            "expected file line counts to be hidden, got:\n{text}"
+        );
     }
 
     #[test]

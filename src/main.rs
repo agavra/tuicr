@@ -295,6 +295,7 @@ fn main() -> anyhow::Result<()> {
             app.show_file_list = false;
             app.focused_panel = FocusedPanel::Diff;
         }
+        app.show_file_line_stats = cfg.show_file_line_stats.unwrap_or(true);
         // Start with the commit selector pane hidden. `(` / `)` still cycle the
         // selected commit while hidden; `<leader>s` / `:set commits!` reveal it.
         if cfg.show_commits == Some(false) {

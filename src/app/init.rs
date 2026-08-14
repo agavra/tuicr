@@ -480,6 +480,7 @@ impl App {
             focused_panel: FocusedPanel::Diff,
             diff_view_mode: DiffViewMode::Unified,
             relative_line_numbers: false,
+            show_file_line_stats: true,
             file_list_state: FileListState::default(),
             comment_navigator_state: CommentNavigatorState::default(),
             diff_state: DiffState::default(),

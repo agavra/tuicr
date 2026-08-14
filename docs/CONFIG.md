@@ -27,6 +27,7 @@ theme_light = "gruvbox-light"
 diff_view = "side-by-side"
 ignore_whitespace = false
 show_file_list = true
+show_file_line_stats = true
 show_pr_checks = false
 show_pr_comments = true
 mouse = true
@@ -80,6 +81,7 @@ legend = true
 | `initial_commit_selection` | `all`        | Which commits are selected when a multi-commit review first opens: `all`, or `oldest` to start on just the oldest commit and walk forward with `(` / `)`.  |
 | `ignore_whitespace`        | `false`      | Ignore all whitespace in local Git, jj, and hg diffs. PR diffs are unchanged.                                                                              |
 | `show_file_list`           | `true`       | Whether the file list panel is visible on startup. Toggle with `<leader>e`.                                                                                |
+| `show_file_line_stats`     | `true`       | Show per-file `+added -removed` line counts in the file list.                                                                                              |
 | `show_pr_checks`           | `false`      | Whether PR CI checks are fetched and shown. Set to `true` to include GitHub check rollups.                                                           |
 | `show_pr_comments`         | `true`       | Whether PR conversation comments are fetched and shown. Set to `false` to skip PR comments.                                                         |
 | `show_commits`             | `true`       | Whether the inline commit selector pane is visible on startup for multi-commit reviews. Toggle with `<leader>s` or `:set commits!`.                        |
