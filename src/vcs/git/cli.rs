@@ -1441,6 +1441,49 @@ mod tests {
     }
 
     #[test]
+    fn reads_non_ascii_paths_as_text() {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let workdir = temp_dir.path();
+
+        git(workdir, &["init"]);
+        git(workdir, &["config", "user.email", "test@example.com"]);
+        git(workdir, &["config", "user.name", "Test User"]);
+        write_file(workdir, "ドキュメント/設計書.md", "base\n");
+        write_file(workdir, "日本語.txt", "base\n");
+        git(workdir, &["add", "."]);
+        git(workdir, &["commit", "-m", "initial"]);
+        write_file(workdir, "ドキュメント/設計書.md", "base\nchanged\n");
+        // A space in the name makes Git terminate the ---/+++ paths with a tab.
+        write_file(workdir, "新規 ファイル.txt", "new\n");
+        git(workdir, &["mv", "日本語.txt", "renamed.txt"]);
+
+        let backend = GitCliBackend::discover_from(workdir, DiffWhitespaceMode::Normal)
+            .expect("failed to discover cli backend");
+        let files = backend
+            .get_working_tree_diff(&SyntaxHighlighter::default())
+            .expect("failed to get working tree diff");
+
+        let new_paths: Vec<_> = files
+            .iter()
+            .filter_map(|file| file.new_path.as_deref())
+            .collect();
+        assert!(
+            new_paths.contains(&Path::new("ドキュメント/設計書.md")),
+            "expected decoded UTF-8 path, got {new_paths:?}"
+        );
+        assert!(
+            new_paths.contains(&Path::new("新規 ファイル.txt")),
+            "expected decoded UTF-8 path, got {new_paths:?}"
+        );
+
+        let renamed = files
+            .iter()
+            .find(|file| file.new_path.as_deref() == Some(Path::new("renamed.txt")))
+            .expect("renamed file should be in the diff");
+        assert_eq!(renamed.old_path.as_deref(), Some(Path::new("日本語.txt")));
+    }
+
+    #[test]
     fn reads_commit_range_diff_in_sparse_index() {
         let (_temp_dir, backend, ids) = setup_sparse_index_repo();
 
