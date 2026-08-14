@@ -7,8 +7,9 @@
 //! Key invariants enforced here:
 //! - The current local checkout is never treated as the source of truth.
 //!   Diffs are parsed from `gh pr diff`; SHAs are captured from PR metadata.
-//! - `.tuicrignore` is applied only when the caller supplies a local
-//!   checkout path. Outside a checkout, the unfiltered diff is shown.
+//! - `.tuicrignore` and `linguist-generated` attributes are applied only when
+//!   the caller supplies a local checkout path. Outside a checkout, the
+//!   unfiltered diff is shown.
 //! - No checkout mutation. We never spawn `git checkout/fetch/reset/stash`
 //!   or branch-creation commands here.
 
@@ -19,10 +20,11 @@ use crate::forge::traits::{
     ForgeBackend, PrSessionKey, PullRequestCommit, PullRequestDetails, PullRequestInfo,
     PullRequestReviewMetadata, PullRequestTarget,
 };
+use crate::gitattributes::LinguistGeneratedMatcher;
 use crate::model::{DiffFile, ReviewSession, SessionDiffSource};
 use crate::syntax::SyntaxHighlighter;
 use crate::tuicrignore;
-use crate::vcs::diff_parser::{DiffFormat, parse_unified_diff};
+use crate::vcs::diff_parser::{DiffFormat, parse_unified_diff_filtered};
 
 /// Everything the App needs to enter PR review mode.
 #[derive(Debug)]
@@ -44,9 +46,10 @@ pub struct OpenedPullRequest {
 
 /// Open a PR target through a forge backend and prepare review state.
 ///
-/// `local_checkout` is optional: when provided, `.tuicrignore` rules at the
-/// root are applied. When absent (PR opened via URL outside a checkout, or
-/// for a different repo), no filtering happens.
+/// `local_checkout` is optional: when provided, `.tuicrignore` rules and
+/// `linguist-generated` attributes at the root are applied. When absent (PR
+/// opened via URL outside a checkout, or for a different repo), no filtering
+/// happens.
 pub fn open_pull_request(
     backend: &dyn ForgeBackend,
     target: PullRequestTarget,
@@ -94,8 +97,8 @@ pub fn fetch_pr_data(
     Ok((details, patch, commits, review_metadata, pr_info))
 }
 
-/// CPU-only half of the PR open path: parse the patch, apply
-/// `.tuicrignore`, and build the session. Runs on the main thread because
+/// CPU-only half of the PR open path: parse the patch, apply repository file
+/// filters, and build the session. Runs on the main thread because
 /// `SyntaxHighlighter` is not trivially `Send`-cloneable.
 pub fn prepare_open_pr(
     details: PullRequestDetails,
@@ -106,7 +109,7 @@ pub fn prepare_open_pr(
     local_checkout: Option<&Path>,
     highlighter: &SyntaxHighlighter,
 ) -> Result<OpenedPullRequest> {
-    let parsed = match parse_unified_diff(patch, DiffFormat::GitStyle, highlighter) {
+    let parsed = match parse_pr_diff(patch, local_checkout, highlighter) {
         Ok(files) => files,
         Err(TuicrError::NoChanges) => {
             return Err(TuicrError::Forge(format!(
@@ -117,10 +120,7 @@ pub fn prepare_open_pr(
         Err(e) => return Err(e),
     };
 
-    let diff_files = match local_checkout {
-        Some(root) => tuicrignore::filter_diff_files(root, parsed),
-        None => parsed,
-    };
+    let diff_files = parsed;
 
     let key = PrSessionKey::from_details(&details);
     let session = build_session(&details, &key, &diff_files);
@@ -137,6 +137,24 @@ pub fn prepare_open_pr(
         commits,
         review_metadata,
         pr_info,
+    })
+}
+
+pub(crate) fn parse_pr_diff(
+    patch: &str,
+    local_checkout: Option<&Path>,
+    highlighter: &SyntaxHighlighter,
+) -> Result<Vec<DiffFile>> {
+    let generated = local_checkout.and_then(LinguistGeneratedMatcher::open);
+    let parsed = parse_unified_diff_filtered(patch, DiffFormat::GitStyle, highlighter, |path| {
+        !generated
+            .as_ref()
+            .is_some_and(|matcher| matcher.is_generated(path))
+    })?;
+
+    Ok(match local_checkout {
+        Some(root) => tuicrignore::filter_diff_files(root, parsed),
+        None => parsed,
     })
 }
 
@@ -271,6 +289,22 @@ index 1111111..2222222 100644
  }
 "##;
 
+    const GENERATED_AND_SOURCE_PATCH: &str = r##"diff --git a/generated.js b/generated.js
+index 1111111..2222222 100644
+--- a/generated.js
++++ b/generated.js
+@@ -1 +1 @@
+-const answer = 41;
++const answer = 42;
+diff --git a/src/lib.rs b/src/lib.rs
+index 3333333..4444444 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1 +1 @@
+-pub fn answer() -> u32 { 41 }
++pub fn answer() -> u32 { 42 }
+"##;
+
     #[test]
     fn should_parse_pr_diff_and_build_session_keyed_by_head_sha() {
         // given
@@ -300,6 +334,40 @@ index 1111111..2222222 100644
         assert_eq!(
             backend.calls.borrow().as_slice(),
             &["get_pull_request", "get_pull_request_diff"],
+        );
+    }
+
+    #[test]
+    fn should_filter_linguist_generated_files_before_highlighting_pr_diff() {
+        // given a local checkout whose Git attributes mark one PR file as generated
+        let checkout = tempfile::tempdir().expect("failed to create temp dir");
+        git2::Repository::init(checkout.path()).expect("failed to initialize repository");
+        std::fs::write(
+            checkout.path().join(".gitattributes"),
+            "generated.js linguist-generated=true\n",
+        )
+        .expect("failed to write .gitattributes");
+        let highlighter = SyntaxHighlighter::default();
+
+        // when
+        let opened = prepare_open_pr(
+            details(),
+            GENERATED_AND_SOURCE_PATCH,
+            Vec::new(),
+            PullRequestReviewMetadata::default(),
+            PullRequestInfo::from_details(details()),
+            Some(checkout.path()),
+            &highlighter,
+        )
+        .unwrap();
+
+        // then the generated file is absent, while the retained source file is highlighted
+        assert_eq!(opened.diff_files.len(), 1);
+        assert_eq!(opened.diff_files[0].display_path(), Path::new("src/lib.rs"));
+        assert!(
+            opened.diff_files[0].hunks[0].lines[0]
+                .highlighted_spans
+                .is_some()
         );
     }
 

@@ -410,22 +410,19 @@ impl App {
         request: &PrRangeReloadRequest,
         patch: &str,
     ) -> Result<()> {
-        use crate::vcs::diff_parser::{DiffFormat, parse_unified_diff};
-
         let highlighter = self.theme.syntax_highlighter();
-        let parsed = match parse_unified_diff(patch, DiffFormat::GitStyle, highlighter) {
-            Ok(files) => files,
-            Err(TuicrError::NoChanges) => Vec::new(),
-            Err(e) => return Err(e),
-        };
-
         let local_checkout = self
             .forge_backend
             .as_deref()
             .and_then(|b| b.local_checkout_path());
-        let files = match local_checkout.as_deref() {
-            Some(root) => crate::tuicrignore::filter_diff_files(root, parsed),
-            None => parsed,
+        let files = match crate::forge::pr_open::parse_pr_diff(
+            patch,
+            local_checkout.as_deref(),
+            highlighter,
+        ) {
+            Ok(files) => files,
+            Err(TuicrError::NoChanges) => Vec::new(),
+            Err(e) => return Err(e),
         };
 
         self.diff_files = files;
