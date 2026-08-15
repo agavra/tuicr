@@ -178,7 +178,7 @@ and fall back through normal precedence.
 Comment categories control:
 
 - The classification badge shown in the TUI (color + label)
-- The `[TYPE]` tag in the exported markdown
+- The `[TYPE]` tag in the exported markdown and in comments submitted to a forge
 - The Tab cycle order in comment mode
 
 ### Fields
@@ -186,7 +186,7 @@ Comment categories control:
 | Field        | Required | Description                                                                             |
 | ------------ | -------- | --------------------------------------------------------------------------------------- |
 | `id`         | yes      | Stable internal value. Saved in sessions and used for matching.                         |
-| `label`      | no       | Visible tag in UI and export (`[QUESTION]`, `[NITPICK]`). Defaults to `id` uppercased.  |
+| `label`      | no       | Visible tag in the UI, export, and submitted comments (`[QUESTION]`, `[NITPICK]`). Defaults to `id` uppercased. |
 | `definition` | no       | Guidance text for LLMs, included in the exported `Comment types:` legend.               |
 | `color`      | no       | Comment badge / border color. Terminal name (`yellow`, `light_red`) or hex (`#RRGGBB`). |
 
@@ -229,7 +229,7 @@ comment_type_prefix = false
 
 | Key                   | Default | Description                                                                                                                                                                 |
 | --------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `comment_type_prefix` | `true`  | Prepend `[TYPE] ` to comment bodies on submit (e.g. `[ISSUE] Magic number should be a constant`). Set to `false` to send the raw comment body without a classification tag. |
+| `comment_type_prefix` | `true`  | Prepend `[TYPE] ` to comment bodies on submit (e.g. `[ISSUE] Magic number should be a constant`). The tag uses the type's `label`, uppercased — the same text the TUI badge and export show. Set to `false` to send the raw comment body without a classification tag. |
 
 When enabled (the default), submitted comments look like:
 
