@@ -38,8 +38,9 @@ If you need to rebuild binaries for an existing release:
 4. **Click "Run workflow"**
 
 Linux binaries are built for both GNU and musl targets, and their archive names
-use the matching target triples. GNU archives are dynamically linked; use the
-musl archives when a fully static binary is required.
+use the matching target triples. GNU archives retain the names expected by existing
+`tuicr update` installations but are dynamically linked. Musl archives remain fully
+static, and direct updates preserve the installed binary's libc target.
 
 ## What Gets Updated
 

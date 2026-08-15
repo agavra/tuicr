@@ -527,9 +527,20 @@ fn rejects_bad_release_metadata_assets_and_digests() {
 #[test]
 fn maps_every_published_target_and_rejects_unsupported_targets() {
     assert_eq!(package_repository_url(), env!("CARGO_PKG_REPOSITORY"));
+    let (x86_64_linux, aarch64_linux) = if cfg!(target_env = "musl") {
+        (
+            "x86_64-unknown-linux-musl.tar.gz",
+            "aarch64-unknown-linux-musl.tar.gz",
+        )
+    } else {
+        (
+            "x86_64-unknown-linux-gnu.tar.gz",
+            "aarch64-unknown-linux-gnu.tar.gz",
+        )
+    };
     let cases = [
-        ("linux", "x86_64", "x86_64-unknown-linux-gnu.tar.gz"),
-        ("linux", "aarch64", "aarch64-unknown-linux-gnu.tar.gz"),
+        ("linux", "x86_64", x86_64_linux),
+        ("linux", "aarch64", aarch64_linux),
         ("macos", "x86_64", "x86_64-apple-darwin.tar.gz"),
         ("macos", "aarch64", "aarch64-apple-darwin.tar.gz"),
         ("windows", "x86_64", "x86_64-pc-windows-msvc.zip"),
