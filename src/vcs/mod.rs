@@ -164,7 +164,7 @@ where
 /// Files larger than this skip the full-file highlight pass and fall back to
 /// per-hunk highlighting. Keeps a runaway-cost ceiling on diffs that include
 /// huge generated artefacts (lockfiles, vendored bundles, fixtures).
-const MAX_HIGHLIGHT_FILE_BYTES: usize = 1024 * 1024;
+pub(crate) const MAX_HIGHLIGHT_FILE_BYTES: usize = 1024 * 1024;
 
 /// Re-highlight each diff line using full-file context, for files whose
 /// grammar needs it (Vue, Svelte, Astro, MDX). Other files keep their existing
@@ -224,7 +224,13 @@ pub(crate) fn enhance_with_full_file_highlight<F, G>(
         if old.is_none() && new.is_none() {
             continue;
         }
-        apply_full_file_spans(&mut files[idx], highlighter, old.as_deref(), new.as_deref());
+        apply_full_file_spans(
+            &mut files[idx],
+            highlighter,
+            old.as_deref(),
+            new.as_deref(),
+            false,
+        );
     }
 }
 
@@ -285,16 +291,50 @@ fn highlight_single_job(job: &HighlightJob, highlighter: &SyntaxHighlighter) -> 
     (job.file_idx, old, new)
 }
 
+pub(crate) fn content_within_full_highlight_limits(content: &str) -> bool {
+    content.len() <= MAX_HIGHLIGHT_FILE_BYTES && !content.as_bytes().contains(&0u8)
+}
+
 fn highlight_content(
     highlighter: &SyntaxHighlighter,
     path: &Path,
     content: &str,
 ) -> Option<HighlightedLines> {
-    if content.len() > MAX_HIGHLIGHT_FILE_BYTES || content.as_bytes().contains(&0u8) {
+    if !content_within_full_highlight_limits(content) {
         return None;
     }
     let lines: Vec<String> = content.lines().map(tabify).collect();
     highlighter.highlight_file_lines(path, &lines)
+}
+
+/// Re-highlight one already-parsed diff file from exact old/new full contents.
+///
+/// Unlike [`enhance_with_full_file_highlight`], this is intentionally ungated
+/// by file extension allowlists: PR hydration uses it for every syntax Syntect
+/// can resolve. Missing, oversized, binary, or unsupported sides leave their
+/// provisional per-hunk spans untouched.
+pub(crate) fn enhance_file_with_full_file_highlight(
+    file: &mut DiffFile,
+    highlighter: &SyntaxHighlighter,
+    old_content: Option<&str>,
+    new_content: Option<&str>,
+) -> bool {
+    if file.is_binary || file.is_too_large || file.hunks.is_empty() {
+        return false;
+    }
+    let old_path = file.old_path.as_deref().or(file.new_path.as_deref());
+    let new_path = file.new_path.as_deref().or(file.old_path.as_deref());
+    let old = old_content.and_then(|content| {
+        old_path.and_then(|path| highlight_content(highlighter, path, content))
+    });
+    let new = new_content.and_then(|content| {
+        new_path.and_then(|path| highlight_content(highlighter, path, content))
+    });
+    if old.is_none() && new.is_none() {
+        return false;
+    }
+    apply_full_file_spans(file, highlighter, old.as_deref(), new.as_deref(), true);
+    true
 }
 
 fn apply_full_file_spans(
@@ -302,6 +342,7 @@ fn apply_full_file_spans(
     highlighter: &SyntaxHighlighter,
     old_highlight: Option<&[Option<HighlightedSpans>]>,
     new_highlight: Option<&[Option<HighlightedSpans>]>,
+    require_exact_content: bool,
 ) {
     for hunk in &mut file.hunks {
         for line in &mut hunk.lines {
@@ -314,8 +355,14 @@ fn apply_full_file_spans(
                 new_idx,
                 line.origin,
             );
-            if spans.is_some() {
-                line.highlighted_spans = spans;
+            if let Some(spans) = spans
+                && (!require_exact_content
+                    || spans
+                        .iter()
+                        .flat_map(|(_, text)| text.bytes())
+                        .eq(line.content.bytes()))
+            {
+                line.highlighted_spans = Some(spans);
             }
         }
     }
@@ -508,6 +555,154 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn full_highlight_limits_reject_oversized_and_binary_content() {
+        assert!(content_within_full_highlight_limits("fn main() {}"));
+        assert!(!content_within_full_highlight_limits(
+            &"x".repeat(MAX_HIGHLIGHT_FILE_BYTES + 1)
+        ));
+        assert!(!content_within_full_highlight_limits("text\0binary"));
+    }
+
+    #[test]
+    fn selected_file_full_highlight_preserves_comment_state_before_hunk() {
+        use crate::model::diff_types::{DiffHunk, DiffLine, FileStatus, LineOrigin};
+        use crate::syntax::SyntaxHighlighter;
+
+        let path = PathBuf::from("src/example.rs");
+        let mut file = DiffFile {
+            old_path: Some(path.clone()),
+            new_path: Some(path),
+            status: FileStatus::Modified,
+            hunks: vec![DiffHunk {
+                header: "@@ -11 +11 @@".to_string(),
+                lines: vec![DiffLine {
+                    origin: LineOrigin::Addition,
+                    content: "comment 9 changed".to_string(),
+                    old_lineno: None,
+                    new_lineno: Some(11),
+                    highlighted_spans: None,
+                }],
+                old_start: 11,
+                old_count: 0,
+                new_start: 11,
+                new_count: 1,
+            }],
+            is_binary: false,
+            is_too_large: false,
+            is_commit_message: false,
+            content_hash: 1,
+        };
+        let content = [
+            "fn before() {}",
+            "/*",
+            "comment 1",
+            "comment 2",
+            "comment 3",
+            "comment 4",
+            "comment 5",
+            "comment 6",
+            "comment 7",
+            "comment 8",
+            "comment 9 changed",
+            "*/",
+            "fn after() {}",
+        ]
+        .join("\n");
+
+        assert!(enhance_file_with_full_file_highlight(
+            &mut file,
+            &SyntaxHighlighter::default(),
+            None,
+            Some(&content),
+        ));
+        let spans = file.hunks[0].lines[0]
+            .highlighted_spans
+            .as_ref()
+            .expect("changed comment line should be highlighted");
+        let colors: std::collections::HashSet<_> =
+            spans.iter().filter_map(|(style, _)| style.fg).collect();
+        assert_eq!(
+            colors.len(),
+            1,
+            "the complete line should retain comment scope"
+        );
+    }
+
+    #[test]
+    fn selected_file_full_highlight_uses_each_rename_sides_syntax() {
+        use crate::model::diff_types::{DiffHunk, DiffLine, FileStatus, LineOrigin};
+        use crate::syntax::SyntaxHighlighter;
+
+        let old_line = "const value = 'old';";
+        let new_line = "const VALUE: &str = \"new\";";
+        let mut file = DiffFile {
+            old_path: Some(PathBuf::from("old.js")),
+            new_path: Some(PathBuf::from("new.rs")),
+            status: FileStatus::Renamed,
+            hunks: vec![DiffHunk {
+                header: "@@ -1 +1 @@".to_string(),
+                lines: vec![
+                    DiffLine {
+                        origin: LineOrigin::Deletion,
+                        content: old_line.to_string(),
+                        old_lineno: Some(1),
+                        new_lineno: None,
+                        highlighted_spans: None,
+                    },
+                    DiffLine {
+                        origin: LineOrigin::Addition,
+                        content: new_line.to_string(),
+                        old_lineno: None,
+                        new_lineno: Some(1),
+                        highlighted_spans: None,
+                    },
+                ],
+                old_start: 1,
+                old_count: 1,
+                new_start: 1,
+                new_count: 1,
+            }],
+            is_binary: false,
+            is_too_large: false,
+            is_commit_message: false,
+            content_hash: 1,
+        };
+        let highlighter = SyntaxHighlighter::default();
+
+        assert!(enhance_file_with_full_file_highlight(
+            &mut file,
+            &highlighter,
+            Some(old_line),
+            Some(new_line),
+        ));
+
+        let expected_old = highlighter.apply_diff_background(
+            highlighter
+                .highlight_file_lines(Path::new("old.js"), &[old_line.to_string()])
+                .unwrap()[0]
+                .clone()
+                .unwrap(),
+            LineOrigin::Deletion,
+        );
+        let expected_new = highlighter.apply_diff_background(
+            highlighter
+                .highlight_file_lines(Path::new("new.rs"), &[new_line.to_string()])
+                .unwrap()[0]
+                .clone()
+                .unwrap(),
+            LineOrigin::Addition,
+        );
+        assert_eq!(
+            file.hunks[0].lines[0].highlighted_spans.as_ref(),
+            Some(&expected_old)
+        );
+        assert_eq!(
+            file.hunks[0].lines[1].highlighted_spans.as_ref(),
+            Some(&expected_new)
+        );
     }
 
     #[test]
