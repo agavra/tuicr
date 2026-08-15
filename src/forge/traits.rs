@@ -306,13 +306,24 @@ pub enum ForgeFileSide {
     Head,
 }
 
+/// A request for the complete contents of one file at an exact forge revision.
+///
+/// Unlike [`ForgeFileLinesRequest`], this does not encode PR base/head semantics:
+/// commit-subset diffs may use any two commit SHAs as their active endpoints.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForgeFileContentRequest {
+    pub repository: ForgeRepository,
+    pub sha: String,
+    pub path: PathBuf,
+}
+
 /// A single request to read file lines from a forge for context expansion.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForgeFileLinesRequest {
     pub repository: ForgeRepository,
-    /// Base SHA captured when the PR was opened.
+    /// Old-side revision: PR base for cumulative diffs, or range start.
     pub base_sha: String,
-    /// Head SHA captured when the PR was opened.
+    /// New-side revision: PR head for cumulative diffs, or range end.
     pub head_sha: String,
     /// File path relative to the repository root.
     pub path: PathBuf,
@@ -488,6 +499,14 @@ pub trait ForgeBackend {
         Ok(PullRequestInfo::from_details(details))
     }
     fn get_pull_request_diff(&self, pr: &PullRequestDetails) -> Result<Vec<FilePatch>>;
+    /// Fetch complete file contents at an exact forge revision. Backends that
+    /// support PR context expansion should override this; the default keeps
+    /// lightweight test and third-party backends source-compatible.
+    fn fetch_file_content(&self, _request: ForgeFileContentRequest) -> Result<String> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Forge file content fetch is not supported".to_string(),
+        ))
+    }
     /// Fetch the requested file lines from the forge for context expansion.
     /// Implementations may optimize by reading from a local checkout when
     /// available; the trait does not require that path.

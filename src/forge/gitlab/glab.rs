@@ -8,9 +8,10 @@ use sha1::{Digest, Sha1};
 use crate::error::{Result, TuicrError};
 use crate::forge::remote_comments::RemoteReviewThread;
 use crate::forge::traits::{
-    ForgeBackend, ForgeFileLinesRequest, ForgeRepository, GhCreateReviewResponse,
-    PagedPullRequests, PullRequestCommit, PullRequestDetails, PullRequestListQuery,
-    PullRequestListScope, PullRequestReviewMetadata, PullRequestReviewRecord, PullRequestTarget,
+    ForgeBackend, ForgeFileContentRequest, ForgeFileLinesRequest, ForgeRepository,
+    GhCreateReviewResponse, PagedPullRequests, PullRequestCommit, PullRequestDetails,
+    PullRequestListQuery, PullRequestListScope, PullRequestReviewMetadata, PullRequestReviewRecord,
+    PullRequestTarget,
 };
 use crate::model::{DiffLine, FilePatch, LineOrigin};
 use crate::process::{
@@ -123,14 +124,6 @@ fn local_range_diff(repo_root: &Path, start_sha: &str, end_sha: &str) -> Option<
 /// Percent-encode `owner/repo` as `owner%2Frepo` for GitLab project API paths.
 fn gl_project_path(owner: &str, name: &str) -> String {
     format!("{}/{}", owner, name).replace('/', "%2F")
-}
-
-/// Percent-encode a file path for use in GitLab repository file API endpoints.
-fn gl_encode_file_path(path: &str) -> String {
-    path.replace('/', "%2F")
-        .replace(' ', "%20")
-        .replace('#', "%23")
-        .replace('?', "%3F")
 }
 
 fn non_empty(value: &str) -> Option<String> {
@@ -513,39 +506,38 @@ where
         Ok(all)
     }
 
+    fn fetch_file_content(&self, request: ForgeFileContentRequest) -> Result<String> {
+        self.local_checkout
+            .as_deref()
+            .and_then(|root| read_blob_with_repo(root, &request.sha, request.path.as_path()))
+            .map(Ok)
+            .unwrap_or_else(|| self.fetch_file_via_api(&request))
+    }
+
     fn fetch_file_lines(&self, request: ForgeFileLinesRequest) -> Result<Vec<DiffLine>> {
         if request.start_line == 0 || request.start_line > request.end_line {
             return Ok(Vec::new());
         }
 
-        let local_content = self
-            .local_checkout
-            .as_deref()
-            .and_then(|root| read_blob_with_repo(root, request.sha(), request.path.as_path()));
+        let start_line = request.start_line;
+        let end_line = request.end_line;
+        let sha = request.sha().to_string();
+        let content = self.fetch_file_content(ForgeFileContentRequest {
+            repository: request.repository,
+            sha,
+            path: request.path,
+        })?;
 
-        let content = if let Some(content) = local_content {
-            content
-        } else {
-            self.fetch_file_via_api(&request)?
-        };
-
-        Ok(slice_context_lines(
-            &content,
-            request.start_line,
-            request.end_line,
-        ))
+        Ok(slice_context_lines(&content, start_line, end_line))
     }
 
     fn file_line_count(&self, request: ForgeFileLinesRequest) -> Result<u32> {
-        let local_content = self
-            .local_checkout
-            .as_deref()
-            .and_then(|root| read_blob_with_repo(root, request.sha(), request.path.as_path()));
-        let content = if let Some(content) = local_content {
-            content
-        } else {
-            self.fetch_file_via_api(&request)?
-        };
+        let sha = request.sha().to_string();
+        let content = self.fetch_file_content(ForgeFileContentRequest {
+            repository: request.repository,
+            sha,
+            path: request.path,
+        })?;
         Ok(content.lines().count() as u32)
     }
 
@@ -788,15 +780,13 @@ impl<R> GitLabGlabBackend<R>
 where
     R: GlabCommandRunner,
 {
-    fn fetch_file_via_api(&self, request: &ForgeFileLinesRequest) -> Result<String> {
+    fn fetch_file_via_api(&self, request: &ForgeFileContentRequest) -> Result<String> {
         let project = gl_project_path(&request.repository.owner, &request.repository.name);
         let path_str = request.path.to_string_lossy().replace('\\', "/");
-        let encoded_path = gl_encode_file_path(&path_str);
+        let encoded_path = crate::forge::encode_api_path(&path_str, false);
         let endpoint = format!(
             "projects/{}/repository/files/{}/raw?ref={}",
-            project,
-            encoded_path,
-            request.sha(),
+            project, encoded_path, request.sha,
         );
         let mut args = vec!["api".to_string()];
         args.extend(Self::api_hostname_args(&request.repository));
@@ -1281,6 +1271,27 @@ mod tests {
                 .unwrap_or_default();
             Ok(resp)
         }
+    }
+
+    #[test]
+    fn fetch_file_content_uses_exact_sha_in_gitlab_api_request() {
+        let repo = ForgeRepository::gitlab("gitlab.com", "owner", "repo");
+        let runner = RecordingRunner::new_with_responses(vec!["remote file content\n".to_string()]);
+        let backend = GitLabGlabBackend::with_runner(None, runner);
+
+        let content = backend
+            .fetch_file_content(ForgeFileContentRequest {
+                repository: repo,
+                sha: "exact-head-sha".to_string(),
+                path: PathBuf::from("dir/a #?%é.rs"),
+            })
+            .expect("file content fetch should succeed");
+
+        assert_eq!(content, "remote file content\n");
+        let calls = backend.runner.calls.borrow();
+        assert!(calls[0].0.iter().any(|arg| {
+            arg == "projects/owner%2Frepo/repository/files/dir%2Fa%20%23%3F%25%C3%A9.rs/raw?ref=exact-head-sha"
+        }));
     }
 
     #[test]

@@ -1,6 +1,167 @@
 use super::*;
 
 impl App {
+    pub(in crate::app) fn install_pr_diff_endpoints(&mut self, old_sha: String, new_sha: String) {
+        let generation = self
+            .pr_diff_endpoints
+            .as_ref()
+            .map_or(1, |current| current.generation.wrapping_add(1));
+        self.pr_diff_endpoints = Some(PrDiffEndpoints {
+            old_sha,
+            new_sha,
+            generation,
+        });
+        // Installing a different diff invalidates both kinds of background
+        // work that are scoped to the previously rendered endpoints.
+        self.pr_range_reload_state = None;
+        self.pr_range_reload_rx = None;
+        self.pr_file_highlight_rx = None;
+        self.pr_file_highlight_finished.clear();
+    }
+
+    fn install_cumulative_pr_diff_endpoints(&mut self) {
+        let DiffSource::PullRequest(pr) = &self.diff_source else {
+            return;
+        };
+        self.install_pr_diff_endpoints(pr.base_sha.clone(), pr.key.head_sha.clone());
+    }
+
+    pub(in crate::app) fn cache_cumulative_pr_diff(&mut self) -> bool {
+        self.range_diff_files = (self.pr_commits.len() > 1).then(|| self.diff_files.clone());
+        Self::is_strict_commit_selection(self.commit_selection_range, self.pr_commits.len())
+    }
+
+    pub(in crate::app) fn current_pr_file_highlight_request(
+        &self,
+    ) -> Option<PrFileHighlightRequest> {
+        let DiffSource::PullRequest(pr) = &self.diff_source else {
+            return None;
+        };
+        let endpoints = self.pr_diff_endpoints.as_ref()?;
+        let file = self.diff_files.get(self.diff_state.current_file_idx)?;
+        if file.is_binary || file.is_too_large || file.hunks.is_empty() {
+            return None;
+        }
+        Some(PrFileHighlightRequest {
+            repository: pr.key.repository.clone(),
+            pr_number: pr.key.number,
+            session_head_sha: pr.key.head_sha.clone(),
+            key: PrFileHighlightKey {
+                generation: endpoints.generation,
+                old_sha: endpoints.old_sha.clone(),
+                new_sha: endpoints.new_sha.clone(),
+                old_path: file.old_path.clone(),
+                new_path: file.new_path.clone(),
+                content_hash: file.content_hash,
+            },
+            status: file.status,
+        })
+    }
+
+    /// Start at most one exact-revision content fetch for the selected PR
+    /// file. Called once per main-loop tick so every navigation path is
+    /// covered without coupling hydration to cursor movement methods.
+    pub fn schedule_current_pr_file_highlight(&mut self) {
+        if self.forge_backend.is_none() || self.pr_file_highlight_rx.is_some() {
+            return;
+        }
+        let Some(request) = self.current_pr_file_highlight_request() else {
+            return;
+        };
+        if self.pr_file_highlight_finished.contains(&request.key) {
+            return;
+        }
+
+        let local_checkout = self
+            .forge_backend
+            .as_deref()
+            .and_then(|backend| backend.local_checkout_path());
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.pr_file_highlight_rx = Some(rx);
+
+        let show_pr_checks = self.show_pr_checks;
+        let show_pr_comments = self.show_pr_comments;
+        std::thread::spawn(move || {
+            let backend = create_forge_backend(
+                &request.repository,
+                local_checkout,
+                show_pr_checks,
+                show_pr_comments,
+            );
+            let old_request = request.old_content_request();
+            let new_request = request.new_content_request();
+            let fetch = |content_request: Option<crate::forge::traits::ForgeFileContentRequest>| {
+                content_request
+                    .and_then(|request| backend.fetch_file_content(request).ok())
+                    .filter(|content| crate::vcs::content_within_full_highlight_limits(content))
+            };
+            let old_content = fetch(old_request);
+            let new_content = fetch(new_request);
+            let _ = tx.send(PrFileHighlightEvent {
+                request,
+                old_content,
+                new_content,
+            });
+        });
+    }
+
+    /// Apply completed content hydration on the main thread, where the theme's
+    /// Syntect highlighter lives. Returns true when a matching file was
+    /// processed and a redraw may reveal improved spans.
+    pub fn poll_pr_file_highlight_events(&mut self) -> bool {
+        let Some(rx) = self.pr_file_highlight_rx.as_ref() else {
+            return false;
+        };
+        let event = match rx.try_recv() {
+            Ok(event) => event,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return false,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.pr_file_highlight_rx = None;
+                return false;
+            }
+        };
+        self.pr_file_highlight_rx = None;
+
+        let PrFileHighlightEvent {
+            request,
+            old_content,
+            new_content,
+        } = event;
+        let matches_pr = matches!(&self.diff_source,
+            DiffSource::PullRequest(pr)
+                if pr.key.repository == request.repository
+                    && pr.key.number == request.pr_number
+                    && pr.key.head_sha == request.session_head_sha
+        );
+        let matches_endpoints = self.pr_diff_endpoints.as_ref().is_some_and(|endpoints| {
+            endpoints.generation == request.key.generation
+                && endpoints.old_sha == request.key.old_sha
+                && endpoints.new_sha == request.key.new_sha
+        });
+        if !matches_pr || !matches_endpoints {
+            return false;
+        }
+
+        let Some(file) = self.diff_files.iter_mut().find(|file| {
+            file.old_path == request.key.old_path
+                && file.new_path == request.key.new_path
+                && file.content_hash == request.key.content_hash
+        }) else {
+            return false;
+        };
+
+        let old = old_content.as_deref();
+        let new = new_content.as_deref();
+        crate::vcs::enhance_file_with_full_file_highlight(
+            file,
+            self.theme.syntax_highlighter(),
+            old,
+            new,
+        );
+        self.pr_file_highlight_finished.insert(request.key);
+        true
+    }
+
     /// Re-enter PR mode after we've already opened a PR via the selector.
     /// Used by the selector → PR open path and by `:reload` in PR mode.
     pub fn enter_pr_diff_mode(
@@ -37,6 +198,7 @@ impl App {
         self.diff_files = diff_files;
         self.reset_persisted_session_tracking();
         self.diff_source = DiffSource::PullRequest(Box::new(pr_source));
+        self.install_pr_diff_endpoints(details.base_sha.clone(), details.head_sha.clone());
         self.forge_backend = Some(backend);
         self.forge_repository = Some(key.repository.clone());
         // Reset remote-comment state on every PR mode entry; the new PR's
@@ -273,6 +435,7 @@ impl App {
         };
         let anchor = self.capture_pr_cursor_anchor();
         self.diff_files = files;
+        self.install_cumulative_pr_diff_endpoints();
         self.clear_expanded_gaps();
         for file in &self.diff_files {
             self.session.add_diff_file(file);
@@ -380,14 +543,22 @@ impl App {
         // Only apply if this result still matches the active in-flight
         // request — toggling again, switching PRs, or reloading the head
         // before this lands invalidates it.
-        let still_active = in_flight.as_ref().is_some_and(|s| {
-            s.start_sha == request.start_sha
-                && s.end_sha == request.end_sha
-                && s.repository == request.repository
-                && s.pr_number == request.pr_number
-                && s.head_sha == request.head_sha
-                && s.range == request.range
-        });
+        let matches_rendered_pr = matches!(
+            &self.diff_source,
+            DiffSource::PullRequest(pr)
+                if pr.key.repository == request.repository
+                    && pr.key.number == request.pr_number
+                    && pr.key.head_sha == request.head_sha
+        );
+        let still_active = matches_rendered_pr
+            && in_flight.as_ref().is_some_and(|s| {
+                s.start_sha == request.start_sha
+                    && s.end_sha == request.end_sha
+                    && s.repository == request.repository
+                    && s.pr_number == request.pr_number
+                    && s.head_sha == request.head_sha
+                    && s.range == request.range
+            });
         if !still_active {
             return;
         }
@@ -430,6 +601,7 @@ impl App {
         };
 
         self.diff_files = parsed;
+        self.install_pr_diff_endpoints(request.start_sha.clone(), request.end_sha.clone());
         self.clear_expanded_gaps();
         // Range diffs can hide hunks that are still reviewed in the broader
         // PR session, so registration must not prune them.
@@ -575,6 +747,7 @@ impl App {
         )?;
 
         let head_changed = opened.details.head_sha != request.head_sha;
+        let mut reload_strict_range = false;
         if head_changed {
             let details_for_threads = opened.details.clone();
             let opened = self.opened_pr_with_new_head_session(opened)?;
@@ -596,6 +769,10 @@ impl App {
                 &opened.review_metadata,
             );
             self.diff_files = opened.diff_files;
+            self.install_pr_diff_endpoints(
+                opened.details.base_sha.clone(),
+                opened.details.head_sha.clone(),
+            );
             self.pr_info = Some(opened.pr_info);
             self.clear_expanded_gaps();
             for file in &self.diff_files {
@@ -606,6 +783,7 @@ impl App {
             self.rebuild_annotations();
             self.refetch_pr_threads();
             self.set_message("Reloaded PR (no new commits)".to_string());
+            reload_strict_range = self.cache_cumulative_pr_diff();
         }
 
         if let Some(line) = request.restore_overview_cursor {
@@ -620,6 +798,11 @@ impl App {
         // panic. Clamp into the current bounds.
         self.diff_state.cursor_line = self.diff_state.cursor_line.min(self.max_cursor_line());
         self.ensure_cursor_visible();
+        // Clamp first: the range reload only spawns background work, so the
+        // cursor must already be valid against the diff installed above.
+        if reload_strict_range {
+            self.spawn_pr_range_reload();
+        }
         Ok(())
     }
 
@@ -693,6 +876,10 @@ impl App {
                 &opened.review_metadata,
             );
             self.diff_files = opened.diff_files;
+            self.install_pr_diff_endpoints(
+                opened.details.base_sha.clone(),
+                opened.details.head_sha.clone(),
+            );
             self.pr_info = Some(opened.pr_info);
             self.clear_expanded_gaps();
             for file in &self.diff_files {
@@ -701,6 +888,9 @@ impl App {
             self.sort_files_by_directory(true);
             self.expand_all_dirs();
             self.rebuild_annotations();
+            if self.cache_cumulative_pr_diff() {
+                self.spawn_pr_range_reload();
+            }
         }
 
         // Same-head reload keeps the old cursor; clamp it into the (possibly

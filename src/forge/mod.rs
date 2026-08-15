@@ -27,6 +27,25 @@ use crate::forge::github::gh::parse_github_remote_url;
 use crate::forge::gitlab::glab::parse_gitlab_remote_url;
 use crate::forge::traits::ForgeRepository;
 
+/// Percent-encode UTF-8 bytes for an API URL path. GitHub accepts a path
+/// hierarchy, while GitLab expects the repository file path as one segment.
+pub(crate) fn encode_api_path(path: &str, preserve_slashes: bool) -> String {
+    use std::fmt::Write;
+
+    let mut encoded = String::with_capacity(path.len());
+    for byte in path.bytes() {
+        if byte.is_ascii_alphanumeric()
+            || matches!(byte, b'-' | b'.' | b'_' | b'~')
+            || (preserve_slashes && byte == b'/')
+        {
+            encoded.push(char::from(byte));
+        } else {
+            write!(&mut encoded, "%{byte:02X}").expect("writing to a String cannot fail");
+        }
+    }
+    encoded
+}
+
 /// Try to detect a GitHub forge repository for the local checkout at `repo_root`.
 ///
 /// Looks at the `origin` remote first, then falls back to any remote whose URL
@@ -168,6 +187,18 @@ mod tests {
         let repo = Repository::init(dir.path()).expect("init repo");
         repo.remote("origin", url).expect("add origin");
         dir
+    }
+
+    #[test]
+    fn api_path_encoding_handles_reserved_and_utf8_bytes() {
+        assert_eq!(
+            encode_api_path("dir/a #?%é.rs", true),
+            "dir/a%20%23%3F%25%C3%A9.rs"
+        );
+        assert_eq!(
+            encode_api_path("dir/a #?%é.rs", false),
+            "dir%2Fa%20%23%3F%25%C3%A9.rs"
+        );
     }
 
     #[test]
