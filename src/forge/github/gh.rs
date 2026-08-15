@@ -3,6 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Result, TuicrError};
+use crate::forge::local_merge_base;
 use crate::forge::remote_comments::{RemoteReviewSummary, RemoteReviewThread};
 use crate::forge::traits::{
     ForgeBackend, ForgeFileContentRequest, ForgeFileLinesRequest, ForgeRepository,
@@ -434,6 +435,37 @@ where
         args.push(endpoint);
         let patch = self.run_gh(args, &pr.repository.host)?;
         pair_metadata_with_patch(metadata, patch.as_bytes())
+    }
+
+    fn resolve_diff_base_sha(&self, pr: &PullRequestDetails) -> Option<String> {
+        // GraphQL's `baseRefOid` usually equals the merge base, but it tracks
+        // the base branch tip once the base moves under a long-lived PR. The
+        // PR diff stays three-dot, so the old side would then be read at the
+        // wrong revision.
+        if let Some(root) = self.local_checkout.as_deref()
+            && let Some(sha) = local_merge_base(root, &pr.base_sha, &pr.head_sha)
+        {
+            return Some(sha);
+        }
+
+        // `per_page=1` trims the `commits` array; `files` is returned either
+        // way, so this stays one modest request rather than a cheap one.
+        let endpoint = format!(
+            "repos/{}/{}/compare/{}...{}?per_page=1",
+            pr.repository.owner, pr.repository.name, pr.base_sha, pr.head_sha,
+        );
+        let mut args = vec!["api".to_string()];
+        if pr.repository.host != DEFAULT_GITHUB_HOST {
+            args.push("--hostname".to_string());
+            args.push(pr.repository.host.clone());
+        }
+        args.push(endpoint);
+        let output = self.run_gh(args, &pr.repository.host).ok()?;
+        let comparison: GhCompare = serde_json::from_str(&output).ok()?;
+        comparison
+            .merge_base_commit
+            .map(|commit| commit.sha)
+            .filter(|sha| !sha.is_empty())
     }
 
     fn list_review_threads(&self, pr: &PullRequestDetails) -> Result<Vec<RemoteReviewThread>> {
@@ -1181,7 +1213,10 @@ index 1111111..2222222 100644
                 {
                     Ok(PR_COMMITS_JSON.to_string())
                 }
-                // gh api repos/.../compare/<base>...<head> (range diff).
+                // gh api repos/.../compare/<base>...<head>. The range diff
+                // asks for `Accept: ...diff` and gets patch text; without
+                // that header the same endpoint is the merge-base lookup and
+                // returns JSON.
                 Some("api") if args.iter().any(|a| a.contains("/compare/")) => {
                     if args
                         .iter()
@@ -1244,7 +1279,17 @@ index 1111111..2222222 100644
 
     const PR_FILES_JSON: &str = r##"[{"filename":"src/lib.rs","status":"modified"}]"##;
 
-    const COMPARE_JSON: &str = r##"{"files":[{"filename":"src/lib.rs","status":"modified"}]}"##;
+    /// `compare` without the diff Accept header. Carries both readers of this
+    /// endpoint: the file metadata the range diff pairs with the patch, and
+    /// the merge base. `merge_base_commit.sha` deliberately differs from the
+    /// `baseaaa` tip the mock reports as `baseRefOid` — that drift is exactly
+    /// what `resolve_diff_base_sha` exists to correct.
+    const COMPARE_JSON: &str = r##"{
+        "status": "diverged",
+        "merge_base_commit": { "sha": "mergebase111" },
+        "commits": [],
+        "files": [{"filename":"src/lib.rs","status":"modified"}]
+    }"##;
 
     const COMPARE_DIFF: &str = r##"diff --git a/src/lib.rs b/src/lib.rs
 index 1111111..2222222 100644
@@ -2013,6 +2058,136 @@ Match host github-work
             })
             .expect("expected a compare api call");
         assert!(compare_call.contains(&"Accept: application/vnd.github.diff".to_string()));
+    }
+
+    #[test]
+    fn should_resolve_diff_base_sha_to_compare_merge_base_not_base_ref_oid() {
+        // given — the mock reports baseRefOid 1234567890abcdef while compare
+        // reports a different merge base, i.e. the base branch has moved.
+        let runner = FakeGhRunner::default();
+        let backend = GitHubGhBackend::with_runner(Some(repo()), runner);
+        let details = backend
+            .get_pull_request(parse_pull_request_target("125").unwrap())
+            .unwrap();
+        assert_eq!(details.base_sha, "1234567890abcdef");
+        // when
+        let resolved = backend.resolve_diff_base_sha(&details);
+        // then — the three-dot merge base wins over the branch tip.
+        assert_eq!(resolved.as_deref(), Some("mergebase111"));
+        // and — it hit compare between the reported base and head, without
+        // the diff Accept header that would return patch text instead.
+        let calls = backend.runner.calls.borrow();
+        let compare_call = calls
+            .iter()
+            .find(|args| {
+                args.iter()
+                    .any(|a| a.contains("/compare/1234567890abcdef...abcdef1234567890"))
+            })
+            .expect("expected a compare api call");
+        assert!(!compare_call.contains(&"Accept: application/vnd.github.diff".to_string()));
+        assert!(compare_call.iter().any(|a| a.contains("per_page=1")));
+    }
+
+    #[test]
+    fn should_leave_diff_base_sha_unrefined_when_compare_call_fails() {
+        // given — a runner that fails every call.
+        struct FailingGhRunner;
+        impl GhCommandRunner for FailingGhRunner {
+            fn run(&self, _args: &[String]) -> GhCommandResult<String> {
+                Err(GhCommandError::Failed {
+                    status: Some(1),
+                    stderr: "network down".to_string(),
+                })
+            }
+        }
+        let details = GitHubGhBackend::with_runner(Some(repo()), FakeGhRunner::default())
+            .get_pull_request(parse_pull_request_target("125").unwrap())
+            .unwrap();
+        let backend = GitHubGhBackend::with_runner(Some(repo()), FailingGhRunner);
+        // when
+        let resolved = backend.resolve_diff_base_sha(&details);
+        // then — best-effort: callers keep the unrefined base_sha.
+        assert_eq!(resolved, None);
+    }
+
+    /// Run `git` in `root`, returning trimmed stdout. Panics on failure so
+    /// setup problems surface as test errors rather than silent `None`s.
+    fn git(root: &Path, args: &[&str]) -> String {
+        let out = run_command_output("git", Some(root), args.iter().map(|a| OsStr::new(*a)))
+            .unwrap_or_else(|e| panic!("git {args:?} failed: {e:?}"));
+        out.trim().to_string()
+    }
+
+    fn commit(root: &Path, name: &str) -> String {
+        fs::write(root.join(name), name).unwrap();
+        git(root, &["add", "."]);
+        git(root, &["commit", "-m", name, "--no-gpg-sign"]);
+        git(root, &["rev-parse", "HEAD"])
+    }
+
+    #[test]
+    fn should_resolve_diff_base_sha_locally_when_base_branch_moved_past_the_branch_point() {
+        // given — a repo where the base tip has advanced past the commit the
+        // PR branch forked from. This is exactly the drift that makes
+        // baseRefOid the wrong revision to read the diff's old side at.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        git(root, &["init", "--quiet"]);
+        git(root, &["config", "user.email", "test@example.com"]);
+        git(root, &["config", "user.name", "Test"]);
+        git(root, &["config", "commit.gpgsign", "false"]);
+
+        let fork_point = commit(root, "a");
+        let pr_head = commit(root, "b");
+        // Detach back to the fork point and advance the base independently.
+        git(root, &["checkout", "--quiet", &fork_point]);
+        let base_tip = commit(root, "c");
+        assert_ne!(base_tip, fork_point);
+
+        // when — the backend has a local checkout containing both commits.
+        let mut backend = GitHubGhBackend::with_runner(Some(repo()), FakeGhRunner::default());
+        backend.set_local_checkout(Some(root.to_path_buf()));
+        let mut details = backend
+            .get_pull_request(parse_pull_request_target("125").unwrap())
+            .unwrap();
+        details.base_sha = base_tip.clone();
+        details.head_sha = pr_head;
+        let resolved = backend.resolve_diff_base_sha(&details);
+
+        // then — the fork point, not the base tip the forge reported.
+        assert_eq!(resolved.as_deref(), Some(fork_point.as_str()));
+        // and — no compare API call was needed.
+        assert!(
+            !backend
+                .runner
+                .calls
+                .borrow()
+                .iter()
+                .any(|args| args.iter().any(|a| a.contains("/compare/"))),
+            "local merge-base must not fall through to the compare API"
+        );
+    }
+
+    #[test]
+    fn should_fall_back_to_compare_api_when_local_checkout_lacks_the_commits() {
+        // given — a valid repo that doesn't contain the PR's commits.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        git(root, &["init", "--quiet"]);
+        git(root, &["config", "user.email", "test@example.com"]);
+        git(root, &["config", "user.name", "Test"]);
+        git(root, &["config", "commit.gpgsign", "false"]);
+        commit(root, "a");
+
+        let mut backend = GitHubGhBackend::with_runner(Some(repo()), FakeGhRunner::default());
+        backend.set_local_checkout(Some(root.to_path_buf()));
+        let details = backend
+            .get_pull_request(parse_pull_request_target("125").unwrap())
+            .unwrap();
+        // when — base/head SHAs are absent from the checkout.
+        let resolved = backend.resolve_diff_base_sha(&details);
+        // then — the forge answers instead of a wrong-or-missing local one.
+        assert_eq!(resolved.as_deref(), Some("mergebase111"));
     }
 
     #[test]

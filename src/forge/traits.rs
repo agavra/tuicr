@@ -229,6 +229,20 @@ pub struct PullRequestDetails {
     pub head_ref_name: String,
     pub base_ref_name: String,
     pub head_sha: String,
+    /// The commit the displayed patch's **old side** lives at — the merge
+    /// base, not the base branch tip.
+    ///
+    /// Forge PR diffs are three-dot, so this is what hydration endpoints,
+    /// `ForgeContextProvider`, and the `pr_range_sha_pair` fallback parent all
+    /// need. Backends that natively report a branch tip correct it via
+    /// `ForgeBackend::resolve_diff_base_sha`, applied once in `fetch_pr_data`.
+    ///
+    /// One consumer wants this field for a second reason: GitLab embeds it as
+    /// `base_sha` in inline-comment position payloads (`glab.rs`). Those two
+    /// meanings coincide today only because GitLab's `diff_refs.base_sha` is
+    /// already the merge base. A backend where the diff's old-side revision
+    /// and the comment-position anchor differ must not reuse this field for
+    /// both — split them rather than picking one and hoping.
     pub base_sha: String,
     pub body: String,
     pub updated_at: Option<DateTime<Utc>>,
@@ -555,6 +569,20 @@ pub trait ForgeBackend {
         start_sha: &str,
         end_sha: &str,
     ) -> Result<Vec<FilePatch>>;
+    /// Resolve the commit the PR's displayed diff is actually taken *from*.
+    ///
+    /// Forge PR diffs are three-dot: the old side is the merge base of the
+    /// base branch and the head, not the tip of the base branch. Backends
+    /// whose `base_sha` already *is* the merge base (GitLab's
+    /// `diff_refs.base_sha`) keep this default and report "no refinement
+    /// needed"; backends that report a branch tip override it so the old
+    /// side of hydration and context expansion lines up with the patch.
+    ///
+    /// Best-effort: `None` on any failure leaves `base_sha` untouched, which
+    /// is the pre-existing behavior.
+    fn resolve_diff_base_sha(&self, _pr: &PullRequestDetails) -> Option<String> {
+        None
+    }
     /// Optional path to a local checkout the backend may consult as an
     /// optimization. The default returns `None`; callers must never treat
     /// this path as the source of truth for PR contents.

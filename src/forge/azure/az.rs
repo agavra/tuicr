@@ -23,6 +23,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use serde_json::json;
 
 use crate::error::{Result, TuicrError};
+use crate::forge::local_merge_base;
 use crate::forge::remote_comments::RemoteReviewThread;
 use crate::forge::submit::{GhSide, SubmitEvent};
 use crate::forge::traits::{
@@ -535,6 +536,15 @@ impl ForgeBackend for AzureDevOpsBackend {
                     .to_string(),
             )
         })
+    }
+
+    fn resolve_diff_base_sha(&self, pr: &PullRequestDetails) -> Option<String> {
+        // `base_sha` is `lastMergeTargetCommit` — the target branch tip, which
+        // drifts ahead of the branch point as the target moves. The diff above
+        // is three-dot, so the old side lives at the merge base. Azure already
+        // requires a local checkout for diffing, so this needs no API call.
+        let root = self.local_checkout.as_deref()?;
+        local_merge_base(root, &pr.base_sha, &pr.head_sha)
     }
 
     fn local_checkout_path(&self) -> Option<PathBuf> {
@@ -1219,6 +1229,71 @@ mod tests {
         let calls = shared.0.calls.lock().unwrap();
         assert_eq!(calls[0].0, "GET");
         assert!(calls[0].1.contains("/pullRequests/42?api-version="));
+    }
+
+    #[test]
+    fn resolve_diff_base_sha_returns_local_merge_base_not_the_target_branch_tip() {
+        use std::ffi::OsStr;
+        fn git(root: &std::path::Path, args: &[&str]) -> String {
+            crate::process::run_command_output(
+                "git",
+                Some(root),
+                args.iter().map(|a| OsStr::new(*a)),
+            )
+            .unwrap_or_else(|e| panic!("git {args:?} failed: {e:?}"))
+            .trim()
+            .to_string()
+        }
+        fn commit(root: &std::path::Path, name: &str) -> String {
+            std::fs::write(root.join(name), name).unwrap();
+            git(root, &["add", "."]);
+            git(root, &["commit", "-m", name, "--no-gpg-sign"]);
+            git(root, &["rev-parse", "HEAD"])
+        }
+
+        // given — the PR target branch has advanced past the branch point,
+        // which is what makes lastMergeTargetCommit the wrong old-side rev.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        git(root, &["init", "--quiet"]);
+        git(root, &["config", "user.email", "test@example.com"]);
+        git(root, &["config", "user.name", "Test"]);
+        git(root, &["config", "commit.gpgsign", "false"]);
+        let fork_point = commit(root, "a");
+        let pr_head = commit(root, "b");
+        git(root, &["checkout", "--quiet", &fork_point]);
+        let target_tip = commit(root, "c");
+        assert_ne!(target_tip, fork_point);
+
+        let shared = SharedHttp::new(vec![
+            r#"{"pullRequestId":42,"title":"t","status":"active","sourceRefName":"refs/heads/feature","targetRefName":"refs/heads/main"}"#.to_string(),
+        ]);
+        let backend = AzureDevOpsBackend::with_transport(Some(azure_repo()), Box::new(shared))
+            .with_local_checkout(Some(root.to_path_buf()));
+        let mut details = backend
+            .get_pull_request(PullRequestTarget::number(42, "42"))
+            .unwrap();
+        details.base_sha = target_tip;
+        details.head_sha = pr_head;
+
+        // when / then — the three-dot base, resolved without an API call.
+        assert_eq!(
+            backend.resolve_diff_base_sha(&details).as_deref(),
+            Some(fork_point.as_str())
+        );
+    }
+
+    #[test]
+    fn resolve_diff_base_sha_is_none_without_a_local_checkout() {
+        let shared = SharedHttp::new(vec![
+            r#"{"pullRequestId":42,"title":"t","status":"active","lastMergeSourceCommit":{"commitId":"head111"},"lastMergeTargetCommit":{"commitId":"base000"}}"#.to_string(),
+        ]);
+        let backend = AzureDevOpsBackend::with_transport(Some(azure_repo()), Box::new(shared));
+        let details = backend
+            .get_pull_request(PullRequestTarget::number(42, "42"))
+            .unwrap();
+        // Best-effort: no checkout means base_sha stays as reported.
+        assert_eq!(backend.resolve_diff_base_sha(&details), None);
     }
 
     #[test]
