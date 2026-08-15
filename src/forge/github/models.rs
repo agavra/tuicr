@@ -22,6 +22,17 @@ pub struct GhPullRequestFile {
 pub struct GhCompare {
     #[serde(default)]
     pub files: Vec<GhPullRequestFile>,
+    /// Three-dot merge base of the two compared revisions. Read by
+    /// `resolve_diff_base_sha`; absent from responses that predate it or when
+    /// GitHub omits it, hence `Option`.
+    #[serde(default)]
+    pub merge_base_commit: Option<GhComparisonCommit>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GhComparisonCommit {
+    #[serde(default)]
+    pub sha: String,
 }
 
 impl GhPullRequestFile {
