@@ -21,8 +21,12 @@ use crate::vcs::{
 
 /// Parse a jj description into (summary, optional body).
 fn parse_description(desc: &str) -> (String, Option<String>) {
+    if desc.trim().is_empty() {
+        return ("(no description set)".to_string(), None);
+    }
+
     let mut lines = desc.lines();
-    let summary = lines.next().unwrap_or("(no message)").to_string();
+    let summary = lines.next().unwrap_or("(no description set)").to_string();
     let body_text: String = lines
         .skip_while(|l| l.trim().is_empty())
         .collect::<Vec<_>>()
@@ -598,6 +602,18 @@ mod tests {
             .expect("Failed to modify file");
 
         Some(temp_dir)
+    }
+
+    #[test]
+    fn empty_description_uses_jj_wording() {
+        assert_eq!(
+            parse_description(""),
+            ("(no description set)".to_string(), None)
+        );
+        assert_eq!(
+            parse_description("  \n"),
+            ("(no description set)".to_string(), None)
+        );
     }
 
     #[test]

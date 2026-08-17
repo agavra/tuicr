@@ -93,6 +93,26 @@ fn mock_vcs(root_path: PathBuf) -> StatusProbeMock {
 }
 
 #[test]
+fn jj_status_never_creates_git_staging_rows() {
+    let dir = tempdir().expect("failed to create temp dir");
+    let mut vcs = mock_vcs(dir.path().to_path_buf());
+    vcs.info.vcs_type = VcsType::Jujutsu;
+
+    let status =
+        App::get_change_status_with_ignore(&vcs, dir.path(), &SyntaxHighlighter::default(), None)
+            .expect("failed to get change status");
+
+    assert_eq!(
+        status,
+        VcsChangeStatus {
+            staged: false,
+            unstaged: false,
+        },
+        "jj represents working-copy changes through @, not staged/unstaged rows"
+    );
+}
+
+#[test]
 fn status_probe_rechecks_positive_rows_when_ignore_rules_exist() {
     let dir = tempdir().expect("failed to create temp dir");
     fs::write(dir.path().join(".tuicrignore"), "ignored/\n").expect("failed to write .tuicrignore");
