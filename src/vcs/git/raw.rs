@@ -12,13 +12,8 @@ use crate::model::{FilePatch, FileStatus};
 
 /// Parse one `git diff --raw -z --patch` byte stream.
 pub(crate) fn parse_raw_patch_output(output: &[u8]) -> Result<Vec<FilePatch>> {
-    if output.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let separator = raw_patch_separator(output)?;
-    let metadata = parse_raw_records(&output[..=separator])?;
-    let patch_text = &output[separator + 2..];
+    let (raw, patch_text) = split_raw_patch_sections(output)?;
+    let metadata = parse_raw_records(raw)?;
     let patch_blocks = split_patch_blocks(patch_text);
 
     if metadata.len() != patch_blocks.len() {
@@ -67,20 +62,31 @@ pub(crate) struct FileMetadata {
 /// This is also useful when a diff option (notably `--ignore-all-space`)
 /// suppresses some patch bodies but Git still emits raw records for them.
 pub(crate) fn parse_raw_metadata_from_patch_output(output: &[u8]) -> Result<Vec<FileMetadata>> {
-    let separator = raw_patch_separator(output)?;
-    parse_raw_records(&output[..=separator])
+    let (raw, _) = split_raw_patch_sections(output)?;
+    parse_raw_records(raw)
 }
 
 pub(crate) fn patch_text_from_raw_patch_output(output: &[u8]) -> Result<&[u8]> {
-    let separator = raw_patch_separator(output)?;
-    Ok(&output[separator + 2..])
+    let (_, patch) = split_raw_patch_sections(output)?;
+    Ok(patch)
 }
 
-fn raw_patch_separator(output: &[u8]) -> Result<usize> {
-    output
+fn split_raw_patch_sections(output: &[u8]) -> Result<(&[u8], &[u8])> {
+    if output.is_empty() {
+        return Ok((output, output));
+    }
+
+    // Git may emit a lone NUL for an empty `--raw -z` section when another
+    // diff option (for example `--ignore-all-space`) filters every change.
+    if output == b"\0" {
+        return Ok((output, &output[1..]));
+    }
+
+    let separator = output
         .windows(2)
         .position(|window| window == b"\0\0")
-        .ok_or_else(|| malformed("missing NUL boundary between raw metadata and patch text"))
+        .ok_or_else(|| malformed("missing NUL boundary between raw metadata and patch text"))?;
+    Ok((&output[..=separator], &output[separator + 2..]))
 }
 
 /// Pair authoritative metadata with file blocks from a Git-style patch.
@@ -265,6 +271,17 @@ mod tests {
             Some(Path::new("old b/ and name.txt"))
         );
         assert_eq!(files[0].new_path.as_deref(), Some(Path::new("日 new.txt")));
+    }
+
+    #[test]
+    fn parses_empty_nul_terminated_raw_section() {
+        assert!(parse_raw_patch_output(b"\0").unwrap().is_empty());
+        assert!(
+            parse_raw_metadata_from_patch_output(b"\0")
+                .unwrap()
+                .is_empty()
+        );
+        assert!(patch_text_from_raw_patch_output(b"\0").unwrap().is_empty());
     }
 
     #[test]

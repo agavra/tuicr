@@ -626,33 +626,14 @@ fn run_git_diff_command(
     highlighter: &SyntaxHighlighter,
 ) -> Result<Vec<DiffFile>> {
     let output = run_git_diff_bytes(workdir, &args, &[])?;
-    let mut patches = match parse_raw_patch_output(&output) {
+    let patches = match parse_raw_patch_output(&output) {
         Ok(patches) => patches,
         Err(_) if suppress_header_only_content_changes => {
             parse_whitespace_filtered_patches(workdir, &args, &output)?
         }
         Err(error) => return Err(error),
     };
-    if suppress_header_only_content_changes {
-        // Git versions differ here: some omit the patch block for a
-        // whitespace-only modification, while others emit a block containing
-        // only display headers. The fallback above handles the omitted form;
-        // normalize the header-only form before materializing DiffFiles.
-        patches.retain(whitespace_filtered_patch_is_visible);
-    }
     diff_parser::parse_file_patches(patches, highlighter)
-}
-
-fn whitespace_filtered_patch_is_visible(patch: &crate::model::FilePatch) -> bool {
-    patch.status != FileStatus::Modified
-        || patch.is_binary
-        || patch.patch.lines().any(|line| {
-            !line.is_empty()
-                && !line.starts_with("diff --git ")
-                && !line.starts_with("index ")
-                && !line.starts_with("--- ")
-                && !line.starts_with("+++ ")
-        })
 }
 
 fn run_git_diff_bytes(workdir: &Path, args: &[String], pathspecs: &[&Path]) -> Result<Vec<u8>> {
@@ -1937,46 +1918,5 @@ mod tests {
             files[0].new_path.as_deref(),
             Some(Path::new(substantive_path))
         );
-    }
-
-    #[test]
-    fn whitespace_filter_discards_header_only_git_blocks() {
-        let header_only = crate::model::FilePatch::new(
-            Some(PathBuf::from("file.txt")),
-            Some(PathBuf::from("file.txt")),
-            FileStatus::Modified,
-            "diff --git a/file.txt b/file.txt\nindex 1111111..2222222 100644\n--- a/file.txt\n+++ b/file.txt\n",
-        );
-        assert!(!whitespace_filtered_patch_is_visible(&header_only));
-    }
-
-    #[test]
-    fn whitespace_filter_preserves_non_content_git_blocks() {
-        let mut mode_change = crate::model::FilePatch::new(
-            Some(PathBuf::from("script.sh")),
-            Some(PathBuf::from("script.sh")),
-            FileStatus::Modified,
-            "diff --git a/script.sh b/script.sh\nold mode 100644\nnew mode 100755\n",
-        );
-        assert!(whitespace_filtered_patch_is_visible(&mode_change));
-
-        mode_change.patch =
-            "diff --git a/file.txt b/file.txt\n@@ -1 +1 @@\n-old\n+new\n".to_string();
-        assert!(whitespace_filtered_patch_is_visible(&mode_change));
-
-        mode_change.patch = "diff --git a/sub b/sub\nSubmodule sub changed\n".to_string();
-        assert!(whitespace_filtered_patch_is_visible(&mode_change));
-
-        mode_change.patch = "diff --git a/image b/image\n".to_string();
-        mode_change.is_binary = true;
-        assert!(whitespace_filtered_patch_is_visible(&mode_change));
-
-        let rename = crate::model::FilePatch::new(
-            Some(PathBuf::from("old.txt")),
-            Some(PathBuf::from("new.txt")),
-            FileStatus::Renamed,
-            "diff --git a/old.txt b/new.txt\n",
-        );
-        assert!(whitespace_filtered_patch_is_visible(&rename));
     }
 }
