@@ -956,7 +956,7 @@ mod tests {
     fn drain_blocks_once_then_takes_only_queued_events() {
         assert_eq!(
             event_drain_timeout(0),
-            Some(Duration::from_millis(100)),
+            Some(Duration::from_millis(50)),
             "the first poll must block, or an idle TUI spins"
         );
         assert_eq!(event_drain_timeout(1), Some(Duration::ZERO));
