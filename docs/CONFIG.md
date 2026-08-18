@@ -289,6 +289,11 @@ The top-level `export_legend` key predates this section and still works. When bo
 
 tuicr reads `.tuicrignore` from the repository root and excludes matching files from all review diffs. Rules follow gitignore-style pattern matching, including `!` negation.
 
+When reviewing a forge pull request from its matching local checkout, tuicr also
+omits files marked `linguist-generated=true` in `.gitattributes`. These files are
+filtered before syntax highlighting, so large generated artifacts do not stall
+PR loading.
+
 `.gitignore` is also honored automatically.
 
 Example:

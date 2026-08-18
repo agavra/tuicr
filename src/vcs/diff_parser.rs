@@ -5,7 +5,7 @@
 //! through this parser to avoid sparse-index limitations in libgit2.
 
 use std::borrow::Cow;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::error::{Result, TuicrError};
 use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin};
@@ -26,10 +26,25 @@ pub fn parse_unified_diff(
     format: DiffFormat,
     highlighter: &SyntaxHighlighter,
 ) -> Result<Vec<DiffFile>> {
-    parse_unified_diff_lines(
+    parse_unified_diff_filtered(diff_text, format, highlighter, |_| true)
+}
+
+/// Parse unified diff output while excluding files before their hunks are
+/// materialized or syntax highlighted.
+pub(crate) fn parse_unified_diff_filtered<F>(
+    diff_text: &str,
+    format: DiffFormat,
+    highlighter: &SyntaxHighlighter,
+    include_file: F,
+) -> Result<Vec<DiffFile>>
+where
+    F: FnMut(&Path) -> bool,
+{
+    parse_unified_diff_lines_filtered(
         diff_text.lines().map(|line| Ok(Cow::Borrowed(line))),
         format,
         highlighter,
+        include_file,
     )
 }
 
@@ -45,8 +60,22 @@ pub fn parse_unified_diff_lines<'a, I>(
 where
     I: Iterator<Item = Result<Cow<'a, str>>>,
 {
+    parse_unified_diff_lines_filtered(diff_lines, format, highlighter, |_| true)
+}
+
+fn parse_unified_diff_lines_filtered<'a, I, F>(
+    diff_lines: I,
+    format: DiffFormat,
+    highlighter: &SyntaxHighlighter,
+    mut include_file: F,
+) -> Result<Vec<DiffFile>>
+where
+    I: Iterator<Item = Result<Cow<'a, str>>>,
+    F: FnMut(&Path) -> bool,
+{
     let mut files: Vec<DiffFile> = Vec::new();
     let mut lines = diff_lines.peekable();
+    let mut saw_file = false;
 
     let header_prefix = match format {
         DiffFormat::Hg => "diff ",
@@ -57,6 +86,7 @@ where
     // `next_line` instead of `lines.next()` to propagate I/O errors.
     while let Some(line) = next_line(&mut lines)? {
         if line.starts_with(header_prefix) {
+            saw_file = true;
             let (mut old_path, mut new_path, status) = parse_file_header(&mut lines, format)?;
 
             // For git-style diffs (jj, git patches), if parse_file_header didn't find
@@ -76,25 +106,29 @@ where
                 }
             }
 
+            let file_path = new_path.as_deref().or(old_path.as_deref());
+            let included = file_path.is_none_or(&mut include_file);
+
             // Check if binary. `git diff --binary` can emit lowercase
             // "GIT binary patch", so keep this check explicit instead of a
             // case-sensitive substring search.
             if peek_line(&mut lines)?.is_some_and(is_binary_patch_line) {
                 next_line(&mut lines)?; // consume binary message
-                files.push(DiffFile {
-                    old_path,
-                    new_path,
-                    status,
-                    hunks: Vec::new(),
-                    is_binary: true,
-                    is_too_large: false,
-                    is_commit_message: false,
-                    content_hash: 0,
-                });
+                if included {
+                    files.push(DiffFile {
+                        old_path,
+                        new_path,
+                        status,
+                        hunks: Vec::new(),
+                        is_binary: true,
+                        is_too_large: false,
+                        is_commit_message: false,
+                        content_hash: 0,
+                    });
+                }
                 continue;
             }
 
-            let file_path = new_path.as_ref().or(old_path.as_ref());
             let mut hunks = Vec::new();
 
             // Parse hunks until next file or end
@@ -102,33 +136,53 @@ where
                 if line.starts_with("diff ") {
                     break;
                 } else if line.starts_with("@@") {
-                    if let Some(hunk) = parse_hunk(&mut lines, file_path, highlighter)? {
-                        hunks.push(hunk);
+                    if included {
+                        if let Some(hunk) = parse_hunk(&mut lines, file_path, highlighter)? {
+                            hunks.push(hunk);
+                        }
+                    } else {
+                        skip_hunk(&mut lines)?;
                     }
                 } else {
                     next_line(&mut lines)?; // skip non-hunk, non-diff lines
                 }
             }
 
-            let content_hash = DiffFile::compute_content_hash(&hunks);
-            files.push(DiffFile {
-                old_path,
-                new_path,
-                status,
-                hunks,
-                is_binary: false,
-                is_too_large: false,
-                is_commit_message: false,
-                content_hash,
-            });
+            if included {
+                let content_hash = DiffFile::compute_content_hash(&hunks);
+                files.push(DiffFile {
+                    old_path,
+                    new_path,
+                    status,
+                    hunks,
+                    is_binary: false,
+                    is_too_large: false,
+                    is_commit_message: false,
+                    content_hash,
+                });
+            }
         }
     }
 
-    if files.is_empty() {
+    if !saw_file {
         return Err(TuicrError::NoChanges);
     }
 
     Ok(files)
+}
+
+fn skip_hunk<'a, I>(lines: &mut std::iter::Peekable<I>) -> Result<()>
+where
+    I: Iterator<Item = Result<Cow<'a, str>>>,
+{
+    next_line(lines)?; // hunk header
+    while let Some(line) = peek_line(lines)? {
+        if line.starts_with("@@") || line.starts_with("diff ") {
+            break;
+        }
+        next_line(lines)?;
+    }
+    Ok(())
 }
 
 fn next_line<'a, I>(lines: &mut std::iter::Peekable<I>) -> Result<Option<Cow<'a, str>>>
@@ -257,7 +311,7 @@ where
 
 fn parse_hunk<'a, I>(
     lines: &mut std::iter::Peekable<I>,
-    file_path: Option<&PathBuf>,
+    file_path: Option<&Path>,
     highlighter: &SyntaxHighlighter,
 ) -> Result<Option<DiffHunk>>
 where
