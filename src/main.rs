@@ -33,6 +33,22 @@ const CTRL_C_EXIT_TIMEOUT: Duration = Duration::from_secs(2);
 /// Hide the file list by default on narrow terminals.
 const MIN_WIDTH_FOR_FILE_LIST: u16 = 100;
 
+/// Upper bound on events consumed between two repaints. High enough that a whole
+/// trackpad gesture collapses into one frame, low enough that held-key
+/// auto-repeat still shows progress instead of sitting on a stale frame.
+const EVENT_DRAIN_LIMIT: usize = 32;
+
+/// How long the loop may wait for the next event after already consuming
+/// `drained` of them: the first blocks so an idle TUI costs nothing, later ones
+/// are only taken if already queued. `None` ends the burst.
+fn event_drain_timeout(drained: usize) -> Option<Duration> {
+    match drained {
+        0 => Some(Duration::from_millis(100)),
+        n if n < EVENT_DRAIN_LIMIT => Some(Duration::ZERO),
+        _ => None,
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     profile::init_from_env();
 
@@ -415,8 +431,16 @@ fn main() -> anyhow::Result<()> {
             needs_redraw = false;
         }
 
-        // Handle events
-        if event::poll(Duration::from_millis(100))? {
+        // Handle events. Every already-queued event is consumed before the next
+        // repaint: a trackpad gesture or held key delivers events faster than a
+        // terminal presents frames, and the intermediate frames are never seen.
+        // `drained` caps a burst so continuous input still repaints.
+        let mut drained = 0;
+        while !app.should_quit
+            && let Some(timeout) = event_drain_timeout(drained)
+            && event::poll(timeout)?
+        {
+            drained += 1;
             // Set before reading so the many `continue` paths below (leader
             // keys, zz/ZZ, dd, {count}G, …) still schedule a redraw on the
             // next iteration even though they short-circuit past the match.
@@ -921,4 +945,28 @@ fn run_editor_from_tui<W: Write>(
     let editor_result = tuicr::editor::run_editor(&command);
     suspension.resume()?;
     Ok(editor_result.map(|()| EditorOutcome::Finished))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn drain_blocks_once_then_takes_only_queued_events() {
+        assert_eq!(
+            event_drain_timeout(0),
+            Some(Duration::from_millis(100)),
+            "the first poll must block, or an idle TUI spins"
+        );
+        assert_eq!(event_drain_timeout(1), Some(Duration::ZERO));
+        assert_eq!(
+            event_drain_timeout(EVENT_DRAIN_LIMIT - 1),
+            Some(Duration::ZERO)
+        );
+        assert_eq!(
+            event_drain_timeout(EVENT_DRAIN_LIMIT),
+            None,
+            "a capped burst must repaint instead of draining forever"
+        );
+    }
 }
