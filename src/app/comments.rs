@@ -1,5 +1,21 @@
 use super::*;
 
+enum SummaryAnnotationTarget {
+    Review {
+        comment_idx: usize,
+    },
+    File {
+        file_idx: usize,
+        comment_idx: usize,
+    },
+    Line {
+        file_idx: usize,
+        line: u32,
+        side: LineSide,
+        comment_idx: usize,
+    },
+}
+
 impl App {
     pub fn comment_navigator_idx_at_screen_row(&self, screen_row: u16) -> Option<usize> {
         let inner = self.comment_navigator_inner_area?;
@@ -253,6 +269,177 @@ impl App {
         }
         self.center_cursor();
         self.focused_panel = FocusedPanel::Diff;
+        true
+    }
+
+    /// Open a comment selected in the summary view in the continuous diff.
+    /// Reviewed files and hunks are revealed without changing their persisted
+    /// reviewed state.
+    pub fn jump_to_summary_comment(&mut self, target: SummaryCommentTarget) -> bool {
+        let mut target_file = None;
+        let mut target_hunk = None;
+
+        let resolved = match target {
+            SummaryCommentTarget::Review { comment_id } => {
+                let Some(comment_idx) = self
+                    .session
+                    .review_comments
+                    .iter()
+                    .position(|comment| comment.id == comment_id)
+                else {
+                    self.set_warning("That summary comment no longer exists");
+                    return false;
+                };
+                SummaryAnnotationTarget::Review { comment_idx }
+            }
+            SummaryCommentTarget::File { path, comment_id } => {
+                let Some(file_idx) = self
+                    .diff_files
+                    .iter()
+                    .position(|file| file.display_path() == &path)
+                else {
+                    self.set_warning("That comment's file is no longer in the diff");
+                    return false;
+                };
+                let Some(comment_idx) = self.session.files.get(&path).and_then(|review| {
+                    review
+                        .file_comments
+                        .iter()
+                        .position(|comment| comment.id == comment_id)
+                }) else {
+                    self.set_warning("That summary comment no longer exists");
+                    return false;
+                };
+                target_file = Some((file_idx, path));
+                SummaryAnnotationTarget::File {
+                    file_idx,
+                    comment_idx,
+                }
+            }
+            SummaryCommentTarget::Line {
+                path,
+                line,
+                side,
+                comment_id,
+            } => {
+                let Some(file_idx) = self
+                    .diff_files
+                    .iter()
+                    .position(|file| file.display_path() == &path)
+                else {
+                    self.set_warning("That comment's file is no longer in the diff");
+                    return false;
+                };
+                let Some(comment_idx) = self
+                    .session
+                    .files
+                    .get(&path)
+                    .and_then(|review| review.line_comments.get(&line))
+                    .and_then(|comments| {
+                        comments.iter().position(|comment| comment.id == comment_id)
+                    })
+                else {
+                    self.set_warning("That summary comment no longer exists");
+                    return false;
+                };
+
+                target_hunk = self.diff_files[file_idx]
+                    .hunks
+                    .iter()
+                    .position(|hunk| {
+                        hunk.lines.iter().any(|diff_line| match side {
+                            LineSide::Old => diff_line.old_lineno == Some(line),
+                            LineSide::New => diff_line.new_lineno == Some(line),
+                        })
+                    })
+                    .map(|hunk_idx| (file_idx, hunk_idx));
+                target_file = Some((file_idx, path));
+                SummaryAnnotationTarget::Line {
+                    file_idx,
+                    line,
+                    side,
+                    comment_idx,
+                }
+            }
+        };
+
+        let previous_file_idx = self.diff_state.current_file_idx;
+        let previous_single_file_view = self.is_single_file_view;
+        let previous_revealed_file = self.revealed_reviewed_file.clone();
+        let previous_revealed_hunk = self.revealed_reviewed_hunk.clone();
+
+        self.is_single_file_view = false;
+        self.revealed_reviewed_file = None;
+        self.revealed_reviewed_hunk = None;
+        if let Some((file_idx, path)) = &target_file {
+            self.diff_state.current_file_idx = *file_idx;
+            if self.session.is_file_reviewed(path) {
+                self.reveal_reviewed_file(*file_idx);
+            }
+        }
+        if let Some((file_idx, hunk_idx)) = target_hunk
+            && self.is_hunk_reviewed(file_idx, hunk_idx)
+        {
+            self.reveal_reviewed_hunk(file_idx, hunk_idx);
+        }
+
+        self.rebuild_annotations();
+        let annotation_idx =
+            self.line_annotations
+                .iter()
+                .position(|annotation| match (&resolved, annotation) {
+                    (
+                        SummaryAnnotationTarget::Review { comment_idx },
+                        AnnotatedLine::ReviewComment {
+                            comment_idx: candidate,
+                        },
+                    ) => comment_idx == candidate,
+                    (
+                        SummaryAnnotationTarget::File {
+                            file_idx,
+                            comment_idx,
+                        },
+                        AnnotatedLine::FileComment {
+                            file_idx: candidate_file,
+                            comment_idx: candidate_comment,
+                        },
+                    ) => file_idx == candidate_file && comment_idx == candidate_comment,
+                    (
+                        SummaryAnnotationTarget::Line {
+                            file_idx,
+                            line,
+                            side,
+                            comment_idx,
+                        },
+                        AnnotatedLine::LineComment {
+                            file_idx: candidate_file,
+                            line: candidate_line,
+                            side: candidate_side,
+                            comment_idx: candidate_comment,
+                        },
+                    ) => {
+                        file_idx == candidate_file
+                            && line == candidate_line
+                            && side == candidate_side
+                            && comment_idx == candidate_comment
+                    }
+                    _ => false,
+                });
+
+        let Some(annotation_idx) = annotation_idx else {
+            self.diff_state.current_file_idx = previous_file_idx;
+            self.is_single_file_view = previous_single_file_view;
+            self.revealed_reviewed_file = previous_revealed_file;
+            self.revealed_reviewed_hunk = previous_revealed_hunk;
+            self.rebuild_annotations();
+            self.set_warning("That comment is hidden by the current diff or filters");
+            return false;
+        };
+
+        self.move_cursor_to_annotation(annotation_idx);
+        self.center_cursor();
+        self.focused_panel = FocusedPanel::Diff;
+        self.exit_summary_mode();
         true
     }
 

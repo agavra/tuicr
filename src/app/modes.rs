@@ -132,6 +132,203 @@ impl App {
         self.help_state.scroll_offset = max_offset;
     }
 
+    pub fn enter_summary_mode(&mut self) {
+        self.input_mode = InputMode::Summary;
+        self.summary_state.selected_comment = 0;
+        self.summary_state.scroll_offset = 0;
+        self.summary_state.comment_ranges.clear();
+        self.summary_state.targets.clear();
+        self.summary_state.selection_needs_scroll = true;
+    }
+
+    pub fn exit_summary_mode(&mut self) {
+        self.input_mode = InputMode::Normal;
+        self.summary_state.comment_ranges.clear();
+        self.summary_state.targets.clear();
+        self.summary_state.selection_needs_scroll = false;
+    }
+
+    pub(crate) fn update_summary_layout(
+        &mut self,
+        comment_ranges: Vec<(usize, usize)>,
+        targets: Vec<Option<SummaryCommentTarget>>,
+        total_lines: usize,
+        viewport_height: usize,
+    ) {
+        debug_assert_eq!(comment_ranges.len(), targets.len());
+        let layout_changed = self.summary_state.comment_ranges != comment_ranges
+            || self.summary_state.viewport_height != viewport_height;
+        self.summary_state.comment_ranges = comment_ranges;
+        self.summary_state.targets = targets;
+        self.summary_state.total_lines = total_lines;
+        self.summary_state.viewport_height = viewport_height;
+
+        let comment_count = self.summary_state.comment_ranges.len();
+        if comment_count == 0 {
+            self.summary_state.selected_comment = 0;
+            self.summary_state.scroll_offset = 0;
+            self.summary_state.selection_needs_scroll = false;
+            return;
+        }
+
+        let clamped_selection = self
+            .summary_state
+            .selected_comment
+            .min(comment_count.saturating_sub(1));
+        if clamped_selection != self.summary_state.selected_comment || layout_changed {
+            self.summary_state.selection_needs_scroll = true;
+        }
+        self.summary_state.selected_comment = clamped_selection;
+
+        if self.summary_state.selection_needs_scroll {
+            self.ensure_summary_selection_visible();
+        } else {
+            let max_offset = total_lines.saturating_sub(viewport_height);
+            self.summary_state.scroll_offset = self.summary_state.scroll_offset.min(max_offset);
+        }
+    }
+
+    pub fn summary_select_down(&mut self, comments: usize) {
+        let max_selection = self.summary_state.comment_ranges.len().saturating_sub(1);
+        self.summary_state.selected_comment = self
+            .summary_state
+            .selected_comment
+            .saturating_add(comments)
+            .min(max_selection);
+        self.summary_state.selection_needs_scroll = true;
+        self.ensure_summary_selection_visible();
+    }
+
+    pub fn summary_select_up(&mut self, comments: usize) {
+        self.summary_state.selected_comment =
+            self.summary_state.selected_comment.saturating_sub(comments);
+        self.summary_state.selection_needs_scroll = true;
+        self.ensure_summary_selection_visible();
+    }
+
+    fn ensure_summary_selection_visible(&mut self) {
+        let Some(&(start, end)) = self
+            .summary_state
+            .comment_ranges
+            .get(self.summary_state.selected_comment)
+        else {
+            return;
+        };
+        let viewport_height = self.summary_state.viewport_height;
+        if viewport_height == 0 {
+            return;
+        }
+
+        let selected_height = end.saturating_sub(start);
+        let viewport_end = self
+            .summary_state
+            .scroll_offset
+            .saturating_add(viewport_height);
+        if selected_height >= viewport_height || start < self.summary_state.scroll_offset {
+            self.summary_state.scroll_offset = start;
+        } else if end > viewport_end {
+            self.summary_state.scroll_offset = end.saturating_sub(viewport_height);
+        }
+
+        let max_offset = self
+            .summary_state
+            .total_lines
+            .saturating_sub(viewport_height);
+        self.summary_state.scroll_offset = self.summary_state.scroll_offset.min(max_offset);
+        self.summary_state.selection_needs_scroll = false;
+    }
+
+    pub fn summary_scroll_down(&mut self, lines: usize) {
+        let max_offset = self
+            .summary_state
+            .total_lines
+            .saturating_sub(self.summary_state.viewport_height);
+        self.summary_state.scroll_offset =
+            (self.summary_state.scroll_offset + lines).min(max_offset);
+        self.sync_summary_selection_to_viewport(true);
+    }
+
+    pub fn summary_scroll_up(&mut self, lines: usize) {
+        self.summary_state.scroll_offset = self.summary_state.scroll_offset.saturating_sub(lines);
+        self.sync_summary_selection_to_viewport(false);
+    }
+
+    pub fn summary_select_first(&mut self) {
+        self.summary_state.selected_comment = 0;
+        self.summary_state.selection_needs_scroll = true;
+        self.ensure_summary_selection_visible();
+    }
+
+    pub fn summary_select_last(&mut self) {
+        self.summary_state.selected_comment =
+            self.summary_state.comment_ranges.len().saturating_sub(1);
+        self.summary_state.selection_needs_scroll = true;
+        self.ensure_summary_selection_visible();
+    }
+
+    fn sync_summary_selection_to_viewport(&mut self, scrolling_down: bool) {
+        let viewport_start = self.summary_state.scroll_offset;
+        let viewport_end = viewport_start.saturating_add(self.summary_state.viewport_height);
+        let is_visible =
+            |(start, end): &(usize, usize)| *end > viewport_start && *start < viewport_end;
+        let current_selection = self.summary_state.selected_comment;
+        let current_is_visible = self
+            .summary_state
+            .comment_ranges
+            .get(current_selection)
+            .is_some_and(is_visible);
+        let visible_selection = if current_is_visible {
+            Some(current_selection)
+        } else if scrolling_down {
+            self.summary_state
+                .comment_ranges
+                .iter()
+                .enumerate()
+                .skip(current_selection.saturating_add(1))
+                .find(|(_, range)| is_visible(range))
+                .map(|(idx, _)| idx)
+        } else {
+            self.summary_state
+                .comment_ranges
+                .iter()
+                .enumerate()
+                .take(current_selection)
+                .rev()
+                .find(|(_, range)| is_visible(range))
+                .map(|(idx, _)| idx)
+        }
+        .or_else(|| {
+            self.summary_state
+                .comment_ranges
+                .iter()
+                .position(is_visible)
+        });
+
+        if let Some(selected_comment) = visible_selection {
+            self.summary_state.selected_comment = selected_comment;
+        } else if let Some((selected_comment, &(start, _))) = self
+            .summary_state
+            .comment_ranges
+            .iter()
+            .enumerate()
+            .find(|(_, (start, _))| *start >= viewport_start)
+        {
+            self.summary_state.selected_comment = selected_comment;
+            self.summary_state.scroll_offset = start;
+        } else if let Some((selected_comment, &(_, end))) = self
+            .summary_state
+            .comment_ranges
+            .iter()
+            .enumerate()
+            .next_back()
+        {
+            self.summary_state.selected_comment = selected_comment;
+            self.summary_state.scroll_offset =
+                end.saturating_sub(self.summary_state.viewport_height);
+        }
+        self.summary_state.selection_needs_scroll = false;
+    }
+
     pub fn enter_confirm_mode(&mut self, action: ConfirmAction) {
         self.input_mode = InputMode::Confirm;
         self.pending_confirm = Some(action);

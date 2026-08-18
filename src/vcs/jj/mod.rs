@@ -21,8 +21,12 @@ use crate::vcs::{
 
 /// Parse a jj description into (summary, optional body).
 fn parse_description(desc: &str) -> (String, Option<String>) {
+    if desc.trim().is_empty() {
+        return ("(no description set)".to_string(), None);
+    }
+
     let mut lines = desc.lines();
-    let summary = lines.next().unwrap_or("(no message)").to_string();
+    let summary = lines.next().unwrap_or("(no description set)").to_string();
     let body_text: String = lines
         .skip_while(|l| l.trim().is_empty())
         .collect::<Vec<_>>()
@@ -173,17 +177,14 @@ impl VcsBackend for JjBackend {
             return Ok(Vec::new());
         }
 
-        let path_str = file_path.to_string_lossy();
+        let fileset = jj_fileset_arg(file_path);
         let content = if let Some(commit) = ref_commit {
             run_jj_command(
                 &self.info.root_path,
-                ["file", "show", "-r", commit, &path_str],
+                ["file", "show", "-r", commit, &fileset],
             )?
         } else if file_status == FileStatus::Deleted {
-            run_jj_command(
-                &self.info.root_path,
-                ["file", "show", "-r", "@-", &path_str],
-            )?
+            run_jj_command(&self.info.root_path, ["file", "show", "-r", "@-", &fileset])?
         } else {
             std::fs::read_to_string(self.info.root_path.join(file_path))?
         };
@@ -197,17 +198,14 @@ impl VcsBackend for JjBackend {
         file_status: FileStatus,
         ref_commit: Option<&str>,
     ) -> Result<u32> {
-        let path_str = file_path.to_string_lossy();
+        let fileset = jj_fileset_arg(file_path);
         let content = if let Some(commit) = ref_commit {
             run_jj_command(
                 &self.info.root_path,
-                ["file", "show", "-r", commit, &path_str],
+                ["file", "show", "-r", commit, &fileset],
             )?
         } else if file_status == FileStatus::Deleted {
-            run_jj_command(
-                &self.info.root_path,
-                ["file", "show", "-r", "@-", &path_str],
-            )?
+            run_jj_command(&self.info.root_path, ["file", "show", "-r", "@-", &fileset])?
         } else {
             std::fs::read_to_string(self.info.root_path.join(file_path))?
         };
@@ -432,6 +430,23 @@ impl VcsBackend for JjBackend {
     }
 }
 
+/// Render `path` as a jj fileset argument that matches it and nothing else.
+///
+/// jj parses positional path arguments as fileset expressions, so a file name
+/// containing meta characters (`(`, `)`, `|`, `&`, `~`, whitespace, ...) is a
+/// syntax error when passed bare -- see
+/// <https://github.com/agavra/tuicr/issues/602>. Wrapping the name in a quoted
+/// string literal keeps it out of the expression grammar, and the `root-file:`
+/// prefix pins it to an exact workspace-relative path (the paths we pass come
+/// from diff output, which is always workspace-relative).
+fn jj_fileset_arg(path: &Path) -> String {
+    let escaped = path
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    format!("root-file:\"{escaped}\"")
+}
+
 /// Fetch the full content of `paths` at `rev` in a single `jj file show`
 /// subprocess. jj is much cheaper per-call than hg, but batching still avoids
 /// repeated process startup when there are many container files in a diff.
@@ -440,12 +455,9 @@ fn jj_show_batch(root: &Path, rev: &str, paths: &[PathBuf]) -> Result<HashMap<Pa
         return Ok(HashMap::new());
     }
     let template = format!("\"\\n{BATCH_BOUNDARY}\\n\" ++ path ++ \"\\n\"");
-    let path_strs: Vec<String> = paths
-        .iter()
-        .map(|p| p.to_string_lossy().into_owned())
-        .collect();
+    let filesets: Vec<String> = paths.iter().map(|p| jj_fileset_arg(p)).collect();
     let mut args: Vec<&str> = vec!["file", "show", "-r", rev, "-T", &template];
-    args.extend(path_strs.iter().map(String::as_str));
+    args.extend(filesets.iter().map(String::as_str));
     let output = run_jj_command(root, &args)?;
     Ok(parse_batched_files(&output))
 }
@@ -598,6 +610,18 @@ mod tests {
             .expect("Failed to modify file");
 
         Some(temp_dir)
+    }
+
+    #[test]
+    fn empty_description_uses_jj_wording() {
+        assert_eq!(
+            parse_description(""),
+            ("(no description set)".to_string(), None)
+        );
+        assert_eq!(
+            parse_description("  \n"),
+            ("(no description set)".to_string(), None)
+        );
     }
 
     #[test]
@@ -1137,6 +1161,86 @@ mod tests {
                 "vue hunk line {line:?} should have varied fg colors, got {unique_fgs:?}"
             );
         }
+    }
+
+    /// Create a repo whose only file lives under a directory with fileset meta
+    /// characters in its name, so every `jj file show` call has to quote it.
+    fn setup_test_repo_with_meta_char_path() -> Option<(tempfile::TempDir, PathBuf)> {
+        if !jj_available() {
+            return None;
+        }
+
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let root = temp_dir.path();
+
+        let output = jj_cmd()
+            .args(["git", "init"])
+            .current_dir(root)
+            .output()
+            .expect("Failed to init jj repo");
+        if !output.status.success() {
+            return None;
+        }
+
+        // Vue so the diff goes through the container full-file highlight path,
+        // which batches paths into a single `jj file show`.
+        let rel = PathBuf::from("routes/(app)/+page.vue");
+        fs::create_dir_all(root.join(rel.parent().unwrap())).expect("Failed to create dir");
+        let initial = "<template>\n  <div>{{ msg }}</div>\n</template>\n\n<script setup>\nimport { ref } from 'vue'\nconst msg = ref('hi')\nconst other = 1\n</script>\n";
+        fs::write(root.join(&rel), initial).expect("Failed to write Vue file");
+
+        jj_cmd()
+            .args(["commit", "-m", "Add Vue file"])
+            .current_dir(root)
+            .output()
+            .expect("Failed to commit");
+
+        let edited = "<template>\n  <div>{{ msg }}</div>\n</template>\n\n<script setup>\nimport { ref } from 'vue'\nconst msg = ref('hello')\nconst other = 1\n</script>\n";
+        fs::write(root.join(&rel), edited).expect("Failed to modify Vue file");
+
+        Some((temp_dir, rel))
+    }
+
+    #[test]
+    fn test_jj_fileset_arg_quotes_meta_characters() {
+        assert_eq!(
+            jj_fileset_arg(Path::new("routes/(app)/+page.svelte")),
+            r#"root-file:"routes/(app)/+page.svelte""#
+        );
+        assert_eq!(
+            jj_fileset_arg(Path::new(r#"we"ird\name.txt"#)),
+            r#"root-file:"we\"ird\\name.txt""#
+        );
+    }
+
+    #[test]
+    fn test_jj_handles_paths_with_fileset_meta_characters() {
+        let Some((temp, rel)) = setup_test_repo_with_meta_char_path() else {
+            eprintln!("Skipping test: jj command not available");
+            return;
+        };
+
+        let backend = JjBackend::from_path(temp.path().to_path_buf(), DiffWhitespaceMode::Normal)
+            .expect("Failed to create jj backend");
+
+        // The batched `jj file show` behind container highlighting must not
+        // choke on the parentheses in the path.
+        let files = backend
+            .get_working_tree_diff(&SyntaxHighlighter::default())
+            .expect("diff should succeed for a path with fileset meta characters");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].new_path.as_deref(), Some(rel.as_path()));
+
+        let lines = backend
+            .fetch_context_lines(&rel, FileStatus::Modified, Some("@-"), 1, 2)
+            .expect("context lines should be fetchable for a meta-character path");
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].content, "<template>");
+
+        let count = backend
+            .file_line_count(&rel, FileStatus::Modified, Some("@-"))
+            .expect("line count should be readable for a meta-character path");
+        assert_eq!(count, 9);
     }
 
     #[test]

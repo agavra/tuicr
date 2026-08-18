@@ -193,22 +193,23 @@ jobs:
           echo "CARGO_TARGET_${cargo_target}_LINKER=musl-gcc" >> "$GITHUB_ENV"
           echo "CC_${cc_target}=musl-gcc" >> "$GITHUB_ENV"
 
-      - name: Configure static GNU runtime
-        if: runner.os == 'Linux' && endsWith(matrix.build_target, '-gnu')
-        shell: bash
-        run: echo 'RUSTFLAGS=-C target-feature=+crt-static' >> "$GITHUB_ENV"
-
       - name: Build
         run: cargo build --release --target ${{ matrix.build_target }}
 
-      - name: Verify static Linux binary
+      - name: Verify Linux binary linkage
         if: runner.os == 'Linux'
         shell: bash
         run: |
           binary=target/${{ matrix.build_target }}/release/tuicr
           test "$("$binary" --version)" = "tuicr ${{ steps.version.outputs.version }}"
-          if readelf -lW "$binary" | grep -Eq '(^|[[:space:]])INTERP([[:space:]]|$)'; then
-            echo "Linux release binary contains a dynamic interpreter" >&2
+          if [[ '${{ matrix.build_target }}' == *-musl ]]; then
+            if readelf -lW "$binary" | grep -Eq '(^|[[:space:]])INTERP([[:space:]]|$)'; then
+              echo "musl release binary contains a dynamic interpreter" >&2
+              readelf -lW "$binary" >&2
+              exit 1
+            fi
+          elif ! readelf -lW "$binary" | grep -Eq '(^|[[:space:]])INTERP([[:space:]]|$)'; then
+            echo "GNU release binary is missing its dynamic interpreter" >&2
             readelf -lW "$binary" >&2
             exit 1
           fi

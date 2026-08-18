@@ -875,6 +875,25 @@ impl App {
         true
     }
 
+    /// The local clone backing `repo`, when tuicr was launched inside one of
+    /// its checkouts.
+    ///
+    /// Resolves against `local_repo_root`, not `vcs_info.root_path`: PR mode
+    /// swaps the latter for the synthetic `forge:host/owner/repo` identity, so
+    /// using it would find no checkout for every PR opened after the first
+    /// (issue #591 — Azure DevOps then fails the open outright, since it has
+    /// no unified-diff API and reads the diff from the clone).
+    ///
+    /// The repo match still gates the result, so a foreign checkout is never
+    /// used to filter or expand another repository's PR.
+    pub(in crate::app) fn local_checkout_for(
+        &self,
+        repo: &crate::forge::traits::ForgeRepository,
+    ) -> Option<std::path::PathBuf> {
+        let root = self.local_repo_root.as_deref()?;
+        crate::forge::local_checkout_for_repo(root, repo)
+    }
+
     /// Kick off the background fetch for a PR open. The main thread keeps
     /// rendering and pumping events; the resulting `PrOpenEvent::Done` is
     /// drained in `poll_pr_open_events` where parsing happens and PR mode
@@ -897,8 +916,7 @@ impl App {
         let pr_number = summary.number;
         // Resolve the local checkout up front so Azure DevOps can source its
         // diff from the clone when opening a PR from the selector.
-        let local_checkout =
-            crate::forge::local_checkout_for_repo(&self.vcs_info.root_path, &summary.repository);
+        let local_checkout = self.local_checkout_for(&summary.repository);
         let show_pr_checks = self.show_pr_checks;
         let show_pr_comments = self.show_pr_comments;
         std::thread::spawn(move || {
@@ -984,8 +1002,7 @@ impl App {
     ) -> Result<()> {
         use crate::forge::pr_open::prepare_open_pr;
 
-        let local_checkout =
-            crate::forge::local_checkout_for_repo(&self.vcs_info.root_path, &request.repository);
+        let local_checkout = self.local_checkout_for(&request.repository);
         let highlighter = self.theme.syntax_highlighter();
         let opened = prepare_open_pr(
             details.clone(),

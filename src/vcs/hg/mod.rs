@@ -135,11 +135,11 @@ impl VcsBackend for HgBackend {
             return Ok(Vec::new());
         }
 
-        let path_str = file_path.to_string_lossy();
+        let pattern = hg_path_pattern(file_path);
         let content = if let Some(commit) = ref_commit {
-            run_hg_command(&self.info.root_path, ["cat", "-r", commit, &path_str])?
+            run_hg_command(&self.info.root_path, ["cat", "-r", commit, &pattern])?
         } else if file_status == FileStatus::Deleted {
-            run_hg_command(&self.info.root_path, ["cat", "-r", ".", &path_str])?
+            run_hg_command(&self.info.root_path, ["cat", "-r", ".", &pattern])?
         } else {
             std::fs::read_to_string(self.info.root_path.join(file_path))?
         };
@@ -153,11 +153,11 @@ impl VcsBackend for HgBackend {
         file_status: FileStatus,
         ref_commit: Option<&str>,
     ) -> Result<u32> {
-        let path_str = file_path.to_string_lossy();
+        let pattern = hg_path_pattern(file_path);
         let content = if let Some(commit) = ref_commit {
-            run_hg_command(&self.info.root_path, ["cat", "-r", commit, &path_str])?
+            run_hg_command(&self.info.root_path, ["cat", "-r", commit, &pattern])?
         } else if file_status == FileStatus::Deleted {
-            run_hg_command(&self.info.root_path, ["cat", "-r", ".", &path_str])?
+            run_hg_command(&self.info.root_path, ["cat", "-r", ".", &pattern])?
         } else {
             std::fs::read_to_string(self.info.root_path.join(file_path))?
         };
@@ -435,6 +435,20 @@ impl VcsBackend for HgBackend {
     }
 }
 
+/// Render `path` as an hg file pattern that matches it and nothing else.
+///
+/// hg treats positional file arguments as patterns. The default notation is
+/// verbatim, so most names survive unquoted, but a name that happens to start
+/// with a pattern prefix (`re:`, `glob:`, `set:`, `listfile:`, ...) is silently
+/// reinterpreted -- `hg cat -r . 're:weird.txt'` matches nothing, and a name
+/// like `re:.*` would match every file in the repo. The `path:` prefix pins the
+/// rest of the argument to a verbatim repository-root-relative path, so nothing
+/// after it needs escaping. This is the hg analogue of `jj_fileset_arg`; see
+/// <https://github.com/agavra/tuicr/issues/602>.
+fn hg_path_pattern(path: &Path) -> String {
+    format!("path:{}", path.to_string_lossy())
+}
+
 /// Fetch the full content of `paths` at `rev` in a single `hg cat` subprocess.
 ///
 /// hg cat is dominated by Python startup (~280 ms) regardless of file count,
@@ -445,12 +459,9 @@ fn hg_cat_batch(root: &Path, rev: &str, paths: &[PathBuf]) -> Result<HashMap<Pat
         return Ok(HashMap::new());
     }
     let template = format!("\n{BATCH_BOUNDARY}\n{{path}}\n{{data}}");
-    let path_strs: Vec<String> = paths
-        .iter()
-        .map(|p| p.to_string_lossy().into_owned())
-        .collect();
+    let patterns: Vec<String> = paths.iter().map(|p| hg_path_pattern(p)).collect();
     let mut args: Vec<&str> = vec!["cat", "-r", rev, "--template", &template];
-    args.extend(path_strs.iter().map(String::as_str));
+    args.extend(patterns.iter().map(String::as_str));
     let output = run_hg_command(root, &args)?;
     Ok(parse_batched_files(&output))
 }
@@ -1071,6 +1082,90 @@ mod tests {
         fs::write(root.join("App.vue"), edited).expect("Failed to modify Vue file");
 
         Some(temp_dir)
+    }
+
+    #[test]
+    fn test_hg_path_pattern_pins_names_to_verbatim_paths() {
+        assert_eq!(
+            hg_path_pattern(Path::new("routes/(app)/+page.svelte")),
+            "path:routes/(app)/+page.svelte"
+        );
+        assert_eq!(
+            hg_path_pattern(Path::new("re:weird.txt")),
+            "path:re:weird.txt"
+        );
+    }
+
+    /// Set up an hg repo whose only file is named like an hg pattern prefix, so
+    /// an unprefixed argument would be reinterpreted as a regex instead of a
+    /// file name. `:` is reserved on Windows, hence the unix gate.
+    #[cfg(unix)]
+    fn setup_test_repo_with_pattern_like_name() -> Option<(tempfile::TempDir, PathBuf)> {
+        if !hg_available() {
+            return None;
+        }
+
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let root = temp_dir.path();
+
+        Command::new("hg")
+            .args(["init"])
+            .current_dir(root)
+            .output()
+            .expect("Failed to init hg repo");
+
+        // Vue so the diff goes through the container full-file highlight path,
+        // which batches paths into a single `hg cat`.
+        let rel = PathBuf::from("re:App.vue");
+        let initial = "<template>\n  <div>{{ msg }}</div>\n</template>\n\n<script setup>\nimport { ref } from 'vue'\nconst msg = ref('hi')\nconst other = 1\n</script>\n";
+        fs::write(root.join(&rel), initial).expect("Failed to write Vue file");
+
+        Command::new("hg")
+            .args(["add", "--", "path:re:App.vue"])
+            .current_dir(root)
+            .output()
+            .expect("Failed to add file");
+        Command::new("hg")
+            .args(["commit", "-m", "Add Vue file"])
+            .current_dir(root)
+            .output()
+            .expect("Failed to commit");
+
+        let edited = "<template>\n  <div>{{ msg }}</div>\n</template>\n\n<script setup>\nimport { ref } from 'vue'\nconst msg = ref('hello')\nconst other = 1\n</script>\n";
+        fs::write(root.join(&rel), edited).expect("Failed to modify Vue file");
+
+        Some((temp_dir, rel))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_hg_handles_paths_that_look_like_pattern_prefixes() {
+        let Some((temp, rel)) = setup_test_repo_with_pattern_like_name() else {
+            eprintln!("Skipping test: hg command not available");
+            return;
+        };
+
+        let backend = HgBackend::from_path(temp.path().to_path_buf(), DiffWhitespaceMode::Normal)
+            .expect("Failed to create hg backend");
+
+        // The batched `hg cat` behind container highlighting must resolve the
+        // name verbatim rather than treating `re:` as a regex pattern.
+        let files = backend
+            .get_working_tree_diff(&SyntaxHighlighter::default())
+            .expect("diff should succeed for a pattern-like file name");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].new_path.as_deref(), Some(rel.as_path()));
+
+        let lines = backend
+            .fetch_context_lines(&rel, FileStatus::Modified, Some("."), 1, 2)
+            .expect("context lines should be fetchable for a pattern-like name");
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].content, "<template>");
+
+        let count = backend
+            .file_line_count(&rel, FileStatus::Modified, Some("."))
+            .expect("line count should be readable for a pattern-like name");
+        assert_eq!(count, 9);
     }
 
     #[test]

@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.0] - 2026-08-13
+
+### Bug Fixes
+
+- Reindex recovered PR sessions (#561)
+- Prevent cursor-overflow panic on PR reload that shrinks the diff (#574)
+- Keep the TUI on screen when opening a windowed editor (#581)
+- Open Helix at the selected line (#590)
+- Run Herdr pane payload under bash so non-bash shells work (#594)
+- Keep a zz centering when opening a comment near EOF (#595)
+- **gitlab:** Submit multi-line range comments without schema errors (#598)
+- **release:** Build static musl binaries for Linux artifacts (#537)
+
+### Features
+
+- Copy open PR URL (#546)
+- **ui:** Copy the comment at the cursor with Y (#570)
+- **search:** Highlight search matches in the diff (#571)
+- Add diff_watch_interval + fix some bugs (#566)
+- **skills:** Add a cmux wrapper for launching tuicr (#589)
+
+### Performance
+
+- **git:** Speed up CLI backend startup (#568)
 ## [0.21.0] - 2026-08-05
 
 ### Bug Fixes

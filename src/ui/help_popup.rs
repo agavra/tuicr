@@ -739,6 +739,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  :summary  ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Pending comments; j/k select, Enter jumps"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  :stage    ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),

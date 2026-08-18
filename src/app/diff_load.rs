@@ -269,6 +269,16 @@ impl App {
         highlighter: &SyntaxHighlighter,
         path_filter: Option<&str>,
     ) -> Result<VcsChangeStatus> {
+        // Jujutsu has no staging index: its working copy is represented by `@`.
+        // Probing the generic unstaged fallback would classify `jj diff` as
+        // "Unstaged changes" and duplicate the `@` row in the selector.
+        if vcs.info().vcs_type == VcsType::Jujutsu {
+            return Ok(VcsChangeStatus {
+                staged: false,
+                unstaged: false,
+            });
+        }
+
         if path_filter.is_none() {
             match vcs.get_change_status() {
                 Ok(status) => {

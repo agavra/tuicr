@@ -11,6 +11,7 @@ mod file_filter_tests;
 mod find_source_line_tests;
 mod persistence_merge_tests;
 mod pr_info_tests;
+mod render_perf_tests;
 mod scroll_behavior_tests;
 mod scroll_tests;
 mod single_file_view_tests;

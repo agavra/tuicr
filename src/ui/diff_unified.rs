@@ -280,10 +280,9 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
             line_idx += 1;
         }
 
-        // If file is reviewed (and we're in multi-file view), skip
-        // rendering the body. In single-file view the user explicitly
-        // focused this file, so show its content under a dimmed banner.
-        if is_reviewed && !app.is_single_file_view {
+        // Reviewed files normally collapse in continuous view. A summary jump
+        // may reveal one target body without changing its reviewed marker.
+        if app.should_collapse_file(file_idx) {
             continue;
         }
         if is_reviewed && app.is_single_file_view {
@@ -565,7 +564,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                     Span::styled(hunk_header_text, hunk_header_style),
                 ]));
                 line_idx += 1;
-                if is_hunk_reviewed {
+                if app.should_collapse_hunk(file_idx, hunk_idx) {
                     continue;
                 }
 

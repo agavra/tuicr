@@ -850,7 +850,7 @@ impl App {
             if !single {
                 cumulative += 1; // File header
             }
-            if !single && is_reviewed {
+            if self.should_collapse_file(file_idx) {
                 // multi-file collapsed: no body, no trailing spacing
                 continue;
             }
@@ -866,7 +866,7 @@ impl App {
                 for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
                     positions.push(cumulative);
                     cumulative += 1;
-                    if !self.is_hunk_reviewed(file_idx, hunk_idx) {
+                    if !self.should_collapse_hunk(file_idx, hunk_idx) {
                         cumulative += hunk.lines.len();
                     }
                 }
@@ -1009,7 +1009,7 @@ impl App {
         if !self.file_passes_filter(file) {
             return 0;
         }
-        if self.session.is_file_reviewed(file.display_path()) {
+        if self.should_collapse_file(file_idx) {
             return 1; // collapsed: header only
         }
         1 + self.file_render_body_height(file_idx, file) // header + body
@@ -1097,7 +1097,7 @@ impl App {
 
                 // Hunk header + diff lines
                 content_lines += 1; // Hunk header
-                if self.is_hunk_reviewed(file_idx, hunk_idx) {
+                if self.should_collapse_hunk(file_idx, hunk_idx) {
                     continue;
                 }
 

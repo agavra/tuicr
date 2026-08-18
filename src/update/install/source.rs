@@ -23,13 +23,16 @@ pub(super) fn release_asset_name(
     version: &str,
     os: &str,
     arch: &str,
+    target_env: &str,
 ) -> Result<String, UpdateError> {
-    let target = match (os, arch) {
-        ("linux", "x86_64") => "x86_64-unknown-linux-gnu",
-        ("linux", "aarch64") => "aarch64-unknown-linux-gnu",
-        ("macos", "x86_64") => "x86_64-apple-darwin",
-        ("macos", "aarch64") => "aarch64-apple-darwin",
-        ("windows", "x86_64") => "x86_64-pc-windows-msvc",
+    let target = match (os, arch, target_env) {
+        ("linux", "x86_64", "gnu") => "x86_64-unknown-linux-gnu",
+        ("linux", "x86_64", "musl") => "x86_64-unknown-linux-musl",
+        ("linux", "aarch64", "gnu") => "aarch64-unknown-linux-gnu",
+        ("linux", "aarch64", "musl") => "aarch64-unknown-linux-musl",
+        ("macos", "x86_64", _) => "x86_64-apple-darwin",
+        ("macos", "aarch64", _) => "aarch64-apple-darwin",
+        ("windows", "x86_64", _) => "x86_64-pc-windows-msvc",
         _ => {
             return Err(UpdateError::UnsupportedPlatform {
                 os: os.to_string(),

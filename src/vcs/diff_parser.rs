@@ -292,19 +292,19 @@ where
             continue;
         }
 
+        // No `---`/`+++` header check here: a hunk body line is never a file
+        // header. The outer loop only starts a file on a `diff --git `/`diff `
+        // line, `parse_file_header` consumes the `---`/`+++` pair before the
+        // first `@@`, and this loop breaks on the next `diff `/`@@` above. A
+        // check here would instead match *content*: deleting a line beginning
+        // with `--` (a SQL/Lua/Haskell comment, a YAML `---` separator, a
+        // Markdown front-matter fence) emits `---…`, and skipping it would drop
+        // the line and desynchronize every following line number in the hunk.
         let (origin, content, old_ln, new_ln) = if let Some(stripped) = line.strip_prefix('+') {
-            if line.starts_with("+++") {
-                // Skip +++ header lines
-                continue;
-            }
             let ln = new_lineno;
             new_lineno += 1;
             (LineOrigin::Addition, stripped, None, Some(ln))
         } else if let Some(stripped) = line.strip_prefix('-') {
-            if line.starts_with("---") {
-                // Skip --- header lines
-                continue;
-            }
             let ln = old_lineno;
             old_lineno += 1;
             (LineOrigin::Deletion, stripped, Some(ln), None)
@@ -807,6 +807,86 @@ copy to dest.rs
         assert_eq!(lines[4].origin, LineOrigin::Context);
         assert_eq!(lines[4].old_lineno, Some(7));
         assert_eq!(lines[4].new_lineno, Some(8));
+    }
+
+    #[test]
+    fn should_keep_deleted_lines_whose_content_starts_with_dashes() {
+        // Deleting a YAML front-matter fence emits `----` (the `-` origin plus
+        // the `---` content); it must not be mistaken for a `---` file header.
+        let diff = r#"diff --git a/post.md b/post.md
+--- a/post.md
++++ b/post.md
+@@ -1,5 +1,2 @@
+----
+-title: hello
+----
+ intro
+-old body
++new body
+"#;
+        let files =
+            parse_unified_diff(diff, DiffFormat::GitStyle, &SyntaxHighlighter::default()).unwrap();
+        let lines = &files[0].hunks[0].lines;
+        assert_eq!(lines.len(), 6);
+
+        assert_eq!(lines[0].origin, LineOrigin::Deletion);
+        assert_eq!(lines[0].content, "---");
+        assert_eq!(lines[0].old_lineno, Some(1));
+
+        assert_eq!(lines[2].origin, LineOrigin::Deletion);
+        assert_eq!(lines[2].content, "---");
+        assert_eq!(lines[2].old_lineno, Some(3));
+
+        // Line numbers after the skipped lines must not shift.
+        assert_eq!(lines[3].origin, LineOrigin::Context);
+        assert_eq!(lines[3].old_lineno, Some(4));
+        assert_eq!(lines[3].new_lineno, Some(1));
+
+        assert_eq!(lines[4].origin, LineOrigin::Deletion);
+        assert_eq!(lines[4].old_lineno, Some(5));
+    }
+
+    #[test]
+    fn should_keep_deleted_sql_comment_lines() {
+        // `--` is the line-comment token in SQL, Lua, Haskell, Ada and Elm.
+        let diff = r#"diff --git a/q.sql b/q.sql
+--- a/q.sql
++++ b/q.sql
+@@ -1,2 +1,1 @@
+--- count the rows
+ SELECT 1;
+"#;
+        let files =
+            parse_unified_diff(diff, DiffFormat::GitStyle, &SyntaxHighlighter::default()).unwrap();
+        let lines = &files[0].hunks[0].lines;
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].origin, LineOrigin::Deletion);
+        assert_eq!(lines[0].content, "-- count the rows");
+        assert_eq!(lines[0].old_lineno, Some(1));
+        assert_eq!(lines[1].old_lineno, Some(2));
+    }
+
+    #[test]
+    fn should_keep_added_lines_whose_content_starts_with_plus_signs() {
+        let diff = r#"diff --git a/loop.c b/loop.c
+--- a/loop.c
++++ b/loop.c
+@@ -1,1 +1,3 @@
+ int i = 0;
++++i;
++return i;
+"#;
+        let files =
+            parse_unified_diff(diff, DiffFormat::GitStyle, &SyntaxHighlighter::default()).unwrap();
+        let lines = &files[0].hunks[0].lines;
+        assert_eq!(lines.len(), 3);
+
+        assert_eq!(lines[1].origin, LineOrigin::Addition);
+        assert_eq!(lines[1].content, "++i;");
+        assert_eq!(lines[1].new_lineno, Some(2));
+
+        // The following addition must not reuse the skipped line's number.
+        assert_eq!(lines[2].new_lineno, Some(3));
     }
 
     // ============ Jujutsu (jj) format tests - uses DiffFormat::GitStyle ============

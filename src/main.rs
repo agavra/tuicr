@@ -17,7 +17,7 @@ use tuicr::handler::{
     handle_commit_select_action, handle_commit_selector_action, handle_confirm_action,
     handle_diff_action, handle_file_list_action, handle_help_action, handle_mouse_event,
     handle_search_action, handle_submit_action_picker_action, handle_submit_confirm_action,
-    handle_submit_resolver_action, handle_visual_action,
+    handle_submit_resolver_action, handle_summary_action, handle_visual_action,
 };
 use tuicr::input::{
     Action, map_file_tree_mode, map_file_tree_prompt_mode, map_key_to_action,
@@ -32,6 +32,22 @@ use tuicr::{config, handler, profile, ui, update};
 const CTRL_C_EXIT_TIMEOUT: Duration = Duration::from_secs(2);
 /// Hide the file list by default on narrow terminals.
 const MIN_WIDTH_FOR_FILE_LIST: u16 = 100;
+
+/// Upper bound on events consumed between two repaints. High enough that a whole
+/// trackpad gesture collapses into one frame, low enough that held-key
+/// auto-repeat still shows progress instead of sitting on a stale frame.
+const EVENT_DRAIN_LIMIT: usize = 32;
+
+/// How long the loop may wait for the next event after already consuming
+/// `drained` of them: the first blocks so an idle TUI costs nothing, later ones
+/// are only taken if already queued. `None` ends the burst.
+fn event_drain_timeout(drained: usize) -> Option<Duration> {
+    match drained {
+        0 => Some(Duration::from_millis(50)),
+        n if n < EVENT_DRAIN_LIMIT => Some(Duration::ZERO),
+        _ => None,
+    }
+}
 
 fn main() -> anyhow::Result<()> {
     profile::init_from_env();
@@ -421,8 +437,16 @@ fn main() -> anyhow::Result<()> {
             needs_redraw = false;
         }
 
-        // Handle events
-        if event::poll(Duration::from_millis(100))? {
+        // Handle events. Every already-queued event is consumed before the next
+        // repaint: a trackpad gesture or held key delivers events faster than a
+        // terminal presents frames, and the intermediate frames are never seen.
+        // `drained` caps a burst so continuous input still repaints.
+        let mut drained = 0;
+        while !app.should_quit
+            && let Some(timeout) = event_drain_timeout(drained)
+            && event::poll(timeout)?
+        {
+            drained += 1;
             // Set before reading so the many `continue` paths below (leader
             // keys, zz/ZZ, dd, {count}G, …) still schedule a redraw on the
             // next iteration even though they short-circuit past the match.
@@ -809,6 +833,7 @@ fn main() -> anyhow::Result<()> {
 fn dispatch_action(app: &mut App, action: Action) {
     match app.input_mode {
         InputMode::Help | InputMode::MessageDetails => handle_help_action(app, action),
+        InputMode::Summary => handle_summary_action(app, action),
         InputMode::Command => handle_command_action(app, action),
         InputMode::Search => handle_search_action(app, action),
         InputMode::Comment => handle_comment_action(app, action),
@@ -927,4 +952,28 @@ fn run_editor_from_tui<W: Write>(
     let editor_result = tuicr::editor::run_editor(&command);
     suspension.resume()?;
     Ok(editor_result.map(|()| EditorOutcome::Finished))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn drain_blocks_once_then_takes_only_queued_events() {
+        assert_eq!(
+            event_drain_timeout(0),
+            Some(Duration::from_millis(100)),
+            "the first poll must block, or an idle TUI spins"
+        );
+        assert_eq!(event_drain_timeout(1), Some(Duration::ZERO));
+        assert_eq!(
+            event_drain_timeout(EVENT_DRAIN_LIMIT - 1),
+            Some(Duration::ZERO)
+        );
+        assert_eq!(
+            event_drain_timeout(EVENT_DRAIN_LIMIT),
+            None,
+            "a capped burst must repaint instead of draining forever"
+        );
+    }
 }

@@ -239,8 +239,18 @@ fn build_app_full(
     commits: Vec<CommitInfo>,
     comment_type_configs: Option<Vec<crate::config::CommentTypeConfig>>,
 ) -> App {
+    build_app_rooted(PathBuf::from("/tmp"), commits, comment_type_configs)
+}
+
+/// `build_app_full` with an explicit VCS root, for tests that need the app
+/// rooted at a real on-disk checkout.
+fn build_app_rooted(
+    root_path: PathBuf,
+    commits: Vec<CommitInfo>,
+    comment_type_configs: Option<Vec<crate::config::CommentTypeConfig>>,
+) -> App {
     let vcs_info = VcsInfo {
-        root_path: PathBuf::from("/tmp"),
+        root_path,
         head_commit: "head".to_string(),
         branch_name: Some("main".to_string()),
         vcs_type: VcsType::Git,
@@ -571,6 +581,49 @@ fn should_enter_pr_mode_when_opening_pr_via_fake_backend() {
     assert_eq!(app.diff_files.len(), 1);
     // and the forge backend is wired for context expansion / submit
     assert!(app.forge_backend.is_some());
+}
+
+/// Regression for issue #591: `:prs` back to the selector and opening a
+/// second PR errored with "needs a local clone" on Azure DevOps.
+///
+/// Entering PR mode replaces `vcs_info.root_path` with the synthetic
+/// `forge:host/owner/repo` session identity, so resolving the checkout from
+/// it found nothing for every PR after the first. `local_repo_root` keeps the
+/// real launch root around for exactly this.
+#[test]
+fn should_still_resolve_local_checkout_for_a_second_pr_open() {
+    // given an app rooted in a real checkout of the PR's repository
+    let _reviews = TestReviewsDir::new();
+    let dir = tempfile::tempdir().expect("failed to create test repo dir");
+    let repo_root = dir.path().to_path_buf();
+    let git = git2::Repository::init(&repo_root).expect("failed to init test repo");
+    git.remote("origin", "https://github.com/agavra/tuicr")
+        .expect("failed to add origin");
+
+    let repository = ForgeRepository::github("github.com", "agavra", "tuicr");
+    let mut app = build_app_rooted(repo_root.clone(), Vec::new(), None);
+    assert_eq!(app.local_checkout_for(&repository), Some(repo_root.clone()));
+
+    // when a first PR is opened
+    let summary = sample_pr(42, "first");
+    let backend = Box::new(FakeForgeBackend::open_pr_details(
+        test_pr_details(42, "first"),
+        crate::forge::github::gh::tests_fixture::SIMPLE_PATCH.to_string(),
+    ));
+    app.open_pr_with_backend(&summary, backend, Some(repo_root.clone()))
+        .unwrap();
+
+    // then the VCS root is the synthetic PR identity, not a directory
+    assert!(
+        app.vcs_info
+            .root_path
+            .to_string_lossy()
+            .starts_with("forge:"),
+        "expected a synthetic PR root, got {:?}",
+        app.vcs_info.root_path,
+    );
+    // and the next PR open still finds the local clone
+    assert_eq!(app.local_checkout_for(&repository), Some(repo_root));
 }
 
 fn sample_pr_commit(oid: &str, summary: &str) -> crate::forge::traits::PullRequestCommit {
@@ -2143,6 +2196,41 @@ fn should_treat_commits_as_alias_for_local_target_selector() {
 }
 
 #[test]
+fn should_open_pending_comment_summary_from_command_mode() {
+    let mut app = build_app();
+    app.input_mode = InputMode::Command;
+    app.command_buffer = "summary".to_string();
+
+    crate::handler::handle_command_action(&mut app, crate::input::Action::SubmitInput);
+
+    assert_eq!(app.input_mode, InputMode::Summary);
+    assert!(app.command_buffer.is_empty());
+    assert_eq!(app.summary_state.selected_comment, 0);
+    assert_eq!(app.summary_state.scroll_offset, 0);
+
+    app.summary_state.selected_comment = 5;
+    app.summary_state.scroll_offset = 15;
+    app.enter_summary_mode();
+    assert_eq!(app.summary_state.selected_comment, 0);
+    assert_eq!(app.summary_state.scroll_offset, 0);
+
+    crate::handler::handle_summary_action(&mut app, crate::input::Action::ExitMode);
+    assert_eq!(app.input_mode, InputMode::Normal);
+}
+
+#[test]
+fn should_complete_summary_command() {
+    let mut app = build_app();
+    app.input_mode = InputMode::Command;
+    app.command_buffer = "summ".to_string();
+
+    crate::handler::handle_command_action(&mut app, crate::input::Action::CompleteCommand);
+
+    assert_eq!(app.command_buffer, "summary");
+    assert!(app.command_completion.is_none());
+}
+
+#[test]
 fn should_complete_command_when_only_one_candidate_matches() {
     // given
     let mut app = build_app();
@@ -2160,7 +2248,7 @@ fn should_extend_to_common_command_prefix_before_cycling() {
     // given
     let mut app = build_app();
     app.input_mode = InputMode::Command;
-    app.command_buffer = "su".to_string();
+    app.command_buffer = "sub".to_string();
     // when
     crate::handler::handle_command_action(&mut app, crate::input::Action::CompleteCommand);
     // then

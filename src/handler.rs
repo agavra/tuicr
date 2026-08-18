@@ -87,6 +87,7 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         CommandKind::Submit(SubmitEvent::RequestChanges),
     ),
     CommandSpec::new(&["submit draft"], CommandKind::Submit(SubmitEvent::Draft)),
+    CommandSpec::new(&["summary"], CommandKind::Summary),
     CommandSpec::new(
         &["comments unresolved"],
         CommandKind::Comments(PrCommentsVisibility::Unresolved),
@@ -131,6 +132,7 @@ enum CommandKind {
     Clear(ClearScope),
     Help,
     MessageDetails,
+    Summary,
     Version,
     Update,
     SetWrap,
@@ -179,6 +181,7 @@ pub fn handle_mouse_event(app: &mut App, event: MouseEvent) {
             let over_commit_list = app.commit_list_inner_area.is_some_and(|r| r.contains(pos));
             match app.input_mode {
                 InputMode::Help | InputMode::MessageDetails => handle_help_action(app, action),
+                InputMode::Summary => handle_summary_action(app, action),
                 InputMode::CommitSelect | InputMode::Normal if over_commit_list => {
                     wheel_commit_list(app, scroll_up);
                 }
@@ -567,6 +570,42 @@ pub fn handle_help_action(app: &mut App, action: Action) {
     }
 }
 
+/// Handle selection, scrolling, activation, and dismissal in the pending-comments summary view.
+pub fn handle_summary_action(app: &mut App, action: Action) {
+    match action {
+        Action::CursorDown(n) => app.summary_select_down(n),
+        Action::CursorUp(n) => app.summary_select_up(n),
+        Action::HalfPageDown => {
+            app.summary_scroll_down(app.summary_state.viewport_height / 2);
+        }
+        Action::HalfPageUp => {
+            app.summary_scroll_up(app.summary_state.viewport_height / 2);
+        }
+        Action::PageDown => app.summary_scroll_down(app.summary_state.viewport_height),
+        Action::PageUp => app.summary_scroll_up(app.summary_state.viewport_height),
+        Action::GoToTop => app.summary_select_first(),
+        Action::GoToBottom => app.summary_select_last(),
+        Action::MouseScrollDown(n) => app.summary_scroll_down(n),
+        Action::MouseScrollUp(n) => app.summary_scroll_up(n),
+        Action::SubmitInput => {
+            let selected_target = app
+                .summary_state
+                .targets
+                .get(app.summary_state.selected_comment)
+                .cloned()
+                .flatten();
+            if let Some(target) = selected_target {
+                app.jump_to_summary_comment(target);
+            } else if !app.summary_state.targets.is_empty() {
+                app.set_warning("That comment is hidden by the current diff or filters");
+            }
+        }
+        Action::ExitMode => app.exit_summary_mode(),
+        Action::Quit => app.should_quit = true,
+        _ => {}
+    }
+}
+
 /// Handle actions in Command mode (text input for :commands)
 pub fn handle_command_action(app: &mut App, action: Action) {
     match action {
@@ -845,6 +884,13 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
         CommandKind::MessageDetails => {
             app.exit_command_mode();
             app.open_message_details();
+            CommandAfterDispatch::KeepMode
+        }
+        CommandKind::Summary => {
+            // See Help above: leave command mode before opening the view so
+            // the common post-dispatch cleanup cannot clobber Summary.
+            app.exit_command_mode();
+            app.enter_summary_mode();
             CommandAfterDispatch::KeepMode
         }
         CommandKind::Version => {

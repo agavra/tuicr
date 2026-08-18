@@ -485,10 +485,9 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
             line_idx += 1;
         }
 
-        // If file is reviewed (and we're in multi-file view), skip the
-        // body. Single-file view keeps the focused file visible under a
-        // dimmed banner.
-        if is_reviewed && !app.is_single_file_view {
+        // Reviewed files normally collapse in continuous view. A summary jump
+        // may reveal one target body without changing its reviewed marker.
+        if app.should_collapse_file(file_idx) {
             continue;
         }
         if is_reviewed && app.is_single_file_view {
@@ -751,7 +750,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                     Span::styled(hunk_header_text, hunk_header_style),
                 ]));
                 line_idx += 1;
-                if is_hunk_reviewed {
+                if app.should_collapse_hunk(file_idx, hunk_idx) {
                     continue;
                 }
 
