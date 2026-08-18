@@ -108,7 +108,7 @@ Auto-detects git, jj, or mercurial.
 | git | ✅ | ✅ | ✅ | ❌ | ✅ |
 | jj | ✅ | ✅ | ✅ | ❌ | ❌ |
 | Mercurial (hg) | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Single static binary | ✅ | (needs Node) | ✅ | ✅ | ✅ |
+| Single static binary | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 ¹ Lumen has `j`/`k` navigation but no broader vim model (visual mode, `{N}G`, `Ctrl-d`/`Ctrl-u`,
 etc.).
