@@ -66,7 +66,7 @@ impl App {
                 content: line.to_string(),
                 old_lineno: None,
                 new_lineno: Some(i as u32 + 1),
-                highlighted_spans: None,
+                coloring: LineColoring::Pending,
             })
             .collect();
         let line_count = diff_lines.len() as u32;
@@ -887,9 +887,10 @@ impl App {
     /// `narrowed_fetch_source` first, so this function stays about the gate and
     /// knows nothing about commit selection.
     ///
-    /// The comparison runs against a parse that skips syntax highlighting first.
-    /// That is 98% of the cost and fingerprints identically, so an unchanged
-    /// tick costs roughly 3ms instead of 195ms on a 4,000-line diff.
+    /// The probe skips syntax highlighting via `probe_highlighter()`. Per-hunk
+    /// coloring runs at render time, so what this avoids is grammar work for
+    /// container files (Vue, MDX; `enhance_with_full_file_highlight`), whose
+    /// content is read from disk regardless.
     fn changed_diff_files_for_source(
         vcs: &dyn VcsBackend,
         root_path: &Path,

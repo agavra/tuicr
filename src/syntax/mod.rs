@@ -101,8 +101,9 @@ impl SyntaxHighlighter {
     /// The diff watcher uses this to parse a diff when it needs the content but not
     /// the colours. `DiffFile::compute_content_hash` runs during parsing over line
     /// text alone, and highlighting only ever assigns spans, so a diff parsed this
-    /// way fingerprints identically to a highlighted one. Measured at 3.1ms against
-    /// 197ms for the same 4,000-line diff.
+    /// way fingerprints identically to a highlighted one. Per-hunk coloring runs at
+    /// render time, so what this saves is grammar work for container files
+    /// (`needs_full_file_highlight`, e.g. Vue, MDX).
     pub(crate) fn plain() -> Self {
         let theme = syntect::highlighting::Theme::default();
         let markdown_palette = cmark::MarkdownPalette::resolve(&theme);

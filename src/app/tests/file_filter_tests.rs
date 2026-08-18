@@ -1,6 +1,6 @@
 use crate::app::*;
 use crate::input::keybindings::Action;
-use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin};
+use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineColoring, LineOrigin};
 use crate::vcs::traits::{VcsBackend, VcsInfo, VcsType};
 use std::path::PathBuf;
 
@@ -44,14 +44,14 @@ fn hunk() -> DiffHunk {
                 content: "context".to_string(),
                 old_lineno: Some(1),
                 new_lineno: Some(1),
-                highlighted_spans: None,
+                coloring: LineColoring::Pending,
             },
             DiffLine {
                 origin: LineOrigin::Addition,
                 content: "added".to_string(),
                 old_lineno: None,
                 new_lineno: Some(2),
-                highlighted_spans: None,
+                coloring: LineColoring::Pending,
             },
         ],
         old_start: 1,

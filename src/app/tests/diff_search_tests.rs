@@ -1,5 +1,5 @@
 use crate::app::*;
-use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin};
+use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineColoring, LineOrigin};
 use crate::vcs::traits::{VcsBackend, VcsInfo, VcsType};
 use std::path::PathBuf;
 
@@ -40,7 +40,7 @@ fn line(origin: LineOrigin, content: &str, old: Option<u32>, new: Option<u32>) -
         content: content.to_string(),
         old_lineno: old,
         new_lineno: new,
-        highlighted_spans: None,
+        coloring: LineColoring::Pending,
     }
 }
 

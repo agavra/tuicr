@@ -1264,7 +1264,6 @@ fn should_reindex_recovered_pr_session() {
     // and a previously saved session file already exists for the new head
     let mut details_b = details_a.clone();
     details_b.head_sha = "bbbbbbbbbbbbbbbb".to_string();
-    let highlighter = app.theme.syntax_highlighter();
     let opened_b = crate::forge::pr_open::prepare_open_pr(
         details_b.clone(),
         structured_patch(&two_file_patch("newer changed")),
@@ -1272,7 +1271,6 @@ fn should_reindex_recovered_pr_session() {
         PullRequestReviewMetadata::default(),
         crate::forge::traits::PullRequestInfo::from_details(details_b.clone()),
         None,
-        highlighter,
     )
     .unwrap();
     let mut persisted_b = opened_b.session.clone();
@@ -1322,8 +1320,6 @@ fn should_error_on_corrupt_exact_session_file_when_reopening_pr() {
     let _reviews = TestReviewsDir::new();
     let mut details = test_pr_details(424250, "corrupt");
     details.head_sha = "aaaaaaaaaaaaaaaa".to_string();
-    let theme = Theme::default();
-    let highlighter = theme.syntax_highlighter();
     let opened = crate::forge::pr_open::prepare_open_pr(
         details.clone(),
         structured_patch(&two_file_patch("new changed")),
@@ -1331,7 +1327,6 @@ fn should_error_on_corrupt_exact_session_file_when_reopening_pr() {
         PullRequestReviewMetadata::default(),
         crate::forge::traits::PullRequestInfo::from_details(details.clone()),
         None,
-        highlighter,
     )
     .unwrap();
     write_corrupt_session_file(&opened.session);
@@ -1376,7 +1371,6 @@ fn should_keep_old_head_session_when_new_head_session_file_is_corrupt() {
     // and the deterministic file for the new head is corrupt
     let mut details_b = details_a.clone();
     details_b.head_sha = "bbbbbbbbbbbbbbbb".to_string();
-    let highlighter = app.theme.syntax_highlighter();
     let opened_b = crate::forge::pr_open::prepare_open_pr(
         details_b.clone(),
         structured_patch(&two_file_patch("newer changed")),
@@ -1384,7 +1378,6 @@ fn should_keep_old_head_session_when_new_head_session_file_is_corrupt() {
         PullRequestReviewMetadata::default(),
         crate::forge::traits::PullRequestInfo::from_details(details_b.clone()),
         None,
-        highlighter,
     )
     .unwrap();
     write_corrupt_session_file(&opened_b.session);
@@ -1457,8 +1450,6 @@ fn should_ignore_exact_session_file_when_pr_session_key_does_not_match() {
     let _reviews = TestReviewsDir::new();
     let mut details = test_pr_details(424249, "mismatch");
     details.head_sha = "aaaaaaaaaaaaaaaa".to_string();
-    let theme = Theme::default();
-    let highlighter = theme.syntax_highlighter();
     let opened = crate::forge::pr_open::prepare_open_pr(
         details.clone(),
         structured_patch(&two_file_patch("new changed")),
@@ -1466,7 +1457,6 @@ fn should_ignore_exact_session_file_when_pr_session_key_does_not_match() {
         PullRequestReviewMetadata::default(),
         crate::forge::traits::PullRequestInfo::from_details(details.clone()),
         None,
-        highlighter,
     )
     .unwrap();
     let stable_path = PathBuf::from("src/stable.rs");
@@ -1773,7 +1763,6 @@ fn should_build_new_head_session_by_carrying_only_unchanged_reviewed_state() {
     // when a new-head session is built and only one file's diff changes
     let mut details_b = details_a.clone();
     details_b.head_sha = "bbbbbbbbbbbbbbbb".to_string();
-    let highlighter = app.theme.syntax_highlighter();
     let pr_info_b = crate::forge::traits::PullRequestInfo::from_details(details_b.clone());
     let opened = crate::forge::pr_open::prepare_open_pr(
         details_b,
@@ -1782,7 +1771,6 @@ fn should_build_new_head_session_by_carrying_only_unchanged_reviewed_state() {
         PullRequestReviewMetadata::default(),
         pr_info_b,
         None,
-        highlighter,
     )
     .unwrap();
     let next =
@@ -1830,7 +1818,6 @@ fn should_carry_unchanged_hunk_marks_inside_changed_file_when_pr_head_advances()
     // when the PR head changes only the second hunk in that file
     let mut details_b = details_a.clone();
     details_b.head_sha = "bbbbbbbbbbbbbbbb".to_string();
-    let highlighter = app.theme.syntax_highlighter();
     let pr_info_b = crate::forge::traits::PullRequestInfo::from_details(details_b.clone());
     let opened = crate::forge::pr_open::prepare_open_pr(
         details_b,
@@ -1839,7 +1826,6 @@ fn should_carry_unchanged_hunk_marks_inside_changed_file_when_pr_head_advances()
         PullRequestReviewMetadata::default(),
         pr_info_b,
         None,
-        highlighter,
     )
     .unwrap();
     let new_first_key = opened.diff_files[0].hunk_review_key(0).unwrap();

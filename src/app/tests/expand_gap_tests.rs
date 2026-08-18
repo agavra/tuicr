@@ -1,5 +1,5 @@
 use crate::app::*;
-use crate::model::{DiffHunk, DiffLine, FileStatus, LineOrigin};
+use crate::model::{DiffHunk, DiffLine, FileStatus, LineColoring, LineOrigin};
 use crate::vcs::traits::VcsType;
 
 struct MockVcs {
@@ -32,7 +32,7 @@ impl VcsBackend for MockVcs {
                 content: format!("line {line_num}"),
                 old_lineno: Some(line_num),
                 new_lineno: Some(line_num),
-                highlighted_spans: None,
+                coloring: LineColoring::Pending,
             });
         }
         Ok(result)
@@ -56,7 +56,7 @@ fn make_hunk(new_start: u32, new_count: u32) -> DiffHunk {
             content: format!("hunk line {}", new_start + i),
             old_lineno: Some(new_start + i),
             new_lineno: Some(new_start + i),
-            highlighted_spans: None,
+            coloring: LineColoring::Pending,
         });
     }
     DiffHunk {

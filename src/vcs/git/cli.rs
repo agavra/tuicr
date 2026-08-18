@@ -8,7 +8,7 @@ use std::process::{Command, Stdio};
 use chrono::{TimeZone, Utc};
 
 use crate::error::{Result, TuicrError};
-use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin, LineSide};
+use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineColoring, LineOrigin, LineSide};
 use crate::syntax::SyntaxHighlighter;
 use crate::vcs::diff_parser;
 use crate::vcs::git::raw::{
@@ -105,19 +105,15 @@ impl GitCliBackend {
         if self.whitespace_mode.ignores_all() {
             args.insert(1, "--ignore-all-space".to_string());
         }
-        let mut files = match run_git_diff_command(
-            &self.root_path,
-            args,
-            self.whitespace_mode.ignores_all(),
-            highlighter,
-        ) {
-            Ok(files) => files,
-            Err(TuicrError::NoChanges) => Vec::new(),
-            Err(err) => return Err(err),
-        };
+        let mut files =
+            match run_git_diff_command(&self.root_path, args, self.whitespace_mode.ignores_all()) {
+                Ok(files) => files,
+                Err(TuicrError::NoChanges) => Vec::new(),
+                Err(err) => return Err(err),
+            };
 
         if include_untracked {
-            append_untracked_cli_diffs(&self.root_path, &mut files, highlighter)?;
+            append_untracked_cli_diffs(&self.root_path, &mut files)?;
         }
         normalize_git_cli_paths(&mut files);
 
@@ -623,7 +619,6 @@ fn run_git_diff_command(
     workdir: &Path,
     args: Vec<String>,
     suppress_header_only_content_changes: bool,
-    highlighter: &SyntaxHighlighter,
 ) -> Result<Vec<DiffFile>> {
     let output = run_git_diff_bytes(workdir, &args, &[])?;
     let patches = match parse_raw_patch_output(&output) {
@@ -633,7 +628,7 @@ fn run_git_diff_command(
         }
         Err(error) => return Err(error),
     };
-    diff_parser::parse_file_patches(patches, highlighter)
+    diff_parser::parse_file_patches(patches)
 }
 
 fn run_git_diff_bytes(workdir: &Path, args: &[String], pathspecs: &[&Path]) -> Result<Vec<u8>> {
@@ -724,16 +719,12 @@ fn parse_whitespace_filtered_patches(
     Ok(patches)
 }
 
-fn append_untracked_cli_diffs(
-    workdir: &Path,
-    files: &mut Vec<DiffFile>,
-    highlighter: &SyntaxHighlighter,
-) -> Result<usize> {
+fn append_untracked_cli_diffs(workdir: &Path, files: &mut Vec<DiffFile>) -> Result<usize> {
     let pathspecs = sparse_checkout_untracked_pathspecs(workdir)?;
     let previous_len = files.len();
     for_each_untracked_path(workdir, &pathspecs, |path| {
         let full_path = workdir.join(&path);
-        let Some(file) = build_untracked_diff_file(&path, &full_path, highlighter) else {
+        let Some(file) = build_untracked_diff_file(&path, &full_path) else {
             return Ok(());
         };
         files.push(file);
@@ -784,11 +775,9 @@ fn is_simple_sparse_path(pattern: &str) -> bool {
         && !pattern.contains('\\')
 }
 
-fn build_untracked_diff_file(
-    path: &Path,
-    full_path: &Path,
-    highlighter: &SyntaxHighlighter,
-) -> Option<DiffFile> {
+/// Builds the diff for one untracked file, leaving every line `LineColoring::Pending`.
+/// See `crate::vcs::color_hunk` for the pass that colors it.
+fn build_untracked_diff_file(path: &Path, full_path: &Path) -> Option<DiffFile> {
     let metadata = full_path.metadata().ok()?;
     if metadata.len() > MAX_UNTRACKED_FILE_SIZE {
         return Some(diff_file_without_hunks(path, false, true));
@@ -809,7 +798,6 @@ fn build_untracked_diff_file(
         return Some(diff_file_without_hunks(path, false, false));
     }
 
-    let highlighted = highlighter.highlight_file_lines(path, &lines);
     let diff_lines: Vec<DiffLine> = lines
         .into_iter()
         .enumerate()
@@ -818,13 +806,7 @@ fn build_untracked_diff_file(
             content,
             old_lineno: None,
             new_lineno: Some((idx + 1) as u32),
-            highlighted_spans: highlighter.highlighted_line_for_diff_with_background(
-                None,
-                highlighted.as_deref(),
-                None,
-                Some(idx),
-                LineOrigin::Addition,
-            ),
+            coloring: LineColoring::Pending,
         })
         .collect();
 
@@ -1922,6 +1904,54 @@ mod tests {
         assert_eq!(
             files[0].new_path.as_deref(),
             Some(Path::new(substantive_path))
+        );
+    }
+
+    /// Characterization: the colors `color_hunk` produces for a hunk built by
+    /// `build_untracked_diff_file`. Rationale on
+    /// `should_preserve_shared_parser_hunk_colors` in `vcs::diff_parser`.
+    ///
+    /// Every line is an addition, so `color_hunk` highlights this hunk once, against the
+    /// file as it stands after the change. This output merges with the shared parser's in
+    /// `get_working_tree_diff`, which is why the two must agree on how a line is colored.
+    #[test]
+    fn should_preserve_untracked_file_colors() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let full_path = dir.path().join("sample.rs");
+        fs::write(
+            &full_path,
+            "use std::collections::HashMap;\n\
+             \n\
+             pub fn alpha(x: u32) -> u32 {\n\
+             \x20   x + 1\n\
+             }\n",
+        )
+        .expect("write file");
+
+        let mut file = build_untracked_diff_file(Path::new("sample.rs"), &full_path)
+            .expect("untracked file should produce a diff file");
+        let highlighter = SyntaxHighlighter::default();
+        crate::vcs::color_hunk(&mut file.hunks[0], Path::new("sample.rs"), &highlighter);
+
+        let lines = &file.hunks[0].lines;
+        assert!(
+            lines.iter().all(|l| l.origin == LineOrigin::Addition),
+            "an untracked file is all additions, which is why the old side is never read"
+        );
+
+        let signature = lines
+            .iter()
+            .find(|l| l.content == "pub fn alpha(x: u32) -> u32 {")
+            .map(crate::model::diff_types::span_signature)
+            .expect("fixture line missing from the diff");
+
+        assert_ne!(
+            signature, "<uncolored>",
+            "fixture must resolve a grammar, not just pin the absence of one"
+        );
+        assert_eq!(
+            signature,
+            r#""pub"[Rgb(204, 153, 204)/Rgb(0, 35, 12)] " "[Rgb(211, 208, 200)/Rgb(0, 35, 12)] "fn"[Rgb(204, 153, 204)/Rgb(0, 35, 12)] " "[Rgb(211, 208, 200)/Rgb(0, 35, 12)] "alpha"[Rgb(102, 153, 204)/Rgb(0, 35, 12)] "("[Rgb(211, 208, 200)/Rgb(0, 35, 12)] "x"[Rgb(242, 119, 122)/Rgb(0, 35, 12)] ":"[Rgb(211, 208, 200)/Rgb(0, 35, 12)] " "[Rgb(211, 208, 200)/Rgb(0, 35, 12)] "u32"[Rgb(204, 153, 204)/Rgb(0, 35, 12)] ")"[Rgb(211, 208, 200)/Rgb(0, 35, 12)] " "[Rgb(211, 208, 200)/Rgb(0, 35, 12)] "->"[Rgb(211, 208, 200)/Rgb(0, 35, 12)] " "[Rgb(211, 208, 200)/Rgb(0, 35, 12)] "u32"[Rgb(204, 153, 204)/Rgb(0, 35, 12)] " "[Rgb(211, 208, 200)/Rgb(0, 35, 12)] "{"[Rgb(211, 208, 200)/Rgb(0, 35, 12)]"#
         );
     }
 }

@@ -345,7 +345,7 @@ mod tests {
     use crate::model::comment::CommentLifecycleState;
     use crate::model::review::FileReview;
     use crate::model::{
-        CommentType, DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin, LineRange,
+        CommentType, DiffFile, DiffHunk, DiffLine, FileStatus, LineColoring, LineOrigin, LineRange,
         ReviewSession, SessionDiffSource,
     };
     use crate::syntax::SyntaxHighlighter;
@@ -434,7 +434,7 @@ mod tests {
                 content: format!("line {}", start + offset),
                 old_lineno: Some(start + offset),
                 new_lineno: Some(start + offset),
-                highlighted_spans: None,
+                coloring: LineColoring::Pending,
             })
             .collect();
         DiffHunk {

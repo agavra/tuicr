@@ -1,5 +1,5 @@
 use crate::app::*;
-use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin};
+use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineColoring, LineOrigin};
 use crate::vcs::traits::{VcsBackend, VcsInfo, VcsType};
 use std::fs;
 use std::path::PathBuf;
@@ -42,7 +42,7 @@ fn hunk(start: u32, count: u32) -> DiffHunk {
             content: format!("line {}", start + i),
             old_lineno: Some(start + i),
             new_lineno: Some(start + i),
-            highlighted_spans: None,
+            coloring: LineColoring::Pending,
         })
         .collect();
     DiffHunk {

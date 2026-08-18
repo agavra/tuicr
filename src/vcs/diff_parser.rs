@@ -13,32 +13,30 @@ use std::path::PathBuf;
 use crate::error::{Result, TuicrError};
 #[cfg(test)]
 use crate::model::FileStatus;
-use crate::model::{DiffFile, DiffHunk, DiffLine, FilePatch, LineOrigin};
-use crate::syntax::{SyntaxHighlighter, needs_full_file_highlight};
+use crate::model::{DiffFile, DiffHunk, DiffLine, FilePatch, LineColoring, LineOrigin};
+#[cfg(test)]
+use crate::syntax::SyntaxHighlighter;
 
 /// Convert backend-structured file patches into renderable diff files.
-pub fn parse_file_patches(
-    patches: Vec<FilePatch>,
-    highlighter: &SyntaxHighlighter,
-) -> Result<Vec<DiffFile>> {
+///
+/// Every line comes out `LineColoring::Pending`. `crate::vcs::color_hunk` colors a
+/// hunk when it is about to be drawn.
+pub fn parse_file_patches(patches: Vec<FilePatch>) -> Result<Vec<DiffFile>> {
     if patches.is_empty() {
         return Err(TuicrError::NoChanges);
     }
 
-    patches
-        .into_iter()
-        .map(|patch| materialize_file_patch(patch, highlighter))
-        .collect()
+    patches.into_iter().map(materialize_file_patch).collect()
 }
 
-fn materialize_file_patch(patch: FilePatch, highlighter: &SyntaxHighlighter) -> Result<DiffFile> {
+fn materialize_file_patch(patch: FilePatch) -> Result<DiffFile> {
     let file_path = patch.display_path().ok_or_else(|| {
         TuicrError::VcsCommand("structured diff entry has neither an old nor a new path".into())
     })?;
     let hunks = if patch.is_binary || patch.is_too_large {
         Vec::new()
     } else {
-        parse_hunks(&patch.patch, file_path, highlighter)?
+        parse_hunks(&patch.patch, file_path)?
     };
     let content_hash = DiffFile::compute_content_hash(&hunks);
 
@@ -54,18 +52,14 @@ fn materialize_file_patch(patch: FilePatch, highlighter: &SyntaxHighlighter) -> 
     })
 }
 
-fn parse_hunks(
-    patch: &str,
-    file_path: &Path,
-    highlighter: &SyntaxHighlighter,
-) -> Result<Vec<DiffHunk>> {
+fn parse_hunks(patch: &str, file_path: &Path) -> Result<Vec<DiffHunk>> {
     let mut hunks = Vec::new();
     let mut lines = patch.lines().peekable();
     let mut parsed_hunk = false;
 
     while let Some(line) = lines.next() {
         if line.starts_with("@@ ") {
-            hunks.push(parse_hunk(line, &mut lines, file_path, highlighter)?);
+            hunks.push(parse_hunk(line, &mut lines, file_path)?);
             parsed_hunk = true;
         } else if line.starts_with("@@") {
             return Err(invalid_patch(
@@ -86,11 +80,12 @@ fn parse_hunks(
     Ok(hunks)
 }
 
+/// Extracts one hunk, leaving every line `LineColoring::Pending`. See
+/// `crate::vcs::color_hunk` for the pass that colors it.
 fn parse_hunk<'a, I>(
     header: &str,
     lines: &mut std::iter::Peekable<I>,
     file_path: &Path,
-    highlighter: &SyntaxHighlighter,
 ) -> Result<DiffHunk>
 where
     I: Iterator<Item = &'a str>,
@@ -184,36 +179,18 @@ where
         line_numbers.push((old_ln, new_ln));
     }
 
-    let highlight_sequences =
-        SyntaxHighlighter::split_diff_lines_for_highlighting(&line_contents, &line_origins);
-    let (old_highlighted_lines, new_highlighted_lines) = if !needs_full_file_highlight(file_path) {
-        (
-            highlighter.highlight_file_lines(file_path, &highlight_sequences.old_lines),
-            highlighter.highlight_file_lines(file_path, &highlight_sequences.new_lines),
-        )
-    } else {
-        (None, None)
-    };
-
     let lines = line_contents
         .into_iter()
         .enumerate()
         .map(|(index, content)| {
             let origin = line_origins[index];
             let (old_lineno, new_lineno) = line_numbers[index];
-            let highlighted_spans = highlighter.highlighted_line_for_diff_with_background(
-                old_highlighted_lines.as_deref(),
-                new_highlighted_lines.as_deref(),
-                highlight_sequences.old_line_indices[index],
-                highlight_sequences.new_line_indices[index],
-                origin,
-            );
             DiffLine {
                 origin,
                 content,
                 old_lineno,
                 new_lineno,
-                highlighted_spans,
+                coloring: LineColoring::Pending,
             }
         })
         .collect();
@@ -306,21 +283,18 @@ mod tests {
     use super::*;
 
     fn parse(patch: &str) -> Result<Vec<DiffFile>> {
-        parse_file_patches(
-            vec![FilePatch::new(
-                Some(PathBuf::from("file.txt")),
-                Some(PathBuf::from("file.txt")),
-                FileStatus::Modified,
-                patch,
-            )],
-            &SyntaxHighlighter::default(),
-        )
+        parse_file_patches(vec![FilePatch::new(
+            Some(PathBuf::from("file.txt")),
+            Some(PathBuf::from("file.txt")),
+            FileStatus::Modified,
+            patch,
+        )])
     }
 
     #[test]
     fn returns_no_changes_for_empty_patch_set() {
         assert!(matches!(
-            parse_file_patches(Vec::new(), &SyntaxHighlighter::default()),
+            parse_file_patches(Vec::new()),
             Err(TuicrError::NoChanges)
         ));
     }
@@ -335,15 +309,12 @@ mod tests {
 +new
 "#;
         let expected = PathBuf::from("日.txt");
-        let files = parse_file_patches(
-            vec![FilePatch::new(
-                Some(expected.clone()),
-                Some(expected.clone()),
-                FileStatus::Modified,
-                patch,
-            )],
-            &SyntaxHighlighter::default(),
-        )
+        let files = parse_file_patches(vec![FilePatch::new(
+            Some(expected.clone()),
+            Some(expected.clone()),
+            FileStatus::Modified,
+            patch,
+        )])
         .unwrap();
 
         assert_eq!(files[0].old_path.as_ref(), Some(&expected));
@@ -442,10 +413,84 @@ mod tests {
         );
         large.is_too_large = true;
 
-        let files = parse_file_patches(vec![binary, large], &SyntaxHighlighter::default()).unwrap();
+        let files = parse_file_patches(vec![binary, large]).unwrap();
         assert!(files[0].is_binary);
         assert!(files[0].hunks.is_empty());
         assert!(files[1].is_too_large);
         assert!(files[1].hunks.is_empty());
+    }
+
+    /// Characterization: the colors `color_hunk` produces for a hunk built by
+    /// `parse_file_patches`, the shared parser Mercurial, Jujutsu, the Git CLI backend
+    /// and forge pull requests all feed through.
+    ///
+    /// This pins behavior, it does not specify it. Nothing else in the suite reads
+    /// spans, so a color regression would otherwise pass unnoticed. Expect to update
+    /// these strings when the bundled theme changes; that should force someone to look.
+    #[test]
+    fn should_preserve_shared_parser_hunk_colors() {
+        let body = "@@ -1,5 +1,6 @@\n \
+                    use std::collections::HashMap;\n \
+                    \n \
+                    pub fn alpha(x: u32) -> u32 {\n\
+                    -    x + 1\n\
+                    +    let total = x * 2;\n\
+                    +    total\n \
+                    }\n\
+                    @@ -10,3 +11,4 @@\n \
+                    pub fn gamma() -> bool {\n\
+                    -    true\n\
+                    +    let m: HashMap<u8, u8> = HashMap::new();\n\
+                    +    m.is_empty()\n \
+                    }\n";
+
+        let mut files = parse_file_patches(vec![FilePatch::new(
+            Some(PathBuf::from("sample.rs")),
+            Some(PathBuf::from("sample.rs")),
+            FileStatus::Modified,
+            body,
+        )])
+        .expect("parse should succeed");
+        let highlighter = SyntaxHighlighter::default();
+        crate::vcs::color_all_hunks(&mut files, &highlighter);
+
+        let hunks: usize = files.iter().map(|f| f.hunks.len()).sum();
+        assert_eq!(
+            hunks, 2,
+            "fixture must produce two hunks so the per-hunk loop runs more than once; got {hunks}"
+        );
+
+        let signature_of = |origin: LineOrigin, content: &str| -> String {
+            files
+                .iter()
+                .flat_map(|f| f.hunks.iter())
+                .flat_map(|h| h.lines.iter())
+                .find(|l| l.origin == origin && l.content == content)
+                .map(crate::model::diff_types::span_signature)
+                .unwrap_or_else(|| panic!("no {origin:?} line with content {content:?}"))
+        };
+
+        // A deletion, which is the only origin that reads the old-side sequence.
+        let deletion = signature_of(LineOrigin::Deletion, "    x + 1");
+        assert_ne!(
+            deletion, "<uncolored>",
+            "fixture must resolve a grammar, not just pin the absence of one"
+        );
+        assert_eq!(
+            deletion,
+            r#""    x "[Rgb(211, 208, 200)/Rgb(45, 0, 0)] "+"[Rgb(211, 208, 200)/Rgb(45, 0, 0)] " "[Rgb(211, 208, 200)/Rgb(45, 0, 0)] "1"[Rgb(249, 145, 87)/Rgb(45, 0, 0)]"#
+        );
+
+        // A context line: the strongest assertion here, since one span of drift
+        // in tokenization moves it and nothing else in the suite would notice.
+        let context = signature_of(LineOrigin::Context, "pub fn alpha(x: u32) -> u32 {");
+        assert_ne!(
+            context, "<uncolored>",
+            "fixture must resolve a grammar, not just pin the absence of one"
+        );
+        assert_eq!(
+            context,
+            r#""pub"[Rgb(204, 153, 204)/-] " "[Rgb(211, 208, 200)/-] "fn"[Rgb(204, 153, 204)/-] " "[Rgb(211, 208, 200)/-] "alpha"[Rgb(102, 153, 204)/-] "("[Rgb(211, 208, 200)/-] "x"[Rgb(242, 119, 122)/-] ":"[Rgb(211, 208, 200)/-] " "[Rgb(211, 208, 200)/-] "u32"[Rgb(204, 153, 204)/-] ")"[Rgb(211, 208, 200)/-] " "[Rgb(211, 208, 200)/-] "->"[Rgb(211, 208, 200)/-] " "[Rgb(211, 208, 200)/-] "u32"[Rgb(204, 153, 204)/-] " "[Rgb(211, 208, 200)/-] "{"[Rgb(211, 208, 200)/-]"#
+        );
     }
 }

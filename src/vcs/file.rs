@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use ignore::WalkBuilder;
 
 use crate::error::{Result, TuicrError};
-use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin};
+use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineColoring, LineOrigin};
 use crate::syntax::SyntaxHighlighter;
 
 use super::traits::{VcsBackend, VcsInfo, VcsType};
@@ -155,12 +155,9 @@ impl FileBackend {
         })
     }
 
-    fn build_diff_file_for_path(
-        &self,
-        highlighter: &SyntaxHighlighter,
-        abs_path: &Path,
-        file_size: u64,
-    ) -> Option<DiffFile> {
+    /// Builds the diff for one file, leaving every line `LineColoring::Pending`. See
+    /// `crate::vcs::color_hunk` for the pass that colors it.
+    fn build_diff_file_for_path(&self, abs_path: &Path, file_size: u64) -> Option<DiffFile> {
         // Binary check first so a too-large binary is skipped (not surfaced
         // as a misleading is_too_large text placeholder), and so single-file
         // mode (which never went through `collect_text_files`) is also guarded.
@@ -200,28 +197,12 @@ impl FileBackend {
             FileMode::Single | FileMode::Directory => LineOrigin::Addition,
         };
 
-        // Build line contents and origins for syntax highlighting
         let line_contents: Vec<String> = lines.iter().map(|l| super::tabify(l)).collect();
-        let line_origins: Vec<LineOrigin> = vec![render_origin; line_contents.len()];
-
-        // Apply syntax highlighting
-        let highlight_sequences =
-            SyntaxHighlighter::split_diff_lines_for_highlighting(&line_contents, &line_origins);
-        let new_highlighted_lines =
-            highlighter.highlight_file_lines(abs_path, &highlight_sequences.new_lines);
 
         // Build DiffLines
         let mut diff_lines = Vec::with_capacity(lines.len());
         for (i, content) in line_contents.iter().enumerate() {
             let line_num = (i + 1) as u32;
-
-            let highlighted_spans = highlighter.highlighted_line_for_diff_with_background(
-                None,
-                new_highlighted_lines.as_deref(),
-                None,
-                highlight_sequences.new_line_indices[i],
-                render_origin,
-            );
 
             // Pristine context lines need both old_lineno and new_lineno
             // populated so the side-by-side and unified renderers walk the
@@ -236,7 +217,7 @@ impl FileBackend {
                 content: content.clone(),
                 old_lineno,
                 new_lineno: Some(line_num),
-                highlighted_spans,
+                coloring: LineColoring::Pending,
             });
         }
 
@@ -286,11 +267,11 @@ impl VcsBackend for FileBackend {
         &self.info
     }
 
-    fn get_working_tree_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+    fn get_working_tree_diff(&self, _highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
         let diff_files: Vec<DiffFile> = self
             .files
             .iter()
-            .filter_map(|(p, size)| self.build_diff_file_for_path(highlighter, p, *size))
+            .filter_map(|(p, size)| self.build_diff_file_for_path(p, *size))
             .collect();
 
         if diff_files.is_empty() {
@@ -598,6 +579,98 @@ mod tests {
         assert!(
             !is_probably_binary(&bin_after),
             "null past the {BINARY_SNIFF_BYTES}-byte sniff window must NOT be detected"
+        );
+    }
+
+    // ---------- Characterization: whole-file coloring ----------
+
+    /// Characterization: the colors `color_hunk` produces for a hunk built by
+    /// `build_diff_file_for_path`. Rationale on
+    /// `should_preserve_shared_parser_hunk_colors` in `vcs::diff_parser`.
+    ///
+    /// This hunk has no deleted lines, so `color_hunk` highlights it once, against the
+    /// file as it stands after the change. A hunk carrying a deletion gets a second pass
+    /// against the file as it stood before, which nothing here triggers. The two calls
+    /// cover both modes because `render_origin` differs between them: pristine review
+    /// emits `Context`, a single file or directory emits `Addition`.
+    #[test]
+    fn should_preserve_all_files_colors() {
+        let source = "use std::collections::HashMap;\n\
+                      \n\
+                      pub fn alpha(x: u32) -> u32 {\n\
+                      \x20   x + 1\n\
+                      }\n";
+
+        let signature_of = |files: &[DiffFile], content: &str| -> String {
+            files
+                .iter()
+                .flat_map(|f| f.hunks.iter())
+                .flat_map(|h| h.lines.iter())
+                .find(|l| l.content == content)
+                .map(crate::model::diff_types::span_signature)
+                .unwrap_or_else(|| panic!("no line with content {content:?}"))
+        };
+
+        // Pristine review: every line is context, so every line reads the new side.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sample.rs").canonicalize_lazy(dir.path());
+        fs::write(&path, source).unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let mut pristine = FileBackend::new_pristine(vec![path.clone()], root)
+            .unwrap()
+            .get_working_tree_diff(&highlighter())
+            .unwrap();
+        crate::vcs::color_all_hunks(&mut pristine, &highlighter());
+
+        assert!(
+            pristine
+                .iter()
+                .flat_map(|f| f.hunks.iter())
+                .flat_map(|h| h.lines.iter())
+                .all(|l| l.origin == LineOrigin::Context),
+            "pristine mode must emit context lines; the old-side coloring path is never \
+             reached here and that is why this site can pass None for it"
+        );
+
+        let pristine_signature = signature_of(&pristine, "pub fn alpha(x: u32) -> u32 {");
+        assert_ne!(
+            pristine_signature, "<uncolored>",
+            "fixture must resolve a grammar, not just pin the absence of one"
+        );
+        assert_eq!(
+            pristine_signature,
+            r#""pub"[Rgb(204, 153, 204)/-] " "[Rgb(211, 208, 200)/-] "fn"[Rgb(204, 153, 204)/-] " "[Rgb(211, 208, 200)/-] "alpha"[Rgb(102, 153, 204)/-] "("[Rgb(211, 208, 200)/-] "x"[Rgb(242, 119, 122)/-] ":"[Rgb(211, 208, 200)/-] " "[Rgb(211, 208, 200)/-] "u32"[Rgb(204, 153, 204)/-] ")"[Rgb(211, 208, 200)/-] " "[Rgb(211, 208, 200)/-] "->"[Rgb(211, 208, 200)/-] " "[Rgb(211, 208, 200)/-] "u32"[Rgb(204, 153, 204)/-] " "[Rgb(211, 208, 200)/-] "{"[Rgb(211, 208, 200)/-]"#
+        );
+
+        // Single-file mode: every line is an addition, which also reads the new
+        // side, so the same source must color identically apart from the diff
+        // background.
+        let single_dir = tempfile::tempdir().unwrap();
+        let single_path = single_dir.path().join("sample.rs");
+        fs::write(&single_path, source).unwrap();
+        let mut single = FileBackend::new(single_path.to_str().unwrap())
+            .unwrap()
+            .get_working_tree_diff(&highlighter())
+            .unwrap();
+        crate::vcs::color_all_hunks(&mut single, &highlighter());
+
+        assert!(
+            single
+                .iter()
+                .flat_map(|f| f.hunks.iter())
+                .flat_map(|h| h.lines.iter())
+                .all(|l| l.origin == LineOrigin::Addition),
+            "single-file mode must emit addition lines"
+        );
+
+        let single_signature = signature_of(&single, "pub fn alpha(x: u32) -> u32 {");
+        assert_ne!(
+            single_signature, "<uncolored>",
+            "fixture must resolve a grammar, not just pin the absence of one"
+        );
+        assert_eq!(
+            single_signature,
+            r#""pub"[Rgb(204, 153, 204)/Rgb(0, 35, 12)] " "[Rgb(211, 208, 200)/Rgb(0, 35, 12)] "fn"[Rgb(204, 153, 204)/Rgb(0, 35, 12)] " "[Rgb(211, 208, 200)/Rgb(0, 35, 12)] "alpha"[Rgb(102, 153, 204)/Rgb(0, 35, 12)] "("[Rgb(211, 208, 200)/Rgb(0, 35, 12)] "x"[Rgb(242, 119, 122)/Rgb(0, 35, 12)] ":"[Rgb(211, 208, 200)/Rgb(0, 35, 12)] " "[Rgb(211, 208, 200)/Rgb(0, 35, 12)] "u32"[Rgb(204, 153, 204)/Rgb(0, 35, 12)] ")"[Rgb(211, 208, 200)/Rgb(0, 35, 12)] " "[Rgb(211, 208, 200)/Rgb(0, 35, 12)] "->"[Rgb(211, 208, 200)/Rgb(0, 35, 12)] " "[Rgb(211, 208, 200)/Rgb(0, 35, 12)] "u32"[Rgb(204, 153, 204)/Rgb(0, 35, 12)] " "[Rgb(211, 208, 200)/Rgb(0, 35, 12)] "{"[Rgb(211, 208, 200)/Rgb(0, 35, 12)]"#
         );
     }
 

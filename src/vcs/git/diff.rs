@@ -2,8 +2,8 @@ use git2::{Delta, Diff, DiffOptions, Repository};
 use std::path::{Path, PathBuf};
 
 use crate::error::{Result, TuicrError};
-use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin};
-use crate::syntax::{SyntaxHighlighter, needs_full_file_highlight};
+use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineColoring, LineOrigin};
+use crate::syntax::SyntaxHighlighter;
 use crate::vcs::traits::{
     ChangeKind, DiffWhitespaceMode, ResolvedRevisionRange, RevisionDiffTarget,
 };
@@ -25,7 +25,7 @@ pub fn get_working_tree_diff(
     opts.recurse_untracked_dirs(true);
 
     let diff = repo.diff_tree_to_workdir_with_index(head.as_ref(), Some(&mut opts))?;
-    let mut files = parse_diff(&diff, highlighter)?;
+    let mut files = parse_diff(&diff)?;
     enhance_with_full_file_highlight(
         &mut files,
         highlighter,
@@ -50,7 +50,7 @@ pub fn get_staged_diff(
     let mut opts = diff_options(whitespace_mode);
 
     let diff = repo.diff_tree_to_index(head.as_ref(), Some(&index), Some(&mut opts))?;
-    let mut files = parse_diff(&diff, highlighter)?;
+    let mut files = parse_diff(&diff)?;
     enhance_with_full_file_highlight(
         &mut files,
         highlighter,
@@ -115,7 +115,7 @@ pub fn get_unstaged_diff(
     opts.recurse_untracked_dirs(true);
 
     let diff = repo.diff_index_to_workdir(Some(&index), Some(&mut opts))?;
-    let mut files = parse_diff(&diff, highlighter)?;
+    let mut files = parse_diff(&diff)?;
     enhance_with_full_file_highlight(
         &mut files,
         highlighter,
@@ -191,7 +191,7 @@ fn diff_commit_trees(
     let mut opts = diff_options(whitespace_mode);
 
     let diff = repo.diff_tree_to_tree(old_tree.as_ref(), Some(&new_tree), Some(&mut opts))?;
-    let mut files = parse_diff(&diff, highlighter)?;
+    let mut files = parse_diff(&diff)?;
     enhance_with_full_file_highlight(
         &mut files,
         highlighter,
@@ -232,7 +232,7 @@ pub fn get_working_tree_with_commits_diff(
     opts.recurse_untracked_dirs(true);
 
     let diff = repo.diff_tree_to_workdir_with_index(old_tree.as_ref(), Some(&mut opts))?;
-    let mut files = parse_diff(&diff, highlighter)?;
+    let mut files = parse_diff(&diff)?;
     enhance_with_full_file_highlight(
         &mut files,
         highlighter,
@@ -268,7 +268,7 @@ fn read_path_from_index(repo: &Repository, index: &git2::Index, path: &Path) -> 
     Some(String::from_utf8_lossy(blob.content()).into_owned())
 }
 
-fn parse_diff(diff: &Diff, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+fn parse_diff(diff: &Diff) -> Result<Vec<DiffFile>> {
     let mut files: Vec<DiffFile> = Vec::new();
 
     // Untracked files larger than this are shown in the file list but their
@@ -291,11 +291,10 @@ fn parse_diff(diff: &Diff, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFi
         let is_too_large =
             delta.status() == Delta::Untracked && delta.new_file().size() > MAX_UNTRACKED_FILE_SIZE;
 
-        let syntax_path = new_path.as_ref().or(old_path.as_ref()).map(|p| p.as_path());
         let hunks = if is_binary || is_too_large {
             Vec::new()
         } else {
-            parse_hunks(diff, delta_idx, highlighter, syntax_path)?
+            parse_hunks(diff, delta_idx)?
         };
 
         let content_hash = DiffFile::compute_content_hash(&hunks);
@@ -318,12 +317,9 @@ fn parse_diff(diff: &Diff, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFi
     Ok(files)
 }
 
-fn parse_hunks(
-    diff: &Diff,
-    delta_idx: usize,
-    highlighter: &SyntaxHighlighter,
-    file_path: Option<&Path>,
-) -> Result<Vec<DiffHunk>> {
+/// Extracts every hunk for one delta, leaving every line `LineColoring::Pending`. See
+/// `crate::vcs::color_hunk` for the pass that colors it.
+fn parse_hunks(diff: &Diff, delta_idx: usize) -> Result<Vec<DiffHunk>> {
     let mut hunks: Vec<DiffHunk> = Vec::new();
 
     let patch = git2::Patch::from_diff(diff, delta_idx)?;
@@ -360,37 +356,17 @@ fn parse_hunks(
                 line_numbers.push((line.old_lineno(), line.new_lineno()));
             }
 
-            let sequences =
-                SyntaxHighlighter::split_diff_lines_for_highlighting(&line_contents, &line_origins);
-            // Container grammars skip per-hunk highlighting; the full-file
-            // post-pass overwrites these spans anyway.
-            let (old_highlighted, new_highlighted) = match file_path {
-                Some(path) if !needs_full_file_highlight(path) => (
-                    highlighter.highlight_file_lines(path, &sequences.old_lines),
-                    highlighter.highlight_file_lines(path, &sequences.new_lines),
-                ),
-                _ => (None, None),
-            };
-
             let mut lines: Vec<DiffLine> = Vec::with_capacity(line_contents.len());
             for (idx, content) in line_contents.into_iter().enumerate() {
                 let origin = line_origins[idx];
                 let (old_lineno, new_lineno) = line_numbers[idx];
-
-                let highlighted_spans = highlighter.highlighted_line_for_diff_with_background(
-                    old_highlighted.as_deref(),
-                    new_highlighted.as_deref(),
-                    sequences.old_line_indices[idx],
-                    sequences.new_line_indices[idx],
-                    origin,
-                );
 
                 lines.push(DiffLine {
                     origin,
                     content,
                     old_lineno,
                     new_lineno,
-                    highlighted_spans,
+                    coloring: LineColoring::Pending,
                 });
             }
 
@@ -445,9 +421,8 @@ mod tests {
         let diff = repo
             .diff_tree_to_tree(Some(&head), Some(&head), None)
             .unwrap();
-        let highlighter = SyntaxHighlighter::default();
 
-        let result = parse_diff(&diff, &highlighter);
+        let result = parse_diff(&diff);
 
         assert!(matches!(result, Err(TuicrError::NoChanges)));
     }
@@ -486,6 +461,70 @@ mod tests {
         assert!(lines.iter().all(|l| !l.content.contains('\t')));
     }
 
+    /// Pins why the whole-file pass exists: recoloring a container-grammar hunk with
+    /// only its own lines in scope produces different, worse colors.
+    ///
+    /// `color_visible_hunks` skips a hunk when no line in it is `Pending`, and the
+    /// whole-file pass leaves none, so this recolor never happens in production. The
+    /// pending assertion records that guard; the whole-file pass colors every line of this
+    /// fixture, so it cannot fail today. The recolor below shows what the guard is worth.
+    #[test]
+    fn should_color_a_vue_hunk_differently_without_full_file_context() {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let repo = Repository::init(temp_dir.path()).expect("failed to init repo");
+
+        // The changed line sits far below `<script setup>`, so the hunk's own three
+        // lines of context cannot reach the tag that puts syntect into JavaScript.
+        // That distance is the whole point: a nearby change would color correctly
+        // either way and prove nothing.
+        let filler: String = (0..30).map(|i| format!("const pad{i} = {i}\n")).collect();
+        let head = format!(
+            "<template>\n  <div>{{{{ msg }}}}</div>\n</template>\n\n<script setup>\nimport {{ ref }} from 'vue'\n{filler}"
+        );
+
+        let initial = format!("{head}const msg = ref('hi')\nconst other = 1\n</script>\n");
+        create_initial_commit(&repo, "App.vue", &initial);
+
+        let edited = format!("{head}const msg = ref('hello')\nconst other = 1\n</script>\n");
+        fs::write(temp_dir.path().join("App.vue"), &edited).expect("failed to update file");
+
+        let highlighter = SyntaxHighlighter::default();
+        let mut files = get_working_tree_diff(&repo, DiffWhitespaceMode::Normal, &highlighter)
+            .expect("failed to get diff");
+
+        let pending = files[0]
+            .hunks
+            .iter()
+            .flat_map(|h| &h.lines)
+            .filter(|l| l.coloring.is_pending())
+            .count();
+        assert_eq!(
+            pending, 0,
+            "the full-file pass must leave no line pending, or `color_visible_hunks` \
+             recolors this hunk with only its own lines in scope"
+        );
+
+        let before: Vec<String> = files[0].hunks[0]
+            .lines
+            .iter()
+            .map(crate::model::diff_types::span_signature)
+            .collect();
+
+        // What the render pass would produce if the guard above ever failed.
+        crate::vcs::color_hunk(&mut files[0].hunks[0], Path::new("App.vue"), &highlighter);
+        let after: Vec<String> = files[0].hunks[0]
+            .lines
+            .iter()
+            .map(crate::model::diff_types::span_signature)
+            .collect();
+
+        assert_ne!(
+            before, after,
+            "hunk-local coloring must differ from the full-file result, or this test \
+             proves nothing about what the guard protects"
+        );
+    }
+
     #[test]
     fn should_highlight_vue_script_hunk_using_full_file_context() {
         let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
@@ -514,8 +553,8 @@ mod tests {
 
         for line in changed_lines {
             let spans = line
-                .highlighted_spans
-                .as_ref()
+                .coloring
+                .spans()
                 .unwrap_or_else(|| panic!("vue line should be highlighted: {line:?}"));
             let unique_fgs: std::collections::HashSet<_> =
                 spans.iter().filter_map(|(s, _)| s.fg).collect();
@@ -786,5 +825,122 @@ mod tests {
 
             assert_files_match(&highlighted, &plain, label);
         }
+    }
+
+    /// Before/after source for a real edit: one hunk with a deletion and an
+    /// addition (`alpha`), one hunk that is untouched context (`beta`), one
+    /// hunk with only an addition against an empty-bodied function (`gamma`).
+    fn characterization_fixture() -> (&'static str, &'static str) {
+        let before = "use std::collections::HashMap;\n\
+                      \n\
+                      pub fn alpha(x: u32) -> u32 {\n\
+                      \x20   x + 1\n\
+                      }\n\
+                      \n\
+                      pub fn beta(s: &str) -> String {\n\
+                      \x20   s.to_uppercase()\n\
+                      }\n\
+                      \n\
+                      pub fn gamma() -> bool {\n\
+                      \x20   true\n\
+                      }\n";
+        let after = "use std::collections::HashMap;\n\
+                     \n\
+                     pub fn alpha(x: u32) -> u32 {\n\
+                     \x20   let total = x * 2;\n\
+                     \x20   total\n\
+                     }\n\
+                     \n\
+                     pub fn beta(s: &str) -> String {\n\
+                     \x20   s.to_uppercase()\n\
+                     }\n\
+                     \n\
+                     pub fn gamma() -> bool {\n\
+                     \x20   let m: HashMap<u8, u8> = HashMap::new();\n\
+                     \x20   m.is_empty()\n\
+                     }\n";
+        (before, after)
+    }
+
+    /// Commits `before` then rewrites the file to `after`, unstaged, so the
+    /// working-tree diff carries a real deletion alongside the addition.
+    /// `TempRepo::with_changes` above always starts from an empty file and so
+    /// never exercises the old-side highlighting path.
+    fn repo_with_edit(name: &str, before: &str, after: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
+        run_git(dir.path(), &["init"]);
+        run_git(dir.path(), &["config", "user.name", "Tuicr Test"]);
+        run_git(dir.path(), &["config", "user.email", "tuicr@example.com"]);
+        fs::write(dir.path().join(name), before).expect("write before");
+        run_git(dir.path(), &["add", "-A"]);
+        run_git(dir.path(), &["commit", "-m", "base"]);
+        fs::write(dir.path().join(name), after).expect("write after");
+        dir
+    }
+
+    fn signature_of(files: &[DiffFile], origin: LineOrigin, content: &str) -> String {
+        files
+            .iter()
+            .flat_map(|f| f.hunks.iter())
+            .flat_map(|h| h.lines.iter())
+            .find(|l| l.origin == origin && l.content == content)
+            .map(crate::model::diff_types::span_signature)
+            .unwrap_or_else(|| panic!("no {origin:?} line with content {content:?} in the diff"))
+    }
+
+    /// Characterization: the colors `color_hunk` produces for a hunk built by the
+    /// libgit2 backend. Rationale on `should_preserve_shared_parser_hunk_colors` in
+    /// `vcs::diff_parser`.
+    #[test]
+    fn should_preserve_libgit2_hunk_colors() {
+        let (before, after) = characterization_fixture();
+        let dir = repo_with_edit("sample.rs", before, after);
+        let backend = Libgit2Backend::discover_from(dir.path(), DiffWhitespaceMode::Normal)
+            .expect("open repo");
+
+        let highlighter = SyntaxHighlighter::default();
+        let mut files = backend.get_working_tree_diff(&highlighter).expect("diff");
+        crate::vcs::color_all_hunks(&mut files, &highlighter);
+
+        let hunks: usize = files.iter().map(|f| f.hunks.len()).sum();
+        assert_eq!(
+            hunks, 2,
+            "fixture must produce two hunks so the parser's per-hunk loop runs more than \
+             once; got {hunks}"
+        );
+
+        // A deletion reads the old-side sequence, and only deletions do. Its
+        // background is the delete tint; `1` is colored as a numeric literal.
+        let deletion = signature_of(&files, LineOrigin::Deletion, "    x + 1");
+        assert_ne!(
+            deletion, "<uncolored>",
+            "fixture must resolve a grammar, not just pin the absence of one"
+        );
+        assert_eq!(
+            deletion,
+            r#""    x "[Rgb(211, 208, 200)/Rgb(45, 0, 0)] "+"[Rgb(211, 208, 200)/Rgb(45, 0, 0)] " "[Rgb(211, 208, 200)/Rgb(45, 0, 0)] "1"[Rgb(249, 145, 87)/Rgb(45, 0, 0)]"#
+        );
+
+        // An addition reads the new-side sequence and carries the add tint.
+        assert_eq!(
+            signature_of(&files, LineOrigin::Addition, "    total"),
+            r#""    total"[Rgb(211, 208, 200)/Rgb(0, 35, 12)]"#
+        );
+
+        // A context line: keywords, the function name, and the parameter each in their
+        // own color, so one span of drift in tokenization fails this assertion.
+        let context = signature_of(
+            &files,
+            LineOrigin::Context,
+            "pub fn beta(s: &str) -> String {",
+        );
+        assert_ne!(
+            context, "<uncolored>",
+            "fixture must resolve a grammar, not just pin the absence of one"
+        );
+        assert_eq!(
+            context,
+            r#""pub"[Rgb(204, 153, 204)/-] " "[Rgb(211, 208, 200)/-] "fn"[Rgb(204, 153, 204)/-] " "[Rgb(211, 208, 200)/-] "beta"[Rgb(102, 153, 204)/-] "("[Rgb(211, 208, 200)/-] "s"[Rgb(242, 119, 122)/-] ":"[Rgb(211, 208, 200)/-] " "[Rgb(211, 208, 200)/-] "&"[Rgb(211, 208, 200)/-] "str"[Rgb(204, 153, 204)/-] ")"[Rgb(211, 208, 200)/-] " "[Rgb(211, 208, 200)/-] "->"[Rgb(211, 208, 200)/-] " String"[Rgb(211, 208, 200)/-] " "[Rgb(211, 208, 200)/-] "{"[Rgb(211, 208, 200)/-]"#
+        );
     }
 }

@@ -616,7 +616,7 @@ pub fn build_review_body(
 mod tests {
     use super::*;
     use crate::model::comment::{Comment, CommentType, LineContext, LineRange, LineSide};
-    use crate::model::diff_types::{DiffHunk, DiffLine, FileStatus, LineOrigin};
+    use crate::model::diff_types::{DiffHunk, DiffLine, FileStatus, LineColoring, LineOrigin};
     use std::path::PathBuf;
 
     fn line(origin: LineOrigin, new: Option<u32>, old: Option<u32>) -> DiffLine {
@@ -625,7 +625,7 @@ mod tests {
             content: String::new(),
             old_lineno: old,
             new_lineno: new,
-            highlighted_spans: None,
+            coloring: LineColoring::Pending,
         }
     }
 

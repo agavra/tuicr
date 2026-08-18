@@ -910,12 +910,10 @@ impl App {
             display_options.show_checks,
             display_options.show_comments,
         );
-        let highlighter = theme.syntax_highlighter();
         let opened = open_pull_request(
             backend.as_ref(),
             parsed,
             local_checkout_for_target.as_deref(),
-            highlighter,
         )?;
         let opened = Self::opened_pr_with_persisted_session(opened)?;
 

@@ -174,7 +174,7 @@ mod tests {
         ForgeFileSide, PagedPullRequests, PullRequestDetails, PullRequestListQuery,
         PullRequestTarget,
     };
-    use crate::model::LineOrigin;
+    use crate::model::{LineColoring, LineOrigin};
     use std::cell::RefCell;
 
     struct CapturingForge {
@@ -242,7 +242,7 @@ mod tests {
             content: text.to_string(),
             old_lineno: Some(1),
             new_lineno: Some(1),
-            highlighted_spans: None,
+            coloring: LineColoring::Pending,
         }
     }
 

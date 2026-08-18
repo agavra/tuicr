@@ -6,7 +6,8 @@
 
 use crate::app::*;
 use crate::model::{
-    Comment, CommentType, DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin, LineRange, LineSide,
+    Comment, CommentType, DiffFile, DiffHunk, DiffLine, FileStatus, LineColoring, LineOrigin,
+    LineRange, LineSide,
 };
 use crate::vcs::traits::{VcsBackend, VcsInfo, VcsType};
 use ratatui::Terminal;
@@ -65,7 +66,7 @@ fn line(idx: usize) -> DiffLine {
         content,
         old_lineno: Some(idx as u32 + 1),
         new_lineno: Some(idx as u32 + 1),
-        highlighted_spans: Some(spans),
+        coloring: LineColoring::Spans(spans),
     }
 }
 

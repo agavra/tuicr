@@ -20,7 +20,6 @@ use crate::forge::traits::{
     PullRequestReviewMetadata, PullRequestTarget,
 };
 use crate::model::{DiffFile, FilePatch, ReviewSession, SessionDiffSource};
-use crate::syntax::SyntaxHighlighter;
 use crate::tuicrignore;
 use crate::vcs::diff_parser::parse_file_patches;
 
@@ -60,7 +59,6 @@ pub fn open_pull_request(
     backend: &dyn ForgeBackend,
     target: PullRequestTarget,
     local_checkout: Option<&Path>,
-    highlighter: &SyntaxHighlighter,
 ) -> Result<OpenedPullRequest> {
     let (details, patches, commits, review_metadata, pr_info) = fetch_pr_data(backend, target)?;
     prepare_open_pr(
@@ -70,7 +68,6 @@ pub fn open_pull_request(
         review_metadata,
         pr_info,
         local_checkout,
-        highlighter,
     )
 }
 
@@ -96,9 +93,7 @@ pub fn fetch_pr_data(backend: &dyn ForgeBackend, target: PullRequestTarget) -> R
 
 /// CPU-only half of the PR open path: apply `.tuicrignore` to the raw
 /// patches, then parse the hunks and build the session. Filtering before the
-/// parse keeps an ignored large file from being highlighted at all. Runs on
-/// the main thread because `SyntaxHighlighter` is not trivially
-/// `Send`-cloneable.
+/// parse keeps an ignored large file from being parsed at all.
 pub fn prepare_open_pr(
     details: PullRequestDetails,
     patches: Vec<FilePatch>,
@@ -106,7 +101,6 @@ pub fn prepare_open_pr(
     review_metadata: PullRequestReviewMetadata,
     pr_info: PullRequestInfo,
     local_checkout: Option<&Path>,
-    highlighter: &SyntaxHighlighter,
 ) -> Result<OpenedPullRequest> {
     let had_patches = !patches.is_empty();
     let patches = match local_checkout {
@@ -117,7 +111,7 @@ pub fn prepare_open_pr(
     let diff_files = if had_patches && patches.is_empty() {
         Vec::new()
     } else {
-        match parse_file_patches(patches, highlighter) {
+        match parse_file_patches(patches) {
             Ok(files) => files,
             Err(TuicrError::NoChanges) => {
                 return Err(TuicrError::Forge(format!(
@@ -291,9 +285,8 @@ index 1111111..2222222 100644
             calls: RefCell::new(Vec::new()),
         };
         let target = PullRequestTarget::with_repository(repo(), 125, "125");
-        let highlighter = SyntaxHighlighter::default();
         // when
-        let opened = open_pull_request(&backend, target, None, &highlighter).unwrap();
+        let opened = open_pull_request(&backend, target, None).unwrap();
         // then
         assert_eq!(opened.diff_files.len(), 1);
         assert_eq!(opened.key.head_sha, "abcdef0123456789");
@@ -357,9 +350,8 @@ rename to new_name.rs
             calls: RefCell::new(Vec::new()),
         };
         let target = PullRequestTarget::with_repository(repo(), 125, "125");
-        let highlighter = SyntaxHighlighter::default();
         // when
-        let opened = open_pull_request(&backend, target, None, &highlighter).unwrap();
+        let opened = open_pull_request(&backend, target, None).unwrap();
         // then — all four files are recognized with correct statuses
         assert_eq!(opened.diff_files.len(), 4);
         let statuses: Vec<(String, crate::model::FileStatus)> = opened
@@ -396,9 +388,8 @@ rename to new_name.rs
             calls: RefCell::new(Vec::new()),
         };
         let target = PullRequestTarget::with_repository(repo(), 125, "125");
-        let highlighter = SyntaxHighlighter::default();
         // when
-        let err = open_pull_request(&backend, target, None, &highlighter).unwrap_err();
+        let err = open_pull_request(&backend, target, None).unwrap_err();
         // then
         let msg = err.to_string();
         assert!(
@@ -429,7 +420,6 @@ rename to new_name.rs
                 "@@not-a-hunk\n+minified one-liner\n",
             ),
         ];
-        let highlighter = SyntaxHighlighter::default();
         // when
         let opened = prepare_open_pr(
             details(),
@@ -438,7 +428,6 @@ rename to new_name.rs
             crate::forge::traits::PullRequestReviewMetadata::default(),
             crate::forge::traits::PullRequestInfo::from_details(details()),
             Some(dir.path()),
-            &highlighter,
         )
         .expect("ignored patch must never reach the parser");
         // then only the kept file was parsed into the review
@@ -455,7 +444,6 @@ rename to new_name.rs
         let dir = tempfile::tempdir().expect("failed to create temp dir");
         std::fs::write(dir.path().join(".tuicrignore"), "dist/\n")
             .expect("failed to write .tuicrignore");
-        let highlighter = SyntaxHighlighter::default();
 
         let opened = prepare_open_pr(
             details(),
@@ -469,7 +457,6 @@ rename to new_name.rs
             crate::forge::traits::PullRequestReviewMetadata::default(),
             crate::forge::traits::PullRequestInfo::from_details(details()),
             Some(dir.path()),
-            &highlighter,
         )
         .expect("an ignored-only PR should open as an empty review");
 
