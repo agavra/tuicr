@@ -43,7 +43,7 @@ const EVENT_DRAIN_LIMIT: usize = 32;
 /// are only taken if already queued. `None` ends the burst.
 fn event_drain_timeout(drained: usize) -> Option<Duration> {
     match drained {
-        0 => Some(Duration::from_millis(100)),
+        0 => Some(Duration::from_millis(50)),
         n if n < EVENT_DRAIN_LIMIT => Some(Duration::ZERO),
         _ => None,
     }
