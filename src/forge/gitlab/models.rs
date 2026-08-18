@@ -1,11 +1,54 @@
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
+use std::path::PathBuf;
 
 use crate::error::{Result, TuicrError};
 use crate::forge::remote_comments::{RemoteCommentSide, RemoteReviewComment, RemoteReviewThread};
 use crate::forge::traits::{
     ForgeRepository, PullRequestCommit, PullRequestDetails, PullRequestSummary,
 };
+use crate::model::{FilePatch, FileStatus};
+use crate::vcs::git::raw::is_binary_patch;
+
+/// One entry from GitLab's merge-request diffs API.
+#[derive(Debug, Deserialize)]
+pub struct GlabDiff {
+    pub old_path: String,
+    pub new_path: String,
+    #[serde(default)]
+    pub new_file: bool,
+    #[serde(default)]
+    pub renamed_file: bool,
+    #[serde(default)]
+    pub deleted_file: bool,
+    #[serde(default)]
+    pub diff: String,
+    #[serde(default)]
+    pub too_large: bool,
+    #[serde(default)]
+    pub collapsed: bool,
+}
+
+impl GlabDiff {
+    pub fn into_file_patch(self) -> FilePatch {
+        let old_path = PathBuf::from(self.old_path);
+        let new_path = PathBuf::from(self.new_path);
+        let (old_path, new_path, status) = if self.new_file {
+            (None, Some(new_path), FileStatus::Added)
+        } else if self.deleted_file {
+            (Some(old_path), None, FileStatus::Deleted)
+        } else if self.renamed_file {
+            (Some(old_path), Some(new_path), FileStatus::Renamed)
+        } else {
+            (Some(old_path), Some(new_path), FileStatus::Modified)
+        };
+        let binary = is_binary_patch(self.diff.as_bytes());
+        let mut patch = FilePatch::new(old_path, new_path, status, self.diff);
+        patch.is_binary = binary;
+        patch.is_too_large = self.too_large || self.collapsed;
+        patch
+    }
+}
 
 #[derive(Debug, Deserialize)]
 pub struct GlabMrSummary {
@@ -335,9 +378,44 @@ fn normalize_state(state: &str) -> String {
 mod tests {
     use super::*;
     use crate::forge::traits::ForgeRepository;
+    use crate::syntax::SyntaxHighlighter;
+    use crate::vcs::diff_parser::parse_file_patches;
 
     fn gitlab_repo() -> ForgeRepository {
         ForgeRepository::gitlab("gitlab.com", "owner", "repo")
+    }
+
+    #[test]
+    fn diff_api_keeps_structured_paths_and_header_like_hunk_content() {
+        let json = r#"{
+            "old_path":"日本語 b/and old.sql",
+            "new_path":"日本語 b/and new.sql",
+            "renamed_file":true,
+            "diff":"@@ -1,2 +1 @@\n--- count rows\n SELECT 1;\n"
+        }"#;
+        let diff: GlabDiff = serde_json::from_str(json).unwrap();
+        let files = parse_file_patches(vec![diff.into_file_patch()], &SyntaxHighlighter::default())
+            .unwrap();
+
+        assert_eq!(files[0].status, FileStatus::Renamed);
+        assert_eq!(
+            files[0].old_path.as_deref(),
+            Some(std::path::Path::new("日本語 b/and old.sql"))
+        );
+        assert_eq!(files[0].hunks[0].lines[0].content, "-- count rows");
+        assert_eq!(files[0].hunks[0].lines[1].old_lineno, Some(2));
+    }
+
+    #[test]
+    fn collapsed_diff_is_marked_too_large() {
+        let json = r#"{
+            "old_path":"large.txt","new_path":"large.txt",
+            "collapsed":true,"diff":""
+        }"#;
+        let patch = serde_json::from_str::<GlabDiff>(json)
+            .unwrap()
+            .into_file_patch();
+        assert!(patch.is_too_large);
     }
 
     #[test]

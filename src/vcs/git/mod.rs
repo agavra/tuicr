@@ -2,6 +2,7 @@ mod cli;
 pub mod context;
 pub mod diff;
 mod libgit2;
+pub(crate) mod raw;
 pub mod repository;
 pub mod staging;
 

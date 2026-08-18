@@ -9,13 +9,14 @@ use crate::forge::traits::{
     PagedPullRequests, PullRequestCommit, PullRequestDetails, PullRequestInfo,
     PullRequestListQuery, PullRequestListScope, PullRequestTarget,
 };
-use crate::model::DiffLine;
+use crate::model::{DiffLine, FilePatch};
 use crate::process::{
     CommandOutputError, CommandOutputErrorKind, run_command_output, run_command_output_with_stdin,
 };
+use crate::vcs::git::raw::{FileMetadata, pair_metadata_with_patch, run_git_diff};
 use crate::vcs::slice_context_lines;
 
-use super::models::{GhPrCommit, GhPullRequestSummary};
+use super::models::{GhCompare, GhPrCommit, GhPullRequestFile, GhPullRequestSummary};
 use super::review_summaries::{
     build_query as build_reviews_query, parse_graphql_page as parse_reviews_page,
 };
@@ -132,7 +133,7 @@ fn read_blob_with_repo(repo_root: &Path, sha: &str, path: &Path) -> Option<Strin
 /// the local checkout at `repo_root`, by running `git diff <start>..<end>`.
 /// Returns `None` when the checkout is missing either SHA or the command
 /// fails — callers fall back to the forge in that case.
-fn local_range_diff(repo_root: &Path, start_sha: &str, end_sha: &str) -> Option<String> {
+fn local_range_diff(repo_root: &Path, start_sha: &str, end_sha: &str) -> Option<Vec<FilePatch>> {
     for sha in [start_sha, end_sha] {
         let exists = run_command_output(
             "git",
@@ -144,12 +145,7 @@ fn local_range_diff(repo_root: &Path, start_sha: &str, end_sha: &str) -> Option<
         }
     }
     let range = format!("{start_sha}..{end_sha}");
-    run_command_output(
-        "git",
-        Some(repo_root),
-        ["diff", range.as_str()].iter().map(|s| OsStr::new(*s)),
-    )
-    .ok()
+    run_git_diff(repo_root, &[range.as_str()]).ok()
 }
 
 #[derive(Debug, Clone)]
@@ -235,6 +231,35 @@ where
             .run(&args)
             .map_err(|err| map_gh_error(err, host))
     }
+
+    fn pull_request_file_metadata(&self, pr: &PullRequestDetails) -> Result<Vec<FileMetadata>> {
+        let mut metadata = Vec::new();
+        for page in 1..=30 {
+            let endpoint = format!(
+                "repos/{}/{}/pulls/{}/files?per_page=100&page={page}",
+                pr.repository.owner, pr.repository.name, pr.number
+            );
+            let mut args = vec!["api".to_string()];
+            if pr.repository.host != DEFAULT_GITHUB_HOST {
+                args.extend(["--hostname".to_string(), pr.repository.host.clone()]);
+            }
+            args.push(endpoint);
+            let output = self.run_gh(args, &pr.repository.host)?;
+            let rows: Vec<GhPullRequestFile> = serde_json::from_str(&output)?;
+            let received = rows.len();
+            metadata.extend(
+                rows.into_iter()
+                    .map(GhPullRequestFile::into_metadata)
+                    .collect::<Result<Vec<_>>>()?,
+            );
+            if received < 100 {
+                return Ok(metadata);
+            }
+        }
+        Err(TuicrError::Forge(
+            "GitHub pull request exceeds the 3000-file REST API limit".into(),
+        ))
+    }
 }
 
 impl<R> ForgeBackend for GitHubGhBackend<R>
@@ -305,7 +330,7 @@ where
         super::pr_info::parse_pull_request_info(&output, &repository)
     }
 
-    fn get_pull_request_diff(&self, pr: &PullRequestDetails) -> Result<String> {
+    fn get_pull_request_diff(&self, pr: &PullRequestDetails) -> Result<Vec<FilePatch>> {
         // We want the *cumulative* diff between base and head for the PR.
         // `gh pr diff --patch` returns mbox-style `git format-patch` output
         // — one patch per commit — so a 7-commit PR yields 7 separate
@@ -313,7 +338,8 @@ where
         // into duplicate `DiffFile`s. Plain `gh pr diff` (no `--patch`)
         // returns the single cumulative diff. Hard-won lesson; see the
         // duplicate-files-in-list bug.
-        self.run_gh(
+        let metadata = self.pull_request_file_metadata(pr)?;
+        let patch = self.run_gh(
             vec![
                 "pr".to_string(),
                 "diff".to_string(),
@@ -324,7 +350,8 @@ where
                 "never".to_string(),
             ],
             &pr.repository.host,
-        )
+        )?;
+        pair_metadata_with_patch(metadata, patch.as_bytes())
     }
 
     fn local_checkout_path(&self) -> Option<PathBuf> {
@@ -363,7 +390,7 @@ where
         pr: &PullRequestDetails,
         start_sha: &str,
         end_sha: &str,
-    ) -> Result<String> {
+    ) -> Result<Vec<FilePatch>> {
         // Fast path: when both SHAs live in the local checkout, `git diff`
         // gives us the cumulative diff in O(local-IO) without round-tripping
         // through GitHub. The PR diff text is the source of truth, but the
@@ -375,12 +402,26 @@ where
             return Ok(diff);
         }
 
-        // Fall back to GitHub's compare API. `Accept: application/vnd.github.diff`
-        // returns plain unified diff text instead of the JSON wrapper.
+        // The JSON response provides authoritative file metadata; a second
+        // request asks for the full patch. Their shared source order lets us
+        // pair them without inspecting display-oriented path headers.
         let endpoint = format!(
             "repos/{}/{}/compare/{}...{}",
             pr.repository.owner, pr.repository.name, start_sha, end_sha,
         );
+        let mut metadata_args = vec!["api".to_string()];
+        if pr.repository.host != DEFAULT_GITHUB_HOST {
+            metadata_args.extend(["--hostname".to_string(), pr.repository.host.clone()]);
+        }
+        metadata_args.push(endpoint.clone());
+        let metadata_output = self.run_gh(metadata_args, &pr.repository.host)?;
+        let compare: GhCompare = serde_json::from_str(&metadata_output)?;
+        let metadata = compare
+            .files
+            .into_iter()
+            .map(GhPullRequestFile::into_metadata)
+            .collect::<Result<Vec<_>>>()?;
+
         let mut args = vec![
             "api".to_string(),
             "-H".to_string(),
@@ -391,7 +432,8 @@ where
             args.push(pr.repository.host.clone());
         }
         args.push(endpoint);
-        self.run_gh(args, &pr.repository.host)
+        let patch = self.run_gh(args, &pr.repository.host)?;
+        pair_metadata_with_patch(metadata, patch.as_bytes())
     }
 
     fn list_review_threads(&self, pr: &PullRequestDetails) -> Result<Vec<RemoteReviewThread>> {
@@ -1131,13 +1173,27 @@ index 1111111..2222222 100644
                 Some("api")
                     if args
                         .iter()
+                        .any(|a| a.contains("/pulls/") && a.contains("/files")) =>
+                {
+                    Ok(PR_FILES_JSON.to_string())
+                }
+                Some("api")
+                    if args
+                        .iter()
                         .any(|a| a.contains("/pulls/") && a.contains("/commits")) =>
                 {
                     Ok(PR_COMMITS_JSON.to_string())
                 }
                 // gh api repos/.../compare/<base>...<head> (range diff).
                 Some("api") if args.iter().any(|a| a.contains("/compare/")) => {
-                    Ok(COMPARE_DIFF.to_string())
+                    if args
+                        .iter()
+                        .any(|a| a == "Accept: application/vnd.github.diff")
+                    {
+                        Ok(COMPARE_DIFF.to_string())
+                    } else {
+                        Ok(COMPARE_JSON.to_string())
+                    }
                 }
                 _ => Err(GhCommandError::Failed {
                     status: Some(1),
@@ -1184,6 +1240,10 @@ index 1111111..2222222 100644
             }
         }
     ]"##;
+
+    const PR_FILES_JSON: &str = r##"[{"filename":"src/lib.rs","status":"modified"}]"##;
+
+    const COMPARE_JSON: &str = r##"{"files":[{"filename":"src/lib.rs","status":"modified"}]}"##;
 
     const COMPARE_DIFF: &str = r##"diff --git a/src/lib.rs b/src/lib.rs
 index 1111111..2222222 100644
@@ -1744,15 +1804,20 @@ Match host github-work
     }
 
     #[test]
-    fn get_pull_request_diff_returns_patch_text() {
+    fn get_pull_request_diff_pairs_metadata_with_patch_text() {
         let runner = FakeGhRunner::default();
         let backend = GitHubGhBackend::with_runner(Some(repo()), runner);
         let details = backend
             .get_pull_request(parse_pull_request_target("125").unwrap())
             .unwrap();
-        let patch = backend.get_pull_request_diff(&details).unwrap();
+        let patches = backend.get_pull_request_diff(&details).unwrap();
 
-        assert_eq!(patch, PR_PATCH);
+        assert_eq!(patches.len(), 1);
+        assert_eq!(
+            patches[0].new_path.as_deref(),
+            Some(Path::new("src/lib.rs"))
+        );
+        assert_eq!(patches[0].patch, PR_PATCH.trim_start());
     }
 
     #[test]
@@ -1913,7 +1978,8 @@ Match host github-work
             .get_pull_request_commit_range_diff(&details, "baseaaa", "headbbb")
             .unwrap();
         // then
-        assert!(diff.contains("diff --git a/src/lib.rs"));
+        assert_eq!(diff.len(), 1);
+        assert!(diff[0].patch.contains("diff --git a/src/lib.rs"));
         // and — the call hit the compare endpoint with the Accept diff header.
         let calls = backend.runner.calls.borrow();
         let compare_call = calls
@@ -1921,6 +1987,9 @@ Match host github-work
             .find(|args| {
                 args.iter()
                     .any(|a| a.contains("/compare/baseaaa...headbbb"))
+                    && args
+                        .iter()
+                        .any(|a| a == "Accept: application/vnd.github.diff")
             })
             .expect("expected a compare api call");
         assert!(compare_call.contains(&"Accept: application/vnd.github.diff".to_string()));

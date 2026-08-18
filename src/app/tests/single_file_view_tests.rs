@@ -245,7 +245,7 @@ impl crate::forge::traits::ForgeBackend for FakeForgeBackend {
     fn get_pull_request_diff(
         &self,
         _pr: &crate::forge::traits::PullRequestDetails,
-    ) -> crate::error::Result<String> {
+    ) -> crate::error::Result<Vec<crate::model::FilePatch>> {
         unimplemented!()
     }
     fn fetch_file_lines(
@@ -271,7 +271,7 @@ impl crate::forge::traits::ForgeBackend for FakeForgeBackend {
         _pr: &crate::forge::traits::PullRequestDetails,
         _start_sha: &str,
         _end_sha: &str,
-    ) -> crate::error::Result<String> {
+    ) -> crate::error::Result<Vec<crate::model::FilePatch>> {
         unimplemented!()
     }
     fn create_review(

@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs;
@@ -11,7 +10,11 @@ use chrono::{TimeZone, Utc};
 use crate::error::{Result, TuicrError};
 use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin, LineSide};
 use crate::syntax::SyntaxHighlighter;
-use crate::vcs::diff_parser::{self, DiffFormat};
+use crate::vcs::diff_parser;
+use crate::vcs::git::raw::{
+    pair_metadata_with_patch, parse_raw_metadata_from_patch_output, parse_raw_patch_output,
+    patch_text_from_raw_patch_output, split_patch_blocks,
+};
 use crate::vcs::{
     ChangeKind, CommitInfo, DiffWhitespaceMode, ResolvedRevisionRange, RevisionDiffTarget,
     VcsBackend, VcsChangeStatus, VcsInfo,
@@ -93,16 +96,21 @@ impl GitCliBackend {
         new_source: GitContentSource<'_>,
         highlighter: &SyntaxHighlighter,
     ) -> Result<Vec<DiffFile>> {
-        // Force the traditional "a/" and "b/" path prefixes. The user's Git config
-        // can change this: diff.mnemonicPrefix emits mnemonic prefixes (i/, w/, c/,
-        // o/) and diff.noprefix drops prefixes entirely. The diff parser only strips
-        // "a/" and "b/", so these flags override the config to keep output parseable.
-        args.insert(1, "--src-prefix=a/".to_string());
-        args.insert(2, "--dst-prefix=b/".to_string());
+        // Paths and status come from Git's NUL-delimited raw records. Patch
+        // headers remain display-only and may follow any user quoting/prefix
+        // configuration without affecting file identity.
+        args.insert(1, "-z".to_string());
+        args.insert(1, "--raw".to_string());
+        args.insert(1, "--patch".to_string());
         if self.whitespace_mode.ignores_all() {
             args.insert(1, "--ignore-all-space".to_string());
         }
-        let mut files = match run_git_diff_command(&self.root_path, args, highlighter) {
+        let mut files = match run_git_diff_command(
+            &self.root_path,
+            args,
+            self.whitespace_mode.ignores_all(),
+            highlighter,
+        ) {
             Ok(files) => files,
             Err(TuicrError::NoChanges) => Vec::new(),
             Err(err) => return Err(err),
@@ -614,17 +622,35 @@ fn has_untracked_changes(workdir: &Path, pathspecs: &[String]) -> Result<bool> {
 fn run_git_diff_command(
     workdir: &Path,
     args: Vec<String>,
+    suppress_header_only_content_changes: bool,
     highlighter: &SyntaxHighlighter,
 ) -> Result<Vec<DiffFile>> {
-    let mut child = Command::new("git")
-        .current_dir(workdir)
-        .args(&args)
+    let output = run_git_diff_bytes(workdir, &args, &[])?;
+    let patches = match parse_raw_patch_output(&output) {
+        Ok(patches) => patches,
+        Err(_) if suppress_header_only_content_changes => {
+            parse_whitespace_filtered_patches(workdir, &args, &output)?
+        }
+        Err(error) => return Err(error),
+    };
+    diff_parser::parse_file_patches(patches, highlighter)
+}
+
+fn run_git_diff_bytes(workdir: &Path, args: &[String], pathspecs: &[&Path]) -> Result<Vec<u8>> {
+    let mut command = Command::new("git");
+    command.current_dir(workdir);
+    if !pathspecs.is_empty() {
+        command.arg("--literal-pathspecs");
+    }
+    let mut child = command
+        .args(args)
+        .args(pathspecs)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| TuicrError::VcsCommand(format!("Failed to run git: {e}")))?;
 
-    let stdout = child
+    let mut stdout = child
         .stdout
         .take()
         .ok_or_else(|| TuicrError::VcsCommand("git diff stdout unavailable".into()))?;
@@ -638,11 +664,8 @@ fn run_git_diff_command(
         bytes
     });
 
-    let diff_lines = BufReader::new(stdout)
-        .lines()
-        .map(|line| line.map(Cow::Owned).map_err(TuicrError::from));
-    let parse_result =
-        diff_parser::parse_unified_diff_lines(diff_lines, DiffFormat::GitStyle, highlighter);
+    let mut output = Vec::new();
+    stdout.read_to_end(&mut output)?;
 
     let status = child.wait()?;
     let stderr = stderr_reader
@@ -657,7 +680,48 @@ fn run_git_diff_command(
         )));
     }
 
-    parse_result
+    Ok(output)
+}
+
+fn parse_whitespace_filtered_patches(
+    workdir: &Path,
+    args: &[String],
+    combined_output: &[u8],
+) -> Result<Vec<crate::model::FilePatch>> {
+    // Raw records are not filtered by `--ignore-all-space`, while patch
+    // bodies are. If that makes the two ordered streams differ, ask Git for
+    // each authoritative path independently. A zero-block result is a
+    // whitespace-only content change; one block can be paired without ever
+    // decoding a display header.
+    let metadata = parse_raw_metadata_from_patch_output(combined_output)?;
+    let mut patches = Vec::new();
+
+    for file in metadata {
+        let mut paths = Vec::new();
+        if let Some(path) = file.old_path.as_deref() {
+            paths.push(path);
+        }
+        if let Some(path) = file.new_path.as_deref()
+            && !paths.contains(&path)
+        {
+            paths.push(path);
+        }
+
+        let output = run_git_diff_bytes(workdir, args, &paths)?;
+        let blocks = split_patch_blocks(patch_text_from_raw_patch_output(&output)?);
+        match blocks.as_slice() {
+            [] => {}
+            [block] => patches.extend(pair_metadata_with_patch(vec![file], block)?),
+            _ => {
+                return Err(TuicrError::VcsCommand(format!(
+                    "structured diff path query emitted {} patch blocks for one file",
+                    blocks.len()
+                )));
+            }
+        }
+    }
+
+    Ok(patches)
 }
 
 fn append_untracked_cli_diffs(
@@ -1493,6 +1557,62 @@ mod tests {
     }
 
     #[test]
+    fn reads_verbatim_paths_that_are_ambiguous_in_display_headers() {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let workdir = temp_dir.path();
+
+        git(workdir, &["init"]);
+        git(workdir, &["config", "user.email", "test@example.com"]);
+        git(workdir, &["config", "user.name", "Test User"]);
+        write_file(workdir, "日本語 b/and name.txt", "base\n");
+        write_file(workdir, "old b/left and right.txt", "rename me\n");
+        let binary_path = workdir.join("binary and b/image and data.bin");
+        fs::create_dir_all(binary_path.parent().unwrap()).unwrap();
+        fs::write(&binary_path, [0, 1, 2, 3]).unwrap();
+        git(workdir, &["add", "."]);
+        git(workdir, &["commit", "-m", "initial"]);
+
+        write_file(workdir, "日本語 b/and name.txt", "base\nchanged\n");
+        fs::create_dir_all(workdir.join("renamed b")).unwrap();
+        git(
+            workdir,
+            &[
+                "mv",
+                "old b/left and right.txt",
+                "renamed b/right and left.txt",
+            ],
+        );
+        fs::write(&binary_path, [0, 1, 9, 3]).unwrap();
+
+        let backend = GitCliBackend::discover_from(workdir, DiffWhitespaceMode::Normal)
+            .expect("failed to discover CLI backend");
+        let files = backend
+            .get_working_tree_diff(&SyntaxHighlighter::default())
+            .expect("failed to parse structured Git diff");
+
+        assert!(files.iter().any(|file| {
+            file.new_path.as_deref() == Some(Path::new("日本語 b/and name.txt"))
+        }));
+        let renamed = files
+            .iter()
+            .find(|file| {
+                file.new_path.as_deref() == Some(Path::new("renamed b/right and left.txt"))
+            })
+            .expect("renamed path should come from raw metadata");
+        assert_eq!(
+            renamed.old_path.as_deref(),
+            Some(Path::new("old b/left and right.txt"))
+        );
+        let binary = files
+            .iter()
+            .find(|file| {
+                file.new_path.as_deref() == Some(Path::new("binary and b/image and data.bin"))
+            })
+            .expect("binary file should be present");
+        assert!(binary.is_binary);
+    }
+
+    #[test]
     fn reads_staged_diff_and_stages_files_in_sparse_index() {
         let (temp_dir, backend, _ids) = setup_sparse_index_repo();
         let workdir = temp_dir.path();
@@ -1767,5 +1887,36 @@ mod tests {
             .get_working_tree_diff(&SyntaxHighlighter::default())
             .expect("non-whitespace edit should still produce a diff");
         assert_eq!(files.len(), 1);
+    }
+
+    #[test]
+    fn whitespace_filter_pairs_remaining_patch_with_its_verbatim_path() {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let workdir = temp_dir.path();
+        let substantive_path = "dir b/literal [and] name.txt";
+
+        git(workdir, &["init"]);
+        git(workdir, &["config", "user.email", "test@example.com"]);
+        git(workdir, &["config", "user.name", "Test User"]);
+        git(workdir, &["config", "commit.gpgsign", "false"]);
+        write_file(workdir, "whitespace.txt", "alpha\nbeta\n");
+        write_file(workdir, substantive_path, "before\n");
+        git(workdir, &["add", "."]);
+        git(workdir, &["commit", "-m", "initial"]);
+
+        write_file(workdir, "whitespace.txt", " alpha \n beta\n");
+        write_file(workdir, substantive_path, "after\n");
+
+        let backend = GitCliBackend::discover_from(workdir, DiffWhitespaceMode::IgnoreAll)
+            .expect("failed to discover cli backend");
+        let files = backend
+            .get_working_tree_diff(&SyntaxHighlighter::default())
+            .expect("substantive edit should produce a diff");
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(
+            files[0].new_path.as_deref(),
+            Some(Path::new(substantive_path))
+        );
     }
 }

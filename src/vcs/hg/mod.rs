@@ -8,7 +8,10 @@ use chrono::{TimeZone, Utc};
 use crate::error::{Result, TuicrError};
 use crate::model::{DiffFile, DiffLine, FileStatus};
 use crate::syntax::SyntaxHighlighter;
-use crate::vcs::diff_parser::{self, DiffFormat};
+use crate::vcs::diff_parser;
+use crate::vcs::git::raw::{
+    FileMetadata, pair_metadata_with_patch, path_buf_from_bytes, split_patch_blocks,
+};
 use crate::vcs::traits::{
     CommitInfo, DiffWhitespaceMode, ResolvedRevisionRange, RevisionDiffTarget, VcsBackend, VcsInfo,
     VcsType,
@@ -96,6 +99,157 @@ impl HgBackend {
         args_with_whitespace.extend_from_slice(&args[1..]);
         Cow::Owned(args_with_whitespace)
     }
+
+    fn load_diff(
+        &self,
+        diff_args: &[&str],
+        highlighter: &SyntaxHighlighter,
+    ) -> Result<Vec<DiffFile>> {
+        let args = self.diff_args(diff_args);
+        let mut patch_args: Vec<&str> = args.iter().copied().collect();
+        patch_args.insert(1, "--git");
+        let patch = run_hg_command(&self.info.root_path, &patch_args)?;
+        if patch.trim().is_empty() {
+            return Err(TuicrError::NoChanges);
+        }
+
+        let status_args = hg_status_args(diff_args);
+        let metadata_output = run_hg_command_bytes(&self.info.root_path, &status_args)?;
+        let metadata = parse_hg_diff_metadata(&metadata_output)?;
+
+        let patches = if metadata.len() == split_patch_blocks(patch.as_bytes()).len() {
+            pair_metadata_with_patch(metadata, patch.as_bytes())?
+        } else {
+            // `hg status` has no whitespace-filter option. If the requested
+            // diff hides only some whitespace-only files, ask hg for each
+            // exact structured path and retain the non-empty patches.
+            let mut patches = Vec::new();
+            for file in metadata {
+                let path = file
+                    .new_path
+                    .as_deref()
+                    .or(file.old_path.as_deref())
+                    .ok_or_else(|| {
+                        TuicrError::VcsCommand(
+                            "Mercurial status entry has neither an old nor a new path".into(),
+                        )
+                    })?;
+                let pattern = hg_path_pattern(path);
+                let mut file_args = patch_args.clone();
+                file_args.push(&pattern);
+                let file_patch = run_hg_command(&self.info.root_path, file_args)?;
+                if !file_patch.trim().is_empty() {
+                    patches.extend(pair_metadata_with_patch(vec![file], file_patch.as_bytes())?);
+                }
+            }
+            patches
+        };
+
+        diff_parser::parse_file_patches(patches, highlighter)
+    }
+}
+
+fn hg_status_args<'a>(diff_args: &'a [&'a str]) -> Vec<&'a str> {
+    let mut args = vec![
+        "status",
+        "--modified",
+        "--added",
+        "--removed",
+        "--deleted",
+        "--copies",
+        "-0",
+    ];
+    let mut index = 1;
+    while index < diff_args.len() {
+        if matches!(diff_args[index], "-r" | "--rev")
+            && let Some(revision) = diff_args.get(index + 1)
+        {
+            args.extend(["--rev", *revision]);
+            index += 2;
+        } else {
+            index += 1;
+        }
+    }
+    args
+}
+
+fn parse_hg_diff_metadata(output: &[u8]) -> Result<Vec<FileMetadata>> {
+    #[derive(Debug)]
+    struct Entry {
+        status: u8,
+        path: PathBuf,
+        copy_source: Option<PathBuf>,
+    }
+
+    let mut entries: Vec<Entry> = Vec::new();
+    for record in output.split(|byte| *byte == 0).filter(|r| !r.is_empty()) {
+        if record.len() < 3 || record[1] != b' ' {
+            return Err(TuicrError::VcsCommand(
+                "invalid NUL-delimited Mercurial status record".into(),
+            ));
+        }
+        if record[0] == b' ' {
+            let previous = entries.last_mut().ok_or_else(|| {
+                TuicrError::VcsCommand(
+                    "Mercurial copy-source record has no preceding target".into(),
+                )
+            })?;
+            previous.copy_source = Some(path_buf_from_bytes(&record[2..]));
+        } else {
+            entries.push(Entry {
+                status: record[0],
+                path: path_buf_from_bytes(&record[2..]),
+                copy_source: None,
+            });
+        }
+    }
+
+    let removed: std::collections::HashSet<PathBuf> = entries
+        .iter()
+        .filter(|entry| matches!(entry.status, b'R' | b'!'))
+        .map(|entry| entry.path.clone())
+        .collect();
+    let copied_sources: std::collections::HashSet<PathBuf> = entries
+        .iter()
+        .filter_map(|entry| entry.copy_source.clone())
+        .collect();
+
+    entries
+        .into_iter()
+        .filter_map(|entry| {
+            let metadata = match entry.status {
+                b'M' => Some(FileMetadata {
+                    old_path: Some(entry.path.clone()),
+                    new_path: Some(entry.path),
+                    status: FileStatus::Modified,
+                }),
+                b'A' => match entry.copy_source {
+                    Some(source) => Some(FileMetadata {
+                        status: if removed.contains(&source) {
+                            FileStatus::Renamed
+                        } else {
+                            FileStatus::Copied
+                        },
+                        old_path: Some(source),
+                        new_path: Some(entry.path),
+                    }),
+                    None => Some(FileMetadata {
+                        old_path: None,
+                        new_path: Some(entry.path),
+                        status: FileStatus::Added,
+                    }),
+                },
+                b'R' | b'!' if copied_sources.contains(&entry.path) => None,
+                b'R' | b'!' => Some(FileMetadata {
+                    old_path: Some(entry.path),
+                    new_path: None,
+                    status: FileStatus::Deleted,
+                }),
+                _ => None,
+            };
+            metadata.map(Ok)
+        })
+        .collect()
 }
 
 impl VcsBackend for HgBackend {
@@ -104,14 +258,7 @@ impl VcsBackend for HgBackend {
     }
 
     fn get_working_tree_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
-        let args = self.diff_args(&["diff"]);
-        let diff_output = run_hg_command(&self.info.root_path, args.iter().copied())?;
-
-        if diff_output.trim().is_empty() {
-            return Err(TuicrError::NoChanges);
-        }
-
-        let mut files = diff_parser::parse_unified_diff(&diff_output, DiffFormat::Hg, highlighter)?;
+        let mut files = self.load_diff(&["diff"], highlighter)?;
         apply_container_full_file_highlight(
             &self.info.root_path,
             ".",
@@ -300,14 +447,7 @@ impl VcsBackend for HgBackend {
         };
 
         let diff_args = ["diff", "-r", &from_rev, "-r", newest_short];
-        let args = self.diff_args(&diff_args);
-        let diff_output = run_hg_command(&self.info.root_path, args.iter().copied())?;
-
-        if diff_output.trim().is_empty() {
-            return Err(TuicrError::NoChanges);
-        }
-
-        let mut files = diff_parser::parse_unified_diff(&diff_output, DiffFormat::Hg, highlighter)?;
+        let mut files = self.load_diff(&diff_args, highlighter)?;
         apply_container_full_file_highlight(
             &self.info.root_path,
             &from_rev,
@@ -415,14 +555,7 @@ impl VcsBackend for HgBackend {
         };
 
         let diff_args = ["diff", "-r", &from_rev];
-        let args = self.diff_args(&diff_args);
-        let diff_output = run_hg_command(&self.info.root_path, args.iter().copied())?;
-
-        if diff_output.trim().is_empty() {
-            return Err(TuicrError::NoChanges);
-        }
-
-        let mut files = diff_parser::parse_unified_diff(&diff_output, DiffFormat::Hg, highlighter)?;
+        let mut files = self.load_diff(&diff_args, highlighter)?;
         apply_container_full_file_highlight(
             &self.info.root_path,
             &from_rev,
@@ -472,6 +605,15 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
 {
+    Ok(String::from_utf8_lossy(&run_hg_command_bytes(root, args)?).into_owned())
+}
+
+/// Run an hg command without forcing NUL-delimited path bytes through UTF-8.
+fn run_hg_command_bytes<I, S>(root: &Path, args: I) -> Result<Vec<u8>>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
     let args: Vec<S> = args.into_iter().collect();
     let output = Command::new("hg")
         .current_dir(root)
@@ -492,7 +634,7 @@ where
         )));
     }
 
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    Ok(output.stdout)
 }
 
 #[cfg(test)]
@@ -612,6 +754,37 @@ mod tests {
             "hello.txt"
         );
         assert_eq!(files[0].status, FileStatus::Modified);
+    }
+
+    #[test]
+    fn test_hg_uses_nul_status_paths_instead_of_diff_headers() {
+        let Some(temp) = setup_test_repo() else {
+            eprintln!("Skipping test: hg command not available");
+            return;
+        };
+        let path = PathBuf::from("日本語 b/left and right.txt");
+        fs::create_dir_all(temp.path().join(path.parent().unwrap())).unwrap();
+        fs::write(temp.path().join(&path), "base\n").unwrap();
+        Command::new("hg")
+            .args(["add", path.to_str().unwrap()])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+        Command::new("hg")
+            .args(["commit", "-m", "add ambiguous path"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+        fs::write(temp.path().join(&path), "base\nchanged\n").unwrap();
+
+        let backend = HgBackend::from_path(temp.path().to_path_buf(), DiffWhitespaceMode::Normal)
+            .expect("Failed to create hg backend");
+        let files = backend
+            .get_working_tree_diff(&SyntaxHighlighter::default())
+            .expect("structured hg diff should parse");
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].new_path.as_deref(), Some(path.as_path()));
     }
 
     #[test]

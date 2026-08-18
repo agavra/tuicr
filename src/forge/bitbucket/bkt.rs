@@ -25,12 +25,13 @@ use crate::forge::traits::{
     GhCreateReviewResponse, PagedPullRequests, PullRequestCommit, PullRequestDetails,
     PullRequestListQuery, PullRequestListScope, PullRequestReviewMetadata, PullRequestTarget,
 };
-use crate::model::DiffLine;
+use crate::model::{DiffLine, FilePatch};
 use crate::process::{CommandOutputError, CommandOutputErrorKind, run_command_output};
+use crate::vcs::git::raw::{pair_metadata_with_patch, run_git_diff};
 use crate::vcs::slice_context_lines;
 
 use super::models::{
-    BbComment, BbCommit, BbPaged, BbPullRequest, BbUser, group_into_review_threads,
+    BbComment, BbCommit, BbDiffStat, BbPaged, BbPullRequest, BbUser, group_into_review_threads,
     review_summaries,
 };
 
@@ -108,7 +109,7 @@ fn read_blob_with_repo(repo_root: &Path, sha: &str, path: &Path) -> Option<Strin
 }
 
 /// Return `Some(diff)` when both SHAs exist locally, via `git diff <start>..<end>`.
-fn local_range_diff(repo_root: &Path, start_sha: &str, end_sha: &str) -> Option<String> {
+fn local_range_diff(repo_root: &Path, start_sha: &str, end_sha: &str) -> Option<Vec<FilePatch>> {
     for sha in [start_sha, end_sha] {
         let exists = run_command_output(
             "git",
@@ -120,12 +121,7 @@ fn local_range_diff(repo_root: &Path, start_sha: &str, end_sha: &str) -> Option<
         }
     }
     let range = format!("{start_sha}..{end_sha}");
-    run_command_output(
-        "git",
-        Some(repo_root),
-        ["diff", range.as_str()].iter().map(|s| OsStr::new(*s)),
-    )
-    .ok()
+    run_git_diff(repo_root, &[range.as_str()]).ok()
 }
 
 #[derive(Debug, Clone)]
@@ -417,12 +413,21 @@ where
         Ok(details)
     }
 
-    fn get_pull_request_diff(&self, pr: &PullRequestDetails) -> Result<String> {
+    fn get_pull_request_diff(&self, pr: &PullRequestDetails) -> Result<Vec<FilePatch>> {
+        let diffstat_path = format!(
+            "{}/pullrequests/{}/diffstat",
+            Self::repo_path(&pr.repository),
+            pr.number
+        );
+        let metadata = self
+            .collect_pages::<BbDiffStat>(diffstat_path)?
+            .into_iter()
+            .map(BbDiffStat::into_metadata)
+            .collect::<Result<Vec<_>>>()?;
         let mut args = vec!["pr".to_string(), "diff".to_string(), pr.number.to_string()];
         args.extend(Self::repo_args(&pr.repository));
-        // `bkt pr diff` already emits `diff --git` headers, so unlike the
-        // GitLab backend this needs no header injection.
-        self.run_bkt(args)
+        let patch = self.run_bkt(args)?;
+        pair_metadata_with_patch(metadata, patch.as_bytes())
     }
 
     fn local_checkout_path(&self) -> Option<PathBuf> {
@@ -469,7 +474,7 @@ where
         pr: &PullRequestDetails,
         start_sha: &str,
         end_sha: &str,
-    ) -> Result<String> {
+    ) -> Result<Vec<FilePatch>> {
         if let Some(root) = self.local_checkout.as_deref()
             && let Some(diff) = local_range_diff(root, start_sha, end_sha)
         {
@@ -478,13 +483,25 @@ where
         // Bitbucket's diff spec is `new..old` — the reverse of git's
         // `old..new`. Verified against the live API: the git-style order
         // returns an empty diff.
+        let diffstat_path = format!(
+            "{}/diffstat/{}..{}",
+            Self::repo_path(&pr.repository),
+            end_sha,
+            start_sha
+        );
+        let metadata = self
+            .collect_pages::<BbDiffStat>(diffstat_path)?
+            .into_iter()
+            .map(BbDiffStat::into_metadata)
+            .collect::<Result<Vec<_>>>()?;
         let path = format!(
             "{}/diff/{}..{}",
             Self::repo_path(&pr.repository),
             end_sha,
             start_sha
         );
-        self.run_api(path, &[])
+        let patch = self.run_api(path, &[])?;
+        pair_metadata_with_patch(metadata, patch.as_bytes())
     }
 
     fn list_review_threads(&self, pr: &PullRequestDetails) -> Result<Vec<RemoteReviewThread>> {
@@ -962,6 +979,10 @@ mod tests {
       "links": { "html": { "href": "https://bitbucket.org/example-workspace/repo/pull-requests/830" } }
     }"#;
 
+    const DIFFSTAT_JSON: &str = r#"{"values":[{
+      "status":"modified","old":{"path":"x"},"new":{"path":"x"}
+    }]}"#;
+
     fn inline_comment(line: u32, side: GhSide, start_line: Option<u32>) -> InlineComment {
         InlineComment {
             path: PathBuf::from("src/lib.rs"),
@@ -982,12 +1003,12 @@ mod tests {
     #[test]
     fn should_always_pass_workspace_and_repo_to_first_class_commands() {
         // given — bkt hard-fails when the active context lacks these
-        let backend = backend(vec!["diff --git a/x b/x\n"]);
+        let backend = backend(vec![DIFFSTAT_JSON, "diff --git a/x b/x\n"]);
         // when
         backend.get_pull_request_diff(&details()).unwrap();
         // then
         assert_eq!(
-            backend.runner.calls.borrow()[0],
+            backend.runner.calls.borrow()[1],
             vec![
                 "pr",
                 "diff",
@@ -1267,14 +1288,14 @@ mod tests {
     #[test]
     fn should_reverse_the_diff_spec_for_a_commit_range() {
         // given — no local checkout, so it goes through the API
-        let backend = backend(vec!["diff --git a/x b/x\n"]);
+        let backend = backend(vec![DIFFSTAT_JSON, "diff --git a/x b/x\n"]);
         // when
         backend
             .get_pull_request_commit_range_diff(&details(), "oldsha", "newsha")
             .unwrap();
         // then — Bitbucket takes `new..old`, the reverse of git
         assert_eq!(
-            backend.runner.calls.borrow()[0][1],
+            backend.runner.calls.borrow()[1][1],
             "/2.0/repositories/example-workspace/repo/diff/newsha..oldsha"
         );
     }
@@ -1751,12 +1772,14 @@ mod tests {
         assert_eq!(details.head_sha.len(), 40, "head_sha was not promoted");
         assert_eq!(details.number, number);
 
-        let patch = backend
+        let patches = backend
             .get_pull_request_diff(&details)
             .expect("get_pull_request_diff");
         assert!(
-            patch.contains("diff --git "),
-            "patch is missing git headers, the shared parser needs them"
+            patches
+                .iter()
+                .any(|patch| patch.patch.contains("diff --git ")),
+            "structured patches are missing Git bodies"
         );
 
         let commits = backend

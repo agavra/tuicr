@@ -12,15 +12,16 @@ use crate::forge::traits::{
     PagedPullRequests, PullRequestCommit, PullRequestDetails, PullRequestListQuery,
     PullRequestListScope, PullRequestReviewMetadata, PullRequestReviewRecord, PullRequestTarget,
 };
-use crate::model::{DiffLine, LineOrigin};
+use crate::model::{DiffLine, FilePatch, LineOrigin};
 use crate::process::{
     CommandOutputError, CommandOutputErrorKind, run_command_output, run_command_output_with_stdin,
 };
+use crate::vcs::git::raw::run_git_diff;
 use crate::vcs::slice_context_lines;
 
 use super::models::{
-    GlabApprovalState, GlabCommit, GlabDiscussion, GlabMrDetails, GlabMrSummary, GlabMrVersion,
-    GlabUser,
+    GlabApprovalState, GlabCommit, GlabDiff, GlabDiscussion, GlabMrDetails, GlabMrSummary,
+    GlabMrVersion, GlabUser,
 };
 use crate::forge::submit::{DiffAnchor, GhSide, SubmitEvent};
 use crate::forge::traits::CreateReviewRequest;
@@ -104,7 +105,7 @@ fn read_blob_with_repo(repo_root: &Path, sha: &str, path: &Path) -> Option<Strin
 }
 
 /// Return `Some(diff)` when both SHAs exist locally, via `git diff <start>..<end>`.
-fn local_range_diff(repo_root: &Path, start_sha: &str, end_sha: &str) -> Option<String> {
+fn local_range_diff(repo_root: &Path, start_sha: &str, end_sha: &str) -> Option<Vec<FilePatch>> {
     for sha in [start_sha, end_sha] {
         let exists = run_command_output(
             "git",
@@ -116,12 +117,7 @@ fn local_range_diff(repo_root: &Path, start_sha: &str, end_sha: &str) -> Option<
         }
     }
     let range = format!("{start_sha}..{end_sha}");
-    run_command_output(
-        "git",
-        Some(repo_root),
-        ["diff", range.as_str()].iter().map(|s| OsStr::new(*s)),
-    )
-    .ok()
+    run_git_diff(repo_root, &[range.as_str()]).ok()
 }
 
 /// Percent-encode `owner/repo` as `owner%2Frepo` for GitLab project API paths.
@@ -396,17 +392,25 @@ where
         mr.into_details(&repository)
     }
 
-    fn get_pull_request_diff(&self, pr: &PullRequestDetails) -> Result<String> {
-        let args = vec![
-            "mr".to_string(),
-            "diff".to_string(),
-            pr.number.to_string(),
-            "--repo".to_string(),
-            Self::repo_arg(&pr.repository),
-            "--color=never".to_string(),
-        ];
-        let raw = self.run_glab(args, &pr.repository.host)?;
-        Ok(inject_git_diff_headers(&raw))
+    fn get_pull_request_diff(&self, pr: &PullRequestDetails) -> Result<Vec<FilePatch>> {
+        let project = gl_project_path(&pr.repository.owner, &pr.repository.name);
+        let mut patches = Vec::new();
+        for page in 1..=100 {
+            let endpoint = format!(
+                "projects/{project}/merge_requests/{}/diffs?per_page=100&page={page}",
+                pr.number
+            );
+            let output = self.run_api(&pr.repository, endpoint)?;
+            let rows: Vec<GlabDiff> = serde_json::from_str(&output)?;
+            let received = rows.len();
+            patches.extend(rows.into_iter().map(GlabDiff::into_file_patch));
+            if received < 100 {
+                return Ok(patches);
+            }
+        }
+        Err(TuicrError::Forge(
+            "GitLab merge request diff exceeded 10000 files".into(),
+        ))
     }
 
     fn local_checkout_path(&self) -> Option<PathBuf> {
@@ -459,7 +463,7 @@ where
         _pr: &PullRequestDetails,
         start_sha: &str,
         end_sha: &str,
-    ) -> Result<String> {
+    ) -> Result<Vec<FilePatch>> {
         if let Some(root) = self.local_checkout.as_deref()
             && let Some(diff) = local_range_diff(root, start_sha, end_sha)
         {
@@ -1010,38 +1014,6 @@ fn strip_git_suffix(value: &str) -> &str {
     value.strip_suffix(".git").unwrap_or(value)
 }
 
-/// Convert a bare unified diff (as output by `glab mr diff`) into git-style
-/// by injecting `diff --git a/X b/X` headers before each `--- ` / `+++ ` pair.
-///
-/// `glab mr diff` emits plain unified diffs without git file headers, but the
-/// tuicr parser requires `diff --git ` to detect file boundaries.
-fn inject_git_diff_headers(diff: &str) -> String {
-    let mut result = String::with_capacity(diff.len() + diff.lines().count() * 64);
-    let mut lines = diff.lines().peekable();
-    while let Some(line) = lines.next() {
-        if let Some(old_raw) = line.strip_prefix("--- ") {
-            // Peek at the next line to get the new path for added files.
-            let new_raw = lines
-                .peek()
-                .and_then(|l| l.strip_prefix("+++ "))
-                .unwrap_or(old_raw);
-            // Determine the canonical path: prefer the non-/dev/null side.
-            let path = if old_raw == "/dev/null" {
-                new_raw
-            } else {
-                old_raw
-            };
-            // Strip a/ or b/ prefix if already present (shouldn't be for glab,
-            // but be defensive).
-            let path = path.trim_start_matches("a/").trim_start_matches("b/");
-            result.push_str(&format!("diff --git a/{path} b/{path}\n"));
-        }
-        result.push_str(line);
-        result.push('\n');
-    }
-    result
-}
-
 fn parse_scp_like_remote(remote_url: &str) -> Option<(&str, &str)> {
     if remote_url.contains("://") {
         return None;
@@ -1460,6 +1432,37 @@ mod tests {
             merged_at: None,
             diff_start_sha: Some("startsha1".to_string()),
         }
+    }
+
+    #[test]
+    fn should_fetch_structured_merge_request_diffs_instead_of_injecting_headers() {
+        let repo = ForgeRepository::gitlab("gitlab.com", "owner", "repo");
+        let pr = make_pr_details(repo.clone());
+        let runner = RecordingRunner::new_with_responses(vec![
+            r#"[{
+              "old_path":"日本語 b/and file.sql",
+              "new_path":"日本語 b/and file.sql",
+              "diff":"@@ -1,2 +1 @@\n--- count rows\n SELECT 1;\n"
+            }]"#
+            .to_string(),
+        ]);
+        let backend = GitLabGlabBackend::with_runner(Some(repo), runner);
+
+        let patches = backend.get_pull_request_diff(&pr).unwrap();
+
+        assert_eq!(patches.len(), 1);
+        assert_eq!(
+            patches[0].new_path.as_deref(),
+            Some(Path::new("日本語 b/and file.sql"))
+        );
+        let calls = backend.runner.calls.borrow();
+        assert!(
+            calls[0]
+                .0
+                .iter()
+                .any(|arg| arg.contains("/merge_requests/42/diffs?"))
+        );
+        assert!(!calls[0].0.iter().any(|arg| arg == "mr"));
     }
 
     #[test]

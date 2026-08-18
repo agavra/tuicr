@@ -390,8 +390,8 @@ impl crate::forge::traits::ForgeBackend for FakeForgeBackend {
     fn get_pull_request_diff(
         &self,
         _pr: &crate::forge::traits::PullRequestDetails,
-    ) -> Result<String> {
-        Ok(self.patch.clone())
+    ) -> Result<Vec<crate::model::FilePatch>> {
+        Ok(structured_patch(&self.patch))
     }
     fn fetch_file_lines(
         &self,
@@ -422,11 +422,10 @@ impl crate::forge::traits::ForgeBackend for FakeForgeBackend {
         _pr: &crate::forge::traits::PullRequestDetails,
         _start_sha: &str,
         _end_sha: &str,
-    ) -> Result<String> {
-        Ok(self
-            .range_patch
-            .clone()
-            .unwrap_or_else(|| self.patch.clone()))
+    ) -> Result<Vec<crate::model::FilePatch>> {
+        Ok(structured_patch(
+            self.range_patch.as_deref().unwrap_or(&self.patch),
+        ))
     }
     fn create_review(
         &self,
@@ -760,6 +759,10 @@ fn first_hunk_patch() -> &'static str {
     include_str!("../../../tests/fixtures/pr_refresh/first_hunk.patch")
 }
 
+fn structured_patch(patch: &str) -> Vec<crate::model::FilePatch> {
+    crate::vcs::diff_parser::git_fixture_file_patches(patch)
+}
+
 fn two_file_patch(changed_replacement: &str) -> String {
     match changed_replacement {
         "new changed" => {
@@ -1000,7 +1003,7 @@ fn should_preserve_hunk_marks_hidden_by_pr_range_diff() {
         started_at: Instant::now(),
         anchor: None,
     };
-    app.finish_pr_range_reload(&request, first_hunk_patch())
+    app.finish_pr_range_reload(&request, structured_patch(first_hunk_patch()))
         .unwrap();
 
     assert!(app.session.is_hunk_reviewed(&path, &hidden_key));
@@ -1264,7 +1267,7 @@ fn should_reindex_recovered_pr_session() {
     let highlighter = app.theme.syntax_highlighter();
     let opened_b = crate::forge::pr_open::prepare_open_pr(
         details_b.clone(),
-        &two_file_patch("newer changed"),
+        structured_patch(&two_file_patch("newer changed")),
         Vec::new(),
         PullRequestReviewMetadata::default(),
         crate::forge::traits::PullRequestInfo::from_details(details_b.clone()),
@@ -1323,7 +1326,7 @@ fn should_error_on_corrupt_exact_session_file_when_reopening_pr() {
     let highlighter = theme.syntax_highlighter();
     let opened = crate::forge::pr_open::prepare_open_pr(
         details.clone(),
-        &two_file_patch("new changed"),
+        structured_patch(&two_file_patch("new changed")),
         Vec::new(),
         PullRequestReviewMetadata::default(),
         crate::forge::traits::PullRequestInfo::from_details(details.clone()),
@@ -1376,7 +1379,7 @@ fn should_keep_old_head_session_when_new_head_session_file_is_corrupt() {
     let highlighter = app.theme.syntax_highlighter();
     let opened_b = crate::forge::pr_open::prepare_open_pr(
         details_b.clone(),
-        &two_file_patch("newer changed"),
+        structured_patch(&two_file_patch("newer changed")),
         Vec::new(),
         PullRequestReviewMetadata::default(),
         crate::forge::traits::PullRequestInfo::from_details(details_b.clone()),
@@ -1458,7 +1461,7 @@ fn should_ignore_exact_session_file_when_pr_session_key_does_not_match() {
     let highlighter = theme.syntax_highlighter();
     let opened = crate::forge::pr_open::prepare_open_pr(
         details.clone(),
-        &two_file_patch("new changed"),
+        structured_patch(&two_file_patch("new changed")),
         Vec::new(),
         PullRequestReviewMetadata::default(),
         crate::forge::traits::PullRequestInfo::from_details(details.clone()),
@@ -1774,7 +1777,7 @@ fn should_build_new_head_session_by_carrying_only_unchanged_reviewed_state() {
     let pr_info_b = crate::forge::traits::PullRequestInfo::from_details(details_b.clone());
     let opened = crate::forge::pr_open::prepare_open_pr(
         details_b,
-        &two_file_patch("newer changed"),
+        structured_patch(&two_file_patch("newer changed")),
         Vec::new(),
         PullRequestReviewMetadata::default(),
         pr_info_b,
@@ -1831,7 +1834,7 @@ fn should_carry_unchanged_hunk_marks_inside_changed_file_when_pr_head_advances()
     let pr_info_b = crate::forge::traits::PullRequestInfo::from_details(details_b.clone());
     let opened = crate::forge::pr_open::prepare_open_pr(
         details_b,
-        &two_hunk_pr_patch("newer second"),
+        structured_patch(&two_hunk_pr_patch("newer second")),
         Vec::new(),
         PullRequestReviewMetadata::default(),
         pr_info_b,
@@ -1883,7 +1886,7 @@ fn should_carry_reviewed_state_through_finish_pr_reload_when_head_advances() {
     details_b.head_sha = "bbbbbbbbbbbbbbbb".to_string();
     app.finish_pr_reload(
         details_b.clone(),
-        two_file_patch("newer changed"),
+        structured_patch(&two_file_patch("newer changed")),
         Vec::new(),
         PullRequestReviewMetadata::default(),
         crate::forge::traits::PullRequestInfo::from_details(details_b),
@@ -1932,7 +1935,7 @@ fn should_keep_reviewed_state_through_finish_pr_reload_when_head_unchanged() {
     // when the async reload finish path refreshes the same head
     app.finish_pr_reload(
         details.clone(),
-        two_file_patch("new changed"),
+        structured_patch(&two_file_patch("new changed")),
         Vec::new(),
         PullRequestReviewMetadata::default(),
         crate::forge::traits::PullRequestInfo::from_details(details),
@@ -1990,7 +1993,7 @@ impl crate::forge::traits::ForgeBackend for FailingForgeBackend {
     fn get_pull_request_diff(
         &self,
         _pr: &crate::forge::traits::PullRequestDetails,
-    ) -> Result<String> {
+    ) -> Result<Vec<crate::model::FilePatch>> {
         unreachable!()
     }
     fn fetch_file_lines(
@@ -2016,7 +2019,7 @@ impl crate::forge::traits::ForgeBackend for FailingForgeBackend {
         _pr: &crate::forge::traits::PullRequestDetails,
         _start_sha: &str,
         _end_sha: &str,
-    ) -> Result<String> {
+    ) -> Result<Vec<crate::model::FilePatch>> {
         unreachable!()
     }
     fn create_review(
@@ -2546,8 +2549,8 @@ impl crate::forge::traits::ForgeBackend for ThreadAwareForgeBackend {
     fn get_pull_request_diff(
         &self,
         _p: &crate::forge::traits::PullRequestDetails,
-    ) -> Result<String> {
-        Ok(self.patch.clone())
+    ) -> Result<Vec<crate::model::FilePatch>> {
+        Ok(structured_patch(&self.patch))
     }
     fn fetch_file_lines(
         &self,
@@ -2573,7 +2576,7 @@ impl crate::forge::traits::ForgeBackend for ThreadAwareForgeBackend {
         _pr: &crate::forge::traits::PullRequestDetails,
         _start_sha: &str,
         _end_sha: &str,
-    ) -> Result<String> {
+    ) -> Result<Vec<crate::model::FilePatch>> {
         unreachable!()
     }
     fn create_review(

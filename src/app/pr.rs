@@ -394,8 +394,8 @@ impl App {
         self.pr_range_reload_state = None;
 
         match result {
-            Ok(patch) => {
-                if let Err(e) = self.finish_pr_range_reload(&request, &patch) {
+            Ok(patches) => {
+                if let Err(e) = self.finish_pr_range_reload(&request, patches) {
                     self.set_error(format!("Range diff failed: {e}"));
                 }
             }
@@ -408,12 +408,12 @@ impl App {
     pub(in crate::app) fn finish_pr_range_reload(
         &mut self,
         request: &PrRangeReloadRequest,
-        patch: &str,
+        patches: Vec<crate::model::FilePatch>,
     ) -> Result<()> {
-        use crate::vcs::diff_parser::{DiffFormat, parse_unified_diff};
+        use crate::vcs::diff_parser::parse_file_patches;
 
         let highlighter = self.theme.syntax_highlighter();
-        let parsed = match parse_unified_diff(patch, DiffFormat::GitStyle, highlighter) {
+        let parsed = match parse_file_patches(patches, highlighter) {
             Ok(files) => files,
             Err(TuicrError::NoChanges) => Vec::new(),
             Err(e) => return Err(e),
@@ -529,10 +529,10 @@ impl App {
             return;
         }
         match result {
-            Ok((details, patch, commits, review_metadata, pr_info)) => {
+            Ok((details, patches, commits, review_metadata, pr_info)) => {
                 if let Err(e) = self.finish_pr_reload(
                     details,
-                    patch,
+                    patches,
                     commits,
                     review_metadata,
                     pr_info,
@@ -550,7 +550,7 @@ impl App {
     pub(in crate::app) fn finish_pr_reload(
         &mut self,
         details: crate::forge::traits::PullRequestDetails,
-        patch: String,
+        patches: Vec<crate::model::FilePatch>,
         commits: Vec<crate::forge::traits::PullRequestCommit>,
         review_metadata: crate::forge::traits::PullRequestReviewMetadata,
         pr_info: crate::forge::traits::PullRequestInfo,
@@ -565,7 +565,7 @@ impl App {
         let highlighter = self.theme.syntax_highlighter();
         let opened = prepare_open_pr(
             details,
-            &patch,
+            patches,
             commits,
             review_metadata,
             pr_info,
@@ -964,10 +964,10 @@ impl App {
                     return;
                 }
                 match result {
-                    Ok((details, patch, commits, review_metadata, pr_info)) => {
+                    Ok((details, patches, commits, review_metadata, pr_info)) => {
                         if let Err(e) = self.finish_pr_open(
                             details,
-                            patch,
+                            patches,
                             commits,
                             review_metadata,
                             pr_info,
@@ -987,14 +987,14 @@ impl App {
         }
     }
 
-    /// Main-thread half of the PR open: parse the patch, build the
+    /// Main-thread half of the PR open: parse the structured patches, build the
     /// session, and enter PR diff mode. Mirrors what the previous synchronous
     /// `open_pr_with_backend` did, but the network fetch has already
     /// happened on the background thread.
     fn finish_pr_open(
         &mut self,
         details: crate::forge::traits::PullRequestDetails,
-        patch: String,
+        patches: Vec<crate::model::FilePatch>,
         commits: Vec<crate::forge::traits::PullRequestCommit>,
         review_metadata: crate::forge::traits::PullRequestReviewMetadata,
         pr_info: crate::forge::traits::PullRequestInfo,
@@ -1006,7 +1006,7 @@ impl App {
         let highlighter = self.theme.syntax_highlighter();
         let opened = prepare_open_pr(
             details.clone(),
-            &patch,
+            patches,
             commits,
             review_metadata,
             pr_info,

@@ -30,8 +30,9 @@ use crate::forge::traits::{
     GhCreateReviewResponse, PagedPullRequests, PullRequestCommit, PullRequestDetails,
     PullRequestListQuery, PullRequestListScope, PullRequestTarget,
 };
-use crate::model::DiffLine;
+use crate::model::{DiffLine, FilePatch};
 use crate::process::{CommandOutputError, CommandOutputErrorKind, run_command_output};
+use crate::vcs::git::raw::run_git_diff;
 use crate::vcs::slice_context_lines;
 
 use super::models::{
@@ -261,7 +262,7 @@ fn read_blob_with_repo(repo_root: &Path, sha: &str, path: &Path) -> Option<Strin
 
 /// `git diff <a><sep><b>` in `repo_root`, returning `None` when either SHA is
 /// absent locally or the command fails.
-fn local_diff(repo_root: &Path, a: &str, b: &str, sep: &str) -> Option<String> {
+fn local_diff(repo_root: &Path, a: &str, b: &str, sep: &str) -> Option<Vec<FilePatch>> {
     for sha in [a, b] {
         let exists = run_command_output(
             "git",
@@ -273,12 +274,7 @@ fn local_diff(repo_root: &Path, a: &str, b: &str, sep: &str) -> Option<String> {
         }
     }
     let range = format!("{a}{sep}{b}");
-    run_command_output(
-        "git",
-        Some(repo_root),
-        ["diff", range.as_str()].iter().map(|s| OsStr::new(*s)),
-    )
-    .ok()
+    run_git_diff(repo_root, &[range.as_str()]).ok()
 }
 
 // ---------- Coordinate helpers ----------
@@ -506,7 +502,7 @@ impl ForgeBackend for AzureDevOpsBackend {
         Ok(pr.into_details(&repository))
     }
 
-    fn get_pull_request_diff(&self, pr: &PullRequestDetails) -> Result<String> {
+    fn get_pull_request_diff(&self, pr: &PullRequestDetails) -> Result<Vec<FilePatch>> {
         // 3-dot diff (merge-base..head) matches PR review semantics, like the
         // GitHub compare API. Sourced from the local clone.
         let root = self
@@ -528,7 +524,7 @@ impl ForgeBackend for AzureDevOpsBackend {
         _pr: &PullRequestDetails,
         start_sha: &str,
         end_sha: &str,
-    ) -> Result<String> {
+    ) -> Result<Vec<FilePatch>> {
         let root = self
             .local_checkout
             .as_deref()

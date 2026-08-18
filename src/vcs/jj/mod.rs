@@ -10,7 +10,8 @@ use chrono::{DateTime, Utc};
 use crate::error::{Result, TuicrError};
 use crate::model::{DiffFile, DiffLine, FileStatus};
 use crate::syntax::SyntaxHighlighter;
-use crate::vcs::diff_parser::{self, DiffFormat};
+use crate::vcs::diff_parser;
+use crate::vcs::git::raw::{FileMetadata, pair_metadata_with_patch};
 use crate::vcs::traits::{
     CommitInfo, DiffWhitespaceMode, ResolvedRevisionRange, RevisionDiffTarget, VcsBackend, VcsInfo,
     VcsType,
@@ -137,6 +138,69 @@ impl JjBackend {
         args_with_whitespace.extend_from_slice(&args[1..]);
         Cow::Owned(args_with_whitespace)
     }
+
+    fn load_diff(
+        &self,
+        diff_args: &[&str],
+        highlighter: &SyntaxHighlighter,
+    ) -> Result<Vec<DiffFile>> {
+        let args = self.diff_args(diff_args);
+        let mut metadata_args: Vec<&str> = args.iter().copied().collect();
+        metadata_args.extend(["-T", JJ_DIFF_METADATA_TEMPLATE]);
+        // This first command snapshots the working copy when needed. The
+        // patch command then reads that exact operation without another
+        // snapshot, keeping metadata and hunks in lockstep.
+        let metadata_output = run_jj_command(&self.info.root_path, metadata_args)?;
+        let metadata = parse_jj_diff_metadata(&metadata_output)?;
+        if metadata.is_empty() {
+            return Err(TuicrError::NoChanges);
+        }
+
+        let mut patch_args: Vec<&str> = args.iter().copied().collect();
+        patch_args.extend(["--git", "--ignore-working-copy"]);
+        let patch = run_jj_command(&self.info.root_path, patch_args)?;
+        let patches = pair_metadata_with_patch(metadata, patch.as_bytes())?;
+        diff_parser::parse_file_patches(patches, highlighter)
+    }
+}
+
+const JJ_DIFF_METADATA_TEMPLATE: &str =
+    r#"status_char ++ "\0" ++ source.path() ++ "\0" ++ target.path() ++ "\0""#;
+
+fn parse_jj_diff_metadata(output: &str) -> Result<Vec<FileMetadata>> {
+    let fields: Vec<&str> = output.split('\0').collect();
+    let records = fields.strip_suffix(&[""]).unwrap_or(&fields);
+    if !records.len().is_multiple_of(3) {
+        return Err(TuicrError::VcsCommand(format!(
+            "invalid jj diff metadata: expected status/source/target triples, got {} fields",
+            records.len()
+        )));
+    }
+
+    records
+        .chunks_exact(3)
+        .map(|record| {
+            let source = (!record[1].is_empty()).then(|| PathBuf::from(record[1]));
+            let target = (!record[2].is_empty()).then(|| PathBuf::from(record[2]));
+            let (old_path, new_path, status) = match record[0] {
+                "A" => (None, target, FileStatus::Added),
+                "D" => (source, None, FileStatus::Deleted),
+                "M" => (source, target, FileStatus::Modified),
+                "R" => (source, target, FileStatus::Renamed),
+                "C" => (source, target, FileStatus::Copied),
+                status => {
+                    return Err(TuicrError::VcsCommand(format!(
+                        "invalid jj diff metadata status `{status}`"
+                    )));
+                }
+            };
+            Ok(FileMetadata {
+                old_path,
+                new_path,
+                status,
+            })
+        })
+        .collect()
 }
 
 impl VcsBackend for JjBackend {
@@ -145,15 +209,7 @@ impl VcsBackend for JjBackend {
     }
 
     fn get_working_tree_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
-        let args = self.diff_args(&["diff", "--git"]);
-        let diff_output = run_jj_command(&self.info.root_path, args.iter().copied())?;
-
-        if diff_output.trim().is_empty() {
-            return Err(TuicrError::NoChanges);
-        }
-
-        let mut files =
-            diff_parser::parse_unified_diff(&diff_output, DiffFormat::GitStyle, highlighter)?;
+        let mut files = self.load_diff(&["diff"], highlighter)?;
         apply_container_full_file_highlight(
             &self.info.root_path,
             "@-",
@@ -322,16 +378,8 @@ impl VcsBackend for JjBackend {
         // Get the parent of the oldest commit to include its changes
         // In jj, we use {commit}- to get the parent(s)
         let from_rev = format!("{}-", oldest);
-        let diff_args = ["diff", "--from", &from_rev, "--to", newest, "--git"];
-        let args = self.diff_args(&diff_args);
-        let diff_output = run_jj_command(&self.info.root_path, args.iter().copied())?;
-
-        if diff_output.trim().is_empty() {
-            return Err(TuicrError::NoChanges);
-        }
-
-        let mut files =
-            diff_parser::parse_unified_diff(&diff_output, DiffFormat::GitStyle, highlighter)?;
+        let diff_args = ["diff", "--from", &from_rev, "--to", newest];
+        let mut files = self.load_diff(&diff_args, highlighter)?;
         apply_container_full_file_highlight(
             &self.info.root_path,
             &from_rev,
@@ -408,16 +456,8 @@ impl VcsBackend for JjBackend {
 
         // Diff from the parent of the oldest commit to the working copy (@)
         let from_rev = format!("{}-", oldest);
-        let diff_args = ["diff", "--from", &from_rev, "--to", "@", "--git"];
-        let args = self.diff_args(&diff_args);
-        let diff_output = run_jj_command(&self.info.root_path, args.iter().copied())?;
-
-        if diff_output.trim().is_empty() {
-            return Err(TuicrError::NoChanges);
-        }
-
-        let mut files =
-            diff_parser::parse_unified_diff(&diff_output, DiffFormat::GitStyle, highlighter)?;
+        let diff_args = ["diff", "--from", &from_rev, "--to", "@"];
+        let mut files = self.load_diff(&diff_args, highlighter)?;
         apply_container_full_file_highlight(
             &self.info.root_path,
             &from_rev,
@@ -668,6 +708,32 @@ mod tests {
             "hello.txt"
         );
         assert_eq!(files[0].status, FileStatus::Modified);
+    }
+
+    #[test]
+    fn test_jj_uses_template_paths_instead_of_git_headers() {
+        let Some(temp) = setup_test_repo() else {
+            eprintln!("Skipping test: jj command not available");
+            return;
+        };
+        let path = PathBuf::from("日本語 b/left and right.txt");
+        fs::create_dir_all(temp.path().join(path.parent().unwrap())).unwrap();
+        fs::write(temp.path().join(&path), "base\n").unwrap();
+        jj_cmd()
+            .args(["commit", "-m", "add ambiguous path"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+        fs::write(temp.path().join(&path), "base\nchanged\n").unwrap();
+
+        let backend = JjBackend::from_path(temp.path().to_path_buf(), DiffWhitespaceMode::Normal)
+            .expect("Failed to create jj backend");
+        let files = backend
+            .get_working_tree_diff(&SyntaxHighlighter::default())
+            .expect("structured jj diff should parse");
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].new_path.as_deref(), Some(path.as_path()));
     }
 
     #[test]

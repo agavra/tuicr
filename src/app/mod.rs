@@ -816,16 +816,7 @@ pub enum PrOpenEvent {
         /// Network-only outcome. Parsing + session build runs on the main
         /// thread after this lands so `SyntaxHighlighter` does not need to
         /// cross thread boundaries.
-        result: std::result::Result<
-            (
-                crate::forge::traits::PullRequestDetails,
-                String,
-                Vec<crate::forge::traits::PullRequestCommit>,
-                crate::forge::traits::PullRequestReviewMetadata,
-                crate::forge::traits::PullRequestInfo,
-            ),
-            String,
-        >,
+        result: std::result::Result<crate::forge::pr_open::PrFetchData, String>,
     },
 }
 
@@ -858,16 +849,7 @@ pub struct PrReloadRequest {
 pub enum PrReloadEvent {
     Done {
         request: PrReloadRequest,
-        result: std::result::Result<
-            (
-                crate::forge::traits::PullRequestDetails,
-                String,
-                Vec<crate::forge::traits::PullRequestCommit>,
-                crate::forge::traits::PullRequestReviewMetadata,
-                crate::forge::traits::PullRequestInfo,
-            ),
-            String,
-        >,
+        result: std::result::Result<crate::forge::pr_open::PrFetchData, String>,
     },
 }
 
@@ -891,7 +873,7 @@ pub struct PrRangeReloadRequest {
 pub enum PrRangeReloadEvent {
     Done {
         request: PrRangeReloadRequest,
-        result: std::result::Result<String, String>,
+        result: std::result::Result<Vec<crate::model::FilePatch>, String>,
     },
 }
 

@@ -23,6 +23,55 @@ use crate::forge::traits::{
     ForgeRepository, PullRequestCommit, PullRequestDetails, PullRequestReviewRecord,
     PullRequestSummary,
 };
+use crate::model::FileStatus;
+use crate::vcs::git::raw::FileMetadata;
+
+#[derive(Debug, Deserialize, Default)]
+pub struct BbDiffStatFile {
+    #[serde(default)]
+    pub path: String,
+}
+
+/// One machine-readable entry from Bitbucket Cloud's diffstat endpoint.
+#[derive(Debug, Deserialize)]
+pub struct BbDiffStat {
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub old: Option<BbDiffStatFile>,
+    #[serde(default)]
+    pub new: Option<BbDiffStatFile>,
+}
+
+impl BbDiffStat {
+    pub(crate) fn into_metadata(self) -> Result<FileMetadata> {
+        let old_path = self
+            .old
+            .filter(|file| !file.path.is_empty())
+            .map(|file| std::path::PathBuf::from(file.path));
+        let new_path = self
+            .new
+            .filter(|file| !file.path.is_empty())
+            .map(|file| std::path::PathBuf::from(file.path));
+        let status = match self.status.to_ascii_lowercase().as_str() {
+            "added" => FileStatus::Added,
+            "removed" => FileStatus::Deleted,
+            "renamed" => FileStatus::Renamed,
+            "copied" => FileStatus::Copied,
+            "modified" => FileStatus::Modified,
+            status => {
+                return Err(TuicrError::Forge(format!(
+                    "Bitbucket returned unsupported diffstat status `{status}`"
+                )));
+            }
+        };
+        Ok(FileMetadata {
+            old_path,
+            new_path,
+            status,
+        })
+    }
+}
 
 /// Envelope Bitbucket Cloud wraps every paginated collection in. `next` is
 /// absent on the final page, which is how callers detect the end.
@@ -902,5 +951,28 @@ mod tests {
         assert_eq!(threads[0].comments.len(), 2);
         assert_eq!(threads[1].id, "2");
         assert_eq!(threads[1].comments.len(), 1);
+    }
+
+    #[test]
+    fn diffstat_metadata_preserves_renamed_unicode_paths() {
+        let row: BbDiffStat = serde_json::from_str(
+            r#"{
+              "status":"renamed",
+              "old":{"path":"旧 b/left and side.txt"},
+              "new":{"path":"新 b/right and side.txt"}
+            }"#,
+        )
+        .unwrap();
+        let metadata = row.into_metadata().unwrap();
+
+        assert_eq!(metadata.status, FileStatus::Renamed);
+        assert_eq!(
+            metadata.old_path.as_deref(),
+            Some(std::path::Path::new("旧 b/left and side.txt"))
+        );
+        assert_eq!(
+            metadata.new_path.as_deref(),
+            Some(std::path::Path::new("新 b/right and side.txt"))
+        );
     }
 }

@@ -5,6 +5,42 @@ use std::{collections::HashMap, path::PathBuf};
 use crate::hash::Fnv1aHasher;
 use crate::model::comment::LineSide;
 
+/// Backend-provided file metadata paired with that file's opaque patch text.
+///
+/// Paths and status come from a machine-readable VCS or forge channel; the
+/// patch is used only to materialize hunks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FilePatch {
+    pub old_path: Option<PathBuf>,
+    pub new_path: Option<PathBuf>,
+    pub status: FileStatus,
+    pub patch: String,
+    pub is_binary: bool,
+    pub is_too_large: bool,
+}
+
+impl FilePatch {
+    pub fn new(
+        old_path: Option<PathBuf>,
+        new_path: Option<PathBuf>,
+        status: FileStatus,
+        patch: impl Into<String>,
+    ) -> Self {
+        Self {
+            old_path,
+            new_path,
+            status,
+            patch: patch.into(),
+            is_binary: false,
+            is_too_large: false,
+        }
+    }
+
+    pub fn display_path(&self) -> Option<&std::path::Path> {
+        self.new_path.as_deref().or(self.old_path.as_deref())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum FileStatus {

@@ -1,329 +1,182 @@
-//! Unified diff parser for text-based VCS backends (hg, jj, sparse Git).
+//! Materialize structured file patches into the diff model.
 //!
-//! Parses unified diff format output from CLI tools into DiffFile structures.
-//! Standard Git uses the native git2 library; sparse Git feeds CLI diff output
-//! through this parser to avoid sparse-index limitations in libgit2.
+//! File identity is deliberately outside this module. Each backend obtains
+//! paths and status from a machine-readable source (`git --raw -z`, jj
+//! templates, Mercurial status templates, or forge JSON) and supplies them in
+//! [`FilePatch`]. This module only parses unified-diff hunks, where the `@@`
+//! header's line counts make the grammar unambiguous.
 
-use std::borrow::Cow;
+use std::path::Path;
+#[cfg(test)]
 use std::path::PathBuf;
 
 use crate::error::{Result, TuicrError};
-use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin};
+#[cfg(test)]
+use crate::model::FileStatus;
+use crate::model::{DiffFile, DiffHunk, DiffLine, FilePatch, LineOrigin};
 use crate::syntax::{SyntaxHighlighter, needs_full_file_highlight};
 
-/// Diff format variants for different VCS tools.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DiffFormat {
-    /// Mercurial format: "diff -r" headers, paths may have timestamps
-    Hg,
-    /// Git-style format: "diff --git" headers (used by jj, git patches)
-    GitStyle,
-}
-
-/// Parse unified diff output into DiffFile structures.
-pub fn parse_unified_diff(
-    diff_text: &str,
-    format: DiffFormat,
+/// Convert backend-structured file patches into renderable diff files.
+pub fn parse_file_patches(
+    patches: Vec<FilePatch>,
     highlighter: &SyntaxHighlighter,
 ) -> Result<Vec<DiffFile>> {
-    parse_unified_diff_lines(
-        diff_text.lines().map(|line| Ok(Cow::Borrowed(line))),
-        format,
-        highlighter,
-    )
-}
-
-/// Parse unified diff lines into DiffFile structures.
-///
-/// This entry point is used by Git's sparse-checkout backend so large diffs can
-/// be parsed directly from command stdout instead of buffering the whole patch.
-pub fn parse_unified_diff_lines<'a, I>(
-    diff_lines: I,
-    format: DiffFormat,
-    highlighter: &SyntaxHighlighter,
-) -> Result<Vec<DiffFile>>
-where
-    I: Iterator<Item = Result<Cow<'a, str>>>,
-{
-    let mut files: Vec<DiffFile> = Vec::new();
-    let mut lines = diff_lines.peekable();
-
-    let header_prefix = match format {
-        DiffFormat::Hg => "diff ",
-        DiffFormat::GitStyle => "diff --git ",
-    };
-
-    // `diff_lines` may stream from a child process, so each read can fail. Use
-    // `next_line` instead of `lines.next()` to propagate I/O errors.
-    while let Some(line) = next_line(&mut lines)? {
-        if line.starts_with(header_prefix) {
-            let (mut old_path, mut new_path, status) = parse_file_header(&mut lines, format)?;
-
-            // For git-style diffs (jj, git patches), if parse_file_header didn't find
-            // ---/+++ or rename/copy lines (e.g. empty new files, mode-only changes),
-            // fall back to parsing paths from the "diff --git a/X b/X" header.
-            if old_path.is_none()
-                && new_path.is_none()
-                && let Some((a, b)) = parse_diff_git_header(&line)
-            {
-                match status {
-                    FileStatus::Deleted => old_path = Some(a),
-                    FileStatus::Added => new_path = Some(b),
-                    _ => {
-                        old_path = Some(a);
-                        new_path = Some(b);
-                    }
-                }
-            }
-
-            // Check if binary. `git diff --binary` can emit lowercase
-            // "GIT binary patch", so keep this check explicit instead of a
-            // case-sensitive substring search.
-            if peek_line(&mut lines)?.is_some_and(is_binary_patch_line) {
-                next_line(&mut lines)?; // consume binary message
-                files.push(DiffFile {
-                    old_path,
-                    new_path,
-                    status,
-                    hunks: Vec::new(),
-                    is_binary: true,
-                    is_too_large: false,
-                    is_commit_message: false,
-                    content_hash: 0,
-                });
-                continue;
-            }
-
-            let file_path = new_path.as_ref().or(old_path.as_ref());
-            let mut hunks = Vec::new();
-
-            // Parse hunks until next file or end
-            while let Some(line) = peek_line(&mut lines)? {
-                if line.starts_with("diff ") {
-                    break;
-                } else if line.starts_with("@@") {
-                    if let Some(hunk) = parse_hunk(&mut lines, file_path, highlighter)? {
-                        hunks.push(hunk);
-                    }
-                } else {
-                    next_line(&mut lines)?; // skip non-hunk, non-diff lines
-                }
-            }
-
-            let content_hash = DiffFile::compute_content_hash(&hunks);
-            files.push(DiffFile {
-                old_path,
-                new_path,
-                status,
-                hunks,
-                is_binary: false,
-                is_too_large: false,
-                is_commit_message: false,
-                content_hash,
-            });
-        }
-    }
-
-    if files.is_empty() {
+    if patches.is_empty() {
         return Err(TuicrError::NoChanges);
     }
 
-    Ok(files)
+    patches
+        .into_iter()
+        .map(|patch| materialize_file_patch(patch, highlighter))
+        .collect()
 }
 
-fn next_line<'a, I>(lines: &mut std::iter::Peekable<I>) -> Result<Option<Cow<'a, str>>>
-where
-    I: Iterator<Item = Result<Cow<'a, str>>>,
-{
-    lines.next().transpose()
+fn materialize_file_patch(patch: FilePatch, highlighter: &SyntaxHighlighter) -> Result<DiffFile> {
+    let file_path = patch.display_path().ok_or_else(|| {
+        TuicrError::VcsCommand("structured diff entry has neither an old nor a new path".into())
+    })?;
+    let hunks = if patch.is_binary || patch.is_too_large {
+        Vec::new()
+    } else {
+        parse_hunks(&patch.patch, file_path, highlighter)?
+    };
+    let content_hash = DiffFile::compute_content_hash(&hunks);
+
+    Ok(DiffFile {
+        old_path: patch.old_path,
+        new_path: patch.new_path,
+        status: patch.status,
+        hunks,
+        is_binary: patch.is_binary,
+        is_too_large: patch.is_too_large,
+        is_commit_message: false,
+        content_hash,
+    })
 }
 
-fn peek_line<'lines, 'a, I>(
-    lines: &'lines mut std::iter::Peekable<I>,
-) -> Result<Option<&'lines str>>
-where
-    I: Iterator<Item = Result<Cow<'a, str>>>,
-    'a: 'lines,
-{
-    if matches!(lines.peek(), Some(Err(_)))
-        && let Some(Err(err)) = lines.next()
-    {
-        return Err(err);
-    }
+fn parse_hunks(
+    patch: &str,
+    file_path: &Path,
+    highlighter: &SyntaxHighlighter,
+) -> Result<Vec<DiffHunk>> {
+    let mut hunks = Vec::new();
+    let mut lines = patch.lines().peekable();
+    let mut parsed_hunk = false;
 
-    Ok(lines.peek().map(|line| {
-        line.as_ref()
-            .expect("peeked line errors are consumed before borrowing")
-            .as_ref()
-    }))
-}
-
-fn is_binary_patch_line(line: &str) -> bool {
-    // A loose `contains("Binary")` also matches an ordinary `@@ ... @@` hunk
-    // header whose context text contains "Binary", so require the real
-    // marker shape instead: real markers always start the line (git's
-    // "Binary files ... differ", hg's "Binary file ... has changed", or
-    // "GIT binary patch"), never a `@@` hunk header.
-    line.starts_with("Binary file") || line.starts_with("GIT binary patch")
-}
-
-fn parse_file_header<'a, I>(
-    lines: &mut std::iter::Peekable<I>,
-    format: DiffFormat,
-) -> Result<(Option<PathBuf>, Option<PathBuf>, FileStatus)>
-where
-    I: Iterator<Item = Result<Cow<'a, str>>>,
-{
-    let mut old_path: Option<PathBuf> = None;
-    let mut new_path: Option<PathBuf> = None;
-    let mut status = FileStatus::Modified;
-
-    // Parse --- and +++ lines and metadata
-    while let Some(line) = peek_line(lines)?.map(str::to_string) {
-        if line.starts_with("---") {
-            let path_str = line.trim_start_matches("--- ").trim_start_matches("a/");
-            if path_str != "/dev/null" {
-                // Hg format may include timestamps after tab
-                let path = if format == DiffFormat::Hg {
-                    path_str.split('\t').next().unwrap_or(path_str)
-                } else {
-                    path_str
-                };
-                old_path = Some(PathBuf::from(path));
-            }
-            next_line(lines)?;
-        } else if line.starts_with("+++") {
-            let path_str = line.trim_start_matches("+++ ").trim_start_matches("b/");
-            if path_str != "/dev/null" {
-                let path = if format == DiffFormat::Hg {
-                    path_str.split('\t').next().unwrap_or(path_str)
-                } else {
-                    path_str
-                };
-                new_path = Some(PathBuf::from(path));
-            }
-            next_line(lines)?;
-            break; // Done with file header
-        } else if line.starts_with("new file") {
-            status = FileStatus::Added;
-            next_line(lines)?;
-        } else if line.starts_with("deleted file") {
-            status = FileStatus::Deleted;
-            next_line(lines)?;
-        } else if let Some(path) = line.strip_prefix("rename from ") {
-            status = FileStatus::Renamed;
-            old_path = Some(PathBuf::from(path));
-            next_line(lines)?;
-        } else if let Some(path) = line.strip_prefix("rename to ") {
-            new_path = Some(PathBuf::from(path));
-            next_line(lines)?;
-        } else if let Some(path) = line.strip_prefix("copy from ") {
-            status = FileStatus::Copied;
-            old_path = Some(PathBuf::from(path));
-            next_line(lines)?;
-        } else if let Some(path) = line.strip_prefix("copy to ") {
-            new_path = Some(PathBuf::from(path));
-            next_line(lines)?;
-        } else if line.starts_with("@@") || line.starts_with("diff ") {
-            break;
-        } else if line.starts_with("Binary file") || line.starts_with("GIT binary patch") {
-            // Hg format: "Binary file <path> has changed"
-            // Git format: "Binary files a/<old> and b/<new> differ"
-            if let Some((old, new)) = parse_binary_file_line(&line) {
-                if old_path.is_none() {
-                    old_path = old;
-                }
-                if new_path.is_none() {
-                    new_path = new;
-                }
-            }
-            break;
-        } else {
-            next_line(lines)?; // Skip other metadata lines (rename to, copy to, index, etc.)
+    while let Some(line) = lines.next() {
+        if line.starts_with("@@ ") {
+            hunks.push(parse_hunk(line, &mut lines, file_path, highlighter)?);
+            parsed_hunk = true;
+        } else if line.starts_with("@@") {
+            return Err(invalid_patch(
+                file_path,
+                format!("unsupported or malformed hunk header `{line}`"),
+            ));
+        } else if parsed_hunk
+            && !line.starts_with('\\')
+            && matches!(line.as_bytes().first(), Some(b' ' | b'+' | b'-'))
+        {
+            return Err(invalid_patch(
+                file_path,
+                format!("body line appears outside its declared hunk range: `{line}`"),
+            ));
         }
     }
 
-    // Determine status from paths if not already set by metadata
-    if status == FileStatus::Modified {
-        if old_path.is_none() && new_path.is_some() {
-            status = FileStatus::Added;
-        } else if old_path.is_some() && new_path.is_none() {
-            status = FileStatus::Deleted;
-        }
-    }
-
-    Ok((old_path, new_path, status))
+    Ok(hunks)
 }
 
 fn parse_hunk<'a, I>(
+    header: &str,
     lines: &mut std::iter::Peekable<I>,
-    file_path: Option<&PathBuf>,
+    file_path: &Path,
     highlighter: &SyntaxHighlighter,
-) -> Result<Option<DiffHunk>>
+) -> Result<DiffHunk>
 where
-    I: Iterator<Item = Result<Cow<'a, str>>>,
+    I: Iterator<Item = &'a str>,
 {
-    let Some(header_line) = next_line(lines)? else {
-        return Ok(None);
-    };
+    let (old_start, old_count, new_start, new_count) = parse_hunk_header(header)
+        .ok_or_else(|| invalid_patch(file_path, format!("malformed hunk header `{header}`")))?;
+    if !range_fits_u32(old_start, old_count) || !range_fits_u32(new_start, new_count) {
+        return Err(invalid_patch(
+            file_path,
+            format!("hunk range overflows a 32-bit line number in `{header}`"),
+        ));
+    }
 
-    // Parse @@ -old_start,old_count +new_start,new_count @@
-    let Some((old_start, old_count, new_start, new_count)) = parse_hunk_header(&header_line) else {
-        return Ok(None);
-    };
-
-    let mut line_contents: Vec<String> = Vec::new();
-    let mut line_origins: Vec<LineOrigin> = Vec::new();
-    let mut line_numbers: Vec<(Option<u32>, Option<u32>)> = Vec::new();
-
+    let mut line_contents = Vec::new();
+    let mut line_origins = Vec::new();
+    let mut line_numbers = Vec::new();
     let mut old_lineno = old_start;
     let mut new_lineno = new_start;
+    let mut old_remaining = old_count;
+    let mut new_remaining = new_count;
 
-    // Collect lines until next hunk or file
-    while let Some(line) = peek_line(lines)?.map(str::to_string) {
-        if line.starts_with("@@") || line.starts_with("diff ") {
-            break;
-        }
-
-        next_line(lines)?;
+    // Counts from the hunk header are the grammar. Prefix-looking content is
+    // still content: deleting `-- comment` yields `--- comment`, and adding
+    // `++i` yields `+++i`. We consume until both declared sides are complete,
+    // rather than looking for path-like sentinel strings inside the body.
+    while old_remaining > 0 || new_remaining > 0 {
+        let line = lines.next().ok_or_else(|| {
+            invalid_patch(
+                file_path,
+                format!(
+                    "hunk `{header}` ended early (missing {old_remaining} old and {new_remaining} new lines)"
+                ),
+            )
+        })?;
 
         if line.starts_with('\\') {
-            // "\ No newline at end of file" - skip
+            // `\ No newline at end of file` does not consume either side.
             continue;
         }
 
-        // No `---`/`+++` header check here: a hunk body line is never a file
-        // header. The outer loop only starts a file on a `diff --git `/`diff `
-        // line, `parse_file_header` consumes the `---`/`+++` pair before the
-        // first `@@`, and this loop breaks on the next `diff `/`@@` above. A
-        // check here would instead match *content*: deleting a line beginning
-        // with `--` (a SQL/Lua/Haskell comment, a YAML `---` separator, a
-        // Markdown front-matter fence) emits `---…`, and skipping it would drop
-        // the line and desynchronize every following line number in the hunk.
-        let (origin, content, old_ln, new_ln) = if let Some(stripped) = line.strip_prefix('+') {
-            let ln = new_lineno;
+        let (origin, content, old_ln, new_ln) = if let Some(content) = line.strip_prefix('+') {
+            if new_remaining == 0 {
+                return Err(invalid_patch(
+                    file_path,
+                    format!("hunk `{header}` contains too many new-side lines"),
+                ));
+            }
+            let line_number = new_lineno;
             new_lineno += 1;
-            (LineOrigin::Addition, stripped, None, Some(ln))
-        } else if let Some(stripped) = line.strip_prefix('-') {
-            let ln = old_lineno;
+            new_remaining -= 1;
+            (LineOrigin::Addition, content, None, Some(line_number))
+        } else if let Some(content) = line.strip_prefix('-') {
+            if old_remaining == 0 {
+                return Err(invalid_patch(
+                    file_path,
+                    format!("hunk `{header}` contains too many old-side lines"),
+                ));
+            }
+            let line_number = old_lineno;
             old_lineno += 1;
-            (LineOrigin::Deletion, stripped, Some(ln), None)
-        } else if let Some(stripped) = line.strip_prefix(' ') {
-            let old_ln = old_lineno;
-            let new_ln = new_lineno;
+            old_remaining -= 1;
+            (LineOrigin::Deletion, content, Some(line_number), None)
+        } else if let Some(content) = line.strip_prefix(' ') {
+            if old_remaining == 0 || new_remaining == 0 {
+                return Err(invalid_patch(
+                    file_path,
+                    format!("hunk `{header}` contains too many context lines"),
+                ));
+            }
+            let old_line_number = old_lineno;
+            let new_line_number = new_lineno;
             old_lineno += 1;
             new_lineno += 1;
-            (LineOrigin::Context, stripped, Some(old_ln), Some(new_ln))
-        } else if line.is_empty() {
-            // Empty line in diff (context line with no content after space)
-            let old_ln = old_lineno;
-            let new_ln = new_lineno;
-            old_lineno += 1;
-            new_lineno += 1;
-            (LineOrigin::Context, "", Some(old_ln), Some(new_ln))
+            old_remaining -= 1;
+            new_remaining -= 1;
+            (
+                LineOrigin::Context,
+                content,
+                Some(old_line_number),
+                Some(new_line_number),
+            )
         } else {
-            // Unknown format, skip
-            continue;
+            return Err(invalid_patch(
+                file_path,
+                format!("hunk `{header}` contains an unprefixed body line `{line}`"),
+            ));
         };
 
         line_contents.push(super::tabify(content));
@@ -331,933 +184,268 @@ where
         line_numbers.push((old_ln, new_ln));
     }
 
-    // Apply syntax highlighting by side-specific sequence to keep parser state valid.
-    // Container grammars skip per-hunk highlighting; the full-file post-pass
-    // (`enhance_with_full_file_highlight`) overwrites these spans anyway.
     let highlight_sequences =
         SyntaxHighlighter::split_diff_lines_for_highlighting(&line_contents, &line_origins);
-    let (old_highlighted_lines, new_highlighted_lines) = match file_path {
-        Some(path) if !needs_full_file_highlight(path) => (
-            highlighter.highlight_file_lines(path, &highlight_sequences.old_lines),
-            highlighter.highlight_file_lines(path, &highlight_sequences.new_lines),
-        ),
-        _ => (None, None),
+    let (old_highlighted_lines, new_highlighted_lines) = if !needs_full_file_highlight(file_path) {
+        (
+            highlighter.highlight_file_lines(file_path, &highlight_sequences.old_lines),
+            highlighter.highlight_file_lines(file_path, &highlight_sequences.new_lines),
+        )
+    } else {
+        (None, None)
     };
 
-    // Build DiffLines
-    let mut diff_lines: Vec<DiffLine> = Vec::with_capacity(line_contents.len());
-    for (idx, content) in line_contents.into_iter().enumerate() {
-        let origin = line_origins[idx];
-        let (old_lineno, new_lineno) = line_numbers[idx];
+    let lines = line_contents
+        .into_iter()
+        .enumerate()
+        .map(|(index, content)| {
+            let origin = line_origins[index];
+            let (old_lineno, new_lineno) = line_numbers[index];
+            let highlighted_spans = highlighter.highlighted_line_for_diff_with_background(
+                old_highlighted_lines.as_deref(),
+                new_highlighted_lines.as_deref(),
+                highlight_sequences.old_line_indices[index],
+                highlight_sequences.new_line_indices[index],
+                origin,
+            );
+            DiffLine {
+                origin,
+                content,
+                old_lineno,
+                new_lineno,
+                highlighted_spans,
+            }
+        })
+        .collect();
 
-        let highlighted_spans = highlighter.highlighted_line_for_diff_with_background(
-            old_highlighted_lines.as_deref(),
-            new_highlighted_lines.as_deref(),
-            highlight_sequences.old_line_indices[idx],
-            highlight_sequences.new_line_indices[idx],
-            origin,
-        );
-
-        diff_lines.push(DiffLine {
-            origin,
-            content,
-            old_lineno,
-            new_lineno,
-            highlighted_spans,
-        });
-    }
-
-    Ok(Some(DiffHunk {
-        header: header_line.to_string(),
-        lines: diff_lines,
+    Ok(DiffHunk {
+        header: header.to_string(),
+        lines,
         old_start,
         old_count,
         new_start,
         new_count,
-    }))
+    })
+}
+
+fn invalid_patch(path: &Path, detail: String) -> TuicrError {
+    TuicrError::VcsCommand(format!(
+        "invalid unified diff for {}: {detail}",
+        path.display()
+    ))
 }
 
 fn parse_hunk_header(line: &str) -> Option<(u32, u32, u32, u32)> {
-    // Format: @@ -old_start,old_count +new_start,new_count @@
-    // or: @@ -old_start +new_start @@ (count defaults to 1)
-
-    let parts: Vec<&str> = line.split_whitespace().collect();
-    if parts.len() < 3 || parts[0] != "@@" {
+    let tail = line.strip_prefix("@@ ")?;
+    let (ranges, _) = tail.split_once(" @@")?;
+    let mut parts = ranges.split_whitespace();
+    let old = parts.next()?.strip_prefix('-')?;
+    let new = parts.next()?.strip_prefix('+')?;
+    if parts.next().is_some() {
         return None;
     }
-
-    let old_part = parts[1].trim_start_matches('-');
-    let new_part = parts[2].trim_start_matches('+');
-
-    let (old_start, old_count) = parse_range(old_part);
-    let (new_start, new_count) = parse_range(new_part);
-
+    let (old_start, old_count) = parse_range(old)?;
+    let (new_start, new_count) = parse_range(new)?;
     Some((old_start, old_count, new_start, new_count))
 }
 
-fn parse_range(s: &str) -> (u32, u32) {
-    if let Some((start, count)) = s.split_once(',') {
-        (start.parse().unwrap_or(1), count.parse().unwrap_or(1))
-    } else {
-        (s.parse().unwrap_or(1), 1)
+fn parse_range(range: &str) -> Option<(u32, u32)> {
+    match range.split_once(',') {
+        Some((start, count)) => Some((start.parse().ok()?, count.parse().ok()?)),
+        None => Some((range.parse().ok()?, 1)),
     }
 }
 
-/// Parse paths from a "diff --git a/X b/X" header line.
-/// Returns (old_path, new_path) extracted from the a/ and b/ prefixes.
-fn parse_diff_git_header(line: &str) -> Option<(PathBuf, PathBuf)> {
-    let rest = line.strip_prefix("diff --git ")?;
-    // The format is "a/<path> b/<path>". Since paths can contain spaces,
-    // we find the " b/" separator. For paths without spaces, a simple split works.
-    // Try finding " b/" as separator (handles most cases).
-    if let Some(pos) = rest.find(" b/") {
-        let old_part = &rest[..pos];
-        let new_part = &rest[pos + 1..];
-        let old_path = old_part.strip_prefix("a/").unwrap_or(old_part);
-        let new_path = new_part.strip_prefix("b/").unwrap_or(new_part);
-        Some((PathBuf::from(old_path), PathBuf::from(new_path)))
-    } else {
-        None
-    }
+fn range_fits_u32(start: u32, count: u32) -> bool {
+    count == 0 || start.checked_add(count - 1).is_some()
 }
 
-/// Parse paths from a binary file line.
-/// Git format: "Binary files a/<old> and b/<new> differ"
-/// Hg format: "Binary file <path> has changed"
-/// Returns (old_path, new_path) where either can be None for /dev/null
-fn parse_binary_file_line(line: &str) -> Option<(Option<PathBuf>, Option<PathBuf>)> {
-    // Git format: "Binary files a/path/to/file and b/path/to/file differ"
-    if let Some(content) = line.strip_prefix("Binary files ") {
-        let content = content.strip_suffix(" differ")?;
-        let (old_part, new_part) = content.split_once(" and ")?;
-
-        let old_path = if old_part == "/dev/null" {
-            None
-        } else {
-            Some(PathBuf::from(
-                old_part.strip_prefix("a/").unwrap_or(old_part),
-            ))
-        };
-
-        let new_path = if new_part == "/dev/null" {
-            None
-        } else {
-            Some(PathBuf::from(
-                new_part.strip_prefix("b/").unwrap_or(new_part),
-            ))
-        };
-
-        return Some((old_path, new_path));
-    }
-
-    // Hg format: "Binary file image.png has changed"
-    if let Some(content) = line.strip_prefix("Binary file ") {
-        let path = content.strip_suffix(" has changed")?;
-        // For hg, the same path is used for both old and new
-        let path = PathBuf::from(path);
-        return Some((Some(path.clone()), Some(path)));
-    }
-
-    None
+/// Adapt compact hand-written Git fixtures used throughout the unit tests.
+/// Production code must obtain metadata from its backend instead.
+#[cfg(test)]
+pub(crate) fn git_fixture_file_patches(patch: &str) -> Vec<FilePatch> {
+    crate::vcs::git::raw::split_patch_blocks(patch.as_bytes())
+        .into_iter()
+        .map(|block| {
+            let text = String::from_utf8(block.to_vec()).expect("test patch must be UTF-8");
+            let mut lines = text.lines();
+            let header = lines.next().expect("test patch block needs a header");
+            let paths = header
+                .strip_prefix("diff --git a/")
+                .and_then(|rest| rest.split_once(" b/"))
+                .expect("test patch header must use simple a/ and b/ paths");
+            let mut old_path = Some(PathBuf::from(paths.0));
+            let mut new_path = Some(PathBuf::from(paths.1));
+            let mut status = FileStatus::Modified;
+            for line in text.lines() {
+                if line.starts_with("new file mode") {
+                    old_path = None;
+                    status = FileStatus::Added;
+                } else if line.starts_with("deleted file mode") {
+                    new_path = None;
+                    status = FileStatus::Deleted;
+                } else if let Some(path) = line.strip_prefix("rename from ") {
+                    old_path = Some(PathBuf::from(path));
+                    status = FileStatus::Renamed;
+                } else if let Some(path) = line.strip_prefix("rename to ") {
+                    new_path = Some(PathBuf::from(path));
+                } else if let Some(path) = line.strip_prefix("copy from ") {
+                    old_path = Some(PathBuf::from(path));
+                    status = FileStatus::Copied;
+                } else if let Some(path) = line.strip_prefix("copy to ") {
+                    new_path = Some(PathBuf::from(path));
+                }
+            }
+            FilePatch::new(old_path, new_path, status, text)
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // ============ Common tests ============
+    fn parse(patch: &str) -> Result<Vec<DiffFile>> {
+        parse_file_patches(
+            vec![FilePatch::new(
+                Some(PathBuf::from("file.txt")),
+                Some(PathBuf::from("file.txt")),
+                FileStatus::Modified,
+                patch,
+            )],
+            &SyntaxHighlighter::default(),
+        )
+    }
 
     #[test]
-    fn should_return_no_changes_for_empty_diff() {
+    fn returns_no_changes_for_empty_patch_set() {
         assert!(matches!(
-            parse_unified_diff("", DiffFormat::Hg, &SyntaxHighlighter::default()),
+            parse_file_patches(Vec::new(), &SyntaxHighlighter::default()),
             Err(TuicrError::NoChanges)
         ));
-        assert!(matches!(
-            parse_unified_diff("", DiffFormat::GitStyle, &SyntaxHighlighter::default()),
-            Err(TuicrError::NoChanges)
-        ));
     }
 
     #[test]
-    fn should_parse_hunk_header() {
-        let result = parse_hunk_header("@@ -1,3 +1,4 @@");
-        assert_eq!(result, Some((1, 3, 1, 4)));
-
-        let result = parse_hunk_header("@@ -10,5 +20,8 @@ context");
-        assert_eq!(result, Some((10, 5, 20, 8)));
-    }
-
-    #[test]
-    fn should_parse_hunk_header_without_count() {
-        let (old_start, old_count, new_start, new_count) =
-            parse_hunk_header("@@ -5 +10 @@").unwrap();
-        assert_eq!(old_start, 5);
-        assert_eq!(old_count, 1);
-        assert_eq!(new_start, 10);
-        assert_eq!(new_count, 1);
-    }
-
-    #[test]
-    fn should_reject_invalid_hunk_header() {
-        assert!(parse_hunk_header("not a hunk header").is_none());
-        assert!(parse_hunk_header("@@ invalid").is_none());
-    }
-
-    #[test]
-    fn should_parse_range_with_comma() {
-        assert_eq!(parse_range("10,5"), (10, 5));
-        assert_eq!(parse_range("1,100"), (1, 100));
-    }
-
-    #[test]
-    fn should_parse_range_without_comma() {
-        assert_eq!(parse_range("42"), (42, 1));
-        assert_eq!(parse_range("1"), (1, 1));
-    }
-
-    #[test]
-    fn should_handle_invalid_range() {
-        assert_eq!(parse_range("abc"), (1, 1));
-        assert_eq!(parse_range("abc,def"), (1, 1));
-    }
-
-    // ============ Hg format tests ============
-
-    #[test]
-    fn hg_should_parse_simple_diff() {
-        let diff = r#"diff -r abc123 test.rs
---- a/test.rs	Thu Jan 01 00:00:00 1970 +0000
-+++ b/test.rs	Thu Jan 01 00:00:00 1970 +0000
-@@ -1,3 +1,4 @@
- fn main() {
-+    println!("hello");
-     println!("world");
- }
-"#;
-
-        let result =
-            parse_unified_diff(diff, DiffFormat::Hg, &SyntaxHighlighter::default()).unwrap();
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].status, FileStatus::Modified);
-        assert_eq!(result[0].hunks.len(), 1);
-        assert_eq!(result[0].hunks[0].lines.len(), 4);
-    }
-
-    #[test]
-    fn hg_should_expand_tabs_to_spaces_in_hunk_lines() {
-        let diff = r#"diff -r abc123 test.rs
---- a/test.rs	Thu Jan 01 00:00:00 1970 +0000
-+++ b/test.rs	Thu Jan 01 00:00:00 1970 +0000
-@@ -1,2 +1,2 @@
--	old
-+	new
-"#;
-
-        let result =
-            parse_unified_diff(diff, DiffFormat::Hg, &SyntaxHighlighter::default()).unwrap();
-        let lines = &result[0].hunks[0].lines;
-
-        assert_eq!(lines[0].content, "    old");
-        assert_eq!(lines[1].content, "    new");
-        assert!(lines.iter().all(|l| !l.content.contains('\t')));
-    }
-
-    #[test]
-    fn hg_should_parse_new_file() {
-        let diff = r#"diff -r 000000000000 new_file.rs
---- /dev/null
-+++ b/new_file.rs
-@@ -0,0 +1,2 @@
-+fn new() {
-+}
-"#;
-
-        let result =
-            parse_unified_diff(diff, DiffFormat::Hg, &SyntaxHighlighter::default()).unwrap();
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].status, FileStatus::Added);
-        assert!(result[0].old_path.is_none());
-        assert_eq!(
-            result[0].new_path.as_ref().unwrap().to_str().unwrap(),
-            "new_file.rs"
-        );
-    }
-
-    #[test]
-    fn hg_should_parse_deleted_file() {
-        let diff = r#"diff -r abc123 old_file.rs
---- a/old_file.rs
-+++ /dev/null
-@@ -1,2 +0,0 @@
--fn old() {
--}
-"#;
-
-        let result =
-            parse_unified_diff(diff, DiffFormat::Hg, &SyntaxHighlighter::default()).unwrap();
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].status, FileStatus::Deleted);
-        assert_eq!(
-            result[0].old_path.as_ref().unwrap().to_str().unwrap(),
-            "old_file.rs"
-        );
-        assert!(result[0].new_path.is_none());
-    }
-
-    #[test]
-    fn hg_should_parse_multiple_files() {
-        let diff = r#"diff -r abc123 file1.rs
---- a/file1.rs
-+++ b/file1.rs
-@@ -1,1 +1,2 @@
- line1
-+line2
-diff -r abc123 file2.rs
---- a/file2.rs
-+++ b/file2.rs
-@@ -1,2 +1,1 @@
- keep
--remove
-"#;
-
-        let result =
-            parse_unified_diff(diff, DiffFormat::Hg, &SyntaxHighlighter::default()).unwrap();
-        assert_eq!(result.len(), 2);
-        assert_eq!(
-            result[0].new_path.as_ref().unwrap().to_str().unwrap(),
-            "file1.rs"
-        );
-        assert_eq!(
-            result[1].new_path.as_ref().unwrap().to_str().unwrap(),
-            "file2.rs"
-        );
-    }
-
-    #[test]
-    fn hg_should_parse_multiple_hunks() {
-        let diff = r#"diff -r abc123 multi.rs
---- a/multi.rs
-+++ b/multi.rs
-@@ -1,3 +1,4 @@
- fn first() {
-+    // added
- }
-
-@@ -10,3 +11,4 @@
- fn second() {
-+    // also added
- }
-"#;
-
-        let result =
-            parse_unified_diff(diff, DiffFormat::Hg, &SyntaxHighlighter::default()).unwrap();
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].hunks.len(), 2);
-        assert_eq!(result[0].hunks[0].old_start, 1);
-        assert_eq!(result[0].hunks[1].old_start, 10);
-    }
-
-    #[test]
-    fn hg_should_parse_renamed_file() {
-        let diff = r#"diff -r abc123 new_name.rs
-rename from old_name.rs
-rename to new_name.rs
---- a/old_name.rs
-+++ b/new_name.rs
-@@ -1,1 +1,1 @@
--old content
-+new content
-"#;
-
-        let result =
-            parse_unified_diff(diff, DiffFormat::Hg, &SyntaxHighlighter::default()).unwrap();
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].status, FileStatus::Renamed);
-        assert_eq!(
-            result[0].old_path.as_ref().unwrap().to_str().unwrap(),
-            "old_name.rs"
-        );
-        assert_eq!(
-            result[0].new_path.as_ref().unwrap().to_str().unwrap(),
-            "new_name.rs"
-        );
-    }
-
-    #[test]
-    fn hg_should_parse_binary_file() {
-        let diff = r#"diff -r abc123 image.png
-Binary file image.png has changed
-"#;
-
-        let result =
-            parse_unified_diff(diff, DiffFormat::Hg, &SyntaxHighlighter::default()).unwrap();
-        assert_eq!(result.len(), 1);
-        assert!(result[0].is_binary);
-        assert!(result[0].hunks.is_empty());
-    }
-
-    #[test]
-    fn hg_should_parse_renamed_file_without_content_changes() {
-        // Pure rename with no content changes - no ---/+++ lines
-        let diff = r#"diff -r abc123 new_name.rs
-rename from old_name.rs
-rename to new_name.rs
-"#;
-
-        let result =
-            parse_unified_diff(diff, DiffFormat::Hg, &SyntaxHighlighter::default()).unwrap();
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].status, FileStatus::Renamed);
-        assert_eq!(result[0].old_path, Some(PathBuf::from("old_name.rs")));
-        assert_eq!(result[0].new_path, Some(PathBuf::from("new_name.rs")));
-        assert!(result[0].hunks.is_empty());
-    }
-
-    #[test]
-    fn hg_should_parse_copied_file_without_content_changes() {
-        // Pure copy with no content changes
-        let diff = r#"diff -r abc123 dest.rs
-copy from source.rs
-copy to dest.rs
-"#;
-
-        let result =
-            parse_unified_diff(diff, DiffFormat::Hg, &SyntaxHighlighter::default()).unwrap();
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].status, FileStatus::Copied);
-        assert_eq!(result[0].old_path, Some(PathBuf::from("source.rs")));
-        assert_eq!(result[0].new_path, Some(PathBuf::from("dest.rs")));
-        assert!(result[0].hunks.is_empty());
-    }
-
-    #[test]
-    fn hg_should_parse_copied_file_with_content_changes() {
-        // Copy with content changes
-        let diff = r#"diff -r abc123 dest.rs
-copy from source.rs
-copy to dest.rs
---- a/source.rs	Thu Jan 01 00:00:00 1970 +0000
-+++ b/dest.rs	Thu Jan 01 00:00:00 1970 +0000
-@@ -1 +1,2 @@
- original
-+added line
-"#;
-
-        let result =
-            parse_unified_diff(diff, DiffFormat::Hg, &SyntaxHighlighter::default()).unwrap();
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].status, FileStatus::Copied);
-        assert_eq!(result[0].old_path, Some(PathBuf::from("source.rs")));
-        assert_eq!(result[0].new_path, Some(PathBuf::from("dest.rs")));
-        assert_eq!(result[0].hunks.len(), 1);
-    }
-
-    #[test]
-    fn hg_should_handle_no_newline_marker() {
-        let diff = r#"diff -r abc123 no_newline.rs
---- a/no_newline.rs
-+++ b/no_newline.rs
-@@ -1,1 +1,1 @@
+    fn uses_structured_metadata_instead_of_display_headers() {
+        let patch = r#"diff --git \"a/\\346\\227\\245.txt\" \"b/\\346\\227\\245.txt\"
+--- \"a/\\346\\227\\245.txt\"
++++ \"b/\\346\\227\\245.txt\"
+@@ -1 +1 @@
 -old
-\ No newline at end of file
 +new
-\ No newline at end of file
 "#;
+        let expected = PathBuf::from("日.txt");
+        let files = parse_file_patches(
+            vec![FilePatch::new(
+                Some(expected.clone()),
+                Some(expected.clone()),
+                FileStatus::Modified,
+                patch,
+            )],
+            &SyntaxHighlighter::default(),
+        )
+        .unwrap();
 
-        let result =
-            parse_unified_diff(diff, DiffFormat::Hg, &SyntaxHighlighter::default()).unwrap();
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].hunks[0].lines.len(), 2);
+        assert_eq!(files[0].old_path.as_ref(), Some(&expected));
+        assert_eq!(files[0].new_path.as_ref(), Some(&expected));
     }
 
     #[test]
-    fn hg_should_parse_line_numbers_correctly() {
-        let diff = r#"diff -r abc123 nums.rs
---- a/nums.rs
-+++ b/nums.rs
-@@ -5,4 +5,5 @@
- context at 5
--deleted at 6
-+added at 6
-+added at 7
- context at 7->8
-"#;
-
-        let result =
-            parse_unified_diff(diff, DiffFormat::Hg, &SyntaxHighlighter::default()).unwrap();
-        let lines = &result[0].hunks[0].lines;
-
-        assert_eq!(lines[0].origin, LineOrigin::Context);
-        assert_eq!(lines[0].old_lineno, Some(5));
-        assert_eq!(lines[0].new_lineno, Some(5));
-
-        assert_eq!(lines[1].origin, LineOrigin::Deletion);
-        assert_eq!(lines[1].old_lineno, Some(6));
-        assert_eq!(lines[1].new_lineno, None);
-
-        assert_eq!(lines[2].origin, LineOrigin::Addition);
-        assert_eq!(lines[2].old_lineno, None);
-        assert_eq!(lines[2].new_lineno, Some(6));
-
-        assert_eq!(lines[3].origin, LineOrigin::Addition);
-        assert_eq!(lines[3].old_lineno, None);
-        assert_eq!(lines[3].new_lineno, Some(7));
-
-        assert_eq!(lines[4].origin, LineOrigin::Context);
-        assert_eq!(lines[4].old_lineno, Some(7));
-        assert_eq!(lines[4].new_lineno, Some(8));
-    }
-
-    #[test]
-    fn should_keep_deleted_lines_whose_content_starts_with_dashes() {
-        // Deleting a YAML front-matter fence emits `----` (the `-` origin plus
-        // the `---` content); it must not be mistaken for a `---` file header.
-        let diff = r#"diff --git a/post.md b/post.md
---- a/post.md
-+++ b/post.md
-@@ -1,5 +1,2 @@
-----
--title: hello
-----
- intro
--old body
-+new body
-"#;
+    fn keeps_deleted_lines_whose_content_looks_like_headers() {
         let files =
-            parse_unified_diff(diff, DiffFormat::GitStyle, &SyntaxHighlighter::default()).unwrap();
+            parse("@@ -1,5 +1,2 @@\n----\n-title: hello\n----\n intro\n-old body\n+new body\n")
+                .unwrap();
         let lines = &files[0].hunks[0].lines;
-        assert_eq!(lines.len(), 6);
 
-        assert_eq!(lines[0].origin, LineOrigin::Deletion);
+        assert_eq!(lines.len(), 6);
         assert_eq!(lines[0].content, "---");
         assert_eq!(lines[0].old_lineno, Some(1));
-
-        assert_eq!(lines[2].origin, LineOrigin::Deletion);
-        assert_eq!(lines[2].content, "---");
-        assert_eq!(lines[2].old_lineno, Some(3));
-
-        // Line numbers after the skipped lines must not shift.
-        assert_eq!(lines[3].origin, LineOrigin::Context);
         assert_eq!(lines[3].old_lineno, Some(4));
-        assert_eq!(lines[3].new_lineno, Some(1));
-
-        assert_eq!(lines[4].origin, LineOrigin::Deletion);
         assert_eq!(lines[4].old_lineno, Some(5));
     }
 
     #[test]
-    fn should_keep_deleted_sql_comment_lines() {
-        // `--` is the line-comment token in SQL, Lua, Haskell, Ada and Elm.
-        let diff = r#"diff --git a/q.sql b/q.sql
---- a/q.sql
-+++ b/q.sql
-@@ -1,2 +1,1 @@
---- count the rows
- SELECT 1;
-"#;
-        let files =
-            parse_unified_diff(diff, DiffFormat::GitStyle, &SyntaxHighlighter::default()).unwrap();
-        let lines = &files[0].hunks[0].lines;
-        assert_eq!(lines.len(), 2);
-        assert_eq!(lines[0].origin, LineOrigin::Deletion);
-        assert_eq!(lines[0].content, "-- count the rows");
-        assert_eq!(lines[0].old_lineno, Some(1));
-        assert_eq!(lines[1].old_lineno, Some(2));
-    }
-
-    #[test]
-    fn should_keep_added_lines_whose_content_starts_with_plus_signs() {
-        let diff = r#"diff --git a/loop.c b/loop.c
---- a/loop.c
-+++ b/loop.c
-@@ -1,1 +1,3 @@
- int i = 0;
-+++i;
-+return i;
-"#;
-        let files =
-            parse_unified_diff(diff, DiffFormat::GitStyle, &SyntaxHighlighter::default()).unwrap();
-        let lines = &files[0].hunks[0].lines;
-        assert_eq!(lines.len(), 3);
-
-        assert_eq!(lines[1].origin, LineOrigin::Addition);
-        assert_eq!(lines[1].content, "++i;");
-        assert_eq!(lines[1].new_lineno, Some(2));
-
-        // The following addition must not reuse the skipped line's number.
-        assert_eq!(lines[2].new_lineno, Some(3));
-    }
-
-    // ============ Jujutsu (jj) format tests - uses DiffFormat::GitStyle ============
-
-    #[test]
-    fn jj_should_parse_simple_diff() {
-        let diff = r#"diff --git a/file.txt b/file.txt
---- a/file.txt
-+++ b/file.txt
-@@ -1,3 +1,4 @@
- line1
-+added
- line2
- line3
-"#;
-        let files =
-            parse_unified_diff(diff, DiffFormat::GitStyle, &SyntaxHighlighter::default()).unwrap();
-        assert_eq!(files.len(), 1);
-        assert_eq!(files[0].new_path, Some(PathBuf::from("file.txt")));
-        assert_eq!(files[0].status, FileStatus::Modified);
-        assert_eq!(files[0].hunks.len(), 1);
-        assert_eq!(files[0].hunks[0].lines.len(), 4);
-    }
-
-    #[test]
-    fn jj_should_expand_tabs_to_spaces_in_hunk_lines() {
-        let diff = r#"diff --git a/file.txt b/file.txt
---- a/file.txt
-+++ b/file.txt
-@@ -1,2 +1,2 @@
--	old
-+	new
-"#;
-        let files =
-            parse_unified_diff(diff, DiffFormat::GitStyle, &SyntaxHighlighter::default()).unwrap();
+    fn keeps_added_lines_whose_content_starts_with_plus_signs() {
+        let files = parse("@@ -1,2 +1,3 @@\n line\n-old\n+++i;\n+ tail\n").unwrap();
         let lines = &files[0].hunks[0].lines;
 
-        assert_eq!(lines[0].content, "    old");
-        assert_eq!(lines[1].content, "    new");
-        assert!(lines.iter().all(|l| !l.content.contains('\t')));
+        assert_eq!(lines.len(), 4);
+        assert_eq!(lines[2].content, "++i;");
+        assert_eq!(lines[2].new_lineno, Some(2));
+        assert_eq!(lines[3].new_lineno, Some(3));
     }
 
     #[test]
-    fn jj_should_keep_highlighting_for_interleaved_typescript_hunk() {
-        let diff = r#"diff --git a/file.ts b/file.ts
---- a/file.ts
-+++ b/file.ts
-@@ -1,3 +1,4 @@
- const msg = getMsg(
--    "old argument"
-+    "new argument",
-+    { extra: true }
- );
-"#;
+    fn parses_multiple_hunks_by_declared_counts() {
+        let files = parse(
+            "metadata\n@@ -1 +1 @@ first\n-old\n+new\n@@ -10,2 +10,2 @@ second\n a\n-b\n+c\n",
+        )
+        .unwrap();
 
-        let files =
-            parse_unified_diff(diff, DiffFormat::GitStyle, &SyntaxHighlighter::default()).unwrap();
-        let lines = &files[0].hunks[0].lines;
-
-        assert_eq!(lines.len(), 5);
-        for (idx, line) in lines.iter().enumerate() {
-            assert!(
-                line.highlighted_spans.is_some(),
-                "line {idx} should retain highlighting"
-            );
-        }
+        assert_eq!(files[0].hunks.len(), 2);
+        assert_eq!(files[0].hunks[1].lines[1].old_lineno, Some(11));
+        assert_eq!(files[0].hunks[1].lines[2].new_lineno, Some(11));
     }
 
     #[test]
-    fn jj_should_parse_new_file() {
-        let diff = r#"diff --git a/new.txt b/new.txt
-new file mode 100644
---- /dev/null
-+++ b/new.txt
-@@ -0,0 +1,2 @@
-+line1
-+line2
-"#;
-        let files =
-            parse_unified_diff(diff, DiffFormat::GitStyle, &SyntaxHighlighter::default()).unwrap();
-        assert_eq!(files.len(), 1);
-        assert_eq!(files[0].status, FileStatus::Added);
-    }
+    fn skips_no_newline_markers_without_consuming_a_side() {
+        let files = parse(
+            "@@ -1 +1 @@\n-old\n\\ No newline at end of file\n+new\n\\ No newline at end of file\n",
+        )
+        .unwrap();
 
-    #[test]
-    fn jj_should_parse_deleted_file() {
-        let diff = r#"diff --git a/old.txt b/old.txt
-deleted file mode 100644
---- a/old.txt
-+++ /dev/null
-@@ -1,2 +0,0 @@
--line1
--line2
-"#;
-        let files =
-            parse_unified_diff(diff, DiffFormat::GitStyle, &SyntaxHighlighter::default()).unwrap();
-        assert_eq!(files.len(), 1);
-        assert_eq!(files[0].status, FileStatus::Deleted);
-    }
-
-    #[test]
-    fn jj_should_parse_renamed_file_without_content_changes() {
-        // Pure rename with no content changes - no ---/+++ lines
-        let diff = r#"diff --git a/old.txt b/new.txt
-rename from old.txt
-rename to new.txt
-"#;
-        let files =
-            parse_unified_diff(diff, DiffFormat::GitStyle, &SyntaxHighlighter::default()).unwrap();
-        assert_eq!(files.len(), 1);
-        assert_eq!(files[0].status, FileStatus::Renamed);
-        assert_eq!(files[0].old_path, Some(PathBuf::from("old.txt")));
-        assert_eq!(files[0].new_path, Some(PathBuf::from("new.txt")));
-        assert!(files[0].hunks.is_empty());
-    }
-
-    #[test]
-    fn jj_should_parse_renamed_file_with_content_changes() {
-        // Rename with content changes - has ---/+++ lines
-        let diff = r#"diff --git a/old.txt b/new.txt
-rename from old.txt
-rename to new.txt
---- a/old.txt
-+++ b/new.txt
-@@ -1 +1 @@
--old content
-+new content
-"#;
-        let files =
-            parse_unified_diff(diff, DiffFormat::GitStyle, &SyntaxHighlighter::default()).unwrap();
-        assert_eq!(files.len(), 1);
-        assert_eq!(files[0].status, FileStatus::Renamed);
-        assert_eq!(files[0].old_path, Some(PathBuf::from("old.txt")));
-        assert_eq!(files[0].new_path, Some(PathBuf::from("new.txt")));
-        assert_eq!(files[0].hunks.len(), 1);
-    }
-
-    #[test]
-    fn jj_should_parse_copied_file_without_content_changes() {
-        // Pure copy with no content changes
-        let diff = r#"diff --git a/source.txt b/dest.txt
-copy from source.txt
-copy to dest.txt
-"#;
-        let files =
-            parse_unified_diff(diff, DiffFormat::GitStyle, &SyntaxHighlighter::default()).unwrap();
-        assert_eq!(files.len(), 1);
-        assert_eq!(files[0].status, FileStatus::Copied);
-        assert_eq!(files[0].old_path, Some(PathBuf::from("source.txt")));
-        assert_eq!(files[0].new_path, Some(PathBuf::from("dest.txt")));
-        assert!(files[0].hunks.is_empty());
-    }
-
-    #[test]
-    fn jj_should_parse_copied_file_with_content_changes() {
-        // Copy with content changes
-        let diff = r#"diff --git a/source.txt b/dest.txt
-copy from source.txt
-copy to dest.txt
---- a/source.txt
-+++ b/dest.txt
-@@ -1 +1,2 @@
- original
-+added line
-"#;
-        let files =
-            parse_unified_diff(diff, DiffFormat::GitStyle, &SyntaxHighlighter::default()).unwrap();
-        assert_eq!(files.len(), 1);
-        assert_eq!(files[0].status, FileStatus::Copied);
-        assert_eq!(files[0].old_path, Some(PathBuf::from("source.txt")));
-        assert_eq!(files[0].new_path, Some(PathBuf::from("dest.txt")));
-        assert_eq!(files[0].hunks.len(), 1);
-    }
-
-    #[test]
-    fn jj_should_parse_binary_file_added() {
-        let diff = r#"diff --git a/image.png b/image.png
-new file mode 100644
-index 0000000000..abc1234567
-Binary files /dev/null and b/image.png differ
-"#;
-        let files =
-            parse_unified_diff(diff, DiffFormat::GitStyle, &SyntaxHighlighter::default()).unwrap();
-        assert_eq!(files.len(), 1);
-        assert!(files[0].is_binary);
-        assert_eq!(files[0].status, FileStatus::Added);
-        assert!(files[0].old_path.is_none());
-        assert_eq!(files[0].new_path, Some(PathBuf::from("image.png")));
-    }
-
-    #[test]
-    fn jj_should_parse_binary_file_deleted() {
-        let diff = r#"diff --git a/image.png b/image.png
-deleted file mode 100644
-index abc1234567..0000000000
-Binary files a/image.png and /dev/null differ
-"#;
-        let files =
-            parse_unified_diff(diff, DiffFormat::GitStyle, &SyntaxHighlighter::default()).unwrap();
-        assert_eq!(files.len(), 1);
-        assert!(files[0].is_binary);
-        assert_eq!(files[0].status, FileStatus::Deleted);
-        assert_eq!(files[0].old_path, Some(PathBuf::from("image.png")));
-        assert!(files[0].new_path.is_none());
-    }
-
-    #[test]
-    fn jj_should_parse_binary_file_modified() {
-        let diff = r#"diff --git a/image.png b/image.png
-index abc1234567..def7890123 100644
-Binary files a/image.png and b/image.png differ
-"#;
-        let files =
-            parse_unified_diff(diff, DiffFormat::GitStyle, &SyntaxHighlighter::default()).unwrap();
-        assert_eq!(files.len(), 1);
-        assert!(files[0].is_binary);
-        assert_eq!(files[0].status, FileStatus::Modified);
-        assert_eq!(files[0].old_path, Some(PathBuf::from("image.png")));
-        assert_eq!(files[0].new_path, Some(PathBuf::from("image.png")));
-    }
-
-    #[test]
-    fn jj_should_not_treat_hunk_context_containing_binary_as_binary_marker() {
-        // Regression test: the hunk-header context text (the enclosing
-        // symbol name that `git diff` appends after the second `@@`) can
-        // contain the substring "Binary" without the file being binary.
-        let diff = r#"diff --git a/f.txt b/f.txt
-index 1111111..2222222 100644
---- a/f.txt
-+++ b/f.txt
-@@ -1,2 +1,3 @@ someBinaryThing(
- aaa
-+bbb
-"#;
-        let files =
-            parse_unified_diff(diff, DiffFormat::GitStyle, &SyntaxHighlighter::default()).unwrap();
-        assert_eq!(files.len(), 1);
-        assert!(!files[0].is_binary);
-        assert_eq!(files[0].hunks.len(), 1);
-    }
-
-    #[test]
-    fn jj_should_parse_multiple_files() {
-        let diff = r#"diff --git a/a.txt b/a.txt
---- a/a.txt
-+++ b/a.txt
-@@ -1 +1 @@
--old
-+new
-diff --git a/b.txt b/b.txt
---- a/b.txt
-+++ b/b.txt
-@@ -1 +1 @@
--foo
-+bar
-"#;
-        let files =
-            parse_unified_diff(diff, DiffFormat::GitStyle, &SyntaxHighlighter::default()).unwrap();
-        assert_eq!(files.len(), 2);
-        assert_eq!(files[0].new_path, Some(PathBuf::from("a.txt")));
-        assert_eq!(files[1].new_path, Some(PathBuf::from("b.txt")));
-    }
-
-    #[test]
-    fn jj_should_calculate_line_numbers() {
-        let diff = r#"diff --git a/file.txt b/file.txt
---- a/file.txt
-+++ b/file.txt
-@@ -5,4 +5,5 @@
- context
--deleted
-+added1
-+added2
- more
-"#;
-        let files =
-            parse_unified_diff(diff, DiffFormat::GitStyle, &SyntaxHighlighter::default()).unwrap();
-        let hunk = &files[0].hunks[0];
-
-        assert_eq!(hunk.lines[0].old_lineno, Some(5));
-        assert_eq!(hunk.lines[0].new_lineno, Some(5));
-
-        assert_eq!(hunk.lines[1].old_lineno, Some(6));
-        assert_eq!(hunk.lines[1].new_lineno, None);
-
-        assert_eq!(hunk.lines[2].old_lineno, None);
-        assert_eq!(hunk.lines[2].new_lineno, Some(6));
-
-        assert_eq!(hunk.lines[3].old_lineno, None);
-        assert_eq!(hunk.lines[3].new_lineno, Some(7));
-
-        assert_eq!(hunk.lines[4].old_lineno, Some(7));
-        assert_eq!(hunk.lines[4].new_lineno, Some(8));
-    }
-
-    #[test]
-    fn jj_should_parse_empty_new_file() {
-        // Empty new file: has "new file mode" and "index" lines but no ---/+++ or hunks
-        let diff = r#"diff --git a/empty.toml b/empty.toml
-new file mode 100644
-index 0000000000..e69de29bb2
-"#;
-        let files =
-            parse_unified_diff(diff, DiffFormat::GitStyle, &SyntaxHighlighter::default()).unwrap();
-        assert_eq!(files.len(), 1);
-        assert_eq!(files[0].status, FileStatus::Added);
-        assert!(files[0].old_path.is_none());
-        assert_eq!(files[0].new_path, Some(PathBuf::from("empty.toml")));
-        assert!(files[0].hunks.is_empty());
-        // Must not panic
-        let _path = files[0].display_path();
-    }
-
-    #[test]
-    fn jj_should_parse_mode_only_change() {
-        // Mode-only change: no ---/+++ or hunks
-        let diff = r#"diff --git a/script.sh b/script.sh
-old mode 100644
-new mode 100755
-"#;
-        let files =
-            parse_unified_diff(diff, DiffFormat::GitStyle, &SyntaxHighlighter::default()).unwrap();
-        assert_eq!(files.len(), 1);
-        assert_eq!(files[0].status, FileStatus::Modified);
-        assert_eq!(files[0].old_path, Some(PathBuf::from("script.sh")));
-        assert_eq!(files[0].new_path, Some(PathBuf::from("script.sh")));
-        assert!(files[0].hunks.is_empty());
-        let _path = files[0].display_path();
-    }
-
-    #[test]
-    fn git_should_parse_binary_patch_as_binary_file() {
-        let diff = r#"diff --git a/image.bin b/image.bin
-index 1234567..89abcde 100644
-GIT binary patch
-literal 4
-LcmeZB000M*0RR91
-
-literal 4
-LcmeZB000M*0RR91
-"#;
-
-        let files =
-            parse_unified_diff(diff, DiffFormat::GitStyle, &SyntaxHighlighter::default()).unwrap();
-
-        assert_eq!(files.len(), 1);
-        assert_eq!(files[0].old_path, Some(PathBuf::from("image.bin")));
-        assert_eq!(files[0].new_path, Some(PathBuf::from("image.bin")));
-        assert!(files[0].is_binary);
-        assert!(files[0].hunks.is_empty());
-    }
-
-    #[test]
-    fn should_parse_unified_diff_from_streamed_lines() {
-        let lines = [
-            "diff --git a/file.txt b/file.txt",
-            "--- a/file.txt",
-            "+++ b/file.txt",
-            "@@ -1 +1 @@",
-            "-old",
-            "+new",
-        ]
-        .into_iter()
-        .map(|line| Ok(Cow::Owned(line.to_string())));
-
-        let files =
-            parse_unified_diff_lines(lines, DiffFormat::GitStyle, &SyntaxHighlighter::default())
-                .unwrap();
-
-        assert_eq!(files.len(), 1);
-        assert_eq!(files[0].new_path, Some(PathBuf::from("file.txt")));
         assert_eq!(files[0].hunks[0].lines.len(), 2);
+    }
+
+    #[test]
+    fn rejects_truncated_hunks_instead_of_stealing_the_next_header() {
+        let error = parse("@@ -1,2 +1,2 @@\n a\n@@ -5 +5 @@\n-b\n+c\n").unwrap_err();
+        assert!(error.to_string().contains("unprefixed body line"));
+    }
+
+    #[test]
+    fn rejects_malformed_ranges_instead_of_defaulting_to_line_one() {
+        let error = parse("@@ -wat +1 @@\n-old\n+new\n").unwrap_err();
+        assert!(error.to_string().contains("malformed hunk header"));
+    }
+
+    #[test]
+    fn rejects_body_lines_beyond_the_declared_counts() {
+        let error = parse("@@ -1 +1 @@\n-old\n+new\n+extra\n").unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("outside its declared hunk range")
+        );
+    }
+
+    #[test]
+    fn rejects_line_ranges_that_would_overflow() {
+        let error = parse("@@ -4294967295,2 +1 @@\n-a\n-b\n+c\n").unwrap_err();
+        assert!(error.to_string().contains("overflows"));
+    }
+
+    #[test]
+    fn binary_and_too_large_files_do_not_parse_patch_text() {
+        let mut binary = FilePatch::new(
+            Some(PathBuf::from("image.png")),
+            Some(PathBuf::from("image.png")),
+            FileStatus::Modified,
+            "GIT binary patch\n@@ malformed",
+        );
+        binary.is_binary = true;
+        let mut large = FilePatch::new(
+            Some(PathBuf::from("large.txt")),
+            Some(PathBuf::from("large.txt")),
+            FileStatus::Modified,
+            "@@ malformed",
+        );
+        large.is_too_large = true;
+
+        let files = parse_file_patches(vec![binary, large], &SyntaxHighlighter::default()).unwrap();
+        assert!(files[0].is_binary);
+        assert!(files[0].hunks.is_empty());
+        assert!(files[1].is_too_large);
+        assert!(files[1].hunks.is_empty());
     }
 }
