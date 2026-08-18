@@ -293,6 +293,8 @@ These are non-obvious things the implementation chain hit. Worth preserving for 
 
 14. **A diff file must be registered in the session before `r`, `R`, or a comment can land on it.** All three look the file up in `ReviewSession.files` by display path. The two review-mark toggles return silently when it is absent; `add_comment_to_session` returns `session does not contain file`. So any code path that assigns `self.diff_files` must also call `App::register_diff_files`. Narrowing the inline commit pane skipped this, so commit-only files could be neither marked nor commented on.
 
+15. **GNU Linux release binaries must stay dynamically linked.** Static glibc binaries can crash when hostname lookup loads a host NSS module (for example Fedora's `libnss_myhostname`). The musl artifacts are the supported static Linux builds. Direct updates must preserve the running binary's GNU/musl target environment when selecting an asset.
+
 ### Keeping Docs Updated
 
 When adding user-facing features, update the relevant documentation:

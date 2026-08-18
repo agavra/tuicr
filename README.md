@@ -43,7 +43,8 @@ mise use github:agavra/tuicr
 nix run github:agavra/tuicr
 ```
 
-Pre-built binaries: [GitHub Releases](https://github.com/agavra/tuicr/releases)
+Pre-built binaries: [GitHub Releases](https://github.com/agavra/tuicr/releases). Linux releases
+include dynamically linked GNU and static musl variants.
 
 From source:
 

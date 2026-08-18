@@ -100,6 +100,7 @@ struct UpdateContext {
     current_version: String,
     os: String,
     arch: String,
+    target_env: String,
 }
 
 impl UpdateContext {
@@ -116,6 +117,13 @@ impl UpdateContext {
             current_version: env!("CARGO_PKG_VERSION").to_string(),
             os: std::env::consts::OS.to_string(),
             arch: std::env::consts::ARCH.to_string(),
+            target_env: if cfg!(target_env = "musl") {
+                "musl".to_string()
+            } else if cfg!(target_env = "gnu") {
+                "gnu".to_string()
+            } else {
+                String::new()
+            },
         })
     }
 }
@@ -268,7 +276,12 @@ fn update_direct(
     }
 
     let release_version = release_version.to_string();
-    let asset_name = release_asset_name(&release_version, &context.os, &context.arch)?;
+    let asset_name = release_asset_name(
+        &release_version,
+        &context.os,
+        &context.arch,
+        &context.target_env,
+    )?;
     let asset = release
         .assets
         .iter()
