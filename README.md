@@ -275,8 +275,6 @@ A first-session cheatsheet. Press `?` inside tuicr for the full reference.
 | `e` | Open focused file in `$EDITOR` |
 | `y` | Copy review to clipboard |
 | `:edit` | Open focused file in `$EDITOR` |
-| `:set noreviewed` / `:set reviewed` / `:reviewed` | Hide / show / toggle files already marked reviewed; narrows the tree **and** the diff |
-| `:copy-url` | Copy the open PR URL (PR mode) |
 | `:submit` | Push review to GitHub, GitLab, or Bitbucket |
 | `Tab` in `:` prompt | Complete or cycle commands |
 | `?` | Toggle full help |
