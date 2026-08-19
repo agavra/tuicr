@@ -18,6 +18,7 @@ src/
 ├── config/
 │   └── mod.rs           # User config loading (XDG on Unix, %APPDATA% on Windows)
 ├── app.rs               # Application state (App struct, InputMode, etc.)
+│   ├── editor_target.rs # Read-only snapshots of a PR revision for `$EDITOR`
 │   └── file_filter.rs   # File-tree include/exclude regex filters + `/` path search
 ├── error.rs             # Error types (TuicrError enum)
 ├── editor.rs            # External $EDITOR command construction and launch helpers
@@ -59,6 +60,7 @@ src/
 │   ├── pr_open.rs       # Async pr-open flow: build session from details + diff
 │   ├── selector.rs      # Review target selector state (Local | Pull Requests tabs)
 │   ├── context.rs       # Remote context expansion via ForgeBackend::fetch_file_lines
+│   ├── local_git.rs     # Shared `git show <sha>:<path>` blob read for all backends
 │   ├── remote_comments.rs # RemoteReviewThread shape + visibility filter
 │   ├── submit.rs        # Submit pipeline: preflight mapping, resolver actions,
 │   │                    # InlineComment payload, build_review_body, SubmitEvent
@@ -343,6 +345,8 @@ These are non-obvious things the implementation chain hit. Worth preserving for 
 19. **Gitea clamps `limit` to its `MaxResponseItems` setting** (default 50, instance-configurable). Requesting `limit=100` and stopping when fewer than 100 rows come back silently truncates at the first page. Pagination must drive off `X-Total-Count` and fall back to reading until a page comes up short *relative to the first page's size*, never relative to what was asked for. A truncated `/pulls/{n}/files` list is especially bad: it is paired positionally with the `.diff` text, so a short read turns into a hard "metadata records but N patch blocks" mismatch.
 
 20. **Gitea reports a mode-only change as file status `unchanged`.** It still emits a `diff --git` block, so the file must stay in the metadata list or every later file pairs against the wrong patch.
+
+21. **`e` in PR mode must not resolve against the working tree.** PR review installs `PrNoopVcs`, so there is no local VCS to ask, and `vcs_info.root_path` is the synthetic `forge:host/owner/repo` identity — the checkout can be on any branch, or absent. Editor targets go through `App::pr_editor_target`, which reads the reviewed revision (local blob via `forge::local_git::read_blob`, else `ForgeBackend::fetch_file_content`) and only hands over the worktree file when its content matches. Related: `fetch_file_lines` runs content through `slice_context_lines`, which expands tabs, so it is never byte-faithful — anything that writes content back to disk must use `fetch_file_content`.
 
 ### Keeping Docs Updated
 

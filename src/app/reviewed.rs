@@ -1,6 +1,21 @@
 use crate::editor::{EditorError, LaunchState};
+use crate::forge::local_git::read_blob;
+use crate::forge::traits::ForgeFileLinesRequest;
 
+use super::editor_target::{materialize, short_sha, snapshot_path, snapshot_root};
 use super::*;
+
+/// The parts of a `DiffFile` that editor-target resolution needs.
+///
+/// Copied out before resolving so the `&mut self` message setters stay usable
+/// with `self.diff_files` no longer borrowed.
+struct ReviewedFile {
+    display_path: PathBuf,
+    old_path: Option<PathBuf>,
+    new_path: Option<PathBuf>,
+    status: FileStatus,
+    is_binary: bool,
+}
 
 impl App {
     pub fn can_stage(&self) -> bool {
@@ -145,27 +160,45 @@ impl App {
             return;
         }
 
-        let display_path = file.display_path().clone();
+        let reviewed_file = ReviewedFile {
+            display_path: file.display_path().clone(),
+            old_path: file.old_path.clone(),
+            new_path: file.new_path.clone(),
+            status: file.status,
+            is_binary: file.is_binary,
+        };
         // PR mode's root_path is the synthetic forge:host/owner/repo
         // identity, never a real directory.
-        let root = if self.vcs_info.root_path.is_absolute() {
+        let checkout = if self.vcs_info.root_path.is_absolute() {
             Some(self.vcs_info.root_path.clone())
         } else {
             self.forge_backend
                 .as_deref()
                 .and_then(|backend| backend.local_checkout_path())
         };
-        let Some(root) = root else {
+
+        // A PR diff describes the PR's revision, which the checkout may not
+        // hold — resolving against the working tree would open the wrong text,
+        // at a line number computed for other content.
+        if let DiffSource::PullRequest(pr) = self.diff_source.clone() {
+            match self.pr_editor_target(&pr, &reviewed_file, checkout.as_deref(), line) {
+                Ok(target) => self.pending_editor_target = Some(target),
+                Err(warning) => self.set_warning(warning),
+            }
+            return;
+        }
+
+        let Some(root) = checkout else {
             self.set_warning(format!(
                 "Cannot open {}: no local checkout",
-                display_path.display()
+                reviewed_file.display_path.display()
             ));
             return;
         };
 
-        let path = root.join(&display_path);
-        // Deleted files and remote-only PR files have diff rows,
-        // but no worktree file the external editor can open.
+        let path = root.join(&reviewed_file.display_path);
+        // Deleted files have diff rows, but no worktree file the external
+        // editor can open.
         if !path.exists() {
             self.set_warning(format!(
                 "Cannot open {}: file does not exist",
@@ -174,7 +207,104 @@ impl App {
             return;
         }
 
-        self.pending_editor_target = Some(EditorTarget { path, line });
+        self.pending_editor_target = Some(EditorTarget {
+            label: reviewed_file.display_path.display().to_string(),
+            path,
+            line,
+        });
+    }
+
+    /// Resolve a PR file to something `$EDITOR` can open at the revision under
+    /// review.
+    ///
+    /// The worktree copy wins when it *is* that revision, because it is the only
+    /// file the user can edit. Otherwise the reviewed content goes to a
+    /// read-only snapshot, so the text and the line the cursor sits on match the
+    /// diff. `Err` carries the status-bar warning: nothing here is worth
+    /// stopping the review for.
+    fn pr_editor_target(
+        &self,
+        pr: &PullRequestDiffSource,
+        file: &ReviewedFile,
+        checkout: Option<&Path>,
+        line: Option<u32>,
+    ) -> std::result::Result<EditorTarget, String> {
+        let display_path = file.display_path.display().to_string();
+        let side = ForgeFileLinesRequest::side_for_status(file.status);
+        let Some(revision_path) = ForgeFileLinesRequest::path_for_side(
+            side,
+            file.old_path.as_ref(),
+            file.new_path.as_ref(),
+        ) else {
+            return Err(format!("Cannot open {display_path}: the diff has no path"));
+        };
+        let request = ForgeFileLinesRequest {
+            repository: pr.key.repository.clone(),
+            base_sha: pr.base_sha.clone(),
+            head_sha: pr.key.head_sha.clone(),
+            path: revision_path.clone(),
+            status: file.status,
+            side,
+            start_line: 0,
+            end_line: 0,
+        };
+        let sha = request.sha().to_string();
+        let short = short_sha(&sha).to_string();
+        let worktree = checkout.map(|root| root.join(&revision_path));
+
+        // Blob reads and forge responses are lossy UTF-8, so snapshotting a
+        // binary file would corrupt it; the worktree copy is the only one safe
+        // to hand over.
+        if file.is_binary {
+            return match worktree.filter(|path| path.exists()) {
+                Some(path) => Ok(EditorTarget {
+                    path,
+                    line,
+                    label: display_path,
+                }),
+                None => Err(format!(
+                    "Cannot open {display_path}: binary file is not in the local checkout"
+                )),
+            };
+        }
+
+        let content = match checkout.and_then(|root| read_blob(root, &sha, &revision_path)) {
+            Some(content) => content,
+            None => match self.forge_backend.as_deref() {
+                Some(backend) => backend
+                    .fetch_file_content(request)
+                    .map_err(|err| format!("Cannot read {display_path} at {short}: {err}"))?,
+                None => {
+                    return Err(format!(
+                        "Cannot open {display_path}: no local checkout and no forge backend"
+                    ));
+                }
+            },
+        };
+
+        if let Some(path) = worktree
+            && std::fs::read_to_string(&path).is_ok_and(|on_disk| on_disk == content)
+        {
+            return Ok(EditorTarget {
+                path,
+                line,
+                label: display_path,
+            });
+        }
+
+        let root = snapshot_root(&pr.key);
+        let Some(path) = snapshot_path(&root, &revision_path) else {
+            return Err(format!(
+                "Cannot open {display_path}: the path escapes the snapshot directory"
+            ));
+        };
+        materialize(&path, &content)
+            .map_err(|err| format!("Cannot write a {short} copy of {display_path}: {err}"))?;
+        Ok(EditorTarget {
+            path,
+            line,
+            label: format!("{display_path} @ {short} (read-only PR copy)"),
+        })
     }
 
     pub fn toggle_reviewed(&mut self) {

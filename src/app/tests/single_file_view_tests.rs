@@ -225,8 +225,35 @@ fn editor_target_warns_for_missing_local_file() {
     );
 }
 
+/// Content the fake backend serves for a revision.
+///
+/// Echoing the SHA back lets a test assert *which* revision (and therefore
+/// which diff side) the editor target was resolved against.
+fn revision_content(sha: &str) -> String {
+    format!("content at {sha}\n")
+}
+
 struct FakeForgeBackend {
     local_checkout: Option<PathBuf>,
+    /// When set, `fetch_file_content` fails with this message instead of
+    /// serving `revision_content`.
+    error: Option<String>,
+}
+
+impl FakeForgeBackend {
+    fn serving(local_checkout: Option<PathBuf>) -> Self {
+        Self {
+            local_checkout,
+            error: None,
+        }
+    }
+
+    fn failing(message: &str) -> Self {
+        Self {
+            local_checkout: None,
+            error: Some(message.to_string()),
+        }
+    }
 }
 
 impl crate::forge::traits::ForgeBackend for FakeForgeBackend {
@@ -281,41 +308,215 @@ impl crate::forge::traits::ForgeBackend for FakeForgeBackend {
     ) -> crate::error::Result<crate::forge::traits::GhCreateReviewResponse> {
         unimplemented!()
     }
+    fn fetch_file_content(
+        &self,
+        request: crate::forge::traits::ForgeFileLinesRequest,
+    ) -> crate::error::Result<String> {
+        match &self.error {
+            Some(message) => Err(crate::error::TuicrError::Forge(message.clone())),
+            None => Ok(revision_content(request.sha())),
+        }
+    }
     fn local_checkout_path(&self) -> Option<PathBuf> {
         self.local_checkout.clone()
     }
 }
 
+/// PR review app over `files`, with a checkout-relative diff and unique SHAs.
+///
+/// The SHAs are per-run so snapshots (which are keyed by SHA and deliberately
+/// never overwritten) cannot leak between runs of the suite.
+fn pr_app(backend: FakeForgeBackend, files: Vec<DiffFile>) -> (App, String, String) {
+    let head_sha = uuid::Uuid::new_v4().simple().to_string();
+    let base_sha = uuid::Uuid::new_v4().simple().to_string();
+    let mut app = app_with_root(PathBuf::from("forge:github.com/agavra/tuicr"), files);
+    app.diff_source = DiffSource::PullRequest(Box::new(PullRequestDiffSource {
+        key: crate::forge::traits::PrSessionKey::new(
+            crate::forge::traits::ForgeRepository::github("github.com", "agavra", "tuicr"),
+            7,
+            head_sha.clone(),
+        ),
+        base_sha: base_sha.clone(),
+        title: "a pull request".to_string(),
+        url: "https://github.com/agavra/tuicr/pull/7".to_string(),
+        head_ref_name: "feature".to_string(),
+        base_ref_name: "main".to_string(),
+        state: "OPEN".to_string(),
+        closed: false,
+        merged: false,
+    }));
+    app.forge_backend = Some(Box::new(backend));
+    app.focused_panel = FocusedPanel::FileList;
+    (app, head_sha, base_sha)
+}
+
+fn deleted_file(path: &str) -> DiffFile {
+    let hunks = vec![hunk(1, 1)];
+    let content_hash = DiffFile::compute_content_hash(&hunks);
+    DiffFile {
+        old_path: Some(PathBuf::from(path)),
+        new_path: None,
+        status: FileStatus::Deleted,
+        hunks,
+        is_binary: false,
+        is_too_large: false,
+        is_commit_message: false,
+        content_hash,
+    }
+}
+
 #[test]
-fn editor_target_falls_back_to_forge_backend_checkout_in_pr_mode() {
+fn pr_editor_target_prefers_a_worktree_copy_of_the_pr_revision() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("main.rs");
-    fs::write(&path, "fn main() {}\n").expect("write file");
 
-    let mut app = app_with_root(
-        PathBuf::from("forge:github.com/agavra/tuicr"),
+    let (mut app, head_sha, _) = pr_app(
+        FakeForgeBackend::serving(Some(dir.path().to_path_buf())),
         vec![file("main.rs", vec![hunk(1, 1)])],
     );
-    app.forge_backend = Some(Box::new(FakeForgeBackend {
-        local_checkout: Some(dir.path().to_path_buf()),
-    }));
-    app.focused_panel = FocusedPanel::FileList;
+    // The checkout holds exactly the reviewed content, so the editor should get
+    // the real file — the only copy edits can land in.
+    fs::write(&path, revision_content(&head_sha)).expect("write file");
 
     app.queue_editor_for_focused_item();
 
     let target = app.take_pending_editor_target().expect("editor target");
     assert_eq!(target.path, path);
+    assert_eq!(target.label, "main.rs");
 }
 
 #[test]
-fn editor_target_warns_when_pr_mode_has_no_matching_checkout() {
+fn pr_editor_target_snapshots_when_the_checkout_holds_another_revision() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let worktree_path = dir.path().join("main.rs");
+    fs::write(&worktree_path, "a different revision\n").expect("write file");
+
+    let (mut app, head_sha, _) = pr_app(
+        FakeForgeBackend::serving(Some(dir.path().to_path_buf())),
+        vec![file("main.rs", vec![hunk(1, 1)])],
+    );
+
+    app.queue_editor_for_focused_item();
+
+    let target = app.take_pending_editor_target().expect("editor target");
+    assert_ne!(target.path, worktree_path);
+    assert_eq!(
+        fs::read_to_string(&target.path).expect("snapshot content"),
+        revision_content(&head_sha)
+    );
+    assert!(
+        fs::metadata(&target.path)
+            .expect("snapshot metadata")
+            .permissions()
+            .readonly()
+    );
+    assert!(
+        target.label.contains(&head_sha[..7]) && target.label.contains("read-only"),
+        "label should name the revision: {}",
+        target.label
+    );
+}
+
+#[test]
+fn pr_editor_target_snapshots_a_file_the_checkout_does_not_have() {
+    let dir = tempfile::tempdir().expect("tempdir");
+
+    let (mut app, head_sha, _) = pr_app(
+        FakeForgeBackend::serving(Some(dir.path().to_path_buf())),
+        vec![file("added.rs", vec![hunk(1, 1)])],
+    );
+
+    app.queue_editor_for_focused_item();
+
+    let target = app.take_pending_editor_target().expect("editor target");
+    assert_eq!(
+        fs::read_to_string(&target.path).expect("snapshot content"),
+        revision_content(&head_sha)
+    );
+}
+
+#[test]
+fn pr_editor_target_snapshots_without_any_local_checkout() {
+    let (mut app, head_sha, _) = pr_app(
+        FakeForgeBackend::serving(None),
+        vec![file("main.rs", vec![hunk(1, 1)])],
+    );
+
+    app.queue_editor_for_focused_item();
+
+    let target = app.take_pending_editor_target().expect("editor target");
+    assert_eq!(
+        fs::read_to_string(&target.path).expect("snapshot content"),
+        revision_content(&head_sha)
+    );
+}
+
+#[test]
+fn pr_editor_target_reads_a_deleted_file_from_the_base_side() {
+    let (mut app, _, base_sha) = pr_app(
+        FakeForgeBackend::serving(None),
+        vec![deleted_file("gone.rs")],
+    );
+
+    app.queue_editor_for_focused_item();
+
+    let target = app.take_pending_editor_target().expect("editor target");
+    assert_eq!(
+        fs::read_to_string(&target.path).expect("snapshot content"),
+        revision_content(&base_sha),
+        "a file deleted by the PR only exists on the base side"
+    );
+    assert!(target.label.contains(&base_sha[..7]), "{}", target.label);
+}
+
+#[test]
+fn pr_editor_target_warns_when_a_binary_file_is_not_in_the_checkout() {
+    let mut binary = file("logo.png", vec![hunk(1, 1)]);
+    binary.is_binary = true;
+    let (mut app, _, _) = pr_app(FakeForgeBackend::serving(None), vec![binary]);
+
+    app.queue_editor_for_focused_item();
+
+    assert!(app.take_pending_editor_target().is_none());
+    assert!(
+        app.message
+            .as_ref()
+            .expect("warning")
+            .content
+            .contains("binary file"),
+        "{:?}",
+        app.message
+    );
+}
+
+#[test]
+fn pr_editor_target_warns_with_the_forge_error() {
+    let (mut app, _, _) = pr_app(
+        FakeForgeBackend::failing("HTTP 404: no such path"),
+        vec![file("main.rs", vec![hunk(1, 1)])],
+    );
+
+    app.queue_editor_for_focused_item();
+
+    assert!(app.take_pending_editor_target().is_none());
+    assert!(
+        app.message
+            .as_ref()
+            .expect("warning")
+            .content
+            .contains("HTTP 404: no such path"),
+        "{:?}",
+        app.message
+    );
+}
+
+#[test]
+fn editor_target_warns_when_a_synthetic_root_has_no_checkout() {
+    // Not PR mode: nothing can resolve the synthetic root to a directory.
     let mut app = app_with_root(
         PathBuf::from("forge:github.com/agavra/tuicr"),
         vec![file("main.rs", vec![hunk(1, 1)])],
     );
-    app.forge_backend = Some(Box::new(FakeForgeBackend {
-        local_checkout: None,
-    }));
     app.focused_panel = FocusedPanel::FileList;
 
     app.queue_editor_for_focused_item();
