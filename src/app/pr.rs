@@ -394,8 +394,8 @@ impl App {
         self.pr_range_reload_state = None;
 
         match result {
-            Ok(patch) => {
-                if let Err(e) = self.finish_pr_range_reload(&request, &patch) {
+            Ok(patches) => {
+                if let Err(e) = self.finish_pr_range_reload(&request, patches) {
                     self.set_error(format!("Range diff failed: {e}"));
                 }
             }
@@ -408,12 +408,12 @@ impl App {
     pub(in crate::app) fn finish_pr_range_reload(
         &mut self,
         request: &PrRangeReloadRequest,
-        patch: &str,
+        patches: Vec<crate::model::FilePatch>,
     ) -> Result<()> {
-        use crate::vcs::diff_parser::{DiffFormat, parse_unified_diff};
+        use crate::vcs::diff_parser::parse_file_patches;
 
         let highlighter = self.theme.syntax_highlighter();
-        let parsed = match parse_unified_diff(patch, DiffFormat::GitStyle, highlighter) {
+        let parsed = match parse_file_patches(patches, highlighter) {
             Ok(files) => files,
             Err(TuicrError::NoChanges) => Vec::new(),
             Err(e) => return Err(e),
@@ -529,10 +529,10 @@ impl App {
             return;
         }
         match result {
-            Ok((details, patch, commits, review_metadata, pr_info)) => {
+            Ok((details, patches, commits, review_metadata, pr_info)) => {
                 if let Err(e) = self.finish_pr_reload(
                     details,
-                    patch,
+                    patches,
                     commits,
                     review_metadata,
                     pr_info,
@@ -550,7 +550,7 @@ impl App {
     pub(in crate::app) fn finish_pr_reload(
         &mut self,
         details: crate::forge::traits::PullRequestDetails,
-        patch: String,
+        patches: Vec<crate::model::FilePatch>,
         commits: Vec<crate::forge::traits::PullRequestCommit>,
         review_metadata: crate::forge::traits::PullRequestReviewMetadata,
         pr_info: crate::forge::traits::PullRequestInfo,
@@ -565,7 +565,7 @@ impl App {
         let highlighter = self.theme.syntax_highlighter();
         let opened = prepare_open_pr(
             details,
-            &patch,
+            patches,
             commits,
             review_metadata,
             pr_info,
@@ -875,6 +875,25 @@ impl App {
         true
     }
 
+    /// The local clone backing `repo`, when tuicr was launched inside one of
+    /// its checkouts.
+    ///
+    /// Resolves against `local_repo_root`, not `vcs_info.root_path`: PR mode
+    /// swaps the latter for the synthetic `forge:host/owner/repo` identity, so
+    /// using it would find no checkout for every PR opened after the first
+    /// (issue #591 — Azure DevOps then fails the open outright, since it has
+    /// no unified-diff API and reads the diff from the clone).
+    ///
+    /// The repo match still gates the result, so a foreign checkout is never
+    /// used to filter or expand another repository's PR.
+    pub(in crate::app) fn local_checkout_for(
+        &self,
+        repo: &crate::forge::traits::ForgeRepository,
+    ) -> Option<std::path::PathBuf> {
+        let root = self.local_repo_root.as_deref()?;
+        crate::forge::local_checkout_for_repo(root, repo)
+    }
+
     /// Kick off the background fetch for a PR open. The main thread keeps
     /// rendering and pumping events; the resulting `PrOpenEvent::Done` is
     /// drained in `poll_pr_open_events` where parsing happens and PR mode
@@ -897,8 +916,7 @@ impl App {
         let pr_number = summary.number;
         // Resolve the local checkout up front so Azure DevOps can source its
         // diff from the clone when opening a PR from the selector.
-        let local_checkout =
-            crate::forge::local_checkout_for_repo(&self.vcs_info.root_path, &summary.repository);
+        let local_checkout = self.local_checkout_for(&summary.repository);
         let show_pr_checks = self.show_pr_checks;
         let show_pr_comments = self.show_pr_comments;
         std::thread::spawn(move || {
@@ -946,10 +964,10 @@ impl App {
                     return;
                 }
                 match result {
-                    Ok((details, patch, commits, review_metadata, pr_info)) => {
+                    Ok((details, patches, commits, review_metadata, pr_info)) => {
                         if let Err(e) = self.finish_pr_open(
                             details,
-                            patch,
+                            patches,
                             commits,
                             review_metadata,
                             pr_info,
@@ -969,14 +987,14 @@ impl App {
         }
     }
 
-    /// Main-thread half of the PR open: parse the patch, build the
+    /// Main-thread half of the PR open: parse the structured patches, build the
     /// session, and enter PR diff mode. Mirrors what the previous synchronous
     /// `open_pr_with_backend` did, but the network fetch has already
     /// happened on the background thread.
     fn finish_pr_open(
         &mut self,
         details: crate::forge::traits::PullRequestDetails,
-        patch: String,
+        patches: Vec<crate::model::FilePatch>,
         commits: Vec<crate::forge::traits::PullRequestCommit>,
         review_metadata: crate::forge::traits::PullRequestReviewMetadata,
         pr_info: crate::forge::traits::PullRequestInfo,
@@ -984,12 +1002,11 @@ impl App {
     ) -> Result<()> {
         use crate::forge::pr_open::prepare_open_pr;
 
-        let local_checkout =
-            crate::forge::local_checkout_for_repo(&self.vcs_info.root_path, &request.repository);
+        let local_checkout = self.local_checkout_for(&request.repository);
         let highlighter = self.theme.syntax_highlighter();
         let opened = prepare_open_pr(
             details.clone(),
-            &patch,
+            patches,
             commits,
             review_metadata,
             pr_info,

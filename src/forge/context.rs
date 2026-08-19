@@ -189,7 +189,10 @@ mod tests {
         fn get_pull_request(&self, _target: PullRequestTarget) -> Result<PullRequestDetails> {
             unimplemented!()
         }
-        fn get_pull_request_diff(&self, _pr: &PullRequestDetails) -> Result<String> {
+        fn get_pull_request_diff(
+            &self,
+            _pr: &PullRequestDetails,
+        ) -> Result<Vec<crate::model::FilePatch>> {
             unimplemented!()
         }
         fn fetch_file_lines(&self, request: ForgeFileLinesRequest) -> Result<Vec<DiffLine>> {
@@ -213,7 +216,7 @@ mod tests {
             _pr: &PullRequestDetails,
             _start_sha: &str,
             _end_sha: &str,
-        ) -> Result<String> {
+        ) -> Result<Vec<crate::model::FilePatch>> {
             unimplemented!()
         }
         fn create_review(

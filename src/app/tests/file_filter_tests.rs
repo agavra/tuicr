@@ -1,4 +1,5 @@
 use crate::app::*;
+use crate::input::keybindings::Action;
 use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin};
 use crate::vcs::traits::{VcsBackend, VcsInfo, VcsType};
 use std::path::PathBuf;
@@ -416,4 +417,281 @@ fn selected_path(app: &App) -> String {
             .to_string(),
         other => panic!("expected a file row, got {other:?}"),
     }
+}
+
+// ---- hiding reviewed files (`H` / `:set noreviewed`) ---------------------
+
+/// `diff_files` index of `path`. Looked up rather than hardcoded because
+/// `App::build` sorts the files, so load order is not index order.
+fn index_of(app: &App, path: &str) -> usize {
+    app.diff_files
+        .iter()
+        .position(|file| file.display_path().display().to_string() == path)
+        .unwrap_or_else(|| panic!("no diff file for {path}"))
+}
+
+/// Mark `path` reviewed the way the tree's `r` does (without moving the diff
+/// cursor), so these tests exercise the real toggle rather than poking the
+/// session directly.
+fn mark_reviewed(app: &mut App, path: &str) {
+    let idx = index_of(app, path);
+    app.toggle_reviewed_for_file_idx(idx, false);
+}
+
+#[test]
+fn should_hide_reviewed_files_from_the_tree() {
+    let mut app = app_with(&["README.md", "src/main.rs"]);
+    mark_reviewed(&mut app, "README.md");
+
+    app.set_show_reviewed(false);
+
+    assert_eq!(visible_paths(&app), vec!["src/main.rs"]);
+}
+
+#[test]
+fn should_bring_reviewed_files_back_when_toggled_on_again() {
+    let mut app = app_with(&["README.md", "src/main.rs"]);
+    mark_reviewed(&mut app, "README.md");
+    app.set_show_reviewed(false);
+
+    app.toggle_show_reviewed();
+
+    assert_eq!(visible_paths(&app), vec!["README.md", "src/main.rs"]);
+}
+
+#[test]
+fn should_remove_hidden_reviewed_files_from_the_diff_render_height() {
+    let mut app = app_with(&["README.md", "src/main.rs"]);
+    mark_reviewed(&mut app, "README.md");
+    // Marking reviewed already collapses the body in multi-file view, leaving
+    // the header row behind. Measure from there so this asserts the hiding,
+    // not the pre-existing collapse.
+    let collapsed = app.total_lines();
+
+    app.set_show_reviewed(false);
+
+    let hidden = app.total_lines();
+    assert!(
+        hidden < collapsed,
+        "hiding a reviewed file should drop its remaining rows: {hidden} vs {collapsed}"
+    );
+}
+
+#[test]
+fn should_keep_hunk_positions_aligned_with_the_rendered_rows_while_hiding() {
+    let mut app = app_with(&["a.rs", "b.rs", "c.rs"]);
+    mark_reviewed(&mut app, "a.rs");
+
+    app.set_show_reviewed(false);
+
+    // `hunk_positions` walks `diff_files` computing its own cumulative row
+    // offsets, so it has to drop exactly the rows the renderer drops —
+    // including the file header that a reviewed-but-visible file still gets.
+    for pos in app.hunk_positions() {
+        assert!(
+            matches!(
+                app.line_annotations.get(pos),
+                Some(AnnotatedLine::HunkHeader { .. })
+            ),
+            "hunk position {pos} should land on a hunk header, got {:?}",
+            app.line_annotations.get(pos)
+        );
+    }
+}
+
+#[test]
+fn should_keep_the_progress_fraction_over_the_whole_population_while_hiding() {
+    let mut app = app_with(&["a.rs", "b.rs", "c.rs"]);
+    mark_reviewed(&mut app, "a.rs");
+
+    app.set_show_reviewed(false);
+
+    // The tree title reads `Files · reviewed/total`. Counting only the rows on
+    // screen would collapse it to `0/2` exactly when progress matters most.
+    assert_eq!(app.reviewed_count(), 1);
+    assert_eq!(app.file_count(), 3);
+}
+
+#[test]
+fn should_still_scope_the_progress_fraction_to_the_include_exclude_filters() {
+    let mut app = app_with(&["src/a.rs", "src/b.rs", "docs/guide.md"]);
+    mark_reviewed(&mut app, "src/a.rs");
+    apply(&mut app, FileTreePrompt::Include, "^src/");
+
+    app.set_show_reviewed(false);
+
+    assert_eq!(app.reviewed_count(), 1);
+    assert_eq!(app.file_count(), 2);
+}
+
+#[test]
+fn should_not_search_into_hidden_reviewed_files() {
+    let mut app = app_with(&["src/main.rs", "tests/main.rs"]);
+    mark_reviewed(&mut app, "tests/main.rs");
+    app.set_show_reviewed(false);
+
+    apply(&mut app, FileTreePrompt::Search, "main");
+    assert_eq!(selected_path(&app), "src/main.rs");
+
+    // The only other "main" match is hidden, so stepping wraps back.
+    app.file_tree_search_next();
+    assert_eq!(selected_path(&app), "src/main.rs");
+}
+
+#[test]
+fn should_advance_to_the_next_unreviewed_file_when_marking_hides_the_current_one() {
+    let mut app = app_with(&["a.rs", "b.rs", "c.rs"]);
+    app.set_show_reviewed(false);
+    app.jump_to_file(index_of(&app, "b.rs"));
+
+    mark_reviewed(&mut app, "b.rs");
+
+    assert_eq!(app.diff_state.current_file_idx, index_of(&app, "c.rs"));
+    assert_eq!(selected_path(&app), "c.rs");
+}
+
+#[test]
+fn should_wrap_to_the_first_remaining_file_when_marking_the_last_one() {
+    let mut app = app_with(&["a.rs", "b.rs", "c.rs"]);
+    app.set_show_reviewed(false);
+    app.jump_to_file(index_of(&app, "c.rs"));
+
+    mark_reviewed(&mut app, "c.rs");
+
+    assert_eq!(app.diff_state.current_file_idx, index_of(&app, "a.rs"));
+    assert_eq!(selected_path(&app), "a.rs");
+}
+
+#[test]
+fn should_park_at_the_overview_when_the_last_unreviewed_file_is_marked() {
+    let mut app = app_with(&["a.rs"]);
+    app.set_show_reviewed(false);
+
+    mark_reviewed(&mut app, "a.rs");
+
+    assert!(visible_paths(&app).is_empty());
+    assert_eq!(app.diff_state.cursor_line, 0);
+    assert_eq!(app.diff_state.scroll_offset, 0);
+    let message = app.message.as_ref().expect("message").content.clone();
+    assert!(
+        message.contains("reviewed"),
+        "expected the exhausted-queue message to name the way back, got: {message}"
+    );
+}
+
+#[test]
+fn should_leave_the_cursor_alone_when_marking_reviewed_while_showing_everything() {
+    let mut app = app_with(&["a.rs", "b.rs", "c.rs"]);
+    let b = index_of(&app, "b.rs");
+    app.jump_to_file(b);
+
+    mark_reviewed(&mut app, "b.rs");
+
+    // Without hiding there is nothing to recover from: the reviewed file keeps
+    // its row and the diff stays where it was.
+    assert_eq!(app.diff_state.current_file_idx, b);
+    assert_eq!(visible_paths(&app), vec!["a.rs", "b.rs", "c.rs"]);
+}
+
+#[test]
+fn should_leave_no_stale_annotations_when_the_startup_default_hides_reviewed_files() {
+    // `App::build` builds annotations before `main.rs` applies the config, so
+    // the startup path has to re-derive them. `total_lines()` recomputes from
+    // the filter, but `line_annotations` — what the diff renderer and the
+    // cursor read — does not.
+    let mut app = app_with(&["a.rs", "b.rs"]);
+    mark_reviewed(&mut app, "a.rs");
+
+    app.init_show_reviewed(false);
+
+    assert_eq!(
+        app.line_annotations.len(),
+        app.total_lines(),
+        "rendered rows and the scroll math must agree after the startup default"
+    );
+}
+
+#[test]
+fn should_mark_the_selected_tree_row_reviewed_through_the_file_list_handler() {
+    let mut app = app_with(&["a.rs", "b.rs"]);
+    app.focused_panel = FocusedPanel::FileList;
+    app.file_list_state.select(0);
+
+    crate::handler::handle_file_list_action(&mut app, Action::ToggleReviewed);
+
+    assert_eq!(app.reviewed_count(), 1);
+}
+
+#[test]
+fn should_burn_down_through_the_file_list_handler_while_hiding() {
+    let mut app = app_with(&["a.rs", "b.rs", "c.rs"]);
+    app.focused_panel = FocusedPanel::FileList;
+    app.set_show_reviewed(false);
+    app.file_list_state.select(0);
+
+    crate::handler::handle_file_list_action(&mut app, Action::ToggleReviewed);
+
+    assert_eq!(visible_paths(&app), vec!["b.rs", "c.rs"]);
+    assert_eq!(selected_path(&app), "b.rs");
+}
+
+/// Type `command` at the `:` prompt and submit it, the way a user would.
+/// Command mode is the only entry point for reviewed-file visibility.
+fn run_command(app: &mut App, command: &str) {
+    app.enter_command_mode();
+    app.command_buffer.push_str(command);
+    crate::handler::handle_command_action(app, Action::SubmitInput);
+}
+
+#[test]
+fn should_hide_reviewed_files_via_the_set_noreviewed_command() {
+    let mut app = app_with(&["a.rs", "b.rs"]);
+    mark_reviewed(&mut app, "a.rs");
+
+    run_command(&mut app, "set noreviewed");
+
+    assert!(!app.show_reviewed());
+    assert_eq!(visible_paths(&app), vec!["b.rs"]);
+}
+
+#[test]
+fn should_show_reviewed_files_via_the_set_reviewed_command() {
+    let mut app = app_with(&["a.rs", "b.rs"]);
+    mark_reviewed(&mut app, "a.rs");
+    run_command(&mut app, "set noreviewed");
+
+    run_command(&mut app, "set reviewed");
+
+    assert!(app.show_reviewed());
+    assert_eq!(visible_paths(&app), vec!["a.rs", "b.rs"]);
+}
+
+#[test]
+fn should_toggle_reviewed_visibility_via_the_bare_reviewed_command() {
+    let mut app = app_with(&["a.rs", "b.rs"]);
+    mark_reviewed(&mut app, "a.rs");
+
+    run_command(&mut app, "reviewed");
+    assert_eq!(visible_paths(&app), vec!["b.rs"]);
+
+    run_command(&mut app, "reviewed");
+    assert_eq!(visible_paths(&app), vec!["a.rs", "b.rs"]);
+}
+
+#[test]
+fn should_not_hide_a_file_whose_hunks_are_merely_all_hunk_reviewed() {
+    let mut app = app_with(&["a.rs", "b.rs"]);
+    // `R` on every hunk is not the same as `r` on the file: only the
+    // file-level flag hides.
+    let a = index_of(&app, "a.rs");
+    app.jump_to_file(a);
+    app.toggle_hunk_reviewed();
+    assert!(
+        app.is_hunk_reviewed(a, 0),
+        "precondition: the hunk should be marked reviewed"
+    );
+
+    app.set_show_reviewed(false);
+
+    assert_eq!(visible_paths(&app), vec!["a.rs", "b.rs"]);
 }

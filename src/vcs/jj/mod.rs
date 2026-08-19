@@ -10,7 +10,8 @@ use chrono::{DateTime, Utc};
 use crate::error::{Result, TuicrError};
 use crate::model::{DiffFile, DiffLine, FileStatus};
 use crate::syntax::SyntaxHighlighter;
-use crate::vcs::diff_parser::{self, DiffFormat};
+use crate::vcs::diff_parser;
+use crate::vcs::git::raw::{FileMetadata, pair_metadata_with_patch};
 use crate::vcs::traits::{
     CommitInfo, DiffWhitespaceMode, ResolvedRevisionRange, RevisionDiffTarget, VcsBackend, VcsInfo,
     VcsType,
@@ -21,8 +22,12 @@ use crate::vcs::{
 
 /// Parse a jj description into (summary, optional body).
 fn parse_description(desc: &str) -> (String, Option<String>) {
+    if desc.trim().is_empty() {
+        return ("(no description set)".to_string(), None);
+    }
+
     let mut lines = desc.lines();
-    let summary = lines.next().unwrap_or("(no message)").to_string();
+    let summary = lines.next().unwrap_or("(no description set)").to_string();
     let body_text: String = lines
         .skip_while(|l| l.trim().is_empty())
         .collect::<Vec<_>>()
@@ -133,6 +138,69 @@ impl JjBackend {
         args_with_whitespace.extend_from_slice(&args[1..]);
         Cow::Owned(args_with_whitespace)
     }
+
+    fn load_diff(
+        &self,
+        diff_args: &[&str],
+        highlighter: &SyntaxHighlighter,
+    ) -> Result<Vec<DiffFile>> {
+        let args = self.diff_args(diff_args);
+        let mut metadata_args: Vec<&str> = args.iter().copied().collect();
+        metadata_args.extend(["-T", JJ_DIFF_METADATA_TEMPLATE]);
+        // This first command snapshots the working copy when needed. The
+        // patch command then reads that exact operation without another
+        // snapshot, keeping metadata and hunks in lockstep.
+        let metadata_output = run_jj_command(&self.info.root_path, metadata_args)?;
+        let metadata = parse_jj_diff_metadata(&metadata_output)?;
+        if metadata.is_empty() {
+            return Err(TuicrError::NoChanges);
+        }
+
+        let mut patch_args: Vec<&str> = args.iter().copied().collect();
+        patch_args.extend(["--git", "--ignore-working-copy"]);
+        let patch = run_jj_command(&self.info.root_path, patch_args)?;
+        let patches = pair_metadata_with_patch(metadata, patch.as_bytes())?;
+        diff_parser::parse_file_patches(patches, highlighter)
+    }
+}
+
+const JJ_DIFF_METADATA_TEMPLATE: &str =
+    r#"status_char ++ "\0" ++ source.path() ++ "\0" ++ target.path() ++ "\0""#;
+
+fn parse_jj_diff_metadata(output: &str) -> Result<Vec<FileMetadata>> {
+    let fields: Vec<&str> = output.split('\0').collect();
+    let records = fields.strip_suffix(&[""]).unwrap_or(&fields);
+    if !records.len().is_multiple_of(3) {
+        return Err(TuicrError::VcsCommand(format!(
+            "invalid jj diff metadata: expected status/source/target triples, got {} fields",
+            records.len()
+        )));
+    }
+
+    records
+        .chunks_exact(3)
+        .map(|record| {
+            let source = (!record[1].is_empty()).then(|| PathBuf::from(record[1]));
+            let target = (!record[2].is_empty()).then(|| PathBuf::from(record[2]));
+            let (old_path, new_path, status) = match record[0] {
+                "A" => (None, target, FileStatus::Added),
+                "D" => (source, None, FileStatus::Deleted),
+                "M" => (source, target, FileStatus::Modified),
+                "R" => (source, target, FileStatus::Renamed),
+                "C" => (source, target, FileStatus::Copied),
+                status => {
+                    return Err(TuicrError::VcsCommand(format!(
+                        "invalid jj diff metadata status `{status}`"
+                    )));
+                }
+            };
+            Ok(FileMetadata {
+                old_path,
+                new_path,
+                status,
+            })
+        })
+        .collect()
 }
 
 impl VcsBackend for JjBackend {
@@ -141,15 +209,7 @@ impl VcsBackend for JjBackend {
     }
 
     fn get_working_tree_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
-        let args = self.diff_args(&["diff", "--git"]);
-        let diff_output = run_jj_command(&self.info.root_path, args.iter().copied())?;
-
-        if diff_output.trim().is_empty() {
-            return Err(TuicrError::NoChanges);
-        }
-
-        let mut files =
-            diff_parser::parse_unified_diff(&diff_output, DiffFormat::GitStyle, highlighter)?;
+        let mut files = self.load_diff(&["diff"], highlighter)?;
         apply_container_full_file_highlight(
             &self.info.root_path,
             "@-",
@@ -173,17 +233,14 @@ impl VcsBackend for JjBackend {
             return Ok(Vec::new());
         }
 
-        let path_str = file_path.to_string_lossy();
+        let fileset = jj_fileset_arg(file_path);
         let content = if let Some(commit) = ref_commit {
             run_jj_command(
                 &self.info.root_path,
-                ["file", "show", "-r", commit, &path_str],
+                ["file", "show", "-r", commit, &fileset],
             )?
         } else if file_status == FileStatus::Deleted {
-            run_jj_command(
-                &self.info.root_path,
-                ["file", "show", "-r", "@-", &path_str],
-            )?
+            run_jj_command(&self.info.root_path, ["file", "show", "-r", "@-", &fileset])?
         } else {
             std::fs::read_to_string(self.info.root_path.join(file_path))?
         };
@@ -197,17 +254,14 @@ impl VcsBackend for JjBackend {
         file_status: FileStatus,
         ref_commit: Option<&str>,
     ) -> Result<u32> {
-        let path_str = file_path.to_string_lossy();
+        let fileset = jj_fileset_arg(file_path);
         let content = if let Some(commit) = ref_commit {
             run_jj_command(
                 &self.info.root_path,
-                ["file", "show", "-r", commit, &path_str],
+                ["file", "show", "-r", commit, &fileset],
             )?
         } else if file_status == FileStatus::Deleted {
-            run_jj_command(
-                &self.info.root_path,
-                ["file", "show", "-r", "@-", &path_str],
-            )?
+            run_jj_command(&self.info.root_path, ["file", "show", "-r", "@-", &fileset])?
         } else {
             std::fs::read_to_string(self.info.root_path.join(file_path))?
         };
@@ -324,16 +378,8 @@ impl VcsBackend for JjBackend {
         // Get the parent of the oldest commit to include its changes
         // In jj, we use {commit}- to get the parent(s)
         let from_rev = format!("{}-", oldest);
-        let diff_args = ["diff", "--from", &from_rev, "--to", newest, "--git"];
-        let args = self.diff_args(&diff_args);
-        let diff_output = run_jj_command(&self.info.root_path, args.iter().copied())?;
-
-        if diff_output.trim().is_empty() {
-            return Err(TuicrError::NoChanges);
-        }
-
-        let mut files =
-            diff_parser::parse_unified_diff(&diff_output, DiffFormat::GitStyle, highlighter)?;
+        let diff_args = ["diff", "--from", &from_rev, "--to", newest];
+        let mut files = self.load_diff(&diff_args, highlighter)?;
         apply_container_full_file_highlight(
             &self.info.root_path,
             &from_rev,
@@ -410,16 +456,8 @@ impl VcsBackend for JjBackend {
 
         // Diff from the parent of the oldest commit to the working copy (@)
         let from_rev = format!("{}-", oldest);
-        let diff_args = ["diff", "--from", &from_rev, "--to", "@", "--git"];
-        let args = self.diff_args(&diff_args);
-        let diff_output = run_jj_command(&self.info.root_path, args.iter().copied())?;
-
-        if diff_output.trim().is_empty() {
-            return Err(TuicrError::NoChanges);
-        }
-
-        let mut files =
-            diff_parser::parse_unified_diff(&diff_output, DiffFormat::GitStyle, highlighter)?;
+        let diff_args = ["diff", "--from", &from_rev, "--to", "@"];
+        let mut files = self.load_diff(&diff_args, highlighter)?;
         apply_container_full_file_highlight(
             &self.info.root_path,
             &from_rev,
@@ -432,6 +470,23 @@ impl VcsBackend for JjBackend {
     }
 }
 
+/// Render `path` as a jj fileset argument that matches it and nothing else.
+///
+/// jj parses positional path arguments as fileset expressions, so a file name
+/// containing meta characters (`(`, `)`, `|`, `&`, `~`, whitespace, ...) is a
+/// syntax error when passed bare -- see
+/// <https://github.com/agavra/tuicr/issues/602>. Wrapping the name in a quoted
+/// string literal keeps it out of the expression grammar, and the `root-file:`
+/// prefix pins it to an exact workspace-relative path (the paths we pass come
+/// from diff output, which is always workspace-relative).
+fn jj_fileset_arg(path: &Path) -> String {
+    let escaped = path
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    format!("root-file:\"{escaped}\"")
+}
+
 /// Fetch the full content of `paths` at `rev` in a single `jj file show`
 /// subprocess. jj is much cheaper per-call than hg, but batching still avoids
 /// repeated process startup when there are many container files in a diff.
@@ -440,12 +495,9 @@ fn jj_show_batch(root: &Path, rev: &str, paths: &[PathBuf]) -> Result<HashMap<Pa
         return Ok(HashMap::new());
     }
     let template = format!("\"\\n{BATCH_BOUNDARY}\\n\" ++ path ++ \"\\n\"");
-    let path_strs: Vec<String> = paths
-        .iter()
-        .map(|p| p.to_string_lossy().into_owned())
-        .collect();
+    let filesets: Vec<String> = paths.iter().map(|p| jj_fileset_arg(p)).collect();
     let mut args: Vec<&str> = vec!["file", "show", "-r", rev, "-T", &template];
-    args.extend(path_strs.iter().map(String::as_str));
+    args.extend(filesets.iter().map(String::as_str));
     let output = run_jj_command(root, &args)?;
     Ok(parse_batched_files(&output))
 }
@@ -601,6 +653,18 @@ mod tests {
     }
 
     #[test]
+    fn empty_description_uses_jj_wording() {
+        assert_eq!(
+            parse_description(""),
+            ("(no description set)".to_string(), None)
+        );
+        assert_eq!(
+            parse_description("  \n"),
+            ("(no description set)".to_string(), None)
+        );
+    }
+
+    #[test]
     fn test_jj_discover() {
         let Some(temp) = setup_test_repo() else {
             eprintln!("Skipping test: jj command not available");
@@ -644,6 +708,32 @@ mod tests {
             "hello.txt"
         );
         assert_eq!(files[0].status, FileStatus::Modified);
+    }
+
+    #[test]
+    fn test_jj_uses_template_paths_instead_of_git_headers() {
+        let Some(temp) = setup_test_repo() else {
+            eprintln!("Skipping test: jj command not available");
+            return;
+        };
+        let path = PathBuf::from("日本語 b/left and right.txt");
+        fs::create_dir_all(temp.path().join(path.parent().unwrap())).unwrap();
+        fs::write(temp.path().join(&path), "base\n").unwrap();
+        jj_cmd()
+            .args(["commit", "-m", "add ambiguous path"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+        fs::write(temp.path().join(&path), "base\nchanged\n").unwrap();
+
+        let backend = JjBackend::from_path(temp.path().to_path_buf(), DiffWhitespaceMode::Normal)
+            .expect("Failed to create jj backend");
+        let files = backend
+            .get_working_tree_diff(&SyntaxHighlighter::default())
+            .expect("structured jj diff should parse");
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].new_path.as_deref(), Some(path.as_path()));
     }
 
     #[test]
@@ -1137,6 +1227,86 @@ mod tests {
                 "vue hunk line {line:?} should have varied fg colors, got {unique_fgs:?}"
             );
         }
+    }
+
+    /// Create a repo whose only file lives under a directory with fileset meta
+    /// characters in its name, so every `jj file show` call has to quote it.
+    fn setup_test_repo_with_meta_char_path() -> Option<(tempfile::TempDir, PathBuf)> {
+        if !jj_available() {
+            return None;
+        }
+
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let root = temp_dir.path();
+
+        let output = jj_cmd()
+            .args(["git", "init"])
+            .current_dir(root)
+            .output()
+            .expect("Failed to init jj repo");
+        if !output.status.success() {
+            return None;
+        }
+
+        // Vue so the diff goes through the container full-file highlight path,
+        // which batches paths into a single `jj file show`.
+        let rel = PathBuf::from("routes/(app)/+page.vue");
+        fs::create_dir_all(root.join(rel.parent().unwrap())).expect("Failed to create dir");
+        let initial = "<template>\n  <div>{{ msg }}</div>\n</template>\n\n<script setup>\nimport { ref } from 'vue'\nconst msg = ref('hi')\nconst other = 1\n</script>\n";
+        fs::write(root.join(&rel), initial).expect("Failed to write Vue file");
+
+        jj_cmd()
+            .args(["commit", "-m", "Add Vue file"])
+            .current_dir(root)
+            .output()
+            .expect("Failed to commit");
+
+        let edited = "<template>\n  <div>{{ msg }}</div>\n</template>\n\n<script setup>\nimport { ref } from 'vue'\nconst msg = ref('hello')\nconst other = 1\n</script>\n";
+        fs::write(root.join(&rel), edited).expect("Failed to modify Vue file");
+
+        Some((temp_dir, rel))
+    }
+
+    #[test]
+    fn test_jj_fileset_arg_quotes_meta_characters() {
+        assert_eq!(
+            jj_fileset_arg(Path::new("routes/(app)/+page.svelte")),
+            r#"root-file:"routes/(app)/+page.svelte""#
+        );
+        assert_eq!(
+            jj_fileset_arg(Path::new(r#"we"ird\name.txt"#)),
+            r#"root-file:"we\"ird\\name.txt""#
+        );
+    }
+
+    #[test]
+    fn test_jj_handles_paths_with_fileset_meta_characters() {
+        let Some((temp, rel)) = setup_test_repo_with_meta_char_path() else {
+            eprintln!("Skipping test: jj command not available");
+            return;
+        };
+
+        let backend = JjBackend::from_path(temp.path().to_path_buf(), DiffWhitespaceMode::Normal)
+            .expect("Failed to create jj backend");
+
+        // The batched `jj file show` behind container highlighting must not
+        // choke on the parentheses in the path.
+        let files = backend
+            .get_working_tree_diff(&SyntaxHighlighter::default())
+            .expect("diff should succeed for a path with fileset meta characters");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].new_path.as_deref(), Some(rel.as_path()));
+
+        let lines = backend
+            .fetch_context_lines(&rel, FileStatus::Modified, Some("@-"), 1, 2)
+            .expect("context lines should be fetchable for a meta-character path");
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].content, "<template>");
+
+        let count = backend
+            .file_line_count(&rel, FileStatus::Modified, Some("@-"))
+            .expect("line count should be readable for a meta-character path");
+        assert_eq!(count, 9);
     }
 
     #[test]

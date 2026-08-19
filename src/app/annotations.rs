@@ -168,16 +168,14 @@ impl App {
                     .push(AnnotatedLine::FileHeader { file_idx });
             }
 
-            // If reviewed, skip all content for this file. Single-file
-            // view ignores the reviewed-collapse since the user
-            // explicitly focused this file, and renders the body under a
-            // "Marked reviewed" banner instead — that banner is a rendered
-            // row, so it needs its own annotation slot to keep this stream
-            // index-parallel with the renderers.
-            if self.session.is_file_reviewed(path) {
-                if !self.is_single_file_view {
-                    continue;
-                }
+            // Reviewed files normally collapse to their header in continuous
+            // view. A summary jump can reveal its target file without clearing
+            // the persisted marker. Single-file view also shows reviewed file
+            // bodies, under a banner that needs a matching annotation row.
+            if self.should_collapse_file(file_idx) {
+                continue;
+            }
+            if self.session.is_file_reviewed(path) && self.is_single_file_view {
                 self.line_annotations
                     .push(AnnotatedLine::ReviewedBanner { file_idx });
             }
@@ -294,7 +292,7 @@ impl App {
                     // Hunk header
                     self.line_annotations
                         .push(AnnotatedLine::HunkHeader { file_idx, hunk_idx });
-                    if self.is_hunk_reviewed(file_idx, hunk_idx) {
+                    if self.should_collapse_hunk(file_idx, hunk_idx) {
                         continue;
                     }
 

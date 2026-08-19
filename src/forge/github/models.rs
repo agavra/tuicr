@@ -1,10 +1,78 @@
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
+use std::path::PathBuf;
 
 use crate::error::{Result, TuicrError};
 use crate::forge::traits::{
     ForgeRepository, PullRequestCommit, PullRequestDetails, PullRequestSummary,
 };
+use crate::model::FileStatus;
+use crate::vcs::git::raw::FileMetadata;
+
+/// Machine-readable entry from the pull-request files REST endpoint.
+#[derive(Debug, Deserialize)]
+pub struct GhPullRequestFile {
+    pub filename: String,
+    pub status: String,
+    #[serde(default)]
+    pub previous_filename: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GhCompare {
+    #[serde(default)]
+    pub files: Vec<GhPullRequestFile>,
+}
+
+impl GhPullRequestFile {
+    pub(crate) fn into_metadata(self) -> Result<FileMetadata> {
+        let new_path = PathBuf::from(&self.filename);
+        let metadata = match self.status.as_str() {
+            "added" => FileMetadata {
+                old_path: None,
+                new_path: Some(new_path),
+                status: FileStatus::Added,
+            },
+            "removed" => FileMetadata {
+                old_path: Some(new_path),
+                new_path: None,
+                status: FileStatus::Deleted,
+            },
+            "renamed" => FileMetadata {
+                old_path: Some(PathBuf::from(self.previous_filename.ok_or_else(|| {
+                    TuicrError::Forge(format!(
+                        "GitHub renamed file `{}` has no previous_filename",
+                        self.filename
+                    ))
+                })?)),
+                new_path: Some(new_path),
+                status: FileStatus::Renamed,
+            },
+            "copied" => FileMetadata {
+                old_path: Some(PathBuf::from(self.previous_filename.ok_or_else(|| {
+                    TuicrError::Forge(format!(
+                        "GitHub copied file `{}` has no previous_filename",
+                        self.filename
+                    ))
+                })?)),
+                new_path: Some(new_path),
+                status: FileStatus::Copied,
+            },
+            "modified" | "changed" | "unchanged" => FileMetadata {
+                old_path: Some(new_path.clone()),
+                new_path: Some(new_path),
+                status: FileStatus::Modified,
+            },
+            status => {
+                return Err(TuicrError::Forge(format!(
+                    "GitHub returned unsupported file status `{status}` for `{}`",
+                    self.filename
+                )));
+            }
+        };
+        Ok(metadata)
+    }
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -164,5 +232,41 @@ fn require_field(value: &str, field: &str) -> Result<()> {
         )))
     } else {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn file_metadata_uses_json_paths_verbatim() {
+        let file: GhPullRequestFile = serde_json::from_str(
+            r#"{
+                "filename":"新 b/right and side.txt",
+                "previous_filename":"旧 b/left and side.txt",
+                "status":"renamed"
+            }"#,
+        )
+        .unwrap();
+        let metadata = file.into_metadata().unwrap();
+
+        assert_eq!(metadata.status, FileStatus::Renamed);
+        assert_eq!(
+            metadata.old_path.as_deref(),
+            Some(Path::new("旧 b/left and side.txt"))
+        );
+        assert_eq!(
+            metadata.new_path.as_deref(),
+            Some(Path::new("新 b/right and side.txt"))
+        );
+    }
+
+    #[test]
+    fn renamed_file_requires_previous_filename() {
+        let file: GhPullRequestFile =
+            serde_json::from_str(r#"{"filename":"new.txt","status":"renamed"}"#).unwrap();
+        assert!(file.into_metadata().is_err());
     }
 }

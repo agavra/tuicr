@@ -6,7 +6,7 @@
 //!
 //! Key invariants enforced here:
 //! - The current local checkout is never treated as the source of truth.
-//!   Diffs are parsed from `gh pr diff`; SHAs are captured from PR metadata.
+//!   File identity comes from forge metadata; SHAs come from PR metadata.
 //! - `.tuicrignore` is applied only when the caller supplies a local
 //!   checkout path. Outside a checkout, the unfiltered diff is shown.
 //! - No checkout mutation. We never spawn `git checkout/fetch/reset/stash`
@@ -19,10 +19,10 @@ use crate::forge::traits::{
     ForgeBackend, PrSessionKey, PullRequestCommit, PullRequestDetails, PullRequestInfo,
     PullRequestReviewMetadata, PullRequestTarget,
 };
-use crate::model::{DiffFile, ReviewSession, SessionDiffSource};
+use crate::model::{DiffFile, FilePatch, ReviewSession, SessionDiffSource};
 use crate::syntax::SyntaxHighlighter;
 use crate::tuicrignore;
-use crate::vcs::diff_parser::{DiffFormat, parse_unified_diff};
+use crate::vcs::diff_parser::parse_file_patches;
 
 /// Everything the App needs to enter PR review mode.
 #[derive(Debug)]
@@ -42,6 +42,15 @@ pub struct OpenedPullRequest {
     pub pr_info: PullRequestInfo,
 }
 
+/// Send-safe data fetched before the main thread materializes diff hunks.
+pub type PrFetchData = (
+    PullRequestDetails,
+    Vec<FilePatch>,
+    Vec<PullRequestCommit>,
+    PullRequestReviewMetadata,
+    PullRequestInfo,
+);
+
 /// Open a PR target through a forge backend and prepare review state.
 ///
 /// `local_checkout` is optional: when provided, `.tuicrignore` rules at the
@@ -53,10 +62,10 @@ pub fn open_pull_request(
     local_checkout: Option<&Path>,
     highlighter: &SyntaxHighlighter,
 ) -> Result<OpenedPullRequest> {
-    let (details, patch, commits, review_metadata, pr_info) = fetch_pr_data(backend, target)?;
+    let (details, patches, commits, review_metadata, pr_info) = fetch_pr_data(backend, target)?;
     prepare_open_pr(
         details,
-        &patch,
+        patches,
         commits,
         review_metadata,
         pr_info,
@@ -65,48 +74,39 @@ pub fn open_pull_request(
     )
 }
 
-/// Network-only half of the PR open path: fetch PR metadata, the raw
-/// patch text, and the commit list. Safe to run on a background thread
+/// Network-only half of the PR open path: fetch PR metadata, structured file
+/// patches, and the commit list. Safe to run on a background thread
 /// because it does no syntax parsing and holds nothing that isn't `Send`.
 ///
 /// The commit list is best-effort: if the forge fails on that endpoint
 /// only, we still return the diff so PR review proceeds without the
 /// inline selector. The first two calls remain required.
-pub fn fetch_pr_data(
-    backend: &dyn ForgeBackend,
-    target: PullRequestTarget,
-) -> Result<(
-    PullRequestDetails,
-    String,
-    Vec<PullRequestCommit>,
-    PullRequestReviewMetadata,
-    PullRequestInfo,
-)> {
+pub fn fetch_pr_data(backend: &dyn ForgeBackend, target: PullRequestTarget) -> Result<PrFetchData> {
     let pr_info = backend.get_pull_request_info(target)?;
     let details = pr_info.details.clone();
-    let patch = backend.get_pull_request_diff(&details)?;
+    let patches = backend.get_pull_request_diff(&details)?;
     let commits = backend
         .list_pull_request_commits(&details)
         .unwrap_or_default();
     let review_metadata = backend
         .list_pull_request_review_metadata(&details)
         .unwrap_or_default();
-    Ok((details, patch, commits, review_metadata, pr_info))
+    Ok((details, patches, commits, review_metadata, pr_info))
 }
 
-/// CPU-only half of the PR open path: parse the patch, apply
+/// CPU-only half of the PR open path: parse the hunks, apply
 /// `.tuicrignore`, and build the session. Runs on the main thread because
 /// `SyntaxHighlighter` is not trivially `Send`-cloneable.
 pub fn prepare_open_pr(
     details: PullRequestDetails,
-    patch: &str,
+    patches: Vec<FilePatch>,
     commits: Vec<PullRequestCommit>,
     review_metadata: PullRequestReviewMetadata,
     pr_info: PullRequestInfo,
     local_checkout: Option<&Path>,
     highlighter: &SyntaxHighlighter,
 ) -> Result<OpenedPullRequest> {
-    let parsed = match parse_unified_diff(patch, DiffFormat::GitStyle, highlighter) {
+    let parsed = match parse_file_patches(patches, highlighter) {
         Ok(files) => files,
         Err(TuicrError::NoChanges) => {
             return Err(TuicrError::Forge(format!(
@@ -224,9 +224,11 @@ mod tests {
             self.calls.borrow_mut().push("get_pull_request");
             Ok(self.details.clone())
         }
-        fn get_pull_request_diff(&self, _pr: &PullRequestDetails) -> Result<String> {
+        fn get_pull_request_diff(&self, _pr: &PullRequestDetails) -> Result<Vec<FilePatch>> {
             self.calls.borrow_mut().push("get_pull_request_diff");
-            Ok(self.patch.clone())
+            Ok(crate::vcs::diff_parser::git_fixture_file_patches(
+                &self.patch,
+            ))
         }
         fn fetch_file_lines(&self, _req: ForgeFileLinesRequest) -> Result<Vec<DiffLine>> {
             unimplemented!()
@@ -248,8 +250,10 @@ mod tests {
             _pr: &PullRequestDetails,
             _start_sha: &str,
             _end_sha: &str,
-        ) -> Result<String> {
-            Ok(self.patch.clone())
+        ) -> Result<Vec<FilePatch>> {
+            Ok(crate::vcs::diff_parser::git_fixture_file_patches(
+                &self.patch,
+            ))
         }
         fn create_review(
             &self,
@@ -303,10 +307,9 @@ index 1111111..2222222 100644
         );
     }
 
-    /// Patch fixture covering add/modify/delete/rename in a single PR
-    /// diff, mirroring what `gh pr diff --patch --color never` would
-    /// emit. Acts as a regression guard against future changes to the
-    /// shared diff parser.
+    /// Patch fixture covering add/modify/delete/rename in a single PR diff.
+    /// Tests pair its file blocks with explicit metadata before invoking the
+    /// shared hunk parser.
     const MULTI_STATUS_PATCH: &str = r##"diff --git a/added.rs b/added.rs
 new file mode 100644
 index 0000000..abc1234

@@ -578,6 +578,8 @@ pub enum InputMode {
     Help,
     /// Scrollable full-screen view for the complete current error message.
     MessageDetails,
+    /// View of the active review's pending local-draft comments.
+    Summary,
     Confirm,
     CommitSelect,
     VisualSelect,
@@ -814,16 +816,7 @@ pub enum PrOpenEvent {
         /// Network-only outcome. Parsing + session build runs on the main
         /// thread after this lands so `SyntaxHighlighter` does not need to
         /// cross thread boundaries.
-        result: std::result::Result<
-            (
-                crate::forge::traits::PullRequestDetails,
-                String,
-                Vec<crate::forge::traits::PullRequestCommit>,
-                crate::forge::traits::PullRequestReviewMetadata,
-                crate::forge::traits::PullRequestInfo,
-            ),
-            String,
-        >,
+        result: std::result::Result<crate::forge::pr_open::PrFetchData, String>,
     },
 }
 
@@ -856,16 +849,7 @@ pub struct PrReloadRequest {
 pub enum PrReloadEvent {
     Done {
         request: PrReloadRequest,
-        result: std::result::Result<
-            (
-                crate::forge::traits::PullRequestDetails,
-                String,
-                Vec<crate::forge::traits::PullRequestCommit>,
-                crate::forge::traits::PullRequestReviewMetadata,
-                crate::forge::traits::PullRequestInfo,
-            ),
-            String,
-        >,
+        result: std::result::Result<crate::forge::pr_open::PrFetchData, String>,
     },
 }
 
@@ -889,7 +873,7 @@ pub struct PrRangeReloadRequest {
 pub enum PrRangeReloadEvent {
     Done {
         request: PrRangeReloadRequest,
-        result: std::result::Result<String, String>,
+        result: std::result::Result<Vec<crate::model::FilePatch>, String>,
     },
 }
 
@@ -1090,6 +1074,15 @@ pub struct App {
     pub theme: Theme,
     pub vcs: Box<dyn VcsBackend>,
     pub vcs_info: VcsInfo,
+    /// The on-disk repo root tuicr was launched in, when there is one.
+    ///
+    /// Entering PR mode replaces `vcs_info.root_path` with the synthetic
+    /// `forge:host/owner/repo` session identity, so it can't be used to find
+    /// the local clone once a PR is open. This field is set once at startup
+    /// and never swapped, which is what lets a *second* PR opened from the PR
+    /// tab still resolve the checkout (`.tuicrignore` filtering, local file
+    /// context, and Azure DevOps diffs, which have no unified-diff API).
+    pub(crate) local_repo_root: Option<PathBuf>,
     pub session: ReviewSession,
     pub(crate) persisted_session_snapshot: ReviewSession,
     pub(crate) session_path: Option<PathBuf>,
@@ -1134,6 +1127,7 @@ pub struct App {
     pub comment_navigator_state: CommentNavigatorState,
     pub diff_state: DiffState,
     pub help_state: HelpState,
+    pub summary_state: SummaryState,
     /// File-tree include/exclude filters and `/` search.
     pub file_filter: FileTreeFilter,
     pub command_buffer: String,
@@ -1300,6 +1294,14 @@ pub struct App {
     /// focused file in the diff panel instead of the continuous-scroll
     /// concatenation. Toggled via `:focus` or `<leader>f`.
     pub is_single_file_view: bool,
+    /// A reviewed file whose body is temporarily expanded after opening a
+    /// comment from the summary view. The persisted reviewed marker is left
+    /// untouched; this is only a presentation override for continuous view.
+    pub revealed_reviewed_file: Option<PathBuf>,
+    /// A reviewed hunk whose body is temporarily expanded after opening a
+    /// comment from the summary view. The persisted reviewed marker is left
+    /// untouched; this is only a presentation override.
+    pub revealed_reviewed_hunk: Option<(PathBuf, String)>,
     /// Set when `j` (or down arrow) tries to overflow past the last line
     /// of the current file in single-file view. The first overflow press
     /// arms the flag and parks the cursor on max; a deliberate second
@@ -1611,7 +1613,6 @@ pub struct FilePattern {
 /// Include/exclude/search state for the file tree. Filters narrow both the
 /// tree and the diff pane (see `App::file_passes_filter`); search only moves
 /// the tree selection.
-#[derive(Default)]
 pub struct FileTreeFilter {
     pub include: Option<FilePattern>,
     pub exclude: Option<FilePattern>,
@@ -1619,6 +1620,23 @@ pub struct FileTreeFilter {
     /// keep stepping matches.
     pub search: Option<String>,
     pub draft: Option<FileTreeDraft>,
+    /// False hides files marked reviewed from the tree and the diff (`H`,
+    /// `:set noreviewed`, config `show_reviewed`).
+    pub show_reviewed: bool,
+}
+
+impl Default for FileTreeFilter {
+    /// Hand-written because `show_reviewed` defaults to *true*: a derived
+    /// `bool` default would silently boot with reviewed files hidden.
+    fn default() -> Self {
+        Self {
+            include: None,
+            exclude: None,
+            search: None,
+            draft: None,
+            show_reviewed: true,
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -1629,6 +1647,38 @@ pub struct HelpState {
     pub(crate) searchable_lines: Vec<String>,
     pub(crate) last_search_pattern: Option<String>,
     pub(crate) current_match_line: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SummaryCommentTarget {
+    Review {
+        comment_id: String,
+    },
+    File {
+        path: PathBuf,
+        comment_id: String,
+    },
+    Line {
+        path: PathBuf,
+        line: u32,
+        side: LineSide,
+        comment_id: String,
+    },
+}
+
+#[derive(Debug, Default)]
+pub struct SummaryState {
+    pub selected_comment: usize,
+    pub scroll_offset: usize,
+    pub viewport_height: usize,
+    pub total_lines: usize, // Set during render
+    /// Exclusive rendered-line ranges for each pending comment.
+    pub comment_ranges: Vec<(usize, usize)>,
+    /// Stable jump targets in the same order as `comment_ranges`.
+    /// A target is absent when the comment is hidden by the current diff,
+    /// commit selection, or file-tree filters.
+    pub targets: Vec<Option<SummaryCommentTarget>>,
+    pub(crate) selection_needs_scroll: bool,
 }
 
 /// Represents a comment location for deletion

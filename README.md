@@ -43,7 +43,8 @@ mise use github:agavra/tuicr
 nix run github:agavra/tuicr
 ```
 
-Pre-built binaries: [GitHub Releases](https://github.com/agavra/tuicr/releases)
+Pre-built binaries: [GitHub Releases](https://github.com/agavra/tuicr/releases). Linux releases
+include dynamically linked GNU and static musl variants.
 
 From source:
 
@@ -92,6 +93,13 @@ before, tuicr preselects commits newer than your latest submitted review when th
 available; commits already covered by that review are marked with `✓` in the inline selector.
 (Bitbucket does not record which commit an approval covered, so that preselection does not apply
 there.)
+Use `:summary` during a review to show every pending local-draft comment. The summary replaces the
+diff while leaving the file sidebar visible when it is open. The first
+comment is selected when the view opens; use `j`/`k` to select the next or previous comment, and
+the view scrolls automatically to keep it visible. Press `Enter` to jump to the selected comment
+in the continuous diff, leaving single-file view if necessary, or `Esc` to return to the diff. If
+its file or hunk is already marked reviewed, tuicr reveals the target without clearing that
+reviewed state.
 Auto-detects git, jj, or mercurial.
 
 ## How it compares
@@ -108,7 +116,7 @@ Auto-detects git, jj, or mercurial.
 | git | ✅ | ✅ | ✅ | ❌ | ✅ |
 | jj | ✅ | ✅ | ✅ | ❌ | ❌ |
 | Mercurial (hg) | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Single static binary | ✅ | (needs Node) | ✅ | ✅ | ✅ |
+| Single static binary | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 ¹ Lumen has `j`/`k` navigation but no broader vim model (visual mode, `{N}G`, `Ctrl-d`/`Ctrl-u`,
 etc.).
@@ -275,7 +283,6 @@ A first-session cheatsheet. Press `?` inside tuicr for the full reference.
 | `e` | Open focused file in `$EDITOR` |
 | `y` | Copy review to clipboard |
 | `:edit` | Open focused file in `$EDITOR` |
-| `:copy-url` | Copy the open PR URL (PR mode) |
 | `:submit` | Push review to GitHub, GitLab, or Bitbucket |
 | `Tab` in `:` prompt | Complete or cycle commands |
 | `?` | Toggle full help |

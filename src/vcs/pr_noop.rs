@@ -1,6 +1,6 @@
 //! Placeholder VCS backend used in PR diff mode.
 //!
-//! When the App enters PR mode, the diff comes from the forge (`gh pr diff`),
+//! When the App enters PR mode, structured file patches come from the forge,
 //! not from a local working tree. The `VcsBackend` slot still needs to be
 //! filled because the App and a number of other call sites assume one is
 //! always present. `PrNoopVcs` satisfies that requirement without doing any

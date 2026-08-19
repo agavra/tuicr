@@ -239,8 +239,18 @@ fn build_app_full(
     commits: Vec<CommitInfo>,
     comment_type_configs: Option<Vec<crate::config::CommentTypeConfig>>,
 ) -> App {
+    build_app_rooted(PathBuf::from("/tmp"), commits, comment_type_configs)
+}
+
+/// `build_app_full` with an explicit VCS root, for tests that need the app
+/// rooted at a real on-disk checkout.
+fn build_app_rooted(
+    root_path: PathBuf,
+    commits: Vec<CommitInfo>,
+    comment_type_configs: Option<Vec<crate::config::CommentTypeConfig>>,
+) -> App {
     let vcs_info = VcsInfo {
-        root_path: PathBuf::from("/tmp"),
+        root_path,
         head_commit: "head".to_string(),
         branch_name: Some("main".to_string()),
         vcs_type: VcsType::Git,
@@ -380,8 +390,8 @@ impl crate::forge::traits::ForgeBackend for FakeForgeBackend {
     fn get_pull_request_diff(
         &self,
         _pr: &crate::forge::traits::PullRequestDetails,
-    ) -> Result<String> {
-        Ok(self.patch.clone())
+    ) -> Result<Vec<crate::model::FilePatch>> {
+        Ok(structured_patch(&self.patch))
     }
     fn fetch_file_lines(
         &self,
@@ -412,11 +422,10 @@ impl crate::forge::traits::ForgeBackend for FakeForgeBackend {
         _pr: &crate::forge::traits::PullRequestDetails,
         _start_sha: &str,
         _end_sha: &str,
-    ) -> Result<String> {
-        Ok(self
-            .range_patch
-            .clone()
-            .unwrap_or_else(|| self.patch.clone()))
+    ) -> Result<Vec<crate::model::FilePatch>> {
+        Ok(structured_patch(
+            self.range_patch.as_deref().unwrap_or(&self.patch),
+        ))
     }
     fn create_review(
         &self,
@@ -573,6 +582,49 @@ fn should_enter_pr_mode_when_opening_pr_via_fake_backend() {
     assert!(app.forge_backend.is_some());
 }
 
+/// Regression for issue #591: `:prs` back to the selector and opening a
+/// second PR errored with "needs a local clone" on Azure DevOps.
+///
+/// Entering PR mode replaces `vcs_info.root_path` with the synthetic
+/// `forge:host/owner/repo` session identity, so resolving the checkout from
+/// it found nothing for every PR after the first. `local_repo_root` keeps the
+/// real launch root around for exactly this.
+#[test]
+fn should_still_resolve_local_checkout_for_a_second_pr_open() {
+    // given an app rooted in a real checkout of the PR's repository
+    let _reviews = TestReviewsDir::new();
+    let dir = tempfile::tempdir().expect("failed to create test repo dir");
+    let repo_root = dir.path().to_path_buf();
+    let git = git2::Repository::init(&repo_root).expect("failed to init test repo");
+    git.remote("origin", "https://github.com/agavra/tuicr")
+        .expect("failed to add origin");
+
+    let repository = ForgeRepository::github("github.com", "agavra", "tuicr");
+    let mut app = build_app_rooted(repo_root.clone(), Vec::new(), None);
+    assert_eq!(app.local_checkout_for(&repository), Some(repo_root.clone()));
+
+    // when a first PR is opened
+    let summary = sample_pr(42, "first");
+    let backend = Box::new(FakeForgeBackend::open_pr_details(
+        test_pr_details(42, "first"),
+        crate::forge::github::gh::tests_fixture::SIMPLE_PATCH.to_string(),
+    ));
+    app.open_pr_with_backend(&summary, backend, Some(repo_root.clone()))
+        .unwrap();
+
+    // then the VCS root is the synthetic PR identity, not a directory
+    assert!(
+        app.vcs_info
+            .root_path
+            .to_string_lossy()
+            .starts_with("forge:"),
+        "expected a synthetic PR root, got {:?}",
+        app.vcs_info.root_path,
+    );
+    // and the next PR open still finds the local clone
+    assert_eq!(app.local_checkout_for(&repository), Some(repo_root));
+}
+
 fn sample_pr_commit(oid: &str, summary: &str) -> crate::forge::traits::PullRequestCommit {
     crate::forge::traits::PullRequestCommit {
         oid: oid.to_string(),
@@ -705,6 +757,10 @@ fn two_hunk_patch() -> &'static str {
 
 fn first_hunk_patch() -> &'static str {
     include_str!("../../../tests/fixtures/pr_refresh/first_hunk.patch")
+}
+
+fn structured_patch(patch: &str) -> Vec<crate::model::FilePatch> {
+    crate::vcs::diff_parser::git_fixture_file_patches(patch)
 }
 
 fn two_file_patch(changed_replacement: &str) -> String {
@@ -947,7 +1003,7 @@ fn should_preserve_hunk_marks_hidden_by_pr_range_diff() {
         started_at: Instant::now(),
         anchor: None,
     };
-    app.finish_pr_range_reload(&request, first_hunk_patch())
+    app.finish_pr_range_reload(&request, structured_patch(first_hunk_patch()))
         .unwrap();
 
     assert!(app.session.is_hunk_reviewed(&path, &hidden_key));
@@ -1211,7 +1267,7 @@ fn should_reindex_recovered_pr_session() {
     let highlighter = app.theme.syntax_highlighter();
     let opened_b = crate::forge::pr_open::prepare_open_pr(
         details_b.clone(),
-        &two_file_patch("newer changed"),
+        structured_patch(&two_file_patch("newer changed")),
         Vec::new(),
         PullRequestReviewMetadata::default(),
         crate::forge::traits::PullRequestInfo::from_details(details_b.clone()),
@@ -1270,7 +1326,7 @@ fn should_error_on_corrupt_exact_session_file_when_reopening_pr() {
     let highlighter = theme.syntax_highlighter();
     let opened = crate::forge::pr_open::prepare_open_pr(
         details.clone(),
-        &two_file_patch("new changed"),
+        structured_patch(&two_file_patch("new changed")),
         Vec::new(),
         PullRequestReviewMetadata::default(),
         crate::forge::traits::PullRequestInfo::from_details(details.clone()),
@@ -1323,7 +1379,7 @@ fn should_keep_old_head_session_when_new_head_session_file_is_corrupt() {
     let highlighter = app.theme.syntax_highlighter();
     let opened_b = crate::forge::pr_open::prepare_open_pr(
         details_b.clone(),
-        &two_file_patch("newer changed"),
+        structured_patch(&two_file_patch("newer changed")),
         Vec::new(),
         PullRequestReviewMetadata::default(),
         crate::forge::traits::PullRequestInfo::from_details(details_b.clone()),
@@ -1405,7 +1461,7 @@ fn should_ignore_exact_session_file_when_pr_session_key_does_not_match() {
     let highlighter = theme.syntax_highlighter();
     let opened = crate::forge::pr_open::prepare_open_pr(
         details.clone(),
-        &two_file_patch("new changed"),
+        structured_patch(&two_file_patch("new changed")),
         Vec::new(),
         PullRequestReviewMetadata::default(),
         crate::forge::traits::PullRequestInfo::from_details(details.clone()),
@@ -1721,7 +1777,7 @@ fn should_build_new_head_session_by_carrying_only_unchanged_reviewed_state() {
     let pr_info_b = crate::forge::traits::PullRequestInfo::from_details(details_b.clone());
     let opened = crate::forge::pr_open::prepare_open_pr(
         details_b,
-        &two_file_patch("newer changed"),
+        structured_patch(&two_file_patch("newer changed")),
         Vec::new(),
         PullRequestReviewMetadata::default(),
         pr_info_b,
@@ -1778,7 +1834,7 @@ fn should_carry_unchanged_hunk_marks_inside_changed_file_when_pr_head_advances()
     let pr_info_b = crate::forge::traits::PullRequestInfo::from_details(details_b.clone());
     let opened = crate::forge::pr_open::prepare_open_pr(
         details_b,
-        &two_hunk_pr_patch("newer second"),
+        structured_patch(&two_hunk_pr_patch("newer second")),
         Vec::new(),
         PullRequestReviewMetadata::default(),
         pr_info_b,
@@ -1830,7 +1886,7 @@ fn should_carry_reviewed_state_through_finish_pr_reload_when_head_advances() {
     details_b.head_sha = "bbbbbbbbbbbbbbbb".to_string();
     app.finish_pr_reload(
         details_b.clone(),
-        two_file_patch("newer changed"),
+        structured_patch(&two_file_patch("newer changed")),
         Vec::new(),
         PullRequestReviewMetadata::default(),
         crate::forge::traits::PullRequestInfo::from_details(details_b),
@@ -1879,7 +1935,7 @@ fn should_keep_reviewed_state_through_finish_pr_reload_when_head_unchanged() {
     // when the async reload finish path refreshes the same head
     app.finish_pr_reload(
         details.clone(),
-        two_file_patch("new changed"),
+        structured_patch(&two_file_patch("new changed")),
         Vec::new(),
         PullRequestReviewMetadata::default(),
         crate::forge::traits::PullRequestInfo::from_details(details),
@@ -1937,7 +1993,7 @@ impl crate::forge::traits::ForgeBackend for FailingForgeBackend {
     fn get_pull_request_diff(
         &self,
         _pr: &crate::forge::traits::PullRequestDetails,
-    ) -> Result<String> {
+    ) -> Result<Vec<crate::model::FilePatch>> {
         unreachable!()
     }
     fn fetch_file_lines(
@@ -1963,7 +2019,7 @@ impl crate::forge::traits::ForgeBackend for FailingForgeBackend {
         _pr: &crate::forge::traits::PullRequestDetails,
         _start_sha: &str,
         _end_sha: &str,
-    ) -> Result<String> {
+    ) -> Result<Vec<crate::model::FilePatch>> {
         unreachable!()
     }
     fn create_review(
@@ -2143,6 +2199,41 @@ fn should_treat_commits_as_alias_for_local_target_selector() {
 }
 
 #[test]
+fn should_open_pending_comment_summary_from_command_mode() {
+    let mut app = build_app();
+    app.input_mode = InputMode::Command;
+    app.command_buffer = "summary".to_string();
+
+    crate::handler::handle_command_action(&mut app, crate::input::Action::SubmitInput);
+
+    assert_eq!(app.input_mode, InputMode::Summary);
+    assert!(app.command_buffer.is_empty());
+    assert_eq!(app.summary_state.selected_comment, 0);
+    assert_eq!(app.summary_state.scroll_offset, 0);
+
+    app.summary_state.selected_comment = 5;
+    app.summary_state.scroll_offset = 15;
+    app.enter_summary_mode();
+    assert_eq!(app.summary_state.selected_comment, 0);
+    assert_eq!(app.summary_state.scroll_offset, 0);
+
+    crate::handler::handle_summary_action(&mut app, crate::input::Action::ExitMode);
+    assert_eq!(app.input_mode, InputMode::Normal);
+}
+
+#[test]
+fn should_complete_summary_command() {
+    let mut app = build_app();
+    app.input_mode = InputMode::Command;
+    app.command_buffer = "summ".to_string();
+
+    crate::handler::handle_command_action(&mut app, crate::input::Action::CompleteCommand);
+
+    assert_eq!(app.command_buffer, "summary");
+    assert!(app.command_completion.is_none());
+}
+
+#[test]
 fn should_complete_command_when_only_one_candidate_matches() {
     // given
     let mut app = build_app();
@@ -2160,7 +2251,7 @@ fn should_extend_to_common_command_prefix_before_cycling() {
     // given
     let mut app = build_app();
     app.input_mode = InputMode::Command;
-    app.command_buffer = "su".to_string();
+    app.command_buffer = "sub".to_string();
     // when
     crate::handler::handle_command_action(&mut app, crate::input::Action::CompleteCommand);
     // then
@@ -2458,8 +2549,8 @@ impl crate::forge::traits::ForgeBackend for ThreadAwareForgeBackend {
     fn get_pull_request_diff(
         &self,
         _p: &crate::forge::traits::PullRequestDetails,
-    ) -> Result<String> {
-        Ok(self.patch.clone())
+    ) -> Result<Vec<crate::model::FilePatch>> {
+        Ok(structured_patch(&self.patch))
     }
     fn fetch_file_lines(
         &self,
@@ -2485,7 +2576,7 @@ impl crate::forge::traits::ForgeBackend for ThreadAwareForgeBackend {
         _pr: &crate::forge::traits::PullRequestDetails,
         _start_sha: &str,
         _end_sha: &str,
-    ) -> Result<String> {
+    ) -> Result<Vec<crate::model::FilePatch>> {
         unreachable!()
     }
     fn create_review(

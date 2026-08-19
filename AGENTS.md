@@ -35,11 +35,11 @@ src/
 ├── vcs/                 # VCS abstraction layer
 │   ├── mod.rs           # detect_vcs(): auto-detect VCS (jj first, then git, then hg)
 │   ├── traits.rs        # VcsBackend trait, VcsInfo, VcsType, CommitInfo
-│   ├── diff_parser.rs   # Unified diff text parser (shared by hg/jj and Git CLI)
-│   │                    # DiffFormat enum: Hg (with timestamps), GitStyle (jj/git patches)
+│   ├── diff_parser.rs   # Strict, count-driven hunk parser over structured FilePatch values
 │   ├── git/             # Git backend selector (libgit2 by default, CLI for sparse/opt-in)
 │   │   ├── mod.rs       # GitBackend wrapper, backend preference, repo mode detection
 │   │   ├── cli.rs       # Git CLI backend used for sparse checkouts and backend = "cli"
+│   │   ├── raw.rs       # Exact `git diff --raw -z --patch` metadata/patch adapter
 │   │   ├── libgit2.rs   # libgit2-backed implementation used for normal Git repos by default
 │   │   ├── repository.rs # CommitInfo, get_recent_commits()
 │   │   ├── diff.rs      # get_working_tree_diff(), get_commit_range_diff()
@@ -104,6 +104,7 @@ src/
     ├── comment_navigator.rs # Sidebar comment index for jumping local/remote comments
     ├── status_bar.rs    # Header, status bar, command line rendering
     ├── help_popup.rs    # Help overlay (? key)
+    ├── summary_popup.rs # :summary view of pending local-draft comments
     ├── comment_panel.rs # Comment input dialog, confirm dialog
     └── styles.rs        # Color constants and style helper functions
 ```
@@ -131,12 +132,28 @@ Repository-managed agent integrations:
 - Implementations: `GitBackend`, `HgBackend`, `JjBackend` (all always compiled)
 
 **FileTreeFilter** (`src/app/mod.rs`, impls in `src/app/file_filter.rs`):
-- File-tree `i` include / `e` exclude regex filters plus the `/` path search
+- File-tree `i` include / `e` exclude regex filters, the `/` path search, and the
+  `show_reviewed` flag (`:set reviewed!`, config `show_reviewed`) that hides files already
+  marked reviewed. `show_reviewed` is deliberately **command-only** — no single-key binding.
+  The project reserves single-stroke keys for vim motions, so do not add one for it.
 - A filter is a *view* over `diff_files`, never a mutation: `file_idx` stays an absolute
   index, so nothing downstream needs remapping. `App::file_passes_filter()` is the single
   predicate, consulted by `build_visible_items`, `rebuild_annotations`,
   `file_render_height`/`effective_file_height` (0 lines for hidden files), `hunk_positions`,
   and both diff renderers. Add a gate anywhere a new loop walks `diff_files`.
+- **Two predicates, deliberately.** `file_matches_patterns()` is `i`/`e` only — the review
+  *population*, used by `file_count()`, `reviewed_count()`, and `/` search.
+  `file_passes_filter()` is that plus `show_reviewed` — what is actually on screen. Scoping
+  the counts to the visible rows would render the tree title's progress fraction as `0/n`
+  whenever reviewed files are hidden. Only the file-level `reviewed` flag hides: a file
+  whose hunks are individually `R`-marked stays visible (and `is_hunk_reviewed` hashes every
+  hunk in the file, so it must not be called speculatively).
+- `FileTreeFilter` has a hand-written `Default` because `show_reviewed` defaults to *true*;
+  a derived `bool` default would silently boot with reviewed files hidden.
+- Marking a file reviewed while hiding deletes the row the cursor sits on, so
+  `toggle_reviewed_for_file_idx` calls `advance_past_hidden_file()` to land on the next
+  visible file (wrapping, then parking at the overview once the queue empties). It runs
+  regardless of the `adjust_cursor` argument — the tree selection has to move either way.
 - `file_filter.draft` makes the tree a text-input sub-state of `InputMode::Normal`, the same
   shape as `pr_filter_draft` for the target selector; `main.rs` routes to
   `map_file_tree_prompt_mode` while it is `Some`
@@ -151,6 +168,7 @@ Repository-managed agent integrations:
 - `Search` - after pressing `/`, search pattern entry
 - `Help` - showing help popup
 - `MessageDetails` - showing the complete current error in a scrollable full-screen view
+- `Summary` - list of all pending local-draft comments (replaces the diff while preserving the file sidebar; first comment selected on open; `j`/`k` changes selection and scrolls it into view; Enter jumps to the selected comment in the continuous diff; Esc returns)
 - `Confirm` - Y/N confirmation dialog
 - `CommitSelect` - selecting commits to review
 - `VisualSelect` - visual mode for range comments
@@ -174,8 +192,8 @@ Repository-managed agent integrations:
 ### Data Flow
 
 1. **Startup**: Parse CLI args (invalid `--theme` exits non-zero). `tuicr update` exits before TUI setup: Homebrew, Cargo, Mise, and Nix profile installs delegate to their package manager; direct binaries fetch the matching GitHub release asset, verify its GitHub-provided SHA-256 digest, and replace the executable. `tuicr update <version>` installs an exact Cargo or direct-binary release for rollback and release testing; managers without a safe generic pin command return an error. With no subcommand, or with explicit `tuicr tui`, load config from `$XDG_CONFIG_HOME/tuicr/config.toml` (default `~/.config/tuicr/config.toml`, or `%APPDATA%\tuicr\config.toml` on Windows), ignore unknown config keys with startup warnings, resolve theme precedence (`--theme` > config > dark), then call `App::new()`. Theme selection first checks bundled names, then local theme files from `$XDG_CONFIG_HOME/tuicr/themes/` (default `~/.config/tuicr/themes/`, or `%APPDATA%\tuicr\themes\` on Windows). Local theme files may reference a local `.tmTheme` syntax theme. Some bat-compatible Base16 `.tmTheme` files encode ANSI palette slots as placeholders, and `src/syntax/mod.rs` translates those at render time. `App::new()` calls `detect_vcs()` (Jujutsu first, then Git, then Mercurial), using config `backend = "libgit2"` or `backend = "cli"` for Git. Normal Git repos default to libgit2; sparse checkout repos automatically use the Git CLI backend and show a startup warning when that overrides the default. It filters diff files via repo-root `.tuicrignore`, then enters commit selection mode by default. If staged/unstaged changes exist, the first selection rows are "Staged changes" and/or "Unstaged changes". The Pull Requests tab can toggle between all open PRs and forge PRs/MRs requesting the current user's review with `r`, which refetches page 1 using `gh pr list --search "review-requested:@me"` on GitHub, `glab mr list --reviewer=@me` on GitLab, or a `q=state="OPEN" AND reviewers.uuid="…"` filter on Bitbucket (the state clause must live inside `q`; Cloud ignores a standalone `state` parameter once `q` is present). With `-r/--revisions`, it opens the requested commit range directly. Config `show_file_list = false` hides the file list panel on startup (toggleable with `<leader>e`, where `leader` defaults to `;`). Config `diff_view = "side-by-side"` sets the default diff layout (toggleable with `:diff`). Config `wrap = true` enables line wrapping (toggleable with `:set wrap!`). Config `review_watch_interval_ms = 1000` controls persisted-session polling; set it to `0` to disable. Config `diff_watch_interval_ms` (default `0`, disabled) periodically re-runs the local diff reload so uncommitted changes appear without `:e`; ignored for pull-request and `--all-files` reviews. The same tick refreshes the inline commit pane, so a commit written mid-review appears, and the "Staged changes" and "Unstaged changes" rows follow the tree as files are staged and unstaged.
-2. **Render**: `ui::render()` draws the TUI based on `App` state. When rendered comments exist, the left sidebar splits vertically into file tree and comment navigator; the navigator is hidden when there are no rendered comment rows.
-3. **Input**: `crossterm` events → `map_key_to_action` → match on Action in main loop
+2. **Render**: `ui::render()` draws the TUI based on `App` state. When rendered comments exist, the left sidebar splits vertically into file tree and comment navigator; the navigator is hidden when there are no rendered comment rows. `InputMode::Summary` replaces the diff while preserving the file sidebar when enabled, and lists every `local_draft` review-, file-, and line-level comment in the active session. The selected comment is highlighted, and the view scrolls as needed to keep it visible.
+3. **Input**: `crossterm` events → `map_key_to_action` → match on Action in main loop. The `:summary` command transitions from command mode to `InputMode::Summary` with the first pending comment selected. `j`/`k` selects the next or previous comment, `Enter` returns to the continuous diff from single-file view if necessary and moves the diff cursor to the selected comment; `Esc` returns to `Normal` without jumping. A reviewed file or hunk is revealed for the jump without clearing its persisted reviewed state.
 4. **Comments**: `App::save_comment()` builds an `AddCommentRequest` and calls `add_comment_to_session()` so TUI and library callers share insertion behavior. The TUI creates a persisted session file as soon as a review session becomes active, so `tuicr review add` can target it immediately. Successful comment submits autosave the session using a locked, atomic write that merges externally added comments first.
 5. **Review CLI**: `tuicr review list|add|comments` exits before TUI startup, uses `ReviewStore`, and always emits JSON; `review list` includes `active: true` for currently open TUI sessions and a `kind` (`local`/`pr`) per session, and `review add --input` accepts JSON literal, `@file`, or stdin payloads. `--repo` is a _selector_: a checkout path (matches its local sessions + PR sessions for its `origin` repo) or a forge coordinate like `owner/repo` / a repo URL (matches local + PR sessions by owner/repo, parsed from each session's slug). PR sessions thus surface by naming the repo; `review list --all` dumps everything. Resolve a PR session with its emitted slug (`gh:owner/repo/pr/N`), which is self-contained and needs no `--repo`.
 6. **Persistence**: active TUI sessions, comment submit, and `:w` save the session JSON to `~/.local/share/tuicr/reviews/`; library callers use `ReviewStore`. Open TUI sessions are also recorded in `active_sessions.json` beside `index.json` with pid, slug, path, and last-seen timestamp. TUI-created empty session files are deleted on normal exit if they still contain no comments and no reviewed files.
@@ -222,11 +240,11 @@ Forge selection is host-driven: `parse_any_remote_url` tries Bitbucket (`bitbuck
 - `list_pull_requests` — paged list for the selector's Pull Requests tab.
 - `get_pull_request` — details for a `PullRequestTarget` (resolves to `PullRequestDetails`).
 - `get_pull_request_info` — extended PR metadata for the description panel (`PullRequestInfo`). GitHub fetches `reviewDecision`, `mergeable`, `mergeStateStatus`, `reviewRequests`, `latestReviews`, and `statusCheckRollup` in the same `gh pr view` call; other backends default to `PullRequestInfo::from_details`.
-- `get_pull_request_diff` — the cumulative PR diff as a unified-diff string.
+- `get_pull_request_diff` — cumulative PR changes as structured `FilePatch` values. Each forge obtains path/status metadata from its API and pairs it with patch bodies without decoding display headers.
 - `list_pull_request_commits` — commits on the PR for the inline subset selector.
 - `list_pull_request_review_metadata` — best-effort viewer login + review commit OIDs used to preselect commits since the viewer's latest submitted review and mark already-reviewed commits in the inline selector.
   GitHub uses review metadata; GitLab combines `/user`, MR diff versions, approvals, and discussions; Bitbucket reads the PR's `participants` and reports account UUIDs (Cloud returns no usernames), with no commit OIDs since it does not record which commit an approval covered.
-- `get_pull_request_commit_range_diff` — cumulative diff for a contiguous subrange (`start_sha` is the parent of the first selected commit; `end_sha` is the last).
+- `get_pull_request_commit_range_diff` — structured cumulative changes for a contiguous subrange (`start_sha` is the parent of the first selected commit; `end_sha` is the last).
 - `list_review_threads` — existing forge comments + resolved/outdated state.
 - `fetch_file_lines` — remote context expansion in the diff view.
 - `create_review` — POST a review with inline comments via `CreateReviewRequest`.
@@ -236,7 +254,7 @@ Forge selection is host-driven: `parse_any_remote_url` tries Bitbucket (`bitbuck
 Network calls run on a background thread. Parsing + state mutation run on the main thread. The pattern across `spawn_pr_open` / `spawn_pr_reload` / `spawn_pr_submit`:
 
 1. Snapshot the request inputs on the main thread (no `&App` lives across the spawn).
-2. Spawn a thread that returns only `Send` data — typically `Result<(PullRequestDetails, String, Vec<PullRequestCommit>)>` or similar tuples.
+2. Spawn a thread that returns only `Send` data — typically `Result<(PullRequestDetails, Vec<FilePatch>, Vec<PullRequestCommit>)>` or similar tuples.
 3. The thread sends the result on an `mpsc` channel; `poll_*_events()` drains the channel each tick.
 4. The main-thread `finish_*` function parses the diff and builds the `ReviewSession`. `SyntaxHighlighter` is not trivially `Send`, so parsing has to happen on the main thread.
 
@@ -267,31 +285,35 @@ These are non-obvious things the implementation chain hit. Worth preserving for 
 
 1. **`gh pr diff` must NOT use `--patch`.** That flag returns per-commit mbox patches and produces duplicate file entries. Plain `gh pr diff` returns the cumulative diff. Regression test: `should_not_pass_patch_flag_to_gh_pr_diff`.
 
-2. **GraphQL thread anchors live on `PullRequestReviewThread`, not the comment.** `path`, `line`, `originalLine`, `diffSide` are thread fields. Putting them on `PullRequestReviewComment` returns a schema error.
+2. **Patch display headers are never authoritative metadata.** Paths and statuses come from unambiguous sources: Git `--raw -z`, jj templates, Mercurial `status -0`, or forge JSON. `diff_parser` only consumes `@@` hunks and uses their declared old/new counts as the grammar. Do not add quoting or path-header heuristics there.
 
-3. **Network on the background thread, parsing on the main thread.** `SyntaxHighlighter` is not `Send`. Background threads return Send-safe data; the main thread parses and builds the session. Used by `spawn_pr_open` / `spawn_pr_reload` / `spawn_pr_submit`.
+3. **GraphQL thread anchors live on `PullRequestReviewThread`, not the comment.** `path`, `line`, `originalLine`, `diffSide` are thread fields. Putting them on `PullRequestReviewComment` returns a schema error.
 
-4. **`apply_initial_load(Err(...))` is a no-op when the tab is already `Loaded`.** It only transitions `Loading → Error`. For transient errors during reload or submit, use `App::set_error()` (the message bar) instead.
+4. **Network on the background thread, parsing on the main thread.** `SyntaxHighlighter` is not `Send`. Background threads return Send-safe data; the main thread parses and builds the session. Used by `spawn_pr_open` / `spawn_pr_reload` / `spawn_pr_submit`.
 
-5. **Anchor restore must scroll.** Setting `diff_state.cursor_line` without calling `move_cursor_to_annotation` leaves the viewport at the top.
+5. **`apply_initial_load(Err(...))` is a no-op when the tab is already `Loaded`.** It only transitions `Loading → Error`. For transient errors during reload or submit, use `App::set_error()` (the message bar) instead.
 
-6. **`Comment` line anchor lives in the `HashMap` key, not on `Comment.line_context`.** Production code creates comments via `Comment::new` without populating `line_context`. The submit mapper takes an explicit `CommentAnchor` parameter — never infer "file-level" from `line_context.is_none()`.
+6. **Anchor restore must scroll.** Setting `diff_state.cursor_line` without calling `move_cursor_to_annotation` leaves the viewport at the top.
 
-7. **`gh api --input -` over CLI args.** The only practical way to send a multi-comment payload. See `GhCommandRunner::run_with_stdin`.
+7. **`Comment` line anchor lives in the `HashMap` key, not on `Comment.line_context`.** Production code creates comments via `Comment::new` without populating `line_context`. The submit mapper takes an explicit `CommentAnchor` parameter — never infer "file-level" from `line_context.is_none()`.
 
-8. **`gh api` writes the response body to STDOUT on non-2xx**, while STDERR only carries the short status line. The error formatter combines both so the user sees the actual GitHub error.
+8. **`gh api --input -` over CLI args.** The only practical way to send a multi-comment payload. See `GhCommandRunner::run_with_stdin`.
 
-9. **Stale-result discard for submit needs (repo, PR#, head SHA).** A different PR opened mid-submit could otherwise consume the result and apply lifecycle writes to the wrong comments.
+9. **`gh api` writes the response body to STDOUT on non-2xx**, while STDERR only carries the short status line. The error formatter combines both so the user sees the actual GitHub error.
 
-10. **TestBackend modal sizing.** A 60%×40% modal on 120×24 is 72×9 (7 content rows after borders). The submit confirmation modal needs 70% height to fit. The submit-action picker needs 50% height to fit the footer line.
+10. **Stale-result discard for submit needs (repo, PR#, head SHA).** A different PR opened mid-submit could otherwise consume the result and apply lifecycle writes to the wrong comments.
 
-11. **Subset-mode `commit_id`.** When a strict subset of PR commits is selected, the payload's `commit_id` must be `pr_commits[start_idx].oid` (the newest selected commit). Using the cumulative PR head returns a misleading 422: `commitOID is not part of the pull request` — even though the SHA _is_ in the PR.
+11. **TestBackend modal sizing.** A 60%×40% modal on 120×24 is 72×9 (7 content rows after borders). The submit confirmation modal needs 70% height to fit. The submit-action picker needs 50% height to fit the footer line.
 
-12. **`cd` into the worktree before running `cargo`.** `cargo` resolves `Cargo.toml` from `pwd`. Running gates from the wrong worktree silently exercises the wrong tree.
+12. **Subset-mode `commit_id`.** When a strict subset of PR commits is selected, the payload's `commit_id` must be `pr_commits[start_idx].oid` (the newest selected commit). Using the cumulative PR head returns a misleading 422: `commitOID is not part of the pull request` — even though the SHA _is_ in the PR.
 
-13. **Comments are commit-scoped via `Comment::commit_id`.** When the inline commit selector shows exactly one commit, `App::save_comment` stamps that commit's SHA on the comment. Comments with `commit_id = Some(sha)` are hidden when a different commit (or a subset not containing `sha`) is selected; `commit_id = None` (legacy, review-level, or made against the full cumulative diff) is always visible. The filter runs in `rebuild_annotations`, both diff renderers, the comment navigator (via filtered annotations), and the submit preflight. `App::comment_visible(&Comment)` is the single predicate. `AnnotatedLine::LineComment`/`FileComment` `comment_idx` is the **absolute** index into the stored `Vec`/`HashMap` value — `delete_comment_at_cursor` and `enter_edit_mode` must look it up directly, not re-count by side.
+13. **`cd` into the worktree before running `cargo`.** `cargo` resolves `Cargo.toml` from `pwd`. Running gates from the wrong worktree silently exercises the wrong tree.
 
-14. **A diff file must be registered in the session before `r`, `R`, or a comment can land on it.** All three look the file up in `ReviewSession.files` by display path. The two review-mark toggles return silently when it is absent; `add_comment_to_session` returns `session does not contain file`. So any code path that assigns `self.diff_files` must also call `App::register_diff_files`. Narrowing the inline commit pane skipped this, so commit-only files could be neither marked nor commented on.
+14. **Comments are commit-scoped via `Comment::commit_id`.** When the inline commit selector shows exactly one commit, `App::save_comment` stamps that commit's SHA on the comment. Comments with `commit_id = Some(sha)` are hidden when a different commit (or a subset not containing `sha`) is selected; `commit_id = None` (legacy, review-level, or made against the full cumulative diff) is always visible. The filter runs in `rebuild_annotations`, both diff renderers, the comment navigator (via filtered annotations), and the submit preflight. `App::comment_visible(&Comment)` is the single predicate. `AnnotatedLine::LineComment`/`FileComment` `comment_idx` is the **absolute** index into the stored `Vec`/`HashMap` value — `delete_comment_at_cursor` and `enter_edit_mode` must look it up directly, not re-count by side.
+
+15. **A diff file must be registered in the session before `r`, `R`, or a comment can land on it.** All three look the file up in `ReviewSession.files` by display path. The two review-mark toggles return silently when it is absent; `add_comment_to_session` returns `session does not contain file`. So any code path that assigns `self.diff_files` must also call `App::register_diff_files`. Narrowing the inline commit pane skipped this, so commit-only files could be neither marked nor commented on.
+
+16. **GNU Linux release binaries must stay dynamically linked.** Static glibc binaries can crash when hostname lookup loads a host NSS module (for example Fedora's `libnss_myhostname`). The musl artifacts are the supported static Linux builds. Direct updates must preserve the running binary's GNU/musl target environment when selecting an asset.
 
 15. **The `[TYPE]` prefix uses the config-resolved `label`, not the `CommentType` id.** `CommentType` carries no label — it lives on `CommentTypeDefinition` (`App::comment_types`), so `as_str()` only ever yields the uppercased id. Four resolvers render this tag and must agree: `App::comment_type_label` (TUI), `export_comment_type_label` (`src/output/markdown.rs`), `SubmitContext::type_label` (`src/forge/submit.rs`), and `describe_row` (`src/ui/submit_modals.rs`). The last is easy to miss and previews the tag the user is deciding about, so disagreement means choosing Move-to-summary vs Omit against a tag that never gets posted. This is why the submit path takes a `SubmitContext` rather than a bare `&ForgeConfig`.
 
@@ -303,6 +325,8 @@ When adding user-facing features, update the relevant documentation:
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | `README.md`            | Keybindings, commands (`:*`), CLI flags, features list, installation methods, agent integration setup, forge limitations |
 | `src/ui/help_popup.rs` | Keybindings or commands (update the `help_text` vector)                                                                  |
+| `src/ui/status_bar.rs` | Keybindings worth advertising in the per-pane hint line                                                                  |
+| `docs/KEYBINDINGS.md`  | Any keybinding or `:` command: add a row to the pane's key table and the `:` command table, plus prose for new behavior  |
 | `AGENTS.md`            | Module structure, repo-managed agent integrations, key types, data flow, dependencies, forge invariants and gotchas      |
 | `docs/CONFIG.md`       | Any `config.toml` key: add a row to the Options table and a line to the Full example block                               |
 

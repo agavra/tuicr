@@ -191,6 +191,7 @@ impl App {
             return;
         };
 
+        self.revealed_reviewed_file = None;
         if let Some(review) = self.session.get_file_mut(&path) {
             review.reviewed = !review.reviewed;
             self.dirty = true;
@@ -202,10 +203,47 @@ impl App {
             }
             self.rebuild_annotations();
 
+            // With reviewed files hidden, the row just marked is gone: there is
+            // no header line left to park on, and the tree selection would be
+            // pointing at whatever shifted up into its place. Move to the next
+            // file still in the queue instead. Runs regardless of
+            // `adjust_cursor`, because the tree selection has to move either
+            // way once the row it names disappears.
+            if !self.file_idx_passes_filter(file_idx) {
+                self.advance_past_hidden_file(file_idx);
+                return;
+            }
+
             if adjust_cursor {
                 let header_line = self.calculate_file_scroll_offset(file_idx);
                 self.diff_state.cursor_line = header_line;
                 self.ensure_cursor_visible();
+            }
+        }
+    }
+
+    /// Land somewhere sensible after marking `file_idx` reviewed hid it: the
+    /// next file still visible after it, wrapping to the first, or the overview
+    /// when the queue is empty.
+    fn advance_past_hidden_file(&mut self, file_idx: usize) {
+        let visible = self.filtered_file_indices();
+        let target = visible
+            .iter()
+            .find(|&&idx| idx > file_idx)
+            .or_else(|| visible.first())
+            .copied();
+
+        match target {
+            Some(idx) => self.jump_to_file(idx),
+            None => {
+                // Nothing left to review. Park at the overview so the diff
+                // pane shows its empty state rather than a stale offset, and
+                // name the command that brings the rows back.
+                self.diff_state.current_file_idx = 0;
+                self.diff_state.cursor_line = 0;
+                self.diff_state.scroll_offset = 0;
+                self.file_list_state.select(0);
+                self.set_message("All files reviewed \u{00b7} :set reviewed shows them again");
             }
         }
     }
@@ -262,11 +300,49 @@ impl App {
         self.session.is_hunk_reviewed(&path, &key)
     }
 
+    /// Whether a reviewed file should currently hide its body. Summary jumps
+    /// may temporarily reveal one reviewed file in the continuous diff without
+    /// changing the persisted reviewed marker.
+    pub fn should_collapse_file(&self, file_idx: usize) -> bool {
+        if self.is_single_file_view {
+            return false;
+        }
+
+        let Some(file) = self.diff_files.get(file_idx) else {
+            return false;
+        };
+        let path = file.display_path();
+        self.session.is_file_reviewed(path) && self.revealed_reviewed_file.as_ref() != Some(path)
+    }
+
+    pub(in crate::app) fn reveal_reviewed_file(&mut self, file_idx: usize) {
+        self.revealed_reviewed_file = self
+            .diff_files
+            .get(file_idx)
+            .map(|file| file.display_path().clone());
+    }
+
+    /// Whether a reviewed hunk should currently hide its body. Summary jumps
+    /// may temporarily reveal one reviewed hunk without changing the persisted
+    /// reviewed marker used by [`Self::is_hunk_reviewed`].
+    pub fn should_collapse_hunk(&self, file_idx: usize, hunk_idx: usize) -> bool {
+        if !self.is_hunk_reviewed(file_idx, hunk_idx) {
+            return false;
+        }
+
+        self.hunk_review_target(file_idx, hunk_idx)
+            .is_none_or(|target| self.revealed_reviewed_hunk.as_ref() != Some(&target))
+    }
+
+    pub(in crate::app) fn reveal_reviewed_hunk(&mut self, file_idx: usize, hunk_idx: usize) {
+        self.revealed_reviewed_hunk = self.hunk_review_target(file_idx, hunk_idx);
+    }
+
     pub fn should_render_gap_before_hunk(&self, file_idx: usize, hunk_idx: usize) -> bool {
         // Reviewed hunks collapse as a complete review unit: their body and
         // adjoining hidden-context controls disappear with the header.
-        !self.is_hunk_reviewed(file_idx, hunk_idx)
-            && (hunk_idx == 0 || !self.is_hunk_reviewed(file_idx, hunk_idx - 1))
+        !self.should_collapse_hunk(file_idx, hunk_idx)
+            && (hunk_idx == 0 || !self.should_collapse_hunk(file_idx, hunk_idx - 1))
     }
 
     pub fn toggle_hunk_reviewed(&mut self) {
@@ -274,6 +350,7 @@ impl App {
             self.set_warning("Move cursor to a hunk to toggle reviewed");
             return;
         };
+        self.revealed_reviewed_hunk = None;
 
         let Some((path, key)) = self.hunk_review_target(file_idx, hunk_idx) else {
             self.set_warning("Move cursor to a hunk to toggle reviewed");
@@ -303,14 +380,20 @@ impl App {
         }
     }
 
-    /// Files currently shown. Excludes anything hidden by the file-tree
-    /// include/exclude filters so the header and tree title describe what is
-    /// actually on screen.
+    /// Files in the review population: everything surviving the `i`/`e`
+    /// patterns, whether or not it is currently reviewed.
+    ///
+    /// Deliberately *not* scoped by the reviewed-files toggle. This is the
+    /// denominator of the tree title's `reviewed/total` fraction, which has to
+    /// keep reporting progress while reviewed rows are hidden.
     pub fn file_count(&self) -> usize {
         if !self.file_filter_active() {
             return self.diff_files.len();
         }
-        self.filtered_file_indices().len()
+        self.diff_files
+            .iter()
+            .filter(|file| self.file_matches_patterns(file))
+            .count()
     }
 
     /// Total files in the diff, ignoring filters. Used to report how much a
@@ -319,18 +402,20 @@ impl App {
         self.diff_files.len()
     }
 
+    /// Reviewed files within the population `file_count()` reports, so the two
+    /// always form a coherent fraction.
     pub fn reviewed_count(&self) -> usize {
         if !self.file_filter_active() {
             return self.session.reviewed_count();
         }
         // Counting the whole session here would read as `12/5` next to a
-        // filtered total, so count only reviewed files that survive.
-        self.filtered_file_indices()
-            .into_iter()
-            .filter(|&idx| {
-                self.diff_files
-                    .get(idx)
-                    .is_some_and(|file| self.session.is_file_reviewed(file.display_path()))
+        // filtered total, so count only reviewed files that survive the
+        // patterns. Hiding them does not remove them from the count.
+        self.diff_files
+            .iter()
+            .filter(|file| {
+                self.file_matches_patterns(file)
+                    && self.session.is_file_reviewed(file.display_path())
             })
             .count()
     }

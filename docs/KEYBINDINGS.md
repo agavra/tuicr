@@ -77,6 +77,26 @@ filters are a view, not an edit.
 Filters are session-local: they are not written to the review session and reset
 when tuicr restarts, but they survive a `:e` reload.
 
+### Hiding reviewed files
+
+`:set noreviewed` / `:set reviewed` / `:set reviewed!` (or the bare `:reviewed`)
+hide or show files already marked reviewed with `r`. There is deliberately no
+single-key binding: `H` is a vim motion, and this is a command-only feature. Like
+`i` / `e`, hidden files leave the tree, the diff pane, `{`/`}` and `[`/`]`
+navigation, `/` search, and the `+/-` counts in the header — so the header reports
+the diff still left to review.
+
+Two things stay deliberately unaffected. The tree title keeps counting reviewed
+files in its `reviewed/total` fraction, since scoping it to the visible rows would
+collapse it to `0/n` exactly when progress matters most; the bottom border carries
+a `reviewed hidden` cue instead. And a file whose hunks are individually marked
+with `R` is not hidden — only the file-level `r` flag counts.
+
+While hiding, `r` becomes a burn-down loop: marking the file you are reading moves
+you to the next unreviewed file, wrapping at the end. A hidden file cannot be
+un-reviewed, because `r` can no longer reach it — `:set reviewed` brings it back.
+Start a session with them hidden via `show_reviewed = false` in `config.toml`.
+
 ### Search
 
 `/` moves only the tree selection to the next matching path, expanding collapsed
@@ -175,6 +195,7 @@ In command mode,
 | `:edit` | Open focused file in `$EDITOR` |
 | `:clip` (`:export`) | Copy review to clipboard |
 | `:copy-url` | Copy the open PR URL to clipboard (PR mode) |
+| `:summary` | Show all pending local-draft comments; `j`/`k` select and `Enter` jumps |
 | `:diff` | Toggle diff view (unified / side-by-side) |
 | `:vim` / `:novim` (`:set vim` / `:set novim`) | Enable/toggle/disable vim modal editing in the comment box (overrides `comment_vim`) |
 | `:commits` | Select commits to review |
@@ -190,6 +211,9 @@ In command mode,
 | `:set commits` | Show inline commit selector |
 | `:set nocommits` | Hide inline commit selector |
 | `:set commits!` | Toggle inline commit selector |
+| `:set reviewed` | Show files already marked reviewed |
+| `:set noreviewed` | Hide files already marked reviewed |
+| `:set reviewed!` / `:reviewed` | Toggle files already marked reviewed |
 | `:clear` | Clear all comments |
 | `:clearc` | Clear comments without clearing reviewed marks |
 | `:version` | Show tuicr version |
@@ -201,6 +225,13 @@ In command mode,
 | `ZQ` | Quit without saving |
 | `?` | Toggle help |
 | `q` | Quick quit |
+
+The summary replaces the diff while leaving the file sidebar visible when it is open. The first
+pending comment is selected when the summary opens. Use `j`/`k` to select the next
+or previous comment; the view scrolls automatically to keep the selection visible. `Enter` returns
+to the continuous diff and jumps to the selected comment, leaving single-file view if necessary,
+while `Esc` returns without jumping. Reviewed files and hunks are revealed for the jump without
+losing their reviewed state.
 
 `draft` applies to GitHub only. `comment` and `approve` work on GitHub, GitLab, and Bitbucket.
 `request-changes` works on GitHub and GitLab, but not Bitbucket yet.

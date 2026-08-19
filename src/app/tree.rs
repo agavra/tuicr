@@ -113,6 +113,10 @@ impl App {
     /// way on the rendered subset.
     pub fn toggle_single_file_view(&mut self) {
         self.is_single_file_view = !self.is_single_file_view;
+        self.revealed_reviewed_file = None;
+        if !self.is_single_file_view {
+            self.revealed_reviewed_hunk = None;
+        }
         // `calculate_file_scroll_offset` changes meaning across modes
         // (single-file stops at review-comments header, all-files
         // accumulates), so re-snap the viewport to the current file.

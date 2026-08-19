@@ -71,6 +71,7 @@ fn context(executable: impl Into<PathBuf>) -> UpdateContext {
         current_version: "1.0.0".to_string(),
         os: "linux".to_string(),
         arch: "x86_64".to_string(),
+        target_env: "gnu".to_string(),
     }
 }
 
@@ -104,7 +105,18 @@ fn direct_runtime(
     archive: Vec<u8>,
     include_digest: bool,
 ) -> MockRuntime {
-    let asset_name = release_asset_name(version, os, arch).unwrap();
+    direct_runtime_for_target(version, os, arch, "gnu", archive, include_digest)
+}
+
+fn direct_runtime_for_target(
+    version: &str,
+    os: &str,
+    arch: &str,
+    target_env: &str,
+    archive: Vec<u8>,
+    include_digest: bool,
+) -> MockRuntime {
+    let asset_name = release_asset_name(version, os, arch, target_env).unwrap();
     let asset_url = release_asset_url(version, &asset_name);
     let digest = format!("sha256:{:x}", Sha256::digest(&archive));
     let metadata = serde_json::json!({
@@ -394,6 +406,27 @@ fn downloads_verifies_and_extracts_a_linux_direct_install() {
 }
 
 #[test]
+fn direct_musl_install_downloads_the_musl_asset() {
+    let binary = b"new-musl-binary";
+    let runtime = direct_runtime_for_target(
+        "1.1.0",
+        "linux",
+        "x86_64",
+        "musl",
+        tar_gz("tuicr", binary),
+        true,
+    );
+    let mut context = context("/home/alice/.local/bin/tuicr");
+    context.target_env = "musl".to_string();
+
+    assert!(matches!(
+        update_with_runtime(&runtime, context),
+        Ok(UpdateOutcome::Updated { .. })
+    ));
+    assert_eq!(runtime.replacement.into_inner().unwrap().1, binary);
+}
+
+#[test]
 fn downloads_verifies_and_extracts_a_windows_direct_install() {
     let binary = b"new-windows-binary";
     let runtime = direct_runtime(
@@ -528,21 +561,38 @@ fn rejects_bad_release_metadata_assets_and_digests() {
 fn maps_every_published_target_and_rejects_unsupported_targets() {
     assert_eq!(package_repository_url(), env!("CARGO_PKG_REPOSITORY"));
     let cases = [
-        ("linux", "x86_64", "x86_64-unknown-linux-gnu.tar.gz"),
-        ("linux", "aarch64", "aarch64-unknown-linux-gnu.tar.gz"),
-        ("macos", "x86_64", "x86_64-apple-darwin.tar.gz"),
-        ("macos", "aarch64", "aarch64-apple-darwin.tar.gz"),
-        ("windows", "x86_64", "x86_64-pc-windows-msvc.zip"),
+        ("linux", "x86_64", "gnu", "x86_64-unknown-linux-gnu.tar.gz"),
+        (
+            "linux",
+            "x86_64",
+            "musl",
+            "x86_64-unknown-linux-musl.tar.gz",
+        ),
+        (
+            "linux",
+            "aarch64",
+            "gnu",
+            "aarch64-unknown-linux-gnu.tar.gz",
+        ),
+        (
+            "linux",
+            "aarch64",
+            "musl",
+            "aarch64-unknown-linux-musl.tar.gz",
+        ),
+        ("macos", "x86_64", "", "x86_64-apple-darwin.tar.gz"),
+        ("macos", "aarch64", "", "aarch64-apple-darwin.tar.gz"),
+        ("windows", "x86_64", "msvc", "x86_64-pc-windows-msvc.zip"),
     ];
-    for (os, arch, suffix) in cases {
+    for (os, arch, target_env, suffix) in cases {
         assert!(
-            release_asset_name("1.2.3", os, arch)
+            release_asset_name("1.2.3", os, arch, target_env)
                 .unwrap()
                 .ends_with(suffix)
         );
     }
     assert!(matches!(
-        release_asset_name("1.2.3", "windows", "aarch64"),
+        release_asset_name("1.2.3", "windows", "aarch64", "msvc"),
         Err(UpdateError::UnsupportedPlatform { .. })
     ));
     assert_eq!(

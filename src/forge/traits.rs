@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use crate::error::Result;
 use crate::forge::remote_comments::RemoteReviewThread;
 use crate::forge::submit::SubmitEvent;
-use crate::model::{DiffLine, FileStatus};
+use crate::model::{DiffLine, FilePatch, FileStatus};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -487,7 +487,7 @@ pub trait ForgeBackend {
         let details = self.get_pull_request(target)?;
         Ok(PullRequestInfo::from_details(details))
     }
-    fn get_pull_request_diff(&self, pr: &PullRequestDetails) -> Result<String>;
+    fn get_pull_request_diff(&self, pr: &PullRequestDetails) -> Result<Vec<FilePatch>>;
     /// Fetch the requested file lines from the forge for context expansion.
     /// Implementations may optimize by reading from a local checkout when
     /// available; the trait does not require that path.
@@ -535,7 +535,7 @@ pub trait ForgeBackend {
         pr: &PullRequestDetails,
         start_sha: &str,
         end_sha: &str,
-    ) -> Result<String>;
+    ) -> Result<Vec<FilePatch>>;
     /// Optional path to a local checkout the backend may consult as an
     /// optimization. The default returns `None`; callers must never treat
     /// this path as the source of truth for PR contents.

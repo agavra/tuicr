@@ -2,6 +2,32 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.23.0] - 2026-08-18
+
+### Bug Fixes
+
+- **vcs:** Quote file paths passed to jj and hg (#619)
+- Resolve the local clone for PRs opened after the first (#593)
+- **jj:** Remove Git staging concepts from local selector (#612)
+- **release:** Dynamically link GNU Linux binaries (#620)
+- **diff:** Keep hunk lines whose content starts with --- or +++ (#534)
+- **test:** Assert the real 50ms first-poll drain timeout (#621)
+
+### Documentation
+
+- Mark Hunk as a standalone binary (#614)
+
+### Features
+
+- Add a summary command (#582)
+
+### Performance
+
+- **tui:** Coalesce queued input events into one repaint (#617)
+
+### Refactor
+
+- **diff:** Use structured file metadata (#622)
 ## [0.22.0] - 2026-08-13
 
 ### Bug Fixes
