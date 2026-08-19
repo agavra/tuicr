@@ -44,6 +44,38 @@ pub(crate) fn needs_full_file_highlight(path: &Path) -> bool {
     )
 }
 
+/// Oniguruma's process-wide cap on backtracking steps per match attempt, in place of
+/// its 10,000,000-step default. Some Markdown lines send it into catastrophic
+/// backtracking on a match that was always going to fail, burning tens of
+/// milliseconds for zero effect on the resulting color. 100,000 left a hundredfold
+/// margin over the highest retry count this repository's own diffs ever needed, with
+/// zero color changes at any tested limit down to 1,000.
+const ONIGURUMA_RETRY_LIMIT: std::os::raw::c_ulong = 100_000;
+
+/// Applies [`ONIGURUMA_RETRY_LIMIT`] once per process, before any highlighter runs a
+/// match. Called from `with_theme`, the constructor every other one funnels through,
+/// so library and TUI callers both get it.
+///
+/// Declared here rather than taken as an `onig_sys` dependency, so the link itself is a
+/// tripwire. Syntect already links Oniguruma; if it ever stops, this symbol goes undefined
+/// and the build fails. Depending on `onig_sys` would keep Oniguruma linked and let this
+/// quietly stop mattering.
+fn cap_oniguruma_retry_limit() {
+    unsafe extern "C" {
+        fn onig_set_retry_limit_in_match(limit: std::os::raw::c_ulong) -> std::os::raw::c_int;
+    }
+
+    static INIT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    INIT.get_or_init(|| {
+        // SAFETY: writes one C global, takes no pointers, has no preconditions. The
+        // `OnceLock` makes this the only writer, and a caller can only reach a match
+        // through a constructor that already ran this, so no read races the write.
+        unsafe {
+            onig_set_retry_limit_in_match(ONIGURUMA_RETRY_LIMIT);
+        }
+    });
+}
+
 /// Helper to highlight lines of code from a diff
 pub struct SyntaxHighlighter {
     pub syntax_set: syntect::parsing::SyntaxSet,
@@ -84,6 +116,7 @@ impl SyntaxHighlighter {
 
     /// Create a new syntax highlighter with a preloaded syntect theme.
     pub fn with_theme(theme: syntect::highlighting::Theme, add_bg: Color, del_bg: Color) -> Self {
+        cap_oniguruma_retry_limit();
         let syntax_set = two_face::syntax::extra_newlines();
         let markdown_palette = cmark::MarkdownPalette::resolve(&theme);
         Self {
@@ -414,6 +447,20 @@ impl SyntaxHighlighter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Proves the cap actually reaches Oniguruma's global rather than merely compiling.
+    /// Deterministic: sets the limit, reads it back.
+
+    #[test]
+    fn should_apply_oniguruma_retry_limit_once() {
+        unsafe extern "C" {
+            fn onig_get_retry_limit_in_match() -> std::os::raw::c_ulong;
+        }
+        cap_oniguruma_retry_limit();
+        // SAFETY: reads one C global, takes no pointers, has no preconditions.
+        let limit = unsafe { onig_get_retry_limit_in_match() };
+        assert_eq!(limit, ONIGURUMA_RETRY_LIMIT);
+    }
 
     #[test]
     fn should_resolve_no_syntax_for_any_path() {
