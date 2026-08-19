@@ -322,13 +322,15 @@ impl crate::forge::traits::ForgeBackend for FakeForgeBackend {
     }
 }
 
-/// PR review app over `files`, with a checkout-relative diff and unique SHAs.
+/// PR review app over `files`, with a synthetic root as PR mode really has.
 ///
-/// The SHAs are per-run so snapshots (which are keyed by SHA and deliberately
-/// never overwritten) cannot leak between runs of the suite.
+/// These cases deliberately stop short of writing a revision snapshot — that
+/// would land in the real temp dir and outlive the run — so
+/// `editor_target::materialize` and friends are covered by their own unit tests
+/// instead.
 fn pr_app(backend: FakeForgeBackend, files: Vec<DiffFile>) -> (App, String, String) {
-    let head_sha = uuid::Uuid::new_v4().simple().to_string();
-    let base_sha = uuid::Uuid::new_v4().simple().to_string();
+    let head_sha = "1a2b3c4d5e6f7a8b".to_string();
+    let base_sha = "9f8e7d6c5b4a3928".to_string();
     let mut app = app_with_root(PathBuf::from("forge:github.com/agavra/tuicr"), files);
     app.diff_source = DiffSource::PullRequest(Box::new(PullRequestDiffSource {
         key: crate::forge::traits::PrSessionKey::new(
@@ -350,21 +352,6 @@ fn pr_app(backend: FakeForgeBackend, files: Vec<DiffFile>) -> (App, String, Stri
     (app, head_sha, base_sha)
 }
 
-fn deleted_file(path: &str) -> DiffFile {
-    let hunks = vec![hunk(1, 1)];
-    let content_hash = DiffFile::compute_content_hash(&hunks);
-    DiffFile {
-        old_path: Some(PathBuf::from(path)),
-        new_path: None,
-        status: FileStatus::Deleted,
-        hunks,
-        is_binary: false,
-        is_too_large: false,
-        is_commit_message: false,
-        content_hash,
-    }
-}
-
 #[test]
 fn pr_editor_target_prefers_a_worktree_copy_of_the_pr_revision() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -383,90 +370,6 @@ fn pr_editor_target_prefers_a_worktree_copy_of_the_pr_revision() {
     let target = app.take_pending_editor_target().expect("editor target");
     assert_eq!(target.path, path);
     assert_eq!(target.label, "main.rs");
-}
-
-#[test]
-fn pr_editor_target_snapshots_when_the_checkout_holds_another_revision() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let worktree_path = dir.path().join("main.rs");
-    fs::write(&worktree_path, "a different revision\n").expect("write file");
-
-    let (mut app, head_sha, _) = pr_app(
-        FakeForgeBackend::serving(Some(dir.path().to_path_buf())),
-        vec![file("main.rs", vec![hunk(1, 1)])],
-    );
-
-    app.queue_editor_for_focused_item();
-
-    let target = app.take_pending_editor_target().expect("editor target");
-    assert_ne!(target.path, worktree_path);
-    assert_eq!(
-        fs::read_to_string(&target.path).expect("snapshot content"),
-        revision_content(&head_sha)
-    );
-    assert!(
-        fs::metadata(&target.path)
-            .expect("snapshot metadata")
-            .permissions()
-            .readonly()
-    );
-    assert!(
-        target.label.contains(&head_sha[..7]) && target.label.contains("read-only"),
-        "label should name the revision: {}",
-        target.label
-    );
-}
-
-#[test]
-fn pr_editor_target_snapshots_a_file_the_checkout_does_not_have() {
-    let dir = tempfile::tempdir().expect("tempdir");
-
-    let (mut app, head_sha, _) = pr_app(
-        FakeForgeBackend::serving(Some(dir.path().to_path_buf())),
-        vec![file("added.rs", vec![hunk(1, 1)])],
-    );
-
-    app.queue_editor_for_focused_item();
-
-    let target = app.take_pending_editor_target().expect("editor target");
-    assert_eq!(
-        fs::read_to_string(&target.path).expect("snapshot content"),
-        revision_content(&head_sha)
-    );
-}
-
-#[test]
-fn pr_editor_target_snapshots_without_any_local_checkout() {
-    let (mut app, head_sha, _) = pr_app(
-        FakeForgeBackend::serving(None),
-        vec![file("main.rs", vec![hunk(1, 1)])],
-    );
-
-    app.queue_editor_for_focused_item();
-
-    let target = app.take_pending_editor_target().expect("editor target");
-    assert_eq!(
-        fs::read_to_string(&target.path).expect("snapshot content"),
-        revision_content(&head_sha)
-    );
-}
-
-#[test]
-fn pr_editor_target_reads_a_deleted_file_from_the_base_side() {
-    let (mut app, _, base_sha) = pr_app(
-        FakeForgeBackend::serving(None),
-        vec![deleted_file("gone.rs")],
-    );
-
-    app.queue_editor_for_focused_item();
-
-    let target = app.take_pending_editor_target().expect("editor target");
-    assert_eq!(
-        fs::read_to_string(&target.path).expect("snapshot content"),
-        revision_content(&base_sha),
-        "a file deleted by the PR only exists on the base side"
-    );
-    assert!(target.label.contains(&base_sha[..7]), "{}", target.label);
 }
 
 #[test]
