@@ -17,10 +17,15 @@ const LAUNCH_FAILURE_WINDOW: Duration = Duration::from_secs(5);
 /// suspend/resume code does not need to know about repository-relative paths.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EditorTarget {
-    /// Absolute path to the local worktree file.
+    /// Absolute path handed to the editor: the local worktree file, or in PR
+    /// review a read-only snapshot of the reviewed revision.
     pub path: PathBuf,
     /// One-based source line to request from editors that support it.
     pub line: Option<u32>,
+    /// What the status bar calls the opened file. A snapshot lives at a
+    /// temp-dir path nobody wants to read, so the App supplies the repository
+    /// path here, plus the revision when it is not the worktree's.
+    pub label: String,
 }
 
 /// Fully expanded editor invocation.
@@ -261,6 +266,7 @@ mod tests {
         EditorTarget {
             path: PathBuf::from("/repo/src/main.rs"),
             line,
+            label: "src/main.rs".to_string(),
         }
     }
 

@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use crate::error::Result;
+use crate::error::{Result, TuicrError};
 use crate::forge::remote_comments::RemoteReviewThread;
 use crate::forge::submit::SubmitEvent;
 use crate::model::{DiffLine, FilePatch, FileStatus};
@@ -492,6 +492,16 @@ pub trait ForgeBackend {
     /// Implementations may optimize by reading from a local checkout when
     /// available; the trait does not require that path.
     fn fetch_file_lines(&self, request: ForgeFileLinesRequest) -> Result<Vec<DiffLine>>;
+    /// Return the whole file at the revision described by `request`, exactly as
+    /// stored: unlike [`Self::fetch_file_lines`], tabs are not expanded, so the
+    /// result is safe to write back out as a file. `start_line` and `end_line`
+    /// are ignored. The default errors; backends able to read a revision
+    /// override it.
+    fn fetch_file_content(&self, _request: ForgeFileLinesRequest) -> Result<String> {
+        Err(TuicrError::Forge(
+            "this backend cannot read file contents".to_string(),
+        ))
+    }
     /// Return the total number of lines in a file at the revision described by
     /// `request`. The `start_line` and `end_line` fields of the request are
     /// ignored. Default returns `Ok(0)`; real forge backends override this.

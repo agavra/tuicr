@@ -3,6 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Result, TuicrError};
+use crate::forge::local_git::read_blob;
 use crate::forge::remote_comments::{RemoteReviewSummary, RemoteReviewThread};
 use crate::forge::traits::{
     ForgeBackend, ForgeFileLinesRequest, ForgeRepository, GhCreateReviewResponse,
@@ -105,28 +106,6 @@ impl From<CommandOutputError> for GhCommandError {
             }
         }
     }
-}
-
-/// Read a git blob from a checkout at `repo_root` using `git show <sha>:<path>`.
-/// Returns `None` if the object is missing or the command fails for any reason.
-fn read_blob_with_repo(repo_root: &Path, sha: &str, path: &Path) -> Option<String> {
-    let spec = format!("{}:{}", sha, path.to_string_lossy());
-    let exists = run_command_output(
-        "git",
-        Some(repo_root),
-        ["cat-file", "-e", spec.as_str()]
-            .iter()
-            .map(|s| OsStr::new(*s)),
-    );
-    if exists.is_err() {
-        return None;
-    }
-    run_command_output(
-        "git",
-        Some(repo_root),
-        ["show", spec.as_str()].iter().map(|s| OsStr::new(*s)),
-    )
-    .ok()
 }
 
 /// Return `Some(diff)` when both `start_sha` and `end_sha` are present in
@@ -514,38 +493,26 @@ where
         if request.start_line == 0 || request.start_line > request.end_line {
             return Ok(Vec::new());
         }
+        let (start_line, end_line) = (request.start_line, request.end_line);
+        let content = self.fetch_file_content(request)?;
+        Ok(slice_context_lines(&content, start_line, end_line))
+    }
 
-        // Local optimization: read the blob from a configured checkout when
-        // we have it. The PR's exact SHAs may or may not be present locally;
-        // we silently fall back if they aren't.
-        let local_content = self
+    /// Local blob when the checkout has the PR's SHA, REST otherwise. The PR's
+    /// exact SHAs may or may not be present locally; we silently fall back.
+    fn fetch_file_content(&self, request: ForgeFileLinesRequest) -> Result<String> {
+        match self
             .local_checkout
             .as_deref()
-            .and_then(|root| read_blob_with_repo(root, request.sha(), request.path.as_path()));
-
-        let content = if let Some(content) = local_content {
-            content
-        } else {
-            self.fetch_file_via_api(&request)?
-        };
-
-        Ok(slice_context_lines(
-            &content,
-            request.start_line,
-            request.end_line,
-        ))
+            .and_then(|root| read_blob(root, request.sha(), request.path.as_path()))
+        {
+            Some(content) => Ok(content),
+            None => self.fetch_file_via_api(&request),
+        }
     }
 
     fn file_line_count(&self, request: ForgeFileLinesRequest) -> Result<u32> {
-        let local_content = self
-            .local_checkout
-            .as_deref()
-            .and_then(|root| read_blob_with_repo(root, request.sha(), request.path.as_path()));
-        let content = if let Some(content) = local_content {
-            content
-        } else {
-            self.fetch_file_via_api(&request)?
-        };
+        let content = self.fetch_file_content(request)?;
         Ok(content.lines().count() as u32)
     }
 
