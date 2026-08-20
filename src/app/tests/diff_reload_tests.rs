@@ -447,3 +447,28 @@ fn should_keep_commit_message_entries_across_a_reload() {
             .collect::<Vec<_>>()
     );
 }
+
+/// The change gate compares a fetched diff against what is on screen. The
+/// fetched side can never contain commit-message entries, so counting them
+/// would make every tick of a commit review look changed and re-apply forever.
+#[test]
+fn should_ignore_commit_message_entries_when_deciding_the_diff_changed() {
+    let files = vec![make_diff_file("a.rs", FileStatus::Modified, 1)];
+    let vcs = ScriptedVcs::new();
+    // Two identical responses: one for the cheap probe, and one the gate must
+    // not need. Scripting the second means a gate that wrongly reports a
+    // change fails on the assertion below rather than on a dry mock.
+    vcs.push_working_tree_diff(Ok(files.clone()));
+    vcs.push_working_tree_diff(Ok(files.clone()));
+    let mut app = build_app_with_scripted_vcs(files, vcs);
+    app.review_commits = vec![make_commit_info("c1")];
+    app.commit_selection_range = Some((0, 0));
+    app.insert_commit_message_if_single();
+
+    let result = app.fetch_changed_diff_files();
+
+    assert!(
+        matches!(result, Ok(None)),
+        "expected Ok(None) with only a commit message differing, got {result:?}"
+    );
+}

@@ -1564,8 +1564,16 @@ fn file_fingerprint(file: &DiffFile) -> u64 {
 /// compares two lists as sets, which is required because the stored list is
 /// sorted by directory and a freshly fetched one is not (see
 /// `sort_files_by_directory`).
+///
+/// Commit-message entries are excluded: they are synthesized locally from the
+/// commit selection, never fetched, so counting them would make an on-screen
+/// diff differ from every fetch of the same content and re-apply forever.
 fn diff_files_fingerprint(files: &[DiffFile]) -> u64 {
-    let mut per_file: Vec<u64> = files.iter().map(file_fingerprint).collect();
+    let mut per_file: Vec<u64> = files
+        .iter()
+        .filter(|file| !file.is_commit_message)
+        .map(file_fingerprint)
+        .collect();
     per_file.sort_unstable();
     let mut hasher = crate::hash::Fnv1aHasher::new();
     for hash in per_file {
