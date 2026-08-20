@@ -384,6 +384,10 @@ fn main() -> anyhow::Result<()> {
     let mut pending_d = false;
     // Track pending leader command for leader-prefixed actions.
     let mut pending_leader = false;
+    // Set by `<leader>L` / `<leader>H` so a bare `L` / `H` keeps moving the
+    // boundary. Any other key drops it, so `H` and `L` stay unbound in
+    // Normal mode and remain free for vim motions.
+    let mut resizing_panes = false;
     // Track pending Ctrl+C for "press twice to exit" (with timestamp for 2s timeout)
     let mut pending_ctrl_c: Option<Instant> = None;
     // Only re-render when state actually changed; the diff renderer rebuilds
@@ -583,6 +587,21 @@ fn main() -> anyhow::Result<()> {
                         // Otherwise fall through to normal handling
                     }
 
+                    // Repeat a resize without re-pressing the leader.
+                    if resizing_panes && !pending_leader {
+                        match key.code {
+                            crossterm::event::KeyCode::Char('L') => {
+                                app.resize_file_list(true);
+                                continue;
+                            }
+                            crossterm::event::KeyCode::Char('H') => {
+                                app.resize_file_list(false);
+                                continue;
+                            }
+                            _ => resizing_panes = false,
+                        }
+                    }
+
                     // Handle pending leader command for panel focus, file list toggle, and review comments.
                     if pending_leader {
                         pending_leader = false;
@@ -606,10 +625,12 @@ fn main() -> anyhow::Result<()> {
                             // model covers both.
                             crossterm::event::KeyCode::Char('L') => {
                                 app.resize_file_list(true);
+                                resizing_panes = true;
                                 continue;
                             }
                             crossterm::event::KeyCode::Char('H') => {
                                 app.resize_file_list(false);
+                                resizing_panes = true;
                                 continue;
                             }
                             crossterm::event::KeyCode::Char('k') => {

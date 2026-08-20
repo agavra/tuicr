@@ -82,7 +82,7 @@ legend = true
 | `initial_commit_selection` | `all`        | Which commits are selected when a multi-commit review first opens: `all`, or `oldest` to start on just the oldest commit and walk forward with `(` / `)`.  |
 | `ignore_whitespace`        | `false`      | Ignore all whitespace in local Git, jj, and hg diffs. PR diffs are unchanged.                                                                              |
 | `show_file_list`           | `true`       | Whether the file list panel is visible on startup. Toggle with `<leader>e`.                                                                                |
-| `file_list_width`          | `20`         | Starting width of the file list, as a percentage of the content area. Clamped to 10-60. Adjust at runtime with `<leader>L` / `<leader>H`.                                   |
+| `file_list_width`          | `20`         | Starting width of the file list, as a percentage of the content area. Clamped to 10-60. Adjust at runtime with `<leader>L` / `<leader>H`, which repeat on a bare `L` / `H`.                                   |
 | `show_pr_checks`           | `false`      | Whether PR CI checks are fetched and shown. Set to `true` to include GitHub check rollups.                                                           |
 | `show_pr_comments`         | `true`       | Whether PR conversation comments are fetched and shown. Set to `false` to skip PR comments.                                                         |
 | `show_commits`             | `true`       | Whether the inline commit selector pane is visible on startup for multi-commit reviews. Toggle with `<leader>s` or `:set commits!`.                        |
