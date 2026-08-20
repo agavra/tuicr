@@ -27,6 +27,8 @@
 curl -fsSL tuicr.dev/install.sh | sh
 # or
 brew install tuicr
+# or
+sudo pacman -S tuicr
 ```
 
 <details>
