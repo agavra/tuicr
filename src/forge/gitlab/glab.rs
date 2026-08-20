@@ -849,10 +849,16 @@ pub fn parse_gitlab_remote_url(remote_url: &str) -> Option<ForgeRepository> {
 
     if let Some((host, path)) = parse_scp_like_remote(trimmed) {
         let resolved = resolve_ssh_hostname(host);
-        if !is_gitlab_host(&resolved) {
+
+        let gitlab_host = if is_gitlab_host(host) {
+            host
+        } else if is_gitlab_host(&resolved) {
+            &resolved
+        } else {
             return None;
-        }
-        return gitlab_repository_from_path(&resolved, path);
+        };
+
+        return gitlab_repository_from_path(gitlab_host, path);
     }
 
     let without_scheme = strip_scheme(trimmed).unwrap_or(trimmed);
