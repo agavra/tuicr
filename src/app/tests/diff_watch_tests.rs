@@ -111,7 +111,7 @@ fn make_diff_file(path: &str, content_hash: u64) -> DiffFile {
         hunks: Vec::new(),
         is_binary: false,
         is_too_large: false,
-        is_commit_message: false,
+        commit_message_sha: None,
         content_hash,
     }
 }
@@ -146,7 +146,7 @@ fn make_file_with_hunks(path: &str, hunks: Vec<DiffHunk>) -> DiffFile {
         hunks,
         is_binary: false,
         is_too_large: false,
-        is_commit_message: false,
+        commit_message_sha: None,
         content_hash,
     }
 }

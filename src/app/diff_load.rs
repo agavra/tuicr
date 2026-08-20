@@ -25,32 +25,48 @@ impl App {
         }
     }
 
-    /// If we are viewing a single commit, insert a "Commit Message" DiffFile at index 0.
+    /// Insert a "Commit Message" DiffFile for every commit in the current
+    /// selection, oldest first, ahead of the real files.
+    ///
+    /// Every selected commit gets its own entry, so reviewing a branch shows
+    /// the story its commits tell and not just the code: on "all commits" the
+    /// messages read top-to-bottom in commit order, and narrowing the selector
+    /// to one commit leaves exactly that commit's message.
     ///
     /// The synthetic path embeds the commit's short id (`Commit Message (<sha>)`)
     /// so that comments on different commits' messages get distinct session keys
-    /// (the session indexes comments by path) and the exported review records
-    /// which commit each commit-message comment belongs to.
-    pub(in crate::app) fn insert_commit_message_if_single(&mut self) {
-        self.diff_files.retain(|f| !f.is_commit_message);
+    /// (the session indexes comments by path), while `commit_message_sha` carries
+    /// the full id that attributes those comments to their commit. Staged and
+    /// unstaged pseudo-commits have no message and are skipped.
+    pub(in crate::app) fn insert_commit_messages_for_selection(&mut self) {
+        self.diff_files.retain(|f| !f.is_commit_message());
 
-        let commit = if let Some((start, end)) = self.commit_selection_range {
-            if start == end {
-                self.review_commits.get(start)
-            } else {
-                None
+        // `review_commits` is newest-first, so walk the selected window in
+        // reverse: the inserted files then read oldest-first, matching the
+        // ascending order the inline selector lays the commits out in.
+        let selected = match self.commit_selection_range {
+            Some((start, end)) if start <= end && end < self.review_commits.len() => {
+                &self.review_commits[start..=end]
             }
-        } else if self.review_commits.len() == 1 {
-            self.review_commits.first()
-        } else {
-            None
+            Some(_) => return,
+            None => &self.review_commits[..],
         };
 
-        let Some(commit) = commit else { return };
-        if Self::is_special_commit(commit) {
-            return;
-        }
+        let commit_files: Vec<DiffFile> = selected
+            .iter()
+            .rev()
+            .filter(|commit| !Self::is_special_commit(commit))
+            .map(Self::build_commit_message_file)
+            .collect();
 
+        for (idx, file) in commit_files.into_iter().enumerate() {
+            self.diff_files.insert(idx, file);
+            self.session.add_diff_file(&self.diff_files[idx]);
+        }
+    }
+
+    /// Render one commit's message as a context-only, single-hunk DiffFile.
+    fn build_commit_message_file(commit: &CommitInfo) -> DiffFile {
         let mut full_message = commit.summary.clone();
         if let Some(ref body) = commit.body {
             full_message.push('\n');
@@ -79,7 +95,7 @@ impl App {
             new_count: line_count,
         }];
         let content_hash = DiffFile::compute_content_hash(&hunks);
-        let commit_msg_file = DiffFile {
+        DiffFile {
             old_path: None,
             new_path: Some(PathBuf::from(format!(
                 "Commit Message ({})",
@@ -89,11 +105,9 @@ impl App {
             hunks,
             is_binary: false,
             is_too_large: false,
-            is_commit_message: true,
+            commit_message_sha: Some(commit.id.clone()),
             content_hash,
-        };
-        self.diff_files.insert(0, commit_msg_file);
-        self.session.add_diff_file(&self.diff_files[0]);
+        }
     }
 
     pub(in crate::app) fn is_staged_commit(commit: &CommitInfo) -> bool {
@@ -738,6 +752,11 @@ impl App {
         self.diff_files = diff_files;
         self.clear_expanded_gaps();
 
+        // A fetched diff carries only real files, so the commit-message
+        // entries have to be rebuilt here or `:e` and every diff-watch tick
+        // would quietly drop them from a commit review.
+        self.insert_commit_messages_for_selection();
+
         self.sort_files_by_directory(false);
         self.populate_file_line_count_cache();
         self.expand_all_dirs();
@@ -928,7 +947,7 @@ impl App {
         {
             self.reload_inline_selection()?;
         } else {
-            self.insert_commit_message_if_single();
+            self.insert_commit_messages_for_selection();
             self.sort_files_by_directory(true);
             self.expand_all_dirs();
             self.rebuild_annotations();
@@ -1559,8 +1578,16 @@ fn file_fingerprint(file: &DiffFile) -> u64 {
 /// compares two lists as sets, which is required because the stored list is
 /// sorted by directory and a freshly fetched one is not (see
 /// `sort_files_by_directory`).
+///
+/// Commit-message entries are excluded: they are synthesized locally from the
+/// commit selection, never fetched, so counting them would make an on-screen
+/// diff differ from every fetch of the same content and re-apply forever.
 fn diff_files_fingerprint(files: &[DiffFile]) -> u64 {
-    let mut per_file: Vec<u64> = files.iter().map(file_fingerprint).collect();
+    let mut per_file: Vec<u64> = files
+        .iter()
+        .filter(|file| !file.is_commit_message())
+        .map(file_fingerprint)
+        .collect();
     per_file.sort_unstable();
     let mut hasher = crate::hash::Fnv1aHasher::new();
     for hash in per_file {
@@ -1587,7 +1614,7 @@ mod tests {
             hunks: vec![],
             is_binary,
             is_too_large,
-            is_commit_message: false,
+            commit_message_sha: None,
             content_hash,
         }
     }

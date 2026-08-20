@@ -1146,7 +1146,7 @@ fn render_hunk_lines_side_by_side(
         .app
         .diff_files
         .get(file_idx)
-        .is_some_and(|f| f.is_commit_message);
+        .is_some_and(|f| f.is_commit_message());
 
     while i < hunk_lines.len() {
         let diff_line = &hunk_lines[i];
@@ -2109,7 +2109,7 @@ mod remote_comments_side_by_side_snapshot_tests {
             hunks,
             is_binary: false,
             is_too_large: false,
-            is_commit_message: false,
+            commit_message_sha: None,
             content_hash,
         }
     }
@@ -2264,7 +2264,7 @@ mod remote_comments_side_by_side_snapshot_tests {
             hunks,
             is_binary: false,
             is_too_large: false,
-            is_commit_message: false,
+            commit_message_sha: None,
             content_hash,
         }
     }
@@ -2293,7 +2293,7 @@ mod remote_comments_side_by_side_snapshot_tests {
             hunks,
             is_binary: false,
             is_too_large: false,
-            is_commit_message: false,
+            commit_message_sha: None,
             content_hash,
         }
     }
@@ -2462,7 +2462,7 @@ mod remote_comments_side_by_side_snapshot_tests {
             hunks,
             is_binary: false,
             is_too_large: false,
-            is_commit_message: true,
+            commit_message_sha: Some("abc1234abcdef".to_string()),
             content_hash,
         }
     }

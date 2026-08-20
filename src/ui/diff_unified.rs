@@ -586,7 +586,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                         let style = base_style;
                         // A commit message is prose, not code: render it without
                         // line numbers, matching the side-by-side view.
-                        let line_num_str = if file.is_commit_message {
+                        let line_num_str = if file.is_commit_message() {
                             " ".repeat(lw + 1)
                         } else if app.relative_line_numbers {
                             crate::ui::diff_view::relative_line_number_field(
@@ -1514,7 +1514,7 @@ mod remote_comments_snapshot_tests {
             hunks,
             is_binary: false,
             is_too_large: false,
-            is_commit_message: false,
+            commit_message_sha: None,
             content_hash,
         }
     }
@@ -1529,7 +1529,7 @@ mod remote_comments_snapshot_tests {
             hunks,
             is_binary: false,
             is_too_large: false,
-            is_commit_message: false,
+            commit_message_sha: None,
             content_hash,
         }
     }
@@ -1694,7 +1694,7 @@ mod remote_comments_snapshot_tests {
             hunks,
             is_binary: false,
             is_too_large: false,
-            is_commit_message: true,
+            commit_message_sha: Some("abc1234abcdef".to_string()),
             content_hash,
         }
     }
@@ -1928,7 +1928,7 @@ mod remote_comments_snapshot_tests {
             hunks,
             is_binary: false,
             is_too_large: false,
-            is_commit_message: false,
+            commit_message_sha: None,
             content_hash,
         };
         let mut app = make_revision_app(vec![file]);
@@ -1997,7 +1997,7 @@ mod remote_comments_snapshot_tests {
             hunks,
             is_binary: false,
             is_too_large: false,
-            is_commit_message: false,
+            commit_message_sha: None,
             content_hash,
         };
         let mut app = make_revision_app(vec![file]);
@@ -2063,7 +2063,7 @@ mod remote_comments_snapshot_tests {
             hunks,
             is_binary: false,
             is_too_large: false,
-            is_commit_message: false,
+            commit_message_sha: None,
             content_hash,
         };
         let mut app = make_revision_app(vec![file]);

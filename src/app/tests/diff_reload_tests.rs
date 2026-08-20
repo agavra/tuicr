@@ -173,7 +173,7 @@ fn make_diff_file(path: &str, status: FileStatus, content_hash: u64) -> DiffFile
         hunks: Vec::new(),
         is_binary: false,
         is_too_large: false,
-        is_commit_message: false,
+        commit_message_sha: None,
         content_hash,
     }
 }
@@ -421,5 +421,54 @@ fn should_fetch_changed_diff_files_keeping_narrowed_commit_selection() {
             .as_slice(),
         [vec!["c3".to_string()]],
         "diff-watch's probe fetch must use the narrowed selection, not the full commit range"
+    );
+}
+/// Commit-message entries are synthesized locally from the commit selection,
+/// never fetched, so a reload that installs only real files has to rebuild
+/// them or `:e` silently drops the commit messages out of the review.
+#[test]
+fn should_keep_commit_message_entries_across_a_reload() {
+    let vcs = ScriptedVcs::new();
+    vcs.push_working_tree_diff(Ok(vec![make_diff_file("a.rs", FileStatus::Modified, 2)]));
+    let mut app =
+        build_app_with_scripted_vcs(vec![make_diff_file("a.rs", FileStatus::Modified, 1)], vcs);
+    app.review_commits = vec![make_commit_info("c1")];
+    app.commit_selection_range = Some((0, 0));
+    app.insert_commit_messages_for_selection();
+
+    app.reload_diff_files().expect("reload should succeed");
+
+    assert!(
+        app.diff_files.iter().any(|file| file.is_commit_message()),
+        "the commit message must survive a reload, got {:?}",
+        app.diff_files
+            .iter()
+            .map(|f| f.display_path().clone())
+            .collect::<Vec<_>>()
+    );
+}
+
+/// The change gate compares a fetched diff against what is on screen. The
+/// fetched side can never contain commit-message entries, so counting them
+/// would make every tick of a commit review look changed and re-apply forever.
+#[test]
+fn should_ignore_commit_message_entries_when_deciding_the_diff_changed() {
+    let files = vec![make_diff_file("a.rs", FileStatus::Modified, 1)];
+    let vcs = ScriptedVcs::new();
+    // Two identical responses: one for the cheap probe, and one the gate must
+    // not need. Scripting the second means a gate that wrongly reports a
+    // change fails on the assertion below rather than on a dry mock.
+    vcs.push_working_tree_diff(Ok(files.clone()));
+    vcs.push_working_tree_diff(Ok(files.clone()));
+    let mut app = build_app_with_scripted_vcs(files, vcs);
+    app.review_commits = vec![make_commit_info("c1")];
+    app.commit_selection_range = Some((0, 0));
+    app.insert_commit_messages_for_selection();
+
+    let result = app.fetch_changed_diff_files();
+
+    assert!(
+        matches!(result, Ok(None)),
+        "expected Ok(None) with only a commit message differing, got {result:?}"
     );
 }

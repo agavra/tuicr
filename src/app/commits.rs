@@ -533,7 +533,18 @@ impl App {
     /// selector shows exactly one commit. `None` otherwise (full range,
     /// multi-commit subset, or no selector) — those comments get
     /// `commit_id = None` so they stay visible across selections.
+    ///
+    /// A comment on a commit message is the exception: that entry names its
+    /// own commit regardless of how wide the selection is, so it is attributed
+    /// to that commit and stays hidden when the selection excludes it.
     pub(in crate::app) fn commit_id_for_new_comment(&self) -> Option<String> {
+        if let Some(sha) = self
+            .current_file()
+            .and_then(|file| file.commit_message_sha.clone())
+        {
+            return Some(sha);
+        }
+
         let (start, end) = self.commit_selection_range?;
         if start != end {
             return None;
@@ -872,7 +883,7 @@ impl App {
         self.file_list_state = FileListState::default();
         self.expanded_top.clear();
         self.expanded_bottom.clear();
-        self.insert_commit_message_if_single();
+        self.insert_commit_messages_for_selection();
         self.sort_files_by_directory(true);
         self.expand_all_dirs();
         self.rebuild_annotations();

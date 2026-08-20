@@ -49,7 +49,7 @@ fn materialize_file_patch(patch: FilePatch, highlighter: &SyntaxHighlighter) -> 
         hunks,
         is_binary: patch.is_binary,
         is_too_large: patch.is_too_large,
-        is_commit_message: false,
+        commit_message_sha: None,
         content_hash,
     })
 }

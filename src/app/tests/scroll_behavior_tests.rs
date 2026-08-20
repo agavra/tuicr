@@ -68,7 +68,7 @@ fn build_scroll_app(n: usize, viewport: usize, scroll_offset_config: usize) -> A
         hunks: vec![hunk],
         is_binary: false,
         is_too_large: false,
-        is_commit_message: false,
+        commit_message_sha: None,
         content_hash: 0,
     };
 

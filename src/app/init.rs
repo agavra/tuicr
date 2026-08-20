@@ -227,7 +227,7 @@ impl App {
                 ) {
                     app.reload_inline_selection()?;
                 } else {
-                    app.insert_commit_message_if_single();
+                    app.insert_commit_messages_for_selection();
                     app.sort_files_by_directory(true);
                     app.expand_all_dirs();
                     app.rebuild_annotations();
@@ -294,7 +294,7 @@ impl App {
             ) {
                 app.reload_inline_selection()?;
             } else {
-                app.insert_commit_message_if_single();
+                app.insert_commit_messages_for_selection();
                 app.sort_files_by_directory(true);
                 app.expand_all_dirs();
                 app.rebuild_annotations();

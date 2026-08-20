@@ -160,6 +160,29 @@ Repository-managed agent integrations:
 - Keys are focus-scoped via `map_file_tree_mode`: the tree claims `i`/`e`/`I`/`E`/`/`, the
   diff keeps `i` = edit comment and `/` = search diff
 
+**Commit messages** (`App::insert_commit_messages_for_selection`, `src/app/diff_load.rs`):
+
+- Every commit in the inline selector's range gets a synthetic `DiffFile` ahead of the real
+  files, oldest first, so a branch review covers the commit messages as well as the code.
+  Narrowing the selector to one commit leaves that commit's message alone. Staged and
+  unstaged pseudo-commits are skipped — they have no message.
+- The entries are ordinary diff files from there on: all-`Context` lines in one hunk, so
+  file/line/range comments, `r`/`R` marks, persistence, the review CLI, and markdown export
+  need no special case. `content_hash` covers the message text, so rewording a commit
+  clears its reviewed mark like any other content change.
+- Identity is carried twice, deliberately. The display path holds the **short** id
+  (`Commit Message (<short_id>)`) and is the session key, keeping two commits' messages
+  apart; `DiffFile::commit_message_sha` holds the **full** id, which is what attributes a
+  comment to its commit. `commit_id_for_new_comment` reads that field first, because a
+  selection spanning several commits cannot name one and would otherwise stamp `None`.
+- Anything synthesizing or comparing diff files must account for them: they are never
+  *fetched*, so `apply_diff_files` rebuilds them after a reload (otherwise `:e` and every
+  diff-watch tick drop them) and `diff_files_fingerprint` excludes them (otherwise the
+  on-screen diff differs from every fetch of the same content and re-applies forever).
+- PR mode does not show them yet: `PullRequestCommit` carries no message body, so
+  `pr_commit_to_commit_info` maps `body: None`, and the PR diff-install paths do not call
+  the insert.
+
 **InputMode** (`src/app.rs`):
 
 - `Normal` - default navigation mode

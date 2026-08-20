@@ -70,7 +70,7 @@ fn diff_file(path: &str) -> DiffFile {
         hunks: Vec::new(),
         is_binary: false,
         is_too_large: false,
-        is_commit_message: false,
+        commit_message_sha: None,
         content_hash: 0,
     }
 }

@@ -82,7 +82,7 @@ fn make_pr_app_with_single_modified_file(file_path: &str) -> App {
         }],
         is_binary: false,
         is_too_large: false,
-        is_commit_message: false,
+        commit_message_sha: None,
         content_hash: 0,
     };
     let pr_source = PullRequestDiffSource {
