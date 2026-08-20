@@ -35,6 +35,12 @@ pub const DEFAULT_REVIEW_WATCH_INTERVAL_MS: u64 = 1000;
 pub const STAGED_SELECTION_ID: &str = "__tuicr_staged__";
 pub const UNSTAGED_SELECTION_ID: &str = "__tuicr_unstaged__";
 pub const GAP_EXPAND_BATCH: usize = 20;
+/// File list width as a percentage of the content area: starting value,
+/// step per `H` / `L` press, and the bounds that keep both panes usable.
+pub const FILE_LIST_WIDTH_DEFAULT: u16 = 20;
+pub const FILE_LIST_WIDTH_STEP: u16 = 5;
+pub const FILE_LIST_WIDTH_MIN: u16 = 10;
+pub const FILE_LIST_WIDTH_MAX: u16 = 60;
 
 /// Create a forge backend for the given repository.
 /// Routes to the GitHub backend (via `gh`), the GitLab backend (via `glab`),
@@ -1122,6 +1128,10 @@ pub struct App {
     pub focused_panel: FocusedPanel,
     pub diff_view_mode: DiffViewMode,
     pub relative_line_numbers: bool,
+    /// Width of the file list as a percentage of the content area.
+    /// `<leader>L` / `<leader>H` move the boundary; `file_list_width` sets
+    /// the start value.
+    pub file_list_width_pct: u16,
 
     pub file_list_state: FileListState,
     pub comment_navigator_state: CommentNavigatorState,

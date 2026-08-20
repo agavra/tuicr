@@ -334,6 +334,12 @@ fn main() -> anyhow::Result<()> {
             app.diff_state.wrap_lines = wrap;
         }
         app.relative_line_numbers = cfg.relative_line_numbers.unwrap_or(false);
+        if let Some(width) = cfg.file_list_width {
+            // Clamp rather than reject: a width outside the usable range is
+            // a preference expressed badly, not a config error.
+            app.file_list_width_pct =
+                (width as u16).clamp(app::FILE_LIST_WIDTH_MIN, app::FILE_LIST_WIDTH_MAX);
+        }
         // Open in single-file view when the user opts in. Pristine
         // `--all-files` already turned it on inside `App::new`, so we
         // only toggle if it's still off.
@@ -593,6 +599,17 @@ fn main() -> anyhow::Result<()> {
                             }
                             crossterm::event::KeyCode::Char('l') => {
                                 app.focused_panel = app::FocusedPanel::Diff;
+                                continue;
+                            }
+                            // `;H` / `;L` move the file list boundary the same
+                            // direction `;h` / `;l` move focus, so one mental
+                            // model covers both.
+                            crossterm::event::KeyCode::Char('L') => {
+                                app.resize_file_list(true);
+                                continue;
+                            }
+                            crossterm::event::KeyCode::Char('H') => {
+                                app.resize_file_list(false);
                                 continue;
                             }
                             crossterm::event::KeyCode::Char('k') => {

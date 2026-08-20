@@ -270,7 +270,10 @@ fn filter_footer(app: &App) -> Option<Line<'static>> {
 mod tests {
     //! Render checks for the filter status/prompt line in the file tree's
     //! bottom border, driven through the real `ui::render`.
-    use crate::app::{App, DiffSource, FileTreePrompt, FocusedPanel, InputMode};
+    use crate::app::{
+        App, DiffSource, FILE_LIST_WIDTH_MAX, FILE_LIST_WIDTH_MIN, FILE_LIST_WIDTH_STEP,
+        FileTreePrompt, FocusedPanel, InputMode,
+    };
     use crate::model::{DiffFile, DiffLine, FileStatus, ReviewSession, SessionDiffSource};
     use crate::vcs::traits::{VcsBackend, VcsInfo, VcsType};
     use ratatui::Terminal;
@@ -472,6 +475,63 @@ mod tests {
         assert!(
             !text.contains("reviewed hidden"),
             "default state should not advertise hiding, got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn should_widen_and_narrow_the_file_list_within_bounds() {
+        let mut app = app_with(&["src/main.rs"]);
+        let start = app.file_list_width_pct;
+
+        app.resize_file_list(true);
+        assert_eq!(app.file_list_width_pct, start + FILE_LIST_WIDTH_STEP);
+
+        app.resize_file_list(false);
+        assert_eq!(app.file_list_width_pct, start);
+
+        for _ in 0..50 {
+            app.resize_file_list(true);
+        }
+        assert_eq!(app.file_list_width_pct, FILE_LIST_WIDTH_MAX);
+
+        for _ in 0..50 {
+            app.resize_file_list(false);
+        }
+        assert_eq!(app.file_list_width_pct, FILE_LIST_WIDTH_MIN);
+    }
+
+    #[test]
+    fn should_refuse_to_resize_a_hidden_file_list() {
+        let mut app = app_with(&["src/main.rs"]);
+        app.show_file_list = false;
+        let start = app.file_list_width_pct;
+
+        app.resize_file_list(true);
+
+        assert_eq!(app.file_list_width_pct, start);
+    }
+
+    #[test]
+    fn should_render_a_wider_tree_after_growing_it() {
+        let mut app = app_with(&["src/deeply/nested/some_long_file_name.rs"]);
+        let narrow = draw(&mut app);
+        let narrow_border = buffer_text(&narrow)
+            .lines()
+            .find_map(|l| l.find("┐"))
+            .expect("tree border");
+
+        for _ in 0..4 {
+            app.resize_file_list(true);
+        }
+        let wide = draw(&mut app);
+        let wide_border = buffer_text(&wide)
+            .lines()
+            .find_map(|l| l.find("┐"))
+            .expect("tree border");
+
+        assert!(
+            wide_border > narrow_border,
+            "expected the tree pane to grow: {narrow_border} -> {wide_border}"
         );
     }
 }
