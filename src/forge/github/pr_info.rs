@@ -371,6 +371,7 @@ mod tests {
             host: "github.com".to_string(),
             owner: "owner".to_string(),
             name: "repo".to_string(),
+            tea_login: None,
         }
     }
 

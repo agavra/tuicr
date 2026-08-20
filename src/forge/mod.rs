@@ -18,12 +18,14 @@ pub mod submit;
 pub mod traits;
 
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use git2::Repository;
+use serde::Deserialize;
 
 use crate::forge::azure::az::parse_azure_remote_url;
 use crate::forge::bitbucket::bkt::parse_bitbucket_remote_url;
-use crate::forge::github::gh::parse_github_remote_url;
+use crate::forge::github::gh::{parse_forgejo_remote_url, parse_github_remote_url};
 use crate::forge::gitlab::glab::parse_gitlab_remote_url;
 use crate::forge::traits::ForgeRepository;
 
@@ -99,6 +101,28 @@ fn remote_urls(repo_root: &Path) -> Vec<String> {
     all_urls
 }
 
+fn named_remote_urls(repo_root: &Path) -> Vec<(String, String)> {
+    let Ok(repo) = Repository::discover(repo_root) else {
+        return Vec::new();
+    };
+    let mut remotes = Vec::new();
+    if let Ok(remote) = repo.find_remote("origin")
+        && let Some(url) = remote.url()
+    {
+        remotes.push(("origin".to_string(), url.to_string()));
+    }
+    if let Ok(names) = repo.remotes() {
+        for name in names.iter().flatten() {
+            if let Ok(remote) = repo.find_remote(name)
+                && let Some(url) = remote.url()
+            {
+                remotes.push((name.to_string(), url.to_string()));
+            }
+        }
+    }
+    remotes
+}
+
 /// Try to detect an Azure DevOps forge repository for the local checkout at
 /// `repo_root`. Looks at `origin` first, then any remote whose URL parses as an
 /// Azure DevOps host. Returns `None` when no Azure remote is configured.
@@ -120,24 +144,100 @@ pub fn parse_any_remote_url(url: &str) -> Option<ForgeRepository> {
     parse_bitbucket_remote_url(url)
         .or_else(|| parse_gitlab_remote_url(url))
         .or_else(|| parse_azure_remote_url(url))
+        .or_else(|| parse_codeberg_remote_url(url))
         .or_else(|| parse_github_remote_url(url))
 }
 
 /// Detect the forge repository for the local checkout at `repo_root`.
 /// Returns `None` when no remote can be parsed.
 pub fn detect_forge_repository(repo_root: &Path) -> Option<ForgeRepository> {
-    remote_urls(repo_root)
-        .iter()
-        .find_map(|url| parse_any_remote_url(url))
+    let urls = remote_urls(repo_root);
+    for url in &urls {
+        if let Some(repository) = parse_bitbucket_remote_url(url)
+            .or_else(|| parse_gitlab_remote_url(url))
+            .or_else(|| parse_azure_remote_url(url))
+        {
+            return Some(repository);
+        }
+    }
+    for (_, url) in named_remote_urls(repo_root) {
+        if parse_github_remote_url(&url).is_some_and(|repository| repository.host != "github.com")
+            && let Some(repository) = parse_forgejo_remote_url(&url)
+            && let Some(login) = tea_login_for_host(&repository.host)
+        {
+            return Some(repository.with_tea_login(login));
+        }
+    }
+    urls.iter().find_map(|url| parse_github_remote_url(url))
 }
 
 /// `root`'s local checkout, but only when one of its remotes — not
 /// necessarily `origin` — matches `target_repo`.
 pub fn local_checkout_for_repo(root: &Path, target_repo: &ForgeRepository) -> Option<PathBuf> {
+    if target_repo.kind == crate::forge::traits::ForgeKind::Forgejo
+        && named_remote_urls(root).iter().any(|(_, url)| {
+            let Some(repository) = parse_forgejo_remote_url(url) else {
+                return false;
+            };
+            tea_login_for_host(&repository.host).as_deref() == target_repo.tea_login.as_deref()
+                && repository.host == target_repo.host
+                && repository.owner == target_repo.owner
+                && repository.name == target_repo.name
+        })
+    {
+        return Some(root.to_path_buf());
+    }
     remote_urls(root)
         .iter()
         .any(|url| parse_any_remote_url(url).as_ref() == Some(target_repo))
         .then(|| root.to_path_buf())
+}
+
+pub fn resolve_tea_login(mut repository: ForgeRepository) -> ForgeRepository {
+    if repository.kind == crate::forge::traits::ForgeKind::Forgejo && repository.tea_login.is_none()
+    {
+        repository.tea_login = tea_login_for_host(&repository.host);
+    }
+    repository
+}
+
+fn parse_codeberg_remote_url(url: &str) -> Option<ForgeRepository> {
+    let repository = parse_github_remote_url(url)?;
+    repository
+        .host
+        .eq_ignore_ascii_case("codeberg.org")
+        .then(|| ForgeRepository::forgejo(repository.host, repository.owner, repository.name))
+}
+
+#[derive(Deserialize)]
+struct TeaLogin {
+    name: String,
+    url: String,
+}
+
+fn tea_login_for_host(host: &str) -> Option<String> {
+    let output = Command::new("tea")
+        .args(["logins", "list", "--output", "json"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let logins: Vec<TeaLogin> = serde_json::from_slice(&output.stdout).ok()?;
+    logins.into_iter().find_map(|login| {
+        tea_host(&login.url)
+            .eq_ignore_ascii_case(host)
+            .then_some(login.name)
+    })
+}
+
+fn tea_host(url: &str) -> &str {
+    url.strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url)
+        .split('/')
+        .next()
+        .unwrap_or(url)
 }
 
 #[cfg(test)]
@@ -157,6 +257,14 @@ mod tests {
         assert_eq!(
             detect_forge_repository(dir.path()),
             Some(ForgeRepository::github("github.com", "agavra", "tuicr"))
+        );
+    }
+
+    #[test]
+    fn parses_codeberg_url_as_forgejo() {
+        assert_eq!(
+            parse_any_remote_url("https://codeberg.org/team/service.git"),
+            Some(ForgeRepository::forgejo("codeberg.org", "team", "service"))
         );
     }
 

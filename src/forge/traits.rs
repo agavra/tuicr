@@ -12,6 +12,7 @@ use crate::model::{DiffLine, FilePatch, FileStatus};
 pub enum ForgeKind {
     GitHub,
     GitLab,
+    Forgejo,
     /// Bitbucket Cloud only. Data Center speaks an unrelated REST 1.0 API and
     /// is rejected during remote-URL parsing.
     Bitbucket,
@@ -25,6 +26,7 @@ impl ForgeKind {
         match self {
             ForgeKind::GitHub => "GitHub",
             ForgeKind::GitLab => "GitLab",
+            ForgeKind::Forgejo => "Forgejo",
             ForgeKind::Bitbucket => "Bitbucket",
             ForgeKind::AzureDevOps => "Azure DevOps",
         }
@@ -37,6 +39,8 @@ pub struct ForgeRepository {
     pub host: String,
     pub owner: String,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tea_login: Option<String>,
 }
 
 impl ForgeRepository {
@@ -50,6 +54,7 @@ impl ForgeRepository {
             host: host.into(),
             owner: owner.into(),
             name: name.into(),
+            tea_login: None,
         }
     }
 
@@ -63,7 +68,27 @@ impl ForgeRepository {
             host: host.into(),
             owner: owner.into(),
             name: name.into(),
+            tea_login: None,
         }
+    }
+
+    pub fn forgejo(
+        host: impl Into<String>,
+        owner: impl Into<String>,
+        name: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind: ForgeKind::Forgejo,
+            host: host.into(),
+            owner: owner.into(),
+            name: name.into(),
+            tea_login: None,
+        }
+    }
+
+    pub fn with_tea_login(mut self, tea_login: impl Into<String>) -> Self {
+        self.tea_login = Some(tea_login.into());
+        self
     }
 
     /// `owner` carries the Bitbucket Cloud workspace.
@@ -77,6 +102,7 @@ impl ForgeRepository {
             host: host.into(),
             owner: owner.into(),
             name: name.into(),
+            tea_login: None,
         }
     }
 
@@ -97,6 +123,7 @@ impl ForgeRepository {
             host: host.into(),
             owner: owner.into(),
             name: name.into(),
+            tea_login: None,
         }
     }
 
