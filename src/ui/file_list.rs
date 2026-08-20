@@ -142,7 +142,7 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
                     } else {
                         styles::pending_style(&app.theme)
                     };
-                    if file.is_commit_message {
+                    if file.is_commit_message() {
                         Line::from(vec![
                             Span::styled(format!("{checkbox} "), checkbox_style),
                             Span::raw(format!("  {}", path.display())),
@@ -317,7 +317,7 @@ mod tests {
             hunks: vec![],
             is_binary: false,
             is_too_large: false,
-            is_commit_message: false,
+            commit_message_sha: None,
             content_hash: 0,
         }
     }

@@ -35,7 +35,7 @@ pub(super) fn file_header_prefix_text(app: &App, file: &DiffFile) -> String {
     let path = file.display_path();
     let is_reviewed = app.session.is_file_reviewed(path);
     let review_mark = if is_reviewed { "✓ " } else { "" };
-    if file.is_commit_message || app.is_pristine_mode {
+    if file.is_commit_message() || app.is_pristine_mode {
         format!("═══ {}{} ", review_mark, path.display())
     } else {
         format!(

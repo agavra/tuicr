@@ -173,7 +173,7 @@ fn make_diff_file(path: &str, status: FileStatus, content_hash: u64) -> DiffFile
         hunks: Vec::new(),
         is_binary: false,
         is_too_large: false,
-        is_commit_message: false,
+        commit_message_sha: None,
         content_hash,
     }
 }
@@ -439,7 +439,7 @@ fn should_keep_commit_message_entries_across_a_reload() {
     app.reload_diff_files().expect("reload should succeed");
 
     assert!(
-        app.diff_files.iter().any(|file| file.is_commit_message),
+        app.diff_files.iter().any(|file| file.is_commit_message()),
         "the commit message must survive a reload, got {:?}",
         app.diff_files
             .iter()

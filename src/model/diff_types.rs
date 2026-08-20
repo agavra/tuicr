@@ -105,7 +105,11 @@ pub struct DiffFile {
     pub hunks: Vec<DiffHunk>,
     pub is_binary: bool,
     pub is_too_large: bool,
-    pub is_commit_message: bool,
+    /// Full commit SHA when this entry is a synthetic commit-message view
+    /// rather than a real file, else `None`. The SHA lives here instead of a
+    /// bare flag so comment attribution never has to be re-parsed out of the
+    /// display path, which carries only the *short* id.
+    pub commit_message_sha: Option<String>,
     pub content_hash: u64,
 }
 
@@ -118,6 +122,14 @@ impl DiffHunk {
 }
 
 impl DiffFile {
+    /// True when this entry is a synthetic commit-message view rather than a
+    /// real file. Renderers, the file tree, and the editor-open path branch
+    /// on this; anything needing the commit itself reads
+    /// `commit_message_sha` directly.
+    pub fn is_commit_message(&self) -> bool {
+        self.commit_message_sha.is_some()
+    }
+
     /// Stable key for a reviewed hunk.
     ///
     /// Unique hunk content ignores hunk header line numbers so unrelated

@@ -846,7 +846,7 @@ fn build_untracked_diff_file(
         hunks,
         is_binary: false,
         is_too_large: false,
-        is_commit_message: false,
+        commit_message_sha: None,
         content_hash,
     })
 }
@@ -859,7 +859,7 @@ fn diff_file_without_hunks(path: &Path, is_binary: bool, is_too_large: bool) -> 
         hunks: Vec::new(),
         is_binary,
         is_too_large,
-        is_commit_message: false,
+        commit_message_sha: None,
         content_hash: 0,
     }
 }

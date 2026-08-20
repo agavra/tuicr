@@ -96,7 +96,7 @@ fn build_pr_app() -> App {
             hunks: vec![],
             is_binary: false,
             is_too_large: false,
-            is_commit_message: false,
+            commit_message_sha: None,
             content_hash: 0,
         }],
         session,

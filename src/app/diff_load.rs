@@ -32,7 +32,7 @@ impl App {
     /// (the session indexes comments by path) and the exported review records
     /// which commit each commit-message comment belongs to.
     pub(in crate::app) fn insert_commit_message_if_single(&mut self) {
-        self.diff_files.retain(|f| !f.is_commit_message);
+        self.diff_files.retain(|f| !f.is_commit_message());
 
         let commit = if let Some((start, end)) = self.commit_selection_range {
             if start == end {
@@ -89,7 +89,7 @@ impl App {
             hunks,
             is_binary: false,
             is_too_large: false,
-            is_commit_message: true,
+            commit_message_sha: Some(commit.id.clone()),
             content_hash,
         };
         self.diff_files.insert(0, commit_msg_file);
@@ -1571,7 +1571,7 @@ fn file_fingerprint(file: &DiffFile) -> u64 {
 fn diff_files_fingerprint(files: &[DiffFile]) -> u64 {
     let mut per_file: Vec<u64> = files
         .iter()
-        .filter(|file| !file.is_commit_message)
+        .filter(|file| !file.is_commit_message())
         .map(file_fingerprint)
         .collect();
     per_file.sort_unstable();
@@ -1600,7 +1600,7 @@ mod tests {
             hunks: vec![],
             is_binary,
             is_too_large,
-            is_commit_message: false,
+            commit_message_sha: None,
             content_hash,
         }
     }

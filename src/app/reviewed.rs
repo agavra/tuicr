@@ -140,7 +140,7 @@ impl App {
             self.set_warning("No file selected");
             return;
         };
-        if file.is_commit_message {
+        if file.is_commit_message() {
             self.set_warning("Commit message has no local file to open");
             return;
         }

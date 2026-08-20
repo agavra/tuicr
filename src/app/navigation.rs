@@ -588,7 +588,7 @@ impl App {
             }
             AnnotatedLine::FileHeader { file_idx } => {
                 let file = self.diff_files.get(*file_idx)?;
-                if file.is_commit_message {
+                if file.is_commit_message() {
                     Some(file.display_path().display().to_string())
                 } else {
                     Some(format!(

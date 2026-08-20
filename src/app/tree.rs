@@ -147,7 +147,7 @@ impl App {
         let mut commit_msg_files: Vec<DiffFile> = Vec::new();
 
         for file in self.diff_files.drain(..) {
-            if file.is_commit_message {
+            if file.is_commit_message() {
                 commit_msg_files.push(file);
                 continue;
             }
