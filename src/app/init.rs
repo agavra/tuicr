@@ -560,6 +560,7 @@ impl App {
             should_quit: false,
             dirty: false,
             quit_warned: false,
+            confirm_quit: false,
             message: None,
             pending_confirm: None,
             supports_keyboard_enhancement: false,

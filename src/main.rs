@@ -233,6 +233,7 @@ fn main() -> anyhow::Result<()> {
                 if let Some(leader) = cfg.leader {
                     app.leader_key = leader;
                 }
+                app.confirm_quit = cfg.confirm_quit.unwrap_or(false);
                 app.comment_vim_enabled = cfg.comment_vim.unwrap_or(false);
                 if let Some(w) = cfg.comment_tab_width {
                     app.comment_tab_width = w;

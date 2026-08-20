@@ -224,7 +224,7 @@ In command mode,
 | `ZZ` | Save and quit |
 | `ZQ` | Quit without saving |
 | `?` | Toggle help |
-| `q` | Quick quit |
+| `q` | Quick quit (see `confirm_quit` below) |
 
 The summary replaces the diff while leaving the file sidebar visible when it is open. The first
 pending comment is selected when the summary opens. Use `j`/`k` to select the next
@@ -235,6 +235,12 @@ losing their reviewed state.
 
 `draft` applies to GitHub only. `comment` and `approve` work on GitHub, GitLab, and Bitbucket.
 `request-changes` works on GitHub and GitLab, but not Bitbucket yet.
+
+Bare `q` quits immediately by default. Set config `confirm_quit = true` and it asks in a
+Y/N modal first — `y` quits, `n` returns to the review. The explicit quit commands
+(`:q`, `:q!`, `:wq`, `:x`, `ZZ`, `ZQ`) are unaffected either way, as are the `q` keys that
+close the help overlay, the summary view, and the review target selector. See
+[docs/CONFIG.md](CONFIG.md).
 
 ## Commit selection / review target selector
 

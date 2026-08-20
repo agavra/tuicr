@@ -77,8 +77,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // Comment input is now rendered inline in the diff view
 
     // Render confirm dialog if in confirm mode
-    if app.input_mode == InputMode::Confirm {
-        comment_panel::render_confirm_dialog(frame, app, "Copy review to clipboard?");
+    if app.input_mode == InputMode::Confirm
+        && let Some(confirm) = app.pending_confirm
+    {
+        comment_panel::render_confirm_dialog(frame, app, confirm.prompt());
     }
 
     // Submit-flow modals.

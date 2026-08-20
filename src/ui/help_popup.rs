@@ -919,6 +919,17 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  q         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(if app.confirm_quit {
+                "Quit, after a Y/N confirmation (confirm_quit)"
+            } else {
+                "Quit"
+            }),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  :version  ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),

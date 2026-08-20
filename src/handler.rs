@@ -1192,6 +1192,14 @@ pub fn handle_comment_action(app: &mut App, action: Action) {
 /// Handle actions in Confirm mode (Y/N prompts)
 pub fn handle_confirm_action(app: &mut App, action: Action) {
     match action {
+        Action::ConfirmYes if matches!(app.pending_confirm, Some(app::ConfirmAction::Quit)) => {
+            app.exit_confirm_mode();
+            quit_review_view(app);
+        }
+        Action::ConfirmNo if matches!(app.pending_confirm, Some(app::ConfirmAction::Quit)) => {
+            // This prompt asked whether to quit at all, so "no" stays put.
+            app.exit_confirm_mode();
+        }
         Action::ConfirmYes => {
             if let Some(app::ConfirmAction::CopyAndQuit) = app.pending_confirm {
                 let slug = app.session_slug();
@@ -1587,6 +1595,19 @@ pub fn handle_diff_action(app: &mut App, action: Action) {
     }
 }
 
+/// Leave the review view once a bare `q` has been accepted — either straight
+/// away with `confirm_quit` off or after the confirm modal.
+///
+/// Review state that is dirty from reviewed-file markers alone is discarded
+/// rather than left behind, matching what `:q` does with the same state.
+fn quit_review_view(app: &mut App) {
+    if app.dirty && !app.session.has_comments() {
+        app.discard_session_and_quit();
+    } else {
+        app.should_quit = true;
+    }
+}
+
 /// Handle actions shared between file list and diff panels in Normal mode
 fn handle_shared_normal_action(app: &mut App, action: Action) {
     // Reset quit_warned on any non-quit action
@@ -1595,16 +1616,19 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
     }
 
     match action {
+        // Bare `q`. The explicit quit commands are dispatched elsewhere —
+        // `:q`/`:q!`/`:wq`/`:x` through `CommandKind`, `ZZ`/`ZQ` straight from
+        // the main loop — so gating here cannot reach them.
         Action::Quit => {
-            if app.dirty && app.session.has_comments() && !app.quit_warned {
+            if app.confirm_quit {
+                // The modal *is* the "press q again" prompt, made visible, so
+                // it replaces that step rather than stacking on top of it.
+                app.enter_confirm_mode(app::ConfirmAction::Quit);
+            } else if app.dirty && app.session.has_comments() && !app.quit_warned {
                 app.set_sticky_warning("Unsaved changes. Press q again to quit.");
                 app.quit_warned = true;
-            } else if app.dirty && !app.session.has_comments() {
-                // Dirty from reviewed-file markers only: discard the state and
-                // quit instead of warning about unsaved changes.
-                app.discard_session_and_quit();
             } else {
-                app.should_quit = true;
+                quit_review_view(app);
             }
         }
         Action::ExitMode => {
