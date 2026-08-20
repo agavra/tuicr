@@ -738,6 +738,11 @@ impl App {
         self.diff_files = diff_files;
         self.clear_expanded_gaps();
 
+        // A fetched diff carries only real files, so the commit-message entry
+        // has to be rebuilt here or `:e` and every diff-watch tick would
+        // quietly drop it from a commit review.
+        self.insert_commit_message_if_single();
+
         self.sort_files_by_directory(false);
         self.populate_file_line_count_cache();
         self.expand_all_dirs();

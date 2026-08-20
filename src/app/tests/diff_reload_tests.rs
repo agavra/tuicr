@@ -423,3 +423,27 @@ fn should_fetch_changed_diff_files_keeping_narrowed_commit_selection() {
         "diff-watch's probe fetch must use the narrowed selection, not the full commit range"
     );
 }
+/// Commit-message entries are synthesized locally from the commit selection,
+/// never fetched, so a reload that installs only real files has to rebuild
+/// them or `:e` silently drops the commit messages out of the review.
+#[test]
+fn should_keep_commit_message_entries_across_a_reload() {
+    let vcs = ScriptedVcs::new();
+    vcs.push_working_tree_diff(Ok(vec![make_diff_file("a.rs", FileStatus::Modified, 2)]));
+    let mut app =
+        build_app_with_scripted_vcs(vec![make_diff_file("a.rs", FileStatus::Modified, 1)], vcs);
+    app.review_commits = vec![make_commit_info("c1")];
+    app.commit_selection_range = Some((0, 0));
+    app.insert_commit_message_if_single();
+
+    app.reload_diff_files().expect("reload should succeed");
+
+    assert!(
+        app.diff_files.iter().any(|file| file.is_commit_message),
+        "the commit message must survive a reload, got {:?}",
+        app.diff_files
+            .iter()
+            .map(|f| f.display_path().clone())
+            .collect::<Vec<_>>()
+    );
+}
