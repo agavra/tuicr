@@ -7,7 +7,7 @@ use crate::forge::remote_comments::{RemoteReviewSummary, RemoteReviewThread};
 use crate::forge::traits::{
     ForgeBackend, ForgeFileLinesRequest, ForgeRepository, GhCreateReviewResponse,
     PagedPullRequests, PullRequestCommit, PullRequestDetails, PullRequestInfo,
-    PullRequestListScope, PullRequestSummary, PullRequestTarget,
+    PullRequestListQuery, PullRequestListScope, PullRequestSummary, PullRequestTarget,
 };
 use crate::model::{DiffLine, FilePatch, FileStatus};
 use crate::process::{
@@ -417,7 +417,9 @@ where
     fn get_pull_request_info(&self, target: PullRequestTarget) -> Result<PullRequestInfo> {
         let repository = self.resolve_repository(&target)?;
         if repository.kind == crate::forge::traits::ForgeKind::Forgejo {
-            return self.get_forgejo_pull_request(&repository, target.number);
+            return self
+                .get_forgejo_pull_request(&repository, target.number)
+                .map(PullRequestInfo::from_details);
         }
 
         let output = self.run_gh(
@@ -905,7 +907,9 @@ fn forgejo_patch_files(patch: &str) -> Result<Vec<FilePatch>> {
                 .strip_prefix("diff --git a/")
                 .and_then(|paths| paths.split_once(" b/"))
                 .ok_or_else(|| {
-                    TuicrError::Forge(format!("Forgejo returned an invalid diff header: `{header}`"))
+                    TuicrError::Forge(format!(
+                        "Forgejo returned an invalid diff header: `{header}`"
+                    ))
                 })?;
             let status = if block.contains("\nnew file mode ") {
                 FileStatus::Added
@@ -2227,7 +2231,8 @@ Match host github-work
         assert_eq!(details.head_sha, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
 
         let patch = backend.get_pull_request_diff(&details).unwrap();
-        assert_eq!(patch, PR_PATCH);
+        assert_eq!(patch.len(), 1);
+        assert_eq!(patch[0].patch, PR_PATCH.trim_start());
 
         let calls = backend.runner.calls.borrow();
         assert!(calls.iter().any(|args| {
