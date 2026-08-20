@@ -10,8 +10,8 @@ Full reference. Press `?` inside tuicr for an in-app version of this list.
 |-----|--------|
 | `j` / `↓` | Scroll down |
 | `k` / `↑` | Scroll up |
-| `h` / `←` | Scroll left |
-| `l` / `→` | Scroll right |
+| `h` / `←` | Scroll left (side-by-side: select the **old** side for comments) |
+| `l` / `→` | Scroll right (side-by-side: select the **new** side for comments) |
 | `Ctrl-d` / `Ctrl-u` | Half page down / up |
 | `Ctrl-f` / `Ctrl-b` | Full page down / up |
 | `g` / `G` | Go to first / last file |

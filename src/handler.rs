@@ -1541,8 +1541,22 @@ pub fn handle_diff_action(app: &mut App, action: Action) {
         Action::CursorUp(n) => app.cursor_up(n),
         Action::ScrollViewDown(n) => app.scroll_view_down(n),
         Action::ScrollViewUp(n) => app.scroll_view_up(n),
-        Action::ScrollLeft(n) => app.scroll_left(n),
-        Action::ScrollRight(n) => app.scroll_right(n),
+        // In side-by-side view the horizontal keys switch the active side
+        // (old/left vs new/right) instead of scrolling.
+        Action::ScrollLeft(n) => {
+            if app.horizontal_keys_switch_side() {
+                app.set_cursor_side(LineSide::Old);
+            } else {
+                app.scroll_left(n);
+            }
+        }
+        Action::ScrollRight(n) => {
+            if app.horizontal_keys_switch_side() {
+                app.set_cursor_side(LineSide::New);
+            } else {
+                app.scroll_right(n);
+            }
+        }
         Action::MouseScrollDown(n) => app.scroll_view_down(n),
         Action::MouseScrollUp(n) => app.scroll_view_up(n),
         Action::SelectFile => {

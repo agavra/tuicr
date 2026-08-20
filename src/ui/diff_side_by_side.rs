@@ -154,6 +154,63 @@ fn sbs_row_prefixes(
     (left_prefix, right_prefix)
 }
 
+/// Move the `▶` caret onto the active side for the cursor row. The per-line
+/// builders always place the caret in the far-left slot (old side). When the
+/// cursor's effective side is `New`, blank that slot and redraw the caret in
+/// the divider's trailing space, just left of the new line number, so it
+/// points at the side a comment would attach to. Run as a post-render overlay
+/// so it's independent of the wrapped/unwrapped row-build paths.
+fn paint_sbs_active_side_caret(
+    frame: &mut Frame,
+    inner: Rect,
+    app: &App,
+    lw: usize,
+    content_width: usize,
+    row_heights: &[usize],
+) {
+    // Only the New side needs moving; Old keeps the left-slot caret.
+    if !matches!(app.get_line_at_cursor(), Some((_, LineSide::New))) {
+        return;
+    }
+    let scroll_offset = app.diff_state.scroll_offset;
+    let cursor_line = app.diff_state.cursor_line;
+    if cursor_line < scroll_offset {
+        return;
+    }
+    let logical_offset = cursor_line - scroll_offset;
+    if logical_offset >= app.diff_state.visible_line_count.max(1) {
+        return;
+    }
+    // First visual row of the cursor's logical line (wrap-aware).
+    let visual_row: u16 = if app.diff_state.wrap_lines {
+        (0..logical_offset)
+            .map(|i| row_heights.get(i).copied().unwrap_or(1) as u16)
+            .sum()
+    } else {
+        logical_offset as u16
+    };
+    if visual_row >= inner.height {
+        return;
+    }
+    let y = inner.y + visual_row;
+    let style = styles::current_line_indicator_style(&app.theme);
+
+    // Blank the far-left caret slot.
+    frame.buffer_mut()[(inner.x, y)].set_char(' ');
+
+    // Caret goes in the divider's trailing space: after the left gutter
+    // (`sbs_left_gutter`) and the left content column, `" │ "` occupies three
+    // cells and the third (index +2) is the space just left of the new lineno.
+    let caret_x = inner.x + crate::app::sbs_left_gutter(lw) + content_width as u16 + 2;
+    if caret_x < inner.x + inner.width {
+        let cell = &mut frame.buffer_mut()[(caret_x, y)];
+        cell.set_char('▶');
+        if let Some(fg) = style.fg {
+            cell.set_fg(fg);
+        }
+    }
+}
+
 /// Continuation-row prefixes shared by every wrapped line: blank in place of
 /// the line numbers (same width, so columns stay aligned) with the center
 /// divider preserved.
@@ -1027,6 +1084,9 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
         &row_heights,
         app,
     );
+
+    // Move the `▶` caret onto the active side for the cursor row.
+    paint_sbs_active_side_caret(frame, inner, app, lw, content_width, &row_heights);
 
     // Painted last so the cell overlay wins over cursor-line bg on overlap.
     if let Some(sel) = app.visual_selection {

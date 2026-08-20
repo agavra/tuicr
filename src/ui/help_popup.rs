@@ -233,7 +233,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  h/l       ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Scroll diff left/right (or ←/→)"),
+            Span::raw("Scroll diff left/right (or ←/→); side-by-side: pick comment side"),
         ]),
         Line::from(vec![
             Span::styled("  h/← at 0 ", Style::default().add_modifier(Modifier::BOLD)),
