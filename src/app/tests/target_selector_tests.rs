@@ -2692,7 +2692,7 @@ fn should_warn_when_comments_command_used_outside_pr_mode() {
     // then — visibility unchanged, a warning surfaced on the message bar
     assert_eq!(
         app.session.remote_comments_visibility,
-        PrCommentsVisibility::Unresolved
+        PrCommentsVisibility::default()
     );
     let msg = app
         .message
@@ -2774,4 +2774,296 @@ fn should_discard_stale_remote_threads_event_after_switching_pr() {
     app.poll_pr_threads_events();
     // then — stale result was dropped
     assert!(app.forge_review_threads.is_empty());
+}
+
+/// Records every thread mutation and serves an updated thread list afterwards,
+/// so tests can assert both the call the App made and the state it adopted.
+struct MutationLog {
+    threads: std::cell::RefCell<Vec<RemoteReviewThread>>,
+    mutations: std::cell::RefCell<Vec<String>>,
+}
+
+struct MutatingForgeBackend {
+    details: crate::forge::traits::PullRequestDetails,
+    patch: String,
+    log: std::rc::Rc<MutationLog>,
+    viewer: Option<String>,
+    supported: bool,
+}
+
+impl MutatingForgeBackend {
+    fn new(log: std::rc::Rc<MutationLog>, viewer: Option<&str>, supported: bool) -> Self {
+        Self {
+            details: test_pr_details(42, "answer"),
+            patch: crate::forge::github::gh::tests_fixture::SIMPLE_PATCH.to_string(),
+            log,
+            viewer: viewer.map(str::to_string),
+            supported,
+        }
+    }
+
+    fn record(&self, call: String) {
+        self.log.mutations.borrow_mut().push(call);
+    }
+}
+
+impl crate::forge::traits::ForgeBackend for MutatingForgeBackend {
+    fn list_pull_requests(
+        &self,
+        _q: crate::forge::traits::PullRequestListQuery,
+    ) -> Result<crate::forge::traits::PagedPullRequests> {
+        unimplemented!()
+    }
+    fn get_pull_request(
+        &self,
+        _t: crate::forge::traits::PullRequestTarget,
+    ) -> Result<crate::forge::traits::PullRequestDetails> {
+        Ok(self.details.clone())
+    }
+    fn get_pull_request_diff(
+        &self,
+        _p: &crate::forge::traits::PullRequestDetails,
+    ) -> Result<String> {
+        Ok(self.patch.clone())
+    }
+    fn fetch_file_lines(
+        &self,
+        _r: crate::forge::traits::ForgeFileLinesRequest,
+    ) -> Result<Vec<crate::model::DiffLine>> {
+        Ok(Vec::new())
+    }
+    fn list_review_threads(
+        &self,
+        _pr: &crate::forge::traits::PullRequestDetails,
+    ) -> Result<Vec<RemoteReviewThread>> {
+        Ok(self.log.threads.borrow().clone())
+    }
+    fn list_pull_request_commits(
+        &self,
+        _pr: &crate::forge::traits::PullRequestDetails,
+    ) -> Result<Vec<crate::forge::traits::PullRequestCommit>> {
+        Ok(Vec::new())
+    }
+    fn list_pull_request_review_metadata(
+        &self,
+        _pr: &crate::forge::traits::PullRequestDetails,
+    ) -> Result<PullRequestReviewMetadata> {
+        Ok(PullRequestReviewMetadata {
+            viewer_login: self.viewer.clone(),
+            reviews: Vec::new(),
+        })
+    }
+    fn get_pull_request_commit_range_diff(
+        &self,
+        _pr: &crate::forge::traits::PullRequestDetails,
+        _start_sha: &str,
+        _end_sha: &str,
+    ) -> Result<String> {
+        unreachable!()
+    }
+    fn create_review(
+        &self,
+        _pr: &crate::forge::traits::PullRequestDetails,
+        _request: crate::forge::traits::CreateReviewRequest<'_>,
+    ) -> Result<crate::forge::traits::GhCreateReviewResponse> {
+        unimplemented!()
+    }
+    fn supports_thread_mutations(&self) -> bool {
+        self.supported
+    }
+    fn set_thread_resolved(
+        &self,
+        _pr: &crate::forge::traits::PullRequestDetails,
+        thread_id: &str,
+        resolved: bool,
+    ) -> Result<()> {
+        self.record(format!("resolve {thread_id} {resolved}"));
+        for thread in self.log.threads.borrow_mut().iter_mut() {
+            if thread.id == thread_id {
+                thread.is_resolved = resolved;
+            }
+        }
+        Ok(())
+    }
+    fn reply_to_thread(
+        &self,
+        _pr: &crate::forge::traits::PullRequestDetails,
+        thread_id: &str,
+        body: &str,
+    ) -> Result<()> {
+        self.record(format!("reply {thread_id} {body}"));
+        for thread in self.log.threads.borrow_mut().iter_mut() {
+            if thread.id == thread_id {
+                thread.comments.push(RemoteReviewComment {
+                    id: "new".to_string(),
+                    author: self.viewer.clone(),
+                    body: body.to_string(),
+                    created_at: None,
+                    in_reply_to: None,
+                    url: String::new(),
+                });
+            }
+        }
+        Ok(())
+    }
+    fn edit_thread_comment(
+        &self,
+        _pr: &crate::forge::traits::PullRequestDetails,
+        thread_id: &str,
+        comment_id: &str,
+        body: &str,
+    ) -> Result<()> {
+        self.record(format!("edit {thread_id} {comment_id} {body}"));
+        Ok(())
+    }
+    fn delete_thread_comment(
+        &self,
+        _pr: &crate::forge::traits::PullRequestDetails,
+        thread_id: &str,
+        comment_id: &str,
+    ) -> Result<()> {
+        self.record(format!("delete {thread_id} {comment_id}"));
+        self.log.threads.borrow_mut().clear();
+        Ok(())
+    }
+}
+
+/// Open a PR whose diff carries one remote thread and leave the cursor on the
+/// thread's first rendered row. Returns the app plus a handle to the backend so
+/// callers can read back the mutations it recorded.
+fn app_on_remote_thread(
+    author: &str,
+    viewer: Option<&str>,
+    supported: bool,
+) -> (App, std::rc::Rc<MutationLog>) {
+    let mut thread = sample_thread(2, "remote body", false, false);
+    thread.comments[0].author = Some(author.to_string());
+    thread.comments[0].id = "C1".to_string();
+
+    let log = std::rc::Rc::new(MutationLog {
+        threads: std::cell::RefCell::new(vec![thread]),
+        mutations: std::cell::RefCell::new(Vec::new()),
+    });
+    let backend = MutatingForgeBackend::new(std::rc::Rc::clone(&log), viewer, supported);
+    let mut app = build_app();
+    let summary = sample_pr(42, "answer");
+    app.open_pr_with_backend(&summary, Box::new(backend), None)
+        .unwrap();
+
+    let cursor = app
+        .line_annotations
+        .iter()
+        .position(|a| matches!(a, AnnotatedLine::RemoteThreadLine { .. }))
+        .expect("thread annotation should be rendered");
+    app.diff_state.cursor_line = cursor;
+    (app, log)
+}
+
+#[test]
+fn should_resolve_the_thread_under_the_cursor() {
+    // given
+    let (mut app, log) = app_on_remote_thread("alice", Some("bob"), true);
+    // when
+    app.set_thread_resolved_at_cursor(true);
+    // then — the call went out and the reread state was adopted
+    assert_eq!(log.mutations.borrow().as_slice(), ["resolve T true"]);
+    assert!(app.forge_review_threads[0].is_resolved);
+}
+
+#[test]
+fn should_warn_instead_of_resolving_when_cursor_is_off_thread() {
+    // given the cursor on a plain diff line
+    let (mut app, log) = app_on_remote_thread("alice", Some("bob"), true);
+    app.diff_state.cursor_line = 0;
+    // when
+    app.set_thread_resolved_at_cursor(true);
+    // then
+    assert!(log.mutations.borrow().is_empty());
+    let msg = app.message.as_ref().expect("expected a warning");
+    assert!(matches!(msg.message_type, MessageType::Warning));
+}
+
+#[test]
+fn should_post_reply_typed_into_the_comment_editor() {
+    // given
+    let (mut app, log) = app_on_remote_thread("alice", Some("bob"), true);
+    app.reply_to_thread_at_cursor();
+    assert_eq!(app.input_mode, InputMode::Comment);
+    app.comment_buffer = "thanks, fixed".to_string();
+    // when
+    app.save_comment();
+    // then — posted as a reply, not stored as a local draft
+    assert_eq!(log.mutations.borrow().as_slice(), ["reply T thanks, fixed"]);
+    assert!(app.session.review_comments.is_empty());
+    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.remote_thread_edit.is_none());
+    assert_eq!(app.forge_review_threads[0].comments.len(), 2);
+}
+
+#[test]
+fn should_edit_own_remote_note_through_the_comment_editor() {
+    // given the viewer authored the note under the cursor
+    let (mut app, log) = app_on_remote_thread("bob", Some("bob"), true);
+    // when
+    assert!(app.edit_remote_note_at_cursor());
+    // then — the editor opens prefilled with the existing body
+    assert_eq!(app.comment_buffer, "remote body");
+    app.comment_buffer = "reworded".to_string();
+    app.save_comment();
+    assert_eq!(log.mutations.borrow().as_slice(), ["edit T C1 reworded"]);
+}
+
+#[test]
+fn should_refuse_to_edit_someone_elses_remote_note() {
+    // given a note authored by someone other than the viewer
+    let (mut app, log) = app_on_remote_thread("alice", Some("bob"), true);
+    // when
+    assert!(!app.edit_remote_note_at_cursor());
+    // then
+    assert!(log.mutations.borrow().is_empty());
+    assert_eq!(app.input_mode, InputMode::Normal);
+    let msg = app.message.as_ref().expect("expected a warning");
+    assert!(
+        msg.content.contains("@alice"),
+        "got message: {}",
+        msg.content
+    );
+}
+
+#[test]
+fn should_refuse_to_edit_remote_note_when_forge_cannot_mutate_threads() {
+    // given a backend without thread mutation support (GitHub today)
+    let (mut app, log) = app_on_remote_thread("bob", Some("bob"), false);
+    // when
+    assert!(!app.edit_remote_note_at_cursor());
+    // then
+    assert!(log.mutations.borrow().is_empty());
+    let msg = app.message.as_ref().expect("expected a message");
+    assert!(
+        msg.content.contains("read only"),
+        "got message: {}",
+        msg.content
+    );
+}
+
+#[test]
+fn should_delete_own_remote_note() {
+    // given
+    let (mut app, log) = app_on_remote_thread("bob", Some("bob"), true);
+    // when
+    assert!(app.delete_remote_note_at_cursor());
+    // then
+    assert_eq!(log.mutations.borrow().as_slice(), ["delete T C1"]);
+    assert!(app.forge_review_threads.is_empty());
+}
+
+#[test]
+fn should_refuse_to_delete_when_the_forge_reports_no_viewer_identity() {
+    // given no viewer login, so ownership cannot be established
+    let (mut app, log) = app_on_remote_thread("bob", None, true);
+    // when
+    assert!(!app.delete_remote_note_at_cursor());
+    // then
+    assert!(log.mutations.borrow().is_empty());
+    assert_eq!(app.forge_review_threads.len(), 1);
 }

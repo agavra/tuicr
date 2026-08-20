@@ -926,10 +926,14 @@ impl App {
         self.comment_vim_pending = CommentVimPending::None;
         self.comment_is_review_level = false;
         self.editing_comment_id = None;
+        self.remote_thread_edit = None;
         self.comment_line_range = None;
     }
 
     pub fn save_comment(&mut self) {
+        if self.save_remote_thread_edit() {
+            return;
+        }
         if self.comment_buffer.trim().is_empty() {
             self.set_message("Comment cannot be empty");
             return;

@@ -58,6 +58,26 @@ not add you as a reviewer on your behalf.
 `:submit draft` remains GitHub-only. Run it against a GitLab MR and tuicr returns
 an unsupported-operation error rather than submitting.
 
+## Discussion threads
+
+Existing MR discussions are writable from the diff view. Put the cursor on a
+thread, then:
+
+| Command | Result |
+|---------|--------|
+| `:resolve` / `:unresolve` | Toggles the thread's resolved state. |
+| `:reply`, or `c` on a thread | Opens the editor; Ctrl-S posts the text as a reply. |
+| `i` | Edits the note under the cursor. |
+| `dd` | Deletes the note under the cursor. |
+
+Editing and deleting are limited to your own notes. Ownership is checked against
+the login GitLab reports for your token, so someone else's note is refused in
+tuicr rather than failing at the API. When the forge reports no identity at all,
+both are refused.
+
+Each write is a single request and the thread list is refetched afterwards, so
+the view shows what GitLab now holds rather than a locally patched guess.
+
 ## Self-hosted GitLab
 
 Authenticate against your instance once:

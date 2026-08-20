@@ -563,11 +563,10 @@ fn main() -> anyhow::Result<()> {
                                     "Comment already pushed to {forge} — read only in tuicr"
                                 ));
                             } else if !app.delete_comment_at_cursor() {
+                                // On a remote thread, the delete path explains
+                                // itself whenever it declines.
                                 if app.cursor_on_remote_thread() {
-                                    let forge = app.forge_display_name();
-                                    app.set_message(format!(
-                                        "{forge} comment — read only in tuicr"
-                                    ));
+                                    app.delete_remote_note_at_cursor();
                                 } else {
                                     app.set_message("No comment at cursor");
                                 }

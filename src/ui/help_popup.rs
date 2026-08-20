@@ -494,7 +494,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  c         ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Add line comment"),
+            Span::raw("Add line comment, or reply to the remote thread at cursor"),
         ]),
         Line::from(vec![
             Span::styled(
@@ -515,14 +515,14 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  i         ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Edit comment at cursor"),
+            Span::raw("Edit comment at cursor (your own remote comments too)"),
         ]),
         Line::from(vec![
             Span::styled(
                 "  dd        ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Delete comment at cursor"),
+            Span::raw("Delete comment at cursor (your own remote comments too)"),
         ]),
         Line::from(vec![
             Span::styled(
@@ -809,6 +809,27 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("  Hide remote comments in PR mode"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :resolve  ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Resolve the remote thread under the cursor (GitLab)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :unresolve",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Reopen the remote thread under the cursor (GitLab)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :reply    ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Reply to the remote thread under the cursor (same as c)"),
         ]),
         Line::from(vec![
             Span::styled(

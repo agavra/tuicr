@@ -789,12 +789,102 @@ where
             state: state.to_string(),
         })
     }
+
+    fn supports_thread_mutations(&self) -> bool {
+        true
+    }
+
+    fn set_thread_resolved(
+        &self,
+        pr: &PullRequestDetails,
+        thread_id: &str,
+        resolved: bool,
+    ) -> Result<()> {
+        self.run_discussion_mutation(
+            pr,
+            "PUT",
+            &format!("discussions/{thread_id}"),
+            &[("resolved", if resolved { "true" } else { "false" })],
+        )
+        .map(drop)
+    }
+
+    fn reply_to_thread(&self, pr: &PullRequestDetails, thread_id: &str, body: &str) -> Result<()> {
+        self.run_discussion_mutation(
+            pr,
+            "POST",
+            &format!("discussions/{thread_id}/notes"),
+            &[("body", body)],
+        )
+        .map(drop)
+    }
+
+    fn edit_thread_comment(
+        &self,
+        pr: &PullRequestDetails,
+        thread_id: &str,
+        comment_id: &str,
+        body: &str,
+    ) -> Result<()> {
+        self.run_discussion_mutation(
+            pr,
+            "PUT",
+            &format!("discussions/{thread_id}/notes/{comment_id}"),
+            &[("body", body)],
+        )
+        .map(drop)
+    }
+
+    fn delete_thread_comment(
+        &self,
+        pr: &PullRequestDetails,
+        thread_id: &str,
+        comment_id: &str,
+    ) -> Result<()> {
+        self.run_discussion_mutation(
+            pr,
+            "DELETE",
+            &format!("discussions/{thread_id}/notes/{comment_id}"),
+            &[],
+        )
+        .map(drop)
+    }
 }
 
 impl<R> GitLabGlabBackend<R>
 where
     R: GlabCommandRunner,
 {
+    /// Run one write against a merge request's discussion endpoints.
+    ///
+    /// `suffix` is appended to `projects/{p}/merge_requests/{n}/`. Fields are
+    /// sent with `--raw-field` so bodies containing `=` or looking like a
+    /// filename are not reinterpreted by glab.
+    fn run_discussion_mutation(
+        &self,
+        pr: &PullRequestDetails,
+        method: &str,
+        suffix: &str,
+        fields: &[(&str, &str)],
+    ) -> Result<String> {
+        let project = gl_project_path(&pr.repository.owner, &pr.repository.name);
+        let mut args = vec![
+            "api".to_string(),
+            format!(
+                "projects/{}/merge_requests/{}/{}",
+                project, pr.number, suffix
+            ),
+            "--method".to_string(),
+            method.to_string(),
+        ];
+        for (name, value) in fields {
+            args.push("--raw-field".to_string());
+            args.push(format!("{name}={value}"));
+        }
+        args.extend(Self::api_hostname_args(&pr.repository));
+        self.run_glab(args, &pr.repository.host)
+    }
+
     fn fetch_file_via_api(&self, request: &ForgeFileLinesRequest) -> Result<String> {
         let project = gl_project_path(&request.repository.owner, &request.repository.name);
         let path_str = request.path.to_string_lossy().replace('\\', "/");
@@ -2073,6 +2163,92 @@ mod tests {
                 "draft path must not publish"
             );
         }
+    }
+
+    #[test]
+    fn should_put_resolved_flag_on_discussion() {
+        let repo = ForgeRepository::gitlab("code.pan.run", "owner", "repo");
+        let pr = make_pr_details(repo.clone());
+        let runner = RecordingRunner::new_with_responses(vec![String::new()]);
+        let backend = GitLabGlabBackend::with_runner(Some(repo), runner);
+
+        backend.set_thread_resolved(&pr, "disc-1", true).unwrap();
+
+        let calls = backend.runner.calls.borrow();
+        assert_eq!(
+            calls[0].0,
+            vec![
+                "api",
+                "projects/owner%2Frepo/merge_requests/42/discussions/disc-1",
+                "--method",
+                "PUT",
+                "--raw-field",
+                "resolved=true",
+                "--hostname",
+                "code.pan.run",
+            ]
+        );
+    }
+
+    #[test]
+    fn should_post_reply_to_discussion_notes() {
+        let repo = ForgeRepository::gitlab("gitlab.com", "owner", "repo");
+        let pr = make_pr_details(repo.clone());
+        let runner = RecordingRunner::new_with_responses(vec![String::new()]);
+        let backend = GitLabGlabBackend::with_runner(Some(repo), runner);
+
+        // A body containing `=` must survive intact, hence --raw-field.
+        backend
+            .reply_to_thread(&pr, "disc-1", "a = b, still one field")
+            .unwrap();
+
+        let calls = backend.runner.calls.borrow();
+        assert_eq!(
+            calls[0].0,
+            vec![
+                "api",
+                "projects/owner%2Frepo/merge_requests/42/discussions/disc-1/notes",
+                "--method",
+                "POST",
+                "--raw-field",
+                "body=a = b, still one field",
+            ]
+        );
+    }
+
+    #[test]
+    fn should_put_and_delete_individual_thread_notes() {
+        let repo = ForgeRepository::gitlab("gitlab.com", "owner", "repo");
+        let pr = make_pr_details(repo.clone());
+        let runner = RecordingRunner::new_with_responses(vec![String::new(), String::new()]);
+        let backend = GitLabGlabBackend::with_runner(Some(repo), runner);
+
+        backend
+            .edit_thread_comment(&pr, "disc-1", "77", "new body")
+            .unwrap();
+        backend.delete_thread_comment(&pr, "disc-1", "77").unwrap();
+
+        let calls = backend.runner.calls.borrow();
+        assert_eq!(
+            calls[0].0,
+            vec![
+                "api",
+                "projects/owner%2Frepo/merge_requests/42/discussions/disc-1/notes/77",
+                "--method",
+                "PUT",
+                "--raw-field",
+                "body=new body",
+            ]
+        );
+        assert_eq!(
+            calls[1].0,
+            vec![
+                "api",
+                "projects/owner%2Frepo/merge_requests/42/discussions/disc-1/notes/77",
+                "--method",
+                "DELETE",
+            ]
+        );
     }
 
     #[test]
