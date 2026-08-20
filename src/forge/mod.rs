@@ -178,7 +178,8 @@ pub fn detect_forge_repository(repo_root: &Path) -> Option<ForgeRepository> {
         }
     }
     for (name, url) in named_remote_urls(repo_root) {
-        if tea_recognizes_remote(repo_root, &name)
+        if parse_github_remote_url(&url).is_some_and(|repository| repository.host != "github.com")
+            && tea_recognizes_remote(repo_root, &name)
             && let Some(repository) = parse_forgejo_remote_url(&url)
         {
             return Some(repository);
@@ -192,7 +193,8 @@ pub fn detect_forge_repository(repo_root: &Path) -> Option<ForgeRepository> {
 pub fn local_checkout_for_repo(root: &Path, target_repo: &ForgeRepository) -> Option<PathBuf> {
     if target_repo.kind == crate::forge::traits::ForgeKind::Forgejo
         && named_remote_urls(root).iter().any(|(name, url)| {
-            tea_recognizes_remote(root, name)
+            parse_github_remote_url(url).is_some_and(|repository| repository.host != "github.com")
+                && tea_recognizes_remote(root, name)
                 && parse_forgejo_remote_url(url).as_ref() == Some(target_repo)
         })
     {
@@ -202,6 +204,14 @@ pub fn local_checkout_for_repo(root: &Path, target_repo: &ForgeRepository) -> Op
         .iter()
         .any(|url| parse_any_remote_url(url).as_ref() == Some(target_repo))
         .then(|| root.to_path_buf())
+}
+
+fn tea_recognizes_remote(repo_root: &Path, remote: &str) -> bool {
+    Command::new("tea")
+        .current_dir(repo_root)
+        .args(["api", "--remote", remote, "/version"])
+        .output()
+        .is_ok_and(|output| output.status.success())
 }
 
 #[cfg(test)]
@@ -284,12 +294,4 @@ mod tests {
             Some(dir.path().to_path_buf())
         );
     }
-}
-
-fn tea_recognizes_remote(repo_root: &Path, remote: &str) -> bool {
-    Command::new("tea")
-        .current_dir(repo_root)
-        .args(["api", "--remote", remote, "/version"])
-        .output()
-        .is_ok_and(|output| output.status.success())
 }
