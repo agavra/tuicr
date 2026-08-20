@@ -75,6 +75,10 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // A themed TUI explicitly requires colors. Crossterm otherwise honors a
+    // remote NO_COLOR environment variable and suppresses every color command.
+    crossterm::style::force_color_output(true);
+
     // Check keyboard enhancement support before enabling raw mode.
     // Skip when --stdout is used because the probe writes escape sequences to stdout,
     // which would leak into the captured export output.
