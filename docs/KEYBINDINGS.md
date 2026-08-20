@@ -113,6 +113,7 @@ considers files that pass the active filters.
 | `<leader>l` | Focus diff view (right panel) |
 | `<leader>k` | Move focus up (comments to files, or diff/files to commit selector when visible) |
 | `<leader>j` | Move focus down (files to comments when visible, otherwise diff) |
+| `<leader>L` / `<leader>H` | Move the file list / diff boundary right / left. Repeats on a bare `L` / `H` until any other key, so `<leader>LL` is two steps |
 | `<leader>e` | Toggle file list visibility |
 | `<leader>s` | Toggle commit selector visibility (also `:set commits!`) |
 | `Enter` | Select file (when file list is focused) |

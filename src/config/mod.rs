@@ -104,6 +104,10 @@ pub struct AppConfig {
     pub backend: Option<String>,
     pub comment_types: Option<Vec<CommentTypeConfig>>,
     pub show_file_list: Option<bool>,
+    /// Starting width of the file list, as a percentage of the content
+    /// area. Clamped to 10-60. Defaults to 20; `<leader>L` / `<leader>H`
+    /// adjust at runtime.
+    pub file_list_width: Option<usize>,
     /// Whether pull-request CI checks are fetched and shown.
     /// Defaults to false.
     pub show_pr_checks: Option<bool>,
@@ -188,6 +192,7 @@ const KNOWN_KEYS: &[&str] = &[
     "backend",
     "comment_types",
     "show_file_list",
+    "file_list_width",
     "show_pr_checks",
     "show_pr_comments",
     "show_commits",
@@ -413,6 +418,7 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
             .get("comment_types")
             .and_then(|v| parse_comment_types(v, &mut warnings)),
         show_file_list: read_bool(table, "show_file_list", &mut warnings),
+        file_list_width: read_usize(table, "file_list_width", &mut warnings),
         show_pr_checks: read_bool(table, "show_pr_checks", &mut warnings),
         show_pr_comments: read_bool(table, "show_pr_comments", &mut warnings),
         show_commits: read_bool(table, "show_commits", &mut warnings),
@@ -988,6 +994,28 @@ mod tests {
         let outcome = parse_config("show_commits = \"no\"\n");
         assert_eq!(
             outcome.config.as_ref().and_then(|cfg| cfg.show_commits),
+            None
+        );
+        assert_eq!(outcome.warnings.len(), 1);
+    }
+
+    // file_list_width
+
+    #[test]
+    fn should_parse_file_list_width() {
+        let outcome = parse_config("file_list_width = 35\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.file_list_width),
+            Some(35)
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_warn_on_non_integer_file_list_width() {
+        let outcome = parse_config("file_list_width = \"wide\"\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.file_list_width),
             None
         );
         assert_eq!(outcome.warnings.len(), 1);

@@ -1,6 +1,28 @@
 use super::*;
 
 impl App {
+    /// Move the file list / diff boundary one step. `wider` grows the file
+    /// list at the diff's expense. Clamped so neither pane can be squeezed
+    /// to nothing — hiding the file list is `<leader>e`'s job, not this.
+    pub fn resize_file_list(&mut self, wider: bool) {
+        if !self.show_file_list {
+            self.set_message("File list is hidden — <leader>e shows it");
+            return;
+        }
+        let next = if wider {
+            self.file_list_width_pct + FILE_LIST_WIDTH_STEP
+        } else {
+            self.file_list_width_pct
+                .saturating_sub(FILE_LIST_WIDTH_STEP)
+        }
+        .clamp(FILE_LIST_WIDTH_MIN, FILE_LIST_WIDTH_MAX);
+        if next == self.file_list_width_pct {
+            return;
+        }
+        self.file_list_width_pct = next;
+        self.set_message(format!("File list width {next}%"));
+    }
+
     pub fn set_message(&mut self, msg: impl Into<String>) {
         self.set_message_inner(msg, MessageType::Info, Some(MESSAGE_TTL_INFO));
     }
