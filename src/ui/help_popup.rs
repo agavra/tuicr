@@ -255,6 +255,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                format!("  {}L/{}H     ", app.leader_key, app.leader_key),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Move the file list boundary right/left"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 format!("  {leader}e        "),
                 Style::default().add_modifier(Modifier::BOLD),
             ),

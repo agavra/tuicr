@@ -279,6 +279,7 @@ leader = ";"                  # configurable prefix for leader shortcuts
 editor = "nvim"               # editor for `e` / `:edit`; overrides $EDITOR
 comment_vim = false           # vim modal editing in the review comment box
 relative_line_numbers = false # show rendered-row distances in the diff gutter
+file_list_width = 20          # file list width as a % of the content area
 
 [[comment_types]]
 id = "issue"
