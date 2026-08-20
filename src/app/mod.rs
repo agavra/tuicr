@@ -919,6 +919,78 @@ pub struct DiffWatchReload {
     pub rx: std::sync::mpsc::Receiver<DiffWatchReloadEvent>,
 }
 
+/// Exact revisions backing the PR diff currently installed in `diff_files`.
+/// The generation changes atomically with every replacement so asynchronous
+/// file hydration cannot apply content from an older cumulative/range view.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PrDiffEndpoints {
+    pub(crate) old_sha: String,
+    pub(crate) new_sha: String,
+    pub(crate) generation: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct PrFileHighlightKey {
+    generation: u64,
+    old_sha: String,
+    new_sha: String,
+    old_path: Option<PathBuf>,
+    new_path: Option<PathBuf>,
+    content_hash: u64,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PrFileHighlightRequest {
+    repository: ForgeRepository,
+    pr_number: u64,
+    session_head_sha: String,
+    key: PrFileHighlightKey,
+    status: FileStatus,
+}
+
+impl PrFileHighlightRequest {
+    fn content_request(
+        &self,
+        sha: &str,
+        path: Option<&PathBuf>,
+    ) -> Option<crate::forge::traits::ForgeFileContentRequest> {
+        let path = path?;
+        Some(crate::forge::traits::ForgeFileContentRequest {
+            repository: self.repository.clone(),
+            sha: sha.to_string(),
+            path: path.clone(),
+        })
+    }
+
+    fn old_content_request(&self) -> Option<crate::forge::traits::ForgeFileContentRequest> {
+        match self.status {
+            FileStatus::Added => None,
+            FileStatus::Modified
+            | FileStatus::Deleted
+            | FileStatus::Renamed
+            | FileStatus::Copied => {
+                self.content_request(&self.key.old_sha, self.key.old_path.as_ref())
+            }
+        }
+    }
+
+    fn new_content_request(&self) -> Option<crate::forge::traits::ForgeFileContentRequest> {
+        match self.status {
+            FileStatus::Deleted => None,
+            FileStatus::Added | FileStatus::Modified | FileStatus::Renamed | FileStatus::Copied => {
+                self.content_request(&self.key.new_sha, self.key.new_path.as_ref())
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct PrFileHighlightEvent {
+    request: PrFileHighlightRequest,
+    old_content: Option<String>,
+    new_content: Option<String>,
+}
+
 /// Snapshot of the submit state needed to lock the matching local comments
 /// after the background `gh api .../reviews` call returns. Captured at
 /// time and stashed on `App::pr_submit_state` so the in-flight spinner has
@@ -1386,6 +1458,13 @@ pub struct App {
     pub pr_range_reload_state: Option<PrRangeReloadRequest>,
     /// Background-thread channel for the active range re-fetch.
     pub pr_range_reload_rx: Option<std::sync::mpsc::Receiver<PrRangeReloadEvent>>,
+    /// Exact old/new revisions for the PR patch currently in `diff_files`.
+    pub(crate) pr_diff_endpoints: Option<PrDiffEndpoints>,
+    /// One selected-file content fetch may be active at a time.
+    pub(crate) pr_file_highlight_rx: Option<std::sync::mpsc::Receiver<PrFileHighlightEvent>>,
+    /// Terminal hydration keys for the active generation. Successful,
+    /// unsupported, and failed attempts all land here to prevent retry storms.
+    pub(crate) pr_file_highlight_finished: HashSet<PrFileHighlightKey>,
     /// Whether the inline commit selector panel is visible
     pub show_commit_selector: bool,
     /// Display order for the inline commit selector (presentation only).

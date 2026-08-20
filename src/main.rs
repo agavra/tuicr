@@ -419,6 +419,8 @@ fn main() -> anyhow::Result<()> {
         app.poll_pr_threads_events();
         app.poll_pr_submit_events();
         needs_redraw |= app.poll_editor_launches();
+        needs_redraw |= app.poll_pr_file_highlight_events();
+        app.schedule_current_pr_file_highlight();
         needs_redraw |= app.poll_persisted_session_changes();
         needs_redraw |= app.poll_diff_watch_changes();
         needs_redraw |= pr_pending;

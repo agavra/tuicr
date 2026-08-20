@@ -599,6 +599,9 @@ impl App {
             pr_last_reviewed_commit_index: None,
             pr_range_reload_state: None,
             pr_range_reload_rx: None,
+            pr_diff_endpoints: None,
+            pr_file_highlight_rx: None,
+            pr_file_highlight_finished: HashSet::new(),
             show_commit_selector: false,
             commit_order: CommitOrder::default(),
             commit_selection_start: CommitSelectionStart::default(),
@@ -944,6 +947,10 @@ impl App {
         // directory here — PRs opened later from the PR tab resolve their
         // local checkout from it.
         app.local_repo_root = local_repo_root;
+        app.install_pr_diff_endpoints(
+            details_for_threads.base_sha.clone(),
+            details_for_threads.head_sha.clone(),
+        );
         // Wire the forge backend so context expansion routes through it.
         app.forge_backend = Some(backend);
         app.forge_repository = Some(target_repo);
