@@ -36,6 +36,37 @@ struct SbsRowMeta {
     right_pad_style: Style,
 }
 
+type WrappedRows = Vec<Vec<Span<'static>>>;
+
+fn sbs_wrapped_sides(meta: &SbsRowMeta, content_width: usize) -> (WrappedRows, WrappedRows) {
+    (
+        wrap_spans(&meta.left_content, content_width),
+        wrap_spans(&meta.right_content, content_width),
+    )
+}
+
+fn sbs_row_height(
+    lines: &[Line],
+    sbs_meta: &std::collections::HashMap<usize, SbsRowMeta>,
+    idx: usize,
+    wrap: bool,
+    content_width: usize,
+    viewport_width: usize,
+) -> usize {
+    if !wrap || content_width == 0 {
+        return 1;
+    }
+    match sbs_meta.get(&idx) {
+        Some(meta) => {
+            let (left_rows, right_rows) = sbs_wrapped_sides(meta, content_width);
+            left_rows.len().max(right_rows.len())
+        }
+        None => lines
+            .get(idx)
+            .map_or(1, |line| wrap_spans(&line.spans, viewport_width).len()),
+    }
+}
+
 fn content_spans_for_diff_line(
     theme: &Theme,
     dl: &DiffLine,
@@ -870,12 +901,15 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
     app.comment_input_annotation_offset = annotation_offset;
 
     // Auto-scroll so the comment input box stays visible while the user types.
+    let wrap = app.diff_state.wrap_lines;
+    let viewport_width = inner.width as usize;
     scroll_comment_input_into_view(
         &mut app.diff_state.scroll_offset,
         comment_input_box_range,
         comment_cursor_logical_line,
         inner.height as usize,
         lines.len(),
+        |idx| sbs_row_height(&lines, &sbs_meta, idx, wrap, content_width, viewport_width),
     );
 
     let visible_lines_unscrolled: Vec<Line> = lines
@@ -901,8 +935,6 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
     app.diff_state.max_content_width = max_content_width;
 
     let scroll_offset = app.diff_state.scroll_offset;
-    let wrap = app.diff_state.wrap_lines;
-    let viewport_width = inner.width as usize;
     let visible_lines_unscrolled_for_overlay = visible_lines_unscrolled.clone();
     // Single pass: wrap each logical line once, producing both the visual
     // rows to render and the per-line height used by every row-mapping
@@ -916,17 +948,8 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
             let logical_idx = scroll_offset + i;
             match sbs_meta.get(&logical_idx) {
                 Some(m) => {
-                    let left_rows = if m.left_content.is_empty() {
-                        vec![Vec::new()]
-                    } else {
-                        wrap_spans(&m.left_content, content_width)
-                    };
-                    let right_rows = if m.right_content.is_empty() {
-                        vec![Vec::new()]
-                    } else {
-                        wrap_spans(&m.right_content, content_width)
-                    };
-                    let n = left_rows.len().max(right_rows.len()).max(1);
+                    let (left_rows, right_rows) = sbs_wrapped_sides(m, content_width);
+                    let n = left_rows.len().max(right_rows.len());
                     heights.push(n);
                     let empty_row: Vec<Span> = Vec::new();
                     for k in 0..n {
@@ -2019,7 +2042,8 @@ mod remote_comments_side_by_side_snapshot_tests {
     };
     use crate::forge::traits::{ForgeRepository, PrSessionKey};
     use crate::model::{
-        DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin, ReviewSession, SessionDiffSource,
+        DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin, LineSide, ReviewSession,
+        SessionDiffSource,
     };
     use crate::syntax::SyntaxHighlighter;
     use crate::theme::Theme;
@@ -2205,7 +2229,6 @@ mod remote_comments_side_by_side_snapshot_tests {
         let mut app = make_pr_app();
         app.forge_review_threads = vec![thread()];
         app.rebuild_annotations();
-        // when
         let buffer = draw(&mut app);
         // then
         let body = body_text(&buffer);
@@ -2221,7 +2244,6 @@ mod remote_comments_side_by_side_snapshot_tests {
         let mut app = make_pr_app();
         app.forge_review_threads = vec![thread()];
         app.set_remote_comments_visibility(PrCommentsVisibility::Hide);
-        // when
         let buffer = draw(&mut app);
         // then
         let body = body_text(&buffer);
@@ -2496,6 +2518,54 @@ mod remote_comments_side_by_side_snapshot_tests {
         assert_eq!(
             checked, 1,
             "expected the commit message body to render exactly once, got {checked}"
+        );
+    }
+
+    fn wrapping_diff_file(count: u32) -> DiffFile {
+        let lines: Vec<DiffLine> = (1..=count)
+            .map(|i| DiffLine {
+                origin: LineOrigin::Addition,
+                content: format!("line {i} {}", "x".repeat(200)),
+                old_lineno: None,
+                new_lineno: Some(i),
+                highlighted_spans: None,
+            })
+            .collect();
+        let hunks = vec![DiffHunk {
+            header: format!("@@ -0,0 +1,{count} @@"),
+            lines,
+            old_start: 0,
+            old_count: 0,
+            new_start: 1,
+            new_count: count,
+        }];
+        let content_hash = DiffFile::compute_content_hash(&hunks);
+        DiffFile {
+            old_path: None,
+            new_path: Some(PathBuf::from("src/lib.rs")),
+            status: FileStatus::Added,
+            hunks,
+            is_binary: false,
+            is_too_large: false,
+            is_commit_message: false,
+            content_hash,
+        }
+    }
+
+    #[test]
+    fn should_show_comment_input_at_eof_when_lines_wrap() {
+        let mut app = make_pr_app();
+        app.diff_files = vec![wrapping_diff_file(40)];
+        app.set_diff_wrap(true);
+        app.rebuild_annotations();
+        let _ = draw_sbs(&mut app, 160, 20);
+        app.jump_to_bottom();
+        app.enter_comment_mode(false, Some((40, LineSide::New)));
+        let buf = draw_sbs(&mut app, 160, 20);
+        let body = body_text(&buf);
+        assert!(
+            body.contains("Type your comment..."),
+            "expected the comment input box to be visible in:\n{body}"
         );
     }
 }
