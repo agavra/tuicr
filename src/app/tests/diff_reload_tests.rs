@@ -434,7 +434,7 @@ fn should_keep_commit_message_entries_across_a_reload() {
         build_app_with_scripted_vcs(vec![make_diff_file("a.rs", FileStatus::Modified, 1)], vcs);
     app.review_commits = vec![make_commit_info("c1")];
     app.commit_selection_range = Some((0, 0));
-    app.insert_commit_message_if_single();
+    app.insert_commit_messages_for_selection();
 
     app.reload_diff_files().expect("reload should succeed");
 
@@ -463,7 +463,7 @@ fn should_ignore_commit_message_entries_when_deciding_the_diff_changed() {
     let mut app = build_app_with_scripted_vcs(files, vcs);
     app.review_commits = vec![make_commit_info("c1")];
     app.commit_selection_range = Some((0, 0));
-    app.insert_commit_message_if_single();
+    app.insert_commit_messages_for_selection();
 
     let result = app.fetch_changed_diff_files();
 

@@ -447,3 +447,172 @@ fn should_comment_on_a_commit_only_file_after_narrowing_the_commit_pane() {
         "the comment must be stored against the file"
     );
 }
+
+fn commit_with_message(id: &str, summary: &str, body: Option<&str>) -> CommitInfo {
+    CommitInfo {
+        id: format!("{id}0123456789abcdef"),
+        short_id: id.to_string(),
+        branch_name: None,
+        summary: summary.to_string(),
+        body: body.map(str::to_string),
+        author: "Test".to_string(),
+        time: Utc::now(),
+    }
+}
+
+fn commit_message_paths(app: &App) -> Vec<PathBuf> {
+    app.diff_files
+        .iter()
+        .filter(|file| file.is_commit_message())
+        .map(|file| file.display_path().clone())
+        .collect()
+}
+
+/// Reviewing a branch means reading the story its commits tell, so every
+/// commit in the selection contributes its own message entry — not just the
+/// one commit a narrowed selector happens to show.
+#[test]
+fn should_show_a_commit_message_for_every_selected_commit_oldest_first() {
+    // given: three commits, stored newest-first as everywhere else
+    let mut app = build_app(vec![
+        commit_with_message("c3", "third", None),
+        commit_with_message("c2", "second", None),
+        commit_with_message("c1", "first", None),
+    ]);
+    app.review_commits = app.commit_list.clone();
+    app.commit_selection_range = Some((0, 2));
+
+    // when
+    app.insert_commit_messages_for_selection();
+
+    // then: one entry per commit, reading oldest-first down the tree
+    assert_eq!(
+        commit_message_paths(&app),
+        vec![
+            PathBuf::from("Commit Message (c1)"),
+            PathBuf::from("Commit Message (c2)"),
+            PathBuf::from("Commit Message (c3)"),
+        ]
+    );
+}
+
+/// The whole message has to be there, body included — a summary alone is what
+/// the commit selector already shows.
+#[test]
+fn should_render_the_summary_and_body_of_each_selected_commit() {
+    let mut app = build_app(vec![commit_with_message(
+        "c1",
+        "feat: add widget",
+        Some("Why: the old widget leaked.\n\nRefs: #42"),
+    )]);
+    app.review_commits = app.commit_list.clone();
+    app.commit_selection_range = Some((0, 0));
+
+    app.insert_commit_messages_for_selection();
+
+    let lines: Vec<String> = app.diff_files[0].hunks[0]
+        .lines
+        .iter()
+        .map(|line| line.content.clone())
+        .collect();
+    assert_eq!(
+        lines,
+        vec![
+            "feat: add widget".to_string(),
+            String::new(),
+            "Why: the old widget leaked.".to_string(),
+            String::new(),
+            "Refs: #42".to_string(),
+        ]
+    );
+}
+
+/// Narrowing the selector is how you review one commit in isolation, so the
+/// other commits' messages have to go with their diffs.
+#[test]
+fn should_leave_only_the_selected_commits_message_when_the_selection_narrows() {
+    let mut app = build_app(vec![
+        commit_with_message("c2", "second", None),
+        commit_with_message("c1", "first", None),
+    ]);
+    app.review_commits = app.commit_list.clone();
+    app.commit_selection_range = Some((0, 1));
+    app.insert_commit_messages_for_selection();
+
+    // when: the selector narrows to the newest commit alone
+    app.commit_selection_range = Some((0, 0));
+    app.insert_commit_messages_for_selection();
+
+    // then
+    assert_eq!(
+        commit_message_paths(&app),
+        vec![PathBuf::from("Commit Message (c2)")]
+    );
+}
+
+/// Staged and unstaged rows are pseudo-commits with no message to review.
+#[test]
+fn should_not_synthesize_a_message_for_staged_or_unstaged_rows() {
+    let mut app = build_app(vec![
+        App::staged_commit_entry(),
+        App::unstaged_commit_entry(),
+        commit_with_message("c1", "first", None),
+    ]);
+    app.review_commits = app.commit_list.clone();
+    app.commit_selection_range = Some((0, 2));
+
+    app.insert_commit_messages_for_selection();
+
+    assert_eq!(
+        commit_message_paths(&app),
+        vec![PathBuf::from("Commit Message (c1)")],
+        "only the real commit has a message"
+    );
+}
+
+/// A comment on a commit message belongs to that commit however wide the
+/// selection is. `commit_id_for_new_comment` alone would stamp `None` here,
+/// because the selection spans three commits and cannot name one of them.
+#[test]
+fn should_attribute_a_commit_message_comment_to_its_own_commit() {
+    let mut app = build_app(vec![
+        commit_with_message("c3", "third", None),
+        commit_with_message("c2", "second", None),
+        commit_with_message("c1", "first", None),
+    ]);
+    app.review_commits = app.commit_list.clone();
+    app.commit_selection_range = Some((0, 2));
+    app.insert_commit_messages_for_selection();
+
+    // when: the cursor sits on the middle commit's message
+    let idx = app
+        .diff_files
+        .iter()
+        .position(|file| file.display_path() == &PathBuf::from("Commit Message (c2)"))
+        .expect("c2's message should be loaded");
+    app.diff_state.current_file_idx = idx;
+
+    // then: the comment is attributed to c2, not left unattributed
+    assert_eq!(
+        app.commit_id_for_new_comment().as_deref(),
+        Some("c20123456789abcdef")
+    );
+}
+
+/// A comment on a real file keeps the old rule: a selection spanning several
+/// commits cannot attribute it to one of them.
+#[test]
+fn should_still_leave_a_file_comment_unattributed_across_a_multi_commit_selection() {
+    let mut app = build_app(vec![
+        commit_with_message("c2", "second", None),
+        commit_with_message("c1", "first", None),
+    ]);
+    app.review_commits = app.commit_list.clone();
+    app.commit_selection_range = Some((0, 1));
+    app.insert_commit_messages_for_selection();
+    app.diff_files
+        .push(commit_only_file(&PathBuf::from("src/lib.rs"), Vec::new()));
+    app.diff_state.current_file_idx = app.diff_files.len() - 1;
+
+    assert_eq!(app.commit_id_for_new_comment(), None);
+}
