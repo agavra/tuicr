@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.23.1] - 2026-08-20
+
+### Performance
+
+- **comments:** Parse comment markdown with pulldown-cmark (#628)
+- **comments:** Cull comment boxes outside the viewport (#600)
 ## [0.23.0] - 2026-08-18
 
 ### Bug Fixes
