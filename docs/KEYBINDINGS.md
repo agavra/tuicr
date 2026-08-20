@@ -131,7 +131,7 @@ considers files that pass the active filters.
 | `<leader>l` | Move focus one panel right (side-by-side: file list → diff → old side → new side) |
 | `<leader>k` | Move focus up (comments to files, or diff/files to commit selector when visible) |
 | `<leader>j` | Move focus down (files to comments when visible, otherwise diff) |
-| `<leader>L` / `<leader>H` | Move the file list / diff boundary right / left |
+| `<leader>L` / `<leader>H` | Move the file list / diff boundary right / left. Repeats on a bare `L` / `H` until any other key, so `<leader>LL` is two steps |
 | `<leader>e` | Toggle file list visibility |
 | `<leader>s` | Toggle commit selector visibility (also `:set commits!`) |
 | `<leader>n` | Toggle relative line numbers (also `:set relativenumber!`) |
