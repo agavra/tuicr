@@ -1,3 +1,5 @@
+mod cmark;
+
 use ratatui::style::{Color, Modifier, Style};
 use std::path::Path;
 use two_face::theme::EmbeddedThemeName;
@@ -50,6 +52,8 @@ pub struct SyntaxHighlighter {
     pub add_bg: Color,
     /// Background color for deleted lines
     pub del_bg: Color,
+    /// Markdown construct colours, resolved from `theme` once at construction.
+    markdown_palette: cmark::MarkdownPalette,
 }
 
 pub(crate) struct DiffHighlightSequences {
@@ -81,11 +85,13 @@ impl SyntaxHighlighter {
     /// Create a new syntax highlighter with a preloaded syntect theme.
     pub fn with_theme(theme: syntect::highlighting::Theme, add_bg: Color, del_bg: Color) -> Self {
         let syntax_set = two_face::syntax::extra_newlines();
+        let markdown_palette = cmark::MarkdownPalette::resolve(&theme);
         Self {
             syntax_set,
             theme,
             add_bg,
             del_bg,
+            markdown_palette,
         }
     }
 
@@ -98,11 +104,14 @@ impl SyntaxHighlighter {
     /// way fingerprints identically to a highlighted one. Measured at 3.1ms against
     /// 197ms for the same 4,000-line diff.
     pub(crate) fn plain() -> Self {
+        let theme = syntect::highlighting::Theme::default();
+        let markdown_palette = cmark::MarkdownPalette::resolve(&theme);
         Self {
             syntax_set: syntect::parsing::SyntaxSet::new(),
-            theme: syntect::highlighting::Theme::default(),
+            theme,
             add_bg: Color::Reset,
             del_bg: Color::Reset,
+            markdown_palette,
         }
     }
 
@@ -127,15 +136,15 @@ impl SyntaxHighlighter {
         Some(self.highlight_lines_with(syntax, lines))
     }
 
-    /// Highlight `lines` as Markdown, for the in-progress review comment box.
-    /// Colors come from the active syntect theme, matching code highlighting.
-    pub(crate) fn highlight_markdown_lines(&self, lines: &[String]) -> HighlightedLines {
-        let syntax = self
-            .syntax_set
-            .find_syntax_by_extension("md")
-            .or_else(|| self.syntax_set.find_syntax_by_name("Markdown"))
-            .unwrap_or_else(|| self.syntax_set.find_syntax_plain_text());
-        self.highlight_lines_with(syntax, lines)
+    /// Highlight a review comment body (`\n`-separated) as Markdown, returning
+    /// one entry per line. Colors come from the active syntect theme, matching
+    /// code highlighting.
+    ///
+    /// Parsed with `pulldown-cmark` rather than syntect's Markdown grammar; see
+    /// the `cmark` module for why. Fenced code blocks are still handed to
+    /// syntect for their contents.
+    pub(crate) fn highlight_markdown_body(&self, content: &str) -> HighlightedLines {
+        cmark::highlight(self, content)
     }
 
     /// Run syntect line-by-line against a resolved syntax, converting to

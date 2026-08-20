@@ -196,10 +196,7 @@ pub fn format_comment_input_lines(
         let buffer_lines: Vec<&str> = buffer.split('\n').collect();
         // Markdown-highlight the in-progress text; colors come from the active
         // syntect theme (same engine/theme as diff code highlighting).
-        let owned_lines: Vec<String> = buffer_lines.iter().map(|s| s.to_string()).collect();
-        let highlighted = theme
-            .syntax_highlighter()
-            .highlight_markdown_lines(&owned_lines);
+        let highlighted = theme.syntax_highlighter().highlight_markdown_body(buffer);
         let mut byte_offset = 0;
         // Tracks how many visual lines have been pushed so far (not counting the header).
         let mut total_visual_lines: usize = 0;
@@ -447,10 +444,9 @@ fn markdown_body_lines(
     border_style: Style,
 ) -> Vec<Line<'static>> {
     let lines: Vec<&str> = content.split('\n').collect();
-    let owned: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
-    // Highlight all lines together so multi-line constructs (e.g. fenced code)
+    // Highlight the body as a whole so multi-line constructs (e.g. fenced code)
     // carry state across lines.
-    let highlighted = theme.syntax_highlighter().highlight_markdown_lines(&owned);
+    let highlighted = theme.syntax_highlighter().highlight_markdown_body(content);
 
     let mut out = Vec::new();
     for (idx, text) in lines.iter().enumerate() {
