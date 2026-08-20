@@ -233,7 +233,14 @@ where
     }
 
     fn pull_request_file_metadata(&self, pr: &PullRequestDetails) -> Result<Vec<FileMetadata>> {
-        let mut metadata = Vec::new();
+        self.pull_request_files(pr)?
+            .into_iter()
+            .map(GhPullRequestFile::into_metadata)
+            .collect()
+    }
+
+    fn pull_request_files(&self, pr: &PullRequestDetails) -> Result<Vec<GhPullRequestFile>> {
+        let mut rows_all: Vec<GhPullRequestFile> = Vec::new();
         for page in 1..=30 {
             let endpoint = format!(
                 "repos/{}/{}/pulls/{}/files?per_page=100&page={page}",
@@ -247,19 +254,24 @@ where
             let output = self.run_gh(args, &pr.repository.host)?;
             let rows: Vec<GhPullRequestFile> = serde_json::from_str(&output)?;
             let received = rows.len();
-            metadata.extend(
-                rows.into_iter()
-                    .map(GhPullRequestFile::into_metadata)
-                    .collect::<Result<Vec<_>>>()?,
-            );
+            rows_all.extend(rows);
             if received < 100 {
-                return Ok(metadata);
+                return Ok(rows_all);
             }
         }
         Err(TuicrError::Forge(
             "GitHub pull request exceeds the 3000-file REST API limit".into(),
         ))
     }
+}
+
+/// GitHub answers the diff media type with 406 once a pull request touches
+/// more than 300 files. Matched on the message because `gh` reports it as a
+/// command failure rather than a typed status.
+fn is_diff_too_large(err: &TuicrError) -> bool {
+    let msg = err.to_string();
+    msg.contains("exceeded the maximum number of files")
+        || (msg.contains("406") && msg.contains("diff"))
 }
 
 impl<R> ForgeBackend for GitHubGhBackend<R>
@@ -338,8 +350,13 @@ where
         // into duplicate `DiffFile`s. Plain `gh pr diff` (no `--patch`)
         // returns the single cumulative diff. Hard-won lesson; see the
         // duplicate-files-in-list bug.
-        let metadata = self.pull_request_file_metadata(pr)?;
-        let patch = self.run_gh(
+        let rows = self.pull_request_files(pr)?;
+        let metadata = rows
+            .iter()
+            .cloned()
+            .map(GhPullRequestFile::into_metadata)
+            .collect::<Result<Vec<_>>>()?;
+        let patch = match self.run_gh(
             vec![
                 "pr".to_string(),
                 "diff".to_string(),
@@ -350,7 +367,14 @@ where
                 "never".to_string(),
             ],
             &pr.repository.host,
-        )?;
+        ) {
+            Ok(patch) => patch,
+            // `gh pr diff` asks for the diff media type, which GitHub refuses
+            // above 300 files. The files endpoint has no such cap and carries
+            // the same hunks, so rebuild the diff from the rows already read.
+            Err(e) if is_diff_too_large(&e) => super::models::synthesize_patch(&rows),
+            Err(e) => return Err(e),
+        };
         pair_metadata_with_patch(metadata, patch.as_bytes())
     }
 
