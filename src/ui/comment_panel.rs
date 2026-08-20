@@ -427,6 +427,7 @@ fn forge_badge_label(kind: Option<ForgeKind>) -> &'static str {
         Some(ForgeKind::GitHub) => "github",
         Some(ForgeKind::GitLab) => "gitlab",
         Some(ForgeKind::Gitea) => "gitea",
+        Some(ForgeKind::Forgejo) => "forgejo",
         Some(ForgeKind::Bitbucket) => "bitbucket",
         Some(ForgeKind::AzureDevOps) => "azure",
         Some(ForgeKind::Gerrit) => "gerrit",

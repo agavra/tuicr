@@ -14,6 +14,7 @@ pub enum ForgeKind {
     GitLab,
     /// Gitea, reached through the `tea` CLI.
     Gitea,
+    Forgejo,
     /// Bitbucket Cloud only. Data Center speaks an unrelated REST 1.0 API and
     /// is rejected during remote-URL parsing.
     Bitbucket,
@@ -31,6 +32,7 @@ impl ForgeKind {
             ForgeKind::GitHub => "GitHub",
             ForgeKind::GitLab => "GitLab",
             ForgeKind::Gitea => "Gitea",
+            ForgeKind::Forgejo => "Forgejo",
             ForgeKind::Bitbucket => "Bitbucket",
             ForgeKind::AzureDevOps => "Azure DevOps",
             ForgeKind::Gerrit => "Gerrit",
@@ -81,6 +83,19 @@ impl ForgeRepository {
     ) -> Self {
         Self {
             kind: ForgeKind::Gitea,
+            host: host.into(),
+            owner: owner.into(),
+            name: name.into(),
+        }
+    }
+
+    pub fn forgejo(
+        host: impl Into<String>,
+        owner: impl Into<String>,
+        name: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind: ForgeKind::Forgejo,
             host: host.into(),
             owner: owner.into(),
             name: name.into(),
