@@ -1122,6 +1122,8 @@ pub struct App {
     pub focused_panel: FocusedPanel,
     pub diff_view_mode: DiffViewMode,
     pub relative_line_numbers: bool,
+    /// Whether file-list rows show per-file added and removed line counts.
+    pub show_file_line_stats: bool,
 
     pub file_list_state: FileListState,
     pub comment_navigator_state: CommentNavigatorState,

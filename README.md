@@ -231,6 +231,7 @@ Path: `~/.config/tuicr/config.toml` on Linux/macOS, `%APPDATA%\tuicr\config.toml
 ```toml
 theme = "catppuccin-mocha"
 diff_view = "side-by-side"   # or "unified"
+show_file_line_stats = true  # show per-file +added -removed counts
 ignore_whitespace = false    # ignore all whitespace in local VCS diffs
 appearance = "system"        # or "dark" / "light"
 mouse = true
