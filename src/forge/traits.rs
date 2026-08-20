@@ -39,6 +39,8 @@ pub struct ForgeRepository {
     pub host: String,
     pub owner: String,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tea_login: Option<String>,
 }
 
 impl ForgeRepository {
@@ -52,6 +54,7 @@ impl ForgeRepository {
             host: host.into(),
             owner: owner.into(),
             name: name.into(),
+            tea_login: None,
         }
     }
 
@@ -65,6 +68,7 @@ impl ForgeRepository {
             host: host.into(),
             owner: owner.into(),
             name: name.into(),
+            tea_login: None,
         }
     }
 
@@ -78,7 +82,13 @@ impl ForgeRepository {
             host: host.into(),
             owner: owner.into(),
             name: name.into(),
+            tea_login: None,
         }
+    }
+
+    pub fn with_tea_login(mut self, tea_login: impl Into<String>) -> Self {
+        self.tea_login = Some(tea_login.into());
+        self
     }
 
     /// `owner` carries the Bitbucket Cloud workspace.
@@ -92,6 +102,7 @@ impl ForgeRepository {
             host: host.into(),
             owner: owner.into(),
             name: name.into(),
+            tea_login: None,
         }
     }
 
@@ -112,6 +123,7 @@ impl ForgeRepository {
             host: host.into(),
             owner: owner.into(),
             name: name.into(),
+            tea_login: None,
         }
     }
 

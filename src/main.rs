@@ -219,7 +219,8 @@ fn main() -> anyhow::Result<()> {
                 repo_url_override: cli_args
                     .repo_url
                     .as_deref()
-                    .and_then(tuicr::forge::parse_any_remote_url),
+                    .and_then(tuicr::forge::parse_any_remote_url)
+                    .map(tuicr::forge::resolve_tea_login),
             },
         )
     }) {

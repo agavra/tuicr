@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use git2::Repository;
+use serde::Deserialize;
 
 use crate::forge::azure::az::parse_azure_remote_url;
 use crate::forge::bitbucket::bkt::parse_bitbucket_remote_url;
@@ -143,6 +144,7 @@ pub fn parse_any_remote_url(url: &str) -> Option<ForgeRepository> {
     parse_bitbucket_remote_url(url)
         .or_else(|| parse_gitlab_remote_url(url))
         .or_else(|| parse_azure_remote_url(url))
+        .or_else(|| parse_codeberg_remote_url(url))
         .or_else(|| parse_github_remote_url(url))
 }
 
@@ -158,12 +160,12 @@ pub fn detect_forge_repository(repo_root: &Path) -> Option<ForgeRepository> {
             return Some(repository);
         }
     }
-    for (name, url) in named_remote_urls(repo_root) {
+    for (_, url) in named_remote_urls(repo_root) {
         if parse_github_remote_url(&url).is_some_and(|repository| repository.host != "github.com")
-            && tea_recognizes_remote(repo_root, &name)
             && let Some(repository) = parse_forgejo_remote_url(&url)
+            && let Some(login) = tea_login_for_host(&repository.host)
         {
-            return Some(repository);
+            return Some(repository.with_tea_login(login));
         }
     }
     urls.iter().find_map(|url| parse_github_remote_url(url))
@@ -173,10 +175,14 @@ pub fn detect_forge_repository(repo_root: &Path) -> Option<ForgeRepository> {
 /// necessarily `origin` — matches `target_repo`.
 pub fn local_checkout_for_repo(root: &Path, target_repo: &ForgeRepository) -> Option<PathBuf> {
     if target_repo.kind == crate::forge::traits::ForgeKind::Forgejo
-        && named_remote_urls(root).iter().any(|(name, url)| {
-            parse_github_remote_url(url).is_some_and(|repository| repository.host != "github.com")
-                && tea_recognizes_remote(root, name)
-                && parse_forgejo_remote_url(url).as_ref() == Some(target_repo)
+        && named_remote_urls(root).iter().any(|(_, url)| {
+            let Some(repository) = parse_forgejo_remote_url(url) else {
+                return false;
+            };
+            tea_login_for_host(&repository.host).as_deref() == target_repo.tea_login.as_deref()
+                && repository.host == target_repo.host
+                && repository.owner == target_repo.owner
+                && repository.name == target_repo.name
         })
     {
         return Some(root.to_path_buf());
@@ -187,12 +193,51 @@ pub fn local_checkout_for_repo(root: &Path, target_repo: &ForgeRepository) -> Op
         .then(|| root.to_path_buf())
 }
 
-fn tea_recognizes_remote(repo_root: &Path, remote: &str) -> bool {
-    Command::new("tea")
-        .current_dir(repo_root)
-        .args(["api", "--remote", remote, "/version"])
+pub fn resolve_tea_login(mut repository: ForgeRepository) -> ForgeRepository {
+    if repository.kind == crate::forge::traits::ForgeKind::Forgejo && repository.tea_login.is_none()
+    {
+        repository.tea_login = tea_login_for_host(&repository.host);
+    }
+    repository
+}
+
+fn parse_codeberg_remote_url(url: &str) -> Option<ForgeRepository> {
+    let repository = parse_github_remote_url(url)?;
+    repository
+        .host
+        .eq_ignore_ascii_case("codeberg.org")
+        .then(|| ForgeRepository::forgejo(repository.host, repository.owner, repository.name))
+}
+
+#[derive(Deserialize)]
+struct TeaLogin {
+    name: String,
+    url: String,
+}
+
+fn tea_login_for_host(host: &str) -> Option<String> {
+    let output = Command::new("tea")
+        .args(["logins", "list", "--output", "json"])
         .output()
-        .is_ok_and(|output| output.status.success())
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let logins: Vec<TeaLogin> = serde_json::from_slice(&output.stdout).ok()?;
+    logins.into_iter().find_map(|login| {
+        tea_host(&login.url)
+            .eq_ignore_ascii_case(host)
+            .then_some(login.name)
+    })
+}
+
+fn tea_host(url: &str) -> &str {
+    url.strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url)
+        .split('/')
+        .next()
+        .unwrap_or(url)
 }
 
 #[cfg(test)]
@@ -212,6 +257,14 @@ mod tests {
         assert_eq!(
             detect_forge_repository(dir.path()),
             Some(ForgeRepository::github("github.com", "agavra", "tuicr"))
+        );
+    }
+
+    #[test]
+    fn parses_codeberg_url_as_forgejo() {
+        assert_eq!(
+            parse_any_remote_url("https://codeberg.org/team/service.git"),
+            Some(ForgeRepository::forgejo("codeberg.org", "team", "service"))
         );
     }
 

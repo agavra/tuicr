@@ -9,7 +9,7 @@ use crate::forge::traits::{
     PagedPullRequests, PullRequestCommit, PullRequestDetails, PullRequestInfo,
     PullRequestListQuery, PullRequestListScope, PullRequestSummary, PullRequestTarget,
 };
-use crate::model::{DiffLine, FilePatch, FileStatus};
+use crate::model::{DiffLine, FilePatch};
 use crate::process::{
     CommandOutputError, CommandOutputErrorKind, run_command_output, run_command_output_with_stdin,
 };
@@ -358,10 +358,17 @@ where
         ))
     }
 
-    fn run_tea(&self, args: Vec<String>, host: &str) -> Result<String> {
+    fn run_tea(&self, repository: &ForgeRepository, mut args: Vec<String>) -> Result<String> {
+        let login = repository.tea_login.as_deref().ok_or_else(|| {
+            TuicrError::Forge(format!(
+                "No Tea login is configured for Forgejo host {}. Add one with `tea logins add`.",
+                repository.host
+            ))
+        })?;
+        args.splice(1..1, ["--login".to_string(), login.to_string()]);
         self.runner
             .run_program("tea", &args)
-            .map_err(|err| map_tea_error(err, host))
+            .map_err(|err| map_tea_error(err, &repository.host))
     }
 }
 
@@ -622,6 +629,9 @@ where
         &self,
         pr: &PullRequestDetails,
     ) -> Result<crate::forge::traits::PullRequestReviewMetadata> {
+        if pr.repository.kind == crate::forge::traits::ForgeKind::Forgejo {
+            return Ok(crate::forge::traits::PullRequestReviewMetadata::default());
+        }
         let mut all = crate::forge::traits::PullRequestReviewMetadata::default();
         let mut cursor: Option<String> = None;
         for _ in 0..100 {
@@ -678,6 +688,11 @@ where
     }
 
     fn file_line_count(&self, request: ForgeFileLinesRequest) -> Result<u32> {
+        if request.repository.kind == crate::forge::traits::ForgeKind::Forgejo {
+            return Err(TuicrError::Forge(
+                "Forgejo remote file line counts are not supported yet.".to_string(),
+            ));
+        }
         let local_content = self
             .local_checkout
             .as_deref()
@@ -740,17 +755,23 @@ where
     R: GhCommandRunner,
 {
     fn list_forgejo_pull_requests(&self, query: PullRequestListQuery) -> Result<PagedPullRequests> {
+        if query.scope == PullRequestListScope::ReviewRequested {
+            return Err(TuicrError::Forge(
+                "Forgejo review-requested filtering is not supported yet; use the open pull request list."
+                    .to_string(),
+            ));
+        }
         let page_size = query.page_size.max(1);
         let limit = page_size + 1;
         let page = (query.already_loaded / page_size) + 1;
         let output = self.run_tea(
+            &query.repository,
             vec![
                 "api".to_string(),
                 "--repo".to_string(),
                 query.repository.slug(),
                 format!("/repos/{{owner}}/{{repo}}/pulls?state=open&page={page}&limit={limit}"),
             ],
-            &query.repository.host,
         )?;
         let rows: Vec<ForgejoPullRequest> = serde_json::from_str(&output)?;
         let has_more = rows.len() > page_size;
@@ -774,13 +795,13 @@ where
         number: u64,
     ) -> Result<PullRequestDetails> {
         let output = self.run_tea(
+            repository,
             vec![
                 "api".to_string(),
                 "--repo".to_string(),
                 repository.slug(),
                 format!("/repos/{{owner}}/{{repo}}/pulls/{number}"),
             ],
-            &repository.host,
         )?;
         let pr: ForgejoPullRequest = serde_json::from_str(&output)?;
         if pr.head.sha.is_empty() || pr.base.sha.is_empty() {
@@ -793,7 +814,9 @@ where
     }
 
     fn get_forgejo_pull_request_diff(&self, pr: &PullRequestDetails) -> Result<Vec<FilePatch>> {
+        let metadata = self.forgejo_pull_request_file_metadata(pr)?;
         let patch = self.run_tea(
+            &pr.repository,
             vec![
                 "api".to_string(),
                 "--header".to_string(),
@@ -802,9 +825,42 @@ where
                 pr.repository.slug(),
                 format!("/repos/{{owner}}/{{repo}}/pulls/{}.diff", pr.number),
             ],
-            &pr.repository.host,
         )?;
-        forgejo_patch_files(&patch)
+        pair_metadata_with_patch(metadata, patch.as_bytes())
+    }
+
+    fn forgejo_pull_request_file_metadata(
+        &self,
+        pr: &PullRequestDetails,
+    ) -> Result<Vec<FileMetadata>> {
+        let mut metadata = Vec::new();
+        for page in 1..=30 {
+            let output = self.run_tea(
+                &pr.repository,
+                vec![
+                    "api".to_string(),
+                    "--repo".to_string(),
+                    pr.repository.slug(),
+                    format!(
+                        "/repos/{{owner}}/{{repo}}/pulls/{}/files?page={page}&limit=100",
+                        pr.number
+                    ),
+                ],
+            )?;
+            let rows: Vec<GhPullRequestFile> = serde_json::from_str(&output)?;
+            let received = rows.len();
+            metadata.extend(
+                rows.into_iter()
+                    .map(GhPullRequestFile::into_metadata)
+                    .collect::<Result<Vec<_>>>()?,
+            );
+            if received < 100 {
+                return Ok(metadata);
+            }
+        }
+        Err(TuicrError::Forge(
+            "Forgejo pull request exceeds the 3000-file API limit".into(),
+        ))
     }
 
     fn build_review_threads_args(
@@ -888,50 +944,6 @@ where
         args.push(endpoint);
         self.run_gh(args, &request.repository.host)
     }
-}
-
-fn forgejo_patch_files(patch: &str) -> Result<Vec<FilePatch>> {
-    let starts = patch
-        .match_indices("diff --git ")
-        .map(|(offset, _)| offset)
-        .collect::<Vec<_>>();
-
-    starts
-        .iter()
-        .enumerate()
-        .map(|(index, start)| {
-            let end = starts.get(index + 1).copied().unwrap_or(patch.len());
-            let block = &patch[*start..end];
-            let header = block.lines().next().unwrap_or_default();
-            let (old_path, new_path) = header
-                .strip_prefix("diff --git a/")
-                .and_then(|paths| paths.split_once(" b/"))
-                .ok_or_else(|| {
-                    TuicrError::Forge(format!(
-                        "Forgejo returned an invalid diff header: `{header}`"
-                    ))
-                })?;
-            let status = if block.contains("\nnew file mode ") {
-                FileStatus::Added
-            } else if block.contains("\ndeleted file mode ") {
-                FileStatus::Deleted
-            } else if block.contains("\nrename from ") {
-                FileStatus::Renamed
-            } else if block.contains("\ncopy from ") {
-                FileStatus::Copied
-            } else {
-                FileStatus::Modified
-            };
-            let (old_path, new_path) = match status {
-                FileStatus::Added => (None, Some(PathBuf::from(new_path))),
-                FileStatus::Deleted => (Some(PathBuf::from(old_path)), None),
-                _ => (Some(PathBuf::from(old_path)), Some(PathBuf::from(new_path))),
-            };
-            let mut file = FilePatch::new(old_path, new_path, status, block.to_string());
-            file.is_binary = block.contains("GIT binary patch") || block.contains("Binary files ");
-            Ok(file)
-        })
-        .collect()
 }
 
 pub fn parse_pull_request_target(input: &str) -> Result<PullRequestTarget> {
@@ -1439,6 +1451,9 @@ index 1111111..2222222 100644
                 }
                 if args.iter().any(|arg| arg.contains("/pulls?")) {
                     return Ok(FORGEJO_PR_LIST_JSON.to_string());
+                }
+                if args.iter().any(|arg| arg.contains("/pulls/42/files")) {
+                    return Ok(PR_FILES_JSON.to_string());
                 }
                 if args.iter().any(|arg| arg.contains("/pulls/")) {
                     return Ok(FORGEJO_PR_DETAILS_JSON.to_string());
@@ -2198,7 +2213,8 @@ Match host github-work
     fn forgejo_pull_request_list_uses_tea_json() {
         let runner = FakeGhRunner::default();
         let backend = GitHubGhBackend::with_runner(None, runner);
-        let repository = ForgeRepository::forgejo("code.example.test", "team", "service");
+        let repository =
+            ForgeRepository::forgejo("code.example.test", "team", "service").with_tea_login("test");
         let result = backend
             .list_pull_requests(PullRequestListQuery::first_page(repository, 1))
             .unwrap();
@@ -2210,6 +2226,7 @@ Match host github-work
         let calls = backend.runner.calls.borrow();
         assert_eq!(calls[0][0], "tea");
         assert_eq!(calls[0][1], "api");
+        assert!(calls[0].windows(2).any(|args| args == ["--login", "test"]));
         assert!(
             calls[0]
                 .iter()
@@ -2220,7 +2237,8 @@ Match host github-work
     #[test]
     fn forgejo_pull_request_details_and_diff_use_tea() {
         let runner = FakeGhRunner::default();
-        let repository = ForgeRepository::forgejo("code.example.test", "team", "service");
+        let repository =
+            ForgeRepository::forgejo("code.example.test", "team", "service").with_tea_login("test");
         let backend = GitHubGhBackend::with_runner(Some(repository.clone()), runner);
         let details = backend
             .get_pull_request(PullRequestTarget::number(42, "42"))
@@ -2243,9 +2261,29 @@ Match host github-work
     }
 
     #[test]
+    fn forgejo_review_requested_scope_returns_an_actionable_error() {
+        let runner = FakeGhRunner::default();
+        let backend = GitHubGhBackend::with_runner(None, runner);
+        let repository =
+            ForgeRepository::forgejo("code.example.test", "team", "service").with_tea_login("test");
+
+        let error = backend
+            .list_pull_requests(PullRequestListQuery::first_page_with_scope(
+                repository,
+                1,
+                PullRequestListScope::ReviewRequested,
+            ))
+            .unwrap_err();
+
+        assert!(error.to_string().contains("review-requested filtering"));
+        assert!(backend.runner.calls.borrow().is_empty());
+    }
+
+    #[test]
     fn forgejo_review_threads_are_empty_without_graphql() {
         let runner = FakeGhRunner::default();
-        let repository = ForgeRepository::forgejo("code.example.test", "team", "service");
+        let repository =
+            ForgeRepository::forgejo("code.example.test", "team", "service").with_tea_login("test");
         let backend = GitHubGhBackend::with_runner(Some(repository), runner);
         let details = backend
             .get_pull_request(PullRequestTarget::number(42, "42"))
