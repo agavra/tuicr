@@ -438,7 +438,9 @@ mod tests {
 
     #[test]
     fn should_return_no_changes_for_clean_repo() {
-        let repo = Repository::discover(".").unwrap();
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let repo = Repository::init(temp_dir.path()).expect("failed to init repo");
+        create_initial_commit(&repo, "file.txt", "content\n");
         let head = repo.head().unwrap().peel_to_tree().unwrap();
         let diff = repo
             .diff_tree_to_tree(Some(&head), Some(&head), None)
@@ -678,6 +680,12 @@ mod tests {
 
     fn run_git(dir: &Path, args: &[&str]) {
         let output = std::process::Command::new("git")
+            .args([
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "init.defaultRefFormat=files",
+            ])
             .args(args)
             .current_dir(dir)
             .output()
