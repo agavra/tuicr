@@ -150,6 +150,15 @@ take over the screen and tuicr reloads the diff once they exit. Windowed editors
 screen; reload with `:e` after editing. Adding `--wait` to `$EDITOR` opts a windowed
 editor back into the blocking behaviour.
 
+In PR review `e` opens the revision under review, not whatever the checkout
+happens to hold. When the local file *is* that revision you get the real file and
+your edits land in it; otherwise — wrong branch checked out, file added or deleted
+by the PR, no checkout at all — tuicr writes a read-only copy of the PR's content
+to a temp directory and opens that, so the text and the line the cursor sits on
+match the diff. The status bar names which one you got, e.g.
+`Opened src/main.rs @ 1a2b3c4 (read-only PR copy)`. Binary files are only opened
+from the checkout, never copied.
+
 ## Visual mode
 
 | Key | Action |
