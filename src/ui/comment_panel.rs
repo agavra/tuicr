@@ -119,6 +119,7 @@ pub fn format_comment_input_lines(
     is_editing: bool,
     width: usize,
     vim_mode: Option<(&str, bool)>,
+    supports_keyboard_enhancement: bool,
 ) -> (Vec<Line<'static>>, CommentCursorInfo) {
     let type_style = styles::comment_type_style(theme, comment_type.color);
     let border_style = styles::comment_border_style(theme, comment_type.color);
@@ -133,7 +134,11 @@ pub fn format_comment_input_lines(
         None => String::new(),
     };
 
-    let newline_hint = "Shift-Enter"; // requires extended-keys on in tmux; Alt-Enter also works
+    let newline_hint = if supports_keyboard_enhancement {
+        "Shift-Enter"
+    } else {
+        "Alt-Enter"
+    };
 
     // "    │  " is the per-line content prefix; everything past that is content.
     // Subtract two extra: one so ratatui never wraps an exact-fit line, and
@@ -751,6 +756,7 @@ mod tests {
             false,
             80,
             None,
+            true,
         );
 
         // then
@@ -779,6 +785,7 @@ mod tests {
             false,
             80,
             None,
+            true,
         );
 
         // then
@@ -806,6 +813,7 @@ mod tests {
             false,
             80,
             None,
+            true,
         );
 
         // then
@@ -834,6 +842,7 @@ mod tests {
             false,
             80,
             None,
+            true,
         );
 
         // then
@@ -861,6 +870,7 @@ mod tests {
             false,
             80,
             None,
+            true,
         );
 
         // then
@@ -889,12 +899,65 @@ mod tests {
             false,
             80,
             None,
+            true,
         );
 
         // then
         assert_eq!(cursor_info.line_offset, 1);
         // "a" = 1 display width, "좋" = 2 display width, total = 3
         assert_eq!(cursor_info.column, 7 + 3);
+    }
+
+    #[test]
+    fn should_show_shift_enter_hint_when_keyboard_enhancement_supported() {
+        let theme = test_theme();
+        let (lines, _) = format_comment_input_lines(
+            &theme,
+            CommentTypePresentation {
+                label: "NOTE".to_string(),
+                color: Color::Blue,
+            },
+            "",
+            0,
+            None,
+            false,
+            80,
+            None,
+            true,
+        );
+        let header = lines[0]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>();
+        assert!(header.contains("Shift-Enter:newline"));
+        assert!(!header.contains("Alt-Enter:newline"));
+    }
+
+    #[test]
+    fn should_show_alt_enter_hint_when_keyboard_enhancement_not_supported() {
+        let theme = test_theme();
+        let (lines, _) = format_comment_input_lines(
+            &theme,
+            CommentTypePresentation {
+                label: "NOTE".to_string(),
+                color: Color::Blue,
+            },
+            "",
+            0,
+            None,
+            false,
+            80,
+            None,
+            false,
+        );
+        let header = lines[0]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>();
+        assert!(header.contains("Alt-Enter:newline"));
+        assert!(!header.contains("Shift-Enter:newline"));
     }
 
     // -- markdown highlighting tests --
@@ -932,6 +995,7 @@ mod tests {
             false,
             80,
             None,
+            true,
         )
         .0
     }

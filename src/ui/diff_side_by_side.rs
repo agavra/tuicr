@@ -356,6 +356,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                 app.comment_vim_mode_label()
                     .as_ref()
                     .map(|(t, w)| (t.as_str(), *w)),
+                app.supports_keyboard_enhancement,
             );
             comment_cursor_logical_line = Some(line_idx + cursor_info.line_offset);
             comment_cursor_column = 1 + cursor_info.column;
@@ -443,6 +444,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
             app.comment_vim_mode_label()
                 .as_ref()
                 .map(|(t, w)| (t.as_str(), *w)),
+            app.supports_keyboard_enhancement,
         );
         comment_cursor_logical_line = Some(line_idx + cursor_info.line_offset);
         comment_cursor_column = 1 + cursor_info.column;
@@ -543,6 +545,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                         app.comment_vim_mode_label()
                             .as_ref()
                             .map(|(t, w)| (t.as_str(), *w)),
+                        app.supports_keyboard_enhancement,
                     );
                     comment_cursor_logical_line = Some(line_idx + cursor_info.line_offset);
                     comment_cursor_column = 1 + cursor_info.column;
@@ -607,6 +610,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                 app.comment_vim_mode_label()
                     .as_ref()
                     .map(|(t, w)| (t.as_str(), *w)),
+                app.supports_keyboard_enhancement,
             );
             comment_cursor_logical_line = Some(line_idx + cursor_info.line_offset);
             comment_cursor_column = 1 + cursor_info.column;
@@ -1911,6 +1915,7 @@ fn add_comments_to_line(
                             .comment_vim_mode_label()
                             .as_ref()
                             .map(|(t, w)| (t.as_str(), *w)),
+                        ctx.app.supports_keyboard_enhancement,
                     );
                     let box_top_row = line_idx;
                     let box_end = line_idx + input_lines.len().saturating_sub(1);
@@ -1999,6 +2004,7 @@ fn add_comments_to_line(
                 .comment_vim_mode_label()
                 .as_ref()
                 .map(|(t, w)| (t.as_str(), *w)),
+            ctx.app.supports_keyboard_enhancement,
         );
         let box_top_row = line_idx;
         let box_end = line_idx + input_lines.len().saturating_sub(1);

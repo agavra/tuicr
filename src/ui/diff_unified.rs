@@ -140,6 +140,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                 app.comment_vim_mode_label()
                     .as_ref()
                     .map(|(t, w)| (t.as_str(), *w)),
+                app.supports_keyboard_enhancement,
             );
             comment_cursor_logical_line = Some(line_idx + cursor_info.line_offset);
             comment_cursor_column = 1 + cursor_info.column;
@@ -228,6 +229,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
             app.comment_vim_mode_label()
                 .as_ref()
                 .map(|(t, w)| (t.as_str(), *w)),
+            app.supports_keyboard_enhancement,
         );
         comment_cursor_logical_line = Some(line_idx + cursor_info.line_offset);
         comment_cursor_column = 1 + cursor_info.column;
@@ -334,6 +336,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                         app.comment_vim_mode_label()
                             .as_ref()
                             .map(|(t, w)| (t.as_str(), *w)),
+                        app.supports_keyboard_enhancement,
                     );
                     // Track cursor position: logical line = current line_idx + cursor offset within input
                     comment_cursor_logical_line = Some(line_idx + cursor_info.line_offset);
@@ -401,6 +404,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                 app.comment_vim_mode_label()
                     .as_ref()
                     .map(|(t, w)| (t.as_str(), *w)),
+                app.supports_keyboard_enhancement,
             );
             // Track cursor position
             comment_cursor_logical_line = Some(line_idx + cursor_info.line_offset);
@@ -709,6 +713,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                                 app.comment_vim_mode_label()
                                                     .as_ref()
                                                     .map(|(t, w)| (t.as_str(), *w)),
+                                                app.supports_keyboard_enhancement,
                                             );
                                         comment_cursor_logical_line =
                                             Some(line_idx + cursor_info.line_offset);
@@ -836,6 +841,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                     app.comment_vim_mode_label()
                                         .as_ref()
                                         .map(|(t, w)| (t.as_str(), *w)),
+                                    app.supports_keyboard_enhancement,
                                 );
                             comment_cursor_logical_line = Some(line_idx + cursor_info.line_offset);
                             comment_cursor_column = 1 + cursor_info.column;
@@ -895,6 +901,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                                 app.comment_vim_mode_label()
                                                     .as_ref()
                                                     .map(|(t, w)| (t.as_str(), *w)),
+                                                app.supports_keyboard_enhancement,
                                             );
                                         comment_cursor_logical_line =
                                             Some(line_idx + cursor_info.line_offset);
@@ -1021,6 +1028,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                     app.comment_vim_mode_label()
                                         .as_ref()
                                         .map(|(t, w)| (t.as_str(), *w)),
+                                    app.supports_keyboard_enhancement,
                                 );
                             comment_cursor_logical_line = Some(line_idx + cursor_info.line_offset);
                             comment_cursor_column = 1 + cursor_info.column;
