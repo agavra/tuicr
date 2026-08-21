@@ -219,9 +219,18 @@ mod tests {
         // `-c commit.gpgsign=false` overrides any global signing config so
         // contributors with commit signing enabled aren't prompted to sign
         // throwaway commits in these temp repos.
+        // `-c safe.bareRepository=all` allows commands run inside bare test
+        // repositories to work on systems with `safe.bareRepository=explicit`.
         let output = Command::new("git")
             .current_dir(workdir)
-            .args(["-c", "commit.gpgsign=false"])
+            .args([
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "init.defaultRefFormat=files",
+                "-c",
+                "safe.bareRepository=all",
+            ])
             .args(args)
             .output()
             .expect("failed to run git");

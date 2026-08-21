@@ -1277,7 +1277,12 @@ mod tests {
         // throwaway commits in these temp repos.
         let output = Command::new("git")
             .current_dir(workdir)
-            .args(["-c", "commit.gpgsign=false"])
+            .args([
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "init.defaultRefFormat=files",
+            ])
             .args(args)
             .output()
             .expect("failed to run git");
