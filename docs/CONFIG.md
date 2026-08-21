@@ -32,6 +32,7 @@ show_pr_comments = true
 show_reviewed = true
 mouse = true
 leader = ","
+confirm_quit = false
 comment_vim = false
 comment_tab_width = 4
 wrap = false
@@ -87,6 +88,7 @@ legend = true
 | `show_reviewed`            | `true`       | Whether files already marked reviewed appear in the file tree and the diff. Set `false` to start a session showing only what is left. Toggle with `:set reviewed!`. |
 | `mouse`                    | `true`       | Wheel scrolling, clicks, and drag-to-select.                                                                                                               |
 | `leader`                   | `;`          | Single-character prefix for panel focus, sidebar toggles, and review-comment shortcuts. Invalid multi-character values are ignored with a startup warning. |
+| `confirm_quit`             | `false`      | Whether a bare `q` in the review view asks first in a Y/N modal instead of quitting right away. The explicit quit commands (`:q`, `:q!`, `:wq`, `:x`, `ZZ`, `ZQ`) always quit regardless. |
 | `comment_vim`              | `false`      | Vim modal editing in the comment box; toggle at runtime with `:vim`. When off, default emacs/readline bindings.                                            |
 | `comment_tab_width`        | `4`          | Spaces inserted by Tab while typing in the vim comment box (Insert mode).                                                                                  |
 | `wrap`                     | `false`      | Line wrap in the diff view. Toggle with `:set wrap!`.                                                                                                      |

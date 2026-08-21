@@ -697,6 +697,20 @@ impl PullRequestDiffSource {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfirmAction {
     CopyAndQuit,
+    /// Bare `q` under `confirm_quit = true`. Unlike `CopyAndQuit`, which only
+    /// asks whether to export on the way out, this asks whether to leave at
+    /// all — so "no" returns to the review.
+    Quit,
+}
+
+impl ConfirmAction {
+    /// Prompt shown in the Y/N modal for this action.
+    pub fn prompt(&self) -> &'static str {
+        match self {
+            ConfirmAction::CopyAndQuit => "Copy review to clipboard?",
+            ConfirmAction::Quit => "Quit tuicr?",
+        }
+    }
 }
 
 /// Push a `MappedComment` onto the appropriate bucket. Free function so the
@@ -1282,6 +1296,15 @@ pub struct App {
     pub should_quit: bool,
     pub dirty: bool,
     pub quit_warned: bool,
+    /// Whether a bare `q` in the review view asks for Y/N confirmation before
+    /// quitting. Defaults to `false` — today's immediate quit; set from config
+    /// `confirm_quit`.
+    ///
+    /// Scoped to the review view's `Action::Quit`: the explicit quit commands
+    /// (`:q`, `:q!`, `:wq`, `:x`, `ZZ`, `ZQ`) never route through it, and
+    /// neither do the `q` bindings that close the help overlay, the summary
+    /// view, or the review target selector.
+    pub confirm_quit: bool,
     pub message: Option<Message>,
     pub pending_confirm: Option<ConfirmAction>,
     pub supports_keyboard_enhancement: bool,

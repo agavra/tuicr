@@ -1,6 +1,7 @@
 mod change_status_tests;
 mod commit_scoped_comment_tests;
 mod commit_selection_tests;
+mod confirm_quit_tests;
 mod decoration_skip_tests;
 mod diff_reload_tests;
 mod diff_search_tests;

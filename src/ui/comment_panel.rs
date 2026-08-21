@@ -535,7 +535,7 @@ pub fn format_comment_lines(
 
 pub fn render_confirm_dialog(frame: &mut Frame, app: &App, message: &str) {
     let theme = &app.theme;
-    let area = centered_rect(50, 20, frame.area());
+    let area = confirm_dialog_rect(message, frame.area());
 
     frame.render_widget(Clear, area);
 
@@ -566,9 +566,26 @@ pub fn render_confirm_dialog(frame: &mut Frame, app: &App, message: &str) {
     frame.render_widget(paragraph, inner);
 }
 
-fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let vertical = Layout::vertical([Constraint::Percentage(percent_y)]).flex(Flex::Center);
-    let horizontal = Layout::horizontal([Constraint::Percentage(percent_x)]).flex(Flex::Center);
+/// Size the confirm dialog to its contents rather than to a share of the
+/// terminal: four content rows plus borders, and just wide enough for the
+/// longer of the message and the `[Y]es    [N]o` row. A percentage-based box
+/// leaves a short prompt like `Quit tuicr?` floating in a mostly empty pane on
+/// a large terminal.
+fn confirm_dialog_rect(message: &str, area: Rect) -> Rect {
+    const BUTTON_ROW_WIDTH: u16 = 15; // "  [Y]es    [N]o"
+    const PADDING: u16 = 4; // two columns of breathing room each side
+    const BORDERS: u16 = 2;
+
+    let message_width = u16::try_from(message.width()).unwrap_or(u16::MAX);
+    let width = message_width
+        .max(BUTTON_ROW_WIDTH)
+        .saturating_add(PADDING)
+        .saturating_add(BORDERS)
+        .min(area.width);
+    let height = (4 + BORDERS).min(area.height);
+
+    let vertical = Layout::vertical([Constraint::Length(height)]).flex(Flex::Center);
+    let horizontal = Layout::horizontal([Constraint::Length(width)]).flex(Flex::Center);
     let [area] = vertical.areas(area);
     let [area] = horizontal.areas(area);
     area
@@ -577,6 +594,35 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn confirm_dialog_is_sized_to_its_contents_not_the_terminal() {
+        let screen = Rect::new(0, 0, 200, 60);
+        let rect = confirm_dialog_rect("Quit tuicr?", screen);
+        // "  [Y]es    [N]o" (15) is wider than the message, + padding + borders
+        assert_eq!(rect.width, 21);
+        assert_eq!(rect.height, 6);
+        // and nothing like the old 50%/20% box
+        assert!(rect.width < screen.width / 2);
+        assert!(rect.height < screen.height / 4);
+    }
+
+    #[test]
+    fn confirm_dialog_widens_for_a_long_message() {
+        let screen = Rect::new(0, 0, 200, 60);
+        let msg = "Copy review to clipboard?";
+        let rect = confirm_dialog_rect(msg, screen);
+        assert_eq!(rect.width, msg.chars().count() as u16 + 6);
+    }
+
+    #[test]
+    fn confirm_dialog_never_exceeds_a_small_screen() {
+        let screen = Rect::new(0, 0, 10, 3);
+        let rect = confirm_dialog_rect("a very long prompt indeed", screen);
+        assert!(rect.width <= screen.width);
+        assert!(rect.height <= screen.height);
+    }
+
     use crate::theme::Theme;
     use ratatui::style::Color;
 

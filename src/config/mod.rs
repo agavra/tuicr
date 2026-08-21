@@ -140,6 +140,10 @@ pub struct AppConfig {
     /// Defaults to 4 (matching diff tab expansion).
     pub comment_tab_width: Option<usize>,
     pub leader: Option<char>,
+    /// Whether a bare `q` in the review view asks for Y/N confirmation before
+    /// quitting. Defaults to `false` — quit right away. The explicit quit
+    /// commands (`:q`, `:q!`, `:wq`, `:x`, `ZZ`, `ZQ`) are never affected.
+    pub confirm_quit: Option<bool>,
     pub transparent_background: Option<bool>,
     pub scroll_offset: Option<usize>,
     pub review_watch_interval_ms: Option<usize>,
@@ -205,6 +209,7 @@ const KNOWN_KEYS: &[&str] = &[
     "comment_vim",
     "comment_tab_width",
     "leader",
+    "confirm_quit",
     "transparent_background",
     "scroll_offset",
     "review_watch_interval_ms",
@@ -445,6 +450,7 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         comment_vim: read_bool(table, "comment_vim", &mut warnings),
         comment_tab_width: read_usize(table, "comment_tab_width", &mut warnings),
         leader: read_leader(table, &mut warnings),
+        confirm_quit: read_bool(table, "confirm_quit", &mut warnings),
         transparent_background: read_bool(table, "transparent_background", &mut warnings),
         scroll_offset: read_usize(table, "scroll_offset", &mut warnings),
         review_watch_interval_ms: read_usize(table, "review_watch_interval_ms", &mut warnings),
@@ -1382,6 +1388,42 @@ mod tests {
         assert_eq!(
             outcome.warnings[0],
             "Warning: Config key 'leader' must be a string; ignoring value"
+        );
+    }
+
+    // confirm_quit
+
+    #[test]
+    fn should_default_confirm_quit_to_unset_when_absent() {
+        let outcome = parse_config("theme = \"dark\"\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.confirm_quit),
+            None
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_parse_confirm_quit_true() {
+        let outcome = parse_config("confirm_quit = true\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.confirm_quit),
+            Some(true)
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_warn_and_ignore_confirm_quit_with_invalid_type() {
+        let outcome = parse_config("confirm_quit = \"confirm\"\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.confirm_quit),
+            None
+        );
+        assert_eq!(outcome.warnings.len(), 1);
+        assert_eq!(
+            outcome.warnings[0],
+            "Warning: Config key 'confirm_quit' must be a boolean; ignoring value"
         );
     }
 
