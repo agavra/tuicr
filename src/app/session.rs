@@ -21,6 +21,27 @@ impl App {
         }
     }
 
+    /// Apply the `clipboard` config key: resolve the ordered mechanism list
+    /// into the runtime override and return any platform-support warnings to
+    /// surface at startup. An absent, empty, or all-invalid list leaves the
+    /// override at `None`, so automatic detection is unchanged.
+    pub fn apply_clipboard_config(&mut self, names: Option<&[String]>) -> Vec<String> {
+        self.clipboard_override = crate::output::markdown::resolve_clipboard_override(names);
+        let is_macos = cfg!(target_os = "macos");
+        self.clipboard_override
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .filter(|method| crate::output::markdown::mechanism_unsupported(**method, is_macos))
+            .map(|method| {
+                format!(
+                    "Warning: clipboard mechanism \"{}\" is not available on this platform; falling back to another method",
+                    method.config_name()
+                )
+            })
+            .collect()
+    }
+
     pub(in crate::app) fn reset_persisted_session_tracking(&mut self) {
         self.session_path = crate::persistence::storage::session_path(&self.session).ok();
         self.session_file_state = self

@@ -23,8 +23,8 @@ type CommentEntry<'a> = (
     Option<&'a str>,
 );
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CopyMethod {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum CopyMethod {
     // macOS system pasteboard
     Pbcopy,
     // xclip / wl-copy — direct Wayland/X11 clipboard
@@ -33,6 +33,51 @@ enum CopyMethod {
     Arboard,
     // tmux load-buffer -w / OSC 52
     TerminalRelay,
+}
+
+impl CopyMethod {
+    pub(crate) fn from_config_name(name: &str) -> Option<Self> {
+        match name {
+            "pbcopy" => Some(Self::Pbcopy),
+            "subprocess" => Some(Self::SubProcess),
+            "arboard" => Some(Self::Arboard),
+            "osc52" => Some(Self::TerminalRelay),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn config_name(self) -> &'static str {
+        match self {
+            Self::Pbcopy => "pbcopy",
+            Self::SubProcess => "subprocess",
+            Self::Arboard => "arboard",
+            Self::TerminalRelay => "osc52",
+        }
+    }
+}
+
+pub(crate) const CLIPBOARD_MECHANISMS: &[&str] = &["arboard", "pbcopy", "subprocess", "osc52"];
+
+/// Whether a forced mechanism cannot work on the given platform. Used to warn
+/// (not block) at startup; the `TerminalRelay` backstop still guarantees a copy.
+pub(crate) fn mechanism_unsupported(method: CopyMethod, is_macos: bool) -> bool {
+    match method {
+        CopyMethod::Pbcopy => !is_macos,
+        CopyMethod::SubProcess => is_macos,
+        CopyMethod::Arboard | CopyMethod::TerminalRelay => false,
+    }
+}
+
+pub(crate) fn resolve_clipboard_override(names: Option<&[String]>) -> Option<Vec<CopyMethod>> {
+    let methods: Vec<CopyMethod> = names?
+        .iter()
+        .filter_map(|name| CopyMethod::from_config_name(name))
+        .collect();
+    if methods.is_empty() {
+        None
+    } else {
+        Some(methods)
+    }
 }
 
 /// Environment inputs that decide clipboard strategy.
@@ -54,7 +99,10 @@ impl ClipboardEnv {
     }
 }
 
-fn copy_method_order(env: &ClipboardEnv) -> Vec<CopyMethod> {
+fn copy_method_order(env: &ClipboardEnv, override_order: Option<&[CopyMethod]>) -> Vec<CopyMethod> {
+    if let Some(methods) = override_order {
+        return with_terminal_backstop(methods);
+    }
     if env.is_macos {
         return vec![
             CopyMethod::Pbcopy,
@@ -73,6 +121,18 @@ fn copy_method_order(env: &ClipboardEnv) -> Vec<CopyMethod> {
         CopyMethod::Arboard,
         CopyMethod::TerminalRelay,
     ]
+}
+
+/// Ensure a user-supplied override always contains `TerminalRelay` as an
+/// infallible final backstop, appending it only when the list omits it. This
+/// preserves the invariant that `copy_text_to_clipboard` never falls through
+/// its loop, so a forced mechanism can never silently copy nothing.
+fn with_terminal_backstop(methods: &[CopyMethod]) -> Vec<CopyMethod> {
+    let mut order = methods.to_vec();
+    if !order.contains(&CopyMethod::TerminalRelay) {
+        order.push(CopyMethod::TerminalRelay);
+    }
+    order
 }
 
 /// Generate markdown content from the review session.
@@ -111,6 +171,29 @@ pub fn export_to_clipboard(
     remote_threads: &[RemoteReviewThread],
     session_slug: Option<&str>,
 ) -> Result<String> {
+    export_to_clipboard_with(
+        session,
+        diff_source,
+        comment_types,
+        export,
+        remote_threads,
+        session_slug,
+        None,
+    )
+}
+
+/// Like [`export_to_clipboard`], but honors a user-configured ordered
+/// override (the `clipboard` config key). `None` uses automatic detection,
+/// so the default export path is unchanged.
+pub(crate) fn export_to_clipboard_with(
+    session: &ReviewSession,
+    diff_source: &DiffSource,
+    comment_types: &[CommentTypeDefinition],
+    export: &ExportConfig,
+    remote_threads: &[RemoteReviewThread],
+    session_slug: Option<&str>,
+    clipboard_override: Option<&[CopyMethod]>,
+) -> Result<String> {
     let content = generate_export_content(
         session,
         diff_source,
@@ -119,7 +202,7 @@ pub fn export_to_clipboard(
         remote_threads,
         session_slug,
     )?;
-    let via_terminal = copy_text_to_clipboard(&content)?;
+    let via_terminal = copy_text_to_clipboard_with(&content, clipboard_override)?;
     Ok(if via_terminal {
         "Review copied to clipboard (via terminal)".to_string()
     } else {
@@ -127,11 +210,21 @@ pub fn export_to_clipboard(
     })
 }
 
-/// Copy arbitrary text to the system clipboard. Returns `Ok(true)` if the
-/// terminal relay (tmux / OSC 52) was used, `Ok(false)` if a direct system
-/// clipboard handled it.
+/// Copy arbitrary text to the system clipboard using automatic mechanism
+/// detection. Returns `Ok(true)` if the terminal relay (tmux / OSC 52) was
+/// used, `Ok(false)` if a direct system clipboard handled it.
 pub fn copy_text_to_clipboard(text: &str) -> Result<bool> {
-    for method in copy_method_order(&ClipboardEnv::detect()) {
+    copy_text_to_clipboard_with(text, None)
+}
+
+/// Like [`copy_text_to_clipboard`], but honors a user-configured ordered
+/// override (the `clipboard` config key). `None` uses automatic detection,
+/// so the default path is byte-for-byte unchanged.
+pub(crate) fn copy_text_to_clipboard_with(
+    text: &str,
+    clipboard_override: Option<&[CopyMethod]>,
+) -> Result<bool> {
+    for method in copy_method_order(&ClipboardEnv::detect(), clipboard_override) {
         match method {
             CopyMethod::Pbcopy if try_clipboard_cmd("pbcopy", &[], text) => return Ok(false),
             CopyMethod::SubProcess if try_copy_via_subprocess(text) => return Ok(false),
@@ -1980,7 +2073,7 @@ mod tests {
             tmux: true,
             zellij: false,
         };
-        let order = copy_method_order(&env);
+        let order = copy_method_order(&env, None);
         let sub = order.iter().position(|m| *m == CopyMethod::SubProcess);
         let relay = order.iter().position(|m| *m == CopyMethod::TerminalRelay);
         assert!(sub < relay, "local tmux prefer direct tools: {order:?}");
@@ -1994,7 +2087,10 @@ mod tests {
             tmux: true,
             zellij: false,
         };
-        assert_eq!(copy_method_order(&env), vec![CopyMethod::TerminalRelay]);
+        assert_eq!(
+            copy_method_order(&env, None),
+            vec![CopyMethod::TerminalRelay]
+        );
     }
 
     #[test]
@@ -2005,6 +2101,164 @@ mod tests {
             tmux: true,
             zellij: false,
         };
-        assert_eq!(copy_method_order(&env)[0], CopyMethod::Pbcopy);
+        assert_eq!(copy_method_order(&env, None)[0], CopyMethod::Pbcopy);
+    }
+
+    #[test]
+    fn should_map_config_name_to_copy_method() {
+        assert_eq!(
+            CopyMethod::from_config_name("arboard"),
+            Some(CopyMethod::Arboard)
+        );
+        assert_eq!(
+            CopyMethod::from_config_name("pbcopy"),
+            Some(CopyMethod::Pbcopy)
+        );
+        assert_eq!(
+            CopyMethod::from_config_name("subprocess"),
+            Some(CopyMethod::SubProcess)
+        );
+        assert_eq!(
+            CopyMethod::from_config_name("osc52"),
+            Some(CopyMethod::TerminalRelay)
+        );
+        assert_eq!(CopyMethod::from_config_name("nope"), None);
+    }
+
+    fn env(is_macos: bool, ssh_tty: bool, tmux: bool, zellij: bool) -> ClipboardEnv {
+        ClipboardEnv {
+            is_macos,
+            ssh_tty,
+            tmux,
+            zellij,
+        }
+    }
+
+    #[test]
+    fn should_keep_auto_order_when_override_is_none() {
+        // Sane-default regression guard: `None` must reproduce the env-only
+        // order for every environment branch, unchanged from before the
+        // override parameter existed.
+        let cases = [
+            (
+                env(true, false, false, false),
+                vec![
+                    CopyMethod::Pbcopy,
+                    CopyMethod::Arboard,
+                    CopyMethod::TerminalRelay,
+                ],
+            ),
+            (
+                env(false, true, false, false),
+                vec![CopyMethod::TerminalRelay],
+            ),
+            (
+                env(false, false, true, false),
+                vec![CopyMethod::SubProcess, CopyMethod::TerminalRelay],
+            ),
+            (
+                env(false, false, false, false),
+                vec![
+                    CopyMethod::SubProcess,
+                    CopyMethod::Arboard,
+                    CopyMethod::TerminalRelay,
+                ],
+            ),
+        ];
+        for (e, want) in cases {
+            assert_eq!(copy_method_order(&e, None), want);
+        }
+    }
+
+    #[test]
+    fn should_prioritize_override_over_environment() {
+        let order = copy_method_order(&env(true, false, true, false), Some(&[CopyMethod::Arboard]));
+        assert_eq!(order[0], CopyMethod::Arboard);
+    }
+
+    #[test]
+    fn should_append_terminal_relay_backstop_when_override_omits_it() {
+        let order = copy_method_order(
+            &env(false, false, false, false),
+            Some(&[CopyMethod::Arboard]),
+        );
+        assert_eq!(order, vec![CopyMethod::Arboard, CopyMethod::TerminalRelay]);
+        assert_eq!(*order.last().unwrap(), CopyMethod::TerminalRelay);
+    }
+
+    #[test]
+    fn should_not_duplicate_terminal_relay_when_override_includes_it() {
+        let order = copy_method_order(
+            &env(false, false, false, false),
+            Some(&[CopyMethod::SubProcess, CopyMethod::TerminalRelay]),
+        );
+        assert_eq!(
+            order,
+            vec![CopyMethod::SubProcess, CopyMethod::TerminalRelay]
+        );
+        assert_eq!(
+            order
+                .iter()
+                .filter(|m| **m == CopyMethod::TerminalRelay)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn should_honor_single_terminal_relay_override() {
+        let order = copy_method_order(
+            &env(false, false, false, false),
+            Some(&[CopyMethod::TerminalRelay]),
+        );
+        assert_eq!(order, vec![CopyMethod::TerminalRelay]);
+    }
+
+    #[test]
+    fn should_resolve_config_names_to_ordered_methods() {
+        let names = vec!["arboard".to_string(), "osc52".to_string()];
+        assert_eq!(
+            resolve_clipboard_override(Some(&names)),
+            Some(vec![CopyMethod::Arboard, CopyMethod::TerminalRelay])
+        );
+        assert_eq!(resolve_clipboard_override(None), None);
+        let empty: Vec<String> = Vec::new();
+        assert_eq!(resolve_clipboard_override(Some(&empty)), None);
+    }
+
+    #[test]
+    fn should_flag_platform_unsupported_mechanisms() {
+        assert!(mechanism_unsupported(CopyMethod::SubProcess, true));
+        assert!(!mechanism_unsupported(CopyMethod::Pbcopy, true));
+        assert!(mechanism_unsupported(CopyMethod::Pbcopy, false));
+        assert!(!mechanism_unsupported(CopyMethod::SubProcess, false));
+        for is_macos in [true, false] {
+            assert!(!mechanism_unsupported(CopyMethod::Arboard, is_macos));
+            assert!(!mechanism_unsupported(CopyMethod::TerminalRelay, is_macos));
+        }
+    }
+
+    #[test]
+    fn config_mechanisms_match_mapping_domain() {
+        use std::collections::HashSet;
+        for name in CLIPBOARD_MECHANISMS {
+            let method = CopyMethod::from_config_name(name)
+                .unwrap_or_else(|| panic!("config mechanism {name} has no CopyMethod mapping"));
+            assert_eq!(
+                method.config_name(),
+                *name,
+                "round-trip mismatch for {name}"
+            );
+        }
+        // Distinct methods, so validation and translation cannot silently diverge.
+        let mapped: HashSet<CopyMethod> = CLIPBOARD_MECHANISMS
+            .iter()
+            .filter_map(|n| CopyMethod::from_config_name(n))
+            .collect();
+        assert_eq!(
+            mapped.len(),
+            CLIPBOARD_MECHANISMS.len(),
+            "every config mechanism must map to a distinct CopyMethod"
+        );
     }
 }

@@ -48,6 +48,10 @@ diff_watch_interval_ms = 0
 
 backend = "libgit2"
 
+# Clipboard mechanism override. Omit for automatic per-environment detection
+# (the default). When set, it is an ordered list tried in turn.
+# clipboard = ["arboard", "osc52"]
+
 comment_types = [
   { id = "note", label = "question", definition = "ask for clarification", color = "yellow" },
   { id = "suggestion", definition = "possible improvements" },
@@ -101,6 +105,7 @@ legend = true
 | `username`                 | `"user"`     | Display name stamped on local comments and used as the viewer identity for local comment coloring.                                                         |
 | `diff_watch_interval_ms`   | `0`          | Poll interval for re-reading the local diff so uncommitted changes show without `:e`. The same tick refreshes the commit pane, including the "Staged changes" and "Unstaged changes" rows. `0` (default) disables it. Ignored for PR and `--all-files` reviews. |
 | `backend`                  | `libgit2`    | Git backend: `libgit2` or `cli`. Sparse-checkout repos auto-route to `cli`.                                                                                |
+| `clipboard`                | `auto`       | Ordered list of clipboard mechanisms for `:clip` / visual yank, e.g. `["arboard", "osc52"]`. Values: `arboard`, `pbcopy`, `subprocess` (xclip/wl-copy), `osc52`. Omit the key for automatic per-environment detection. |
 | `comment_types`            | (none)       | Comment categories. Untyped by default. See [Comment types](#comment-types).                                                                               |
 | `export_legend`            | `true`       | Include the `Comment types:` legend in the exported review. Superseded by `legend` under [Export](#export).                                                |
 
