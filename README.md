@@ -14,12 +14,12 @@
 ## What it does
 
 - GitHub-style continuous diff in the terminal. Scroll through every changed file in one stream.
-- PR-style comments at the line, range, file, and review level. 
+- PR-style comments at the line, range, file, and review level.
 - Review tracking at file or hunk granularity, persisted across sessions.
 - Three export targets: push a real review to GitHub, GitLab, Gitea, Bitbucket, Azure DevOps, or Gerrit, copy
   structured markdown to your clipboard, or pipe to stdout.
 - Works with git, jj, and mercurial. Reviews uncommitted changes, commit ranges, or any GitHub PR,
-  GitLab MR, Gitea PR, Bitbucket PR, Azure DevOps PR, or Gerrit change.
+  Forgejo/Codeberg PR, GitLab MR, Gitea PR, Bitbucket PR, Azure DevOps PR, or Gerrit change.
 
 ## Install
 
@@ -79,10 +79,10 @@ tuicr                       # Pick from a commit selector
 tuicr tui                   # Same TUI, explicit subcommand
 tuicr -w                    # Uncommitted changes (skip selector)
 tuicr -r main..HEAD         # Commit range
-tuicr pr 125                # GitHub, Gitea, Bitbucket, or Azure DevOps PR, or Gerrit change
+tuicr pr 125                # GitHub, Forgejo, Codeberg, Gitea, Bitbucket, or Azure DevOps PR, or Gerrit change
 tuicr pr 125 --remote up    # Use a named Git remote's fetch URL
 tuicr mr 125                # GitLab MR
-tuicr tui pr 125            # GitHub PR via explicit TUI subcommand
+tuicr tui pr 125            # PR via explicit TUI subcommand
 tuicr tui mr 125            # GitLab MR via explicit TUI subcommand
 tuicr --stdout              # Pipe the review to stdout
 tuicr review list           # List saved local review sessions
@@ -143,6 +143,16 @@ When you're done reviewing, send your comments wherever the work continues.
 `:submit` opens a picker for Comment, Approve, Request changes, or Draft. Inline comments land
 on the right lines as a real PR review. Review-level comments become the review summary.
 Requires `gh` authenticated to the repo.
+
+### To Forgejo or Codeberg
+
+Open a pull request from a local clone or pass its URL to `tuicr pr`. tuicr recognizes Codeberg
+and Forgejo-looking hosts directly; install and authenticate
+[`fj`](https://codeberg.org/forgejo-contrib/forgejo-cli) when the Forgejo host requires a token.
+tuicr loads open pull requests, metadata, and cumulative diffs through the Forgejo REST API.
+
+Forgejo and Codeberg review submission, commit selection, commit-range diffs, remote comments,
+and remote context expansion are not supported yet. Use `:clip` to export your review.
 
 ### To GitLab
 
