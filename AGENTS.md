@@ -49,9 +49,8 @@ src/
 │   └── jj/              # Jujutsu backend (always compiled)
 │       └── mod.rs       # JjBackend: uses jj CLI, parses with diff_parser::GitStyle
 │
-├── forge/               # Remote forge integration (GitHub PR, GitLab MR, Bitbucket PR review)
-│   ├── mod.rs           # Detect and parse GitHub/GitLab/Bitbucket remotes
-│                        # (parse_any_remote_url: Bitbucket, then GitLab, then GitHub)
+├── forge/               # Remote forge integration (GitHub, Forgejo/Codeberg, GitLab, Bitbucket)
+│   ├── mod.rs           # Detect and parse forge remotes; Forgejo discovery uses Tea logins
 │   ├── traits.rs        # ForgeBackend trait, ForgeRepository, PullRequestTarget,
 │   │                    # PullRequestDetails, PullRequestInfo, PrSessionKey,
 │   │                    # CreateReviewRequest, GhCreateReviewResponse, ForgeFileLinesRequest
@@ -61,9 +60,9 @@ src/
 │   ├── remote_comments.rs # RemoteReviewThread shape + visibility filter
 │   ├── submit.rs        # Submit pipeline: preflight mapping, resolver actions,
 │   │                    # InlineComment payload, build_review_body, SubmitEvent
-│   ├── github/          # GitHub backend via `gh` CLI
+│   ├── github/          # GitHub and Forgejo-compatible backend via `gh` / `tea`
 │   │   ├── mod.rs       # GitHubGhBackend: ForgeBackend impl
-│   │   ├── gh.rs        # GhCommandRunner: spawn `gh`, parse output, error mapping
+│   │   ├── gh.rs        # GhCommandRunner: spawn `gh` or `tea`, parse output, error mapping
 │   │   ├── models.rs    # JSON parsing for `gh` REST + GraphQL responses
 │   │   ├── pr_info.rs   # Extended `gh pr view --json` parsing for PR description panel
 │   │   ├── review_threads.rs # GraphQL query for existing review threads
@@ -229,9 +228,9 @@ Repository-managed agent integrations:
 
 ## Forge integration
 
-Forge review (`tuicr pr <target>`, `tuicr mr <target>`, or their explicit `tuicr tui` forms) is the only feature in `src/forge/`. GitHub operations shell out to `gh`; GitLab operations shell out to `glab`; Bitbucket Cloud operations shell out to `bkt`.
+Forge review (`tuicr pr <target>`, `tuicr mr <target>`, or their explicit `tuicr tui` forms) is the only feature in `src/forge/`. GitHub operations shell out to `gh`; Forgejo and Codeberg operations shell out to `tea`; GitLab operations shell out to `glab`; Bitbucket Cloud operations shell out to `bkt`.
 
-Forge selection is host-driven: `parse_any_remote_url` tries Bitbucket (`bitbucket.org` only), then GitLab (host contains `gitlab`, or matches `glab config get host`), then GitHub. GitHub must stay last — its parser accepts any host, so it would otherwise claim every Bitbucket and self-hosted GitLab remote. Bitbucket Data Center is deliberately unsupported: it speaks REST 1.0, so those remotes are not claimed at all.
+Forge selection is host-driven: `parse_any_remote_url` tries Bitbucket (`bitbucket.org` only), then GitLab (host contains `gitlab`, or matches `glab config get host`), Codeberg, then GitHub. Local remote discovery additionally recognizes a non-GitHub host as Forgejo only when `tea logins list --output json` has a matching host. GitHub must stay last — its parser accepts any host, so it would otherwise claim every Bitbucket, Forgejo, and self-hosted GitLab remote. Bitbucket Data Center is deliberately unsupported: it speaks REST 1.0, so those remotes are not claimed at all.
 
 ### ForgeBackend trait
 
@@ -314,6 +313,8 @@ These are non-obvious things the implementation chain hit. Worth preserving for 
 15. **A diff file must be registered in the session before `r`, `R`, or a comment can land on it.** All three look the file up in `ReviewSession.files` by display path. The two review-mark toggles return silently when it is absent; `add_comment_to_session` returns `session does not contain file`. So any code path that assigns `self.diff_files` must also call `App::register_diff_files`. Narrowing the inline commit pane skipped this, so commit-only files could be neither marked nor commented on.
 
 16. **GNU Linux release binaries must stay dynamically linked.** Static glibc binaries can crash when hostname lookup loads a host NSS module (for example Fedora's `libnss_myhostname`). The musl artifacts are the supported static Linux builds. Direct updates must preserve the running binary's GNU/musl target environment when selecting an asset.
+
+17. **Forgejo and Codeberg require Tea discovery.** Match a configured Tea login by host instead of guessing from a hostname. Use Tea API endpoints for open PR pagination, metadata, file metadata, and the cumulative `.diff`. Review submission, commit selection, commit-range diffs, remote comments, and remote context expansion must fail closed with actionable errors until implemented.
 
 ### Keeping Docs Updated
 
