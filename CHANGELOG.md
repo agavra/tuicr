@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.24.0] - 2026-08-25
+
+### Bug Fixes
+
+- **tui:** Resume from an editor without querying the cursor (#648)
+- Detect self-hosted GitLab before resolving SSH host (#631)
+
+### Documentation
+
+- Add pacman installation (#635)
+
+### Comment_panel
+
+- Adapt newline hint to terminal (#641)
+
+### Vcs/jj
+
+- Use as_chunks to parse diff metadata (#642)
 ## [0.23.1] - 2026-08-20
 
 ### Performance
