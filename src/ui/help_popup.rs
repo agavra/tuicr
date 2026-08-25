@@ -62,8 +62,22 @@ pub fn render_message_details(frame: &mut Frame, app: &mut App) {
     );
 }
 
+/// Printable stand-in for the configured leader key.
+///
+/// A whitespace leader (`leader = " "`) is a valid config value but renders as a
+/// blank in the help text, so substitute a visible glyph. The substitute must be
+/// exactly one display column wide: the help lines pad each chord to a fixed width.
+fn leader_display(leader: char) -> char {
+    if leader.is_whitespace() {
+        '\u{2423}'
+    } else {
+        leader
+    }
+}
+
 pub fn render_help(frame: &mut Frame, app: &mut App) {
     let theme = &app.theme;
+    let leader = leader_display(app.leader_key);
     // Center over the diff pane (matches the submit-modal anchoring) so the
     // file list doesn't tug the popup's visual centre off to one side. Fall
     // back to the full frame when no diff area is laid out yet.
@@ -195,35 +209,35 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
-                format!("  {}h/{}l     ", app.leader_key, app.leader_key),
+                format!("  {leader}h/{leader}l     "),
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("Focus file list/diff"),
         ]),
         Line::from(vec![
             Span::styled(
-                format!("  {}k/{}j     ", app.leader_key, app.leader_key),
+                format!("  {leader}k/{leader}j     "),
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("Move focus up/down between panes"),
         ]),
         Line::from(vec![
             Span::styled(
-                format!("  {}e        ", app.leader_key),
+                format!("  {leader}e        "),
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("Toggle file list visibility"),
         ]),
         Line::from(vec![
             Span::styled(
-                format!("  {}s        ", app.leader_key),
+                format!("  {leader}s        "),
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("Toggle commit selector visibility (also `:set commits!`)"),
         ]),
         Line::from(vec![
             Span::styled(
-                format!("  {}f        ", app.leader_key),
+                format!("  {leader}f        "),
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("Toggle single-file view (also `:focus` / `:f`)"),
@@ -248,7 +262,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(""),
         Line::from(Span::styled(
-            format!("Single-file view (`:focus`, `:f`, {}f)", app.leader_key),
+            format!("Single-file view (`:focus`, `:f`, {leader}f)"),
             Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
         )),
         Line::from(""),
@@ -505,7 +519,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
-                format!("  {}c        ", app.leader_key),
+                format!("  {leader}c        "),
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("Add review comment"),
@@ -763,10 +777,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  :focus    ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw(format!(
-                "Toggle single-file view (alias `:f`, {}f)",
-                app.leader_key
-            )),
+            Span::raw(format!("Toggle single-file view (alias `:f`, {leader}f)")),
         ]),
         Line::from(vec![
             Span::styled(
@@ -1024,4 +1035,40 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     let [area] = vertical.areas(area);
     let [area] = horizontal.areas(area);
     area
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use unicode_width::UnicodeWidthChar;
+
+    #[test]
+    fn should_substitute_a_visible_glyph_for_a_whitespace_leader() {
+        // given
+        let leader = ' ';
+        // when
+        let displayed = leader_display(leader);
+        // then
+        assert_eq!(displayed, '\u{2423}');
+    }
+
+    #[test]
+    fn should_leave_an_ordinary_leader_unchanged() {
+        // given
+        let leader = ',';
+        // when
+        let displayed = leader_display(leader);
+        // then
+        assert_eq!(displayed, ',');
+    }
+
+    #[test]
+    fn should_keep_the_substitute_one_display_column_wide() {
+        // given
+        let leader = '\t';
+        // when
+        let displayed = leader_display(leader);
+        // then
+        assert_eq!(displayed.width(), Some(1));
+    }
 }
