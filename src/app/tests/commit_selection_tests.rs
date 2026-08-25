@@ -4,6 +4,7 @@ use crate::vcs::traits::VcsType;
 
 struct DummyVcs {
     info: VcsInfo,
+    range_diff: Vec<DiffFile>,
 }
 
 impl VcsBackend for DummyVcs {
@@ -13,6 +14,14 @@ impl VcsBackend for DummyVcs {
 
     fn get_working_tree_diff(&self, _highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
         Err(TuicrError::NoChanges)
+    }
+
+    fn get_commit_range_diff(
+        &self,
+        _revision_range: &crate::vcs::traits::ResolvedRevisionRange<'_>,
+        _highlighter: &SyntaxHighlighter,
+    ) -> Result<Vec<DiffFile>> {
+        Ok(self.range_diff.clone())
     }
 
     fn fetch_context_lines(
@@ -37,6 +46,10 @@ impl VcsBackend for DummyVcs {
 }
 
 fn build_app(commit_list: Vec<CommitInfo>) -> App {
+    build_app_with_range_diff(commit_list, Vec::new())
+}
+
+fn build_app_with_range_diff(commit_list: Vec<CommitInfo>, range_diff: Vec<DiffFile>) -> App {
     let vcs_info = VcsInfo {
         root_path: PathBuf::from("/tmp"),
         head_commit: "head".to_string(),
@@ -53,6 +66,7 @@ fn build_app(commit_list: Vec<CommitInfo>) -> App {
     App::build(
         Box::new(DummyVcs {
             info: vcs_info.clone(),
+            range_diff,
         }),
         vcs_info,
         Theme::dark(),
@@ -491,4 +505,158 @@ fn review_comments_header_hidden_while_empty() {
     // Single-file view always hides the header.
     app.is_single_file_view = true;
     assert!(!app.show_review_comments_header());
+}
+
+fn commit_with_body(id: &str, body: &str) -> CommitInfo {
+    CommitInfo {
+        body: Some(body.to_string()),
+        ..normal_commit(id)
+    }
+}
+
+/// Choosing one commit in the review-target list must show that commit's
+/// message. Confirming a selection forks on whether it is a strict subrange,
+/// and one commit is its own whole range, so it takes the full-range branch
+/// rather than the narrowing one.
+#[test]
+fn should_show_the_commit_message_when_one_commit_is_chosen_in_the_target_selector() {
+    let path = PathBuf::from("src/only_in_commit.rs");
+    let mut app = build_app_with_range_diff(
+        vec![commit_with_body("c1", "why this change was made")],
+        vec![commit_only_file(&path, vec![one_line_hunk()])],
+    );
+    app.commit_list_cursor = 0;
+    app.commit_selection_range = Some((0, 0));
+
+    // when: the user presses Enter on that one commit
+    app.confirm_commit_selection()
+        .expect("confirming one commit should load its diff");
+
+    // then
+    let message = app
+        .diff_files
+        .iter()
+        .find(|file| file.is_commit_message)
+        .expect("a single-commit review should carry its commit message");
+    let rendered: Vec<&str> = message.hunks[0]
+        .lines
+        .iter()
+        .map(|line| line.content.as_str())
+        .collect();
+    assert!(
+        rendered.contains(&"why this change was made"),
+        "the message body should be readable, got {rendered:?}"
+    );
+}
+
+/// The display path the session stores the commit message under. This repeats the format
+/// string built in `insert_commit_message_if_single`, so the two move together.
+fn commit_message_path(short_id: &str) -> PathBuf {
+    PathBuf::from(format!("Commit Message ({short_id})"))
+}
+
+fn commit_message_file(app: &App) -> Option<&DiffFile> {
+    app.diff_files.iter().find(|file| file.is_commit_message)
+}
+
+/// The commit message tracks the current selection, so it appears when the
+/// pane narrows to one commit and goes when the pane widens. Asserting only
+/// the narrow half would still pass with a reload that inserts every time,
+/// leaving a stale message above a diff of several commits.
+#[test]
+fn should_add_and_drop_the_commit_message_as_the_inline_pane_narrows_and_widens() {
+    let path = PathBuf::from("src/only_in_commit.rs");
+    let mut app = build_app(vec![commit_with_body("c2", "second"), normal_commit("c1")]);
+    app.review_commits = app.commit_list.clone();
+    app.commit_diff_cache
+        .insert((0, 0), vec![commit_only_file(&path, vec![one_line_hunk()])]);
+    app.range_diff_files = Some(vec![commit_only_file(&path, vec![one_line_hunk()])]);
+
+    // when: the pane narrows to one commit
+    app.commit_selection_range = Some((0, 0));
+    app.reload_inline_selection()
+        .expect("narrowing should load");
+
+    // then
+    assert_eq!(
+        commit_message_file(&app).map(|file| file.display_path().clone()),
+        Some(commit_message_path("c2")),
+        "narrowing to one commit should show that commit's message"
+    );
+
+    // when: the pane widens back to both commits
+    app.commit_selection_range = Some((0, 1));
+    app.reload_inline_selection().expect("widening should load");
+
+    // then
+    assert!(
+        commit_message_file(&app).is_none(),
+        "a two-commit view has no single message to show"
+    );
+}
+
+/// "Staged changes" and "Unstaged changes" are rows in the same list, but they
+/// are not commits and have no message. Narrowing onto one must not build a
+/// commit-message file out of the placeholder's summary.
+#[test]
+fn should_not_show_a_commit_message_for_the_unstaged_row() {
+    let path = PathBuf::from("src/only_in_commit.rs");
+    let mut app = build_app(vec![App::unstaged_commit_entry(), normal_commit("c1")]);
+    app.review_commits = app.commit_list.clone();
+    app.commit_diff_cache
+        .insert((0, 0), vec![commit_only_file(&path, vec![one_line_hunk()])]);
+
+    // when: the pane narrows onto the unstaged row
+    app.commit_selection_range = Some((0, 0));
+    app.reload_inline_selection()
+        .expect("narrowing should load");
+
+    // then
+    assert!(
+        commit_message_file(&app).is_none(),
+        "the unstaged placeholder is not a commit and has no message"
+    );
+}
+
+/// A comment on the commit message needs the synthetic file registered in the
+/// session, the same as any real file: `add_comment_to_session` looks it up by
+/// display path and fails loudly when it is absent. Inserting the file without
+/// registering it would leave the row on screen and refuse every comment on it.
+#[test]
+fn should_comment_on_the_commit_message_of_a_commit_chosen_from_the_target_selector() {
+    use crate::model::comment::{CommentType, LineSide};
+    use crate::review_store::{AddCommentRequest, CommentTarget, add_comment_to_session};
+
+    let path = PathBuf::from("src/only_in_commit.rs");
+    let mut app = build_app_with_range_diff(
+        vec![commit_with_body("c1", "why this change was made")],
+        vec![commit_only_file(&path, vec![one_line_hunk()])],
+    );
+    app.commit_list_cursor = 0;
+    app.commit_selection_range = Some((0, 0));
+    app.confirm_commit_selection()
+        .expect("confirming one commit should load its diff");
+
+    // when: the user writes a line comment on the commit message
+    let saved = add_comment_to_session(
+        &mut app.session,
+        AddCommentRequest {
+            target: CommentTarget::Line {
+                path: commit_message_path("c1"),
+                line: 3,
+                side: LineSide::New,
+            },
+            content: "spell out why, not what".to_string(),
+            comment_type: CommentType::None,
+            author: "user".to_string(),
+            commit_id: None,
+        },
+    );
+
+    // then
+    assert!(
+        saved.is_ok(),
+        "commenting on the commit message should succeed, got {:?}",
+        saved.err()
+    );
 }
