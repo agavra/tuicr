@@ -134,6 +134,23 @@ impl<W: Write> TerminalSession<W> {
         self.active = false;
         Ok(())
     }
+
+    /// Clears the screen and drops the back buffer so the next draw repaints
+    /// every cell.
+    ///
+    /// `Terminal::clear` cannot be used here: it starts by reading the cursor
+    /// position, whose `ESC [ 6 n` query goes to stdout. When stdout is not
+    /// the terminal the reply never arrives, and the two-second timeout fails
+    /// the clear before it resets the back buffer, so the next draw diffs
+    /// against the pre-editor screen and paints nothing.
+    ///
+    /// Resizing to the current size clears and resets the same way, but sizes
+    /// itself from `/dev/tty`.
+    fn repaint_from_scratch(&mut self) -> anyhow::Result<()> {
+        let area = self.terminal.size()?.into();
+        self.terminal.resize(area)?;
+        Ok(())
+    }
 }
 
 impl<W: Write> Drop for TerminalSession<W> {
@@ -164,7 +181,7 @@ impl<W: Write> TerminalSuspension<'_, W> {
             return Ok(());
         };
         session.activate()?;
-        session.terminal.clear()?;
+        session.repaint_from_scratch()?;
         Ok(())
     }
 }
@@ -175,7 +192,7 @@ impl<W: Write> Drop for TerminalSuspension<'_, W> {
             return;
         };
         if session.activate().is_ok() {
-            let _ = session.terminal.clear();
+            let _ = session.repaint_from_scratch();
         }
     }
 }
