@@ -45,6 +45,16 @@ impl EditorCommand {
         Self::from_editor(&editor, target)
     }
 
+    /// Builds an invocation from `$EDITOR` that always blocks until the file is
+    /// closed.
+    ///
+    /// Used when tuicr needs to read the file back afterwards, so a windowed
+    /// editor that would otherwise return immediately gets its wait flag.
+    pub fn blocking_from_env(target: &EditorTarget) -> Self {
+        let editor = std::env::var("EDITOR").unwrap_or_default();
+        Self::blocking_from_editor(&editor, target)
+    }
+
     /// Builds an invocation from an editor command string.
     ///
     /// The command is split with shell-like quoting rules,
@@ -56,11 +66,32 @@ impl EditorCommand {
     /// `vim -f` with line 42 becomes `vim -f +42 /repo/src/main.rs`,
     /// while `code` becomes `code --goto /repo/src/main.rs:42`.
     pub fn from_editor(editor: &str, target: &EditorTarget) -> Self {
+        Self::build(editor, target, false)
+    }
+
+    /// Builds a blocking invocation from an editor command string.
+    ///
+    /// Terminal editors already block; a known windowed editor gains its wait
+    /// flag (`code --wait /repo/src/main.rs`) unless the user has already
+    /// asked for one. An unrecognized windowed editor cannot be made to wait,
+    /// and is left as the user wrote it.
+    pub fn blocking_from_editor(editor: &str, target: &EditorTarget) -> Self {
+        Self::build(editor, target, true)
+    }
+
+    fn build(editor: &str, target: &EditorTarget, require_wait: bool) -> Self {
         let mut parts = shlex::split(editor)
             .filter(|parts| !parts.is_empty())
             .unwrap_or_else(|| vec!["vi".to_string()]);
         let program = parts.remove(0);
         let mut args: Vec<OsString> = parts.into_iter().map(OsString::from).collect();
+
+        if require_wait
+            && !waits_for_close(&args)
+            && let Some(flag) = wait_flag(&program)
+        {
+            args.push(OsString::from(flag));
+        }
 
         match (editor_family(&program), target.line) {
             (EditorFamily::PlusLine, Some(line)) => {
@@ -107,10 +138,7 @@ impl EditorCommand {
     pub fn surface(&self) -> EditorSurface {
         // An explicit wait flag means the user wants tuicr to block until the
         // file is closed, so the terminal has to be handed over either way.
-        let waits = self
-            .args
-            .iter()
-            .any(|arg| arg == "-w" || arg == "--wait" || arg == "--block");
+        let waits = waits_for_close(&self.args);
         if !waits && is_windowed_editor(&self.program) {
             EditorSurface::Gui
         } else {
@@ -164,18 +192,33 @@ pub enum EditorSurface {
     Gui,
 }
 
+/// Whether an argument list already asks the editor to block.
+fn waits_for_close(args: &[OsString]) -> bool {
+    args.iter()
+        .any(|arg| arg == "-w" || arg == "--wait" || arg == "--block")
+}
+
+/// Flag that makes a known windowed editor block until the file is closed.
+///
+/// Terminal editors need no flag, and unknown programs get none because a
+/// rejected flag would stop the editor from opening at all.
+fn wait_flag(program: &str) -> Option<&'static str> {
+    let name = executable_name(program);
+    match name {
+        "mate" => Some("-w"),
+        _ if is_windowed_editor(name) => Some("--wait"),
+        _ => None,
+    }
+}
+
 /// Whether a program is a known editor that opens its own window.
 ///
 /// Unrecognized editors are assumed to be terminal editors: suspending for a
 /// GUI editor costs a flicker, while not suspending for a terminal editor
 /// leaves two programs fighting over the same screen.
 fn is_windowed_editor(program: &str) -> bool {
-    let name = Path::new(program)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or(program);
     matches!(
-        name,
+        executable_name(program),
         "code"
             | "code-insiders"
             | "codium"
@@ -196,6 +239,14 @@ fn is_windowed_editor(program: &str) -> bool {
     )
 }
 
+/// Executable name from a program path, for matching against known editors.
+fn executable_name(program: &str) -> &str {
+    Path::new(program)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(program)
+}
+
 /// Line-navigation syntax family for a recognized editor executable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EditorFamily {
@@ -208,11 +259,7 @@ enum EditorFamily {
 }
 
 fn editor_family(program: &str) -> EditorFamily {
-    let name = Path::new(program)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or(program);
-    match name {
+    match executable_name(program) {
         "vi" | "vim" | "nvim" | "nano" | "emacs" | "emacsclient" | "hx" => EditorFamily::PlusLine,
         "code" | "code-insiders" | "codium" | "cursor" => EditorFamily::GotoLine,
         _ => EditorFamily::Plain,
@@ -347,6 +394,37 @@ mod tests {
         for editor in ["code --wait", "code -w", "zed --wait"] {
             let command = EditorCommand::from_editor(editor, &target(Some(42)));
             assert_eq!(command.surface(), EditorSurface::Terminal, "{editor}");
+        }
+    }
+
+    #[test]
+    fn blocking_windowed_editors_gain_their_wait_flag() {
+        let command = EditorCommand::blocking_from_editor("code", &target(Some(42)));
+        assert_eq!(command.program, "code");
+        assert_eq!(
+            args(&command),
+            vec!["--wait", "--goto", "/repo/src/main.rs:42"]
+        );
+        assert_eq!(command.surface(), EditorSurface::Terminal);
+
+        let command = EditorCommand::blocking_from_editor("mate", &target(None));
+        assert_eq!(args(&command), vec!["-w", "/repo/src/main.rs"]);
+    }
+
+    #[test]
+    fn blocking_editors_keep_an_existing_wait_flag() {
+        let command = EditorCommand::blocking_from_editor("code --wait", &target(None));
+        assert_eq!(args(&command), vec!["--wait", "/repo/src/main.rs"]);
+    }
+
+    #[test]
+    fn blocking_terminal_editors_are_unchanged() {
+        for editor in ["vim", "nvim -f", "kak"] {
+            let blocking = EditorCommand::blocking_from_editor(editor, &target(Some(42)));
+            assert_eq!(
+                blocking,
+                EditorCommand::from_editor(editor, &target(Some(42)))
+            );
         }
     }
 

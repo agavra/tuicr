@@ -1114,6 +1114,11 @@ pub struct App {
     pub diff_files: Vec<DiffFile>,
     pub diff_source: DiffSource,
     pub pending_editor_target: Option<EditorTarget>,
+    /// Comment-box draft queued for `$EDITOR`, as the full editor buffer
+    /// (body plus commented-out diff context). Consumed by the main event
+    /// loop, like `pending_editor_target`, because the handoff needs the
+    /// terminal.
+    pub pending_comment_draft: Option<String>,
     /// Windowed editors that have not exited yet; polled by
     /// `poll_editor_launches`.
     pub(crate) editor_launches: Vec<EditorLaunch>,
@@ -1755,6 +1760,7 @@ impl AppStartupOptions<'_> {
 }
 
 mod annotations;
+mod comment_draft;
 mod comment_vim;
 mod comments;
 mod commits;

@@ -482,6 +482,7 @@ impl App {
             diff_files,
             diff_source,
             pending_editor_target: None,
+            pending_comment_draft: None,
             editor_launches: Vec::new(),
             input_mode,
             focused_panel: FocusedPanel::Diff,

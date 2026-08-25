@@ -1157,6 +1157,7 @@ pub fn handle_comment_action(app: &mut App, action: Action) {
         }
         Action::ExitMode => app.exit_comment_mode(),
         Action::SubmitInput => app.save_comment(),
+        Action::EditCommentDraft => app.queue_comment_draft_editor(),
         Action::CycleCommentType => app.cycle_comment_type(),
         Action::CycleCommentTypeReverse => app.cycle_comment_type_reverse(),
         Action::TextCursorLeft => {

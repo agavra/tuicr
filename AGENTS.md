@@ -21,6 +21,7 @@ src/
 │   └── file_filter.rs   # File-tree include/exclude regex filters + `/` path search
 ├── error.rs             # Error types (TuicrError enum)
 ├── editor.rs            # External $EDITOR command construction and launch helpers
+├── comment_draft.rs     # Comment-box drafts as $EDITOR buffers (scissors template + hunk context)
 ├── review_store.rs      # Library API for session listing/loading and shared comment insertion
 ├── review_cli.rs        # Non-interactive `tuicr review` subcommands over ReviewStore
 ├── update.rs            # Public update facade
