@@ -57,6 +57,16 @@ tuicr review list --repo slatedb/slatedb
 tuicr review comments --session gh:slatedb/slatedb/pr/1745
 ```
 
+Azure DevOps repos live under `organization/project/repository`, so their
+`owner` is `org/project` and a bare `owner/repo` selector cannot name them. Use
+a URL form, which is recognized by host:
+
+```bash
+tuicr review list --repo dev.azure.com/myorg/myproject/_git/myrepo
+tuicr review list --repo git@ssh.dev.azure.com:v3/myorg/myproject/myrepo
+#   -> [ ..., { "slug": "az:myorg/myproject/myrepo/pr/123", "kind": "pr", ... } ]
+```
+
 `--repo` for `add` / `comments` is only consulted when resolving a *local*
 slug; PR slugs and JSON paths ignore it.
 

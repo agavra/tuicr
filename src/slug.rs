@@ -9,6 +9,11 @@
 //! - Local: `[<owner>/]<repo>@<anchor>/<source>`
 //! - PR:    `gh:<owner>/<repo>/pr/<number>`
 //!
+//! `<owner>` may itself contain `/`: Azure DevOps repos live under
+//! `organization/project/repository`, so their owner is `org/project` (the
+//! packing [`crate::forge::traits::ForgeRepository::azure`] uses). In both
+//! grammars the repo is the last segment before `@` / `/pr/`.
+//!
 //! Where `<anchor>` is either a sanitized branch/bookmark name (no `/`) or
 //! `~<short-sha>` for detached / anonymous heads, and `<source>` is one of the
 //! diff-source variants (`worktree/<head>`, `staged/<head>`,
@@ -27,6 +32,7 @@ use std::str::FromStr;
 
 use git2::Repository;
 
+use crate::forge::azure::az::parse_azure_remote_url;
 use crate::forge::traits::{ForgeKind, PrSessionKey};
 use crate::model::review::SessionDiffSource;
 
@@ -221,8 +227,11 @@ fn parse_local(s: &str) -> Result<LocalSlug, SlugParseError> {
         .split_once('@')
         .ok_or_else(|| SlugParseError::InvalidShape(s.to_string()))?;
 
-    let (owner, repo) = if let Some((o, r)) = project.split_once('/') {
-        if r.contains('/') || o.is_empty() || r.is_empty() {
+    // `<owner>` may contain slashes (Azure DevOps `org/project`), so the repo
+    // is the last segment and everything before it is the owner — the same rule
+    // `parse_pr` uses.
+    let (owner, repo) = if let Some((o, r)) = project.rsplit_once('/') {
+        if o.is_empty() || r.is_empty() {
             return Err(SlugParseError::InvalidShape(s.to_string()));
         }
         (Some(o.to_string()), r.to_string())
@@ -380,9 +389,21 @@ impl RepoCoordinate {
     /// segments become `owner/repo` (so nested GitLab subgroups degrade
     /// gracefully); a lone segment yields a repo with no owner. A trailing
     /// `.git` is stripped.
+    ///
+    /// Azure DevOps selectors are recognized by host and keep their full
+    /// `org/project` owner, so `dev.azure.com/org/project/_git/repo` matches
+    /// that repo's `az:` PR sessions. The bare `org/project/repo` form is
+    /// indistinguishable from `host/owner/repo` and falls back to the generic
+    /// rule.
     pub fn parse(input: &str) -> Option<Self> {
         let trimmed = input.trim();
         let without_forge = trimmed.strip_prefix("forge:").unwrap_or(trimmed);
+        if let Some(repo) = parse_azure_remote_url(without_forge) {
+            return Some(Self {
+                owner: Some(repo.owner),
+                repo: repo.name,
+            });
+        }
         let without_scheme = without_forge
             .split_once("://")
             .map(|(_, rest)| rest)
@@ -459,11 +480,21 @@ fn origin_owner_repo(repo: &Repository) -> Option<(String, String)> {
     parse_remote_owner_repo(url)
 }
 
-/// Forge-agnostic remote-URL parser. Handles HTTPS, SCP-style SSH
-/// (`git@host:path`), and SSH scheme URLs. Always takes the last two path
-/// segments as `owner/repo` so nested groupings (GitLab subgroups, etc.)
-/// degrade gracefully. Strips a trailing `.git`.
+/// Remote-URL parser. Handles HTTPS, SCP-style SSH (`git@host:path`), and SSH
+/// scheme URLs. Takes the last two path segments as `owner/repo` so nested
+/// groupings (GitLab subgroups, etc.) degrade gracefully. Strips a trailing
+/// `.git`.
 fn parse_remote_owner_repo(remote_url: &str) -> Option<(String, String)> {
+    // Azure DevOps remotes are `host/org/project/_git/repo` (HTTPS) or
+    // `v3/org/project/repo` (SSH), so the last-two-segments rule below would
+    // yield `_git` / `project` as the owner. Defer to the forge parser, which
+    // packs `org/project` into the owner exactly as PR sessions do — otherwise
+    // the two halves of a session identity disagree and `review list` in an
+    // Azure checkout hides that repo's PR sessions.
+    if let Some(repo) = parse_azure_remote_url(remote_url) {
+        return Some((repo.owner, repo.name));
+    }
+
     let url = remote_url.trim();
     if let Some(rest) = url.strip_prefix("https://") {
         parse_path_segments(rest)
@@ -683,6 +714,24 @@ mod tests {
         }
     }
 
+    #[test]
+    fn should_roundtrip_azure_local_slug_with_org_project_owner() {
+        // Azure packs `org/project` into the owner, so a local slug carries an
+        // extra `/`. parse_local must treat the repo as the last segment.
+        assert_roundtrip("myorg/myproject/myrepo@main/worktree/abc1234");
+        let parsed: Slug = "myorg/myproject/myrepo@main/worktree/abc1234"
+            .parse()
+            .unwrap();
+        match parsed {
+            Slug::Local(local) => {
+                assert_eq!(local.owner.as_deref(), Some("myorg/myproject"));
+                assert_eq!(local.repo, "myrepo");
+                assert_eq!(local.anchor, SlugAnchor::Branch("main".to_string()));
+            }
+            other => panic!("expected local slug, got {other:?}"),
+        }
+    }
+
     // ---------- Parse errors ----------
 
     #[test]
@@ -823,6 +872,23 @@ mod tests {
             parse_remote_owner_repo("git@gitlab.com:org/team/svc.git"),
             Some(("team".to_string(), "svc".to_string()))
         );
+    }
+
+    #[test]
+    fn should_parse_azure_remote_urls_with_org_project_owner() {
+        // Regression for #639: the last-two-segments rule yields `_git` (HTTPS)
+        // or the project (SSH) as the owner, which never matches the
+        // `org/project` owner an `az:` PR slug carries.
+        let expected = Some(("myorg/myproject".to_string(), "myrepo".to_string()));
+        for url in [
+            "https://dev.azure.com/myorg/myproject/_git/myrepo",
+            "https://myorg@dev.azure.com/myorg/myproject/_git/myrepo.git",
+            "https://myorg.visualstudio.com/myproject/_git/myrepo",
+            "https://myorg.visualstudio.com/DefaultCollection/myproject/_git/myrepo",
+            "git@ssh.dev.azure.com:v3/myorg/myproject/myrepo",
+        ] {
+            assert_eq!(parse_remote_owner_repo(url), expected, "parsing {url}");
+        }
     }
 
     #[test]
@@ -1007,6 +1073,24 @@ mod tests {
     }
 
     #[test]
+    fn should_parse_azure_repo_coordinate_forms() {
+        for input in [
+            "dev.azure.com/myorg/myproject/_git/myrepo",
+            "https://dev.azure.com/myorg/myproject/_git/myrepo",
+            "https://myorg@dev.azure.com/myorg/myproject/_git/myrepo.git",
+            "forge:dev.azure.com/myorg/myproject/_git/myrepo",
+            "myorg.visualstudio.com/myproject/_git/myrepo",
+            "git@ssh.dev.azure.com:v3/myorg/myproject/myrepo",
+        ] {
+            assert_eq!(
+                RepoCoordinate::parse(input),
+                Some(coord(Some("myorg/myproject"), "myrepo")),
+                "parsing {input}"
+            );
+        }
+    }
+
+    #[test]
     fn should_reject_empty_repo_coordinate() {
         assert_eq!(RepoCoordinate::parse(""), None);
         assert_eq!(RepoCoordinate::parse("forge:"), None);
@@ -1036,6 +1120,17 @@ mod tests {
         // A no-remote checkout (no owner) still matches an owner/repo selector.
         assert!(coord(Some("slatedb"), "slatedb").matches(&coord(None, "slatedb")));
         assert!(coord(None, "slatedb").matches(&coord(Some("slatedb"), "slatedb")));
+    }
+
+    #[test]
+    fn should_match_multi_segment_owner_both_directions() {
+        // An Azure checkout's coordinate and its `az:` PR slug's coordinate must
+        // agree, in either argument position.
+        let azure: Slug = "az:myorg/myproject/myrepo/pr/42".parse().unwrap();
+        let selector = coord(Some("myorg/myproject"), "myrepo");
+        assert!(selector.matches(&RepoCoordinate::from_slug(&azure)));
+        assert!(RepoCoordinate::from_slug(&azure).matches(&selector));
+        assert!(!selector.matches(&coord(Some("myproject"), "myrepo")));
     }
 
     #[test]

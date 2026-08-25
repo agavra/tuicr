@@ -887,6 +887,23 @@ mod tests {
         )
     }
 
+    fn make_azure_pr_key(number: u64, head_sha: &str) -> PrSessionKey {
+        PrSessionKey::new(
+            ForgeRepository::azure("dev.azure.com", "myorg/myproject", "myrepo"),
+            number,
+            head_sha.to_string(),
+        )
+    }
+
+    /// A checkout with a real `origin`, so the selector's coordinate comes from
+    /// the remote URL rather than the directory name.
+    fn make_repo_with_origin(url: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        repo.remote("origin", url).unwrap();
+        dir
+    }
+
     fn make_pr_session(key: &PrSessionKey) -> ReviewSession {
         let mut s = ReviewSession::new(
             PathBuf::from(format!(
@@ -1487,6 +1504,56 @@ mod tests {
         assert!(slugs.contains(&"gh:agavra/tuicr/pr/125"));
 
         let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn should_find_azure_pr_session_by_repo_url_coordinate() {
+        let _g = with_test_reviews_dir();
+        let reviews_dir = get_reviews_dir().unwrap();
+        save_session(&make_pr_session(&make_azure_pr_key(123, "abcdef0123456789"))).unwrap();
+
+        let listed = list_sessions_for_selector_in_dir(
+            &reviews_dir,
+            Path::new("dev.azure.com/myorg/myproject/_git/myrepo"),
+        )
+        .unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].0, "az:myorg/myproject/myrepo/pr/123");
+    }
+
+    #[test]
+    fn should_surface_azure_pr_session_from_its_checkout() {
+        // Regression for #639: the checkout's coordinate used to come out as
+        // owner `_git`, which never matched the `myorg/myproject` owner the PR
+        // slug carries, so `review list` in an Azure checkout showed only the
+        // local session.
+        let _g = with_test_reviews_dir();
+        let reviews_dir = get_reviews_dir().unwrap();
+        let checkout =
+            make_repo_with_origin("https://myorg@dev.azure.com/myorg/myproject/_git/myrepo");
+
+        save_session(&make_local_session(
+            checkout.path().to_path_buf(),
+            "abc1234",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
+            None,
+        ))
+        .unwrap();
+        save_session(&make_pr_session(&make_azure_pr_key(123, "abcdef0123456789"))).unwrap();
+
+        let listed = list_sessions_for_selector_in_dir(&reviews_dir, checkout.path()).unwrap();
+        let slugs: Vec<&str> = listed.iter().map(|(slug, _)| slug.as_str()).collect();
+        assert!(
+            slugs.contains(&"az:myorg/myproject/myrepo/pr/123"),
+            "expected the PR session, got {slugs:?}"
+        );
+        assert!(
+            slugs
+                .iter()
+                .any(|s| s.starts_with("myorg/myproject/myrepo@main/worktree")),
+            "expected the local session under an org/project owner, got {slugs:?}"
+        );
     }
 
     #[test]
