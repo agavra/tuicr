@@ -198,7 +198,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 format!("  {}h/{}l     ", app.leader_key, app.leader_key),
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Focus file list/diff"),
+            Span::raw("Move focus left/right (side-by-side: between the two sides)"),
         ]),
         Line::from(vec![
             Span::styled(

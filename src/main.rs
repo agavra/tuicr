@@ -586,13 +586,11 @@ fn main() -> anyhow::Result<()> {
                                 continue;
                             }
                             crossterm::event::KeyCode::Char('h') => {
-                                if app.show_file_list {
-                                    app.focused_panel = app::FocusedPanel::FileList;
-                                }
+                                app.focus_pane_left();
                                 continue;
                             }
                             crossterm::event::KeyCode::Char('l') => {
-                                app.focused_panel = app::FocusedPanel::Diff;
+                                app.focus_pane_right();
                                 continue;
                             }
                             crossterm::event::KeyCode::Char('k') => {

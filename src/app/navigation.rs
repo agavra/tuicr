@@ -244,6 +244,44 @@ impl App {
         self.diff_state.scroll_x = self.diff_state.scroll_x.saturating_sub(cols);
     }
 
+    /// Whether the diff is focused and split into two commentable panes, so
+    /// the `<leader>` panel walk has a step to take inside it.
+    fn diff_panes_are_walkable(&self) -> bool {
+        self.focused_panel == FocusedPanel::Diff && self.diff_view_mode == DiffViewMode::SideBySide
+    }
+
+    /// `<leader>h` — move focus one panel left. In side-by-side view the two
+    /// diff columns are stops on that walk, so the order is
+    /// file list → old → new; from the new side this only steps to the old one.
+    pub fn focus_pane_left(&mut self) {
+        if self.diff_panes_are_walkable() && self.cursor_side == LineSide::New {
+            self.set_cursor_side(LineSide::Old);
+            return;
+        }
+        if self.show_file_list {
+            self.focused_panel = FocusedPanel::FileList;
+        }
+    }
+
+    /// `<leader>l` — move focus one panel right; the mirror of
+    /// [`focus_pane_left`]. Entering the diff from the file list keeps
+    /// whichever side was already active rather than resetting it.
+    pub fn focus_pane_right(&mut self) {
+        if self.diff_panes_are_walkable() {
+            if self.cursor_side == LineSide::Old {
+                self.set_cursor_side(LineSide::New);
+            }
+            return;
+        }
+        self.focused_panel = FocusedPanel::Diff;
+    }
+
+    /// Set the side the cursor targets in side-by-side view (drives the caret
+    /// and which side a new comment attaches to).
+    pub fn set_cursor_side(&mut self, side: LineSide) {
+        self.cursor_side = side;
+    }
+
     pub fn scroll_right(&mut self, cols: usize) {
         if self.diff_state.wrap_lines {
             return;
@@ -1475,13 +1513,39 @@ impl App {
                 old_lineno,
                 new_lineno,
                 ..
-            }) => {
-                // Prefer new line number (for added/context lines), fall back to old (for deleted)
-                new_lineno
-                    .map(|ln| (ln, LineSide::New))
-                    .or_else(|| old_lineno.map(|ln| (ln, LineSide::Old)))
-            }
+            }) => Self::line_for_side(self.effective_cursor_side(), *old_lineno, *new_lineno),
             _ => None,
+        }
+    }
+
+    /// The side the cursor effectively targets at its current line. In
+    /// side-by-side view it follows `cursor_side`; in unified view there is one
+    /// column, so `New` is preferred (falling back per line below). This is a
+    /// *preference*; [`line_for_side`] clamps it to the sides the line offers.
+    pub fn effective_cursor_side(&self) -> LineSide {
+        if self.diff_view_mode == DiffViewMode::SideBySide {
+            self.cursor_side
+        } else {
+            LineSide::New
+        }
+    }
+
+    /// Resolve a `(lineno, side)` for a diff line given a preferred side,
+    /// clamping to whichever side the line actually has. A pure addition has
+    /// only `new_lineno`; a pure deletion only `old_lineno`; a context line has
+    /// both, so the preference wins.
+    fn line_for_side(
+        prefer: LineSide,
+        old_lineno: Option<u32>,
+        new_lineno: Option<u32>,
+    ) -> Option<(u32, LineSide)> {
+        match prefer {
+            LineSide::Old => old_lineno
+                .map(|ln| (ln, LineSide::Old))
+                .or_else(|| new_lineno.map(|ln| (ln, LineSide::New))),
+            LineSide::New => new_lineno
+                .map(|ln| (ln, LineSide::New))
+                .or_else(|| old_lineno.map(|ln| (ln, LineSide::Old))),
         }
     }
 }
