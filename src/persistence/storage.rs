@@ -1510,7 +1510,8 @@ mod tests {
     fn should_find_azure_pr_session_by_repo_url_coordinate() {
         let _g = with_test_reviews_dir();
         let reviews_dir = get_reviews_dir().unwrap();
-        save_session(&make_pr_session(&make_azure_pr_key(123, "abcdef0123456789"))).unwrap();
+        let key = make_azure_pr_key(123, "abcdef0123456789");
+        save_session(&make_pr_session(&key)).unwrap();
 
         let listed = list_sessions_for_selector_in_dir(
             &reviews_dir,
@@ -1540,7 +1541,8 @@ mod tests {
             None,
         ))
         .unwrap();
-        save_session(&make_pr_session(&make_azure_pr_key(123, "abcdef0123456789"))).unwrap();
+        let key = make_azure_pr_key(123, "abcdef0123456789");
+        save_session(&make_pr_session(&key)).unwrap();
 
         let listed = list_sessions_for_selector_in_dir(&reviews_dir, checkout.path()).unwrap();
         let slugs: Vec<&str> = listed.iter().map(|(slug, _)| slug.as_str()).collect();
