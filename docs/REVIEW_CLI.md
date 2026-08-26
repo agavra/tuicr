@@ -67,6 +67,15 @@ tuicr review list --repo git@ssh.dev.azure.com:v3/myorg/myproject/myrepo
 #   -> [ ..., { "slug": "az:myorg/myproject/myrepo/pr/123", "kind": "pr", ... } ]
 ```
 
+GitLab groups nest the same way, so a repo under `group/subgroup` has
+`group/subgroup` as its owner:
+
+```bash
+tuicr review list --repo https://gitlab.com/org/team/svc
+tuicr review list --repo git@gitlab.com:org/team/svc.git
+#   -> [ ..., { "slug": "gl:org/team/svc/pr/123", "kind": "pr", ... } ]
+```
+
 `--repo` for `add` / `comments` is only consulted when resolving a *local*
 slug; PR slugs and JSON paths ignore it.
 
