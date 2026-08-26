@@ -191,6 +191,7 @@ fn render_local_target_tab(frame: &mut Frame, app: &mut App, area: Rect) {
         .map(|(i, commit)| {
             render_commit_row(&CommitRowSpec {
                 commit,
+                available_width: area.width,
                 is_cursor: i == app.commit_list_cursor,
                 is_selected: app.is_commit_selected(i),
                 is_reviewed: false,
@@ -598,12 +599,28 @@ mod selector_render_snapshot_tests {
         }
     }
 
-    fn draw(app: &mut App) -> Buffer {
-        let backend = TestBackend::new(120, 24);
+    fn draw_at(app: &mut App, width: u16, height: u16) -> Buffer {
+        let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| render(frame, app))
             .expect("draw frame");
+        terminal.backend().buffer().clone()
+    }
+
+    fn draw(app: &mut App) -> Buffer {
+        draw_at(app, 120, 24)
+    }
+
+    fn draw_inline_at(app: &mut App, width: u16) -> Buffer {
+        let backend = TestBackend::new(width, 5);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                crate::ui::inline_commit_selector::render_inline_commit_selector(frame, app, area);
+            })
+            .expect("draw inline selector");
         terminal.backend().buffer().clone()
     }
 
@@ -633,6 +650,28 @@ mod selector_render_snapshot_tests {
     }
 
     const TAB_STRIP_ROW: u16 = 0;
+
+    #[test]
+    fn should_resize_branch_columns_on_fullscreen_and_inline_selectors() {
+        // given
+        let mut wide_commit = commit(0);
+        wide_commit.branch_name = Some("feat/responsive-branch-alpha".to_string());
+        let mut fullscreen_app = make_app(vec![wide_commit.clone()]);
+        let mut inline_app = make_app(vec![wide_commit.clone()]);
+        inline_app.review_commits = vec![wide_commit];
+
+        // when
+        let compact_fullscreen = draw_at(&mut fullscreen_app, 100, 24);
+        let wide_fullscreen = draw_at(&mut fullscreen_app, 160, 24);
+        let compact_inline = draw_inline_at(&mut inline_app, 100);
+        let wide_inline = draw_inline_at(&mut inline_app, 160);
+
+        // then
+        assert!(!row_text(&compact_fullscreen, 2).contains("branch-alpha]"));
+        assert!(row_text(&wide_fullscreen, 2).contains("branch-alpha]"));
+        assert!(!row_text(&compact_inline, 1).contains("branch-alpha]"));
+        assert!(row_text(&wide_inline, 1).contains("branch-alpha]"));
+    }
 
     /// True when at least one cell in [x_start, x_end) on row `y` carries
     /// the given background color.
