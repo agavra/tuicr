@@ -2503,6 +2503,20 @@ fn should_cancel_in_flight_open_when_pressing_esc_in_selector() {
     assert!(app.pr_open_state.is_none());
 }
 
+#[test]
+fn should_show_quit_hint_message_without_quitting_in_commit_select_mode() {
+    // given
+    let mut app = build_app();
+    // when
+    crate::handler::handle_commit_select_action(&mut app, crate::input::Action::QuitHint);
+    // then
+    assert!(!app.should_quit);
+    assert_eq!(
+        app.message.as_ref().map(|m| m.content.as_str()),
+        Some("q no longer quits — use :q to quit")
+    );
+}
+
 // -----------------------------------------------------------------
 // Remote review threads (PR 4)
 // -----------------------------------------------------------------

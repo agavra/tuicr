@@ -225,6 +225,9 @@ In command mode,
 | `ZQ` | Quit without saving |
 | `?` | Toggle help |
 
+Pressing bare `q` no longer quits; it prints a reminder to use `:q` instead — a transitional
+affordance that will be removed in a future release.
+
 The summary replaces the diff while leaving the file sidebar visible when it is open. The first
 pending comment is selected when the summary opens. Use `j`/`k` to select the next
 or previous comment; the view scrolls automatically to keep the selection visible. `Enter` returns
