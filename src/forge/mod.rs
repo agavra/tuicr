@@ -123,6 +123,25 @@ pub fn parse_any_remote_url(url: &str) -> Option<ForgeRepository> {
         .or_else(|| parse_github_remote_url(url))
 }
 
+/// Parse `url` using only the forge parsers that decide from the URL alone —
+/// no subprocess, no `~/.ssh/config` read — and without the GitHub catch-all.
+///
+/// For hot paths such as [`crate::slug::resolve_owner_repo`], which runs on
+/// every session save, and only where an unrecognized remote has a usable
+/// fallback. Prefer [`parse_any_remote_url`] everywhere else: it recognizes
+/// more remotes, at the cost of a `glab config get host` spawn and up to three
+/// `~/.ssh/config` reads per call.
+///
+/// GitHub is excluded on purpose. Its parser accepts any host and reads the
+/// *first* two path segments, where `slug.rs`'s generic fallback reads the last
+/// two; letting it claim unknown hosts would turn
+/// `code.example.com/git/owner/repo` into `git/owner`. Bitbucket is left out
+/// because a workspace is always one segment, so the fallback already agrees
+/// with it.
+pub fn parse_any_remote_url_by_hostname(url: &str) -> Option<ForgeRepository> {
+    parse_azure_remote_url(url)
+}
+
 /// Detect the forge repository for the local checkout at `repo_root`.
 /// Returns `None` when no remote can be parsed.
 pub fn detect_forge_repository(repo_root: &Path) -> Option<ForgeRepository> {
@@ -157,6 +176,29 @@ mod tests {
         assert_eq!(
             detect_forge_repository(dir.path()),
             Some(ForgeRepository::github("github.com", "agavra", "tuicr"))
+        );
+    }
+
+    #[test]
+    fn hostname_only_parser_claims_azure_but_leaves_other_hosts_alone() {
+        assert_eq!(
+            parse_any_remote_url_by_hostname("https://dev.azure.com/myorg/myproject/_git/myrepo"),
+            Some(ForgeRepository::azure(
+                "dev.azure.com",
+                "myorg/myproject",
+                "myrepo"
+            ))
+        );
+        // The GitHub catch-all is excluded, so anything it would have claimed
+        // falls through to the caller's own rule. Were it in the chain, its
+        // first-two-segments reading would turn the last URL into `git/owner`.
+        assert_eq!(
+            parse_any_remote_url_by_hostname("https://github.com/agavra/tuicr"),
+            None
+        );
+        assert_eq!(
+            parse_any_remote_url_by_hostname("https://code.example.com/git/owner/repo"),
+            None
         );
     }
 

@@ -9,10 +9,12 @@
 //! - Local: `[<owner>/]<repo>@<anchor>/<source>`
 //! - PR:    `gh:<owner>/<repo>/pr/<number>`
 //!
-//! `<owner>` may itself contain `/`: Azure DevOps repos live under
+//! `<owner>` may itself contain `/`, because some forges put a multi-segment
+//! namespace there: Azure DevOps repos live under
 //! `organization/project/repository`, so their owner is `org/project` (the
-//! packing [`crate::forge::traits::ForgeRepository::azure`] uses). In both
-//! grammars the repo is the last segment before `@` / `/pr/`.
+//! packing [`crate::forge::traits::ForgeRepository::azure`] uses), and GitLab
+//! groups nest. In both grammars the repo is the last segment before `@` /
+//! `/pr/`.
 //!
 //! Where `<anchor>` is either a sanitized branch/bookmark name (no `/`) or
 //! `~<short-sha>` for detached / anonymous heads, and `<source>` is one of the
@@ -32,7 +34,7 @@ use std::str::FromStr;
 
 use git2::Repository;
 
-use crate::forge::azure::az::parse_azure_remote_url;
+use crate::forge::parse_any_remote_url_by_hostname;
 use crate::forge::traits::{ForgeKind, PrSessionKey};
 use crate::model::review::SessionDiffSource;
 
@@ -227,9 +229,9 @@ fn parse_local(s: &str) -> Result<LocalSlug, SlugParseError> {
         .split_once('@')
         .ok_or_else(|| SlugParseError::InvalidShape(s.to_string()))?;
 
-    // `<owner>` may contain slashes (Azure DevOps `org/project`), so the repo
-    // is the last segment and everything before it is the owner — the same rule
-    // `parse_pr` uses.
+    // `<owner>` may contain slashes (Azure DevOps `org/project`, nested GitLab
+    // groups), so the repo is the last segment and everything before it is the
+    // owner — the same rule `parse_pr` uses.
     let (owner, repo) = if let Some((o, r)) = project.rsplit_once('/') {
         if o.is_empty() || r.is_empty() {
             return Err(SlugParseError::InvalidShape(s.to_string()));
@@ -386,19 +388,18 @@ impl RepoCoordinate {
 
     /// Parse a user-supplied repo selector: `owner/repo`, `host/owner/repo`,
     /// `forge:host/owner/repo`, or an HTTPS / SSH / SCP URL. The last two path
-    /// segments become `owner/repo` (so nested GitLab subgroups degrade
-    /// gracefully); a lone segment yields a repo with no owner. A trailing
-    /// `.git` is stripped.
+    /// segments become `owner/repo`; a lone segment yields a repo with no
+    /// owner. A trailing `.git` is stripped.
     ///
-    /// Azure DevOps selectors are recognized by host and keep their full
-    /// `org/project` owner, so `dev.azure.com/org/project/_git/repo` matches
-    /// that repo's `az:` PR sessions. The bare `org/project/repo` form is
-    /// indistinguishable from `host/owner/repo` and falls back to the generic
-    /// rule.
+    /// A selector whose host a forge parser recognizes keeps that forge's whole
+    /// multi-segment owner instead, so `dev.azure.com/org/project/_git/repo`
+    /// matches that repo's `az:` PR sessions. The bare `org/project/repo` form
+    /// is indistinguishable from `host/owner/repo` and falls back to the
+    /// generic rule.
     pub fn parse(input: &str) -> Option<Self> {
         let trimmed = input.trim();
         let without_forge = trimmed.strip_prefix("forge:").unwrap_or(trimmed);
-        if let Some(repo) = parse_azure_remote_url(without_forge) {
+        if let Some(repo) = parse_any_remote_url_by_hostname(without_forge) {
             return Some(Self {
                 owner: Some(repo.owner),
                 repo: repo.name,
@@ -481,17 +482,18 @@ fn origin_owner_repo(repo: &Repository) -> Option<(String, String)> {
 }
 
 /// Remote-URL parser. Handles HTTPS, SCP-style SSH (`git@host:path`), and SSH
-/// scheme URLs. Takes the last two path segments as `owner/repo` so nested
-/// groupings (GitLab subgroups, etc.) degrade gracefully. Strips a trailing
+/// scheme URLs. Takes the last two path segments as `owner/repo` unless a
+/// forge's own parser recognizes the host and knows better. Strips a trailing
 /// `.git`.
 fn parse_remote_owner_repo(remote_url: &str) -> Option<(String, String)> {
-    // Azure DevOps remotes are `host/org/project/_git/repo` (HTTPS) or
-    // `v3/org/project/repo` (SSH), so the last-two-segments rule below would
-    // yield `_git` / `project` as the owner. Defer to the forge parser, which
-    // packs `org/project` into the owner exactly as PR sessions do — otherwise
-    // the two halves of a session identity disagree and `review list` in an
-    // Azure checkout hides that repo's PR sessions.
-    if let Some(repo) = parse_azure_remote_url(remote_url) {
+    // Some forges put a multi-segment namespace in the owner, which the
+    // last-two-segments rule below truncates: an Azure DevOps remote is
+    // `host/org/project/_git/repo` (HTTPS) or `v3/org/project/repo` (SSH), so
+    // it would yield `_git` / `project`. Ask the forge layer first — it packs
+    // the owner exactly as PR sessions do; otherwise the two halves of a
+    // session identity disagree and `review list` in such a checkout hides
+    // that repo's PR sessions.
+    if let Some(repo) = parse_any_remote_url_by_hostname(remote_url) {
         return Some((repo.owner, repo.name));
     }
 
