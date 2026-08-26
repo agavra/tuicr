@@ -827,17 +827,22 @@ impl App {
     ) -> Result<Self> {
         use crate::forge::azure::az::parse_pull_request_target_azure;
         use crate::forge::bitbucket::bkt::parse_pull_request_target_bitbucket;
+        use crate::forge::gitea::tea::parse_pull_request_target_gitea;
         use crate::forge::github::gh::parse_pull_request_target;
         use crate::forge::gitlab::glab::parse_pull_request_target_gitlab;
         use crate::forge::pr_open::open_pull_request;
         use crate::forge::traits::ForgeKind;
 
         // Bitbucket first: its URL shape (`/pull-requests/<n>`) is distinct,
-        // and the GitHub parser would otherwise claim the host. GitHub then
-        // handles numeric / `owner/repo#N` / GitHub URLs, GitLab handles
-        // `/-/merge_requests/<n>`, and an Azure DevOps PR URL falls through to
-        // the Azure parser last.
+        // and the GitHub parser would otherwise claim the host. Gitea next:
+        // its `/pulls/<n>` URL differs from GitHub's singular `/pull/<n>`, but
+        // only the Gitea parser knows which self-hosted hosts are Gitea, and
+        // it must see a host-qualified `host/owner/repo#N` before GitHub's
+        // parser claims it. GitHub then handles numeric / `owner/repo#N` /
+        // GitHub URLs, GitLab handles `/-/merge_requests/<n>`, and an Azure
+        // DevOps PR URL falls through to the Azure parser last.
         let parsed = parse_pull_request_target_bitbucket(target)
+            .or_else(|_| parse_pull_request_target_gitea(target))
             .or_else(|_| parse_pull_request_target(target))
             .or_else(|_| parse_pull_request_target_gitlab(target))
             .or_else(|_| parse_pull_request_target_azure(target))?;

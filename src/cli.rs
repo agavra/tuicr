@@ -397,16 +397,17 @@ fn non_empty_theme_name(s: &str) -> Result<String, String> {
 }
 
 /// Reject `--repo-url` values that don't parse as a supported forge remote URL
-/// (GitHub, GitLab, Bitbucket, or Azure DevOps) so the failure is surfaced at
-/// startup rather than when the PR tab is opened.
+/// (GitHub, GitLab, Gitea, Bitbucket, or Azure DevOps) so the failure is
+/// surfaced at startup rather than when the PR tab is opened.
 fn parse_repo_url(s: &str) -> Result<String, String> {
     if crate::forge::parse_any_remote_url(s).is_some() {
         Ok(s.to_string())
     } else {
         Err(format!(
-            "--repo-url value '{s}' is not a recognized GitHub, GitLab, Bitbucket, or Azure \
-             DevOps URL. Expected forms like: https://github.com/owner/repo, \
-             git@gitlab.com:owner/repo, https://bitbucket.org/workspace/repo, or \
+            "--repo-url value '{s}' is not a recognized GitHub, GitLab, Gitea, Bitbucket, \
+             or Azure DevOps URL. Expected forms like: https://github.com/owner/repo, \
+             git@gitlab.com:owner/repo, https://gitea.com/owner/repo, \
+             https://bitbucket.org/workspace/repo, or \
              https://dev.azure.com/org/project/_git/repo"
         ))
     }
@@ -856,7 +857,7 @@ mod tests {
         assert_eq!(err.kind(), ErrorKind::ValueValidation);
         assert!(
             err.to_string()
-                .contains("not a recognized GitHub, GitLab, Bitbucket, or Azure"),
+                .contains("not a recognized GitHub, GitLab, Gitea, Bitbucket, or Azure"),
             "unexpected error: {err}"
         );
     }
@@ -871,6 +872,8 @@ mod tests {
             "https://bitbucket.org/example-workspace/repo.git",
             "git@bitbucket.org:example-workspace/repo.git",
             "https://dev.azure.com/org/project/_git/repo",
+            "https://gitea.com/owner/repo.git",
+            "git@gitea.example.com:owner/repo.git",
         ] {
             let parsed = parse_for_test(&["tuicr", "--repo-url", url])
                 .unwrap_or_else(|err| panic!("{url} should parse: {err}"));
