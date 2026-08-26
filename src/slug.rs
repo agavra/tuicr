@@ -868,10 +868,37 @@ mod tests {
     }
 
     #[test]
-    fn should_pick_last_two_segments_for_nested_subgroups() {
-        // GitLab subgroups: take last two segments as owner/repo.
+    fn should_keep_the_whole_namespace_for_nested_gitlab_groups() {
+        for url in [
+            "git@gitlab.com:org/team/svc.git",
+            "https://gitlab.com/org/team/svc",
+            "https://gitlab.com/org/team/svc.git",
+            "https://oauth2:token@gitlab.com/org/team/svc.git",
+            "ssh://git@gitlab.com:2222/org/team/svc.git",
+            "https://gitlab.example.com/org/team/svc",
+        ] {
+            assert_eq!(
+                parse_remote_owner_repo(url),
+                Some(("org/team".to_string(), "svc".to_string())),
+                "parsing {url}"
+            );
+        }
+    }
+
+    #[test]
+    fn should_keep_deeply_nested_gitlab_groups() {
         assert_eq!(
-            parse_remote_owner_repo("git@gitlab.com:org/team/svc.git"),
+            parse_remote_owner_repo("git@gitlab.com:org/team/sub/svc.git"),
+            Some(("org/team/sub".to_string(), "svc".to_string()))
+        );
+    }
+
+    #[test]
+    fn should_pick_last_two_segments_for_nested_unrecognized_hosts() {
+        // Only a forge's own parser knows a leading segment is a namespace
+        // rather than a host, so unknown hosts keep degrading to the last two.
+        assert_eq!(
+            parse_remote_owner_repo("git@example.com:org/team/svc.git"),
             Some(("team".to_string(), "svc".to_string()))
         );
     }
@@ -1067,9 +1094,29 @@ mod tests {
     }
 
     #[test]
-    fn should_take_last_two_segments_for_nested_groups() {
+    fn should_parse_nested_gitlab_group_coordinate_forms() {
+        for input in [
+            "gitlab.com/org/team/svc",
+            "forge:gitlab.com/org/team/svc",
+            "https://gitlab.com/org/team/svc.git",
+            "git@gitlab.com:org/team/svc.git",
+            "ssh://git@gitlab.com/org/team/svc",
+            "gitlab.example.com/org/team/svc",
+        ] {
+            assert_eq!(
+                RepoCoordinate::parse(input),
+                Some(coord(Some("org/team"), "svc")),
+                "parsing {input}"
+            );
+        }
+    }
+
+    #[test]
+    fn should_take_last_two_segments_for_a_hostless_nested_coordinate() {
+        // `org/team/svc` is indistinguishable from `host/owner/repo`, so it
+        // stays ambiguous — users name a nested repo by its URL.
         assert_eq!(
-            RepoCoordinate::parse("gitlab.com/org/team/svc"),
+            RepoCoordinate::parse("org/team/svc"),
             Some(coord(Some("team"), "svc"))
         );
     }

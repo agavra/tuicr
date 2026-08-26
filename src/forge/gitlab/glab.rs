@@ -833,6 +833,16 @@ pub fn parse_pull_request_target_gitlab(input: &str) -> Result<PullRequestTarget
     malformed_target(input)
 }
 
+/// How far host recognition may go to decide a remote is GitLab.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HostLookup {
+    /// Consult `glab`'s configured host and `~/.ssh/config` when the hostname
+    /// alone is inconclusive.
+    WithConfig,
+    /// Recognize GitLab by hostname only — no subprocess, no file read.
+    HostnameOnly,
+}
+
 /// Parse a GitLab remote URL into a `ForgeRepository`.
 ///
 /// Handles SCP-like (`git@gitlab.com:owner/repo.git`), HTTPS
@@ -842,23 +852,40 @@ pub fn parse_pull_request_target_gitlab(input: &str) -> Result<PullRequestTarget
 /// configured as a GitLab host in `glab`'s config file (self-hosted
 /// instances such as `git.example.com`).
 pub fn parse_gitlab_remote_url(remote_url: &str) -> Option<ForgeRepository> {
+    parse_gitlab_remote(remote_url, HostLookup::WithConfig)
+}
+
+/// Like [`parse_gitlab_remote_url`], but recognizes GitLab by hostname alone:
+/// no `glab config get host` subprocess and no `~/.ssh/config` read.
+///
+/// For callers on hot paths — [`crate::slug::resolve_owner_repo`] runs on every
+/// session save — where a process spawn per call is not affordable. The cost is
+/// coverage: a self-hosted instance on a custom domain like `git.example.com`
+/// is not recognized, so it keeps falling back to the caller's generic parser.
+pub fn parse_gitlab_remote_url_by_hostname(remote_url: &str) -> Option<ForgeRepository> {
+    parse_gitlab_remote(remote_url, HostLookup::HostnameOnly)
+}
+
+fn parse_gitlab_remote(remote_url: &str, lookup: HostLookup) -> Option<ForgeRepository> {
     let trimmed = trim_url_suffix(remote_url.trim());
     if trimmed.is_empty() {
         return None;
     }
 
     if let Some((host, path)) = parse_scp_like_remote(trimmed) {
-        let resolved = resolve_ssh_hostname(host);
-
-        let gitlab_host = if is_gitlab_host(host) {
-            host
-        } else if is_gitlab_host(&resolved) {
-            &resolved
-        } else {
+        if is_gitlab_host(host, lookup) {
+            return gitlab_repository_from_path(host, path);
+        }
+        if lookup == HostLookup::HostnameOnly {
             return None;
-        };
-
-        return gitlab_repository_from_path(gitlab_host, path);
+        }
+        // The remote may name an `~/.ssh/config` alias rather than the real
+        // host, so fall back to what that alias resolves to.
+        let resolved = resolve_ssh_hostname(host);
+        if !is_gitlab_host(&resolved, lookup) {
+            return None;
+        }
+        return gitlab_repository_from_path(&resolved, path);
     }
 
     let without_scheme = strip_scheme(trimmed).unwrap_or(trimmed);
@@ -868,19 +895,23 @@ pub fn parse_gitlab_remote_url(remote_url: &str) -> Option<ForgeRepository> {
         .unwrap_or(without_scheme);
     let (host, path) = without_user.split_once('/')?;
     let host = strip_port(host);
-    if !is_gitlab_host(host) {
+    if !is_gitlab_host(host, lookup) {
         return None;
     }
     gitlab_repository_from_path(host, path)
 }
 
 /// Returns `true` when `host` looks like a GitLab instance: either its name
-/// contains "gitlab" (covers `gitlab.com` and most public deployments) or
-/// matches the default host `glab` is configured against (covers self-hosted
-/// instances with custom domains like `git.example.com`).
-fn is_gitlab_host(host: &str) -> bool {
+/// contains "gitlab" (covers `gitlab.com` and most public deployments) or —
+/// under [`HostLookup::WithConfig`] — matches the default host `glab` is
+/// configured against (covers self-hosted instances with custom domains like
+/// `git.example.com`).
+fn is_gitlab_host(host: &str, lookup: HostLookup) -> bool {
     if host.contains("gitlab") {
         return true;
+    }
+    if lookup == HostLookup::HostnameOnly {
+        return false;
     }
 
     glab_default_host().is_some_and(|known| known.eq_ignore_ascii_case(host))
