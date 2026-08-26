@@ -224,7 +224,6 @@ In command mode,
 | `ZZ` | Save and quit |
 | `ZQ` | Quit without saving |
 | `?` | Toggle help |
-| `q` | Quick quit |
 
 The summary replaces the diff while leaving the file sidebar visible when it is open. The first
 pending comment is selected when the summary opens. Use `j`/`k` to select the next
@@ -246,7 +245,8 @@ losing their reviewed state.
 | `Enter` | Confirm local commit range, open PR, or load more PRs |
 | `/` | Filter currently loaded PR rows locally |
 | `r` | In Pull Requests tab, toggle all open PRs / PRs requesting your review |
-| `q` / `Esc` | Quit / return |
+| `Esc` | Return to the diff |
+| `:q` | Quit |
 
 ## Inline commit selector
 
