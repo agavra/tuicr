@@ -239,6 +239,7 @@ mouse = true
 leader = ";"                  # configurable prefix for leader shortcuts
 comment_vim = false           # vim modal editing in the review comment box
 relative_line_numbers = false # show rendered-row distances in the diff gutter
+clipboard = ["arboard", "osc52"] # copy mechanism order; omit for auto-detection
 
 [[comment_types]]
 id = "issue"

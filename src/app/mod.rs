@@ -1122,6 +1122,9 @@ pub struct App {
     pub focused_panel: FocusedPanel,
     pub diff_view_mode: DiffViewMode,
     pub relative_line_numbers: bool,
+    /// Ordered clipboard-mechanism override from the `clipboard` config key
+    /// (`None` = automatic detection). Set by [`App::apply_clipboard_config`].
+    pub(crate) clipboard_override: Option<Vec<crate::output::markdown::CopyMethod>>,
 
     pub file_list_state: FileListState,
     pub comment_navigator_state: CommentNavigatorState,

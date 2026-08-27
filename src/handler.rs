@@ -9,7 +9,9 @@ use crate::forge::remote_comments::PrCommentsVisibility;
 use crate::forge::submit::SubmitEvent;
 use crate::input::Action;
 use crate::model::{ClearScope, LineSide};
-use crate::output::{copy_text_to_clipboard, export_to_clipboard, generate_export_content};
+use crate::output::{
+    copy_text_to_clipboard_with, export_to_clipboard_with, generate_export_content,
+};
 use crate::text_edit::{
     delete_char_before, delete_word_before, next_char_boundary, prev_char_boundary,
 };
@@ -383,7 +385,7 @@ fn handle_copy_pr_url(app: &mut App) {
     };
     let url = pr.url.clone();
 
-    match copy_text_to_clipboard(&url) {
+    match copy_text_to_clipboard_with(&url, app.clipboard_override.as_deref()) {
         Ok(true) => app.set_message("PR URL copied to clipboard (via terminal)"),
         Ok(false) => app.set_message("PR URL copied to clipboard"),
         Err(e) => app.set_warning(format!("Failed to copy PR URL: {e}")),
@@ -410,13 +412,14 @@ fn handle_export(app: &mut App) {
             Err(e) => app.set_warning(format!("{e}")),
         }
     } else {
-        match export_to_clipboard(
+        match export_to_clipboard_with(
             &app.session,
             &app.diff_source,
             &app.comment_types,
             &app.export,
             &app.forge_review_threads,
             slug.as_deref(),
+            app.clipboard_override.as_deref(),
         ) {
             Ok(msg) => app.set_message(msg),
             Err(e) => app.set_warning(format!("{e}")),
@@ -437,7 +440,7 @@ fn handle_copy_comment_at_cursor(app: &mut App) {
         }
         return;
     };
-    match copy_text_to_clipboard(&content) {
+    match copy_text_to_clipboard_with(&content, app.clipboard_override.as_deref()) {
         Ok(true) => app.set_message("Comment copied to clipboard (via terminal)"),
         Ok(false) => app.set_message("Comment copied to clipboard"),
         Err(e) => app.set_warning(format!("{e}")),
@@ -1212,13 +1215,14 @@ pub fn handle_confirm_action(app: &mut App, action: Action) {
                         Err(e) => app.set_warning(format!("{e}")),
                     }
                 } else {
-                    match export_to_clipboard(
+                    match export_to_clipboard_with(
                         &app.session,
                         &app.diff_source,
                         &app.comment_types,
                         &app.export,
                         &app.forge_review_threads,
                         slug.as_deref(),
+                        app.clipboard_override.as_deref(),
                     ) {
                         Ok(msg) => app.set_message(msg),
                         Err(e) => app.set_warning(format!("{e}")),
