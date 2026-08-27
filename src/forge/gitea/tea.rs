@@ -1019,20 +1019,7 @@ where
         request: CreateReviewRequest<'_>,
     ) -> Result<GhCreateReviewResponse> {
         let body = request.body.trim();
-        // Gitea rejects these server-side with a bare 422; catching them here
-        // costs a round trip and produces a message that names the fix.
-        if request.event == SubmitEvent::RequestChanges && body.is_empty() {
-            return Err(TuicrError::Forge(
-                "Gitea requires a review summary when requesting changes. Add a review-level \
-                 comment and submit again."
-                    .to_string(),
-            ));
-        }
-        if request.event == SubmitEvent::Comment && body.is_empty() && request.comments.is_empty() {
-            return Err(TuicrError::Forge(
-                "Gitea requires a review summary or at least one inline comment.".to_string(),
-            ));
-        }
+        check_body_requirement(request.event, body, request.comments.is_empty())?;
 
         let comments = request
             .comments
@@ -1238,6 +1225,43 @@ fn parse_review_state(state: &str) -> RemoteReviewState {
         "PENDING" => RemoteReviewState::Pending,
         other => RemoteReviewState::parse(other),
     }
+}
+
+/// Reject a review Gitea would refuse, before spending a round trip on it.
+///
+/// Gitea decides this with a `needsBody` flag that starts `true` and is
+/// cleared only for approvals and comment reviews, so *requesting changes and
+/// filing a draft both require a summary*. Verified against 1.27.2:
+///
+/// | Event             | Requirement                                   |
+/// |-------------------|-----------------------------------------------|
+/// | `APPROVED`        | nothing; a bare approval is fine              |
+/// | `COMMENT`         | a summary **or** at least one inline comment   |
+/// | `REQUEST_CHANGES` | a summary; inline comments do not substitute   |
+/// | pending (draft)   | a summary; inline comments do not substitute   |
+///
+/// The server's own message is a bare "review event X requires a body", which
+/// says nothing about where a body comes from in tuicr, so these name the key.
+fn check_body_requirement(event: SubmitEvent, body: &str, no_inline_comments: bool) -> Result<()> {
+    if !body.is_empty() {
+        return Ok(());
+    }
+    let detail = match event {
+        SubmitEvent::RequestChanges => {
+            "requesting changes requires a review summary, and inline comments do not count"
+        }
+        SubmitEvent::Draft => {
+            "a draft review requires a review summary, and inline comments do not count"
+        }
+        SubmitEvent::Comment if no_inline_comments => {
+            "a comment review requires a review summary or at least one inline comment"
+        }
+        _ => return Ok(()),
+    };
+    Err(TuicrError::Forge(format!(
+        "Gitea rejects this review: {detail}. Add one with `<leader>c` (`;c` by default), \
+         then submit again."
+    )))
 }
 
 /// Gitea's review event names, which differ from GitHub's (`APPROVED` rather
@@ -2281,6 +2305,38 @@ mod tests {
             "a draft must not name an event: {payload}"
         );
         assert_eq!(payload["commit_id"], "headsha");
+    }
+
+    #[test]
+    fn should_mirror_giteas_body_requirement_for_every_event() {
+        // needsBody starts true server-side and is cleared only for approvals
+        // and comment reviews, so request-changes and draft both need a body.
+        let cases = [
+            (SubmitEvent::Approve, "", true, true),
+            (SubmitEvent::Approve, "", false, true),
+            (SubmitEvent::Comment, "", false, true),
+            (SubmitEvent::Comment, "", true, false),
+            (SubmitEvent::Comment, "summary", true, true),
+            (SubmitEvent::RequestChanges, "", false, false),
+            (SubmitEvent::RequestChanges, "summary", true, true),
+            (SubmitEvent::Draft, "", false, false),
+            (SubmitEvent::Draft, "summary", true, true),
+        ];
+        for (event, body, no_inline, expected_ok) in cases {
+            let actual = check_body_requirement(event, body, no_inline).is_ok();
+            assert_eq!(
+                actual, expected_ok,
+                "{event:?} body={body:?} no_inline={no_inline}"
+            );
+        }
+    }
+
+    #[test]
+    fn should_point_at_the_review_comment_key_when_a_summary_is_missing() {
+        let error = check_body_requirement(SubmitEvent::Draft, "", false).unwrap_err();
+        let text = error.to_string();
+        assert!(text.contains("<leader>c"), "{text}");
+        assert!(text.contains("draft review requires"), "{text}");
     }
 
     #[test]

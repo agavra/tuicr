@@ -76,12 +76,29 @@ Inline comments land on their lines as review comments. Review-level comments
 become the review summary. The whole review is created in a single request, so
 comments and the summary post atomically.
 
-Gitea rejects a few combinations server-side; tuicr catches these before the
-request so the message names the fix:
+### When Gitea requires a summary
 
-- Request changes requires a review summary.
-- A comment review requires either a summary or at least one inline comment.
-- You cannot approve or request changes on your own pull request.
+Gitea requires a review summary for some events, and **inline comments do not
+substitute for one**. Add a summary with `<leader>c` (`;c` by default) — the
+same "add review comment" binding used on every other forge. Anything you write
+there becomes the review body.
+
+| Event | Needs a summary? |
+|-------|------------------|
+| Approve | No. A bare approval is fine. |
+| Comment | Only if there are no inline comments either. |
+| Request changes | **Yes**, always. |
+| Draft | **Yes**, always. |
+
+Draft is the surprising one: on GitHub a pending review can hold nothing but
+line comments, whereas Gitea refuses it without a body.
+
+tuicr checks all of this before sending, so you get a message naming the fix
+rather than Gitea's bare `review event X requires a body`.
+
+One rejection comes from the server itself, since tuicr cannot know it in
+advance: you cannot approve or request changes on your own pull request. tuicr
+surfaces Gitea's message rather than reporting success.
 
 ## Limitations
 
