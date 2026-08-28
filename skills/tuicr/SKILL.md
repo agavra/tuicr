@@ -155,10 +155,17 @@ seconds and compare comment IDs with the previous result. Read immediately when
 the user says comments are ready. Stop polling once the user says the review is
 done or your tooling would block other work.
 
-If the result is empty, ask whether the user saved comments in the intended
-session or whether another active session should be selected. If the review may
-have continued while you were working, rerun `tuicr review comments` before
-claiming completion.
+An empty result does not by itself mean the review didn't happen. On exit,
+tuicr always prints a line like `tuicr-summary: reviewed 3/3 files, 0 comments
+added` to stderr (visible in the pane's scrollback), and `tuicr review list`
+reports the same `reviewed_count`/`file_count` for the session. If
+`reviewed_count` equals `file_count`, zero comments is a legitimate "nothing to
+flag" outcome — treat the review as complete, don't ask the user to confirm.
+Only ask whether the user saved comments in the intended session, or whether
+another active session should be selected, when `reviewed_count` is less than
+`file_count` (the user quit before reviewing everything) or you can't find a
+`tuicr-summary:` line at all. If the review may have continued while you were
+working, rerun `tuicr review comments` before claiming completion.
 
 ## Add Agent Comments
 
@@ -256,7 +263,8 @@ Herdr:
 | cmux wrapper printed no surface ref | Run `cmux list-panes` to find the pane, or ask the user to start `tuicr` themselves |
 | `tuicr` not installed | Tell the user to install tuicr |
 | Not a repository | Ask for the correct repo directory |
-| Comments are empty | Confirm the selected session or ask the user to save/add comments |
+| Comments are empty, but `reviewed_count` == `file_count` | Treat as a completed review with nothing to flag — don't ask |
+| Comments are empty and `reviewed_count` < `file_count` | Confirm the selected session or ask the user to save/add comments |
 
 ## When Not To Use
 
