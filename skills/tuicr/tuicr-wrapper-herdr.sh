@@ -24,12 +24,13 @@ log_error() {
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [directory]
+Usage: $(basename "$0") [directory] [-- tuicr-args...]
 
 Launch tuicr in a Herdr split pane.
 
 Arguments:
   directory    Repository directory to review (default: current directory)
+  tuicr-args   Extra arguments passed through to tuicr (e.g. -w, -r <revset>)
 
 Environment variables:
   TUICR_PANE_DIRECTION  Split direction: right or down (default: right)
@@ -39,6 +40,7 @@ Environment variables:
 Examples:
   $(basename "$0")
   $(basename "$0") ~/project
+  $(basename "$0") . -- -w
   TUICR_PANE_DIRECTION=down $(basename "$0")
 EOF
 }
@@ -67,6 +69,8 @@ cleanup() {
 
 launch_tuicr_pane() {
   local target_dir="$1"
+  shift
+  local tuicr_args=("$@")
 
   case "$TUICR_PANE_DIRECTION" in
     right|down) ;;
@@ -94,6 +98,12 @@ launch_tuicr_pane() {
   local quoted_tuicr
   printf -v quoted_tuicr '%q' "$tuicr_bin"
 
+  local arg quoted_arg
+  for arg in ${tuicr_args[@]+"${tuicr_args[@]}"}; do
+    printf -v quoted_arg '%q' "$arg"
+    quoted_tuicr="$quoted_tuicr $quoted_arg"
+  done
+
   local completion_suffix="_DONE_$$_${RANDOM}__"
   local completion_token="__TUICR${completion_suffix}"
   # `herdr pane run` injects this string into the pane's *interactive* shell,
@@ -104,8 +114,18 @@ launch_tuicr_pane() {
   # printf %q quoting, which can emit non-POSIX $'...' forms.
   # $completion_suffix needs no quoting: it is built from $$ and $RANDOM, so it
   # is digits and underscores by construction.
+  local inner_script
+  inner_script="$quoted_tuicr; printf \"\\n__TUICR%s:%s\\n\" $completion_suffix \$?"
+
+  # $quoted_tuicr may itself contain a `'` (e.g. a -r revset with an
+  # apostrophe, %q-escaped as \' for bash's own parsing). Embedding that raw
+  # into the outer single-quoted argument below would close it early. Escape
+  # every `'` as '\'' (close, escaped literal quote, reopen) so the pane's
+  # shell reproduces $inner_script byte-for-byte as bash -c's one argument.
+  local escaped_inner_script="${inner_script//\'/\'\\\'\'}"
+
   local pane_command
-  pane_command="bash -c '$quoted_tuicr; printf \"\\n__TUICR%s:%s\\n\" $completion_suffix \$?'"
+  pane_command="bash -c '$escaped_inner_script'"
 
   "$HERDR_BIN" pane run "$new_pane_id" "$pane_command" >/dev/null
 
@@ -155,7 +175,14 @@ main() {
   require_command "$JQ_BIN" "jq"
   require_command "tuicr" "tuicr"
 
-  local target_dir="${1:-.}"
+  local target_dir="."
+  if [[ "${1:-}" != "--" && -n "${1:-}" ]]; then
+    target_dir="$1"
+    shift
+  fi
+  if [[ "${1:-}" == "--" ]]; then
+    shift
+  fi
   if [[ ! -d "$target_dir" ]]; then
     log_error "Directory not found: $target_dir"
     exit 1
@@ -166,7 +193,7 @@ main() {
   trap 'exit 130' INT
   trap 'exit 143' TERM
 
-  launch_tuicr_pane "$target_dir"
+  launch_tuicr_pane "$target_dir" "$@"
 }
 
 main "$@"

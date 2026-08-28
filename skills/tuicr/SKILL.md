@@ -72,11 +72,15 @@ When the user needs an interactive tuicr pane and no active session exists:
 
 | Environment | Action |
 |-------------|--------|
-| `$CMUX_WORKSPACE_ID` is set | Run `tuicr-wrapper-cmux.sh /path/to/repo` |
-| `$TMUX` is set | Run `tuicr-wrapper.sh /path/to/repo` |
-| `$ZELLIJ` is set | Run `tuicr-wrapper-zellij.sh /path/to/repo` |
-| `$HERDR_ENV` is `1` | Run `tuicr-wrapper-herdr.sh /path/to/repo` |
+| `$CMUX_WORKSPACE_ID` is set | Run `tuicr-wrapper-cmux.sh /path/to/repo -- <scope>` |
+| `$TMUX` is set | Run `tuicr-wrapper.sh /path/to/repo -- <scope>` |
+| `$ZELLIJ` is set | Run `tuicr-wrapper-zellij.sh /path/to/repo -- <scope>` |
+| `$HERDR_ENV` is `1` | Run `tuicr-wrapper-herdr.sh /path/to/repo -- <scope>` |
 | None is set | Tell the user you are waiting for them to start `tuicr` in the repo, then attach with `tuicr review list` after they say it is ready |
+
+`<scope>` is `-w` for uncommitted working-tree changes or `-r <revset>` for a
+commit range — always pass one explicitly so the user is never left to pick
+staged/unstaged/commit-range manually in the TUI.
 
 If more than one multiplexer marker is set, prefer the innermost multiplexer if
 that is clear; otherwise ask. cmux hosts a Ghostty terminal, so `$TERM_PROGRAM`
@@ -90,18 +94,20 @@ run the wrapper and let it validate the repository.
 Wrapper paths are relative to this skill directory:
 
 ```bash
-<skill-directory>/tuicr-wrapper-cmux.sh /path/to/repo
-<skill-directory>/tuicr-wrapper.sh /path/to/repo
-<skill-directory>/tuicr-wrapper-zellij.sh /path/to/repo
-<skill-directory>/tuicr-wrapper-herdr.sh /path/to/repo
+<skill-directory>/tuicr-wrapper-cmux.sh /path/to/repo -- -w
+<skill-directory>/tuicr-wrapper.sh /path/to/repo -- -w
+<skill-directory>/tuicr-wrapper-zellij.sh /path/to/repo -- -w
+<skill-directory>/tuicr-wrapper-herdr.sh /path/to/repo -- -w
 ```
 
 The Herdr wrapper requires `jq` to read pane IDs and completion results from
 Herdr's JSON responses.
 
-The cmux wrapper accepts pass-through tuicr arguments after `--`, which is how
-you scope the review — for example `-- -w` for uncommitted working-tree changes
-or `-- -r <revset>` for a commit range.
+Every wrapper accepts pass-through tuicr arguments after `--`, which is how
+you scope the review instead of leaving the scope selector for the user to
+fill in — for example `-- -w` for uncommitted working-tree changes or
+`-- -r <revset>` for a commit range. Always pass one of these explicitly when
+launching a review pane.
 
 If your tool supports command timeouts, use a long timeout, such as 10 minutes,
 because the tmux, Zellij, and Herdr wrappers wait for the TUI to exit. The cmux

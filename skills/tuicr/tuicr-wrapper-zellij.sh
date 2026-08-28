@@ -32,12 +32,13 @@ log_error() {
 
 usage() {
   cat << EOF
-Usage: $(basename "$0") [directory]
+Usage: $(basename "$0") [directory] [-- tuicr-args...]
 
 Launch tuicr in a zellij split pane to review changes.
 
 Arguments:
   directory    Git or jj repository directory to review (default: current directory)
+  tuicr-args   Extra arguments passed through to tuicr (e.g. -w, -r <revset>)
 
 Environment variables:
   TUICR_PANE_DIRECTION  Split direction: down or right or stacked (default: stacked)
@@ -46,6 +47,7 @@ Environment variables:
 Examples:
   $(basename "$0")                            # Review changes in current directory
   $(basename "$0") ~/project                  # Review changes in ~/project
+  $(basename "$0") . -- -w                    # Review uncommitted working-tree changes
   TUICR_PANE_DIRECTION=right $(basename "$0") # Split to the right instead of below
 EOF
 }
@@ -94,6 +96,8 @@ check_tuicr_running() {
 
 launch_tuicr_pane() {
   local target_dir="$1"
+  shift
+  local tuicr_args=("$@")
 
   # Validate direction
   case "$TUICR_PANE_DIRECTION" in
@@ -115,6 +119,10 @@ launch_tuicr_pane() {
   # Optional --stdout capture
   local output_file=""
   local tuicr_cmd="$(command -v tuicr)"
+  local arg
+  for arg in ${tuicr_args[@]+"${tuicr_args[@]}"}; do
+    tuicr_cmd="$tuicr_cmd $(printf '%q' "$arg")"
+  done
   local use_stdout=false
 
   if check_tuicr_stdout_support; then
@@ -180,8 +188,15 @@ main() {
     exit 1
   fi
 
-  # Determine target directory
-  local target_dir="${1:-.}"
+  # Determine target directory, then split off any pass-through tuicr args
+  local target_dir="."
+  if [[ "${1:-}" != "--" && -n "${1:-}" ]]; then
+    target_dir="$1"
+    shift
+  fi
+  if [[ "${1:-}" == "--" ]]; then
+    shift
+  fi
   target_dir=$(cd "$target_dir" && pwd)  # Get absolute path
 
   # Verify it's a git or jj repo
@@ -211,7 +226,7 @@ main() {
   fi
 
   # Launch tuicr in a split pane
-  launch_tuicr_pane "$target_dir"
+  launch_tuicr_pane "$target_dir" "$@"
 }
 
 main "$@"
