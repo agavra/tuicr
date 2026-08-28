@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -e -u -o pipefail
 
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_tuicr-common.sh"
+
 # Configuration - override via environment variables
 TUICR_PANE_POSITION="${TUICR_PANE_POSITION:-top}"    # top or bottom
 TUICR_PANE_SIZE="${TUICR_PANE_SIZE:-80}"              # percentage of screen
@@ -119,11 +121,7 @@ launch_tuicr_pane() {
 
   # Check if --stdout is supported and set up output capture
   local output_file=""
-  local tuicr_cmd="tuicr"
-  local arg
-  for arg in ${tuicr_args[@]+"${tuicr_args[@]}"}; do
-    tuicr_cmd="$tuicr_cmd $(printf '%q' "$arg")"
-  done
+  local tuicr_cmd="tuicr$(tuicr_quote_args "${tuicr_args[@]+"${tuicr_args[@]}"}")"
   local use_stdout=false
 
   if check_tuicr_stdout_support; then
@@ -182,14 +180,8 @@ main() {
   fi
 
   # Determine target directory, then split off any pass-through tuicr args
-  local target_dir="."
-  if [[ "${1:-}" != "--" && -n "${1:-}" ]]; then
-    target_dir="$1"
-    shift
-  fi
-  if [[ "${1:-}" == "--" ]]; then
-    shift
-  fi
+  tuicr_parse_args "$@"
+  local target_dir="$TUICR_TARGET_DIR"
   target_dir=$(cd "$target_dir" && pwd)  # Get absolute path
 
   # Verify it's a git or jj repo
@@ -219,7 +211,7 @@ main() {
   fi
 
   # Launch tuicr in a split pane
-  launch_tuicr_pane "$target_dir" "$@"
+  launch_tuicr_pane "$target_dir" "${TUICR_PASSTHROUGH_ARGS[@]+"${TUICR_PASSTHROUGH_ARGS[@]}"}"
 }
 
 main "$@"

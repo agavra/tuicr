@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -e -u -o pipefail
 
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_tuicr-common.sh"
+
 TUICR_PANE_DIRECTION="${TUICR_PANE_DIRECTION:-right}"
 HERDR_BIN="${HERDR_BIN:-herdr}"
 JQ_BIN="${JQ_BIN:-jq}"
@@ -97,12 +99,7 @@ launch_tuicr_pane() {
 
   local quoted_tuicr
   printf -v quoted_tuicr '%q' "$tuicr_bin"
-
-  local arg quoted_arg
-  for arg in ${tuicr_args[@]+"${tuicr_args[@]}"}; do
-    printf -v quoted_arg '%q' "$arg"
-    quoted_tuicr="$quoted_tuicr $quoted_arg"
-  done
+  quoted_tuicr="$quoted_tuicr$(tuicr_quote_args "${tuicr_args[@]+"${tuicr_args[@]}"}")"
 
   local completion_suffix="_DONE_$$_${RANDOM}__"
   local completion_token="__TUICR${completion_suffix}"
@@ -175,14 +172,8 @@ main() {
   require_command "$JQ_BIN" "jq"
   require_command "tuicr" "tuicr"
 
-  local target_dir="."
-  if [[ "${1:-}" != "--" && -n "${1:-}" ]]; then
-    target_dir="$1"
-    shift
-  fi
-  if [[ "${1:-}" == "--" ]]; then
-    shift
-  fi
+  tuicr_parse_args "$@"
+  local target_dir="$TUICR_TARGET_DIR"
   if [[ ! -d "$target_dir" ]]; then
     log_error "Directory not found: $target_dir"
     exit 1
@@ -193,7 +184,7 @@ main() {
   trap 'exit 130' INT
   trap 'exit 143' TERM
 
-  launch_tuicr_pane "$target_dir" "$@"
+  launch_tuicr_pane "$target_dir" "${TUICR_PASSTHROUGH_ARGS[@]+"${TUICR_PASSTHROUGH_ARGS[@]}"}"
 }
 
 main "$@"

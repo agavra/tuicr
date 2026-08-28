@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -e -u -o pipefail
 
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_tuicr-common.sh"
+
 # Configuration - override via environment variables
 TUICR_PANE_DIRECTION="${TUICR_PANE_DIRECTION:-right}"  # left, right, up or down
 CMUX_BIN="${CMUX_BIN:-cmux}"
@@ -124,10 +126,7 @@ launch_tuicr_pane() {
   local command_line
   # exec: no shell survives tuicr, so cmux closes the pane when the TUI exits
   printf -v command_line 'cd %q && exec tuicr' "$target_dir"
-  local arg
-  for arg in ${tuicr_args[@]+"${tuicr_args[@]}"}; do
-    printf -v command_line '%s %q' "$command_line" "$arg"
-  done
+  command_line="$command_line$(tuicr_quote_args "${tuicr_args[@]+"${tuicr_args[@]}"}")"
 
   "$CMUX_BIN" send --surface "$surface_ref" "$command_line"$'\n' > /dev/null
 
@@ -157,14 +156,8 @@ main() {
   fi
 
   # Determine target directory, then split off any pass-through tuicr args
-  local target_dir="."
-  if [[ "${1:-}" != "--" && -n "${1:-}" ]]; then
-    target_dir="$1"
-    shift
-  fi
-  if [[ "${1:-}" == "--" ]]; then
-    shift
-  fi
+  tuicr_parse_args "$@"
+  local target_dir="$TUICR_TARGET_DIR"
   target_dir=$(cd "$target_dir" && pwd)  # Get absolute path
 
   # Verify it's a git or jj repo
@@ -186,7 +179,7 @@ main() {
     exit 1
   fi
 
-  launch_tuicr_pane "$target_dir" "$@"
+  launch_tuicr_pane "$target_dir" "${TUICR_PASSTHROUGH_ARGS[@]+"${TUICR_PASSTHROUGH_ARGS[@]}"}"
 }
 
 main "$@"
