@@ -202,6 +202,11 @@ impl ReviewSession {
         !self.review_comments.is_empty() || self.files.values().any(|f| f.comment_count() > 0)
     }
 
+    pub fn comment_count(&self) -> usize {
+        self.review_comments.len()
+            + self.files.values().map(|f| f.comment_count()).sum::<usize>()
+    }
+
     pub fn clear_comments(&mut self, scope: ClearScope) -> (usize, usize) {
         let mut cleared = self.review_comments.len();
         let mut unreviewed = 0;
@@ -331,6 +336,33 @@ mod tests {
         let file = session.files.get(&path).unwrap();
         assert!(file.file_comments.is_empty());
         assert!(file.line_comments.is_empty());
+    }
+
+    #[test]
+    fn should_count_review_level_and_file_and_line_comments() {
+        let mut session = test_session();
+        assert_eq!(session.comment_count(), 0);
+
+        session.review_comments.push(Comment::new(
+            "note".to_string(),
+            CommentType::from_id("note"),
+            None,
+        ));
+
+        let path = PathBuf::from("src/main.rs");
+        session.add_file(path.clone(), FileStatus::Modified, SOME_HASH);
+        let file = session.get_file_mut(&path).unwrap();
+        file.add_file_comment(Comment::new(
+            "comment".to_string(),
+            CommentType::from_id("note"),
+            None,
+        ));
+        file.add_line_comment(
+            10,
+            Comment::new("line".to_string(), CommentType::from_id("note"), None),
+        );
+
+        assert_eq!(session.comment_count(), 3);
     }
 
     #[test]
