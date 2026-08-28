@@ -101,6 +101,19 @@ launch_tuicr_pane() {
   printf -v quoted_tuicr '%q' "$tuicr_bin"
   quoted_tuicr="$quoted_tuicr$(tuicr_quote_args "${tuicr_args[@]+"${tuicr_args[@]}"}")"
 
+  # Optional --stdout capture: skips tuicr's save & copy confirm dialog on
+  # exit and writes the exported review straight to a file we print below.
+  local output_file=""
+  local use_stdout=false
+  if tuicr_stdout_supported; then
+    output_file=$(mktemp /tmp/tuicr-output.XXXXXX)
+    quoted_tuicr="$quoted_tuicr --stdout > '$output_file'"
+    use_stdout=true
+    log_info "Using --stdout mode (output will be captured)"
+  else
+    log_warn "tuicr --stdout not supported, output will be copied to clipboard"
+  fi
+
   local completion_suffix="_DONE_$$_${RANDOM}__"
   local completion_token="__TUICR${completion_suffix}"
   # `herdr pane run` injects this string into the pane's *interactive* shell,
@@ -152,6 +165,8 @@ launch_tuicr_pane() {
   else
     log_error "tuicr exited with status $tuicr_status"
   fi
+
+  tuicr_report_stdout_output "$use_stdout" "$output_file"
 
   return "$tuicr_status"
 }

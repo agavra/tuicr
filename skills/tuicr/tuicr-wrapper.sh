@@ -62,11 +62,6 @@ check_tuicr() {
   return 0
 }
 
-check_tuicr_stdout_support() {
-  # Check if tuicr supports --stdout flag
-  tuicr --help 2>&1 | grep -q -- '--stdout'
-}
-
 check_repo() {
   local dir="$1"
   if git -C "$dir" rev-parse --git-dir &> /dev/null; then
@@ -124,7 +119,7 @@ launch_tuicr_pane() {
   local tuicr_cmd="tuicr$(tuicr_quote_args "${tuicr_args[@]+"${tuicr_args[@]}"}")"
   local use_stdout=false
 
-  if check_tuicr_stdout_support; then
+  if tuicr_stdout_supported; then
     output_file=$(mktemp /tmp/tuicr-output.XXXXXX)
     tuicr_cmd="$tuicr_cmd --stdout > '$output_file'"
     use_stdout=true
@@ -150,21 +145,7 @@ launch_tuicr_pane() {
 
   log_info "tuicr finished"
 
-  # Output captured instructions if --stdout was used
-  if [[ "$use_stdout" == true ]] && [[ -f "$output_file" ]]; then
-    if [[ -s "$output_file" ]]; then
-      echo ""
-      echo "=== TUICR INSTRUCTIONS ==="
-      cat "$output_file"
-      echo "=== END TUICR INSTRUCTIONS ==="
-    else
-      log_info "No instructions exported from tuicr"
-      log_info "If you exported to clipboard, paste the instructions here"
-    fi
-    rm -f "$output_file"
-  else
-    log_info "If you exported instructions, they are in your clipboard - paste them here"
-  fi
+  tuicr_report_stdout_output "$use_stdout" "$output_file"
 }
 
 main() {

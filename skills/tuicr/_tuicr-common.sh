@@ -27,3 +27,32 @@ tuicr_quote_args() {
     printf '%s' "$quoted"
   done
 }
+
+# True if the installed tuicr accepts --stdout, which exports the review
+# straight to a file instead of prompting the human to save & copy on exit.
+tuicr_stdout_supported() {
+  tuicr --help 2>&1 | grep -q -- '--stdout'
+}
+
+# Prints the review exported via --stdout, or points the caller at the
+# clipboard when --stdout capture wasn't used. Cleans up output_file either
+# way. Callers must define log_info before invoking this.
+tuicr_report_stdout_output() {
+  local use_stdout="$1"
+  local output_file="$2"
+
+  if [[ "$use_stdout" == true ]] && [[ -f "$output_file" ]]; then
+    if [[ -s "$output_file" ]]; then
+      echo ""
+      echo "=== TUICR INSTRUCTIONS ==="
+      cat "$output_file"
+      echo "=== END TUICR INSTRUCTIONS ==="
+    else
+      log_info "No instructions exported from tuicr"
+      log_info "If you exported to clipboard, paste the instructions here"
+    fi
+    rm -f "$output_file"
+  else
+    log_info "If you exported instructions, they are in your clipboard - paste them here"
+  fi
+}
