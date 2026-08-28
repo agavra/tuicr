@@ -128,7 +128,7 @@ launch_tuicr_pane() {
 
   if check_tuicr_stdout_support; then
     output_file=$(mktemp /tmp/tuicr-output.XXXXXX)
-    tuicr_cmd="tuicr --stdout > '$output_file'"
+    tuicr_cmd="$tuicr_cmd --stdout > '$output_file'"
     use_stdout=true
     log_info "Using --stdout mode (output will be captured)"
   else
