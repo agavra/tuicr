@@ -5,6 +5,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::App;
 use crate::ui::styles;
@@ -73,6 +74,19 @@ fn leader_display(leader: char) -> char {
     } else {
         leader
     }
+}
+
+const COMMENT_MODE_KEY_WIDTH: usize = "Shift-Enter/Alt-Enter/Ctrl-J".len();
+
+fn comment_mode_row(key: &str, description: &str) -> Line<'static> {
+    let padding = COMMENT_MODE_KEY_WIDTH.saturating_sub(key.width());
+    Line::from(vec![
+        Span::styled(
+            format!("  {key}{}", " ".repeat(padding + 1)),
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(description.to_string()),
+    ])
 }
 
 pub fn render_help(frame: &mut Frame, app: &mut App) {
@@ -599,73 +613,22 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
             Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
         )),
         Line::from(""),
-        Line::from(vec![
-            Span::styled(
-                "  Tab/S-Tab ",
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("Cycle comment type next/previous"),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "  Enter     ",
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("Save comment"),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "  Ctrl-S    ",
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("Save comment"),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "  Shift-Enter/Alt-Enter/Ctrl-J",
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("Insert newline"),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "  Ctrl-A/E  ",
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("Line start/end"),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "  Ctrl/Alt-Left/Right",
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("Word left/right"),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "  Cmd-Left/Right",
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("Line start/end (macOS)"),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "  Esc/Ctrl-C",
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("Cancel"),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "  comment_vim",
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(if app.comment_vim_enabled {
+        comment_mode_row("Tab/S-Tab", "Cycle comment type next/previous"),
+        comment_mode_row("Enter", "Save comment"),
+        comment_mode_row("Ctrl-S", "Save comment"),
+        comment_mode_row("Shift-Enter/Alt-Enter/Ctrl-J", "Insert newline"),
+        comment_mode_row("Ctrl-A/E", "Line start/end"),
+        comment_mode_row("Ctrl/Alt-Left/Right", "Word left/right"),
+        comment_mode_row("Cmd-Left/Right", "Line start/end (macOS)"),
+        comment_mode_row("Esc/Ctrl-C", "Cancel"),
+        comment_mode_row(
+            "comment_vim",
+            if app.comment_vim_enabled {
                 "Vim ON (i/a:insert Esc:normal hjkl dd/ciw/x u; S-Enter:save S-Esc:discard :w/:q)"
             } else {
                 "Set comment_vim=true (or :vim) for vim modal editing"
-            }),
-        ]),
+            },
+        ),
         Line::from(""),
         Line::from(Span::styled(
             "Commands",
@@ -1070,5 +1033,31 @@ mod tests {
         let displayed = leader_display(leader);
         // then
         assert_eq!(displayed.width(), Some(1));
+    }
+
+    #[test]
+    fn should_align_comment_mode_descriptions_after_the_key_column() {
+        let keys = [
+            "Tab/S-Tab",
+            "Enter",
+            "Ctrl-S",
+            "Shift-Enter/Alt-Enter/Ctrl-J",
+            "Ctrl-A/E",
+            "Ctrl/Alt-Left/Right",
+            "Cmd-Left/Right",
+            "Esc/Ctrl-C",
+            "comment_vim",
+        ];
+
+        let description_columns: Vec<usize> = keys
+            .iter()
+            .map(|key| {
+                comment_mode_row(key, "description").spans[0]
+                    .content
+                    .width()
+            })
+            .collect();
+
+        assert!(description_columns.iter().all(|&column| column == 31));
     }
 }
