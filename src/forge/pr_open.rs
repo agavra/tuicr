@@ -94,9 +94,11 @@ pub fn fetch_pr_data(backend: &dyn ForgeBackend, target: PullRequestTarget) -> R
     Ok((details, patches, commits, review_metadata, pr_info))
 }
 
-/// CPU-only half of the PR open path: parse the hunks, apply
-/// `.tuicrignore`, and build the session. Runs on the main thread because
-/// `SyntaxHighlighter` is not trivially `Send`-cloneable.
+/// CPU-only half of the PR open path: apply `.tuicrignore` to the raw
+/// patches, then parse the hunks and build the session. Filtering before the
+/// parse keeps an ignored large file from being highlighted at all. Runs on
+/// the main thread because `SyntaxHighlighter` is not trivially
+/// `Send`-cloneable.
 pub fn prepare_open_pr(
     details: PullRequestDetails,
     patches: Vec<FilePatch>,
@@ -106,20 +108,25 @@ pub fn prepare_open_pr(
     local_checkout: Option<&Path>,
     highlighter: &SyntaxHighlighter,
 ) -> Result<OpenedPullRequest> {
-    let parsed = match parse_file_patches(patches, highlighter) {
-        Ok(files) => files,
-        Err(TuicrError::NoChanges) => {
-            return Err(TuicrError::Forge(format!(
-                "Pull request #{} has no file changes",
-                details.number
-            )));
-        }
-        Err(e) => return Err(e),
+    let had_patches = !patches.is_empty();
+    let patches = match local_checkout {
+        Some(root) => tuicrignore::filter_file_patches(root, patches),
+        None => patches,
     };
 
-    let diff_files = match local_checkout {
-        Some(root) => tuicrignore::filter_diff_files(root, parsed),
-        None => parsed,
+    let diff_files = if had_patches && patches.is_empty() {
+        Vec::new()
+    } else {
+        match parse_file_patches(patches, highlighter) {
+            Ok(files) => files,
+            Err(TuicrError::NoChanges) => {
+                return Err(TuicrError::Forge(format!(
+                    "Pull request #{} has no file changes",
+                    details.number
+                )));
+            }
+            Err(e) => return Err(e),
+        }
     };
 
     let key = PrSessionKey::from_details(&details);
@@ -398,5 +405,74 @@ rename to new_name.rs
             msg.contains("Pull request #125 has no file changes"),
             "unexpected error message: {msg}"
         );
+    }
+
+    #[test]
+    fn should_drop_ignored_patches_before_parsing_them() {
+        // given a checkout whose .tuicrignore excludes dist/, and a PR diff
+        // whose ignored patch body is malformed (a hunk header the parser
+        // rejects)
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
+        std::fs::write(dir.path().join(".tuicrignore"), "dist/\n")
+            .expect("failed to write .tuicrignore");
+        let patches = vec![
+            FilePatch::new(
+                None,
+                Some(std::path::PathBuf::from("src/main.rs")),
+                crate::model::FileStatus::Modified,
+                "@@ -1,3 +1,3 @@\n pub fn answer() -> u32 {\n-    41\n+    42\n }\n",
+            ),
+            FilePatch::new(
+                None,
+                Some(std::path::PathBuf::from("dist/bundle.js")),
+                crate::model::FileStatus::Modified,
+                "@@not-a-hunk\n+minified one-liner\n",
+            ),
+        ];
+        let highlighter = SyntaxHighlighter::default();
+        // when
+        let opened = prepare_open_pr(
+            details(),
+            patches,
+            Vec::new(),
+            crate::forge::traits::PullRequestReviewMetadata::default(),
+            crate::forge::traits::PullRequestInfo::from_details(details()),
+            Some(dir.path()),
+            &highlighter,
+        )
+        .expect("ignored patch must never reach the parser");
+        // then only the kept file was parsed into the review
+        let kept: Vec<String> = opened
+            .diff_files
+            .iter()
+            .map(|f| f.display_path().display().to_string())
+            .collect();
+        assert_eq!(kept, vec!["src/main.rs"]);
+    }
+
+    #[test]
+    fn should_open_an_empty_review_when_every_pr_patch_is_ignored() {
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
+        std::fs::write(dir.path().join(".tuicrignore"), "dist/\n")
+            .expect("failed to write .tuicrignore");
+        let highlighter = SyntaxHighlighter::default();
+
+        let opened = prepare_open_pr(
+            details(),
+            vec![FilePatch::new(
+                None,
+                Some(std::path::PathBuf::from("dist/bundle.js")),
+                crate::model::FileStatus::Modified,
+                "@@ -1 +1 @@\n-old\n+new\n",
+            )],
+            Vec::new(),
+            crate::forge::traits::PullRequestReviewMetadata::default(),
+            crate::forge::traits::PullRequestInfo::from_details(details()),
+            Some(dir.path()),
+            &highlighter,
+        )
+        .expect("an ignored-only PR should open as an empty review");
+
+        assert!(opened.diff_files.is_empty());
     }
 }
