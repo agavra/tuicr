@@ -317,7 +317,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  Tab/S-Tab ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Switch Local / Pull Requests tab"),
+            Span::raw("Switch tabs"),
         ]),
         Line::from(vec![
             Span::styled(
@@ -331,7 +331,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  Space     ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Toggle local commit selection (no-op on PR tab)"),
+            Span::raw("Toggle commit selection (Local tab only)"),
         ]),
         Line::from(vec![
             Span::styled(

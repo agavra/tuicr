@@ -538,6 +538,8 @@ impl App {
             pr_list_viewport_height: 0,
             pr_list_inner_area: None,
             pr_filter_draft: None,
+            sessions_tab: crate::app::sessions_tab::SessionsTab::default(),
+            sessions_list_viewport_height: 0,
             pr_load_rx: None,
             pr_open_state: None,
             pr_open_rx: None,

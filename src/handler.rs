@@ -77,6 +77,10 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         CommandKind::Targets(TargetTab::Local),
     ),
     CommandSpec::new(&["prs"], CommandKind::Targets(TargetTab::PullRequests)),
+    CommandSpec::new(
+        &["sessions", "reviews"],
+        CommandKind::Targets(TargetTab::Sessions),
+    ),
     CommandSpec::new(&["submit"], CommandKind::SubmitPicker),
     CommandSpec::new(
         &["submit comment"],
@@ -969,6 +973,10 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
                     app.set_error(format!("Failed to open PR selector: {e}"));
                     CommandAfterDispatch::ExitCommandMode
                 }
+                (TargetTab::Sessions, Err(e)) => {
+                    app.set_error(format!("Failed to open session selector: {e}"));
+                    CommandAfterDispatch::ExitCommandMode
+                }
             }
         }
         CommandKind::SubmitPicker => {
@@ -1275,7 +1283,23 @@ pub fn handle_commit_select_action(app: &mut App, action: Action) {
         other => match app.target_tab {
             TargetTab::Local => handle_local_target_action(app, other),
             TargetTab::PullRequests => handle_pr_target_action(app, other),
+            TargetTab::Sessions => handle_sessions_target_action(app, other),
         },
+    }
+}
+
+fn handle_sessions_target_action(app: &mut App, action: Action) {
+    match action {
+        Action::CommitSelectUp => app.sessions_tab_cursor_up(),
+        Action::CommitSelectDown => app.sessions_tab_cursor_down(),
+        Action::ConfirmCommitSelect => {
+            if let Err(e) = app.sessions_tab_select() {
+                app.set_error(format!("Failed to open session: {e}"));
+            }
+        }
+        // Space is a no-op: sessions are picked, not multi-selected.
+        Action::ToggleCommitSelect => {}
+        _ => {}
     }
 }
 

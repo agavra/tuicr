@@ -182,9 +182,9 @@ impl App {
 
         let commits = self.vcs.get_recent_commits(0, VISIBLE_COMMIT_COUNT)?;
         let no_local_targets = commits.is_empty() && !has_staged_changes && !has_unstaged_changes;
-        // Allow opening the selector on the Pull Requests tab even when there
-        // are no local commits or changes — the PR tab is the user's reason
-        // for being here.
+        // Allow opening the selector on the Pull Requests or Sessions tab even
+        // when there are no local commits or changes — that tab is the user's
+        // reason for being here.
         if no_local_targets && initial_tab == TargetTab::Local {
             self.set_message("No commits or staged/unstaged changes found");
             return Ok(());
@@ -211,9 +211,15 @@ impl App {
         self.pr_filter_draft = None;
         self.pr_load_rx = None;
 
+        // Reset the Sessions tab too, so a resumed review's own session shows
+        // up in the listing rather than a stale snapshot.
+        self.sessions_tab = crate::app::sessions_tab::SessionsTab::default();
+
         self.target_tab = initial_tab;
-        if initial_tab == TargetTab::PullRequests {
-            self.on_target_tab_entered();
+        match initial_tab {
+            TargetTab::PullRequests => self.on_target_tab_entered(),
+            TargetTab::Sessions => self.load_sessions_tab(),
+            TargetTab::Local => {}
         }
         Ok(())
     }
@@ -272,20 +278,29 @@ impl App {
     }
 
     /// Switch to the next/previous tab in the review target selector.
-    /// With only two tabs, forward and reverse are equivalent; the `_forward`
-    /// arg is kept so callers can pass the natural direction without a cast.
-    /// Triggers the lazy PR fetch the first time the PR tab is entered.
-    pub fn cycle_target_tab(&mut self, _forward: bool) {
-        let next = match self.target_tab {
-            TargetTab::Local => TargetTab::PullRequests,
-            TargetTab::PullRequests => TargetTab::Local,
+    /// Triggers the lazy PR fetch the first time the PR tab is entered, and
+    /// lists persisted sessions on entry to the Sessions tab.
+    pub fn cycle_target_tab(&mut self, forward: bool) {
+        let next = match (self.target_tab, forward) {
+            (TargetTab::Local, true) => TargetTab::PullRequests,
+            (TargetTab::PullRequests, true) => TargetTab::Sessions,
+            (TargetTab::Sessions, true) => TargetTab::Local,
+            (TargetTab::Local, false) => TargetTab::Sessions,
+            (TargetTab::Sessions, false) => TargetTab::PullRequests,
+            (TargetTab::PullRequests, false) => TargetTab::Local,
         };
         self.target_tab = next;
-        if next == TargetTab::PullRequests {
-            self.on_target_tab_entered();
-        } else {
-            // Returning to Local: clear any half-typed PR filter draft.
-            self.pr_filter_draft = None;
+        match next {
+            TargetTab::PullRequests => self.on_target_tab_entered(),
+            TargetTab::Sessions => {
+                // Leaving the PR tab: drop any half-typed filter draft.
+                self.pr_filter_draft = None;
+                self.load_sessions_tab();
+            }
+            TargetTab::Local => {
+                // Returning to Local: clear any half-typed PR filter draft.
+                self.pr_filter_draft = None;
+            }
         }
     }
 
@@ -297,6 +312,181 @@ impl App {
             let skip_resolution = self.canonical_resolved;
             self.spawn_pr_initial_load(repo, override_repo, skip_resolution, scope);
         }
+    }
+
+    /// Resolve a session's stored commit ids to [`CommitInfo`] rows in the
+    /// same order, which the range loaders require to be oldest-first.
+    ///
+    /// `ReviewSession::commit_range` is written oldest-first by
+    /// `confirm_commit_selection_inner` (it reverses the newest-first display
+    /// list), and `commit_list_range_trees` reads `[0]` as the oldest and
+    /// `last()` as the newest. So the stored order is already the order the
+    /// loaders want and must be passed through unchanged — reversing it here
+    /// inverts the diff, turning added lines into deletions.
+    ///
+    /// Resolution is by direct id lookup, not a history walk: a saved range can
+    /// sit on another branch or far past any page of recent commits, and those
+    /// commits are still addressable. `None` means at least one id no longer
+    /// resolves — amended or rebased since the session was written — which the
+    /// caller reports rather than loading a partial range.
+    fn resolve_session_commits(&self, ids: &[String]) -> Result<Option<Vec<CommitInfo>>> {
+        let resolved = match self.vcs.get_commits_info(ids) {
+            Ok(resolved) => resolved,
+            // Backends report an unknown id as a command error; that is the
+            // "no longer reachable" case, not a failure to surface.
+            Err(TuicrError::VcsCommand(_)) => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        if resolved.len() != ids.len() {
+            return Ok(None);
+        }
+        Ok(Some(resolved))
+    }
+
+    /// List persisted sessions for this checkout. Synchronous: this reads the
+    /// review manifest, so there is no network call to defer.
+    ///
+    /// Sessions with neither comments nor reviewed state are hidden because
+    /// they hold no review progress to resume. A clean quit removes them
+    /// (`delete_session_if_empty`); a crash can leave one behind.
+    pub fn load_sessions_tab(&mut self) {
+        let root = self.vcs_info.root_path.clone();
+        let result = crate::review_store::ReviewStore::new()
+            .list_sessions_for_repo(&root)
+            .map(|sessions| sessions.into_iter().filter(Self::is_resumable).collect())
+            .map_err(|e| e.to_string());
+        self.sessions_tab
+            .set_scope(Self::checkout_display_name(&root));
+        self.sessions_tab.apply_load(result);
+    }
+
+    /// Whether a listed session holds review progress worth resuming.
+    pub(in crate::app) fn is_resumable(summary: &crate::review_store::SessionSummary) -> bool {
+        summary.comment_count > 0 || summary.reviewed_count > 0
+    }
+
+    /// `owner/repo` for a checkout, falling back to the directory name when it
+    /// has no origin remote. Resolved once per listing: it reaches git2
+    /// repository discovery, so it must stay out of the render path.
+    fn checkout_display_name(root: &Path) -> String {
+        crate::slug::RepoCoordinate::from_repo_path(root)
+            .map(|coordinate| match coordinate.owner {
+                Some(owner) => format!("{owner}/{}", coordinate.repo),
+                None => coordinate.repo,
+            })
+            .or_else(|| {
+                root.file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+            })
+            .unwrap_or_else(|| root.display().to_string())
+    }
+
+    pub fn sessions_tab_cursor_up(&mut self) {
+        self.sessions_tab.cursor_up();
+        let height = self.sessions_list_viewport_height;
+        self.sessions_tab.ensure_cursor_visible(height);
+    }
+
+    pub fn sessions_tab_cursor_down(&mut self) {
+        self.sessions_tab.cursor_down();
+        let height = self.sessions_list_viewport_height;
+        self.sessions_tab.ensure_cursor_visible(height);
+    }
+
+    /// Open the session under the cursor with its stored `diff_source` and
+    /// `commit_range`, which is what the user would otherwise have to retype as
+    /// `-r` / `-w` flags.
+    ///
+    /// PR sessions need the forge round-trip the Pull Requests tab owns, so
+    /// selecting one points there instead.
+    pub fn sessions_tab_select(&mut self) -> Result<()> {
+        let Some(summary) = self.sessions_tab.cursor_session() else {
+            return Ok(());
+        };
+        if matches!(summary.kind, crate::review_store::SessionKind::Pr) {
+            self.set_message("PR sessions open from the Pull Requests tab");
+            return Ok(());
+        }
+
+        let session = match crate::persistence::storage::load_session(summary.session_ref.path()) {
+            Ok(session) => session,
+            Err(e) => {
+                self.set_error(format!("Failed to load session: {e}"));
+                return Ok(());
+            }
+        };
+
+        let loaded = match session.diff_source {
+            SessionDiffSource::CommitRange => {
+                let Some(commits) = self.session_range_commits(&session)? else {
+                    return Ok(());
+                };
+                let ordered_ids = commits.iter().map(|c| c.id.clone()).collect();
+                self.load_commit_range_selection(ordered_ids, commits)
+            }
+            SessionDiffSource::WorkingTree => self.load_working_tree_selection(),
+            SessionDiffSource::Unstaged => self.load_unstaged_selection(),
+            SessionDiffSource::Staged => self.load_staged_selection(),
+            SessionDiffSource::StagedAndUnstaged => self.load_staged_and_unstaged_selection(),
+            SessionDiffSource::WorkingTreeAndCommits
+            | SessionDiffSource::StagedUnstagedAndCommits => {
+                let Some(commits) = self.session_range_commits(&session)? else {
+                    return Ok(());
+                };
+                let ordered_ids = commits.iter().map(|c| c.id.clone()).collect();
+                self.load_staged_unstaged_and_commits_selection(ordered_ids, commits)
+            }
+            SessionDiffSource::Pristine => {
+                self.set_message("Restart tuicr with --all-files to open this review.");
+                return Ok(());
+            }
+            SessionDiffSource::PullRequest => {
+                self.set_message("Open PR sessions from the Pull Requests tab.");
+                return Ok(());
+            }
+        };
+        loaded?;
+
+        // The loaders resolve a session from the *current* branch and HEAD, so
+        // they can hand back a different session than the row that was picked
+        // — a range saved on another branch, or an older working-tree session.
+        // Install the selected one and keep its comments and reviewed state.
+        self.install_resumed_session(session);
+        Ok(())
+    }
+
+    /// Commits for a session's stored range, or `None` after reporting why the
+    /// range cannot be restored.
+    fn session_range_commits(
+        &mut self,
+        session: &ReviewSession,
+    ) -> Result<Option<Vec<CommitInfo>>> {
+        let Some(ids) = session.commit_range.clone().filter(|ids| !ids.is_empty()) else {
+            self.set_error("Can't restore this review: it has no saved commit range.".to_string());
+            return Ok(None);
+        };
+        let Some(commits) = self.resolve_session_commits(&ids)? else {
+            self.set_error(
+                "Can't restore this review: one or more saved commits aren't in the current \
+                 history. Switch to the review's branch and try again."
+                    .to_string(),
+            );
+            return Ok(None);
+        };
+        Ok(Some(commits))
+    }
+
+    /// Adopt the session the user selected, carrying over the diff files the
+    /// loader just resolved so reviewed state and comments still line up.
+    fn install_resumed_session(&mut self, session: ReviewSession) {
+        self.session = session;
+        let diff_files = std::mem::take(&mut self.diff_files);
+        for file in &diff_files {
+            self.session.add_diff_file(file);
+        }
+        self.diff_files = diff_files;
+        self.reset_persisted_session_tracking();
+        self.rebuild_annotations();
     }
 
     /// Whether the inline commit selector panel should be displayed.
@@ -709,6 +899,17 @@ impl App {
             return self.load_unstaged_selection();
         }
 
+        self.load_commit_range_selection(selected_ids, selected_commits)
+    }
+
+    /// Load a commit-range review from ids ordered oldest-to-newest, together
+    /// with the commit rows that produced them. Installs the matching persisted
+    /// session and resets the commit selector and navigation state.
+    fn load_commit_range_selection(
+        &mut self,
+        selected_ids: Vec<String>,
+        selected_commits: Vec<CommitInfo>,
+    ) -> Result<()> {
         // Get the diff for the selected commits
         let highlighter = self.theme.syntax_highlighter();
         let diff_files = Self::get_commit_range_diff_with_ignore(

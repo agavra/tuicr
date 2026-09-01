@@ -766,12 +766,12 @@ pub enum FocusedPanel {
 
 /// Active tab in the review target selector.
 ///
-/// The selector internally still goes through `InputMode::CommitSelect`,
-/// but it shows two tabs to the user.
+/// The selector internally still goes through `InputMode::CommitSelect`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TargetTab {
     Local,
     PullRequests,
+    Sessions,
 }
 
 /// Background-thread events that the PR tab consumes through `pr_load_rx`.
@@ -1212,6 +1212,10 @@ pub struct App {
     /// When `Some`, the user is editing the local PR filter. Captured keys
     /// update this draft; pressing Enter commits it to the tab state.
     pub pr_filter_draft: Option<String>,
+    /// State for the Sessions tab: persisted reviews for this checkout.
+    pub sessions_tab: crate::app::sessions_tab::SessionsTab,
+    /// Viewport height of the session list (set during render).
+    pub sessions_list_viewport_height: usize,
     /// Background-thread channel that delivers PR list fetch results.
     /// `Receiver` is only present while a fetch is in flight.
     pub pr_load_rx: Option<std::sync::mpsc::Receiver<PrLoadEvent>>,
@@ -1772,6 +1776,7 @@ mod pr;
 mod reviewed;
 mod search;
 mod session;
+pub mod sessions_tab;
 mod submit;
 mod tree;
 mod visual;

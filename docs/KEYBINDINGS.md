@@ -199,6 +199,7 @@ In command mode,
 | `:diff` | Toggle diff view (unified / side-by-side) |
 | `:vim` / `:novim` (`:set vim` / `:set novim`) | Enable/toggle/disable vim modal editing in the comment box (overrides `comment_vim`) |
 | `:commits` | Select commits to review |
+| `:sessions` (`:reviews`) | Resume a saved review for this checkout |
 | `:submit` | Open submit picker (Comment / Approve / Request changes / Draft) |
 | `:submit comment` | Submit a Comment review |
 | `:submit approve` | Submit an Approve review |
@@ -242,14 +243,19 @@ losing their reviewed state.
 
 | Key | Action |
 |-----|--------|
-| `Tab` / `Shift-Tab` | Switch between Local and Pull Requests tabs |
+| `Tab` / `Shift-Tab` | Switch between Local, Pull Requests, and Sessions tabs |
 | `j` / `k` | Move selection |
 | `Space` | Toggle local commit selection |
-| `Enter` | Confirm local commit range, open PR, or load more PRs |
+| `Enter` | Confirm local commit range, open PR, load more PRs, or resume a saved review |
 | `/` | Filter currently loaded PR rows locally |
 | `r` | In Pull Requests tab, toggle all open PRs / PRs requesting your review |
 | `Esc` | Return to the diff |
 | `:q` | Quit |
+
+The Sessions tab lists saved reviews for the current checkout, so you can pick one
+instead of retyping the commit range it was opened with. Rows show the review target,
+comment count, reviewed files, and age. Reviews with no comments and no reviewed files
+are omitted. PR sessions open from the Pull Requests tab.
 
 ## Inline commit selector
 

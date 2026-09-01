@@ -6,7 +6,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
 };
 
-use crate::app::{App, TargetTab};
+use crate::app::{App, TargetTab, sessions_tab};
 use crate::forge::selector::{PrTabStatus, PrTabView};
 use crate::forge::traits::PullRequestListScope;
 use crate::ui::commit_row::{
@@ -18,6 +18,7 @@ use crate::ui::text_utils::truncate_or_pad;
 
 const TAB_LOCAL: &str = "Local";
 const TAB_PULL_REQUESTS: &str = "Pull Requests";
+const TAB_SESSIONS: &str = "Sessions";
 
 pub(super) fn render_commit_select(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
@@ -36,16 +37,24 @@ pub(super) fn render_commit_select(frame: &mut Frame, app: &mut App) {
     render_top_bar(frame, app, chunks[0]);
 
     let body_area = chunks[1];
-    let body_block = Block::default()
+    let mut body_block = Block::default()
         .borders(Borders::ALL)
         .border_style(styles::border_style(&app.theme, true))
         .style(styles::panel_style(&app.theme));
+    // The Sessions tab lists only this checkout's reviews, which is not
+    // obvious from rows whose slug is trimmed to the review target. Name the
+    // scope in the border title rather than spending a row or slug width on a
+    // repo that is the same for every row.
+    if app.target_tab == TargetTab::Sessions {
+        body_block = body_block.title(format!(" Reviews \u{00b7} {} ", app.sessions_tab.scope()));
+    }
     let inner = body_block.inner(body_area);
     frame.render_widget(body_block, body_area);
 
     match app.target_tab {
         TargetTab::Local => render_local_target_tab(frame, app, inner),
         TargetTab::PullRequests => render_pull_requests_tab(frame, app, inner),
+        TargetTab::Sessions => render_sessions_tab(frame, app, inner),
     }
 
     render_target_selector_footer(frame, app, chunks[2]);
@@ -60,6 +69,7 @@ fn render_top_bar(frame: &mut Frame, app: &App, area: Rect) {
     let active = app.target_tab;
     let local_active = active == TargetTab::Local;
     let pr_active = active == TargetTab::PullRequests;
+    let sessions_active = active == TargetTab::Sessions;
 
     let strip_bg = theme.status_bar_bg;
     let strip_style = Style::default().bg(strip_bg).fg(theme.fg_dim);
@@ -92,11 +102,28 @@ fn render_top_bar(frame: &mut Frame, app: &App, area: Rect) {
             inactive_chip
         },
     ));
+    spans.push(Span::styled(" ".to_string(), strip_style));
+    spans.push(Span::styled(
+        format!(" {TAB_SESSIONS} "),
+        if sessions_active {
+            active_chip
+        } else {
+            inactive_chip
+        },
+    ));
 
     let left_width: usize = spans.iter().map(|s| s.content.chars().count()).sum();
 
     let (right_span, right_width) = match active {
         TargetTab::PullRequests => pr_status_hint_span(app, strip_bg),
+        TargetTab::Sessions => {
+            let count = app.sessions_tab.rows().len();
+            // `<n> saved`, not `<n> sessions`: mirrors the PR tab's
+            // `<n> loaded` and stays correct at a count of one.
+            let content = format!(" {count} saved ");
+            let width = content.chars().count();
+            (Span::styled(content, strip_style), width)
+        }
         TargetTab::Local => {
             let vcs_type = &app.vcs_info.vcs_type;
             let branch = app.vcs_info.branch_name.as_deref().unwrap_or("detached");
@@ -242,6 +269,102 @@ fn render_pull_requests_tab(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let view = app.pr_tab.view();
     render_pr_list(frame, app, area, &view);
+}
+
+/// Persisted review sessions for this checkout, newest first. Rows mirror the
+/// PR tab's column layout: cursor, kind, slug, then a dim metadata tail.
+fn render_sessions_tab(frame: &mut Frame, app: &mut App, area: Rect) {
+    app.commit_list_inner_area = None;
+    app.pr_list_inner_area = None;
+    app.sessions_list_viewport_height = area.height as usize;
+
+    let theme = &app.theme;
+    if area.height == 0 {
+        return;
+    }
+
+    if let Some(error) = app.sessions_tab.error() {
+        let line = Line::from(vec![
+            Span::styled("  error \u{00b7} ", styles::error_inline_style(theme)),
+            Span::styled(
+                format!("Failed to list saved reviews: {error}"),
+                Style::default().fg(theme.fg_primary),
+            ),
+        ]);
+        frame.render_widget(
+            Paragraph::new(vec![line]).style(styles::panel_style(theme)),
+            area,
+        );
+        return;
+    }
+
+    if app.sessions_tab.is_empty() {
+        let line = Line::from(Span::styled(
+            "  No saved reviews for this checkout",
+            Style::default().fg(theme.fg_dim),
+        ));
+        frame.render_widget(
+            Paragraph::new(vec![line]).style(styles::panel_style(theme)),
+            area,
+        );
+        return;
+    }
+
+    let height = area.height as usize;
+    let scroll = app.sessions_tab.scroll();
+    let cursor = app.sessions_tab.cursor();
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, row) in app
+        .sessions_tab
+        .rows()
+        .iter()
+        .enumerate()
+        .skip(scroll)
+        .take(height)
+    {
+        let is_cursor = i == cursor;
+        let pointer_str = if is_cursor {
+            format!("{CURSOR_GLYPH} ")
+        } else {
+            "  ".to_string()
+        };
+        let pointer_style = if is_cursor {
+            styles::selected_style(theme)
+        } else {
+            Style::default().fg(theme.fg_secondary)
+        };
+
+        let kind = truncate_or_pad(sessions_tab::kind_label(row.kind), 5);
+        // Omit the repeated `owner/repo@` prefix so the target stays visible
+        // when the row is truncated. The border title names the repository.
+        let target = row
+            .slug
+            .split_once('@')
+            .map_or(row.slug.as_str(), |(_, rest)| rest);
+        let slug = truncate_or_pad(target, 60);
+        let updated = format_relative_short(&row.updated_at);
+        let active = if row.active { " \u{00b7} open" } else { "" };
+
+        lines.push(Line::from(vec![
+            Span::styled(pointer_str, pointer_style),
+            Span::styled("  ", Style::default()),
+            Span::styled(kind, styles::hash_style(theme)),
+            Span::styled(" ", Style::default()),
+            Span::styled(slug, Style::default().fg(theme.fg_primary)),
+            Span::styled(
+                format!(
+                    "  {} comments \u{00b7} {}/{} files \u{00b7} {}{}",
+                    row.comment_count, row.reviewed_count, row.file_count, updated, active
+                ),
+                Style::default().fg(theme.fg_secondary),
+            ),
+        ]));
+    }
+
+    frame.render_widget(
+        Paragraph::new(lines).style(styles::panel_style(theme)),
+        area,
+    );
 }
 
 fn render_pr_list(frame: &mut Frame, app: &App, area: Rect, view: &PrTabView<'_>) {
@@ -429,6 +552,7 @@ fn render_target_selector_footer(frame: &mut Frame, app: &App, area: Rect) {
                 };
                 format!("   j/k navigate · ↵ open · {scope_hint} · / filter · esc back")
             }
+            TargetTab::Sessions => "   j/k navigate · ↵ resume · esc back".to_string(),
         }
     };
     let hints_span = Span::styled(hints, Style::default().fg(theme.fg_secondary));
@@ -480,6 +604,7 @@ mod selector_render_snapshot_tests {
     use crate::forge::selector::PullRequestsTab;
     use crate::forge::traits::{ForgeRepository, PullRequestSummary};
     use crate::model::{DiffFile, DiffLine, FileStatus, ReviewSession, SessionDiffSource};
+    use crate::review_store::SessionSummary;
     use crate::syntax::SyntaxHighlighter;
     use crate::theme::Theme;
     use crate::ui::render;
@@ -692,10 +817,12 @@ mod selector_render_snapshot_tests {
         let highlight_bg = app.theme.bg_highlight;
         // when
         let buffer = draw(&mut app);
-        // then — tab strip shows both labels in the single bg-filled row
+        // then — tab strip shows every label in the single bg-filled row
         let strip = row_text(&buffer, TAB_STRIP_ROW);
         assert!(
-            strip.contains("Local") && strip.contains("Pull Requests"),
+            strip.contains("Local")
+                && strip.contains("Pull Requests")
+                && strip.contains("Sessions"),
             "tab strip missing labels: {strip:?}"
         );
         // and — the active "Local" chip carries the highlight bg
@@ -842,6 +969,121 @@ mod selector_render_snapshot_tests {
         assert!(
             footer.contains("Failed to load commits"),
             "expected status message in selector footer, got: {footer:?}"
+        );
+    }
+
+    fn session_summary(slug: &str, comments: usize, active: bool) -> SessionSummary {
+        SessionSummary {
+            session_ref: crate::review_store::SessionRef::from_path("/tmp/s.json"),
+            slug: slug.to_string(),
+            kind: crate::review_store::SessionKind::Local,
+            updated_at: Utc.with_ymd_and_hms(2026, 5, 1, 0, 0, 0).unwrap(),
+            comment_count: comments,
+            reviewed_count: 1,
+            file_count: 3,
+            anchor: "main".to_string(),
+            active,
+        }
+    }
+
+    #[test]
+    fn should_render_session_rows_with_slug_and_comment_count() {
+        // given — the Sessions tab with one saved review
+        let mut app = make_app(vec![commit(0)]);
+        app.sessions_tab.apply_load(Ok(vec![session_summary(
+            "repo@main/commits/aaa..bbb",
+            7,
+            true,
+        )]));
+        app.target_tab = crate::app::TargetTab::Sessions;
+        // when
+        let buffer = draw(&mut app);
+        // then — the slug's target segment carries the review scope, so it
+        // must be visible (the repo prefix lives in the border title)
+        let body = (2..buffer.area.height)
+            .map(|y| row_text(&buffer, y))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            body.contains("main/commits/aaa..bbb"),
+            "expected the review target in body:\n{body}"
+        );
+        assert!(
+            body.contains("7 comments"),
+            "expected comment count in body:\n{body}"
+        );
+        assert!(
+            body.contains("open"),
+            "expected the active marker in body:\n{body}"
+        );
+    }
+
+    #[test]
+    fn should_name_the_checkout_in_the_sessions_border_title() {
+        // given — the tab lists only this checkout's reviews, which the rows
+        // no longer say now that the repo prefix is trimmed off the slug
+        let mut app = make_app(vec![commit(0)]);
+        app.sessions_tab.set_scope("owner/repo".to_string());
+        app.sessions_tab.apply_load(Ok(vec![session_summary(
+            "repo@main/commits/aaa..bbb",
+            7,
+            true,
+        )]));
+        app.target_tab = crate::app::TargetTab::Sessions;
+        // when
+        let buffer = draw(&mut app);
+        // then — the scope is on the border, costing no row
+        let border = row_text(&buffer, 1);
+        assert!(
+            border.contains("Reviews \u{00b7} owner/repo"),
+            "expected a scope title on the body border, got: {border:?}"
+        );
+    }
+
+    #[test]
+    fn should_trim_the_repo_prefix_from_session_rows() {
+        // given — a slug whose repo prefix is long enough to push the commit
+        // range past the row's truncation point
+        let mut app = make_app(vec![commit(0)]);
+        app.sessions_tab.apply_load(Ok(vec![session_summary(
+            "fairinternal/ai-verification-leanified-hl@main/commits/e4b5941..8b2838d",
+            7,
+            false,
+        )]));
+        app.target_tab = crate::app::TargetTab::Sessions;
+        // when
+        let buffer = draw(&mut app);
+        // then — the target survives, the redundant prefix does not
+        let body = (2..buffer.area.height)
+            .map(|y| row_text(&buffer, y))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            body.contains("main/commits/e4b5941..8b2838d"),
+            "the commit range is what rows are told apart by, body:\n{body}"
+        );
+        assert!(
+            !body.contains("fairinternal/ai-verification-leanified-hl@"),
+            "repo prefix is in the border title, not on every row, body:\n{body}"
+        );
+    }
+
+    #[test]
+    fn should_render_empty_state_when_no_saved_sessions() {
+        // given
+        let mut app = make_app(vec![commit(0)]);
+        app.sessions_tab.apply_load(Ok(Vec::new()));
+        app.target_tab = crate::app::TargetTab::Sessions;
+        // when
+        let buffer = draw(&mut app);
+        // then
+        let body = (2..buffer.area.height)
+            .map(|y| row_text(&buffer, y))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            body.contains("No saved reviews"),
+            "expected empty state, body:\n{body}"
         );
     }
 
