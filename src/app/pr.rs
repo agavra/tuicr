@@ -413,22 +413,23 @@ impl App {
         use crate::vcs::diff_parser::parse_file_patches;
 
         let highlighter = self.theme.syntax_highlighter();
+        let local_checkout = self
+            .forge_backend
+            .as_deref()
+            .and_then(|b| b.local_checkout_path());
+        // Filter before parsing so an ignored large file is never
+        // highlighted, exactly as in `prepare_open_pr`.
+        let patches = match local_checkout.as_deref() {
+            Some(root) => crate::tuicrignore::filter_file_patches(root, patches),
+            None => patches,
+        };
         let parsed = match parse_file_patches(patches, highlighter) {
             Ok(files) => files,
             Err(TuicrError::NoChanges) => Vec::new(),
             Err(e) => return Err(e),
         };
 
-        let local_checkout = self
-            .forge_backend
-            .as_deref()
-            .and_then(|b| b.local_checkout_path());
-        let files = match local_checkout.as_deref() {
-            Some(root) => crate::tuicrignore::filter_diff_files(root, parsed),
-            None => parsed,
-        };
-
-        self.diff_files = files;
+        self.diff_files = parsed;
         self.clear_expanded_gaps();
         // Range diffs can hide hunks that are still reviewed in the broader
         // PR session, so registration must not prune them.
