@@ -432,21 +432,12 @@ fn forge_badge_label(kind: Option<ForgeKind>) -> &'static str {
     }
 }
 
-/// Format a comment as multiple lines with a box border (themed version).
-///
-/// `author` advertises the comment's author in the top-row badge and tints
-/// the box border. Callers pass `Some(name)` for non-self comments — the
-/// resulting badge reads `[TYPE @name]`, mirroring the remote forge badge
-/// format used for remote PR threads. `None` keeps the existing neutral
-/// `[TYPE]` badge and theme border.
-/// Render `content` as markdown-highlighted, border-prefixed, pre-wrapped lines
-/// (no cursor). Colors come from the active syntect theme. Used for displayed
-/// comment bodies; the editor box does its own variant with cursor handling.
-fn markdown_body_lines(
+/// Render `content` as markdown-highlighted, pre-wrapped lines. Colors come
+/// from the active syntect theme.
+pub(crate) fn markdown_body_lines(
     theme: &Theme,
     content: &str,
     content_area: usize,
-    border_style: Style,
 ) -> Vec<Line<'static>> {
     let lines: Vec<&str> = content.split('\n').collect();
     // Highlight the body as a whole so multi-line constructs (e.g. fenced code)
@@ -459,15 +450,22 @@ fn markdown_body_lines(
         let mut seg_start = 0usize;
         for seg in wrap_segments(text, content_area) {
             let seg_end = seg_start + seg.len();
-            let mut spans = vec![Span::styled(BORDER_PREFIX, border_style)];
-            spans.extend(highlighted_window_spans(runs, text, seg_start, seg_end));
-            out.push(Line::from(spans));
+            out.push(Line::from(highlighted_window_spans(
+                runs, text, seg_start, seg_end,
+            )));
             seg_start = seg_end;
         }
     }
     out
 }
 
+/// Format a comment as multiple lines with a box border (themed version).
+///
+/// `author` advertises the comment's author in the top-row badge and tints
+/// the box border. Callers pass `Some(name)` for non-self comments — the
+/// resulting badge reads `[TYPE @name]`, mirroring the remote forge badge
+/// format used for remote PR threads. `None` keeps the existing neutral
+/// `[TYPE]` badge and theme border.
 pub fn format_comment_lines(
     theme: &Theme,
     comment_type: CommentTypePresentation,
@@ -522,12 +520,12 @@ pub fn format_comment_lines(
     ]));
 
     // Content lines — markdown-highlighted, pre-wrapped at content_area.
-    result.extend(markdown_body_lines(
-        theme,
-        content,
-        content_area,
-        border_style,
-    ));
+    let mut body_lines = markdown_body_lines(theme, content, content_area);
+    for line in &mut body_lines {
+        line.spans
+            .insert(0, Span::styled(BORDER_PREFIX, border_style));
+    }
+    result.extend(body_lines);
 
     // Bottom border — "    ╰" = 5 chars, fill to width
     result.push(Line::from(vec![Span::styled(
