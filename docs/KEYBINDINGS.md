@@ -168,7 +168,16 @@ editor back into the blocking behaviour.
 | `←` / `→` | Move cursor |
 | `Ctrl-w` / `Alt-Backspace` / `Cmd-Backspace` | Delete word |
 | `Ctrl-u` | Clear line |
+| `Ctrl-o` | Compose the draft in `$EDITOR` |
 | `Esc` / `Ctrl-c` | Cancel |
+
+`Ctrl-o` hands the draft to `$EDITOR` as a temporary Markdown file laid out like
+a `git commit` buffer: the comment body at the top, and the hunk being commented
+on below a `# ------ >8 ------` scissors line as `#`-prefixed context. Only the
+text above the scissors comes back, so `#` headings in the body are kept as
+typed. Saving an empty body leaves the draft as it was. Windowed editors
+(`code`, `cursor`, `zed`, …) are launched with `--wait`, because the draft cannot
+be read back until the editor exits.
 
 With `comment_vim = true` the box uses [`edtui`](https://github.com/preiter93/edtui)
 modal editing (Normal/Insert/Visual: `hjkl`, `w`/`b`/`e`, `dd`/`D`/`ciw`/`x`,

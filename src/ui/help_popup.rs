@@ -650,6 +650,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  Ctrl-O    ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Compose the draft in $EDITOR (with the hunk as context)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  Esc/Ctrl-C",
                 Style::default().add_modifier(Modifier::BOLD),
             ),

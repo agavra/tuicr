@@ -45,6 +45,9 @@ pub enum Action {
     EditCommentAtEnd,
     PendingDCommand,
     EditFile,
+    /// Comment mode: hand the draft to `$EDITOR` with the commented hunk as
+    /// context.
+    EditCommentDraft,
     SearchNext,
     SearchPrev,
     ClearSearchHighlight,
@@ -311,6 +314,9 @@ fn map_comment_mode(key: KeyEvent) -> Action {
         // Char('\t') instead of KeyCode::Tab.
         (KeyCode::Tab, _) | (KeyCode::Char('\t'), _) => Action::CycleCommentType,
         (KeyCode::BackTab, _) => Action::CycleCommentTypeReverse,
+        // Compose the draft in `$EDITOR`. Ctrl-o rather than Ctrl-e, which is
+        // already end-of-line here.
+        (KeyCode::Char('o'), KeyModifiers::CONTROL) => Action::EditCommentDraft,
         // Cursor movement
         (KeyCode::Char('a'), KeyModifiers::CONTROL) => Action::TextCursorLineStart,
         (KeyCode::Char('e'), KeyModifiers::CONTROL) => Action::TextCursorLineEnd,
@@ -751,6 +757,18 @@ mod tests {
     fn should_map_lowercase_e_to_edit_file_in_normal_mode() {
         let action = map_normal_mode(key(KeyCode::Char('e')), DEFAULT_LEADER_KEY);
         assert_eq!(action, Action::EditFile);
+    }
+
+    #[test]
+    fn should_map_ctrl_o_to_editor_handoff_in_comment_mode() {
+        let action = map_comment_mode(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL));
+        assert_eq!(action, Action::EditCommentDraft);
+    }
+
+    #[test]
+    fn should_keep_ctrl_e_as_line_end_in_comment_mode() {
+        let action = map_comment_mode(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL));
+        assert_eq!(action, Action::TextCursorLineEnd);
     }
 
     #[test]

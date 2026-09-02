@@ -634,6 +634,7 @@ fn main() -> anyhow::Result<()> {
                     if app.input_mode == InputMode::Comment && app.comment_vim_enabled {
                         app.ensure_comment_vim_editor();
                         if handle_comment_vim_key(&mut app, key) {
+                            run_pending_editors(&mut app, &mut terminal);
                             continue;
                         }
                     }
@@ -739,47 +740,7 @@ fn main() -> anyhow::Result<()> {
                     }
 
                     dispatch_action(&mut app, action);
-                    if let Some(target) = app.take_pending_editor_target() {
-                        match run_editor_from_tui(&mut terminal, &target) {
-                            // The editor is still open, so there is nothing to
-                            // pick up yet; the user reloads once they are done.
-                            Ok(Ok(EditorOutcome::Detached(launch))) => {
-                                app.track_editor_launch(launch);
-                                let hint = if app.diff_source.includes_worktree_changes() {
-                                    " (:e to reload)"
-                                } else {
-                                    ""
-                                };
-                                app.set_message(format!("Opened {}{hint}", target.path.display()));
-                            }
-                            Ok(Ok(EditorOutcome::Finished)) => {
-                                if app.diff_source.includes_worktree_changes() {
-                                    match app.reload_diff_files() {
-                                        Ok((count, invalidated)) => {
-                                            let invalidated_suffix = if invalidated > 0 {
-                                                format!(", {invalidated} changed since last review")
-                                            } else {
-                                                String::new()
-                                            };
-                                            app.set_message(format!(
-                                                "Opened {} and reloaded {count} files{invalidated_suffix}",
-                                                target.path.display()
-                                            ));
-                                        }
-                                        Err(err) => {
-                                            app.set_error(format!(
-                                                "Reload after editor failed: {err}"
-                                            ));
-                                        }
-                                    }
-                                } else {
-                                    app.set_message(format!("Opened {}", target.path.display()));
-                                }
-                            }
-                            Ok(Err(err)) => app.set_error(err.to_string()),
-                            Err(err) => app.set_error(format!("Failed to restore terminal: {err}")),
-                        }
-                    }
+                    run_pending_editors(&mut app, &mut terminal);
                 }
                 Event::Mouse(mouse_event) => handle_mouse_event(&mut app, mouse_event),
                 Event::Paste(text) => {
@@ -914,6 +875,8 @@ fn handle_comment_vim_key(app: &mut App, key: crossterm::event::KeyEvent) -> boo
         // Save shortcut in any mode (Ctrl-C cancel is handled earlier).
         KeyCode::Char('s') if ctrl => app.save_comment(),
         KeyCode::Enter if ctrl => app.save_comment(),
+        // Compose the draft in `$EDITOR`, as in the non-vim comment box.
+        KeyCode::Char('o') if ctrl => app.queue_comment_draft_editor(),
         // Tab cycles the comment type in Normal mode; in Insert it inserts a
         // soft tab (`comment_tab_width` spaces).
         KeyCode::Tab | KeyCode::Char('\t') if normal => app.cycle_comment_type(),
@@ -925,6 +888,59 @@ fn handle_comment_vim_key(app: &mut App, key: crossterm::event::KeyEvent) -> boo
         _ => app.comment_vim_feed_key(key),
     }
     true
+}
+
+/// Runs any editor handoff queued by the action just dispatched.
+///
+/// `App` cannot do this itself: both handoffs need the terminal, which the
+/// event loop owns.
+fn run_pending_editors<W: Write>(app: &mut App, terminal: &mut TerminalSession<W>) {
+    if let Some(target) = app.take_pending_editor_target() {
+        match run_editor_from_tui(terminal, &target) {
+            // The editor is still open, so there is nothing to
+            // pick up yet; the user reloads once they are done.
+            Ok(Ok(EditorOutcome::Detached(launch))) => {
+                app.track_editor_launch(launch);
+                let hint = if app.diff_source.includes_worktree_changes() {
+                    " (:e to reload)"
+                } else {
+                    ""
+                };
+                app.set_message(format!("Opened {}{hint}", target.path.display()));
+            }
+            Ok(Ok(EditorOutcome::Finished)) => {
+                if app.diff_source.includes_worktree_changes() {
+                    match app.reload_diff_files() {
+                        Ok((count, invalidated)) => {
+                            let invalidated_suffix = if invalidated > 0 {
+                                format!(", {invalidated} changed since last review")
+                            } else {
+                                String::new()
+                            };
+                            app.set_message(format!(
+                                "Opened {} and reloaded {count} files{invalidated_suffix}",
+                                target.path.display()
+                            ));
+                        }
+                        Err(err) => {
+                            app.set_error(format!("Reload after editor failed: {err}"));
+                        }
+                    }
+                } else {
+                    app.set_message(format!("Opened {}", target.path.display()));
+                }
+            }
+            Ok(Err(err)) => app.set_error(err.to_string()),
+            Err(err) => app.set_error(format!("Failed to restore terminal: {err}")),
+        }
+    }
+    if let Some(buffer) = app.take_pending_comment_draft() {
+        match edit_comment_draft_from_tui(terminal, &buffer) {
+            Ok(Ok(edited)) => app.apply_comment_draft(&edited),
+            Ok(Err(err)) => app.set_error(err.to_string()),
+            Err(err) => app.set_error(format!("Comment draft handoff failed: {err}")),
+        }
+    }
 }
 
 /// How the editor handoff ended, so the caller knows whether the file could
@@ -950,6 +966,41 @@ fn run_editor_from_tui<W: Write>(
     let editor_result = tuicr::editor::run_editor(&command);
     suspension.resume()?;
     Ok(editor_result.map(|()| EditorOutcome::Finished))
+}
+
+/// Hands a comment draft to the editor and reads the edited buffer back.
+///
+/// The draft lives in a temporary Markdown file, so `$EDITOR` gets Markdown
+/// highlighting and the review session is never touched by a half-finished
+/// edit. Unlike opening a source file, this always waits for the editor: there
+/// is nothing to read back until it exits.
+fn edit_comment_draft_from_tui<W: Write>(
+    terminal: &mut TerminalSession<W>,
+    buffer: &str,
+) -> anyhow::Result<Result<String, EditorError>> {
+    let mut file = tempfile::Builder::new()
+        .prefix("tuicr-comment-")
+        .suffix(".md")
+        .tempfile()?;
+    file.write_all(buffer.as_bytes())?;
+    file.flush()?;
+    let target = EditorTarget {
+        path: file.path().to_path_buf(),
+        line: tuicr::comment_draft::cursor_line(buffer),
+    };
+    let command = EditorCommand::blocking_from_env(&target);
+
+    let suspension = terminal.suspend()?;
+    let editor_result = tuicr::editor::run_editor(&command);
+    suspension.resume()?;
+
+    match editor_result {
+        // Read by path rather than through the handle: editors that save by
+        // writing a new file and renaming it over the old one leave our handle
+        // pointing at the replaced inode.
+        Ok(()) => Ok(Ok(std::fs::read_to_string(file.path())?)),
+        Err(err) => Ok(Err(err)),
+    }
 }
 
 #[cfg(test)]
