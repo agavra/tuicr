@@ -365,6 +365,8 @@ fn map_help_mode(key: KeyEvent) -> Action {
         // Scroll navigation
         (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => Action::CursorDown(1),
         (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => Action::CursorUp(1),
+        (KeyCode::Char('h') | KeyCode::Left, KeyModifiers::NONE) => Action::ScrollLeft(4),
+        (KeyCode::Char('l') | KeyCode::Right, KeyModifiers::NONE) => Action::ScrollRight(4),
         (KeyCode::Char('d'), KeyModifiers::CONTROL) => Action::HalfPageDown,
         (KeyCode::Char('u'), KeyModifiers::CONTROL) => Action::HalfPageUp,
         (KeyCode::Char('f'), KeyModifiers::CONTROL) => Action::PageDown,
@@ -586,6 +588,22 @@ mod tests {
             map_file_tree_mode(key(KeyCode::Char('h')), DEFAULT_LEADER_KEY),
             Action::ScrollLeft(4)
         );
+    }
+
+    #[test]
+    fn should_pan_the_help_popup_with_h_and_l() {
+        // Long descriptions are cut off on narrow terminals; `h`/`l` pan the
+        // popup the same way they pan the diff and the file tree.
+        assert_eq!(
+            map_help_mode(key(KeyCode::Char('h'))),
+            Action::ScrollLeft(4)
+        );
+        assert_eq!(
+            map_help_mode(key(KeyCode::Char('l'))),
+            Action::ScrollRight(4)
+        );
+        assert_eq!(map_help_mode(key(KeyCode::Left)), Action::ScrollLeft(4));
+        assert_eq!(map_help_mode(key(KeyCode::Right)), Action::ScrollRight(4));
     }
 
     #[test]

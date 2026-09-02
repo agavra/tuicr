@@ -1650,11 +1650,31 @@ impl Default for FileTreeFilter {
 #[derive(Debug, Default)]
 pub struct HelpState {
     pub scroll_offset: usize,
+    pub horizontal_offset: usize,
     pub viewport_height: usize,
-    pub total_lines: usize, // Set during render
+    pub viewport_width: usize,
+    pub total_lines: usize,    // Set during render
+    pub max_line_width: usize, // Set during render
     pub(crate) searchable_lines: Vec<String>,
     pub(crate) last_search_pattern: Option<String>,
     pub(crate) current_match_line: Option<usize>,
+}
+
+impl HelpState {
+    /// Furthest left column the popup can be panned to, so the widest help
+    /// line's tail can still reach the viewport.
+    pub(crate) fn max_horizontal_offset(&self) -> usize {
+        self.max_line_width.saturating_sub(self.viewport_width)
+    }
+
+    pub(crate) fn scroll_right(&mut self, columns: usize) {
+        self.horizontal_offset =
+            (self.horizontal_offset + columns).min(self.max_horizontal_offset());
+    }
+
+    pub(crate) fn scroll_left(&mut self, columns: usize) {
+        self.horizontal_offset = self.horizontal_offset.saturating_sub(columns);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

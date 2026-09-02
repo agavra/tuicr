@@ -473,6 +473,44 @@ mod tests {
     }
 
     #[test]
+    fn should_pan_help_right_only_until_the_widest_line_ends() {
+        let mut state = help_state();
+        state.viewport_width = 20;
+        state.max_line_width = 30;
+
+        state.scroll_right(4);
+        assert_eq!(state.horizontal_offset, 4);
+
+        state.scroll_right(40);
+        assert_eq!(state.horizontal_offset, 10);
+    }
+
+    #[test]
+    fn should_not_pan_help_when_every_line_fits() {
+        let mut state = help_state();
+        state.viewport_width = 40;
+        state.max_line_width = 30;
+
+        state.scroll_right(4);
+
+        assert_eq!(state.horizontal_offset, 0);
+    }
+
+    #[test]
+    fn should_pan_help_back_to_the_left_edge() {
+        let mut state = help_state();
+        state.viewport_width = 20;
+        state.max_line_width = 30;
+        state.horizontal_offset = 8;
+
+        state.scroll_left(4);
+        assert_eq!(state.horizontal_offset, 4);
+
+        state.scroll_left(40);
+        assert_eq!(state.horizontal_offset, 0);
+    }
+
+    #[test]
     fn should_keep_the_current_help_position_when_no_match_exists() {
         let mut state = help_state();
         state.scroll_offset = 2;

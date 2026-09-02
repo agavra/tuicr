@@ -102,7 +102,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
     frame.render_widget(Clear, area);
 
     let block = Block::default()
-        .title(" Help (j/k scroll, / search) - Press ? or Esc to close ")
+        .title(" Help (j/k scroll, h/l pan, / search) - Press ? or Esc to close ")
         .borders(Borders::ALL)
         .style(styles::popup_style(theme))
         .border_style(styles::border_style(theme, true));
@@ -934,6 +934,10 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
     let viewport_height = inner.height as usize;
     app.help_state.total_lines = total_lines;
     app.help_state.viewport_height = viewport_height;
+    app.help_state.viewport_width = inner.width as usize;
+    app.help_state.max_line_width = help_text.iter().map(Line::width).max().unwrap_or(0);
+    let max_horizontal_offset = app.help_state.max_horizontal_offset();
+    app.help_state.horizontal_offset = app.help_state.horizontal_offset.min(max_horizontal_offset);
     app.help_state.searchable_lines = help_text
         .iter()
         .map(|line| {
@@ -963,7 +967,12 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         })
         .collect();
 
-    let paragraph = Paragraph::new(visible_lines).style(styles::popup_style(theme));
+    let paragraph = Paragraph::new(visible_lines)
+        .style(styles::popup_style(theme))
+        .scroll((
+            0,
+            app.help_state.horizontal_offset.min(u16::MAX as usize) as u16,
+        ));
     frame.render_widget(paragraph, inner);
 
     // Render scroll indicators

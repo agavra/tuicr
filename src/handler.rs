@@ -557,6 +557,8 @@ pub fn handle_help_action(app: &mut App, action: Action) {
     match action {
         Action::CursorDown(n) => app.help_scroll_down(n),
         Action::CursorUp(n) => app.help_scroll_up(n),
+        Action::ScrollLeft(n) => app.help_scroll_left(n),
+        Action::ScrollRight(n) => app.help_scroll_right(n),
         Action::HalfPageDown => app.help_scroll_down(app.help_state.viewport_height / 2),
         Action::HalfPageUp => app.help_scroll_up(app.help_state.viewport_height / 2),
         Action::PageDown => app.help_scroll_down(app.help_state.viewport_height),
