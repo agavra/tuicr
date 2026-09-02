@@ -351,10 +351,36 @@ impl App {
     /// (`delete_session_if_empty`); a crash can leave one behind.
     pub fn load_sessions_tab(&mut self) {
         let root = self.vcs_info.root_path.clone();
-        let result = crate::review_store::ReviewStore::new()
+        let store = crate::review_store::ReviewStore::new();
+        let mut result = store
             .list_sessions_for_repo(&root)
-            .map(|sessions| sessions.into_iter().filter(Self::is_resumable).collect())
+            .map(|sessions| {
+                sessions
+                    .into_iter()
+                    .filter(Self::is_resumable)
+                    .collect::<Vec<_>>()
+            })
             .map_err(|e| e.to_string());
+
+        // A fork's `origin` coordinate does not match PR sessions saved against
+        // the upstream repo, so listing by checkout alone hides them. Add the
+        // sessions for the forge repository this checkout reviews against: the
+        // canonical parent, or whatever `--repo-url` named.
+        if let (Ok(sessions), Some(forge)) = (&mut result, self.forge_repository.clone()) {
+            let coordinate = format!("{}/{}", forge.owner, forge.name);
+            if let Ok(forge_sessions) = store.list_sessions_for_repo(Path::new(&coordinate)) {
+                for session in forge_sessions {
+                    let listed = sessions
+                        .iter()
+                        .any(|s| s.session_ref.path() == session.session_ref.path());
+                    if !listed && Self::is_resumable(&session) {
+                        sessions.push(session);
+                    }
+                }
+                sessions.sort_by_key(|s| std::cmp::Reverse(s.updated_at));
+            }
+        }
+
         self.sessions_tab
             .set_scope(Self::checkout_display_name(&root));
         self.sessions_tab.apply_load(result);
@@ -396,17 +422,10 @@ impl App {
     /// Open the session under the cursor with its stored `diff_source` and
     /// `commit_range`, which is what the user would otherwise have to retype as
     /// `-r` / `-w` flags.
-    ///
-    /// PR sessions need the forge round-trip the Pull Requests tab owns, so
-    /// selecting one points there instead.
     pub fn sessions_tab_select(&mut self) -> Result<()> {
         let Some(summary) = self.sessions_tab.cursor_session() else {
             return Ok(());
         };
-        if matches!(summary.kind, crate::review_store::SessionKind::Pr) {
-            self.set_message("PR sessions open from the Pull Requests tab");
-            return Ok(());
-        }
 
         let session = match crate::persistence::storage::load_session(summary.session_ref.path()) {
             Ok(session) => session,
@@ -440,8 +459,17 @@ impl App {
                 self.set_message("Restart tuicr with --all-files to open this review.");
                 return Ok(());
             }
+            // A PR review is fetched, not read from the checkout. The session
+            // records the forge repository and number, so resume can reuse the
+            // Pull Requests tab's open path instead of sending the user there.
             SessionDiffSource::PullRequest => {
-                self.set_message("Open PR sessions from the Pull Requests tab.");
+                let Some(key) = session.pr_session_key.clone() else {
+                    self.set_error(
+                        "Can't restore this review: it has no saved pull request.".to_string(),
+                    );
+                    return Ok(());
+                };
+                self.resume_pr_session(&key);
                 return Ok(());
             }
         };

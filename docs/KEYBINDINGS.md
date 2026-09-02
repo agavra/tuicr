@@ -255,7 +255,8 @@ losing their reviewed state.
 The Sessions tab lists saved reviews for the current checkout, so you can pick one
 instead of retyping the commit range it was opened with. Rows show the review target,
 comment count, reviewed files, and age. Reviews with no comments and no reviewed files
-are omitted. PR sessions open from the Pull Requests tab.
+are omitted. Selecting a saved PR review re-fetches it from the forge, the same as
+opening it from the Pull Requests tab.
 
 ## Inline commit selector
 

@@ -357,13 +357,27 @@ fn should_resolve_commits_outside_the_recent_history_page() {
 }
 
 #[test]
-fn should_point_pr_sessions_at_the_tab_that_owns_them() {
-    // a PR row. PR sessions are keyed by forge coordinates and need the
-    // forge round-trip the Pull Requests tab owns, so this tab must not try.
+fn should_resume_a_pr_session_through_the_forge_open_path() {
+    // A PR diff is fetched, not read from the checkout, so resume must reuse
+    // the Pull Requests tab's open path rather than refusing.
     let _reviews = TestReviewsDir::new();
     let (mut app, calls) = build_app(vec![commit("ccc")]);
+    let repository = crate::forge::traits::ForgeRepository::github("github.com", "owner", "repo");
+    let mut session = ReviewSession::new(
+        PathBuf::from("/tmp"),
+        "deadbee".to_string(),
+        None,
+        SessionDiffSource::PullRequest,
+    );
+    session.pr_session_key = Some(crate::forge::traits::PrSessionKey::new(
+        repository.clone(),
+        7,
+        "deadbee",
+    ));
+    let store = crate::review_store::ReviewStore::new();
+    let session_ref = store.save_review(&session).expect("persist PR session");
     app.sessions_tab.apply_load(Ok(vec![SessionSummary {
-        session_ref: crate::review_store::SessionRef::from_path("/tmp/pr.json"),
+        session_ref,
         slug: "gh:owner/repo/pr/7".to_string(),
         kind: SessionKind::Pr,
         updated_at: Utc::now(),
@@ -374,22 +388,44 @@ fn should_point_pr_sessions_at_the_tab_that_owns_them() {
         active: false,
     }]));
 
-    app.sessions_tab_select().expect("select should not error");
+    app.sessions_tab_select().expect("resume should not error");
 
-    // guidance, and no diff loaded
-    assert!(
-        app.message
-            .as_ref()
-            .is_some_and(|m| m.content.contains("Pull Requests tab")),
-        "expected guidance, got {:?}",
-        app.message
-    );
+    // The forge fetch is in flight for the right PR, and no local diff was read.
+    let request = app
+        .pr_open_state
+        .as_ref()
+        .expect("expected a PR open to start");
+    assert_eq!(request.pr_number, 7);
+    assert_eq!(request.repository, repository);
     let calls = calls.lock().unwrap();
     assert_eq!(
         (calls.working_tree, calls.staged, calls.unstaged),
         (0, 0, 0)
     );
     assert!(calls.range_ids.is_none());
+}
+
+#[test]
+fn should_report_a_pr_session_with_no_saved_pull_request() {
+    let _reviews = TestReviewsDir::new();
+    let (mut app, _) = build_app(vec![commit("ccc")]);
+    app.sessions_tab.apply_load(Ok(vec![SessionSummary {
+        session_ref: crate::review_store::SessionRef::from_path("/tmp/missing-pr.json"),
+        slug: "gh:owner/repo/pr/9".to_string(),
+        kind: SessionKind::Pr,
+        updated_at: Utc::now(),
+        comment_count: 1,
+        reviewed_count: 0,
+        file_count: 1,
+        anchor: "pr/9".to_string(),
+        active: false,
+    }]));
+
+    app.sessions_tab_select().expect("select should not error");
+
+    // A session file that cannot be read is reported, not silently ignored.
+    assert!(app.message.is_some(), "expected a user-facing message");
+    assert!(app.pr_open_state.is_none());
 }
 
 #[test]
