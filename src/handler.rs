@@ -108,6 +108,9 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         &["comments hide"],
         CommandKind::Comments(PrCommentsVisibility::Hide),
     ),
+    CommandSpec::new(&["resolve"], CommandKind::ResolveThread(true)),
+    CommandSpec::new(&["unresolve"], CommandKind::ResolveThread(false)),
+    CommandSpec::new(&["reply"], CommandKind::ReplyToThread),
 ];
 
 /// CommandSpec is the single registry entry used by both completion and
@@ -160,6 +163,8 @@ enum CommandKind {
     SubmitPicker,
     Submit(SubmitEvent),
     Comments(PrCommentsVisibility),
+    ResolveThread(bool),
+    ReplyToThread,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -995,6 +1000,16 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
             set_remote_comments_visibility(app, visibility);
             CommandAfterDispatch::ExitCommandMode
         }
+        CommandKind::ResolveThread(resolved) => {
+            app.exit_command_mode();
+            app.set_thread_resolved_at_cursor(resolved);
+            CommandAfterDispatch::KeepMode
+        }
+        CommandKind::ReplyToThread => {
+            app.exit_command_mode();
+            app.reply_to_thread_at_cursor();
+            CommandAfterDispatch::KeepMode
+        }
     }
 }
 
@@ -1557,9 +1572,10 @@ fn edit_comment_at_cursor(app: &mut App, cursor_at_end: bool) {
             "Comment already pushed to {forge} — read only in tuicr"
         ));
     } else if !app.enter_edit_mode(cursor_at_end) {
+        // On a remote thread, `edit_remote_note_at_cursor` explains itself
+        // whenever it declines (someone else's note, a read-only forge).
         if app.cursor_on_remote_thread() {
-            let forge = app.forge_display_name();
-            app.set_message(format!("{forge} comment — read only in tuicr"));
+            app.edit_remote_note_at_cursor();
         } else {
             app.set_message("No comment at cursor");
         }
@@ -1713,6 +1729,8 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
             let line = app.get_line_at_cursor();
             if line.is_some() {
                 app.enter_comment_mode(false, line);
+            } else if app.cursor_on_remote_thread() && app.supports_remote_thread_mutations() {
+                app.reply_to_thread_at_cursor();
             } else {
                 app.set_message("Move cursor to a diff line to add a line comment");
             }
