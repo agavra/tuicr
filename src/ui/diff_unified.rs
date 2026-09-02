@@ -27,14 +27,19 @@ use crate::vcs::git::calculate_gap;
 pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focused_panel == FocusedPanel::Diff;
 
-    let title = crate::ui::diff_view::diff_title(app, area.width);
-
-    let block = Block::default()
-        .title(title)
-        .title_top(diff_stat_title(app).right_aligned())
-        .borders(Borders::ALL)
+    // When the diff is the only pane, drop the frame entirely — including its
+    // title row. The file name and stats are folded into the top header line
+    // instead (see status_bar::render_header) so there's a single header line.
+    let sole = app.is_diff_sole_pane();
+    let mut block = Block::default()
+        .borders(if sole { Borders::NONE } else { Borders::ALL })
         .style(styles::panel_style(&app.theme))
         .border_style(styles::border_style(&app.theme, focused));
+    if !sole {
+        block = block
+            .title(crate::ui::diff_view::diff_title(app, area.width))
+            .title_top(diff_stat_title(app).right_aligned());
+    }
 
     let inner = block.inner(area);
     let comment_width = inner.width.saturating_sub(1) as usize;
