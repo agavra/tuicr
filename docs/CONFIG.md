@@ -272,6 +272,7 @@ comments_header = "## Comments"
 | `comments_header`        | `## Local tuicr Comments`                                                    | Heading above comments you wrote in the TUI. Set to `""` to omit it.                                                                        |
 | `remote_comments_header` | `## Existing GitHub Comments`                                                | Heading above unresolved forge threads. Appears only in pull request mode. Set to `""` to omit it.                                          |
 | `legend`                 | `true`                                                                       | Emit the `Comment types:` legend. Takes precedence over the top-level `export_legend` key when set.                                         |
+| `session_header`         | `true`                                                                       | Emit the `## Session: <slug>` header naming the session. Set to `false` for agents that treat it as noise.                                  |
 
 The example above produces an export that opens directly on the comment list:
 

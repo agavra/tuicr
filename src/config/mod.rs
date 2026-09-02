@@ -62,6 +62,8 @@ pub struct ExportConfig {
     pub remote_comments_header: Option<String>,
     /// Whether to emit the `Comment types:` legend.
     pub legend: Option<bool>,
+    /// Whether to emit the `## Session: <slug>` header.
+    pub session_header: Option<bool>,
 }
 
 impl ExportConfig {
@@ -91,6 +93,10 @@ impl ExportConfig {
 
     pub fn legend(&self) -> bool {
         self.legend.unwrap_or(true)
+    }
+
+    pub fn session_header(&self) -> bool {
+        self.session_header.unwrap_or(true)
     }
 }
 
@@ -225,6 +231,7 @@ const EXPORT_KNOWN_KEYS: &[&str] = &[
     "comments_header",
     "remote_comments_header",
     "legend",
+    "session_header",
 ];
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -530,6 +537,7 @@ fn parse_export(value: &Value, warnings: &mut Vec<String>) -> Option<ExportConfi
             warnings,
         ),
         legend: read_section_bool(table, "export", "legend", warnings),
+        session_header: read_section_bool(table, "export", "session_header", warnings),
     };
 
     if cfg == ExportConfig::default() {
@@ -1698,6 +1706,7 @@ pr_metadata = false
 comments_header = "## Comments"
 remote_comments_header = "## Upstream"
 legend = false
+session_header = false
 "###,
         );
         let export = outcome
@@ -1711,6 +1720,7 @@ legend = false
         assert_eq!(export.comments_header(), "## Comments");
         assert_eq!(export.remote_comments_header(), "## Upstream");
         assert!(!export.legend());
+        assert!(!export.session_header());
         assert!(outcome.warnings.is_empty());
     }
 

@@ -266,7 +266,9 @@ fn generate_markdown(
 ) -> String {
     let mut md = String::new();
 
-    if let Some(slug) = session_slug {
+    // The slug names the session an agent should write comments back into.
+    // `session_header = false` drops it for agents that read it as noise.
+    if let Some(slug) = session_slug.filter(|_| export.session_header()) {
         let _ = writeln!(md, "## Session: {slug}");
         let _ = writeln!(md);
     }
@@ -864,6 +866,30 @@ mod tests {
         assert!(
             markdown.contains("## Session: agavra/tuicr@main/worktree"),
             "expected slug header in:\n{markdown}"
+        );
+    }
+
+    #[test]
+    fn should_omit_session_slug_header_when_disabled_by_config() {
+        let session = create_test_session();
+        let diff_source = DiffSource::WorkingTree;
+        let export = ExportConfig {
+            session_header: Some(false),
+            ..ExportConfig::default()
+        };
+
+        let markdown = generate_markdown(
+            &session,
+            &diff_source,
+            &comment_types(),
+            &export,
+            &[],
+            Some("agavra/tuicr@main/worktree"),
+        );
+
+        assert!(
+            !markdown.contains("## Session:"),
+            "expected no slug header in:\n{markdown}"
         );
     }
 
