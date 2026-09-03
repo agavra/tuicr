@@ -139,11 +139,7 @@ pub enum GhCommandError {
 pub type GhCommandResult<T> = std::result::Result<T, GhCommandError>;
 
 pub trait GhCommandRunner {
-    fn run_program(&self, program: &str, args: &[String]) -> GhCommandResult<String>;
-
-    fn run(&self, args: &[String]) -> GhCommandResult<String> {
-        self.run_program("gh", args)
-    }
+    fn run(&self, args: &[String]) -> GhCommandResult<String>;
 
     /// Variant for `gh` invocations that take their payload on stdin (e.g.
     /// `gh api ... --input -`). The default panics; concrete runners that
@@ -157,13 +153,9 @@ pub trait GhCommandRunner {
 pub struct SystemGhRunner;
 
 impl GhCommandRunner for SystemGhRunner {
-    fn run_program(&self, program: &str, args: &[String]) -> GhCommandResult<String> {
-        run_command_output(
-            program,
-            None,
-            args.iter().map(|arg| OsStr::new(arg.as_str())),
-        )
-        .map_err(GhCommandError::from)
+    fn run(&self, args: &[String]) -> GhCommandResult<String> {
+        run_command_output("gh", None, args.iter().map(|arg| OsStr::new(arg.as_str())))
+            .map_err(GhCommandError::from)
     }
 
     fn run_with_stdin(&self, args: &[String], stdin: &str) -> GhCommandResult<String> {
@@ -232,8 +224,8 @@ fn local_range_diff(repo_root: &Path, start_sha: &str, end_sha: &str) -> Option<
     run_git_diff(repo_root, &[range.as_str()]).ok()
 }
 
-/// Resolve a branch or ref in the local checkout. Forgejo's `tea` JSON exposes
-/// branch names but not always the PR head SHA, while tuicr sessions need a
+/// Resolve a branch or ref in the local checkout. Forgejo API responses can
+/// expose branch names without the PR head SHA, while tuicr sessions need a
 /// stable-ish head identifier for persistence.
 fn resolve_local_ref(repo_root: &Path, reference: &str) -> Option<String> {
     run_command_output(
@@ -358,10 +350,8 @@ where
         ))
     }
 
-    fn run_tea(&self, args: Vec<String>, host: &str) -> Result<String> {
-        self.runner
-            .run_program("tea", &args)
-            .map_err(|err| map_tea_error(err, host))
+    fn run_forgejo_api(&self, repository: &ForgeRepository, endpoint: &str) -> Result<String> {
+        forgejo_api_get(repository, endpoint)
     }
 }
 
@@ -743,14 +733,12 @@ where
         let page_size = query.page_size.max(1);
         let limit = page_size + 1;
         let page = (query.already_loaded / page_size) + 1;
-        let output = self.run_tea(
-            vec![
-                "api".to_string(),
-                "--repo".to_string(),
-                query.repository.slug(),
-                format!("/repos/{{owner}}/{{repo}}/pulls?state=open&page={page}&limit={limit}"),
-            ],
-            &query.repository.host,
+        let output = self.run_forgejo_api(
+            &query.repository,
+            &format!(
+                "/repos/{}/{}/pulls?state=open&page={page}&limit={limit}",
+                query.repository.owner, query.repository.name
+            ),
         )?;
         let rows: Vec<ForgejoPullRequest> = serde_json::from_str(&output)?;
         let has_more = rows.len() > page_size;
@@ -773,14 +761,12 @@ where
         repository: &ForgeRepository,
         number: u64,
     ) -> Result<PullRequestDetails> {
-        let output = self.run_tea(
-            vec![
-                "api".to_string(),
-                "--repo".to_string(),
-                repository.slug(),
-                format!("/repos/{{owner}}/{{repo}}/pulls/{number}"),
-            ],
-            &repository.host,
+        let output = self.run_forgejo_api(
+            repository,
+            &format!(
+                "/repos/{}/{}/pulls/{number}",
+                repository.owner, repository.name
+            ),
         )?;
         let pr: ForgejoPullRequest = serde_json::from_str(&output)?;
         if pr.head.sha.is_empty() || pr.base.sha.is_empty() {
@@ -793,16 +779,12 @@ where
     }
 
     fn get_forgejo_pull_request_diff(&self, pr: &PullRequestDetails) -> Result<Vec<FilePatch>> {
-        let patch = self.run_tea(
-            vec![
-                "api".to_string(),
-                "--header".to_string(),
-                "Accept: application/vnd.github.diff".to_string(),
-                "--repo".to_string(),
-                pr.repository.slug(),
-                format!("/repos/{{owner}}/{{repo}}/pulls/{}.diff", pr.number),
-            ],
-            &pr.repository.host,
+        let patch = self.run_forgejo_api(
+            &pr.repository,
+            &format!(
+                "/repos/{}/{}/pulls/{}.diff",
+                pr.repository.owner, pr.repository.name, pr.number
+            ),
         )?;
         forgejo_patch_files(&patch)
     }
@@ -973,8 +955,8 @@ pub fn parse_github_remote_url(remote_url: &str) -> Option<ForgeRepository> {
     repository_from_path(strip_port(host), path)
 }
 
-/// Parse a Git remote into a Forgejo repository after `tea` has confirmed the
-/// remote belongs to its configured Forgejo/Gitea instance.
+/// Parse a Git remote into a Forgejo repository after the caller has decided
+/// the host should be treated as Forgejo.
 pub fn parse_forgejo_remote_url(remote_url: &str) -> Option<ForgeRepository> {
     let repository = parse_github_remote_url(remote_url)?;
     Some(ForgeRepository::forgejo(
@@ -1019,7 +1001,7 @@ fn parse_url_target(target: &str) -> Option<PullRequestTarget> {
             ForgeRepository::gitlab(host, owner, strip_git_suffix(repo)),
         )
     } else if segment == "pulls" {
-        // Forgejo/Gitea: /<owner>/<repo>/pulls/<n>
+        // Forgejo: /<owner>/<repo>/pulls/<n>
         (
             parts.next()?.parse::<u64>().ok()?,
             ForgeRepository::forgejo(host, owner, strip_git_suffix(repo)),
@@ -1227,19 +1209,70 @@ fn map_gh_error(error: GhCommandError, host: &str) -> TuicrError {
     }
 }
 
-fn map_tea_error(error: GhCommandError, host: &str) -> TuicrError {
-    match error {
-        GhCommandError::MissingGh => TuicrError::Forge(
-            "`tea` CLI not found. Install tea and authenticate it for Forgejo PR review."
-                .to_string(),
-        ),
-        GhCommandError::Failed { status, stderr } => TuicrError::Forge(format!(
-            "tea command failed{} for Forgejo host {host}: {}",
-            status
-                .map(|code| format!(" with exit status {code}"))
-                .unwrap_or_default(),
-            stderr.trim()
-        )),
+fn forgejo_api_get(repository: &ForgeRepository, endpoint: &str) -> Result<String> {
+    let url = format!("https://{}/api/v1{}", repository.host, endpoint);
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(30)))
+        .http_status_as_error(false)
+        .build()
+        .into();
+
+    let mut request = agent.get(&url);
+    if endpoint.ends_with(".diff") {
+        request = request.header("Accept", "application/vnd.github.diff");
+    }
+    if let Some(token) = fj_token_for_host(&repository.host) {
+        request = request.header("Authorization", &format!("token {token}"));
+    }
+
+    let response = request.call().map_err(|err| {
+        TuicrError::Forge(format!(
+            "Forgejo request failed for host {}: {err}",
+            repository.host
+        ))
+    })?;
+    let status = response.status().as_u16();
+    let body = response.into_body().read_to_string().map_err(|err| {
+        TuicrError::Forge(format!(
+            "Forgejo response from host {} could not be read: {err}",
+            repository.host
+        ))
+    })?;
+
+    if (200..300).contains(&status) {
+        Ok(body)
+    } else if status == 401 || status == 403 {
+        Err(TuicrError::Forge(format!(
+            "Forgejo authentication failed for host {}. Run `fj auth login` or `fj auth add-token`, then try again.",
+            repository.host
+        )))
+    } else {
+        Err(TuicrError::Forge(format!(
+            "Forgejo request failed for host {} with HTTP {status}: {}",
+            repository.host,
+            body.trim()
+        )))
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct FjKeys {
+    hosts: std::collections::BTreeMap<String, FjLoginInfo>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(tag = "type")]
+enum FjLoginInfo {
+    Application { token: String },
+    OAuth { token: String },
+}
+
+fn fj_token_for_host(host: &str) -> Option<String> {
+    let dirs = directories::ProjectDirs::from("", "forgejo-cli", "forgejo-cli")?;
+    let content = std::fs::read_to_string(dirs.data_dir().join("keys.json")).ok()?;
+    let keys: FjKeys = serde_json::from_str(&content).ok()?;
+    match keys.hosts.get(host)? {
+        FjLoginInfo::Application { token } | FjLoginInfo::OAuth { token } => Some(token.clone()),
     }
 }
 
@@ -1425,30 +1458,8 @@ index 1111111..2222222 100644
     }
 
     impl GhCommandRunner for FakeGhRunner {
-        fn run_program(&self, program: &str, args: &[String]) -> GhCommandResult<String> {
-            if program == "tea" {
-                let mut recorded = vec![program.to_string()];
-                recorded.extend(args.iter().cloned());
-                self.calls.borrow_mut().push(recorded);
-            } else {
-                self.calls.borrow_mut().push(args.to_vec());
-            }
-            if program == "tea" {
-                if args.iter().any(|arg| arg.ends_with(".diff")) {
-                    return Ok(PR_PATCH.to_string());
-                }
-                if args.iter().any(|arg| arg.contains("/pulls?")) {
-                    return Ok(FORGEJO_PR_LIST_JSON.to_string());
-                }
-                if args.iter().any(|arg| arg.contains("/pulls/")) {
-                    return Ok(FORGEJO_PR_DETAILS_JSON.to_string());
-                }
-                return Err(GhCommandError::Failed {
-                    status: Some(1),
-                    stderr: "unexpected tea API request".to_string(),
-                });
-            }
-
+        fn run(&self, args: &[String]) -> GhCommandResult<String> {
+            self.calls.borrow_mut().push(args.to_vec());
             match args.first().map(String::as_str) {
                 // gh pr list/view/diff — second arg is the subcommand.
                 Some("pr") => match args.get(1).map(String::as_str) {
@@ -2192,67 +2203,6 @@ Match host github-work
             !diff_call.iter().any(|a| a == "--patch"),
             "`gh pr diff` must NOT pass --patch (mbox output duplicates files); got {diff_call:?}"
         );
-    }
-
-    #[test]
-    fn forgejo_pull_request_list_uses_tea_json() {
-        let runner = FakeGhRunner::default();
-        let backend = GitHubGhBackend::with_runner(None, runner);
-        let repository = ForgeRepository::forgejo("code.example.test", "team", "service");
-        let result = backend
-            .list_pull_requests(PullRequestListQuery::first_page(repository, 1))
-            .unwrap();
-
-        assert_eq!(result.pull_requests.len(), 1);
-        assert_eq!(result.pull_requests[0].number, 42);
-        assert_eq!(result.pull_requests[0].author.as_deref(), Some("reviewer"));
-
-        let calls = backend.runner.calls.borrow();
-        assert_eq!(calls[0][0], "tea");
-        assert_eq!(calls[0][1], "api");
-        assert!(
-            calls[0]
-                .iter()
-                .any(|arg| arg == "/repos/{owner}/{repo}/pulls?state=open&page=1&limit=2")
-        );
-    }
-
-    #[test]
-    fn forgejo_pull_request_details_and_diff_use_tea() {
-        let runner = FakeGhRunner::default();
-        let repository = ForgeRepository::forgejo("code.example.test", "team", "service");
-        let backend = GitHubGhBackend::with_runner(Some(repository.clone()), runner);
-        let details = backend
-            .get_pull_request(PullRequestTarget::number(42, "42"))
-            .unwrap();
-
-        assert_eq!(details.number, 42);
-        assert_eq!(details.body, "Add Forgejo pull request support.");
-        assert_eq!(details.head_sha, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-
-        let patch = backend.get_pull_request_diff(&details).unwrap();
-        assert_eq!(patch.len(), 1);
-        assert_eq!(patch[0].patch, PR_PATCH.trim_start());
-
-        let calls = backend.runner.calls.borrow();
-        assert!(calls.iter().any(|args| {
-            args.first().map(String::as_str) == Some("tea")
-                && args.get(1).map(String::as_str) == Some("api")
-                && args.iter().any(|arg| arg.ends_with("/pulls/42.diff"))
-        }));
-    }
-
-    #[test]
-    fn forgejo_review_threads_are_empty_without_graphql() {
-        let runner = FakeGhRunner::default();
-        let repository = ForgeRepository::forgejo("code.example.test", "team", "service");
-        let backend = GitHubGhBackend::with_runner(Some(repository), runner);
-        let details = backend
-            .get_pull_request(PullRequestTarget::number(42, "42"))
-            .unwrap();
-
-        assert!(backend.list_review_threads(&details).unwrap().is_empty());
-        assert!(backend.list_review_summaries(&details).unwrap().is_empty());
     }
 
     #[test]

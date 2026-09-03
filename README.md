@@ -139,8 +139,8 @@ Requires `gh` authenticated to the repo.
 ### To Forgejo or Codeberg
 
 Open a pull request from a local clone or pass its URL to `tuicr pr`. Install and authenticate
-[`tea`](https://gitea.com/gitea/tea) for the Forgejo-compatible host, for example with
-`tea logins add`. tuicr loads open pull requests, metadata, and cumulative diffs through Tea.
+[`fj`](https://codeberg.org/forgejo-contrib/forgejo-cli) for the Forgejo host. tuicr loads open
+pull requests, metadata, and cumulative diffs through the Forgejo REST API.
 
 Forgejo and Codeberg review submission, commit selection, commit-range diffs, remote comments,
 and remote context expansion are not supported yet. Use `:clip` to export your review.

@@ -37,7 +37,7 @@ pub const UNSTAGED_SELECTION_ID: &str = "__tuicr_unstaged__";
 pub const GAP_EXPAND_BATCH: usize = 20;
 
 /// Create a forge backend for the given repository.
-/// Routes to GitHub (`gh`), Forgejo-compatible hosts (`tea`), GitLab (`glab`),
+/// Routes to GitHub (`gh`), Forgejo, GitLab (`glab`),
 /// Bitbucket Cloud (`bkt`), or Azure DevOps (`az`) based on `repo.kind`.
 fn create_forge_backend(
     repo: &ForgeRepository,

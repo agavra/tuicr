@@ -99,7 +99,7 @@ mod tests {
     }
 
     impl GhCommandRunner for FakeRunner {
-        fn run_program(&self, _program: &str, args: &[String]) -> GhCommandResult<String> {
+        fn run(&self, args: &[String]) -> GhCommandResult<String> {
             self.calls.borrow_mut().push(args.to_vec());
             self.response
                 .borrow_mut()
