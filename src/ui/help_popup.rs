@@ -571,7 +571,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  e         ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Open focused file in $EDITOR"),
+            Span::raw("Open focused file in editor config / $EDITOR"),
         ]),
         Line::from(vec![
             Span::styled(
@@ -677,7 +677,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  :edit     ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Open focused file in $EDITOR"),
+            Span::raw("Open focused file in editor config / $EDITOR"),
         ]),
         Line::from(vec![
             Span::styled(
