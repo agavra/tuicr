@@ -3,7 +3,9 @@
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
 use crate::cli::{LineSideArg, ReviewCommand};
@@ -12,7 +14,8 @@ use crate::error::{Result, TuicrError};
 use crate::model::comment::{self, CommentLifecycleState};
 use crate::model::{Comment, CommentType, LineRange, LineSide, ReviewSession};
 use crate::review_store::{
-    AddCommentRequest, CommentTarget, ReviewStore, SessionRef, SessionSummary,
+    AddCommentRequest, CommentTarget, RemoveReviewOutcome, ReviewPruneCriterion, ReviewStore,
+    SessionCleanup, SessionRef, SessionSummary,
 };
 use crate::slug::Slug;
 
@@ -51,6 +54,30 @@ fn run_with_writer(command: ReviewCommand, out: &mut impl Write) -> Result<()> {
             out,
         ),
         ReviewCommand::Comments { session, repo } => show_comments(&session, &repo, out),
+        ReviewCommand::Rm {
+            session,
+            repo,
+            if_empty,
+            force,
+        } => remove_session(&session, &repo, if_empty, force, out),
+        ReviewCommand::Prune {
+            empty,
+            older_than,
+            repo,
+            all,
+            dry_run,
+            force,
+        } => prune_sessions(
+            PruneOptions {
+                empty,
+                older_than,
+                repo: repo.as_deref(),
+                all,
+                dry_run,
+                force,
+            },
+            out,
+        ),
     }
 }
 
@@ -335,6 +362,97 @@ fn show_comments(session: &str, repo: &Path, out: &mut impl Write) -> Result<()>
     Ok(())
 }
 
+fn remove_session(
+    session: &str,
+    repo: &Path,
+    if_empty: bool,
+    force: bool,
+    out: &mut impl Write,
+) -> Result<()> {
+    let store = ReviewStore::new();
+    remove_session_with_store(&store, session, repo, if_empty, force, out)
+}
+
+fn remove_session_with_store(
+    store: &ReviewStore,
+    session: &str,
+    repo: &Path,
+    if_empty: bool,
+    force: bool,
+    out: &mut impl Write,
+) -> Result<()> {
+    let session_ref = resolve_session_ref(store, repo, session)?;
+    let removed = match store.remove_review(&session_ref, if_empty, force)? {
+        RemoveReviewOutcome::Removed(entry) => vec![SessionCleanupOutput::from(entry)],
+        RemoveReviewOutcome::NotEmpty => Vec::new(),
+        RemoveReviewOutcome::Active(entry) => {
+            return Err(TuicrError::InvalidInput(format!(
+                "session '{}' is active; pass --force to delete it",
+                entry.slug
+            )));
+        }
+        RemoveReviewOutcome::NotFound => {
+            return Err(TuicrError::InvalidInput(format!(
+                "session '{}' does not exist",
+                session_ref.path().display()
+            )));
+        }
+    };
+    write_cleanup_output(out, &removed)
+}
+
+struct PruneOptions<'a> {
+    empty: bool,
+    older_than: Option<Duration>,
+    repo: Option<&'a Path>,
+    all: bool,
+    dry_run: bool,
+    force: bool,
+}
+
+fn prune_sessions(options: PruneOptions<'_>, out: &mut impl Write) -> Result<()> {
+    let store = ReviewStore::new();
+    prune_sessions_with_store(&store, options, out)
+}
+
+fn prune_sessions_with_store(
+    store: &ReviewStore,
+    options: PruneOptions<'_>,
+    out: &mut impl Write,
+) -> Result<()> {
+    let criterion = match (options.empty, options.older_than) {
+        (true, None) => ReviewPruneCriterion::Empty,
+        (false, Some(duration)) => {
+            let age = chrono::Duration::from_std(duration).map_err(|_| {
+                TuicrError::InvalidInput("duration is too large to represent".to_string())
+            })?;
+            ReviewPruneCriterion::UpdatedBefore(Utc::now() - age)
+        }
+        _ => {
+            return Err(TuicrError::InvalidInput(
+                "choose exactly one of --empty or --older-than".to_string(),
+            ));
+        }
+    };
+    let selector = if options.all {
+        None
+    } else {
+        Some(options.repo.unwrap_or_else(|| Path::new(".")))
+    };
+    let removed = store.prune_reviews(selector, criterion, options.dry_run, options.force)?;
+    let output: Vec<_> = removed
+        .into_iter()
+        .map(SessionCleanupOutput::from)
+        .collect();
+    write_cleanup_output(out, &output)
+}
+
+fn write_cleanup_output(out: &mut impl Write, output: &[SessionCleanupOutput]) -> Result<()> {
+    serde_json::to_writer_pretty(&mut *out, output)?;
+    writeln!(out)?;
+    Ok(())
+}
+
 fn resolve_session_ref(store: &ReviewStore, repo: &Path, session: &str) -> Result<SessionRef> {
     let direct_path = PathBuf::from(session);
     if direct_path.exists() || direct_path.is_absolute() || session.ends_with(".json") {
@@ -537,6 +655,25 @@ impl From<SessionSummary> for SessionSummaryOutput {
             file_count: summary.file_count,
             anchor: summary.anchor,
             active: summary.active,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct SessionCleanupOutput {
+    slug: String,
+    path: String,
+    updated_at: String,
+    active: bool,
+}
+
+impl From<SessionCleanup> for SessionCleanupOutput {
+    fn from(entry: SessionCleanup) -> Self {
+        Self {
+            slug: entry.slug,
+            path: entry.path.display().to_string(),
+            updated_at: entry.updated_at.to_rfc3339(),
+            active: entry.active,
         }
     }
 }
@@ -865,5 +1002,147 @@ mod tests {
         assert_eq!(value[0]["comment_type"], "issue");
         assert_eq!(value[0]["location"], "src/main.rs:42");
         assert_eq!(value[0]["content"], "check this");
+    }
+
+    #[test]
+    fn should_remove_session_and_emit_json() {
+        let temp = tempdir().unwrap();
+        let repo = temp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let store = ReviewStore::with_reviews_dir(temp.path().join("reviews"));
+        let session = test_session(repo.clone());
+        let session_ref = store.save_review(&session).unwrap();
+        let slug = store.list_sessions_for_repo(&repo).unwrap()[0].slug.clone();
+        let mut out = Vec::new();
+
+        remove_session_with_store(&store, &slug, &repo, false, false, &mut out).unwrap();
+
+        let value: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(value[0]["slug"], slug);
+        assert_eq!(value[0]["path"], session_ref.path().display().to_string());
+        assert_eq!(value[0]["active"], false);
+        assert!(!session_ref.path().exists());
+    }
+
+    #[test]
+    fn should_emit_empty_array_when_if_empty_protects_session() {
+        let temp = tempdir().unwrap();
+        let repo = temp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let store = ReviewStore::with_reviews_dir(temp.path().join("reviews"));
+        let mut session = test_session(repo.clone());
+        session.review_comments.push(Comment::new(
+            "keep me".to_string(),
+            CommentType::from_id("note"),
+            None,
+        ));
+        let session_ref = store.save_review(&session).unwrap();
+        let slug = store.list_sessions_for_repo(&repo).unwrap()[0].slug.clone();
+        let mut out = Vec::new();
+
+        remove_session_with_store(&store, &slug, &repo, true, false, &mut out).unwrap();
+
+        let value: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(value, serde_json::json!([]));
+        assert!(session_ref.path().exists());
+    }
+
+    #[test]
+    fn should_reject_active_session_without_force() {
+        let temp = tempdir().unwrap();
+        let repo = temp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let reviews_dir = temp.path().join("reviews");
+        let store = ReviewStore::with_reviews_dir(&reviews_dir);
+        let session = test_session(repo.clone());
+        let session_ref = store.save_review(&session).unwrap();
+        crate::persistence::storage::mark_session_active_in_dir(
+            &session,
+            session_ref.path(),
+            &reviews_dir,
+        )
+        .unwrap();
+        let slug = store.list_sessions_for_repo(&repo).unwrap()[0].slug.clone();
+
+        let err = remove_session_with_store(&store, &slug, &repo, false, false, &mut Vec::new())
+            .unwrap_err();
+
+        assert!(matches!(err, TuicrError::InvalidInput(_)));
+        assert!(session_ref.path().exists());
+    }
+
+    #[test]
+    fn should_error_when_named_session_does_not_exist() {
+        let temp = tempdir().unwrap();
+        let store = ReviewStore::with_reviews_dir(temp.path().join("reviews"));
+        let missing = temp.path().join("missing.json");
+
+        let err = remove_session_with_store(
+            &store,
+            &missing.display().to_string(),
+            Path::new("."),
+            false,
+            false,
+            &mut Vec::new(),
+        )
+        .unwrap_err();
+
+        assert!(matches!(err, TuicrError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn should_prune_empty_sessions_with_matching_dry_run_output() {
+        let temp = tempdir().unwrap();
+        let repo = temp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let store = ReviewStore::with_reviews_dir(temp.path().join("reviews"));
+        let empty_ref = store.save_review(&test_session(repo.clone())).unwrap();
+
+        let mut commented = test_session(repo.clone());
+        commented.base_commit = "commented".to_string();
+        commented.review_comments.push(Comment::new(
+            "keep me".to_string(),
+            CommentType::from_id("note"),
+            None,
+        ));
+        let commented_ref = store.save_review(&commented).unwrap();
+
+        let mut preview = Vec::new();
+        prune_sessions_with_store(
+            &store,
+            PruneOptions {
+                empty: true,
+                older_than: None,
+                repo: Some(&repo),
+                all: false,
+                dry_run: true,
+                force: false,
+            },
+            &mut preview,
+        )
+        .unwrap();
+        assert!(empty_ref.path().exists());
+        assert!(commented_ref.path().exists());
+
+        let mut removed = Vec::new();
+        prune_sessions_with_store(
+            &store,
+            PruneOptions {
+                empty: true,
+                older_than: None,
+                repo: Some(&repo),
+                all: false,
+                dry_run: false,
+                force: false,
+            },
+            &mut removed,
+        )
+        .unwrap();
+
+        let preview: serde_json::Value = serde_json::from_slice(&preview).unwrap();
+        let removed: serde_json::Value = serde_json::from_slice(&removed).unwrap();
+        assert_eq!(preview, removed);
+        assert!(!empty_ref.path().exists());
+        assert!(commented_ref.path().exists());
     }
 }

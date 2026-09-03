@@ -73,6 +73,7 @@ two-face = { version = "0.5", default-features = false, features = ["syntect-def
 # Terminal background detection
 terminal-colorsaurus = "1"
 pulldown-cmark = { version = "0.13.4", default-features = false }
+humantime = "2.4.0"
 
 # Git operations
 [target.'cfg(not(target_env = "musl"))'.dependencies]

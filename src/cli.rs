@@ -4,6 +4,7 @@
 //! POJO the rest of the binary consumes. Conversion lives in `From<Cli>`.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 
@@ -262,6 +263,65 @@ pub enum ReviewCommand {
         /// `owner/repo`). PR slugs and JSON paths resolve without it.
         #[arg(long, value_name = "PATH|OWNER/REPO", default_value = ".")]
         repo: PathBuf,
+    },
+
+    /// Delete one persisted review session.
+    #[command(alias = "remove")]
+    Rm {
+        /// Session slug from `tuicr review list` (local or PR), or path to a
+        /// session JSON file.
+        #[arg(long, value_name = "SESSION")]
+        session: String,
+
+        /// Repo selector used to resolve a local session slug (path or
+        /// `owner/repo`). PR slugs and JSON paths resolve without it.
+        #[arg(long, value_name = "PATH|OWNER/REPO", default_value = ".")]
+        repo: PathBuf,
+
+        /// Delete only when the session has no comments or reviewed state.
+        #[arg(long)]
+        if_empty: bool,
+
+        /// Delete even when the session is currently active in a TUI.
+        #[arg(long)]
+        force: bool,
+    },
+
+    /// Delete persisted sessions that match an age or emptiness criterion.
+    Prune {
+        /// Delete sessions with no comments or reviewed files/hunks.
+        #[arg(
+            long,
+            required_unless_present = "older_than",
+            conflicts_with = "older_than"
+        )]
+        empty: bool,
+
+        /// Delete sessions whose last update is older than this duration.
+        #[arg(
+            long,
+            value_name = "DURATION",
+            value_parser = humantime::parse_duration,
+            required_unless_present = "empty",
+            conflicts_with = "empty"
+        )]
+        older_than: Option<Duration>,
+
+        /// Restrict pruning to a checkout or forge repo selector.
+        #[arg(long, value_name = "PATH|OWNER/REPO", conflicts_with = "all")]
+        repo: Option<PathBuf>,
+
+        /// Consider every persisted session across every repo.
+        #[arg(long)]
+        all: bool,
+
+        /// Print the sessions that would be removed without changing storage.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Include sessions that are currently active in a TUI.
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -1029,6 +1089,100 @@ mod tests {
                 repo: PathBuf::from("."),
             })
         );
+    }
+
+    #[test]
+    fn should_parse_review_rm_command() {
+        let parsed = parse_for_test(&[
+            "tuicr",
+            "review",
+            "rm",
+            "--session",
+            "agavra/tuicr@main/worktree",
+            "--if-empty",
+            "--force",
+        ])
+        .expect("parse should succeed");
+        assert_eq!(
+            parsed.review_command,
+            Some(ReviewCommand::Rm {
+                session: "agavra/tuicr@main/worktree".to_string(),
+                repo: PathBuf::from("."),
+                if_empty: true,
+                force: true,
+            })
+        );
+    }
+
+    #[test]
+    fn should_parse_review_prune_older_than_command() {
+        let parsed = parse_for_test(&[
+            "tuicr",
+            "review",
+            "prune",
+            "--older-than",
+            "30d",
+            "--repo",
+            "agavra/tuicr",
+            "--dry-run",
+        ])
+        .expect("parse should succeed");
+        assert_eq!(
+            parsed.review_command,
+            Some(ReviewCommand::Prune {
+                empty: false,
+                older_than: Some(Duration::from_secs(30 * 24 * 60 * 60)),
+                repo: Some(PathBuf::from("agavra/tuicr")),
+                all: false,
+                dry_run: true,
+                force: false,
+            })
+        );
+    }
+
+    #[test]
+    fn should_parse_review_prune_empty_all_command() {
+        let parsed = parse_for_test(&["tuicr", "review", "prune", "--empty", "--all", "--force"])
+            .expect("parse should succeed");
+        assert_eq!(
+            parsed.review_command,
+            Some(ReviewCommand::Prune {
+                empty: true,
+                older_than: None,
+                repo: None,
+                all: true,
+                dry_run: false,
+                force: true,
+            })
+        );
+    }
+
+    #[test]
+    fn should_require_one_review_prune_criterion() {
+        let err = parse_for_test(&["tuicr", "review", "prune"]).expect_err("parse should fail");
+        assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn should_reject_multiple_review_prune_criteria() {
+        let err = parse_for_test(&["tuicr", "review", "prune", "--empty", "--older-than", "30d"])
+            .expect_err("parse should fail");
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn should_reject_review_prune_repo_with_all() {
+        let err = parse_for_test(&[
+            "tuicr",
+            "review",
+            "prune",
+            "--empty",
+            "--repo",
+            "agavra/tuicr",
+            "--all",
+        ])
+        .expect_err("parse should fail");
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
     }
 
     #[test]
