@@ -557,6 +557,15 @@ fn main() -> anyhow::Result<()> {
                     if pending_d {
                         pending_d = false;
                         if key.code == crossterm::event::KeyCode::Char('d') {
+                            // In the target selector `dd` deletes the saved
+                            // review under the cursor, not a comment.
+                            if app.input_mode == InputMode::CommitSelect {
+                                handler::handle_commit_select_action(
+                                    &mut app,
+                                    Action::SessionsTabDelete,
+                                );
+                                continue;
+                            }
                             if app.cursor_on_locked_comment() {
                                 let forge = app.forge_display_name();
                                 app.set_message(format!(

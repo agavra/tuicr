@@ -83,6 +83,16 @@ impl ReviewStore {
         Ok(comment)
     }
 
+    /// Delete a persisted session and prune its manifest entry. Returns
+    /// `false` when there was no file to remove.
+    ///
+    /// Unconditional: unlike quit-time cleanup this also discards sessions
+    /// that carry comments, so callers are expected to confirm first.
+    pub fn delete_review(&self, session_ref: &SessionRef) -> Result<bool> {
+        let reviews_dir = self.reviews_dir()?;
+        storage::delete_session_in_dir(session_ref.path(), &reviews_dir)
+    }
+
     /// Save a session through this store's storage root.
     pub fn save_review(&self, session: &ReviewSession) -> Result<SessionRef> {
         let reviews_dir = self.reviews_dir()?;

@@ -14,6 +14,10 @@ use crate::review_store::{SessionKind, SessionSummary};
 pub struct SessionsTab {
     rows: Vec<SessionSummary>,
     error: Option<String>,
+    /// When true the listing also shows sessions with no comments and no
+    /// reviewed files. They hold nothing to resume, so they are hidden by
+    /// default; revealing them is what makes them reachable for `dd`.
+    show_empty: bool,
     /// Checkout the listing is scoped to, resolved once at load. Rendering
     /// reads this every frame, so it must not re-derive it: the lookup reaches
     /// git2 repository discovery and the `origin` remote.
@@ -23,6 +27,29 @@ pub struct SessionsTab {
 }
 
 impl SessionsTab {
+    /// Whether empty sessions are currently listed.
+    pub fn show_empty(&self) -> bool {
+        self.show_empty
+    }
+
+    /// Flip the empty-session filter. The caller reloads the listing, since
+    /// the filter is applied while rows are gathered, not while they render.
+    pub fn toggle_show_empty(&mut self) {
+        self.show_empty = !self.show_empty;
+    }
+
+    /// Drop the row at `index`, keeping the cursor on a valid neighbour.
+    ///
+    /// Used after a session file is deleted so the list reflects the removal
+    /// without a full reload, which would reset the cursor to the top.
+    pub fn remove_row(&mut self, index: usize) {
+        if index >= self.rows.len() {
+            return;
+        }
+        self.rows.remove(index);
+        self.cursor = self.cursor.min(self.rows.len().saturating_sub(1));
+    }
+
     /// Replace the rows with a fresh listing, resetting the cursor.
     pub fn apply_load(&mut self, result: std::result::Result<Vec<SessionSummary>, String>) {
         self.cursor = 0;

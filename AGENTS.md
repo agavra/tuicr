@@ -181,7 +181,7 @@ Repository-managed agent integrations:
 **ReviewStore** (`src/review_store.rs`):
 
 - Public library facade for persisted review sessions
-- Methods: `list_sessions_for_repo()`, `get_review()`, `add_comment()`, `save_review()`
+- Methods: `list_sessions_for_repo()`, `get_review()`, `add_comment()`, `save_review()`, `delete_review()`
 - Shared primitive: `add_comment_to_session()` is used by both the library facade and `App::save_comment()`
 
 **Action** (`src/input/keybindings.rs`):
