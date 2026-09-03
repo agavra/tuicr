@@ -204,7 +204,11 @@ impl ReviewSession {
 
     pub fn comment_count(&self) -> usize {
         self.review_comments.len()
-            + self.files.values().map(|f| f.comment_count()).sum::<usize>()
+            + self
+                .files
+                .values()
+                .map(|f| f.comment_count())
+                .sum::<usize>()
     }
 
     pub fn clear_comments(&mut self, scope: ClearScope) -> (usize, usize) {
