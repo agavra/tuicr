@@ -92,7 +92,14 @@ fn add_comment(
     let request_parts = build_add_request_parts(options)?;
     let target = request_parts.target;
     let comment_type = CommentType::from_id(&request_parts.comment_type);
-    let author = resolve_cli_author(request_parts.username);
+    // One config read serves both the type check and the author fallback.
+    let config = config::load_config()
+        .ok()
+        .and_then(|outcome| outcome.config);
+    if let Some(warning) = unknown_comment_type_warning(&comment_type, config.as_ref()) {
+        eprintln!("{warning}");
+    }
+    let author = resolve_cli_author(request_parts.username, config.as_ref());
     let comment = store.add_comment(
         &session_ref,
         AddCommentRequest {
@@ -121,21 +128,51 @@ struct AddRequestParts {
 /// Priority: explicit `--username` / JSON `username` ► config `username` ►
 /// `Comment::DEFAULT_AUTHOR`. Trims whitespace so `--username " "` doesn't
 /// produce an awkward all-whitespace badge.
-fn resolve_cli_author(explicit: Option<String>) -> String {
+fn resolve_cli_author(explicit: Option<String>, config: Option<&config::AppConfig>) -> String {
     if let Some(name) = explicit.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         return name.to_string();
     }
-    if let Ok(outcome) = config::load_config()
-        && let Some(name) = outcome
-            .config
-            .as_ref()
-            .and_then(|cfg| cfg.username.as_deref())
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
+    if let Some(name) = config
+        .and_then(|cfg| cfg.username.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
     {
         return name.to_string();
     }
     comment::DEFAULT_AUTHOR.to_string()
+}
+
+/// Warn when `--type` names a type that no `comment_types` entry defines.
+///
+/// `CommentType::from_id` turns any non-empty id into `Custom`, so a typo is
+/// indistinguishable from a configured type: it is stored, exported as
+/// `**[TYPO]**`, and shown with no badge in the TUI. Warning rather than
+/// rejecting keeps the CLI usable when `comment_types` is unset — the default,
+/// under which every id but `none` is technically undefined — and keeps
+/// scripted callers from breaking on a config change they don't control.
+fn unknown_comment_type_warning(
+    comment_type: &CommentType,
+    config: Option<&config::AppConfig>,
+) -> Option<String> {
+    if comment_type.is_none() {
+        return None;
+    }
+    let configured = config.and_then(|cfg| cfg.comment_types.as_deref())?;
+    if configured
+        .iter()
+        .any(|definition| definition.id == comment_type.id())
+    {
+        return None;
+    }
+    let known: Vec<&str> = configured
+        .iter()
+        .map(|definition| definition.id.as_str())
+        .collect();
+    Some(format!(
+        "Warning: comment type '{}' is not configured; known types: {}",
+        comment_type.id(),
+        known.join(", ")
+    ))
 }
 
 fn build_add_request_parts(options: AddCommentOptions) -> Result<AddRequestParts> {
@@ -865,5 +902,93 @@ mod tests {
         assert_eq!(value[0]["comment_type"], "issue");
         assert_eq!(value[0]["location"], "src/main.rs:42");
         assert_eq!(value[0]["content"], "check this");
+    }
+
+    fn config_with_types(ids: &[&str]) -> config::AppConfig {
+        config::AppConfig {
+            comment_types: Some(
+                ids.iter()
+                    .map(|id| config::CommentTypeConfig {
+                        id: (*id).to_string(),
+                        ..Default::default()
+                    })
+                    .collect(),
+            ),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn should_warn_when_type_is_not_configured() {
+        // given a config declaring note and issue
+        let config = config_with_types(&["note", "issue"]);
+
+        // when a typo slips through
+        let warning = unknown_comment_type_warning(&CommentType::from_id("isue"), Some(&config));
+
+        // then the id and the valid ids are both named
+        let warning = warning.expect("an unconfigured type should warn");
+        assert!(warning.contains("'isue'"), "got {warning}");
+        assert!(warning.contains("note, issue"), "got {warning}");
+    }
+
+    #[test]
+    fn should_not_warn_for_a_configured_type() {
+        let config = config_with_types(&["note", "issue"]);
+        assert!(
+            unknown_comment_type_warning(&CommentType::from_id("issue"), Some(&config)).is_none()
+        );
+    }
+
+    #[test]
+    fn should_not_warn_when_comment_types_are_unconfigured() {
+        // `comment_types` is unset by default, which leaves every id but
+        // `none` undefined. Warning there would fire on every typed comment
+        // the agent skill documents, so an absent list means no opinion.
+        assert!(unknown_comment_type_warning(&CommentType::from_id("issue"), None).is_none());
+        assert!(
+            unknown_comment_type_warning(
+                &CommentType::from_id("issue"),
+                Some(&config::AppConfig::default())
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn should_not_warn_for_the_untyped_default() {
+        // `--type none` is always valid and never carries a badge.
+        let config = config_with_types(&["issue"]);
+        assert!(
+            unknown_comment_type_warning(&CommentType::from_id("none"), Some(&config)).is_none()
+        );
+    }
+
+    #[test]
+    fn should_still_store_a_comment_whose_type_is_unconfigured() {
+        // given a session and a type no config declares
+        let dir = tempdir().unwrap();
+        let store = ReviewStore::with_reviews_dir(dir.path());
+        let session = test_session(PathBuf::from("/tmp/repo"));
+        let session_ref = store.save_review(&session).unwrap();
+
+        // when
+        let comment = store
+            .add_comment(
+                &session_ref,
+                AddCommentRequest {
+                    target: CommentTarget::File {
+                        path: PathBuf::from("src/main.rs"),
+                    },
+                    content: "body".to_string(),
+                    comment_type: CommentType::from_id("isue"),
+                    author: "Codex".to_string(),
+                    commit_id: None,
+                },
+            )
+            .expect("an unconfigured type must not block the write");
+
+        // then the warning is advisory only — the comment is still stored
+        assert_eq!(comment.comment_type.id(), "isue");
     }
 }

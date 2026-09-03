@@ -205,6 +205,13 @@ and it is appended to the end of the Tab cycle when they are, so you can always 
 untyped. An untyped comment never renders a `[TYPE]` tag, a badge, or a legend entry (file-level
 comments still keep their `File-level:` marker on submit).
 
+### `tuicr review add --type`
+
+When `comment_types` is configured, `tuicr review add --type <id>` warns on stderr if `<id>` is not
+one of them, listing the ids that are. The comment is still stored and the command still exits `0`,
+so scripted callers keep working. With `comment_types` unset there is nothing to check against and
+no warning is emitted.
+
 ### Replacement semantics
 
 `comment_types` is a full replacement of the _configured_ types. If you define 2 types, those 2 —
