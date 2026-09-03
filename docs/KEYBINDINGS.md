@@ -249,14 +249,21 @@ losing their reviewed state.
 | `Enter` | Confirm local commit range, open PR, load more PRs, or resume a saved review |
 | `/` | Filter currently loaded PR rows locally |
 | `r` | In Pull Requests tab, toggle all open PRs / PRs requesting your review |
+| `a` | In Sessions tab, show or hide saved reviews holding no progress |
+| `dd` | In Sessions tab, delete the saved review under the cursor (asks to confirm) |
 | `Esc` | Return to the diff |
 | `:q` | Quit |
 
 The Sessions tab lists saved reviews for the current checkout, so you can pick one
 instead of retyping the commit range it was opened with. Rows show the review target,
 comment count, reviewed files, and age. Reviews with no comments and no reviewed files
-are omitted. Selecting a saved PR review re-fetches it from the forge, the same as
-opening it from the Pull Requests tab.
+are omitted; press `a` to show them. Selecting a saved PR review re-fetches it from the
+forge, the same as opening it from the Pull Requests tab.
+
+Press `dd` to delete the saved review under the cursor. tuicr asks to confirm first, and
+refuses to delete a review that is open in another tuicr, since that process would write
+it straight back. Combine `a` with `dd` to clear out empty sessions left behind by a
+crash.
 
 ## Inline commit selector
 

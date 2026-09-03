@@ -697,6 +697,27 @@ impl PullRequestDiffSource {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfirmAction {
     CopyAndQuit,
+    /// Delete the session under the cursor on the Sessions tab. Unlike
+    /// `CopyAndQuit` this returns to the selector instead of quitting.
+    DeleteSession,
+}
+
+impl ConfirmAction {
+    /// Mode to return to once the prompt is answered either way.
+    pub fn return_mode(self) -> InputMode {
+        match self {
+            ConfirmAction::CopyAndQuit => InputMode::Normal,
+            ConfirmAction::DeleteSession => InputMode::CommitSelect,
+        }
+    }
+
+    /// Prompt shown in the dialog.
+    pub fn prompt(self) -> &'static str {
+        match self {
+            ConfirmAction::CopyAndQuit => "Copy review to clipboard?",
+            ConfirmAction::DeleteSession => "Delete this saved review?",
+        }
+    }
 }
 
 /// Push a `MappedComment` onto the appropriate bucket. Free function so the

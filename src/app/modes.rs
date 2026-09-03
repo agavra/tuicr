@@ -344,7 +344,11 @@ impl App {
     }
 
     pub fn exit_confirm_mode(&mut self) {
-        self.input_mode = InputMode::Normal;
+        // Not every prompt is a quit prompt: a Sessions-tab delete has to drop
+        // the user back on the selector, not into an empty diff behind it.
+        self.input_mode = self
+            .pending_confirm
+            .map_or(InputMode::Normal, ConfirmAction::return_mode);
         self.pending_confirm = None;
     }
 }

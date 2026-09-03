@@ -115,6 +115,10 @@ pub enum Action {
     BeginTargetFilter,
     /// Toggle PR tab between all open PRs and PRs awaiting your review (`r`).
     TogglePrReviewRequestedFilter,
+    /// Sessions tab: show or hide sessions holding no review progress.
+    SessionsTabToggleShowEmpty,
+    /// Sessions tab: delete the session under the cursor, after a confirm.
+    SessionsTabDelete,
 
     // Submit resolver
     /// Move resolver cursor down (`j` / Down).
@@ -455,6 +459,9 @@ fn map_commit_select_mode(key: KeyEvent) -> Action {
         (KeyCode::BackTab, _) => Action::TargetSelectorTabPrev,
         (KeyCode::Char('/'), _) => Action::BeginTargetFilter,
         (KeyCode::Char('r'), KeyModifiers::NONE) => Action::TogglePrReviewRequestedFilter,
+        // Sessions-tab only; the other tabs ignore these in their dispatch.
+        (KeyCode::Char('a'), KeyModifiers::NONE) => Action::SessionsTabToggleShowEmpty,
+        (KeyCode::Char('d'), KeyModifiers::NONE) => Action::PendingDCommand,
         _ => Action::None,
     }
 }

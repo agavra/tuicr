@@ -201,7 +201,9 @@ TUI sessions with `"active": true`.
 Inside the TUI, the review target selector's **Sessions** tab lists the saved
 reviews for the current checkout, so you can resume one by picking it instead of
 retyping the commit range it was opened with. Open it with `:sessions` or cycle
-to it with `Tab`.
+to it with `Tab`. Press `dd` to delete the review under the cursor after a
+confirmation prompt, and `a` to reveal reviews holding no comments and no
+reviewed files, which are hidden by default.
 
 ## Library API
 
