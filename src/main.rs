@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -49,6 +49,10 @@ fn event_drain_timeout(drained: usize) -> Option<Duration> {
     }
 }
 
+fn should_probe_keyboard_enhancement(output_to_stdout: bool, stdin_is_terminal: bool) -> bool {
+    !output_to_stdout && stdin_is_terminal
+}
+
 fn main() -> anyhow::Result<()> {
     profile::init_from_env();
 
@@ -78,10 +82,13 @@ fn main() -> anyhow::Result<()> {
     // Check keyboard enhancement support before enabling raw mode.
     // Skip when --stdout is used because the probe writes escape sequences to stdout,
     // which would leak into the captured export output.
-    let keyboard_enhancement_supported = if cli_args.output_to_stdout {
-        false
-    } else {
+    let keyboard_enhancement_supported = if should_probe_keyboard_enhancement(
+        cli_args.output_to_stdout,
+        io::stdin().is_terminal(),
+    ) {
         matches!(supports_keyboard_enhancement(), Ok(true))
+    } else {
+        false
     };
 
     // --path implies --working-tree unless -r is explicitly provided
@@ -973,5 +980,12 @@ mod tests {
             None,
             "a capped burst must repaint instead of draining forever"
         );
+    }
+
+    #[test]
+    fn keyboard_enhancement_probe_requires_interactive_stdin() {
+        assert!(should_probe_keyboard_enhancement(false, true));
+        assert!(!should_probe_keyboard_enhancement(false, false));
+        assert!(!should_probe_keyboard_enhancement(true, true));
     }
 }
