@@ -1,6 +1,6 @@
 # tuicr
 
-**A code review TUI with vim keybindings. Export to GitHub, GitLab, Bitbucket, or clipboard.**
+**A code review TUI with vim keybindings. Export to GitHub, GitLab, Gitea, Bitbucket, or clipboard.**
 
 [![Crates.io](https://img.shields.io/crates/v/tuicr)](https://crates.io/crates/tuicr)
 [![License](https://img.shields.io/crates/l/tuicr)](./LICENSE)
@@ -16,10 +16,10 @@
 - GitHub-style continuous diff in the terminal. Scroll through every changed file in one stream.
 - PR-style comments at the line, range, file, and review level. 
 - Review tracking at file or hunk granularity, persisted across sessions.
-- Three export targets: push a real review to GitHub, GitLab, or Bitbucket, copy structured
+- Three export targets: push a real review to GitHub, GitLab, Gitea, or Bitbucket, copy structured
   markdown to your clipboard, or pipe to stdout.
 - Works with git, jj, and mercurial. Reviews uncommitted changes, commit ranges, or any GitHub PR,
-  GitLab MR, or Bitbucket PR.
+  GitLab MR, Gitea PR, or Bitbucket PR.
 
 ## Install
 
@@ -79,7 +79,7 @@ tuicr                       # Pick from a commit selector
 tuicr tui                   # Same TUI, explicit subcommand
 tuicr -w                    # Uncommitted changes (skip selector)
 tuicr -r main..HEAD         # Commit range
-tuicr pr 125                # GitHub PR, or Bitbucket PR
+tuicr pr 125                # GitHub, Gitea, or Bitbucket PR
 tuicr mr 125                # GitLab MR
 tuicr tui pr 125            # GitHub PR via explicit TUI subcommand
 tuicr tui mr 125            # GitLab MR via explicit TUI subcommand
@@ -113,6 +113,7 @@ Auto-detects git, jj, or mercurial.
 | Vim keybindings | ✅ | ❌ | partial¹ | ❌ | ❌ |
 | Push inline review to GitHub | ✅ | ❌ | ❌ | partial² | ❌ |
 | Push inline review to GitLab | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Push inline review to Gitea | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Push inline review to Bitbucket | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Agent-ready markdown export | ✅ | via CLI skill | ❌ | ❌ | ❌ |
 | git | ✅ | ✅ | ✅ | ❌ | ✅ |
@@ -142,6 +143,14 @@ Requires `gh` authenticated to the repo.
 discussion notes. Review-level comments become the summary. Requires `glab` authenticated to the
 host. Request changes needs your account to be an assigned reviewer. Only Draft is GitHub-only
 here. See [docs/GITLAB.md](docs/GITLAB.md) for setup, self-hosted instances, and troubleshooting.
+
+### To Gitea
+
+`:submit` offers Comment, Approve, Request changes, or Draft on a Gitea pull request. Inline
+comments post as review comments and review-level comments become the summary, all in one request.
+Requires [`tea`](https://gitea.com/gitea/tea) with a login for the instance (`tea logins add`).
+Multi-line comments collapse to their last line — Gitea has no range form. See
+[docs/GITEA.md](docs/GITEA.md) for setup, self-hosted detection, and limitations.
 
 ### To Bitbucket
 
@@ -290,7 +299,7 @@ A first-session cheatsheet. Press `?` inside tuicr for the full reference.
 | `e` | Open focused file in `$EDITOR` |
 | `y` | Copy review to clipboard |
 | `:edit` | Open focused file in `$EDITOR` |
-| `:submit` | Push review to GitHub, GitLab, or Bitbucket |
+| `:submit` | Push review to GitHub, GitLab, Gitea, or Bitbucket |
 | `Tab` in `:` prompt | Complete or cycle commands |
 | `?` | Toggle full help |
 

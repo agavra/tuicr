@@ -9,6 +9,7 @@ pub mod azure;
 pub mod bitbucket;
 pub mod canonical;
 pub mod context;
+pub mod gitea;
 pub mod github;
 pub mod gitlab;
 pub mod pr_open;
@@ -23,6 +24,7 @@ use git2::Repository;
 
 use crate::forge::azure::az::parse_azure_remote_url;
 use crate::forge::bitbucket::bkt::parse_bitbucket_remote_url;
+use crate::forge::gitea::tea::parse_gitea_remote_url;
 use crate::forge::github::gh::parse_github_remote_url;
 use crate::forge::gitlab::glab::parse_gitlab_remote_url;
 use crate::forge::traits::ForgeRepository;
@@ -112,14 +114,17 @@ pub fn detect_azure_repository(repo_root: &Path) -> Option<ForgeRepository> {
 ///
 /// Order matters. Bitbucket and GitLab both gate on the hostname, so trying
 /// them first won't claim GitHub Enterprise remotes. Azure next — its parser
-/// filters to `dev.azure.com` / `*.visualstudio.com` hosts. GitHub must stay
-/// last because its parser accepts *any* host (covers github.com and GHE hosts
-/// whose hostname does not literally contain "github") — it would otherwise
-/// swallow every Bitbucket, self-hosted GitLab, and Azure remote.
+/// filters to `dev.azure.com` / `*.visualstudio.com` hosts. Gitea then, which
+/// recognizes its own public hosts by name and self-hosted ones through the
+/// logins configured in `tea`. GitHub must stay last because its parser
+/// accepts *any* host (covers github.com and GHE hosts whose hostname does not
+/// literally contain "github") — it would otherwise swallow every Bitbucket,
+/// self-hosted GitLab, Gitea, and Azure remote.
 pub fn parse_any_remote_url(url: &str) -> Option<ForgeRepository> {
     parse_bitbucket_remote_url(url)
         .or_else(|| parse_gitlab_remote_url(url))
         .or_else(|| parse_azure_remote_url(url))
+        .or_else(|| parse_gitea_remote_url(url))
         .or_else(|| parse_github_remote_url(url))
 }
 

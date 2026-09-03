@@ -12,6 +12,8 @@ use crate::model::{DiffLine, FilePatch, FileStatus};
 pub enum ForgeKind {
     GitHub,
     GitLab,
+    /// Gitea, reached through the `tea` CLI.
+    Gitea,
     /// Bitbucket Cloud only. Data Center speaks an unrelated REST 1.0 API and
     /// is rejected during remote-URL parsing.
     Bitbucket,
@@ -25,6 +27,7 @@ impl ForgeKind {
         match self {
             ForgeKind::GitHub => "GitHub",
             ForgeKind::GitLab => "GitLab",
+            ForgeKind::Gitea => "Gitea",
             ForgeKind::Bitbucket => "Bitbucket",
             ForgeKind::AzureDevOps => "Azure DevOps",
         }
@@ -60,6 +63,20 @@ impl ForgeRepository {
     ) -> Self {
         Self {
             kind: ForgeKind::GitLab,
+            host: host.into(),
+            owner: owner.into(),
+            name: name.into(),
+        }
+    }
+
+    /// Gitea repositories are always `<owner>/<repo>` — no nested groups.
+    pub fn gitea(
+        host: impl Into<String>,
+        owner: impl Into<String>,
+        name: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind: ForgeKind::Gitea,
             host: host.into(),
             owner: owner.into(),
             name: name.into(),
@@ -109,6 +126,7 @@ impl ForgeRepository {
             || self.host == "gitlab.com"
             || self.host == "bitbucket.org"
             || self.host == "dev.azure.com"
+            || self.host == "gitea.com"
         {
             self.slug()
         } else {

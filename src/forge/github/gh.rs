@@ -788,6 +788,8 @@ fn parse_repo_hash_target(target: &str) -> Option<PullRequestTarget> {
 fn forge_repo_from_host(host: &str, owner: &str, repo: &str) -> ForgeRepository {
     if host.contains("gitlab") {
         ForgeRepository::gitlab(host, owner, repo)
+    } else if crate::forge::gitea::tea::is_gitea_host(host) {
+        ForgeRepository::gitea(host, owner, repo)
     } else {
         ForgeRepository::github(host, owner, repo)
     }
