@@ -18,6 +18,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Result, TuicrError};
+use crate::forge::local_merge_base;
 use crate::forge::remote_comments::{RemoteReviewSummary, RemoteReviewThread};
 use crate::forge::submit::{GhSide, SubmitEvent};
 use crate::forge::traits::{
@@ -428,6 +429,30 @@ where
         args.extend(Self::repo_args(&pr.repository));
         let patch = self.run_bkt(args)?;
         pair_metadata_with_patch(metadata, patch.as_bytes())
+    }
+
+    fn resolve_diff_base_sha(&self, pr: &PullRequestDetails) -> Option<String> {
+        // `base_sha` is `destination.commit.hash` — where the destination
+        // branch stood, which drifts ahead of the branch point as that branch
+        // moves. `bkt pr diff` stays three-dot, so the old side lives at the
+        // merge base.
+        if let Some(root) = self.local_checkout.as_deref()
+            && let Some(sha) = local_merge_base(root, &pr.base_sha, &pr.head_sha)
+        {
+            return Some(sha);
+        }
+        // `merge-base/{revspec}` takes a two-commit revspec and returns a
+        // commit object. Merge base is symmetric, so unlike this backend's
+        // `diff` spec the argument order carries no meaning here.
+        let path = format!(
+            "{}/merge-base/{}..{}",
+            Self::repo_path(&pr.repository),
+            pr.base_sha,
+            pr.head_sha,
+        );
+        let output = self.run_api(path, &[]).ok()?;
+        let commit: BbCommit = serde_json::from_str(&output).ok()?;
+        (!commit.hash.is_empty()).then_some(commit.hash)
     }
 
     fn local_checkout_path(&self) -> Option<PathBuf> {
@@ -1843,6 +1868,43 @@ mod tests {
                 println!("  #{} {} [{}]", row.number, row.title, row.state);
             }
         }
+    }
+
+    #[test]
+    fn resolve_diff_base_sha_uses_the_merge_base_endpoint_without_a_local_checkout() {
+        // given — the destination branch tip the PR reports, plus a merge
+        // base that differs because that branch has moved since the fork.
+        let backend = backend(vec![
+            r#"{"hash":"cccccccccccccccccccccccccccccccccccccccc","message":"fork point"}"#,
+        ]);
+        // when
+        let resolved = backend.resolve_diff_base_sha(&details());
+        // then
+        assert_eq!(resolved.as_deref(), Some("c".repeat(40).as_str()));
+        // and — it hit merge-base with a two-commit revspec, not `diff`.
+        let calls = backend.runner.calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0][0], "api");
+        assert_eq!(
+            calls[0][1],
+            format!(
+                "/2.0/repositories/example-workspace/repo/merge-base/{}..{}",
+                "b".repeat(40),
+                "a".repeat(40)
+            )
+        );
+    }
+
+    #[test]
+    fn resolve_diff_base_sha_is_none_when_the_merge_base_call_fails() {
+        let backend = BitbucketBktBackend::with_runner(
+            Some(repo()),
+            FailingRunner {
+                stderr: "network down".to_string(),
+            },
+        );
+        // Best-effort: callers keep the unrefined base_sha.
+        assert_eq!(backend.resolve_diff_base_sha(&details()), None);
     }
 
     #[test]
