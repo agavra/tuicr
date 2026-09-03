@@ -57,7 +57,7 @@ comment_types = [
 ]
 
 [forge]
-comment_type_prefix = true
+comment_type_prefix = "**{type}:** "   # or true / false
 
 [export]
 intro = "I reviewed your code and have the following comments. Please address them."
@@ -229,9 +229,9 @@ Settings under the `[forge]` section control how tuicr submits reviews to GitHub
 comment_type_prefix = false
 ```
 
-| Key                   | Default | Description                                                                                                                                                                 |
-| --------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `comment_type_prefix` | `true`  | Prepend `[TYPE] ` to comment bodies on submit (e.g. `[ISSUE] Magic number should be a constant`). Set to `false` to send the raw comment body without a classification tag. |
+| Key                   | Default | Description                                                                                                                                                                                                       |
+| --------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `comment_type_prefix` | `true`  | How to tag comment bodies with their type on submit. `true` prepends `[TYPE] ` (e.g. `[ISSUE] Magic number should be a constant`), `false` sends the raw body, and a template string renders a tag of your own. |
 
 When enabled (the default), submitted comments look like:
 
@@ -248,6 +248,35 @@ Consider adding unit tests
 Magic number should be a named constant
 This module could use a doc comment
 ```
+
+### Prefix templates
+
+`[TYPE] ` reads as shouting on forges that render Markdown, and it does not match the
+review conventions some teams have already standardised on. Set the key to a template
+string to choose the tag yourself:
+
+| Placeholder | Renders                                                    |
+| ----------- | ---------------------------------------------------------- |
+| `{type}`    | The comment type id as configured, which is lowercase      |
+| `{TYPE}`    | The same id uppercased                                     |
+
+```toml
+[forge]
+comment_type_prefix = "**{type}:** "
+```
+
+```
+**suggestion:** Consider adding unit tests
+**issue:** Magic number should be a named constant
+**note:** File-level: This module could use a doc comment
+```
+
+`true` is exactly `"[{TYPE}] "`, and `""` is exactly `false`. A template that contains
+neither placeholder would tag every comment identically — almost always a mistyped
+placeholder — so tuicr warns and falls back to the default.
+
+The template interpolates the comment type **id**, not its `label`; the two are the same
+unless you set `label` explicitly. Untyped (`none`) comments never render a tag.
 
 This applies to inline line comments, file-level comments, and review-level comments pushed via `:submit`. The prefix works the same way on GitLab MR and Bitbucket PR submissions.
 

@@ -17,21 +17,79 @@ pub struct CommentTypeConfig {
     pub color: Option<String>,
 }
 
+/// How the comment-type classification tag is rendered onto comment bodies
+/// pushed to a forge.
+///
+/// `true`/`false` keep the original toggle semantics; a string is a template
+/// so the tag can match a team's review convention (for example the bold
+/// lowercase labels of Conventional Comments) rather than being locked to
+/// `[TYPE] `.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(default)]
-pub struct ForgeConfig {
-    /// Prepend `[TYPE] ` to inline review comment bodies on submit so the
-    /// reader can see the comment classification at a glance. Defaults to
-    /// `true`; set to `false` to send the raw comment body.
-    pub comment_type_prefix: bool,
+#[serde(untagged)]
+pub enum CommentTypePrefix {
+    /// `true` renders [`CommentTypePrefix::DEFAULT_TEMPLATE`]; `false` renders
+    /// no tag at all.
+    Toggle(bool),
+    /// A template with `{type}` (the comment type id) and `{TYPE}` (the same
+    /// id uppercased) placeholders.
+    Template(String),
 }
 
-impl Default for ForgeConfig {
+impl Default for CommentTypePrefix {
     fn default() -> Self {
-        Self {
-            comment_type_prefix: true,
+        Self::Toggle(true)
+    }
+}
+
+impl CommentTypePrefix {
+    /// What `true` renders, and what tuicr has always emitted.
+    pub const DEFAULT_TEMPLATE: &'static str = "[{TYPE}] ";
+
+    const LOWER_PLACEHOLDER: &'static str = "{type}";
+    const UPPER_PLACEHOLDER: &'static str = "{TYPE}";
+
+    /// Whether `template` interpolates the comment type at all. A template
+    /// without a placeholder would tag every comment identically, which is
+    /// never what the author meant — usually a mistyped placeholder.
+    pub fn template_has_placeholder(template: &str) -> bool {
+        template.contains(Self::LOWER_PLACEHOLDER) || template.contains(Self::UPPER_PLACEHOLDER)
+    }
+
+    /// The active template, empty when no tag should be rendered.
+    pub fn template(&self) -> &str {
+        match self {
+            Self::Toggle(true) => Self::DEFAULT_TEMPLATE,
+            Self::Toggle(false) => "",
+            Self::Template(template) => template.as_str(),
         }
     }
+
+    /// True when no tag is rendered, whatever the spelling (`false` or `""`).
+    pub fn is_disabled(&self) -> bool {
+        self.template().is_empty()
+    }
+
+    /// Render the tag for `type_id` — a `comment_types` id, already lowercased
+    /// by config parsing. Empty when disabled; callers skip untyped comments.
+    pub fn render(&self, type_id: &str) -> String {
+        let template = self.template();
+        if template.is_empty() {
+            return String::new();
+        }
+        template
+            .replace(Self::UPPER_PLACEHOLDER, &type_id.to_ascii_uppercase())
+            .replace(Self::LOWER_PLACEHOLDER, type_id)
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct ForgeConfig {
+    /// How to tag inline review comment bodies with their comment type on
+    /// submit, so the reader can see the classification at a glance. Defaults
+    /// to `true` (`[TYPE] `); `false` sends the raw comment body, and a
+    /// template string renders the tag that template describes.
+    pub comment_type_prefix: CommentTypePrefix,
 }
 
 const DEFAULT_EXPORT_INTRO: &str =
@@ -493,7 +551,7 @@ fn parse_forge(value: &Value, warnings: &mut Vec<String>) -> Option<ForgeConfig>
     let mut cfg = defaults.clone();
     let mut any_override = false;
 
-    if let Some(v) = read_section_bool(table, "forge", "comment_type_prefix", warnings) {
+    if let Some(v) = read_comment_type_prefix(table, warnings) {
         cfg.comment_type_prefix = v;
         any_override = true;
     }
@@ -541,6 +599,40 @@ fn parse_export(value: &Value, warnings: &mut Vec<String>) -> Option<ExportConfi
 
 /// Like `read_bool`, but emits a `<section>.<key>` qualified warning so the
 /// user can locate the misconfigured field.
+/// Read `forge.comment_type_prefix`, which accepts either the original
+/// boolean toggle or a template string.
+fn read_comment_type_prefix(
+    table: &toml::Table,
+    warnings: &mut Vec<String>,
+) -> Option<CommentTypePrefix> {
+    let val = table.get("comment_type_prefix")?;
+
+    if let Some(toggled) = val.as_bool() {
+        return Some(CommentTypePrefix::Toggle(toggled));
+    }
+
+    if let Some(template) = val.as_str() {
+        if template.is_empty() {
+            // An explicit empty template reads as "no tag", same as `false`.
+            return Some(CommentTypePrefix::Toggle(false));
+        }
+        if !CommentTypePrefix::template_has_placeholder(template) {
+            warnings.push(
+                "Warning: Config key 'forge.comment_type_prefix' template must contain '{type}' or '{TYPE}'; ignoring value"
+                    .to_string(),
+            );
+            return None;
+        }
+        return Some(CommentTypePrefix::Template(template.to_string()));
+    }
+
+    warnings.push(
+        "Warning: Config key 'forge.comment_type_prefix' must be a boolean or a template string; ignoring value"
+            .to_string(),
+    );
+    None
+}
+
 fn read_section_bool(
     table: &toml::Table,
     section: &str,
@@ -1547,7 +1639,7 @@ comment_type_prefix = false
             .as_ref()
             .and_then(|cfg| cfg.forge.clone())
             .expect("forge section should parse");
-        assert!(!forge.comment_type_prefix);
+        assert_eq!(forge.comment_type_prefix, CommentTypePrefix::Toggle(false));
         assert!(outcome.warnings.is_empty());
     }
 
@@ -1576,7 +1668,7 @@ foo = "bar"
             .as_ref()
             .and_then(|cfg| cfg.forge.clone())
             .expect("forge section should parse");
-        assert!(!forge.comment_type_prefix);
+        assert_eq!(forge.comment_type_prefix, CommentTypePrefix::Toggle(false));
         assert_eq!(outcome.warnings.len(), 1);
         assert_eq!(
             outcome.warnings[0],
@@ -1588,7 +1680,7 @@ foo = "bar"
     fn should_warn_and_ignore_forge_value_with_wrong_type() {
         let outcome = parse_config(
             r#"[forge]
-comment_type_prefix = "yes"
+comment_type_prefix = 42
 "#,
         );
         // Wrong-type fields fall back to defaults; with no other overrides
@@ -1606,6 +1698,77 @@ comment_type_prefix = "yes"
             "warning should be qualified, got {:?}",
             outcome.warnings[0]
         );
+    }
+
+    #[test]
+    fn should_parse_comment_type_prefix_template() {
+        let outcome = parse_config(
+            r#"[forge]
+comment_type_prefix = "**{type}:** "
+"#,
+        );
+        let forge = outcome
+            .config
+            .as_ref()
+            .and_then(|cfg| cfg.forge.clone())
+            .expect("forge section should parse");
+        assert_eq!(
+            forge.comment_type_prefix,
+            CommentTypePrefix::Template("**{type}:** ".to_string())
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_read_empty_comment_type_prefix_template_as_disabled() {
+        let outcome = parse_config(
+            r#"[forge]
+comment_type_prefix = ""
+"#,
+        );
+        let forge = outcome
+            .config
+            .as_ref()
+            .and_then(|cfg| cfg.forge.clone())
+            .expect("forge section should parse");
+        assert!(forge.comment_type_prefix.is_disabled());
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_warn_and_ignore_comment_type_prefix_template_without_placeholder() {
+        // A template that never interpolates the type would tag every comment
+        // identically -- almost always a mistyped placeholder.
+        let outcome = parse_config(
+            r#"[forge]
+comment_type_prefix = "nit: "
+"#,
+        );
+        assert!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.forge.clone())
+                .is_none()
+        );
+        assert_eq!(outcome.warnings.len(), 1);
+        assert!(
+            outcome.warnings[0].contains("'{type}' or '{TYPE}'"),
+            "warning should name the placeholders, got {:?}",
+            outcome.warnings[0]
+        );
+    }
+
+    #[test]
+    fn comment_type_prefix_renders_both_placeholder_cases() {
+        let prefix = CommentTypePrefix::Template("**{type}** ({TYPE}) ".to_string());
+        assert_eq!(prefix.render("nitpick"), "**nitpick** (NITPICK) ");
+    }
+
+    #[test]
+    fn disabled_comment_type_prefix_renders_nothing() {
+        assert!(CommentTypePrefix::Toggle(false).render("issue").is_empty());
+        assert!(CommentTypePrefix::Template(String::new()).is_disabled());
     }
 
     #[test]
@@ -1627,7 +1790,12 @@ comment_type_prefix = "yes"
     #[test]
     fn forge_defaults_enable_comment_type_prefix() {
         let cfg = ForgeConfig::default();
-        assert!(cfg.comment_type_prefix);
+        assert_eq!(cfg.comment_type_prefix, CommentTypePrefix::Toggle(true));
+        assert_eq!(
+            cfg.comment_type_prefix.render("issue"),
+            "[ISSUE] ",
+            "the default must stay byte-identical to the historical tag"
+        );
     }
 
     #[test]

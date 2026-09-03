@@ -176,7 +176,7 @@ pub enum MappedComment {
 /// Compute the inline body for `comment` honoring the `[TYPE]` prefix toggle.
 /// File-level bodies are prefixed `[TYPE] File-level:`.
 fn build_inline_body(comment: &Comment, file_level: bool, config: &ForgeConfig) -> String {
-    if !config.comment_type_prefix {
+    if config.comment_type_prefix.is_disabled() {
         return comment.content.clone();
     }
     // `None` comments carry no `[TYPE]` tag, but file-level ones keep the
@@ -184,7 +184,7 @@ fn build_inline_body(comment: &Comment, file_level: bool, config: &ForgeConfig) 
     let type_tag = if comment.comment_type.is_none() {
         String::new()
     } else {
-        format!("[{ty}] ", ty = comment.comment_type.as_str())
+        config.comment_type_prefix.render(comment.comment_type.id())
     };
     let prefix = if file_level {
         format!("{type_tag}File-level: ")
@@ -539,8 +539,8 @@ pub fn build_review_body(
             if i > 0 {
                 block.push_str("\n\n");
             }
-            if config.comment_type_prefix && !c.comment_type.is_none() {
-                block.push_str(&format!("[{}] ", c.comment_type.as_str()));
+            if !c.comment_type.is_none() {
+                block.push_str(&config.comment_type_prefix.render(c.comment_type.id()));
             }
             block.push_str(&c.content);
         }
@@ -550,10 +550,12 @@ pub fn build_review_body(
     if !moved_to_summary.is_empty() {
         let mut block = String::from("## Unplaced comments\n");
         for item in moved_to_summary {
-            let prefix = if config.comment_type_prefix && !item.comment.comment_type.is_none() {
-                format!("[{}] ", item.comment.comment_type.as_str())
-            } else {
+            let prefix = if item.comment.comment_type.is_none() {
                 String::new()
+            } else {
+                config
+                    .comment_type_prefix
+                    .render(item.comment.comment_type.id())
             };
             let path = item.file.display();
             block.push_str(&format!(
@@ -574,6 +576,7 @@ pub fn build_review_body(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::CommentTypePrefix;
     use crate::model::comment::{Comment, CommentType, LineContext, LineRange, LineSide};
     use crate::model::diff_types::{DiffHunk, DiffLine, FileStatus, LineOrigin};
     use std::path::PathBuf;
@@ -1023,7 +1026,7 @@ mod tests {
     fn should_omit_type_prefix_when_config_disables_it() {
         let comment = comment_with_line(LineSide::New, Some(11), None);
         let cfg = ForgeConfig {
-            comment_type_prefix: false,
+            comment_type_prefix: CommentTypePrefix::Toggle(false),
         };
         let mapped = map_comment(&comment, anchor_from(&comment), &typical_file(), &cfg);
         match mapped {
@@ -1033,6 +1036,38 @@ mod tests {
             }
             other => panic!("expected Inline, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn should_render_custom_type_prefix_template_on_inline_bodies() {
+        let comment = comment_with_line(LineSide::New, Some(11), None);
+        let cfg = ForgeConfig {
+            comment_type_prefix: CommentTypePrefix::Template("**{type}:** ".to_string()),
+        };
+        let mapped = map_comment(&comment, anchor_from(&comment), &typical_file(), &cfg);
+        match mapped {
+            MappedComment::Inline(inline) => {
+                assert_eq!(inline.body, "**issue:** needs work");
+            }
+            other => panic!("expected Inline, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn should_render_custom_type_prefix_template_on_file_level_bodies() {
+        let comment = Comment::new(
+            "needs work".to_string(),
+            CommentType::from_id("issue"),
+            None,
+        );
+        let cfg = ForgeConfig {
+            comment_type_prefix: CommentTypePrefix::Template("**{type}:** ".to_string()),
+        };
+        // The `File-level:` marker still follows the tag.
+        assert_eq!(
+            build_inline_body(&comment, true, &cfg),
+            "**issue:** File-level: needs work"
+        );
     }
 
     // build_review_body
@@ -1081,7 +1116,7 @@ mod tests {
     #[test]
     fn should_omit_type_prefix_in_body_when_disabled() {
         let cfg = ForgeConfig {
-            comment_type_prefix: false,
+            comment_type_prefix: CommentTypePrefix::Toggle(false),
         };
         let comments = vec![note("just text")];
         let body = build_review_body(&comments, &[], &cfg);
@@ -1099,6 +1134,24 @@ mod tests {
         assert!(!body.contains('['), "no type tag expected on None: {body}");
         assert!(body.contains("untyped"));
         assert!(body.contains("- a.rs: also untyped"));
+    }
+
+    #[test]
+    fn should_render_custom_type_prefix_template_in_review_body() {
+        let cfg = ForgeConfig {
+            comment_type_prefix: CommentTypePrefix::Template("**{type}:** ".to_string()),
+        };
+        let comments = vec![note("first")];
+        let summary = vec![MovedToSummaryItem {
+            comment: Comment::new("kaboom".to_string(), CommentType::from_id("issue"), None),
+            file: PathBuf::from("src/lib.rs"),
+        }];
+        let body = build_review_body(&comments, &summary, &cfg);
+        assert!(body.contains("**note:** first"), "review level: {body}");
+        assert!(
+            body.contains("- **issue:** src/lib.rs: kaboom"),
+            "unplaced: {body}"
+        );
     }
 
     #[test]
