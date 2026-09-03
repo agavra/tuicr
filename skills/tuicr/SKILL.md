@@ -49,11 +49,15 @@ If the user's intent is ambiguous, ask which workflow they want.
    local and PR sessions by owner/repo. Each row carries a `kind` (`local` or
    `pr`) and a usable `slug`. Use `--all` when you don't know the repo.
 
+   `[]` with exit 0 also means "not a repo root" — a subdirectory returns it
+   too. Pass the root, then `--all`, before concluding nothing is open.
+
 3. Choose the session:
    - If the CLI clearly reports exactly one relevant active session with
      `"active": true`, attach to it.
    - If multiple sessions are active, or the correct session is not clear, ask
-     the user which slug to use.
+     the user which slug to use. One repo can hold a worktree and a
+     commit-range session at once, and adding to the wrong one exits 0.
    - If the user provided a slug or session JSON path, use it directly.
    - For a PR review, pass the PR slug from the listing (e.g.
      `gh:owner/repo/pr/N`) to `--session`; it is self-contained and needs no
@@ -118,6 +122,24 @@ Once the TUI creates its active session, use
 `tuicr review list --repo /path/to/repo` to capture the slug. If your
 environment cannot run another command while a blocking wrapper is waiting,
 read the comments after the user exits tuicr.
+
+## Reconstruct The Diff
+
+To review a patch yourself, rebuild the diff the user sees. The slug's source
+segment says which:
+
+| Slug segment | Diff |
+|--------------|------|
+| `worktree/<head>`, `staged-and-unstaged/<head>` | `git diff HEAD` |
+| `staged/<head>` | `git diff --cached` |
+| `unstaged/<head>` | `git diff` |
+| `commits/<base>..<head>` | `git diff <base>~1..<head>` |
+| `pr/<n>` | `gh pr diff <n>` |
+| `pristine` | none; every tracked file shown in full |
+
+Range endpoints are inclusive and printed oldest-first, so `<base>` without
+`~1` drops the first commit. Check the file count against the listing row's
+`file_count`; a mismatch means every line number you derive will be wrong.
 
 ## Read User Comments
 
@@ -200,7 +222,20 @@ unchanged lines in the new file.
 
 For structured input, use `--input` with literal JSON, `@path/to/file.json`, or
 `-` for stdin. Supported target types are `review`, `file`, `line`, and
-`line_range`.
+`line_range`. One object per call — an array is a parse error. The file key is
+`file`, not `path`. `target.type` is inferred from the fields present:
+
+```bash
+tuicr review add --session <slug> --username "Codex" --input \
+  '{"file":"src/main.rs","line":42,"side":"new","comment_type":"issue","content":"Handle the empty case."}'
+```
+
+Then verify. A line outside the diff stores, prints back, and exits 0, but
+never renders — invisible to the user, successful-looking to you. Re-read
+`tuicr review comments` and check each `start_line` exists on the side you gave
+(`new` for added or unchanged, `old` for removed). Keep the returned `id`s:
+`review comments` reports no author, so they are the only way to tell your
+comments from the user's.
 
 ## Legacy Export Output
 
