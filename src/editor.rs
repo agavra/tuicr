@@ -36,13 +36,14 @@ pub struct EditorCommand {
 }
 
 impl EditorCommand {
-    /// Builds an invocation from `$EDITOR`.
+    /// Builds an invocation from the configured editor.
+    /// Builds an invocation from `$EDITOR` or the config `editor` override.
     ///
     /// An unset, empty, or unparsable value falls back to `vi` so the caller
     /// always gets a concrete command to run.
-    pub fn from_env(target: &EditorTarget) -> Self {
-        let editor = std::env::var("EDITOR").unwrap_or_default();
-        Self::from_editor(&editor, target)
+    pub fn from_env(editor_override: Option<&str>, target: &EditorTarget) -> Self {
+        let env_editor = std::env::var("EDITOR").unwrap_or_default();
+        Self::from_editor(&resolve_editor(editor_override, &env_editor), target)
     }
 
     /// Builds an invocation from an editor command string.
@@ -205,6 +206,13 @@ enum EditorFamily {
     GotoLine,
     /// Has no known line syntax; opens with `$editor $file`.
     Plain,
+}
+
+fn resolve_editor(editor_override: Option<&str>, env_editor: &str) -> String {
+    editor_override
+        .filter(|editor| !editor.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| env_editor.to_string())
 }
 
 fn editor_family(program: &str) -> EditorFamily {
@@ -411,5 +419,26 @@ mod tests {
         let command = EditorCommand::from_editor("", &target(None));
         assert_eq!(command.program, "vi");
         assert_eq!(args(&command), vec!["/repo/src/main.rs"]);
+    }
+
+    #[test]
+    fn config_override_wins_over_env() {
+        assert_eq!(resolve_editor(Some("from-config"), "from-env"), "from-config");
+    }
+
+    #[test]
+    fn env_is_used_without_config_override() {
+        assert_eq!(resolve_editor(None, "from-env"), "from-env");
+    }
+
+    #[test]
+    fn blank_config_override_falls_back_to_env() {
+        assert_eq!(resolve_editor(Some("  "), "from-env"), "from-env");
+    }
+
+    #[test]
+    fn missing_env_and_config_fall_back_to_vi() {
+        let command = EditorCommand::from_editor(&resolve_editor(None, ""), &target(None));
+        assert_eq!(command.program, "vi");
     }
 }

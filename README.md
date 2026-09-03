@@ -242,6 +242,7 @@ ignore_whitespace = false    # ignore all whitespace in local VCS diffs
 appearance = "system"        # or "dark" / "light"
 mouse = true
 leader = ";"                  # configurable prefix for leader shortcuts
+editor = "nvim"               # editor for `e` / `:edit`; overrides $EDITOR
 comment_vim = false           # vim modal editing in the review comment box
 relative_line_numbers = false # show rendered-row distances in the diff gutter
 

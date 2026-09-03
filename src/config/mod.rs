@@ -140,6 +140,7 @@ pub struct AppConfig {
     /// Defaults to 4 (matching diff tab expansion).
     pub comment_tab_width: Option<usize>,
     pub leader: Option<char>,
+    pub editor: Option<String>,
     pub transparent_background: Option<bool>,
     pub scroll_offset: Option<usize>,
     pub review_watch_interval_ms: Option<usize>,
@@ -205,6 +206,7 @@ const KNOWN_KEYS: &[&str] = &[
     "comment_vim",
     "comment_tab_width",
     "leader",
+    "editor",
     "transparent_background",
     "scroll_offset",
     "review_watch_interval_ms",
@@ -445,6 +447,7 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         comment_vim: read_bool(table, "comment_vim", &mut warnings),
         comment_tab_width: read_usize(table, "comment_tab_width", &mut warnings),
         leader: read_leader(table, &mut warnings),
+        editor: read_string(table, "editor", &mut warnings),
         transparent_background: read_bool(table, "transparent_background", &mut warnings),
         scroll_offset: read_usize(table, "scroll_offset", &mut warnings),
         review_watch_interval_ms: read_usize(table, "review_watch_interval_ms", &mut warnings),
@@ -1382,6 +1385,29 @@ mod tests {
         assert_eq!(
             outcome.warnings[0],
             "Warning: Config key 'leader' must be a string; ignoring value"
+        );
+    }
+
+    // editor
+
+    #[test]
+    fn should_parse_editor_command_with_args() {
+        let outcome = parse_config("editor = \"code -w\"\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.editor.clone()),
+            Some("code -w".to_string())
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_warn_and_ignore_editor_with_invalid_type() {
+        let outcome = parse_config("editor = 42\n");
+        assert_eq!(outcome.config.as_ref().and_then(|cfg| cfg.editor.clone()), None);
+        assert_eq!(outcome.warnings.len(), 1);
+        assert_eq!(
+            outcome.warnings[0],
+            "Warning: Config key 'editor' must be a string; ignoring value"
         );
     }
 

@@ -234,6 +234,7 @@ fn main() -> anyhow::Result<()> {
                     app.leader_key = leader;
                 }
                 app.comment_vim_enabled = cfg.comment_vim.unwrap_or(false);
+                app.editor_override = cfg.editor.clone();
                 if let Some(w) = cfg.comment_tab_width {
                     app.comment_tab_width = w;
                 }
@@ -740,7 +741,7 @@ fn main() -> anyhow::Result<()> {
 
                     dispatch_action(&mut app, action);
                     if let Some(target) = app.take_pending_editor_target() {
-                        match run_editor_from_tui(&mut terminal, &target) {
+                        match run_editor_from_tui(&mut terminal, &target, app.editor_override.as_deref()) {
                             // The editor is still open, so there is nothing to
                             // pick up yet; the user reloads once they are done.
                             Ok(Ok(EditorOutcome::Detached(launch))) => {
@@ -939,8 +940,9 @@ enum EditorOutcome {
 fn run_editor_from_tui<W: Write>(
     terminal: &mut TerminalSession<W>,
     target: &EditorTarget,
+    editor_override: Option<&str>,
 ) -> anyhow::Result<Result<EditorOutcome, EditorError>> {
-    let command = EditorCommand::from_env(target);
+    let command = EditorCommand::from_env(editor_override, target);
     // Windowed editors never draw on our terminal, so suspending would only
     // blank the TUI for as long as the editor takes to come up.
     if command.surface() == EditorSurface::Gui {
