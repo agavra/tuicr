@@ -551,18 +551,12 @@ impl App {
                 .files
                 .get(&path)
                 .and_then(|review| review.line_comments.get(&line))
-                .and_then(|comments| {
-                    let mut side_idx = 0;
-                    for c in comments {
-                        if c.side.unwrap_or(LineSide::New) == side {
-                            if side_idx == index {
-                                return Some(c);
-                            }
-                            side_idx += 1;
-                        }
-                    }
-                    None
-                })
+                // The annotation carries an index into the line's comments,
+                // the same one every other lookup uses. Counting per side
+                // again here answers about a different comment as soon as a
+                // line holds comments on both sides.
+                .and_then(|comments| comments.get(index))
+                .filter(|c| c.side.unwrap_or(LineSide::New) == side)
                 .is_some_and(|c| c.is_locked()),
         }
     }
