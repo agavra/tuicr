@@ -820,6 +820,15 @@ fn main() -> anyhow::Result<()> {
         eprintln!("Warning: failed to clear active review session marker: {e}");
     }
 
+    // Always report how the review ended, even with zero comments, so a
+    // human or agent watching the pane can tell "reviewed everything, had
+    // nothing to flag" apart from "quit without looking".
+    let reviewed = app.session.reviewed_count();
+    let total = app.session.files.len();
+    let comments = app.session.comment_count();
+    let comment_word = if comments == 1 { "comment" } else { "comments" };
+    eprintln!("tuicr-summary: reviewed {reviewed}/{total} files, {comments} {comment_word} added");
+
     // Print pending stdout output if --stdout was used
     if let Some(output) = app.pending_stdout_output {
         print!("{output}");
