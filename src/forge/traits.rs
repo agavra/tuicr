@@ -12,6 +12,7 @@ use crate::model::{DiffLine, FilePatch, FileStatus};
 pub enum ForgeKind {
     GitHub,
     GitLab,
+    Forgejo,
     /// Bitbucket Cloud only. Data Center speaks an unrelated REST 1.0 API and
     /// is rejected during remote-URL parsing.
     Bitbucket,
@@ -25,6 +26,7 @@ impl ForgeKind {
         match self {
             ForgeKind::GitHub => "GitHub",
             ForgeKind::GitLab => "GitLab",
+            ForgeKind::Forgejo => "Forgejo",
             ForgeKind::Bitbucket => "Bitbucket",
             ForgeKind::AzureDevOps => "Azure DevOps",
         }
@@ -60,6 +62,19 @@ impl ForgeRepository {
     ) -> Self {
         Self {
             kind: ForgeKind::GitLab,
+            host: host.into(),
+            owner: owner.into(),
+            name: name.into(),
+        }
+    }
+
+    pub fn forgejo(
+        host: impl Into<String>,
+        owner: impl Into<String>,
+        name: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind: ForgeKind::Forgejo,
             host: host.into(),
             owner: owner.into(),
             name: name.into(),

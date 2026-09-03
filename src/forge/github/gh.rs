@@ -7,9 +7,9 @@ use crate::forge::remote_comments::{RemoteReviewSummary, RemoteReviewThread};
 use crate::forge::traits::{
     ForgeBackend, ForgeFileLinesRequest, ForgeRepository, GhCreateReviewResponse,
     PagedPullRequests, PullRequestCommit, PullRequestDetails, PullRequestInfo,
-    PullRequestListQuery, PullRequestListScope, PullRequestTarget,
+    PullRequestListQuery, PullRequestListScope, PullRequestSummary, PullRequestTarget,
 };
-use crate::model::{DiffLine, FilePatch};
+use crate::model::{DiffLine, FilePatch, FileStatus};
 use crate::process::{
     CommandOutputError, CommandOutputErrorKind, run_command_output, run_command_output_with_stdin,
 };
@@ -53,6 +53,82 @@ const PR_INFO_JSON_FIELDS_WITHOUT_CHECKS_OR_COMMENTS: &str = concat!(
     "headRefOid,baseRefOid,body,updatedAt,closed,mergedAt,",
     "reviewDecision,mergeable,mergeStateStatus,reviewRequests,latestReviews"
 );
+
+#[derive(Debug, serde::Deserialize)]
+struct ForgejoUser {
+    login: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ForgejoBranch {
+    #[serde(default)]
+    r#ref: String,
+    #[serde(default)]
+    sha: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ForgejoPullRequest {
+    number: u64,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    state: String,
+    user: Option<ForgejoUser>,
+    #[serde(default, alias = "html_url")]
+    url: String,
+    head: ForgejoBranch,
+    base: ForgejoBranch,
+    #[serde(default)]
+    body: String,
+    #[serde(default, alias = "updated_at")]
+    updated: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default)]
+    draft: bool,
+    #[serde(default)]
+    merged: bool,
+    #[serde(default)]
+    merged_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+impl ForgejoPullRequest {
+    /// Convert Forgejo's pull-request API response into Tuicr's neutral model.
+    fn into_summary(self, repository: &ForgeRepository) -> PullRequestSummary {
+        PullRequestSummary {
+            repository: repository.clone(),
+            number: self.number,
+            title: self.title,
+            author: self.user.map(|user| user.login),
+            head_ref_name: self.head.r#ref,
+            base_ref_name: self.base.r#ref,
+            updated_at: self.updated,
+            url: self.url,
+            state: self.state,
+            is_draft: self.draft,
+        }
+    }
+
+    fn into_details(self, repository: &ForgeRepository) -> PullRequestDetails {
+        PullRequestDetails {
+            repository: repository.clone(),
+            number: self.number,
+            title: self.title,
+            url: self.url,
+            state: self.state.clone(),
+            is_draft: self.draft,
+            author: self.user.map(|user| user.login),
+            head_ref_name: self.head.r#ref,
+            base_ref_name: self.base.r#ref,
+            head_sha: self.head.sha,
+            base_sha: self.base.sha,
+            body: self.body,
+            updated_at: self.updated,
+            closed: !self.state.eq_ignore_ascii_case("open") || self.merged,
+            merged_at: self.merged_at,
+            diff_start_sha: None,
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GhCommandError {
@@ -148,6 +224,20 @@ fn local_range_diff(repo_root: &Path, start_sha: &str, end_sha: &str) -> Option<
     run_git_diff(repo_root, &[range.as_str()]).ok()
 }
 
+/// Resolve a branch or ref in the local checkout. Forgejo API responses can
+/// expose branch names without the PR head SHA, while tuicr sessions need a
+/// stable-ish head identifier for persistence.
+fn resolve_local_ref(repo_root: &Path, reference: &str) -> Option<String> {
+    run_command_output(
+        "git",
+        Some(repo_root),
+        ["rev-parse", reference].iter().map(|s| OsStr::new(*s)),
+    )
+    .ok()
+    .map(|output| output.trim().to_string())
+    .filter(|output| !output.is_empty())
+}
+
 #[derive(Debug, Clone)]
 pub struct GitHubGhBackend<R = SystemGhRunner> {
     default_repository: Option<ForgeRepository>,
@@ -231,7 +321,6 @@ where
             .run(&args)
             .map_err(|err| map_gh_error(err, host))
     }
-
     fn pull_request_file_metadata(&self, pr: &PullRequestDetails) -> Result<Vec<FileMetadata>> {
         let mut metadata = Vec::new();
         for page in 1..=30 {
@@ -260,6 +349,10 @@ where
             "GitHub pull request exceeds the 3000-file REST API limit".into(),
         ))
     }
+
+    fn run_forgejo_api(&self, repository: &ForgeRepository, endpoint: &str) -> Result<String> {
+        forgejo_api_get(repository, endpoint)
+    }
 }
 
 impl<R> ForgeBackend for GitHubGhBackend<R>
@@ -267,6 +360,10 @@ where
     R: GhCommandRunner,
 {
     fn list_pull_requests(&self, query: PullRequestListQuery) -> Result<PagedPullRequests> {
+        if query.repository.kind == crate::forge::traits::ForgeKind::Forgejo {
+            return self.list_forgejo_pull_requests(query);
+        }
+
         let page_size = query.page_size.max(1);
         let requested = query.already_loaded + page_size + 1;
         let mut args = vec![
@@ -309,6 +406,12 @@ where
 
     fn get_pull_request_info(&self, target: PullRequestTarget) -> Result<PullRequestInfo> {
         let repository = self.resolve_repository(&target)?;
+        if repository.kind == crate::forge::traits::ForgeKind::Forgejo {
+            return self
+                .get_forgejo_pull_request(&repository, target.number)
+                .map(PullRequestInfo::from_details);
+        }
+
         let output = self.run_gh(
             vec![
                 "pr".to_string(),
@@ -331,6 +434,9 @@ where
     }
 
     fn get_pull_request_diff(&self, pr: &PullRequestDetails) -> Result<Vec<FilePatch>> {
+        if pr.repository.kind == crate::forge::traits::ForgeKind::Forgejo {
+            return self.get_forgejo_pull_request_diff(pr);
+        }
         // We want the *cumulative* diff between base and head for the PR.
         // `gh pr diff --patch` returns mbox-style `git format-patch` output
         // — one patch per commit — so a 7-commit PR yields 7 separate
@@ -359,6 +465,12 @@ where
     }
 
     fn list_pull_request_commits(&self, pr: &PullRequestDetails) -> Result<Vec<PullRequestCommit>> {
+        if pr.repository.kind == crate::forge::traits::ForgeKind::Forgejo {
+            return Err(TuicrError::Forge(
+                "Forgejo commit selection is not supported yet; review the cumulative diff instead."
+                    .to_string(),
+            ));
+        }
         // GitHub paginates `pulls/<num>/commits` at 250 commits per page (max
         // per_page=100; PRs are capped at 250 commits via the API). Paginate
         // explicitly so multi-page PRs work; bound the loop defensively.
@@ -391,6 +503,12 @@ where
         start_sha: &str,
         end_sha: &str,
     ) -> Result<Vec<FilePatch>> {
+        if pr.repository.kind == crate::forge::traits::ForgeKind::Forgejo {
+            return Err(TuicrError::Forge(
+                "Forgejo commit-range diffs are not supported yet; review the cumulative diff instead."
+                    .to_string(),
+            ));
+        }
         // Fast path: when both SHAs live in the local checkout, `git diff`
         // gives us the cumulative diff in O(local-IO) without round-tripping
         // through GitHub. The PR diff text is the source of truth, but the
@@ -437,6 +555,10 @@ where
     }
 
     fn list_review_threads(&self, pr: &PullRequestDetails) -> Result<Vec<RemoteReviewThread>> {
+        if pr.repository.kind == crate::forge::traits::ForgeKind::Forgejo {
+            return Ok(Vec::new());
+        }
+
         let mut all: Vec<RemoteReviewThread> = Vec::new();
         let mut cursor: Option<String> = None;
         // Bound the pagination loop so a buggy/cyclic server can't hang us.
@@ -461,6 +583,10 @@ where
     }
 
     fn list_review_summaries(&self, pr: &PullRequestDetails) -> Result<Vec<RemoteReviewSummary>> {
+        if pr.repository.kind == crate::forge::traits::ForgeKind::Forgejo {
+            return Ok(Vec::new());
+        }
+
         let mut all: Vec<RemoteReviewSummary> = Vec::new();
         let mut cursor: Option<String> = None;
         for _ in 0..100 {
@@ -511,6 +637,11 @@ where
     }
 
     fn fetch_file_lines(&self, request: ForgeFileLinesRequest) -> Result<Vec<DiffLine>> {
+        if request.repository.kind == crate::forge::traits::ForgeKind::Forgejo {
+            return Err(TuicrError::Forge(
+                "Forgejo remote context expansion is not supported yet.".to_string(),
+            ));
+        }
         if request.start_line == 0 || request.start_line > request.end_line {
             return Ok(Vec::new());
         }
@@ -554,6 +685,12 @@ where
         pr: &PullRequestDetails,
         request: CreateReviewRequest<'_>,
     ) -> Result<GhCreateReviewResponse> {
+        if pr.repository.kind == crate::forge::traits::ForgeKind::Forgejo {
+            return Err(TuicrError::Forge(
+                "Forgejo review submission is not supported yet; use :clip to export the review."
+                    .to_string(),
+            ));
+        }
         let payload = build_review_payload(
             request.commit_id,
             request.body,
@@ -592,6 +729,66 @@ impl<R> GitHubGhBackend<R>
 where
     R: GhCommandRunner,
 {
+    fn list_forgejo_pull_requests(&self, query: PullRequestListQuery) -> Result<PagedPullRequests> {
+        let page_size = query.page_size.max(1);
+        let limit = page_size + 1;
+        let page = (query.already_loaded / page_size) + 1;
+        let output = self.run_forgejo_api(
+            &query.repository,
+            &format!(
+                "/repos/{}/{}/pulls?state=open&page={page}&limit={limit}",
+                query.repository.owner, query.repository.name
+            ),
+        )?;
+        let rows: Vec<ForgejoPullRequest> = serde_json::from_str(&output)?;
+        let has_more = rows.len() > page_size;
+        let pull_requests = rows
+            .into_iter()
+            .take(page_size)
+            .map(|row| row.into_summary(&query.repository))
+            .collect::<Vec<_>>();
+        let total_loaded = query.already_loaded + pull_requests.len();
+
+        Ok(PagedPullRequests {
+            pull_requests,
+            has_more,
+            total_loaded,
+        })
+    }
+
+    fn get_forgejo_pull_request(
+        &self,
+        repository: &ForgeRepository,
+        number: u64,
+    ) -> Result<PullRequestDetails> {
+        let output = self.run_forgejo_api(
+            repository,
+            &format!(
+                "/repos/{}/{}/pulls/{number}",
+                repository.owner, repository.name
+            ),
+        )?;
+        let pr: ForgejoPullRequest = serde_json::from_str(&output)?;
+        if pr.head.sha.is_empty() || pr.base.sha.is_empty() {
+            return Err(TuicrError::Forge(format!(
+                "Forgejo pull request #{number} did not include immutable head and base SHAs"
+            )));
+        }
+
+        Ok(pr.into_details(repository))
+    }
+
+    fn get_forgejo_pull_request_diff(&self, pr: &PullRequestDetails) -> Result<Vec<FilePatch>> {
+        let patch = self.run_forgejo_api(
+            &pr.repository,
+            &format!(
+                "/repos/{}/{}/pulls/{}.diff",
+                pr.repository.owner, pr.repository.name, pr.number
+            ),
+        )?;
+        forgejo_patch_files(&patch)
+    }
+
     fn build_review_threads_args(
         &self,
         pr: &PullRequestDetails,
@@ -675,6 +872,50 @@ where
     }
 }
 
+fn forgejo_patch_files(patch: &str) -> Result<Vec<FilePatch>> {
+    let starts = patch
+        .match_indices("diff --git ")
+        .map(|(offset, _)| offset)
+        .collect::<Vec<_>>();
+
+    starts
+        .iter()
+        .enumerate()
+        .map(|(index, start)| {
+            let end = starts.get(index + 1).copied().unwrap_or(patch.len());
+            let block = &patch[*start..end];
+            let header = block.lines().next().unwrap_or_default();
+            let (old_path, new_path) = header
+                .strip_prefix("diff --git a/")
+                .and_then(|paths| paths.split_once(" b/"))
+                .ok_or_else(|| {
+                    TuicrError::Forge(format!(
+                        "Forgejo returned an invalid diff header: `{header}`"
+                    ))
+                })?;
+            let status = if block.contains("\nnew file mode ") {
+                FileStatus::Added
+            } else if block.contains("\ndeleted file mode ") {
+                FileStatus::Deleted
+            } else if block.contains("\nrename from ") {
+                FileStatus::Renamed
+            } else if block.contains("\ncopy from ") {
+                FileStatus::Copied
+            } else {
+                FileStatus::Modified
+            };
+            let (old_path, new_path) = match status {
+                FileStatus::Added => (None, Some(PathBuf::from(new_path))),
+                FileStatus::Deleted => (Some(PathBuf::from(old_path)), None),
+                _ => (Some(PathBuf::from(old_path)), Some(PathBuf::from(new_path))),
+            };
+            let mut file = FilePatch::new(old_path, new_path, status, block.to_string());
+            file.is_binary = block.contains("GIT binary patch") || block.contains("Binary files ");
+            Ok(file)
+        })
+        .collect()
+}
+
 pub fn parse_pull_request_target(input: &str) -> Result<PullRequestTarget> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
@@ -714,6 +955,17 @@ pub fn parse_github_remote_url(remote_url: &str) -> Option<ForgeRepository> {
     repository_from_path(strip_port(host), path)
 }
 
+/// Parse a Git remote into a Forgejo repository after the caller has decided
+/// the host should be treated as Forgejo.
+pub fn parse_forgejo_remote_url(remote_url: &str) -> Option<ForgeRepository> {
+    let repository = parse_github_remote_url(remote_url)?;
+    Some(ForgeRepository::forgejo(
+        repository.host,
+        repository.owner,
+        repository.name,
+    ))
+}
+
 fn parse_numeric_target(target: &str) -> Option<PullRequestTarget> {
     if !target.chars().all(|ch| ch.is_ascii_digit()) {
         return None;
@@ -747,6 +999,12 @@ fn parse_url_target(target: &str) -> Option<PullRequestTarget> {
         (
             parts.next()?.parse::<u64>().ok()?,
             ForgeRepository::gitlab(host, owner, strip_git_suffix(repo)),
+        )
+    } else if segment == "pulls" {
+        // Forgejo: /<owner>/<repo>/pulls/<n>
+        (
+            parts.next()?.parse::<u64>().ok()?,
+            ForgeRepository::forgejo(host, owner, strip_git_suffix(repo)),
         )
     } else {
         return None;
@@ -948,6 +1206,73 @@ fn map_gh_error(error: GhCommandError, host: &str) -> TuicrError {
             };
             TuicrError::Forge(format!("GitHub command failed: {detail}"))
         }
+    }
+}
+
+fn forgejo_api_get(repository: &ForgeRepository, endpoint: &str) -> Result<String> {
+    let url = format!("https://{}/api/v1{}", repository.host, endpoint);
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(30)))
+        .http_status_as_error(false)
+        .build()
+        .into();
+
+    let mut request = agent.get(&url);
+    if endpoint.ends_with(".diff") {
+        request = request.header("Accept", "application/vnd.github.diff");
+    }
+    if let Some(token) = fj_token_for_host(&repository.host) {
+        request = request.header("Authorization", &format!("token {token}"));
+    }
+
+    let response = request.call().map_err(|err| {
+        TuicrError::Forge(format!(
+            "Forgejo request failed for host {}: {err}",
+            repository.host
+        ))
+    })?;
+    let status = response.status().as_u16();
+    let body = response.into_body().read_to_string().map_err(|err| {
+        TuicrError::Forge(format!(
+            "Forgejo response from host {} could not be read: {err}",
+            repository.host
+        ))
+    })?;
+
+    if (200..300).contains(&status) {
+        Ok(body)
+    } else if status == 401 || status == 403 {
+        Err(TuicrError::Forge(format!(
+            "Forgejo authentication failed for host {}. Run `fj auth login` or `fj auth add-token`, then try again.",
+            repository.host
+        )))
+    } else {
+        Err(TuicrError::Forge(format!(
+            "Forgejo request failed for host {} with HTTP {status}: {}",
+            repository.host,
+            body.trim()
+        )))
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct FjKeys {
+    hosts: std::collections::BTreeMap<String, FjLoginInfo>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(tag = "type")]
+enum FjLoginInfo {
+    Application { token: String },
+    OAuth { token: String },
+}
+
+fn fj_token_for_host(host: &str) -> Option<String> {
+    let dirs = directories::ProjectDirs::from("", "forgejo-cli", "forgejo-cli")?;
+    let content = std::fs::read_to_string(dirs.data_dir().join("keys.json")).ok()?;
+    let keys: FjKeys = serde_json::from_str(&content).ok()?;
+    match keys.hosts.get(host)? {
+        FjLoginInfo::Application { token } | FjLoginInfo::OAuth { token } => Some(token.clone()),
     }
 }
 
@@ -1255,6 +1580,38 @@ index 1111111..2222222 100644
 +    42
  }
 "##;
+
+    const FORGEJO_PR_LIST_JSON: &str = r##"[
+        {
+            "number": 42,
+            "title": "Improve Forgejo support",
+            "state": "open",
+            "user": { "login": "reviewer" },
+            "html_url": "https://code.example.test/team/service/pulls/42",
+            "head": { "ref": "feature/forgejo", "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+            "base": { "ref": "main", "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
+            "body": "Add Forgejo pull request support.",
+            "updated_at": "2026-06-22T21:51:00Z",
+            "draft": false,
+            "merged": false,
+            "merged_at": null
+        }
+    ]"##;
+
+    const FORGEJO_PR_DETAILS_JSON: &str = r##"{
+        "number": 42,
+        "title": "Improve Forgejo support",
+        "state": "open",
+        "user": { "login": "reviewer" },
+        "html_url": "https://code.example.test/team/service/pulls/42",
+        "head": { "ref": "feature/forgejo", "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+        "base": { "ref": "main", "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
+        "body": "Add Forgejo pull request support.",
+        "updated_at": "2026-06-22T21:51:00Z",
+        "draft": false,
+        "merged": false,
+        "merged_at": null
+    }"##;
 
     const REVIEW_THREADS_JSON: &str = r##"{
         "data": {

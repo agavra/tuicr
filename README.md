@@ -18,8 +18,8 @@
 - Review tracking at file or hunk granularity, persisted across sessions.
 - Three export targets: push a real review to GitHub, GitLab, or Bitbucket, copy structured
   markdown to your clipboard, or pipe to stdout.
-- Works with git, jj, and mercurial. Reviews uncommitted changes, commit ranges, or any GitHub PR,
-  GitLab MR, or Bitbucket PR.
+- Works with git, jj, and mercurial. Reviews uncommitted changes, commit ranges, or GitHub,
+  Forgejo, Codeberg, GitLab, or Bitbucket pull requests.
 
 ## Install
 
@@ -79,9 +79,9 @@ tuicr                       # Pick from a commit selector
 tuicr tui                   # Same TUI, explicit subcommand
 tuicr -w                    # Uncommitted changes (skip selector)
 tuicr -r main..HEAD         # Commit range
-tuicr pr 125                # GitHub PR, or Bitbucket PR
+tuicr pr 125                # GitHub, Forgejo, Codeberg, or Bitbucket PR
 tuicr mr 125                # GitLab MR
-tuicr tui pr 125            # GitHub PR via explicit TUI subcommand
+tuicr tui pr 125            # PR via explicit TUI subcommand
 tuicr tui mr 125            # GitLab MR via explicit TUI subcommand
 tuicr --stdout              # Pipe the review to stdout
 tuicr review list           # List saved local review sessions
@@ -135,6 +135,15 @@ When you're done reviewing, send your comments wherever the work continues.
 `:submit` opens a picker for Comment, Approve, Request changes, or Draft. Inline comments land
 on the right lines as a real PR review. Review-level comments become the review summary.
 Requires `gh` authenticated to the repo.
+
+### To Forgejo or Codeberg
+
+Open a pull request from a local clone or pass its URL to `tuicr pr`. Install and authenticate
+[`fj`](https://codeberg.org/forgejo-contrib/forgejo-cli) for the Forgejo host. tuicr loads open
+pull requests, metadata, and cumulative diffs through the Forgejo REST API.
+
+Forgejo and Codeberg review submission, commit selection, commit-range diffs, remote comments,
+and remote context expansion are not supported yet. Use `:clip` to export your review.
 
 ### To GitLab
 

@@ -37,9 +37,8 @@ pub const UNSTAGED_SELECTION_ID: &str = "__tuicr_unstaged__";
 pub const GAP_EXPAND_BATCH: usize = 20;
 
 /// Create a forge backend for the given repository.
-/// Routes to the GitHub backend (via `gh`), the GitLab backend (via `glab`),
-/// the Bitbucket Cloud backend (via `bkt`), or the Azure DevOps backend (via
-/// `az`) based on `repo.kind`.
+/// Routes to GitHub (`gh`), Forgejo, GitLab (`glab`),
+/// Bitbucket Cloud (`bkt`), or Azure DevOps (`az`) based on `repo.kind`.
 fn create_forge_backend(
     repo: &ForgeRepository,
     local_checkout: Option<PathBuf>,
@@ -48,7 +47,7 @@ fn create_forge_backend(
 ) -> Box<dyn ForgeBackend> {
     use crate::forge::traits::ForgeKind;
     match repo.kind {
-        ForgeKind::GitHub => {
+        ForgeKind::GitHub | ForgeKind::Forgejo => {
             use crate::forge::github::gh::GitHubGhBackend;
             Box::new(
                 GitHubGhBackend::new(Some(repo.clone()))
