@@ -21,7 +21,6 @@ pub mod submit;
 pub mod traits;
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use git2::Repository;
 
@@ -184,10 +183,10 @@ pub fn detect_forge_repository(repo_root: &Path) -> Option<ForgeRepository> {
             return Some(repository);
         }
     }
-    for (name, url) in named_remote_urls(repo_root) {
+    for (_, url) in named_remote_urls(repo_root) {
         if parse_github_remote_url(&url).is_some_and(|repository| repository.host != "github.com")
-            && tea_recognizes_remote(repo_root, &name)
             && let Some(repository) = parse_forgejo_remote_url(&url)
+            && fj_has_login_for_host(&repository.host)
         {
             return Some(repository);
         }
@@ -211,10 +210,10 @@ pub fn resolve_remote_repository(vcs: &dyn VcsBackend, name: &str) -> Result<For
 /// necessarily `origin` — matches `target_repo`.
 pub fn local_checkout_for_repo(root: &Path, target_repo: &ForgeRepository) -> Option<PathBuf> {
     if target_repo.kind == crate::forge::traits::ForgeKind::Forgejo
-        && named_remote_urls(root).iter().any(|(name, url)| {
+        && named_remote_urls(root).iter().any(|(_, url)| {
             parse_github_remote_url(url).is_some_and(|repository| repository.host != "github.com")
-                && tea_recognizes_remote(root, name)
                 && parse_forgejo_remote_url(url).as_ref() == Some(target_repo)
+                && fj_has_login_for_host(&target_repo.host)
         })
     {
         return Some(root.to_path_buf());
@@ -225,12 +224,19 @@ pub fn local_checkout_for_repo(root: &Path, target_repo: &ForgeRepository) -> Op
         .then(|| root.to_path_buf())
 }
 
-fn tea_recognizes_remote(repo_root: &Path, remote: &str) -> bool {
-    Command::new("tea")
-        .current_dir(repo_root)
-        .args(["api", "--remote", remote, "/version"])
-        .output()
-        .is_ok_and(|output| output.status.success())
+fn fj_has_login_for_host(host: &str) -> bool {
+    fj_keys().is_some_and(|keys| keys.hosts.contains_key(host))
+}
+
+#[derive(serde::Deserialize)]
+struct FjKeys {
+    hosts: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+fn fj_keys() -> Option<FjKeys> {
+    let dirs = directories::ProjectDirs::from("", "forgejo-cli", "forgejo-cli")?;
+    let content = std::fs::read_to_string(dirs.data_dir().join("keys.json")).ok()?;
+    serde_json::from_str(&content).ok()
 }
 
 #[cfg(test)]
