@@ -741,7 +741,11 @@ fn main() -> anyhow::Result<()> {
 
                     dispatch_action(&mut app, action);
                     if let Some(target) = app.take_pending_editor_target() {
-                        match run_editor_from_tui(&mut terminal, &target, app.editor_override.as_deref()) {
+                        match run_editor_from_tui(
+                            &mut terminal,
+                            &target,
+                            app.editor_override.as_deref(),
+                        ) {
                             // The editor is still open, so there is nothing to
                             // pick up yet; the user reloads once they are done.
                             Ok(Ok(EditorOutcome::Detached(launch))) => {

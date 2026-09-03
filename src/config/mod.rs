@@ -1403,7 +1403,10 @@ mod tests {
     #[test]
     fn should_warn_and_ignore_editor_with_invalid_type() {
         let outcome = parse_config("editor = 42\n");
-        assert_eq!(outcome.config.as_ref().and_then(|cfg| cfg.editor.clone()), None);
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.editor.clone()),
+            None
+        );
         assert_eq!(outcome.warnings.len(), 1);
         assert_eq!(
             outcome.warnings[0],

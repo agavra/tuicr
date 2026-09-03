@@ -423,7 +423,10 @@ mod tests {
 
     #[test]
     fn config_override_wins_over_env() {
-        assert_eq!(resolve_editor(Some("from-config"), "from-env"), "from-config");
+        assert_eq!(
+            resolve_editor(Some("from-config"), "from-env"),
+            "from-config"
+        );
     }
 
     #[test]
