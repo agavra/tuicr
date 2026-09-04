@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
+use clap::{ArgAction, ArgGroup, Args, Parser, Subcommand, ValueEnum};
 
 use crate::theme::{AppearanceArg, ThemeArg};
 
@@ -273,53 +273,62 @@ pub enum ReviewCommand {
         #[arg(long, value_name = "SESSION")]
         session: String,
 
-        /// Repo selector used to resolve a local session slug (path or
-        /// `owner/repo`). PR slugs and JSON paths resolve without it.
+        /// Context for resolving a local session slug. Ignored for PR slugs
+        /// and JSON paths.
         #[arg(long, value_name = "PATH|OWNER/REPO", default_value = ".")]
         repo: PathBuf,
 
-        /// Delete only when the session has no comments or reviewed state.
+        /// Delete only if the session has no comments or reviewed files/hunks.
         #[arg(long)]
-        if_empty: bool,
+        empty: bool,
 
-        /// Delete even when the session is currently active in a TUI.
+        /// Delete an active session instead of rejecting it.
         #[arg(long)]
         force: bool,
     },
 
     /// Delete persisted sessions that match an age or emptiness criterion.
+    #[command(
+        long_about = "Delete persisted sessions matching exactly one criterion.",
+        group(
+            ArgGroup::new("criterion")
+                .required(true)
+                .multiple(false)
+                .args(["empty", "older_than"])
+        ),
+        group(
+            ArgGroup::new("scope")
+                .multiple(false)
+                .args(["repo", "all"])
+        )
+    )]
     Prune {
-        /// Delete sessions with no comments or reviewed files/hunks.
-        #[arg(
-            long,
-            required_unless_present = "older_than",
-            conflicts_with = "older_than"
-        )]
+        /// Select sessions with no comments or reviewed files/hunks.
+        #[arg(long)]
         empty: bool,
 
-        /// Delete sessions whose last update is older than this duration.
+        /// Select sessions last updated more than DURATION ago.
         #[arg(
             long,
             value_name = "DURATION",
-            value_parser = humantime::parse_duration,
-            required_unless_present = "empty",
-            conflicts_with = "empty"
+            value_parser = humantime::parse_duration
         )]
         older_than: Option<Duration>,
 
-        /// Restrict pruning to a checkout or forge repo selector.
-        #[arg(long, value_name = "PATH|OWNER/REPO", conflicts_with = "all")]
+        /// Limit pruning to sessions for PATH|OWNER/REPO. Defaults to the
+        /// current directory; cannot be combined with --all.
+        #[arg(long, value_name = "PATH|OWNER/REPO")]
         repo: Option<PathBuf>,
 
-        /// Consider every persisted session across every repo.
+        /// Prune sessions across all repositories instead of using --repo.
         #[arg(long)]
         all: bool,
 
-        /// Print the sessions that would be removed without changing storage.
+        /// Print matching sessions without deleting them.
         #[arg(long)]
         dry_run: bool,
 
-        /// Include sessions that are currently active in a TUI.
+        /// Include active sessions, which are skipped by default.
         #[arg(long)]
         force: bool,
     },
@@ -1099,7 +1108,7 @@ mod tests {
             "rm",
             "--session",
             "agavra/tuicr@main/worktree",
-            "--if-empty",
+            "--empty",
             "--force",
         ])
         .expect("parse should succeed");
@@ -1108,7 +1117,7 @@ mod tests {
             Some(ReviewCommand::Rm {
                 session: "agavra/tuicr@main/worktree".to_string(),
                 repo: PathBuf::from("."),
-                if_empty: true,
+                empty: true,
                 force: true,
             })
         );
@@ -1161,6 +1170,8 @@ mod tests {
     fn should_require_one_review_prune_criterion() {
         let err = parse_for_test(&["tuicr", "review", "prune"]).expect_err("parse should fail");
         assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
+        let message = err.to_string();
+        assert!(message.contains("<--empty|--older-than <DURATION>>"));
     }
 
     #[test]
@@ -1168,6 +1179,8 @@ mod tests {
         let err = parse_for_test(&["tuicr", "review", "prune", "--empty", "--older-than", "30d"])
             .expect_err("parse should fail");
         assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
+        let message = err.to_string();
+        assert!(message.contains("<--empty|--older-than <DURATION>>"));
     }
 
     #[test]
@@ -1183,6 +1196,32 @@ mod tests {
         ])
         .expect_err("parse should fail");
         assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
+        assert!(
+            err.to_string()
+                .contains("'--repo <PATH|OWNER/REPO>' cannot be used with '--all'")
+        );
+    }
+
+    #[test]
+    fn should_explain_review_prune_scope_and_active_behavior() {
+        let err = parse_for_test(&["tuicr", "review", "prune", "--help"])
+            .expect_err("help exits through clap");
+        assert_eq!(err.kind(), ErrorKind::DisplayHelp);
+        let help = err.to_string();
+        assert!(help.contains("matching exactly one criterion"));
+        assert!(help.contains("Defaults to the current directory; cannot be combined with --all"));
+        assert!(help.contains("across all repositories instead of using --repo"));
+        assert!(help.contains("Include active sessions, which are skipped by default"));
+    }
+
+    #[test]
+    fn should_use_symmetric_empty_flag_for_review_rm() {
+        let err = parse_for_test(&["tuicr", "review", "rm", "--help"])
+            .expect_err("help exits through clap");
+        assert_eq!(err.kind(), ErrorKind::DisplayHelp);
+        let help = err.to_string();
+        assert!(help.contains("--empty"));
+        assert!(!help.contains("--if-empty"));
     }
 
     #[test]

@@ -86,7 +86,7 @@ tuicr review rm --session ./saved-session.json
 ```
 
 `rm` returns a non-zero exit when the named session does not exist. Add
-`--if-empty` to delete only when the session has no comments and no reviewed
+`--empty` to delete only when the session has no comments and no reviewed
 files or hunks; a non-empty session is left in place and the command emits
 `[]`.
 

@@ -57,9 +57,9 @@ fn run_with_writer(command: ReviewCommand, out: &mut impl Write) -> Result<()> {
         ReviewCommand::Rm {
             session,
             repo,
-            if_empty,
+            empty,
             force,
-        } => remove_session(&session, &repo, if_empty, force, out),
+        } => remove_session(&session, &repo, empty, force, out),
         ReviewCommand::Prune {
             empty,
             older_than,
@@ -365,24 +365,24 @@ fn show_comments(session: &str, repo: &Path, out: &mut impl Write) -> Result<()>
 fn remove_session(
     session: &str,
     repo: &Path,
-    if_empty: bool,
+    empty: bool,
     force: bool,
     out: &mut impl Write,
 ) -> Result<()> {
     let store = ReviewStore::new();
-    remove_session_with_store(&store, session, repo, if_empty, force, out)
+    remove_session_with_store(&store, session, repo, empty, force, out)
 }
 
 fn remove_session_with_store(
     store: &ReviewStore,
     session: &str,
     repo: &Path,
-    if_empty: bool,
+    empty: bool,
     force: bool,
     out: &mut impl Write,
 ) -> Result<()> {
     let session_ref = resolve_session_ref(store, repo, session)?;
-    let removed = match store.remove_review(&session_ref, if_empty, force)? {
+    let removed = match store.remove_review(&session_ref, empty, force)? {
         RemoveReviewOutcome::Removed(entry) => vec![SessionCleanupOutput::from(entry)],
         RemoveReviewOutcome::NotEmpty => Vec::new(),
         RemoveReviewOutcome::Active(entry) => {
@@ -1025,7 +1025,7 @@ mod tests {
     }
 
     #[test]
-    fn should_emit_empty_array_when_if_empty_protects_session() {
+    fn should_emit_empty_array_when_empty_protects_session() {
         let temp = tempdir().unwrap();
         let repo = temp.path().join("repo");
         std::fs::create_dir_all(&repo).unwrap();
