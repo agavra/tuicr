@@ -24,7 +24,7 @@ use git2::Repository;
 use crate::forge::azure::az::parse_azure_remote_url;
 use crate::forge::bitbucket::bkt::parse_bitbucket_remote_url;
 use crate::forge::github::gh::parse_github_remote_url;
-use crate::forge::gitlab::glab::parse_gitlab_remote_url;
+use crate::forge::gitlab::glab::{parse_gitlab_remote_url, parse_gitlab_remote_url_by_hostname};
 use crate::forge::traits::ForgeRepository;
 
 /// Try to detect a GitHub forge repository for the local checkout at `repo_root`.
@@ -137,9 +137,11 @@ pub fn parse_any_remote_url(url: &str) -> Option<ForgeRepository> {
 /// two; letting it claim unknown hosts would turn
 /// `code.example.com/git/owner/repo` into `git/owner`. Bitbucket is left out
 /// because a workspace is always one segment, so the fallback already agrees
-/// with it.
+/// with it. GitLab enters as its hostname-only variant, which forgoes the
+/// `glab` config lookup that would otherwise recognize self-hosted instances on
+/// custom domains.
 pub fn parse_any_remote_url_by_hostname(url: &str) -> Option<ForgeRepository> {
-    parse_azure_remote_url(url)
+    parse_gitlab_remote_url_by_hostname(url).or_else(|| parse_azure_remote_url(url))
 }
 
 /// Detect the forge repository for the local checkout at `repo_root`.
@@ -188,6 +190,10 @@ mod tests {
                 "myorg/myproject",
                 "myrepo"
             ))
+        );
+        assert_eq!(
+            parse_any_remote_url_by_hostname("git@gitlab.com:org/team/svc.git"),
+            Some(ForgeRepository::gitlab("gitlab.com", "org/team", "svc"))
         );
         // The GitHub catch-all is excluded, so anything it would have claimed
         // falls through to the caller's own rule. Were it in the chain, its
