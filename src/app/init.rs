@@ -509,6 +509,7 @@ impl App {
             comment_buffer: String::new(),
             comment_cursor: 0,
             comment_vim_enabled: false,
+            q_quits: false,
             comment_tab_width: 4,
             comment_vim_editor: None,
             comment_vim_command: None,

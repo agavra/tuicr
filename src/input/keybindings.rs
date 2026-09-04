@@ -160,8 +160,17 @@ pub enum Action {
 }
 
 pub fn map_key_to_action(key: KeyEvent, mode: InputMode, leader_key: char) -> Action {
+    map_key_to_action_with_q_quits(key, mode, leader_key, false)
+}
+
+pub fn map_key_to_action_with_q_quits(
+    key: KeyEvent,
+    mode: InputMode,
+    leader_key: char,
+    q_quits: bool,
+) -> Action {
     match mode {
-        InputMode::Normal => map_normal_mode(key, leader_key),
+        InputMode::Normal => map_normal_mode_with_q_quits(key, leader_key, q_quits),
         InputMode::Command => map_command_mode(key),
         InputMode::Search => map_search_mode(key),
         InputMode::Comment => map_comment_mode(key),
@@ -172,15 +181,28 @@ pub fn map_key_to_action(key: KeyEvent, mode: InputMode, leader_key: char) -> Ac
         },
         InputMode::Summary => map_summary_mode(key),
         InputMode::Confirm => map_confirm_mode(key),
-        InputMode::CommitSelect => map_commit_select_mode(key),
-        InputMode::VisualSelect => map_visual_mode(key),
+        InputMode::CommitSelect => map_commit_select_mode_with_q_quits(key, q_quits),
+        InputMode::VisualSelect => map_visual_mode_with_q_quits(key, q_quits),
         InputMode::SubmitResolver => map_submit_resolver_mode(key),
         InputMode::SubmitConfirm => map_submit_confirm_mode(key),
-        InputMode::SubmitActionPicker => map_submit_action_picker_mode(key),
+        InputMode::SubmitActionPicker => map_submit_action_picker_mode_with_q_quits(key, q_quits),
     }
 }
 
+#[cfg(test)]
 fn map_normal_mode(key: KeyEvent, leader_key: char) -> Action {
+    map_normal_mode_with_q_quits(key, leader_key, false)
+}
+
+fn q_action(q_quits: bool) -> Action {
+    if q_quits {
+        Action::Quit
+    } else {
+        Action::QuitHint
+    }
+}
+
+fn map_normal_mode_with_q_quits(key: KeyEvent, leader_key: char, q_quits: bool) -> Action {
     match (key.code, key.modifiers) {
         (KeyCode::Char(key), KeyModifiers::NONE) if key == leader_key => {
             Action::PendingLeaderCommand
@@ -244,7 +266,7 @@ fn map_normal_mode(key: KeyEvent, leader_key: char) -> Action {
         (KeyCode::Esc, KeyModifiers::NONE) => Action::ClearSearchHighlight,
 
         // Transitional hint: q used to quit; now it just points at :q.
-        (KeyCode::Char('q'), KeyModifiers::NONE) => Action::QuitHint,
+        (KeyCode::Char('q'), KeyModifiers::NONE) => q_action(q_quits),
 
         (KeyCode::Char(' '), KeyModifiers::NONE) => Action::ToggleExpand,
         (KeyCode::Char('o'), KeyModifiers::NONE) => Action::ExpandAll,
@@ -431,25 +453,35 @@ fn map_submit_confirm_mode(key: KeyEvent) -> Action {
     }
 }
 
+#[cfg(test)]
 fn map_submit_action_picker_mode(key: KeyEvent) -> Action {
+    map_submit_action_picker_mode_with_q_quits(key, false)
+}
+
+fn map_submit_action_picker_mode_with_q_quits(key: KeyEvent, q_quits: bool) -> Action {
     match (key.code, key.modifiers) {
         (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => Action::SubmitPickerDown,
         (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => Action::SubmitPickerUp,
         (KeyCode::Enter, KeyModifiers::NONE) => Action::SubmitPickerConfirm,
         (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
-        (KeyCode::Char('q'), KeyModifiers::NONE) => Action::QuitHint,
+        (KeyCode::Char('q'), KeyModifiers::NONE) => q_action(q_quits),
         _ => Action::None,
     }
 }
 
+#[cfg(test)]
 fn map_commit_select_mode(key: KeyEvent) -> Action {
+    map_commit_select_mode_with_q_quits(key, false)
+}
+
+fn map_commit_select_mode_with_q_quits(key: KeyEvent, q_quits: bool) -> Action {
     match (key.code, key.modifiers) {
         (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => Action::CommitSelectDown,
         (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => Action::CommitSelectUp,
         (KeyCode::Char(' '), KeyModifiers::NONE) => Action::ToggleCommitSelect,
         (KeyCode::Enter, KeyModifiers::NONE) => Action::ConfirmCommitSelect,
         (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
-        (KeyCode::Char('q'), KeyModifiers::NONE) => Action::QuitHint,
+        (KeyCode::Char('q'), KeyModifiers::NONE) => q_action(q_quits),
         (KeyCode::Char(':'), _) => Action::EnterCommandMode,
         (KeyCode::Tab, KeyModifiers::NONE) => Action::TargetSelectorTabNext,
         (KeyCode::BackTab, _) => Action::TargetSelectorTabPrev,
@@ -466,10 +498,14 @@ fn map_commit_select_mode(key: KeyEvent) -> Action {
 /// notable override — in the diff it edits the comment at the cursor, in the
 /// tree it opens the include filter.
 pub fn map_file_tree_mode(key: KeyEvent, leader_key: char) -> Action {
+    map_file_tree_mode_with_q_quits(key, leader_key, false)
+}
+
+pub fn map_file_tree_mode_with_q_quits(key: KeyEvent, leader_key: char, q_quits: bool) -> Action {
     // The leader key wins: `;e` (toggle file list) must not be swallowed by
     // the exclude-filter binding.
     if key.code == KeyCode::Char(leader_key) && key.modifiers == KeyModifiers::NONE {
-        return map_normal_mode(key, leader_key);
+        return map_normal_mode_with_q_quits(key, leader_key, q_quits);
     }
     match (key.code, key.modifiers) {
         (KeyCode::Char('i'), KeyModifiers::NONE) => Action::FileTreeFilterInclude,
@@ -477,7 +513,7 @@ pub fn map_file_tree_mode(key: KeyEvent, leader_key: char) -> Action {
         (KeyCode::Char('I'), _) => Action::FileTreeClearInclude,
         (KeyCode::Char('E'), _) => Action::FileTreeClearExclude,
         (KeyCode::Char('/'), _) => Action::FileTreeSearch,
-        _ => map_normal_mode(key, leader_key),
+        _ => map_normal_mode_with_q_quits(key, leader_key, q_quits),
     }
 }
 
@@ -513,7 +549,12 @@ pub fn map_target_filter_mode(key: KeyEvent) -> Action {
     }
 }
 
+#[cfg(test)]
 fn map_visual_mode(key: KeyEvent) -> Action {
+    map_visual_mode_with_q_quits(key, false)
+}
+
+fn map_visual_mode_with_q_quits(key: KeyEvent, q_quits: bool) -> Action {
     match (key.code, key.modifiers) {
         // Extend selection
         (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => Action::CursorDown(1),
@@ -523,7 +564,7 @@ fn map_visual_mode(key: KeyEvent) -> Action {
         (KeyCode::Char('y'), KeyModifiers::NONE) => Action::ExportToClipboard,
         (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
         (KeyCode::Char('v') | KeyCode::Char('V'), _) => Action::ExitMode,
-        (KeyCode::Char('q'), KeyModifiers::NONE) => Action::QuitHint,
+        (KeyCode::Char('q'), KeyModifiers::NONE) => q_action(q_quits),
         _ => Action::None,
     }
 }
@@ -1040,5 +1081,29 @@ mod tests {
         // The overlays keep their own `q`, which closes them rather than tuicr.
         assert_eq!(map_help_mode(key(KeyCode::Char('q'))), Action::ToggleHelp);
         assert_eq!(map_summary_mode(key(KeyCode::Char('q'))), Action::ExitMode);
+    }
+
+    #[test]
+    fn should_map_q_to_quit_when_q_quits_is_enabled() {
+        assert_eq!(
+            map_normal_mode_with_q_quits(key(KeyCode::Char('q')), DEFAULT_LEADER_KEY, true),
+            Action::Quit
+        );
+        assert_eq!(
+            map_file_tree_mode_with_q_quits(key(KeyCode::Char('q')), DEFAULT_LEADER_KEY, true),
+            Action::Quit
+        );
+        assert_eq!(
+            map_visual_mode_with_q_quits(key(KeyCode::Char('q')), true),
+            Action::Quit
+        );
+        assert_eq!(
+            map_commit_select_mode_with_q_quits(key(KeyCode::Char('q')), true),
+            Action::Quit
+        );
+        assert_eq!(
+            map_submit_action_picker_mode_with_q_quits(key(KeyCode::Char('q')), true),
+            Action::Quit
+        );
     }
 }

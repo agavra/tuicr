@@ -136,6 +136,9 @@ pub struct AppConfig {
     /// Enable vim-style modal editing in the review comment text box. When
     /// unset/false the comment box uses the default emacs/readline bindings.
     pub comment_vim: Option<bool>,
+    /// Restore the legacy bare `q` quit binding in review modes.
+    /// Defaults to false.
+    pub q_quits: Option<bool>,
     /// Number of spaces inserted by Tab while typing in the vim comment box.
     /// Defaults to 4 (matching diff tab expansion).
     pub comment_tab_width: Option<usize>,
@@ -203,6 +206,7 @@ const KNOWN_KEYS: &[&str] = &[
     "search_highlight",
     "mouse",
     "comment_vim",
+    "q_quits",
     "comment_tab_width",
     "leader",
     "transparent_background",
@@ -443,6 +447,7 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         search_highlight: read_bool(table, "search_highlight", &mut warnings),
         mouse: read_bool(table, "mouse", &mut warnings),
         comment_vim: read_bool(table, "comment_vim", &mut warnings),
+        q_quits: read_bool(table, "q_quits", &mut warnings),
         comment_tab_width: read_usize(table, "comment_tab_width", &mut warnings),
         leader: read_leader(table, &mut warnings),
         transparent_background: read_bool(table, "transparent_background", &mut warnings),
@@ -1348,6 +1353,35 @@ mod tests {
         assert_eq!(
             outcome.warnings[0],
             "Warning: Config key 'mouse' must be a boolean; ignoring value"
+        );
+    }
+
+    // q_quits
+
+    #[test]
+    fn should_parse_q_quits_true() {
+        let outcome = parse_config("q_quits = true\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.q_quits),
+            Some(true)
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_default_q_quits_to_none() {
+        let outcome = parse_config("\n");
+        assert_eq!(outcome.config.as_ref().and_then(|cfg| cfg.q_quits), None);
+    }
+
+    #[test]
+    fn should_warn_and_ignore_q_quits_with_invalid_type() {
+        let outcome = parse_config("q_quits = \"yes\"\n");
+        assert_eq!(outcome.config.as_ref().and_then(|cfg| cfg.q_quits), None);
+        assert_eq!(outcome.warnings.len(), 1);
+        assert_eq!(
+            outcome.warnings[0],
+            "Warning: Config key 'q_quits' must be a boolean; ignoring value"
         );
     }
 
