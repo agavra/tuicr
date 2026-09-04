@@ -30,6 +30,9 @@ tuicr review list --repo slatedb/slatedb              # all sessions for a forge
 tuicr review list --all                               # every session across all repos
 tuicr review comments --session agavra/tuicr@main/worktree
 tuicr review comments --session gh:slatedb/slatedb/pr/1745
+tuicr review rm --session agavra/tuicr@main/worktree
+tuicr review prune --empty --repo agavra/tuicr --dry-run
+tuicr review prune --older-than 30d --all
 ```
 
 All `tuicr review` commands emit JSON by default. Timestamps are RFC3339 strings
@@ -67,8 +70,48 @@ tuicr review list --repo git@ssh.dev.azure.com:v3/myorg/myproject/myrepo
 #   -> [ ..., { "slug": "az:myorg/myproject/myrepo/pr/123", "kind": "pr", ... } ]
 ```
 
-`--repo` for `add` / `comments` is only consulted when resolving a *local*
-slug; PR slugs and JSON paths ignore it.
+`--repo` for `add`, `comments`, or `rm` is only consulted when resolving a
+*local* slug; PR slugs and JSON paths ignore it. For `prune`, `--repo` defines
+the cleanup scope and defaults to the current checkout. Pass `--all` instead to
+consider sessions from every repo.
+
+## Remove Sessions
+
+Delete one session by the same slug or JSON path accepted by `comments`:
+
+```bash
+tuicr review rm --session agavra/tuicr@main/worktree
+tuicr review rm --session gh:slatedb/slatedb/pr/1745
+tuicr review rm --session ./saved-session.json
+```
+
+`rm` returns a non-zero exit when the named session does not exist. Add
+`--empty` to delete only when the session has no comments and no reviewed
+files or hunks; a non-empty session is left in place and the command emits
+`[]`.
+
+An active TUI session is rejected unless `--force` is passed. A still-running
+TUI can recreate a forcibly removed session the next time it saves.
+
+## Prune Sessions
+
+Choose exactly one cleanup criterion:
+
+```bash
+tuicr review prune --empty                    # current checkout
+tuicr review prune --empty --repo owner/repo  # all matching local and PR sessions
+tuicr review prune --older-than 30d --all     # every repo
+```
+
+`--empty` uses the persisted session contents, including reviewed hunks.
+Manifest entries whose session file is already missing are also removed.
+`--older-than` accepts human durations such as `12h`, `30d`, or `6weeks` and
+uses the session's last-update timestamp.
+
+Pruning skips active sessions by default. Pass `--force` to include them; each
+forced result retains `"active": true` in the JSON output. Use `--dry-run` to
+emit the same candidates without changing session files, the manifest, or
+active-session markers.
 
 ## Add Comments
 
@@ -194,6 +237,20 @@ PR slug:
     "lifecycle_state": "local_draft",
     "created_at": "2026-05-22T17:20:00Z",
     "content": "Handle the empty case here."
+  }
+]
+```
+
+`rm` and `prune` return a JSON array containing each removed session. A prune
+dry run returns the sessions that would be removed:
+
+```json
+[
+  {
+    "slug": "agavra/tuicr@main/worktree",
+    "path": "/Users/alice/Library/Application Support/tuicr/reviews/sessions/9f6c1b3e09a54e2a.json",
+    "updated_at": "2026-05-22T17:20:00Z",
+    "active": false
   }
 ]
 ```

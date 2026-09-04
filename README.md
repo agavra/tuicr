@@ -85,6 +85,7 @@ tuicr tui pr 125            # GitHub PR via explicit TUI subcommand
 tuicr tui mr 125            # GitLab MR via explicit TUI subcommand
 tuicr --stdout              # Pipe the review to stdout
 tuicr review list           # List saved local review sessions
+tuicr review prune --empty --dry-run
 tuicr update                # Update the active installation
 tuicr update 0.18.0         # Install a known-good version
 ```
@@ -189,14 +190,16 @@ tuicr --stdout | pbcopy
 
 ## Review session CLI
 
-`tuicr review` exposes saved sessions without opening the TUI. It can list
-sessions, add comments, and print stored comments for agent and script
-integrations. See [docs/REVIEW_CLI.md](docs/REVIEW_CLI.md).
+`tuicr review` exposes saved sessions without opening the TUI. It can list and
+remove sessions, prune empty or old sessions, add comments, and print stored
+comments for agent and script integrations. See
+[docs/REVIEW_CLI.md](docs/REVIEW_CLI.md).
 
 The TUI creates a persisted session file when a review target becomes active,
 so collaborative tools can add comments immediately. Empty auto-created session
 files are removed when the TUI exits. `tuicr review list` marks currently open
-TUI sessions with `"active": true`.
+TUI sessions with `"active": true`; removal refuses or skips those sessions
+unless `--force` is passed.
 
 Inside the TUI, the review target selector's **Sessions** tab lists the saved
 reviews for the current checkout, so you can resume one by picking it instead of

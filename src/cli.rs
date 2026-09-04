@@ -4,8 +4,9 @@
 //! POJO the rest of the binary consumes. Conversion lives in `From<Cli>`.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
-use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
+use clap::{ArgAction, ArgGroup, Args, Parser, Subcommand, ValueEnum};
 
 use crate::theme::{AppearanceArg, ThemeArg};
 
@@ -262,6 +263,74 @@ pub enum ReviewCommand {
         /// `owner/repo`). PR slugs and JSON paths resolve without it.
         #[arg(long, value_name = "PATH|OWNER/REPO", default_value = ".")]
         repo: PathBuf,
+    },
+
+    /// Delete one persisted review session.
+    #[command(alias = "remove")]
+    Rm {
+        /// Session slug from `tuicr review list` (local or PR), or path to a
+        /// session JSON file.
+        #[arg(long, value_name = "SESSION")]
+        session: String,
+
+        /// Context for resolving a local session slug. Ignored for PR slugs
+        /// and JSON paths.
+        #[arg(long, value_name = "PATH|OWNER/REPO", default_value = ".")]
+        repo: PathBuf,
+
+        /// Delete only if the session has no comments or reviewed files/hunks.
+        #[arg(long)]
+        empty: bool,
+
+        /// Delete an active session instead of rejecting it.
+        #[arg(long)]
+        force: bool,
+    },
+
+    /// Delete persisted sessions that match an age or emptiness criterion.
+    #[command(
+        long_about = "Delete persisted sessions matching exactly one criterion.",
+        group(
+            ArgGroup::new("criterion")
+                .required(true)
+                .multiple(false)
+                .args(["empty", "older_than"])
+        ),
+        group(
+            ArgGroup::new("scope")
+                .multiple(false)
+                .args(["repo", "all"])
+        )
+    )]
+    Prune {
+        /// Select sessions with no comments or reviewed files/hunks.
+        #[arg(long)]
+        empty: bool,
+
+        /// Select sessions last updated more than DURATION ago.
+        #[arg(
+            long,
+            value_name = "DURATION",
+            value_parser = humantime::parse_duration
+        )]
+        older_than: Option<Duration>,
+
+        /// Limit pruning to sessions for PATH|OWNER/REPO. Defaults to the
+        /// current directory; cannot be combined with --all.
+        #[arg(long, value_name = "PATH|OWNER/REPO")]
+        repo: Option<PathBuf>,
+
+        /// Prune sessions across all repositories instead of using --repo.
+        #[arg(long)]
+        all: bool,
+
+        /// Print matching sessions without deleting them.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Include active sessions, which are skipped by default.
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -1029,6 +1098,130 @@ mod tests {
                 repo: PathBuf::from("."),
             })
         );
+    }
+
+    #[test]
+    fn should_parse_review_rm_command() {
+        let parsed = parse_for_test(&[
+            "tuicr",
+            "review",
+            "rm",
+            "--session",
+            "agavra/tuicr@main/worktree",
+            "--empty",
+            "--force",
+        ])
+        .expect("parse should succeed");
+        assert_eq!(
+            parsed.review_command,
+            Some(ReviewCommand::Rm {
+                session: "agavra/tuicr@main/worktree".to_string(),
+                repo: PathBuf::from("."),
+                empty: true,
+                force: true,
+            })
+        );
+    }
+
+    #[test]
+    fn should_parse_review_prune_older_than_command() {
+        let parsed = parse_for_test(&[
+            "tuicr",
+            "review",
+            "prune",
+            "--older-than",
+            "30d",
+            "--repo",
+            "agavra/tuicr",
+            "--dry-run",
+        ])
+        .expect("parse should succeed");
+        assert_eq!(
+            parsed.review_command,
+            Some(ReviewCommand::Prune {
+                empty: false,
+                older_than: Some(Duration::from_secs(30 * 24 * 60 * 60)),
+                repo: Some(PathBuf::from("agavra/tuicr")),
+                all: false,
+                dry_run: true,
+                force: false,
+            })
+        );
+    }
+
+    #[test]
+    fn should_parse_review_prune_empty_all_command() {
+        let parsed = parse_for_test(&["tuicr", "review", "prune", "--empty", "--all", "--force"])
+            .expect("parse should succeed");
+        assert_eq!(
+            parsed.review_command,
+            Some(ReviewCommand::Prune {
+                empty: true,
+                older_than: None,
+                repo: None,
+                all: true,
+                dry_run: false,
+                force: true,
+            })
+        );
+    }
+
+    #[test]
+    fn should_require_one_review_prune_criterion() {
+        let err = parse_for_test(&["tuicr", "review", "prune"]).expect_err("parse should fail");
+        assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
+        let message = err.to_string();
+        assert!(message.contains("<--empty|--older-than <DURATION>>"));
+    }
+
+    #[test]
+    fn should_reject_multiple_review_prune_criteria() {
+        let err = parse_for_test(&["tuicr", "review", "prune", "--empty", "--older-than", "30d"])
+            .expect_err("parse should fail");
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
+        let message = err.to_string();
+        assert!(message.contains("<--empty|--older-than <DURATION>>"));
+    }
+
+    #[test]
+    fn should_reject_review_prune_repo_with_all() {
+        let err = parse_for_test(&[
+            "tuicr",
+            "review",
+            "prune",
+            "--empty",
+            "--repo",
+            "agavra/tuicr",
+            "--all",
+        ])
+        .expect_err("parse should fail");
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
+        assert!(
+            err.to_string()
+                .contains("'--repo <PATH|OWNER/REPO>' cannot be used with '--all'")
+        );
+    }
+
+    #[test]
+    fn should_explain_review_prune_scope_and_active_behavior() {
+        let err = parse_for_test(&["tuicr", "review", "prune", "--help"])
+            .expect_err("help exits through clap");
+        assert_eq!(err.kind(), ErrorKind::DisplayHelp);
+        let help = err.to_string();
+        assert!(help.contains("matching exactly one criterion"));
+        assert!(help.contains("Defaults to the current directory; cannot be combined with --all"));
+        assert!(help.contains("across all repositories instead of using --repo"));
+        assert!(help.contains("Include active sessions, which are skipped by default"));
+    }
+
+    #[test]
+    fn should_use_symmetric_empty_flag_for_review_rm() {
+        let err = parse_for_test(&["tuicr", "review", "rm", "--help"])
+            .expect_err("help exits through clap");
+        assert_eq!(err.kind(), ErrorKind::DisplayHelp);
+        let help = err.to_string();
+        assert!(help.contains("--empty"));
+        assert!(!help.contains("--if-empty"));
     }
 
     #[test]
