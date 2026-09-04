@@ -11,6 +11,7 @@ pub mod canonical;
 pub mod context;
 pub mod github;
 pub mod gitlab;
+pub mod local_git;
 pub mod pr_open;
 pub mod remote_comments;
 pub mod selector;
