@@ -212,6 +212,9 @@ impl App {
     }
 
     pub fn scroll_view_down(&mut self, lines: usize) {
+        // A view scroll is deliberate: disarm the renderer's catch-up so
+        // it cannot move the view against this gesture.
+        self.diff_state.scroll_catchup_armed = false;
         let max_scroll = self.max_scroll_offset();
         self.diff_state.scroll_offset = (self.diff_state.scroll_offset + lines).min(max_scroll);
         let scroll_margin = self.diff_state.effective_scroll_margin(self.scroll_offset);
@@ -224,6 +227,9 @@ impl App {
     }
 
     pub fn scroll_view_up(&mut self, lines: usize) {
+        // A view scroll is deliberate: disarm the renderer's catch-up so
+        // it cannot move the view against this gesture.
+        self.diff_state.scroll_catchup_armed = false;
         self.diff_state.scroll_offset = self.diff_state.scroll_offset.saturating_sub(lines);
         let visible_lines = if self.diff_state.visible_line_count > 0 {
             self.diff_state.visible_line_count
@@ -312,9 +318,41 @@ impl App {
         self.set_message(format!("Diff wrapping: {status}"));
     }
 
+    /// True when wrapped lines render through the gutter-aligned pre-expansion
+    /// path instead of the flow wrap pass.
+    pub fn gutter_wrap_active(&self) -> bool {
+        self.diff_state.wrap_lines && self.diff_state.wrap_style == crate::app::WrapStyle::Gutter
+    }
+
+    /// Content char range of visual row `which_row` of an annotation. In
+    /// gutter wrap mode word-boundary rows hold fewer chars than the
+    /// content column, so the expansion's recorded ranges are authoritative;
+    /// otherwise rows pack uniformly at `content_width` chars per row.
+    pub fn sel_row_char_range(
+        &self,
+        ann_idx: usize,
+        which_row: usize,
+        content_width: usize,
+        total_chars: usize,
+    ) -> (usize, usize) {
+        if let Some(ranges) = self.gutter_sel_ranges.get(&ann_idx) {
+            return ranges
+                .get(which_row)
+                .copied()
+                .unwrap_or((total_chars, total_chars));
+        }
+        let start = (which_row * content_width).min(total_chars);
+        (start, (start + content_width).min(total_chars))
+    }
+
     /// Adjusts scroll_offset so the cursor stays within the visible viewport,
     /// respecting the configured scroll margin (minimum lines from edge).
     pub(in crate::app) fn ensure_cursor_visible(&mut self) {
+        // The cursor moved: arm the renderer's one-frame catch-up. The
+        // stale visible_line_count below can leave the cursor under the
+        // fresh fold after wrap recomputes. The renderer corrects that at
+        // end of frame, only for cursor motion, never for view scrolls.
+        self.diff_state.scroll_catchup_armed = self.diff_state.wrap_lines;
         // Use visible_line_count which is computed during render based on actual line widths.
         // Falls back to viewport_height if not yet set (before first render).
         let visible_lines = self.diff_state.effective_visible_lines();
@@ -746,7 +784,9 @@ impl App {
         }
         let which_row = rel - walker;
         let total_chars = content.chars().count();
-        let char_offset = (which_row * geom.content_width + col_in_row).min(total_chars);
+        let (row_start, row_end) =
+            self.sel_row_char_range(idx, which_row, geom.content_width, total_chars);
+        let char_offset = (row_start + col_in_row).min(row_end).min(total_chars);
         Some(SelPoint {
             annotation_idx: idx,
             char_offset,

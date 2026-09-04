@@ -17,10 +17,12 @@
 //! the renderers.
 
 use ratatui::text::{Line, Span};
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
-use crate::app::{AnnotatedLine, App, DiffViewMode, sbs_overhead};
+use crate::app::{AnnotatedLine, App, DiffViewMode, sbs_overhead, unified_gutter};
 use crate::ui::text_utils::wrap_spans;
-use crate::ui::{comment_panel, diff_view};
+use crate::ui::{comment_panel, diff_view, word_wrap};
 
 pub(crate) fn annotation_row_height(app: &App, idx: usize) -> usize {
     if !app.diff_state.wrap_lines {
@@ -29,6 +31,13 @@ pub(crate) fn annotation_row_height(app: &App, idx: usize) -> usize {
     let viewport_width = app.diff_state.viewport_width;
     if viewport_width == 0 {
         return 1;
+    }
+    // Gutter wrap pre-expands only unified diff content lines; everything
+    // else renders one row (the no-Wrap Paragraph clips overflow). Mirror
+    // the expansion's packing so jumps sum the same heights the renderer
+    // paints.
+    if app.diff_view_mode == DiffViewMode::Unified && app.gutter_wrap_active() {
+        return gutter_row_height(app, idx, viewport_width);
     }
     // SBS parity: the renderer disables the entire wrap pass (including
     // non-content rows) when the per-side content width is 0, falling back
@@ -111,6 +120,52 @@ pub(crate) fn annotation_row_height(app: &App, idx: usize) -> usize {
             wrap_len(&text, viewport_width)
         }
     }
+}
+
+/// Height of `line_annotations[idx]` under gutter wrap: the row count of
+/// `word_wrap::gutter_row_byte_ranges` over the same text the renderer
+/// expands, or 1 for exempt (non diff-content) lines.
+fn gutter_row_height(app: &App, idx: usize, viewport_width: usize) -> usize {
+    let Some(annotation) = app.line_annotations.get(idx) else {
+        return 1;
+    };
+    if !matches!(
+        annotation,
+        AnnotatedLine::DiffLine { .. } | AnnotatedLine::ExpandedContext { .. }
+    ) {
+        return 1;
+    }
+    let text = full_row_text(app, annotation);
+    if text.width() <= viewport_width {
+        return 1;
+    }
+    let gutter_width = unified_gutter(app.lineno_width()) as usize;
+    let content_width = viewport_width.saturating_sub(gutter_width);
+    if content_width == 0 {
+        return 1;
+    }
+    let content = strip_gutter_cells(&text, gutter_width);
+    if content.width() <= content_width {
+        return 1;
+    }
+    word_wrap::gutter_row_byte_ranges(content, content_width)
+        .len()
+        .max(1)
+}
+
+/// Drop the first `gutter_width` display cells (grapheme-aligned), mirroring
+/// the expansion's span split at the same boundary.
+fn strip_gutter_cells(text: &str, gutter_width: usize) -> &str {
+    let mut width = 0;
+    let mut byte_offset = 0;
+    for grapheme in text.graphemes(true) {
+        if width >= gutter_width {
+            break;
+        }
+        width += grapheme.width();
+        byte_offset += grapheme.len();
+    }
+    &text[byte_offset..]
 }
 
 fn repeated_annotation_row(app: &App, idx: usize, annotation: &AnnotatedLine) -> usize {
@@ -813,6 +868,23 @@ mod tests {
     }
 
     #[test]
+    fn parity_unified_with_gutter_wrap() {
+        let mut app = make_app();
+        app.set_diff_wrap(true);
+        app.diff_state.wrap_style = crate::app::WrapStyle::Gutter;
+        render_diff(&mut app, DiffViewMode::Unified, 40, 200);
+        let expanded = observed_heights(&app).into_iter().any(|(idx, height)| {
+            height > 1
+                && matches!(
+                    app.line_annotations.get(idx),
+                    Some(AnnotatedLine::DiffLine { .. })
+                )
+        });
+        assert!(expanded, "expected at least one diff line to gutter-expand");
+        assert_parity(&app);
+    }
+
+    #[test]
     fn parity_side_by_side_with_wrap() {
         let mut app = make_app();
         app.set_diff_wrap(true);
@@ -820,6 +892,23 @@ mod tests {
         assert_coverage(&app, DiffViewMode::SideBySide);
         assert_remote_rows_wrap(&app);
         assert_parity(&app);
+    }
+
+    #[test]
+    fn parity_side_by_side_gutter_style_stays_flow() {
+        // Gutter wrap must not leak into side-by-side. SBS keeps its flow
+        // layout: annotation_row_height gates the gutter branch on Unified.
+        // The render publishes no gutter selection ranges, and parity holds.
+        let mut app = make_app();
+        app.set_diff_wrap(true);
+        app.diff_state.wrap_style = crate::app::WrapStyle::Gutter;
+        render_diff(&mut app, DiffViewMode::SideBySide, 60, 200);
+        assert_coverage(&app, DiffViewMode::SideBySide);
+        assert_parity(&app);
+        assert!(
+            app.gutter_sel_ranges.is_empty(),
+            "SBS render must not publish gutter selection ranges"
+        );
     }
 
     #[test]

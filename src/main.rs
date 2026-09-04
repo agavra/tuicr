@@ -333,6 +333,9 @@ fn main() -> anyhow::Result<()> {
         if let Some(wrap) = cfg.wrap {
             app.diff_state.wrap_lines = wrap;
         }
+        if cfg.wrap_style.as_deref() == Some("gutter") {
+            app.diff_state.wrap_style = app::WrapStyle::Gutter;
+        }
         app.relative_line_numbers = cfg.relative_line_numbers.unwrap_or(false);
         // Open in single-file view when the user opts in. Pristine
         // `--all-files` already turned it on inside `App::new`, so we

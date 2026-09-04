@@ -35,6 +35,7 @@ leader = ","
 comment_vim = false
 comment_tab_width = 4
 wrap = false
+wrap_style = "flow"
 relative_line_numbers = false
 cursor_line = true
 search_highlight = true
@@ -90,6 +91,7 @@ legend = true
 | `comment_vim`              | `false`      | Vim modal editing in the comment box; toggle at runtime with `:vim`. When off, default emacs/readline bindings.                                            |
 | `comment_tab_width`        | `4`          | Spaces inserted by Tab while typing in the vim comment box (Insert mode).                                                                                  |
 | `wrap`                     | `false`      | Line wrap in the diff view. Toggle with `:set wrap!`.                                                                                                      |
+| `wrap_style`               | `flow`       | How wrapped lines render. `flow` uses word wrap with continuation rows starting at column 0. `gutter` wraps at word boundaries within the content column so continuation rows keep the line-number gutter, showing `↪` plus the line's `+`/`-` prefix; tokens longer than the content column hard-cut, and decoration lines (file headers) never split. |
 | `relative_line_numbers`    | `false`      | Show gutter numbers as rendered-row distances from the cursor. Toggle with `:set relativenumber!`.                                                         |
 | `cursor_line`              | `true`       | Highlight the current cursor line and visual selection.                                                                                                    |
 | `search_highlight`         | `true`       | Highlight `/` search matches in the diff view. Clear at runtime with `Esc`; `n` / `N` re-enable.                                                           |

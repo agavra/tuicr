@@ -990,6 +990,17 @@ pub enum DiffViewMode {
     SideBySide,
 }
 
+/// How wrapped diff lines render. `Flow` delegates to the renderer's word
+/// wrap (continuation rows start at column 0). `Gutter` pre-expands logical
+/// lines so continuation rows keep the line-number gutter with a wrap marker
+/// and the diff origin prefix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WrapStyle {
+    #[default]
+    Flow,
+    Gutter,
+}
+
 /// Display order for the inline commit selector. The stored `review_commits`
 /// list is always newest-first; this only flips presentation (render + input
 /// mapping), never the underlying data model.
@@ -1350,6 +1361,12 @@ pub struct App {
     /// Visual-row -> annotation-index map for the diff viewport. Wrapped
     /// logical lines repeat their annotation index across multiple rows.
     pub diff_row_to_annotation: Vec<usize>,
+    /// Gutter-wrap only: per-annotation content char ranges of each visual
+    /// row, emitted by the expansion (word-boundary rows hold fewer chars
+    /// than the content column). Selection painting and cell-to-char
+    /// mapping consult this; absent entries fall back to the uniform
+    /// `which_row * content_width` model. Repopulated every render.
+    pub gutter_sel_ranges: HashMap<usize, Vec<(usize, usize)>>,
     pub expanded_dirs: HashSet<String>,
     /// Stores lines expanded downward from the upper boundary of each gap
     pub expanded_top: HashMap<GapId, Vec<DiffLine>>,
@@ -1529,6 +1546,12 @@ pub struct DiffState {
     pub viewport_width: usize,
     pub max_content_width: usize,
     pub wrap_lines: bool,
+    pub wrap_style: WrapStyle,
+    /// Cursor motion (`ensure_cursor_visible`) arms this flag while wrap
+    /// is on. The renderer consumes it, applies the stale-geometry
+    /// catch-up, and stays armed while corrections still occur. View
+    /// scrolls disarm it, so the catch-up cannot fight ctrl-e/ctrl-y.
+    pub scroll_catchup_armed: bool,
     /// Number of logical lines that fit in the viewport (set during render).
     /// When wrapping is enabled, this accounts for lines expanding to multiple visual rows.
     pub visible_line_count: usize,
@@ -1565,6 +1588,8 @@ impl Default for DiffState {
             viewport_width: 0,
             max_content_width: 0,
             wrap_lines: true,
+            wrap_style: WrapStyle::default(),
+            scroll_catchup_armed: false,
             visible_line_count: 0,
         }
     }

@@ -1215,11 +1215,49 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
     let wrap = app.diff_state.wrap_lines;
     let viewport_width = inner.width as usize;
     let visible_lines_unscrolled_for_bg = visible_lines_unscrolled.clone();
+    let gutter_wrap = app.gutter_wrap_active();
+    // In gutter mode the expansion itself produces both the rendered rows and
+    // the row counts, so renderer and geometry come from the same pass.
+    let gutter_expansion = (gutter_wrap && viewport_width > 0).then(|| {
+        let gutter_width = crate::app::unified_gutter(app.lineno_width()) as usize;
+        let plans = crate::ui::word_wrap::unified_wrap_plans(
+            app,
+            scroll_offset,
+            visible_lines_unscrolled.len(),
+            gutter_width,
+        );
+        crate::ui::word_wrap::expand_gutter_wrap(
+            visible_lines_unscrolled.clone(),
+            &plans,
+            viewport_width,
+            inner.height as usize,
+            &app.theme,
+        )
+    });
+    // Publish the expansion's per-row content char ranges for selection
+    // geometry (word-boundary rows hold fewer chars than the content
+    // column). Each render clears the map, so flow mode and stale
+    // windows use the uniform packing model. Keys use the same raw
+    // rendered-index space that `populate_row_to_annotation` stores
+    // (scroll_offset + rendered line). Producer and consumers therefore
+    // agree when the comment input box shifts indices.
+    app.gutter_sel_ranges.clear();
+    if let Some(expansion) = &gutter_expansion {
+        let pairs: Vec<(usize, Vec<(usize, usize)>)> = expansion
+            .row_char_ranges
+            .iter()
+            .enumerate()
+            .filter(|(_, ranges)| !ranges.is_empty())
+            .map(|(i, ranges)| (scroll_offset + i, ranges.clone()))
+            .collect();
+        app.gutter_sel_ranges.extend(pairs);
+    }
     // Single pass: wrap each logical line once, producing both the visual
     // rows to render and the per-line height used by every row-mapping
     // consumer below, so the two can't disagree.
-    let (row_heights, wrapped_lines): (Vec<usize>, Option<Vec<Line>>) =
-        if wrap && viewport_width > 0 {
+    let (row_heights, wrapped_lines): (Vec<usize>, Option<Vec<Line>>) = match gutter_expansion {
+        Some(expansion) => (expansion.row_heights, Some(expansion.rows)),
+        None if wrap && viewport_width > 0 => {
             let mut heights = Vec::with_capacity(visible_lines_unscrolled_for_bg.len());
             let mut out: Vec<Line> = Vec::new();
             for line in &visible_lines_unscrolled_for_bg {
@@ -1228,9 +1266,9 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                 out.extend(rows.into_iter().map(Line::from));
             }
             (heights, Some(out))
-        } else {
-            (vec![1; visible_lines_unscrolled_for_bg.len()], None)
-        };
+        }
+        None => (vec![1; visible_lines_unscrolled_for_bg.len()], None),
+    };
     app.diff_state.visible_line_count = populate_row_to_annotation(
         &mut app.diff_row_to_annotation,
         &row_heights,
@@ -1239,6 +1277,28 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
         wrap,
         scroll_offset,
     );
+    // Stale-geometry catch-up: ensure_cursor_visible ran at keypress time
+    // with the previous frame's visible_line_count. When fresh wrapping
+    // shrinks the window and leaves the cursor below the fold, correct
+    // the scroll for the next frame and for post-frame state. Only
+    // cursor motion arms it, view scrolls never do. Every painter in
+    // this frame uses the local `scroll_offset`, so the frame stays
+    // consistent and the lag is at most one frame.
+    if wrap
+        && app.input_mode != crate::app::InputMode::Comment
+        && std::mem::take(&mut app.diff_state.scroll_catchup_armed)
+    {
+        let visible_now = app.diff_state.effective_visible_lines();
+        if app.diff_state.cursor_line >= scroll_offset + visible_now {
+            app.diff_state.scroll_offset = app.diff_state.cursor_line + 1 - visible_now;
+            // The corrected window can shrink again. Stay armed until a
+            // frame passes with no correction, so convergence completes.
+            // View scrolls disarm explicitly and stop the chain.
+            app.diff_state.scroll_catchup_armed = true;
+        }
+    } else {
+        app.diff_state.scroll_catchup_armed = false;
+    }
 
     let max_scroll_x = max_content_width.saturating_sub(viewport_width);
     if app.diff_state.scroll_x > max_scroll_x {
@@ -1274,7 +1334,9 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
         wrap_lines: app.diff_state.wrap_lines,
         viewport_width: inner.width as usize,
         scroll_x,
-        scroll_offset: app.diff_state.scroll_offset,
+        // The frame's own offset, never the possibly caught-up live value:
+        // overlays must match the row list this frame rendered.
+        scroll_offset,
         theme: &app.theme,
         comment_bars: &comment_bars,
     };
@@ -1296,6 +1358,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
         &visible_lines_unscrolled_for_bg,
         &row_heights,
         app,
+        scroll_offset,
     );
 
     if let Some(sel) = app.visual_selection {
@@ -1491,8 +1554,8 @@ mod remote_comments_snapshot_tests {
     use ratatui::layout::Rect;
     use std::path::{Path, PathBuf};
 
-    struct SnapshotVcs {
-        info: VcsInfo,
+    pub(super) struct SnapshotVcs {
+        pub(super) info: VcsInfo,
     }
 
     impl VcsBackend for SnapshotVcs {
@@ -1576,7 +1639,7 @@ mod remote_comments_snapshot_tests {
         }
     }
 
-    fn header_only_diff_file_at(path: &str) -> DiffFile {
+    pub(super) fn header_only_diff_file_at(path: &str) -> DiffFile {
         let hunks = Vec::new();
         let content_hash = DiffFile::compute_content_hash(&hunks);
         DiffFile {
@@ -1661,7 +1724,7 @@ mod remote_comments_snapshot_tests {
         .expect("build app")
     }
 
-    fn make_revision_app(diff_files: Vec<DiffFile>) -> App {
+    pub(super) fn make_revision_app(diff_files: Vec<DiffFile>) -> App {
         let vcs_info = VcsInfo {
             root_path: PathBuf::from("/tmp/tuicr"),
             head_commit: "headsha".to_string(),
@@ -1711,7 +1774,7 @@ mod remote_comments_snapshot_tests {
         terminal.backend().buffer().clone()
     }
 
-    fn body_text(buffer: &Buffer) -> String {
+    pub(super) fn body_text(buffer: &Buffer) -> String {
         (0..buffer.area.height)
             .map(|y| {
                 (0..buffer.area.width)
@@ -2264,6 +2327,461 @@ mod remote_comments_snapshot_tests {
             assert_eq!(
                 glyph, "│",
                 "expected │ at ({bar_x},{y}) between cap ({cap_y}) and box top ({box_top_y}), got {glyph:?}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod gutter_wrap_snapshot_tests {
+    //! Render-snapshot tests for `wrap_style = "gutter"`: continuation rows
+    //! keep the gutter (↪ in the lineno column + origin prefix), headers
+    //! never split, and per-row backgrounds/highlights track the expansion.
+    use super::remote_comments_snapshot_tests::{
+        body_text, header_only_diff_file_at, make_revision_app,
+    };
+    use crate::app::{App, WrapStyle};
+    use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use std::path::PathBuf;
+
+    fn long_line_diff_file(content: &str) -> DiffFile {
+        let lines = vec![
+            DiffLine {
+                origin: LineOrigin::Context,
+                content: "short context".to_string(),
+                old_lineno: Some(1),
+                new_lineno: Some(1),
+                highlighted_spans: None,
+            },
+            DiffLine {
+                origin: LineOrigin::Addition,
+                content: content.to_string(),
+                old_lineno: None,
+                new_lineno: Some(2),
+                highlighted_spans: None,
+            },
+        ];
+        let hunk = DiffHunk {
+            header: "@@ -1,1 +1,2 @@".to_string(),
+            lines,
+            old_start: 1,
+            old_count: 1,
+            new_start: 1,
+            new_count: 2,
+        };
+        let hunks = vec![hunk];
+        let content_hash = DiffFile::compute_content_hash(&hunks);
+        DiffFile {
+            old_path: Some(PathBuf::from("src/lib.rs")),
+            new_path: Some(PathBuf::from("src/lib.rs")),
+            status: FileStatus::Modified,
+            hunks,
+            is_binary: false,
+            is_too_large: false,
+            is_commit_message: false,
+            content_hash,
+        }
+    }
+
+    fn gutter_app(diff_files: Vec<DiffFile>) -> App {
+        let mut app = make_revision_app(diff_files);
+        app.diff_state.wrap_style = WrapStyle::Gutter;
+        app.diff_state.wrap_lines = true;
+        app
+    }
+
+    /// A file of `n` additions, each long enough to wrap several times.
+    fn many_wrapped_additions_file(n: usize) -> DiffFile {
+        let lines: Vec<DiffLine> = (0..n)
+            .map(|i| DiffLine {
+                origin: LineOrigin::Addition,
+                content: format!("line{i:02} {}", "wrapped content ".repeat(8)),
+                old_lineno: None,
+                new_lineno: Some(i as u32 + 1),
+                highlighted_spans: None,
+            })
+            .collect();
+        let hunk = DiffHunk {
+            header: format!("@@ -0,0 +1,{n} @@"),
+            lines,
+            old_start: 0,
+            old_count: 0,
+            new_start: 1,
+            new_count: n as u32,
+        };
+        let hunks = vec![hunk];
+        let content_hash = DiffFile::compute_content_hash(&hunks);
+        DiffFile {
+            old_path: Some(PathBuf::from("src/lib.rs")),
+            new_path: Some(PathBuf::from("src/lib.rs")),
+            status: FileStatus::Modified,
+            hunks,
+            is_binary: false,
+            is_too_large: false,
+            is_commit_message: false,
+            content_hash,
+        }
+    }
+
+    fn draw_at(app: &mut App, width: u16, height: u16) -> Buffer {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| super::render_unified_diff(frame, app, Rect::new(0, 0, width, height)))
+            .expect("draw unified diff");
+        terminal.backend().buffer().clone()
+    }
+
+    fn rows(buffer: &Buffer) -> Vec<String> {
+        body_text(buffer).lines().map(str::to_string).collect()
+    }
+
+    #[test]
+    fn should_render_continuation_gutter_for_wrapped_addition() {
+        let mut app = gutter_app(vec![long_line_diff_file(&"a".repeat(120))]);
+        let buffer = draw_at(&mut app, 40, 12);
+        let body = body_text(&buffer);
+        // Continuation row: ↪ in the lineno column, then the carried origin
+        // prefix, then content at the content column — not at column 0.
+        assert!(
+            body.contains("↪▌ a"),
+            "expected gutter-aligned continuation row:\n{body}"
+        );
+        let continuation = rows(&buffer)
+            .into_iter()
+            .find(|row| row.contains('↪'))
+            .expect("a continuation row exists");
+        // First cell inside the panel border is the blank indicator slot.
+        assert_eq!(
+            continuation.chars().nth(1),
+            Some(' '),
+            "continuation keeps the indicator slot blank: {continuation:?}"
+        );
+    }
+
+    #[test]
+    fn should_map_all_visual_rows_of_wrapped_line_to_same_annotation() {
+        let mut app = gutter_app(vec![long_line_diff_file(&"b".repeat(120))]);
+        let buffer = draw_at(&mut app, 40, 12);
+        // The wrapped addition occupies as many consecutive identical
+        // entries in the hit-test map as the buffer shows ↪ rows + 1.
+        let marker_rows = rows(&buffer).iter().filter(|row| row.contains('↪')).count();
+        assert!(marker_rows >= 2, "expected at least 2 continuation rows");
+        let mut counts = std::collections::HashMap::new();
+        for &idx in &app.diff_row_to_annotation {
+            *counts.entry(idx).or_insert(0usize) += 1;
+        }
+        let max_duplicates = counts.values().copied().max().unwrap_or(0);
+        assert_eq!(
+            max_duplicates,
+            marker_rows + 1,
+            "hit-test rows must match rendered rows (marker rows {marker_rows} + first row)"
+        );
+    }
+
+    #[test]
+    fn should_never_split_file_header_in_gutter_mode() {
+        // Narrow viewport, long path: the header would wrap under flow mode.
+        let mut app = gutter_app(vec![header_only_diff_file_at(
+            "src/some/deeply/nested/path/with_a_rather_long_name.rs",
+        )]);
+        let buffer = draw_at(&mut app, 30, 12);
+        let body = body_text(&buffer);
+        // The path appears on exactly one row (clipped at the panel edge),
+        // never spilling onto a second row the way the wrapped header did.
+        let header_rows = rows(&buffer)
+            .iter()
+            .filter(|row| row.contains("src/some"))
+            .count();
+        assert_eq!(
+            header_rows, 1,
+            "header must occupy exactly one row:\n{body}"
+        );
+        assert!(
+            !body.contains("long_name"),
+            "clipped header tail must not spill onto another row:\n{body}"
+        );
+        assert!(
+            !body.contains('↪'),
+            "decoration lines must never grow continuation rows:\n{body}"
+        );
+    }
+
+    #[test]
+    fn should_keep_short_file_header_intact_in_gutter_mode() {
+        let mut app = gutter_app(vec![header_only_diff_file_at("README.md")]);
+        let buffer = draw_at(&mut app, 60, 12);
+        let body = body_text(&buffer);
+        assert!(
+            body.contains("═══ README.md [M] "),
+            "expected full README.md file header in:\n{body}"
+        );
+    }
+
+    #[test]
+    fn should_keep_flow_continuations_at_column_zero_when_wrap_style_flow() {
+        let mut app = make_revision_app(vec![long_line_diff_file(&"c".repeat(120))]);
+        app.diff_state.wrap_lines = true; // default Flow style
+        let buffer = draw_at(&mut app, 40, 12);
+        let body = body_text(&buffer);
+        assert!(
+            !body.contains('↪'),
+            "flow mode must not grow gutter markers:\n{body}"
+        );
+        // Flow continuations start at the panel's first inner column (right
+        // after the border), under the gutter.
+        assert!(
+            rows(&buffer).iter().any(|row| row.starts_with("│c")),
+            "flow continuation rows start at the inner left edge:\n{body}"
+        );
+    }
+
+    #[test]
+    fn should_paint_add_background_across_continuation_rows() {
+        let mut app = gutter_app(vec![long_line_diff_file(&"d".repeat(120))]);
+        let add_bg = app.theme.diff_add_bg;
+        let buffer = draw_at(&mut app, 40, 12);
+        let continuation_y = rows(&buffer)
+            .iter()
+            .position(|row| row.contains('↪'))
+            .expect("a continuation row exists") as u16;
+        // Last column inside the panel border carries the add background even
+        // though the wrapped content ends earlier.
+        assert_eq!(
+            buffer[(buffer.area.width - 2, continuation_y)].style().bg,
+            Some(add_bg),
+            "continuation row right edge must carry the add background"
+        );
+    }
+
+    #[test]
+    fn should_highlight_all_visual_rows_of_cursor_line_in_gutter_mode() {
+        let mut app = gutter_app(vec![long_line_diff_file(&"e".repeat(120))]);
+        let cursor_bg = app.theme.cursor_line_bg;
+        // Move the cursor onto the wrapped addition (last navigable line).
+        app.diff_state.cursor_line = app.max_cursor_line();
+        let buffer = draw_at(&mut app, 40, 12);
+        let continuation_y = rows(&buffer)
+            .iter()
+            .position(|row| row.contains('↪'))
+            .expect("a continuation row exists");
+        // The wrapped line's first visual row sits directly above its first
+        // continuation row; both must carry the cursor background on the
+        // first inner column.
+        for y in [continuation_y - 1, continuation_y] {
+            assert_eq!(
+                buffer[(1, y as u16)].style().bg,
+                Some(cursor_bg),
+                "row {y} of the cursor line must carry the cursor background"
+            );
+        }
+    }
+
+    #[test]
+    fn should_render_cjk_diff_line_in_gutter_mode_without_panic() {
+        let mut app = gutter_app(vec![long_line_diff_file(&"漢字テスト".repeat(12))]);
+        let buffer = draw_at(&mut app, 40, 12);
+        let body = body_text(&buffer);
+        assert!(
+            body.contains('↪'),
+            "CJK content must wrap with gutter continuations:\n{body}"
+        );
+    }
+
+    #[test]
+    fn should_keep_catchup_frame_consistent_after_cursor_walk() {
+        // A j-walk into heavy wrap arms the catch-up. The first frame
+        // after the walk paints with the old offset. In that frame, each
+        // row that carries the cursor background must map to the cursor
+        // line: the catch-up must not shift overlays mid-render. The
+        // second frame shows the corrected viewport.
+        let mut app = gutter_app(vec![long_line_diff_file(&"g".repeat(200))]);
+        let cursor_bg = app.theme.cursor_line_bg;
+        draw_at(&mut app, 40, 10);
+        let max = app.max_cursor_line();
+        for _ in 0..max {
+            app.cursor_down(1);
+        }
+        let buffer = draw_at(&mut app, 40, 10);
+        // Inner rows start below the top border, so buffer row y maps to
+        // hit-map index y - 1.
+        for y in 1..buffer.area.height - 1 {
+            if buffer[(1, y)].style().bg == Some(cursor_bg) {
+                let ann = app.diff_row_to_annotation.get(y as usize - 1).copied();
+                assert_eq!(
+                    ann,
+                    Some(app.diff_state.cursor_line),
+                    "row {y} carries the cursor background but maps elsewhere"
+                );
+            }
+        }
+        draw_at(&mut app, 40, 10);
+        assert!(app.is_cursor_visible(), "second frame shows the cursor");
+    }
+
+    #[test]
+    fn should_keep_gutter_wrap_correct_while_comment_input_box_is_open() {
+        // The wrap planner maps rendered rows to annotations through the
+        // comment-input-box offset. With the box open on the context line
+        // (above the wrapped addition), the addition must still expand with
+        // gutter continuations and decoration rows must stay exempt.
+        let mut app = gutter_app(vec![long_line_diff_file(&"f".repeat(120))]);
+        app.enter_comment_mode(false, Some((1, crate::model::LineSide::New)));
+        let buffer = draw_at(&mut app, 40, 16);
+        let body = body_text(&buffer);
+        assert!(
+            body.contains("↪▌ f"),
+            "wrapped addition keeps gutter continuations below the open box:\n{body}"
+        );
+        // Match the decoration form only: since v0.24 the panel border title
+        // also carries the file name, which is not a rendered header row.
+        let header_rows = rows(&buffer)
+            .iter()
+            .filter(|row| row.contains("═══ src/lib.rs"))
+            .count();
+        assert_eq!(
+            header_rows, 1,
+            "file header stays a single row with the box open:\n{body}"
+        );
+    }
+
+    #[test]
+    fn should_swap_render_modes_when_wrap_toggles_at_runtime() {
+        let mut app = gutter_app(vec![long_line_diff_file(&"g".repeat(120))]);
+        // Gutter wrap on: continuation markers present.
+        let body_on = body_text(&draw_at(&mut app, 40, 12));
+        assert!(
+            body_on.contains('↪'),
+            "expected markers while on:\n{body_on}"
+        );
+
+        // :set wrap! off — clipped single rows, no markers, no flow wrap.
+        app.set_diff_wrap(false);
+        let body_off = body_text(&draw_at(&mut app, 40, 12));
+        assert!(
+            !body_off.contains('↪'),
+            "no markers with wrap off:\n{body_off}"
+        );
+
+        // Back on: gutter expansion resumes.
+        app.set_diff_wrap(true);
+        let body_back = body_text(&draw_at(&mut app, 40, 12));
+        assert!(
+            body_back.contains('↪'),
+            "markers return after toggling wrap back on:\n{body_back}"
+        );
+    }
+
+    #[test]
+    fn should_show_last_line_after_jump_to_bottom_with_heavy_wrapping() {
+        // Regression (test campaign, probe 1): jump_to_bottom positioned the
+        // scroll using the raw viewport height in logical-line units, so
+        // with wrapped lines the cursor and the last line landed far below
+        // the fold.
+        let mut app = gutter_app(vec![many_wrapped_additions_file(14)]);
+        // First draw establishes the wrap-aware visible_line_count.
+        let _ = draw_at(&mut app, 40, 12);
+        app.jump_to_bottom();
+        // Geometry is computed lazily during render, so the first frame
+        // after a jump may still under-scroll; the render's catch-up clamp
+        // corrects the scroll for the following frame — same cadence as
+        // the event loop's next redraw.
+        let _ = draw_at(&mut app, 40, 12);
+        let buffer = draw_at(&mut app, 40, 12);
+        let body = body_text(&buffer);
+        assert!(
+            body.contains("line13"),
+            "last line must be on screen after G:\n{body}"
+        );
+        assert!(
+            app.is_cursor_visible(),
+            "cursor must be visible after G (scroll {}, cursor {}, visible {})",
+            app.diff_state.scroll_offset,
+            app.diff_state.cursor_line,
+            app.diff_state.visible_line_count
+        );
+    }
+
+    #[test]
+    fn should_keep_cursor_on_screen_walking_j_across_wrapped_lines() {
+        // Regression (test campaign, probe 2): the scroll-catch-up cap in
+        // cursor_down assumed one visual row per logical line, accumulating
+        // a scroll deficit on wrapped lines until the cursor walked off
+        // screen.
+        let mut app = gutter_app(vec![many_wrapped_additions_file(14)]);
+        let _ = draw_at(&mut app, 40, 12);
+        let max = app.max_cursor_line();
+        for step in 0..max {
+            app.cursor_down(1);
+            // One frame of catch-up is allowed (lazy geometry; the render's
+            // clamp corrects the scroll for the next frame). What must
+            // never happen is the old unbounded deficit that walked the
+            // cursor permanently off screen.
+            let _ = draw_at(&mut app, 40, 12);
+            let _ = draw_at(&mut app, 40, 12);
+            assert!(
+                app.is_cursor_visible(),
+                "cursor off screen at step {step}: scroll {}, cursor {}, visible {}",
+                app.diff_state.scroll_offset,
+                app.diff_state.cursor_line,
+                app.diff_state.visible_line_count
+            );
+        }
+    }
+
+    #[test]
+    fn should_paint_visual_selection_on_every_row_of_word_wrapped_line() {
+        // Regression (test campaign, probe 4b): word-boundary rows hold
+        // fewer chars than the content column, so the uniform
+        // `which_row * content_width` model exhausted the selection's char
+        // range before the last visual row — the row rendered with no
+        // selection background. The expansion's recorded per-row char
+        // ranges fix the mapping.
+        use crate::app::{SelPoint, VisualSelection};
+        use crate::model::LineSide;
+
+        // Four words that word-wrap into several short rows.
+        let content = "alphaword betaword gammaword deltaword";
+        let mut app = gutter_app(vec![long_line_diff_file(content)]);
+        let buffer = draw_at(&mut app, 24, 12); // content_width 24-2(border)-8(gutter)
+        let marker_rows: Vec<usize> = rows(&buffer)
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.contains('↪'))
+            .map(|(y, _)| y)
+            .collect();
+        assert!(marker_rows.len() >= 2, "need a multi-row wrapped line");
+
+        // Select the whole wrapped line.
+        let ann_idx = app.diff_row_to_annotation[marker_rows[0]];
+        let sel_bg = app.theme.bg_highlight; // visual_selection_style's bg
+        app.visual_selection = Some(VisualSelection {
+            anchor: SelPoint {
+                annotation_idx: ann_idx,
+                char_offset: 0,
+                side: LineSide::New,
+            },
+            head: SelPoint {
+                annotation_idx: ann_idx,
+                char_offset: content.chars().count(),
+                side: LineSide::New,
+            },
+        });
+        let buffer = draw_at(&mut app, 24, 12);
+
+        // Every visual row of the line (first row + each continuation row)
+        // must carry the selection background at the content column.
+        let content_x = 1 + 8; // border + gutter
+        let first_row_y = marker_rows[0] - 1;
+        for y in std::iter::once(first_row_y).chain(marker_rows.iter().copied()) {
+            assert_eq!(
+                buffer[(content_x as u16, y as u16)].style().bg,
+                Some(sel_bg),
+                "visual row {y} of the selected wrapped line lacks selection bg"
             );
         }
     }
