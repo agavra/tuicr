@@ -20,8 +20,8 @@ use tuicr::handler::{
     handle_submit_resolver_action, handle_summary_action, handle_visual_action,
 };
 use tuicr::input::{
-    Action, map_file_tree_mode, map_file_tree_prompt_mode, map_key_to_action,
-    map_target_filter_mode,
+    Action, map_file_tree_mode_with_q_quits, map_file_tree_prompt_mode,
+    map_key_to_action_with_q_quits, map_target_filter_mode,
 };
 use tuicr::terminal_state::{TerminalFeatures, TerminalSession};
 use tuicr::theme::resolve_theme_with_config;
@@ -234,6 +234,7 @@ fn main() -> anyhow::Result<()> {
                     app.leader_key = leader;
                 }
                 app.comment_vim_enabled = cfg.comment_vim.unwrap_or(false);
+                app.q_quits = cfg.q_quits.unwrap_or(false);
                 if let Some(w) = cfg.comment_tab_width {
                     app.comment_tab_width = w;
                 }
@@ -656,9 +657,14 @@ fn main() -> anyhow::Result<()> {
                     {
                         // The tree claims i/e/I/E and `/` for filtering; the
                         // diff keeps its own meanings for those keys.
-                        map_file_tree_mode(key, app.leader_key)
+                        map_file_tree_mode_with_q_quits(key, app.leader_key, app.q_quits)
                     } else {
-                        map_key_to_action(key, app.input_mode, app.leader_key)
+                        map_key_to_action_with_q_quits(
+                            key,
+                            app.input_mode,
+                            app.leader_key,
+                            app.q_quits,
+                        )
                     };
 
                     // Handle pending command setters (these work in any mode)

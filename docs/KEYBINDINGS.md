@@ -226,8 +226,8 @@ In command mode,
 | `ZQ` | Quit without saving |
 | `?` | Toggle help |
 
-Pressing bare `q` no longer quits; it prints a reminder to use `:q` instead — a transitional
-affordance that will be removed in a future release.
+Pressing bare `q` no longer quits by default; it prints a reminder to use `:q` instead. Set
+`q_quits = true` to restore `q` as a quit key in review modes.
 
 The summary replaces the diff while leaving the file sidebar visible when it is open. The first
 pending comment is selected when the summary opens. Use `j`/`k` to select the next

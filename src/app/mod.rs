@@ -1150,6 +1150,8 @@ pub struct App {
     pub comment_cursor: usize,
     /// Config `comment_vim`: vim modal editing in the comment box.
     pub comment_vim_enabled: bool,
+    /// Config `q_quits`: restore bare `q` as a quit key in review modes.
+    pub q_quits: bool,
     /// Spaces inserted by Tab while typing in the vim comment box (config
     /// `comment_tab_width`, default 4).
     pub comment_tab_width: usize,
