@@ -83,11 +83,49 @@ check_repo() {
   return 1
 }
 
+# Whether the pane this wrapper was called from is a zellij floating overlay.
+#
+# zellij's layout dump groups floating panes under `floating_panes {` and
+# carries no pane ids, so the caller has to be recognised by its command line.
+# That is not this shell — an agent calls the wrapper several processes deep —
+# so walk up to the pane's own process and try each ancestor.
+caller_pane_is_floating() {
+  local layout pid cmd
+  layout=$("$ZELLIJ_BIN" action dump-layout 2>/dev/null) || return 1
+
+  pid=$$
+  while [[ -n "$pid" && "$pid" != "1" ]]; do
+    cmd=$(tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null | head -1)
+    if [[ -n "$cmd" && "$cmd" != "bash" && "$cmd" != "sh" ]]; then
+      if printf '%s\n' "$layout" | awk -v needle="$cmd" '
+           # Only the focused tab: a floating pane in some other tab says
+           # nothing about where this one is.
+           /^    tab / { in_tab = ($0 ~ /focus=true/); inside = 0 }
+           in_tab && /floating_panes \{/ { inside = 1 }
+           inside && index($0, needle) { found = 1 }
+           inside && /^        \}/ { inside = 0 }
+           END { exit(found ? 0 : 1) }
+         '; then
+        return 0
+      fi
+    fi
+    pid=$(awk '{print $4}' "/proc/$pid/stat" 2>/dev/null)
+  done
+  return 1
+}
+
 check_tuicr_running() {
-  # Zellij has no panes-list CLI like tmux. Fall back to a process check.
-  if pgrep -x tuicr &> /dev/null; then
-    return 0
-  fi
+  # Zellij has no panes-list CLI like tmux. Fall back to a process check —
+  # scoped to the repository being opened, since a tuicr reviewing some other
+  # checkout is no reason to refuse this one.
+  local target="$1"
+  local pid cwd
+  for pid in $(pgrep -x tuicr 2>/dev/null); do
+    cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null) || continue
+    if [[ "$cwd" == "$target" || "$cwd" == "$target"/* ]]; then
+      return 0
+    fi
+  done
   return 1
 }
 
@@ -129,12 +167,24 @@ launch_tuicr_pane() {
 
   # Spawn tuicr in a new zellij pane. --close-on-exit cleans up the pane when
   # tuicr quits; the trailing FIFO write unblocks the wrapper.
-  zellij_args=("--close-on-exit" "--name" "tuicr")
+  # Without --near-current-pane zellij opens beside whatever is FOCUSED, which
+  # is the tab the human is looking at rather than the pane this wrapper runs
+  # in — an agent's review lands in someone else's tab.
+  zellij_args=("--close-on-exit" "--near-current-pane" "--name" "tuicr")
 
-  if [[ "$TUICR_PANE_DIRECTION" == "stacked" ]]; then
+  # A stack is only visible from a tiled pane. Called from a floating overlay,
+  # a stacked pane is hidden behind whatever is already stacked there, so the
+  # review appears not to have opened at all — split instead.
+  local direction="$TUICR_PANE_DIRECTION"
+  if [[ "$direction" == "stacked" ]] && caller_pane_is_floating; then
+    direction="right"
+    log_info "Caller is a floating pane; opening a split instead of a stack"
+  fi
+
+  if [[ "$direction" == "stacked" ]]; then
     zellij_args+=("--stacked")
   else
-    zellij_args+=("--direction" "$TUICR_PANE_DIRECTION")
+    zellij_args+=("--direction" "$direction")
   fi
 
   # bash, not sh: $tuicr_cmd carries bash's printf %q quoting, which can emit
@@ -146,7 +196,7 @@ launch_tuicr_pane() {
     "${zellij_args[@]}"
 
 
-  log_info "tuicr is running in a $TUICR_PANE_DIRECTION pane"
+  log_info "tuicr is running in a $direction pane"
   log_info "Waiting for tuicr to exit..."
 
   # Block until the spawned command writes to the FIFO
@@ -195,7 +245,7 @@ main() {
   fi
 
   # Check if tuicr is already running
-  if check_tuicr_running; then
+  if check_tuicr_running "$target_dir"; then
     log_warn "tuicr is already running"
     log_info "Switch to its pane with Alt-arrow keys (default zellij binding)"
     exit 0
