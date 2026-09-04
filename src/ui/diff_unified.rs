@@ -24,6 +24,15 @@ use crate::ui::diff_view::{
 use crate::ui::styles;
 use crate::vcs::git::calculate_gap;
 
+fn unified_row_height(lines: &[Line], idx: usize, wrap: bool, viewport_width: usize) -> usize {
+    if !wrap || viewport_width == 0 {
+        return 1;
+    }
+    lines.get(idx).map_or(1, |line| {
+        crate::ui::text_utils::wrap_spans(&line.spans, viewport_width).len()
+    })
+}
+
 pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focused_panel == FocusedPanel::Diff;
 
@@ -1181,12 +1190,15 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
     // Auto-scroll so the comment input box stays visible while the user types.
     // Without this, adding a comment near the bottom/top of the viewport would
     // place the input box off-screen and the user couldn't see what they type.
+    let wrap = app.diff_state.wrap_lines;
+    let viewport_width = inner.width as usize;
     scroll_comment_input_into_view(
         &mut app.diff_state.scroll_offset,
         comment_input_box_range,
         comment_cursor_logical_line,
         inner.height as usize,
         lines.len(),
+        |idx| unified_row_height(&lines, idx, wrap, viewport_width),
     );
 
     let visible_lines_unscrolled: Vec<Line> = lines
@@ -1212,8 +1224,6 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
     app.diff_state.max_content_width = max_content_width;
 
     let scroll_offset = app.diff_state.scroll_offset;
-    let wrap = app.diff_state.wrap_lines;
-    let viewport_width = inner.width as usize;
     let visible_lines_unscrolled_for_bg = visible_lines_unscrolled.clone();
     // Single pass: wrap each logical line once, producing both the visual
     // rows to render and the per-line height used by every row-mapping
@@ -1479,7 +1489,8 @@ mod remote_comments_snapshot_tests {
     };
     use crate::forge::traits::{ForgeRepository, PrSessionKey};
     use crate::model::{
-        DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin, ReviewSession, SessionDiffSource,
+        DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin, LineSide, ReviewSession,
+        SessionDiffSource,
     };
     use crate::syntax::SyntaxHighlighter;
     use crate::theme::Theme;
@@ -1756,6 +1767,52 @@ mod remote_comments_snapshot_tests {
         }
     }
 
+    fn wrapping_diff_file(count: u32) -> DiffFile {
+        let lines: Vec<DiffLine> = (1..=count)
+            .map(|i| DiffLine {
+                origin: LineOrigin::Addition,
+                content: format!("line {i} {}", "x".repeat(120)),
+                old_lineno: None,
+                new_lineno: Some(i),
+                highlighted_spans: None,
+            })
+            .collect();
+        let hunks = vec![DiffHunk {
+            header: format!("@@ -0,0 +1,{count} @@"),
+            lines,
+            old_start: 0,
+            old_count: 0,
+            new_start: 1,
+            new_count: count,
+        }];
+        let content_hash = DiffFile::compute_content_hash(&hunks);
+        DiffFile {
+            old_path: None,
+            new_path: Some(PathBuf::from("src/lib.rs")),
+            status: FileStatus::Added,
+            hunks,
+            is_binary: false,
+            is_too_large: false,
+            is_commit_message: false,
+            content_hash,
+        }
+    }
+
+    #[test]
+    fn should_show_comment_input_at_eof_when_lines_wrap() {
+        let mut app = make_revision_app(vec![wrapping_diff_file(40)]);
+        app.diff_state.wrap_lines = true;
+        let _ = draw_unified_diff(&mut app);
+        app.jump_to_bottom();
+        app.enter_comment_mode(false, Some((40, LineSide::New)));
+        let buffer = draw_unified_diff(&mut app);
+        let body = body_text(&buffer);
+        assert!(
+            body.contains("Type your comment..."),
+            "expected the comment input box to be visible in:\n{body}"
+        );
+    }
+
     #[test]
     fn should_render_commit_message_without_line_numbers_in_unified() {
         let mut app = make_revision_app(vec![commit_message_file(
@@ -1797,7 +1854,6 @@ mod remote_comments_snapshot_tests {
         let mut app = make_pr_app();
         app.forge_review_threads = vec![thread("t1", "alice", "looks good?", 2, false, false)];
         app.rebuild_annotations();
-        // when
         let buffer = draw(&mut app);
         // then — the badge appears somewhere in the rendered frame
         let body = body_text(&buffer);
@@ -1863,7 +1919,6 @@ mod remote_comments_snapshot_tests {
         let before = body_text(&draw(&mut app));
         assert!(before.contains("[github @alice]"));
 
-        // when
         assert!(app.set_remote_comments_visibility(PrCommentsVisibility::Hide));
         // then
         let after = body_text(&draw(&mut app));
@@ -1917,7 +1972,6 @@ mod remote_comments_snapshot_tests {
             }],
         }];
         app.rebuild_annotations();
-        // when
         let buffer = draw(&mut app);
         let body = body_text(&buffer);
         // then — the badge and body appear in the rendered frame
