@@ -90,6 +90,8 @@ Target flags:
 - add `--line <n>` for a line comment
 - add `--end-line <n>` for a range comment
 - use `--side old|new` for inline comments
+- use `--username <name>` to identify the comment author; otherwise tuicr uses
+  the configured `username` or `"user"`
 
 ## JSON Input
 
@@ -116,6 +118,8 @@ Flat JSON fields:
 - `line`: line number for a line comment
 - `start_line` and `end_line`: range bounds
 - `side`: `old` or `new`, defaults to `new`
+- `username` or `author`: comment author; uses the same fallback as
+  `--username`
 
 Nested targets are also accepted:
 
@@ -191,9 +195,13 @@ PR slug:
     "end_line": 42,
     "side": "new",
     "comment_type": "issue",
+    "author": "alice",
     "lifecycle_state": "local_draft",
     "created_at": "2026-05-22T17:20:00Z",
     "content": "Handle the empty case here."
   }
 ]
 ```
+
+The `author` field is the username stored with the comment. It is present in
+the JSON emitted by both `review add` and `review comments`.

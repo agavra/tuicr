@@ -550,6 +550,7 @@ struct CommentOutput {
     end_line: Option<u32>,
     side: Option<&'static str>,
     comment_type: String,
+    author: String,
     lifecycle_state: &'static str,
     created_at: String,
     content: String,
@@ -599,6 +600,7 @@ impl CommentOutput {
             end_line,
             side: side_id(side),
             comment_type: comment.comment_type.id().to_string(),
+            author: comment.author.clone(),
             lifecycle_state: lifecycle_id(comment.lifecycle_state),
             created_at: comment.created_at.to_rfc3339(),
             content: comment.content.clone(),
@@ -846,7 +848,7 @@ mod tests {
                     },
                     content: "check this".to_string(),
                     comment_type: CommentType::from_id("issue"),
-                    author: crate::model::comment::DEFAULT_AUTHOR.to_string(),
+                    author: "review-agent".to_string(),
                     commit_id: None,
                 },
             )
@@ -858,12 +860,35 @@ mod tests {
         assert_eq!(comments[0].id, comment.id);
         assert_eq!(comments[0].location, "src/main.rs:42");
         assert_eq!(comments[0].comment_type, "issue");
+        assert_eq!(comments[0].author, "review-agent");
 
         show_comments(&session_ref.path().display().to_string(), &repo, &mut out).unwrap();
         let text = String::from_utf8(out).unwrap();
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(value[0]["comment_type"], "issue");
+        assert_eq!(value[0]["author"], "review-agent");
         assert_eq!(value[0]["location"], "src/main.rs:42");
         assert_eq!(value[0]["content"], "check this");
+    }
+
+    #[test]
+    fn should_include_author_in_add_comment_output() {
+        let comment = Comment::new(
+            "check this".to_string(),
+            CommentType::from_id("issue"),
+            Some(LineSide::New),
+        )
+        .with_author("review-agent");
+        let value = serde_json::to_value(CommentOutput::from_target(
+            &CommentTarget::Line {
+                path: PathBuf::from("src/main.rs"),
+                line: 42,
+                side: LineSide::New,
+            },
+            &comment,
+        ))
+        .unwrap();
+
+        assert_eq!(value["author"], "review-agent");
     }
 }
