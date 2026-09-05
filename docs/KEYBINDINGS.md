@@ -236,8 +236,9 @@ to the continuous diff and jumps to the selected comment, leaving single-file vi
 while `Esc` returns without jumping. Reviewed files and hunks are revealed for the jump without
 losing their reviewed state.
 
-`draft` applies to GitHub only. `comment` and `approve` work on GitHub, GitLab, and Bitbucket.
-`request-changes` works on GitHub and GitLab, but not Bitbucket yet.
+`draft` works on GitHub (pending review), GitLab (draft notes), and Gerrit (draft comments) — in
+each case you publish from the forge's own UI. `comment` and `approve` work on GitHub, GitLab,
+Bitbucket, and Gerrit. `request-changes` works on GitHub, GitLab, and Gerrit, but not Bitbucket yet.
 
 ## Commit selection / review target selector
 

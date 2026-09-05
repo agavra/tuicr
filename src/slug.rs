@@ -120,6 +120,7 @@ impl fmt::Display for PrSlug {
             ForgeKind::GitLab => "gl",
             ForgeKind::Bitbucket => "bb",
             ForgeKind::AzureDevOps => "az",
+            ForgeKind::Gerrit => "ge",
         };
         write!(
             f,
@@ -191,6 +192,7 @@ impl FromStr for Slug {
                 "gl" => ForgeKind::GitLab,
                 "bb" => ForgeKind::Bitbucket,
                 "az" => ForgeKind::AzureDevOps,
+                "ge" => ForgeKind::Gerrit,
                 other => return Err(SlugParseError::UnknownForge(other.to_string())),
             };
             return parse_pr(forge, rest).map(Slug::Pr);
@@ -717,6 +719,23 @@ mod tests {
     }
 
     #[test]
+    fn should_roundtrip_gerrit_pr_slug_with_a_nested_project_path() {
+        // Gerrit projects are paths, so the parent segments land in the owner
+        // exactly like Azure's `org/project`.
+        assert_roundtrip("ge:platform/frameworks/base/pr/3965");
+        let parsed: Slug = "ge:platform/frameworks/base/pr/3965".parse().unwrap();
+        match parsed {
+            Slug::Pr(pr) => {
+                assert_eq!(pr.forge, ForgeKind::Gerrit);
+                assert_eq!(pr.owner, "platform/frameworks");
+                assert_eq!(pr.repo, "base");
+                assert_eq!(pr.number, 3965);
+            }
+            other => panic!("expected PR slug, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn should_roundtrip_azure_local_slug_with_org_project_owner() {
         // Azure packs `org/project` into the owner, so a local slug carries an
         // extra `/`. parse_local must treat the repo as the last segment.
@@ -888,6 +907,21 @@ mod tests {
             "https://myorg.visualstudio.com/myproject/_git/myrepo",
             "https://myorg.visualstudio.com/DefaultCollection/myproject/_git/myrepo",
             "git@ssh.dev.azure.com:v3/myorg/myproject/myrepo",
+        ] {
+            assert_eq!(parse_remote_owner_repo(url), expected, "parsing {url}");
+        }
+    }
+
+    #[test]
+    fn should_parse_gerrit_remote_urls_with_a_nested_project_path() {
+        // The last-two-segments rule would call `frameworks` the owner, which
+        // never matches the `platform/frameworks` owner a `ge:` PR slug
+        // carries.
+        let expected = Some(("platform/frameworks".to_string(), "base".to_string()));
+        for url in [
+            "https://gerrit.example.com/platform/frameworks/base",
+            "https://jdoe@gerrit.example.com/a/platform/frameworks/base.git",
+            "ssh://jdoe@review.internal:29418/platform/frameworks/base",
         ] {
             assert_eq!(parse_remote_owner_repo(url), expected, "parsing {url}");
         }

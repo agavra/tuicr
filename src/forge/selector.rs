@@ -85,7 +85,7 @@ impl PullRequestsTab {
                 scope: PullRequestListScope::Open,
             },
             None => PullRequestsTab::Disabled {
-                reason: "No GitHub, GitLab, Bitbucket, or Azure DevOps remote on this repo"
+                reason: "No GitHub, GitLab, Bitbucket, Azure DevOps, or Gerrit remote on this repo"
                     .to_string(),
             },
         }

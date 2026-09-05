@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Features
+
+- **gerrit:** Add Gerrit Code Review support over the Gerrit REST API (no CLI
+  needed). Open and browse changes, read existing comments — including
+  outdated ones from earlier patch sets — and push reviews with `:submit`
+  (Comment, Approve as `Code-Review +2`, Request changes as `-1`, and Draft as
+  Gerrit draft comments). Self-hosted hosts are detected by the canonical SSH
+  port 29418, a `GERRIT_URL`, or a hostname containing "gerrit". The `r`
+  toggle in the Pull Requests tab lists changes in your Gerrit *attention set*
+  (`attention:self -owner:self`) rather than every change you review, so it
+  answers "what needs me now"; that toggle needs Gerrit 3.3+. Auth is a Gerrit
+  HTTP password in `GERRIT_USERNAME` / `GERRIT_PASSWORD`. Reviewing needs a
+  local clone, and patch-set comparison is not supported yet. See
+  `docs/GERRIT.md`.
+
 ## [0.25.0] - 2026-09-02
 
 ### Bug Fixes

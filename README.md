@@ -1,6 +1,6 @@
 # tuicr
 
-**A code review TUI with vim keybindings. Export to GitHub, GitLab, Bitbucket, or clipboard.**
+**A code review TUI with vim keybindings. Export to GitHub, GitLab, Bitbucket, Gerrit, or clipboard.**
 
 [![Crates.io](https://img.shields.io/crates/v/tuicr)](https://crates.io/crates/tuicr)
 [![License](https://img.shields.io/crates/l/tuicr)](./LICENSE)
@@ -16,10 +16,10 @@
 - GitHub-style continuous diff in the terminal. Scroll through every changed file in one stream.
 - PR-style comments at the line, range, file, and review level. 
 - Review tracking at file or hunk granularity, persisted across sessions.
-- Three export targets: push a real review to GitHub, GitLab, or Bitbucket, copy structured
+- Push a real review to GitHub, GitLab, Bitbucket, or Gerrit, copy structured
   markdown to your clipboard, or pipe to stdout.
 - Works with git, jj, and mercurial. Reviews uncommitted changes, commit ranges, or any GitHub PR,
-  GitLab MR, or Bitbucket PR.
+  GitLab MR, Bitbucket PR, or Gerrit change.
 
 ## Install
 
@@ -79,7 +79,7 @@ tuicr                       # Pick from a commit selector
 tuicr tui                   # Same TUI, explicit subcommand
 tuicr -w                    # Uncommitted changes (skip selector)
 tuicr -r main..HEAD         # Commit range
-tuicr pr 125                # GitHub PR, or Bitbucket PR
+tuicr pr 125                # GitHub PR, Bitbucket PR, or Gerrit change
 tuicr mr 125                # GitLab MR
 tuicr tui pr 125            # GitHub PR via explicit TUI subcommand
 tuicr tui mr 125            # GitLab MR via explicit TUI subcommand
@@ -90,9 +90,10 @@ tuicr update 0.18.0         # Install a known-good version
 ```
 
 Inside tuicr, navigate with `j`/`k`, press `c` to comment, then `y` to copy the review or
-`:submit` to push it to GitHub, GitLab, or Bitbucket. When reopening a pull request you've reviewed
-before, tuicr preselects commits newer than your latest submitted review when that metadata is
-available; commits already covered by that review are marked with `✓` in the inline selector.
+`:submit` to push it to GitHub, GitLab, Bitbucket, or Gerrit. When reopening a pull request you've
+reviewed before, tuicr preselects commits newer than your latest submitted review when that
+metadata is available; commits already covered by that review are marked with `✓` in the inline
+selector.
 (Bitbucket does not record which commit an approval covered, so that preselection does not apply
 there.)
 Use `:summary` during a review to show every pending local-draft comment. The summary replaces the
@@ -114,6 +115,7 @@ Auto-detects git, jj, or mercurial.
 | Push inline review to GitHub | ✅ | ❌ | ❌ | partial² | ❌ |
 | Push inline review to GitLab | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Push inline review to Bitbucket | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Push inline review to Gerrit | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Agent-ready markdown export | ✅ | via CLI skill | ❌ | ❌ | ❌ |
 | git | ✅ | ✅ | ✅ | ❌ | ✅ |
 | jj | ✅ | ✅ | ✅ | ❌ | ❌ |
@@ -159,6 +161,16 @@ Access Token in `AZURE_DEVOPS_EXT_PAT` (preferred — works with enterprise tena
 to `az login` via the Azure CLI. Run tuicr from a local clone of the repo — Azure exposes no
 unified-diff API, so the diff is built with `git diff base...head`. See
 [docs/AZURE.md](docs/AZURE.md) for setup, supported URL forms, and MVP limitations.
+
+### To Gerrit
+
+`:submit` offers Comment, Approve, Request changes, or Draft on a Gerrit change. Inline comments
+post as Gerrit comments (multi-line ranges included) and the review-level comment becomes the
+change message; Approve votes `Code-Review +2` and Request changes votes `-1`. Draft keeps
+everything as Gerrit draft comments so you can publish from the web UI. Auth is your Gerrit HTTP
+password in `GERRIT_USERNAME` / `GERRIT_PASSWORD`. Run tuicr from a local clone — the diff is
+built with `git diff base..head` after fetching the change's patch-set ref. See
+[docs/GERRIT.md](docs/GERRIT.md) for setup, detection of self-hosted hosts, and limitations.
 
 ### To your coding agent
 
@@ -290,7 +302,7 @@ A first-session cheatsheet. Press `?` inside tuicr for the full reference.
 | `e` | Open focused file in `$EDITOR` |
 | `y` | Copy review to clipboard |
 | `:edit` | Open focused file in `$EDITOR` |
-| `:submit` | Push review to GitHub, GitLab, or Bitbucket |
+| `:submit` | Push review to GitHub, GitLab, Bitbucket, or Gerrit |
 | `Tab` in `:` prompt | Complete or cycle commands |
 | `?` | Toggle full help |
 

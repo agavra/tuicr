@@ -830,6 +830,7 @@ impl App {
     ) -> Result<Self> {
         use crate::forge::azure::az::parse_pull_request_target_azure;
         use crate::forge::bitbucket::bkt::parse_pull_request_target_bitbucket;
+        use crate::forge::gerrit::api::parse_pull_request_target_gerrit;
         use crate::forge::github::gh::parse_pull_request_target;
         use crate::forge::gitlab::glab::parse_pull_request_target_gitlab;
         use crate::forge::pr_open::open_pull_request;
@@ -838,12 +839,13 @@ impl App {
         // Bitbucket first: its URL shape (`/pull-requests/<n>`) is distinct,
         // and the GitHub parser would otherwise claim the host. GitHub then
         // handles numeric / `owner/repo#N` / GitHub URLs, GitLab handles
-        // `/-/merge_requests/<n>`, and an Azure DevOps PR URL falls through to
-        // the Azure parser last.
+        // `/-/merge_requests/<n>`, and the Azure (`/pullrequest/<n>`) and
+        // Gerrit (`/c/<project>/+/<n>`) URL shapes fall through last.
         let parsed = parse_pull_request_target_bitbucket(target)
             .or_else(|_| parse_pull_request_target(target))
             .or_else(|_| parse_pull_request_target_gitlab(target))
-            .or_else(|_| parse_pull_request_target_azure(target))?;
+            .or_else(|_| parse_pull_request_target_azure(target))
+            .or_else(|_| parse_pull_request_target_gerrit(target))?;
 
         // Resolution order when the target lacks an explicit repo
         // (`tuicr pr 125`):
