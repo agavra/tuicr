@@ -38,8 +38,8 @@ pub const GAP_EXPAND_BATCH: usize = 20;
 
 /// Create a forge backend for the given repository.
 /// Routes to the GitHub backend (via `gh`), the GitLab backend (via `glab`),
-/// the Gitea backend (via `tea`), the
-/// Bitbucket Cloud backend (via `bkt`), or the Azure DevOps backend (via `az`)
+/// the Gitea backend (via `tea`), the Bitbucket Cloud backend (via `bkt`),
+/// the Azure DevOps backend (via `az`), or the Gerrit backend (REST, no CLI)
 /// based on `repo.kind`.
 fn create_forge_backend(
     repo: &ForgeRepository,
@@ -82,6 +82,10 @@ fn create_forge_backend(
             Box::new(
                 AzureDevOpsBackend::new(Some(repo.clone())).with_local_checkout(local_checkout),
             )
+        }
+        ForgeKind::Gerrit => {
+            use crate::forge::gerrit::GerritBackend;
+            Box::new(GerritBackend::new(Some(repo.clone())).with_local_checkout(local_checkout))
         }
     }
 }

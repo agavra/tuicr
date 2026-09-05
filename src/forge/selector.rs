@@ -85,8 +85,10 @@ impl PullRequestsTab {
                 scope: PullRequestListScope::Open,
             },
             None => PullRequestsTab::Disabled {
-                reason: "No GitHub, GitLab, Gitea, Bitbucket, or Azure DevOps remote on this repo"
-                    .to_string(),
+                // Six forges no longer fit the tab strip at 80 columns, and
+                // the list grows with every backend; the supported set is in
+                // the README.
+                reason: "No supported forge remote on this repo".to_string(),
             },
         }
     }
