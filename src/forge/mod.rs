@@ -9,6 +9,7 @@ pub mod azure;
 pub mod bitbucket;
 pub mod canonical;
 pub mod context;
+pub mod gerrit;
 pub mod github;
 pub mod gitlab;
 pub mod pr_open;
@@ -23,6 +24,7 @@ use git2::Repository;
 
 use crate::forge::azure::az::parse_azure_remote_url;
 use crate::forge::bitbucket::bkt::parse_bitbucket_remote_url;
+use crate::forge::gerrit::api::parse_gerrit_remote_url;
 use crate::forge::github::gh::parse_github_remote_url;
 use crate::forge::gitlab::glab::parse_gitlab_remote_url;
 use crate::forge::traits::ForgeRepository;
@@ -112,14 +114,17 @@ pub fn detect_azure_repository(repo_root: &Path) -> Option<ForgeRepository> {
 ///
 /// Order matters. Bitbucket and GitLab both gate on the hostname, so trying
 /// them first won't claim GitHub Enterprise remotes. Azure next — its parser
-/// filters to `dev.azure.com` / `*.visualstudio.com` hosts. GitHub must stay
+/// filters to `dev.azure.com` / `*.visualstudio.com` hosts. Gerrit follows: it
+/// is always self-hosted, so it gates on the canonical SSH port `29418`, a
+/// configured `GERRIT_URL`, or a hostname containing "gerrit". GitHub must stay
 /// last because its parser accepts *any* host (covers github.com and GHE hosts
 /// whose hostname does not literally contain "github") — it would otherwise
-/// swallow every Bitbucket, self-hosted GitLab, and Azure remote.
+/// swallow every Bitbucket, self-hosted GitLab, Azure, and Gerrit remote.
 pub fn parse_any_remote_url(url: &str) -> Option<ForgeRepository> {
     parse_bitbucket_remote_url(url)
         .or_else(|| parse_gitlab_remote_url(url))
         .or_else(|| parse_azure_remote_url(url))
+        .or_else(|| parse_gerrit_remote_url(url))
         .or_else(|| parse_github_remote_url(url))
 }
 
@@ -137,9 +142,11 @@ pub fn parse_any_remote_url(url: &str) -> Option<ForgeRepository> {
 /// two; letting it claim unknown hosts would turn
 /// `code.example.com/git/owner/repo` into `git/owner`. Bitbucket is left out
 /// because a workspace is always one segment, so the fallback already agrees
-/// with it.
+/// with it. Gerrit is included: its project path can be any depth, so the
+/// last-two-segments rule would mis-split `gerrit.example.com/platform/frameworks/base`,
+/// and its parser only reads the URL plus one env var.
 pub fn parse_any_remote_url_by_hostname(url: &str) -> Option<ForgeRepository> {
-    parse_azure_remote_url(url)
+    parse_azure_remote_url(url).or_else(|| parse_gerrit_remote_url(url))
 }
 
 /// Detect the forge repository for the local checkout at `repo_root`.
@@ -199,6 +206,32 @@ mod tests {
         assert_eq!(
             parse_any_remote_url_by_hostname("https://code.example.com/git/owner/repo"),
             None
+        );
+    }
+
+    #[test]
+    fn detects_gerrit_repository_from_a_canonical_ssh_port_remote() {
+        // A neutral hostname on port 29418 is unambiguously Gerrit; without
+        // this arm the GitHub catch-all would claim it as `platform/base`.
+        let dir =
+            init_repo_with_origin("ssh://jdoe@review.internal:29418/platform/frameworks/base");
+        assert_eq!(
+            detect_forge_repository(dir.path()),
+            Some(ForgeRepository::gerrit(
+                "review.internal",
+                "platform/frameworks/base"
+            ))
+        );
+    }
+
+    #[test]
+    fn leaves_github_enterprise_remotes_to_the_github_catch_all() {
+        // Gerrit sits ahead of GitHub in the chain, so it must not claim a
+        // self-hosted host that shows none of its signals.
+        let dir = init_repo_with_origin("https://code.example.com/owner/repo.git");
+        assert_eq!(
+            detect_forge_repository(dir.path()),
+            Some(ForgeRepository::github("code.example.com", "owner", "repo"))
         );
     }
 
