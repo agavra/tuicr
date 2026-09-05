@@ -250,6 +250,7 @@ fn renamed_file_app(status: FileStatus) -> (tempfile::TempDir, git2::Repository,
         dir.path(),
         crate::vcs::GitBackendPreference::Libgit2,
         crate::vcs::traits::DiffWhitespaceMode::Normal,
+        true,
     )
     .unwrap();
     let info = vcs.info().clone();

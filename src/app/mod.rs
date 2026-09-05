@@ -1966,6 +1966,7 @@ pub struct SummaryState {
 struct VcsOpenOptions {
     git_backend_preference: GitBackendPreference,
     diff_whitespace_mode: DiffWhitespaceMode,
+    include_untracked: bool,
 }
 
 impl Default for VcsOpenOptions {
@@ -1975,6 +1976,7 @@ impl Default for VcsOpenOptions {
         Self {
             git_backend_preference: GitBackendPreference::Libgit2,
             diff_whitespace_mode: DiffWhitespaceMode::default(),
+            include_untracked: true,
         }
     }
 }
@@ -1995,6 +1997,8 @@ pub struct AppStartupOptions<'a> {
     pub pr_comments_visibility: Option<crate::forge::remote_comments::PrCommentsVisibility>,
     pub git_backend_preference: GitBackendPreference,
     pub diff_whitespace_mode: DiffWhitespaceMode,
+    /// Whether untracked files are included in working-tree / unstaged diffs.
+    pub include_untracked: bool,
     /// Which commits are selected when a multi-commit review first opens.
     pub commit_selection: CommitSelectionStart,
     /// Direct PR target (`tuicr pr <target>`). Mutually exclusive with the
@@ -2016,6 +2020,7 @@ impl AppStartupOptions<'_> {
         VcsOpenOptions {
             git_backend_preference: self.git_backend_preference,
             diff_whitespace_mode: self.diff_whitespace_mode.clone(),
+            include_untracked: self.include_untracked,
         }
     }
 }

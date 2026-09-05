@@ -1153,6 +1153,7 @@ impl App {
         let vcs = detect_vcs(
             vcs_open_options.git_backend_preference,
             vcs_open_options.diff_whitespace_mode,
+            vcs_open_options.include_untracked,
         )?;
         let root_path = &vcs.info().root_path;
         let fetch_source = Self::narrowed_fetch_source(
@@ -1818,6 +1819,7 @@ mod tests {
             crate::vcs::git::diff::get_working_tree_diff(
                 &self.repo,
                 &self.whitespace_mode,
+                true,
                 highlighter,
             )
         }
@@ -1940,9 +1942,13 @@ mod tests {
         let root = dir.path();
         let highlighter = SyntaxHighlighter::default();
         for preference in [GitBackendPreference::Libgit2, GitBackendPreference::Cli] {
-            let vcs =
-                crate::vcs::GitBackend::discover_from(root, preference, DiffWhitespaceMode::Normal)
-                    .unwrap();
+            let vcs = crate::vcs::GitBackend::discover_from(
+                root,
+                preference,
+                DiffWhitespaceMode::Normal,
+                true,
+            )
+            .unwrap();
             for revisions in ["main...feature", "main..feature"] {
                 let range = vcs.resolve_revision_range(revisions).unwrap();
                 let source = DiffSource::CommitRange(range.commit_ids.to_vec());
@@ -1973,6 +1979,7 @@ mod tests {
             root,
             GitBackendPreference::Libgit2,
             DiffWhitespaceMode::Normal,
+            true,
         )
         .unwrap();
         let range = vcs.resolve_revision_range("main...feature").unwrap();
@@ -1998,6 +2005,7 @@ mod tests {
             ("custom".into(), true),
         ]));
         let options = AppStartupOptions {
+            include_untracked: true,
             revisions: None,
             working_tree: false,
             path_filter: None,
@@ -2027,6 +2035,7 @@ mod tests {
             ("custom".into(), true),
         ]));
         let captured = VcsOpenOptions {
+            include_untracked: true,
             git_backend_preference: GitBackendPreference::Libgit2,
             diff_whitespace_mode: mode.clone(),
         };

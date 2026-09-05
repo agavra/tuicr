@@ -86,8 +86,8 @@ fn read_view(repo: &Repository, view: View, base: &str) -> Vec<DiffFile> {
     let highlighter = SyntaxHighlighter::default();
     match view {
         View::Staged => diff::get_staged_diff(repo, &mode, &highlighter),
-        View::Unstaged => diff::get_unstaged_diff(repo, &mode, &highlighter),
-        View::WorkingTree => diff::get_working_tree_diff(repo, &mode, &highlighter),
+        View::Unstaged => diff::get_unstaged_diff(repo, &mode, true, &highlighter),
+        View::WorkingTree => diff::get_working_tree_diff(repo, &mode, true, &highlighter),
         View::Commits => {
             let head = repo
                 .head()
@@ -350,6 +350,7 @@ fn clean_repository_has_no_diff() {
         diff::get_working_tree_diff(
             &repo,
             &DiffWhitespaceMode::Normal,
+            true,
             &SyntaxHighlighter::default()
         ),
         Err(crate::error::TuicrError::NoChanges)

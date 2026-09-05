@@ -360,6 +360,7 @@ fn apply_full_file_spans(
 pub fn detect_vcs(
     git_backend_preference: GitBackendPreference,
     whitespace_mode: DiffWhitespaceMode,
+    include_untracked: bool,
 ) -> Result<Box<dyn VcsBackend>> {
     // Try jj first since jj repos are Git-backed
     if let Ok(backend) = JjBackend::discover(whitespace_mode.clone()) {
@@ -367,7 +368,11 @@ pub fn detect_vcs(
     }
 
     // Try git
-    if let Ok(backend) = GitBackend::discover(git_backend_preference, whitespace_mode.clone()) {
+    if let Ok(backend) = GitBackend::discover(
+        git_backend_preference,
+        whitespace_mode.clone(),
+        include_untracked,
+    ) {
         return Ok(Box::new(backend));
     }
 
@@ -385,13 +390,17 @@ pub fn detect_vcs_in(
     path: &Path,
     git_backend_preference: GitBackendPreference,
     whitespace_mode: DiffWhitespaceMode,
+    include_untracked: bool,
 ) -> Result<Box<dyn VcsBackend>> {
     if let Ok(backend) = JjBackend::discover_from(path, whitespace_mode.clone()) {
         return Ok(Box::new(backend));
     }
-    if let Ok(backend) =
-        GitBackend::discover_from(path, git_backend_preference, whitespace_mode.clone())
-    {
+    if let Ok(backend) = GitBackend::discover_from(
+        path,
+        git_backend_preference,
+        whitespace_mode.clone(),
+        include_untracked,
+    ) {
         return Ok(Box::new(backend));
     }
     if let Ok(backend) = HgBackend::discover_from(path, whitespace_mode) {
@@ -422,7 +431,7 @@ mod tests {
     #[test]
     fn exports_are_accessible() {
         // Verify that public types are properly exported
-        let _: fn(GitBackendPreference, DiffWhitespaceMode) -> Result<Box<dyn VcsBackend>> =
+        let _: fn(GitBackendPreference, DiffWhitespaceMode, bool) -> Result<Box<dyn VcsBackend>> =
             detect_vcs;
 
         // VcsInfo can be constructed
@@ -453,7 +462,11 @@ mod tests {
         // Note: This test may pass or fail depending on where tests are run
         // In CI or outside a repo, it should fail with NotARepository
         // Inside the tuicr repo (which is git), it will succeed
-        let result = detect_vcs(GitBackendPreference::Libgit2, DiffWhitespaceMode::Normal);
+        let result = detect_vcs(
+            GitBackendPreference::Libgit2,
+            DiffWhitespaceMode::Normal,
+            true,
+        );
 
         // We just verify the function runs without panic
         // The actual result depends on the environment

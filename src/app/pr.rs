@@ -144,6 +144,7 @@ impl App {
                 root,
                 options.git_backend_preference,
                 options.diff_whitespace_mode,
+                options.include_untracked,
             )
             .ok()?;
             let info = vcs.info().clone();

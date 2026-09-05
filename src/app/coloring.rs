@@ -380,6 +380,7 @@ mod tests {
                 dir.path(),
                 preference,
                 crate::vcs::DiffWhitespaceMode::Normal,
+                true,
             )
             .expect("open repo");
             let files = backend

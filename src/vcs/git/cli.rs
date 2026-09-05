@@ -45,6 +45,7 @@ pub struct GitCliBackend {
     untracked_cache: bool,
     fsmonitor: bool,
     whitespace_mode: DiffWhitespaceMode,
+    include_untracked: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -56,7 +57,11 @@ enum GitContentSource<'a> {
 }
 
 impl GitCliBackend {
-    pub(super) fn discover_from(cwd: &Path, whitespace_mode: DiffWhitespaceMode) -> Result<Self> {
+    pub(super) fn discover_from(
+        cwd: &Path,
+        whitespace_mode: DiffWhitespaceMode,
+        include_untracked: bool,
+    ) -> Result<Self> {
         let root_path =
             PathBuf::from(run_git_command(cwd, &["rev-parse", "--show-toplevel"])?.trim());
         let repo_mode = GitRepoMode::detect(&root_path)?;
@@ -84,6 +89,7 @@ impl GitCliBackend {
             untracked_cache,
             fsmonitor,
             whitespace_mode,
+            include_untracked,
         })
     }
 
@@ -247,7 +253,7 @@ impl VcsBackend for GitCliBackend {
                 base,
                 "--".into(),
             ],
-            true,
+            self.include_untracked,
             old_source,
             GitContentSource::Workdir,
             highlighter,
@@ -273,7 +279,7 @@ impl VcsBackend for GitCliBackend {
     fn get_unstaged_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
         self.get_cli_diff(
             strings(["diff", "--no-ext-diff", "--binary", "--"]),
-            true,
+            self.include_untracked,
             GitContentSource::Index,
             GitContentSource::Workdir,
             highlighter,
@@ -282,20 +288,24 @@ impl VcsBackend for GitCliBackend {
 
     fn get_change_status(&self) -> Result<VcsChangeStatus> {
         if self.repo_mode == GitRepoMode::Standard {
-            return get_cli_change_status(&self.root_path);
+            if self.include_untracked {
+                return get_cli_change_status(&self.root_path);
+            }
+            return get_cli_change_status_tracked_only(&self.root_path);
         }
 
         // Keep sparse probes pathspec-scoped. Plain `git status` reports
         // out-of-cone untracked files and would show an empty Unstaged row.
         let staged = has_diff_changes(&self.root_path, &["diff", "--quiet", "--cached", "--"])?;
         let tracked_unstaged = has_diff_changes(&self.root_path, &["diff", "--quiet", "--"])?;
-        let untracked_pathspecs = if tracked_unstaged {
+        let untracked_pathspecs = if tracked_unstaged || !self.include_untracked {
             Vec::new()
         } else {
             sparse_checkout_untracked_pathspecs(&self.root_path)?
         };
-        let unstaged =
-            tracked_unstaged || has_untracked_changes(&self.root_path, &untracked_pathspecs)?;
+        let unstaged = tracked_unstaged
+            || (self.include_untracked
+                && has_untracked_changes(&self.root_path, &untracked_pathspecs)?);
 
         Ok(VcsChangeStatus { staged, unstaged })
     }
@@ -309,8 +319,10 @@ impl VcsBackend for GitCliBackend {
             ChangeKind::Unstaged => {
                 let mut paths =
                     list_diff_paths(&self.root_path, &["diff", "--name-only", "-z", "--"])?;
-                let untracked_pathspecs = sparse_checkout_untracked_pathspecs(&self.root_path)?;
-                paths.extend(list_untracked_paths(&self.root_path, &untracked_pathspecs)?);
+                if self.include_untracked {
+                    let untracked_pathspecs = sparse_checkout_untracked_pathspecs(&self.root_path)?;
+                    paths.extend(list_untracked_paths(&self.root_path, &untracked_pathspecs)?);
+                }
                 Ok(paths)
             }
         }
@@ -514,6 +526,27 @@ fn get_cli_change_status(workdir: &Path) -> Result<VcsChangeStatus> {
     let output = Command::new("git")
         .current_dir(workdir)
         .args(["status", "--porcelain=v1", "-z", "--untracked-files=normal"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| TuicrError::VcsCommand(format!("Failed to run git: {e}")))?;
+
+    if !output.status.success() {
+        return Err(TuicrError::VcsCommand(
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        ));
+    }
+
+    Ok(parse_porcelain_status(&output.stdout))
+}
+
+/// Same probe as [`get_cli_change_status`], but with untracked files excluded
+/// at the Git level so `include_untracked = false` never pays the untracked
+/// scan that can hang large working trees.
+fn get_cli_change_status_tracked_only(workdir: &Path) -> Result<VcsChangeStatus> {
+    let output = Command::new("git")
+        .current_dir(workdir)
+        .args(["status", "--porcelain=v1", "-z", "--untracked-files=no"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
@@ -1443,7 +1476,7 @@ mod tests {
         git(workdir, &["sparse-checkout", "reapply", "--sparse-index"]);
         git(workdir, &["config", "advice.sparseIndexExpanded", "false"]);
 
-        let backend = GitCliBackend::discover_from(workdir, DiffWhitespaceMode::Normal)
+        let backend = GitCliBackend::discover_from(workdir, DiffWhitespaceMode::Normal, true)
             .expect("failed to discover backend");
         (temp_dir, backend, vec![first_id, second_id])
     }
@@ -1485,7 +1518,7 @@ mod tests {
         git(workdir, &["add", "staged.txt"]);
         write_file(workdir, "untracked.txt", "untracked\n");
 
-        let cli_backend = GitCliBackend::discover_from(workdir, DiffWhitespaceMode::Normal)
+        let cli_backend = GitCliBackend::discover_from(workdir, DiffWhitespaceMode::Normal, true)
             .expect("failed to discover cli backend");
         let repo = git2::Repository::open(workdir).expect("failed to open git2 repo");
         (temp_dir, cli_backend, repo, vec![first_id, second_id])
@@ -1533,7 +1566,7 @@ mod tests {
             .trim()
             .to_string();
 
-        let cli_backend = GitCliBackend::discover_from(workdir, DiffWhitespaceMode::Normal)
+        let cli_backend = GitCliBackend::discover_from(workdir, DiffWhitespaceMode::Normal, true)
             .expect("failed to discover cli backend");
         let repo = git2::Repository::open(workdir).expect("failed to open git2 repo");
         (temp_dir, cli_backend, repo, left_id, right_id)
@@ -1670,7 +1703,7 @@ mod tests {
         );
         fs::write(&binary_path, [0, 1, 9, 3]).unwrap();
 
-        let backend = GitCliBackend::discover_from(workdir, DiffWhitespaceMode::Normal)
+        let backend = GitCliBackend::discover_from(workdir, DiffWhitespaceMode::Normal, true)
             .expect("failed to discover CLI backend");
         let files = backend
             .get_working_tree_diff(&SyntaxHighlighter::default())
@@ -1743,7 +1776,7 @@ mod tests {
         git(workdir, &["init"]);
         git(workdir, &["config", "status.showUntrackedFiles", "no"]);
         write_file(workdir, "untracked.txt", "untracked\n");
-        let backend = GitCliBackend::discover_from(workdir, DiffWhitespaceMode::Normal)
+        let backend = GitCliBackend::discover_from(workdir, DiffWhitespaceMode::Normal, true)
             .expect("failed to discover cli backend");
 
         let status = backend
@@ -1797,7 +1830,7 @@ mod tests {
         assert_eq!(
             summarize_files(cli_backend.get_working_tree_diff(&highlighter).unwrap()),
             summarize_files(
-                diff::get_working_tree_diff(&repo, &DiffWhitespaceMode::Normal, &highlighter)
+                diff::get_working_tree_diff(&repo, &DiffWhitespaceMode::Normal, true, &highlighter)
                     .unwrap()
             )
         );
@@ -1810,7 +1843,8 @@ mod tests {
         assert_eq!(
             summarize_files(cli_backend.get_unstaged_diff(&highlighter).unwrap()),
             summarize_files(
-                diff::get_unstaged_diff(&repo, &DiffWhitespaceMode::Normal, &highlighter).unwrap()
+                diff::get_unstaged_diff(&repo, &DiffWhitespaceMode::Normal, true, &highlighter)
+                    .unwrap()
             )
         );
         assert_eq!(
@@ -1959,7 +1993,7 @@ mod tests {
         git(workdir, &["add", "."]);
         git(workdir, &["commit", "-m", "initial"]);
 
-        let backend = GitCliBackend::discover_from(workdir, DiffWhitespaceMode::IgnoreAll)
+        let backend = GitCliBackend::discover_from(workdir, DiffWhitespaceMode::IgnoreAll, true)
             .expect("failed to discover cli backend");
 
         write_file(workdir, "file.txt", " alpha \n beta\n");
@@ -1993,7 +2027,7 @@ mod tests {
         write_file(workdir, "whitespace.txt", " alpha \n beta\n");
         write_file(workdir, substantive_path, "after\n");
 
-        let backend = GitCliBackend::discover_from(workdir, DiffWhitespaceMode::IgnoreAll)
+        let backend = GitCliBackend::discover_from(workdir, DiffWhitespaceMode::IgnoreAll, true)
             .expect("failed to discover cli backend");
         let files = backend
             .get_working_tree_diff(&SyntaxHighlighter::default())
@@ -2013,7 +2047,7 @@ mod tests {
     }
 
     fn cli(workdir: &Path) -> GitCliBackend {
-        GitCliBackend::discover_from(workdir, DiffWhitespaceMode::default()).unwrap()
+        GitCliBackend::discover_from(workdir, DiffWhitespaceMode::default(), true).unwrap()
     }
 
     #[test]

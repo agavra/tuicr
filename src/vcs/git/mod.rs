@@ -158,15 +158,17 @@ impl GitBackend {
     pub fn discover(
         preference: GitBackendPreference,
         whitespace_mode: DiffWhitespaceMode,
+        include_untracked: bool,
     ) -> Result<Self> {
         let cwd = std::env::current_dir().map_err(|_| TuicrError::NotARepository)?;
-        Self::discover_from(&cwd, preference, whitespace_mode)
+        Self::discover_from(&cwd, preference, whitespace_mode, include_untracked)
     }
 
     pub(crate) fn discover_from(
         cwd: &Path,
         preference: GitBackendPreference,
         whitespace_mode: DiffWhitespaceMode,
+        include_untracked: bool,
     ) -> Result<Self> {
         // libgit2 doesn't support reftable, split index, or SHA-256 repositories.
         // TODO: remove reftable fallback logic when libgit2 supports it as part of https://github.com/libgit2/libgit2/issues/5352
@@ -180,15 +182,21 @@ impl GitBackend {
             return Ok(Self::Cli(GitCliBackend::discover_from(
                 cwd,
                 whitespace_mode,
+                include_untracked,
             )?));
         }
 
-        let backend = Self::Libgit2(Libgit2Backend::discover_from(cwd, whitespace_mode.clone())?);
+        let backend = Self::Libgit2(Libgit2Backend::discover_from(
+            cwd,
+            whitespace_mode.clone(),
+            include_untracked,
+        )?);
         let repo_mode = GitRepoMode::detect(&backend.info().root_path)?;
         if repo_mode.is_sparse_checkout() && !backend.supports_sparse_checkout() {
             return Ok(Self::Cli(GitCliBackend::discover_from(
                 cwd,
                 whitespace_mode,
+                include_untracked,
             )?));
         }
 
@@ -446,7 +454,8 @@ mod tests {
 
         for preference in [GitBackendPreference::Libgit2, GitBackendPreference::Cli] {
             let backend =
-                GitBackend::discover_from(&nested, preference, DiffWhitespaceMode::Normal).unwrap();
+                GitBackend::discover_from(&nested, preference, DiffWhitespaceMode::Normal, true)
+                    .unwrap();
             assert_eq!(
                 resolve_remote_repository(&backend, "staging-upstream").unwrap(),
                 ForgeRepository::github("github.com", "org", "repo-staging")
@@ -470,6 +479,7 @@ mod tests {
             dir.path(),
             GitBackendPreference::Libgit2,
             DiffWhitespaceMode::Normal,
+            true,
         )
         .unwrap();
 
@@ -488,6 +498,7 @@ mod tests {
             dir.path(),
             GitBackendPreference::Libgit2,
             DiffWhitespaceMode::Normal,
+            true,
         )
         .unwrap();
         for name in ["missing", "invalid", "--all"] {
@@ -544,6 +555,7 @@ mod tests {
             root,
             GitBackendPreference::Libgit2,
             DiffWhitespaceMode::Normal,
+            true,
         )
         .expect("failed to discover backend");
 
@@ -569,6 +581,7 @@ mod tests {
             root,
             GitBackendPreference::Libgit2,
             DiffWhitespaceMode::Normal,
+            true,
         )
         .expect("failed to discover backend");
 
@@ -592,6 +605,7 @@ mod tests {
             root,
             GitBackendPreference::Libgit2,
             DiffWhitespaceMode::Normal,
+            true,
         )
         .expect("reftable repo should open via CLI fallback");
 
@@ -613,6 +627,7 @@ mod tests {
             root,
             GitBackendPreference::Libgit2,
             DiffWhitespaceMode::Normal,
+            true,
         )
         .expect("split-index repo should open via CLI fallback");
 
@@ -637,6 +652,7 @@ mod tests {
                 &path,
                 GitBackendPreference::Libgit2,
                 DiffWhitespaceMode::Normal,
+                true,
             )
             .expect("SHA-256 repositories should open via the Git CLI");
             assert!(matches!(backend, GitBackend::Cli(_)));
@@ -651,6 +667,7 @@ mod tests {
                 dir.path(),
                 GitBackendPreference::Cli,
                 DiffWhitespaceMode::Normal,
+                true,
             )
             .unwrap();
             let highlighter = SyntaxHighlighter::default();
@@ -702,6 +719,7 @@ mod tests {
             root,
             GitBackendPreference::Libgit2,
             DiffWhitespaceMode::Normal,
+            true,
         )
         .unwrap();
         let highlighter = SyntaxHighlighter::default();

@@ -150,6 +150,7 @@ impl App {
             detect_vcs(
                 options.git_backend_preference,
                 options.diff_whitespace_mode.clone(),
+                options.include_untracked,
             )
         })?;
         let vcs_info = vcs.info().clone();
@@ -1031,6 +1032,7 @@ fn current_branch_for_launch_dir(
         dir,
         options.git_backend_preference,
         options.diff_whitespace_mode.clone(),
+        options.include_untracked,
     )
     .ok()
     .and_then(|vcs| vcs.info().branch_name.clone())
@@ -1049,6 +1051,7 @@ pub(in crate::app) fn checkout_root_for_launch_dir(
         dir,
         options.git_backend_preference,
         options.diff_whitespace_mode.clone(),
+        options.include_untracked,
     )
     .ok()
     .map(|vcs| vcs.info().root_path.clone())
