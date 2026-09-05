@@ -58,6 +58,9 @@ const PASSWORD_ENV_VAR: &str = "GERRIT_PASSWORD";
 /// Label a review vote is cast on. `Code-Review` is Gerrit's out-of-the-box
 /// review label and is present on every default install.
 const REVIEW_LABEL: &str = "Code-Review";
+/// How much of a server error body to keep, in characters. Long enough for a
+/// real Gerrit message, short enough not to flood the status line.
+const MAX_DETAIL_CHARS: usize = 400;
 /// Gerrit's magic path for patch-set-level (review-level) comments.
 const PATCHSET_LEVEL: &str = "/PATCHSET_LEVEL";
 /// Gerrit prefixes every JSON response with this XSSI guard.
@@ -788,12 +791,15 @@ fn map_http_error(error: GerritHttpError, server: &str) -> TuicrError {
 }
 
 /// Keep error detail readable: collapse whitespace and cap the length.
+///
+/// The cap counts characters, not bytes: Gerrit error bodies are often
+/// non-ASCII HTML, and slicing at a byte offset panics when it lands inside a
+/// multi-byte character.
 fn trim_detail(detail: &str) -> String {
     let collapsed = detail.split_whitespace().collect::<Vec<_>>().join(" ");
-    if collapsed.len() > 400 {
-        format!("{}…", &collapsed[..400])
-    } else {
-        collapsed
+    match collapsed.char_indices().nth(MAX_DETAIL_CHARS) {
+        Some((end, _)) => format!("{}…", &collapsed[..end]),
+        None => collapsed,
     }
 }
 
@@ -1226,6 +1232,24 @@ mod tests {
     fn should_strip_the_xssi_prefix_before_parsing_json() {
         assert_eq!(strip_magic_prefix(")]}'\n[]"), "[]");
         assert_eq!(strip_magic_prefix("[]"), "[]");
+    }
+
+    #[test]
+    fn should_cap_error_detail_without_splitting_a_multi_byte_character() {
+        // given — a body whose 400th *byte* falls inside a 3-byte character.
+        // Capping by byte offset panicked here, so a long non-ASCII error
+        // page from Gerrit took the whole TUI down instead of reporting.
+        let detail = format!("{}{}", "a".repeat(399), "€".repeat(10));
+        // when
+        let trimmed = trim_detail(&detail);
+        // then — 400 characters kept, plus the ellipsis
+        assert_eq!(trimmed.chars().count(), MAX_DETAIL_CHARS + 1);
+        assert!(trimmed.ends_with("a€…"), "unexpected tail: {trimmed}");
+    }
+
+    #[test]
+    fn should_leave_short_detail_untrimmed_and_collapse_its_whitespace() {
+        assert_eq!(trim_detail("  not\n  found\t "), "not found");
     }
 
     /// Records every request and replays canned responses in order.
