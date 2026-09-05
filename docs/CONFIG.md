@@ -26,6 +26,7 @@ theme_light = "gruvbox-light"
 
 diff_view = "side-by-side"
 ignore_whitespace = false
+include_untracked = true
 show_file_list = true
 show_pr_checks = false
 show_pr_comments = true
@@ -80,6 +81,7 @@ legend = true
 | `commit_order`             | `descending` | Inline commit selector order: `descending` (newest on top, the default) or `ascending` (oldest on top).                                                    |
 | `initial_commit_selection` | `all`        | Which commits are selected when a multi-commit review first opens: `all`, or `oldest` to start on just the oldest commit and walk forward with `(` / `)`.  |
 | `ignore_whitespace`        | `false`      | Ignore all whitespace in local Git, jj, and hg diffs. PR diffs are unchanged.                                                                              |
+| `include_untracked`        | `true`       | Include untracked files in local Git working-tree / unstaged diffs. Set `false` to review only tracked changes; scanning many untracked files can be slow, and turning this off skips that scan. |
 | `show_file_list`           | `true`       | Whether the file list panel is visible on startup. Toggle with `<leader>e`.                                                                                |
 | `show_pr_checks`           | `false`      | Whether PR CI checks are fetched and shown. Set to `true` to include GitHub check rollups.                                                           |
 | `show_pr_comments`         | `true`       | Whether PR conversation comments are fetched and shown. Set to `false` to skip PR comments.                                                         |

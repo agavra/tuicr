@@ -133,7 +133,11 @@ impl App {
         }
 
         let vcs = crate::profile::time("startup.detect_vcs", || {
-            detect_vcs(options.git_backend_preference, options.diff_whitespace_mode)
+            detect_vcs(
+                options.git_backend_preference,
+                options.diff_whitespace_mode,
+                options.include_untracked,
+            )
         })?;
         let vcs_info = vcs.info().clone();
         let highlighter =

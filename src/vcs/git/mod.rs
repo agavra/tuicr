@@ -155,15 +155,17 @@ impl GitBackend {
     pub fn discover(
         preference: GitBackendPreference,
         whitespace_mode: DiffWhitespaceMode,
+        include_untracked: bool,
     ) -> Result<Self> {
         let cwd = std::env::current_dir().map_err(|_| TuicrError::NotARepository)?;
-        Self::discover_from(&cwd, preference, whitespace_mode)
+        Self::discover_from(&cwd, preference, whitespace_mode, include_untracked)
     }
 
     fn discover_from(
         cwd: &Path,
         preference: GitBackendPreference,
         whitespace_mode: DiffWhitespaceMode,
+        include_untracked: bool,
     ) -> Result<Self> {
         // libgit2 doesn't support reftable or split index repositories, so we fallback to cli
         // TODO: remove reftable fallback logic when libgit2 supports it as part of https://github.com/libgit2/libgit2/issues/5352
@@ -175,15 +177,21 @@ impl GitBackend {
             return Ok(Self::Cli(GitCliBackend::discover_from(
                 cwd,
                 whitespace_mode,
+                include_untracked,
             )?));
         }
 
-        let backend = Self::Libgit2(Libgit2Backend::discover_from(cwd, whitespace_mode)?);
+        let backend = Self::Libgit2(Libgit2Backend::discover_from(
+            cwd,
+            whitespace_mode,
+            include_untracked,
+        )?);
         let repo_mode = GitRepoMode::detect(&backend.info().root_path)?;
         if repo_mode.is_sparse_checkout() && !backend.supports_sparse_checkout() {
             return Ok(Self::Cli(GitCliBackend::discover_from(
                 cwd,
                 whitespace_mode,
+                include_untracked,
             )?));
         }
 
@@ -448,6 +456,7 @@ mod tests {
             root,
             GitBackendPreference::Libgit2,
             DiffWhitespaceMode::Normal,
+            true,
         )
         .expect("failed to discover backend");
 
@@ -473,6 +482,7 @@ mod tests {
             root,
             GitBackendPreference::Libgit2,
             DiffWhitespaceMode::Normal,
+            true,
         )
         .expect("failed to discover backend");
 
@@ -496,6 +506,7 @@ mod tests {
             root,
             GitBackendPreference::Libgit2,
             DiffWhitespaceMode::Normal,
+            true,
         )
         .expect("reftable repo should open via CLI fallback");
 
@@ -517,6 +528,7 @@ mod tests {
             root,
             GitBackendPreference::Libgit2,
             DiffWhitespaceMode::Normal,
+            true,
         )
         .expect("split-index repo should open via CLI fallback");
 

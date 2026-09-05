@@ -12,6 +12,7 @@ use crate::vcs::{enhance_with_full_file_highlight, tabify};
 pub fn get_working_tree_diff(
     repo: &Repository,
     whitespace_mode: DiffWhitespaceMode,
+    include_untracked: bool,
     highlighter: &SyntaxHighlighter,
 ) -> Result<Vec<DiffFile>> {
     // Unborn HEAD (fresh `git init` / `git clone` of an empty remote) has no
@@ -20,9 +21,11 @@ pub fn get_working_tree_diff(
     let head = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
 
     let mut opts = diff_options(whitespace_mode);
-    opts.include_untracked(true);
-    opts.show_untracked_content(true);
-    opts.recurse_untracked_dirs(true);
+    if include_untracked {
+        opts.include_untracked(true);
+        opts.show_untracked_content(true);
+        opts.recurse_untracked_dirs(true);
+    }
 
     let diff = repo.diff_tree_to_workdir_with_index(head.as_ref(), Some(&mut opts))?;
     let mut files = parse_diff(&diff, highlighter)?;
@@ -68,7 +71,11 @@ pub fn get_staged_diff(
 /// materializing hunks or running the syntax highlighter. Lets callers verify
 /// `get_change_status` against ignore rules cheaply — full diff parsing only
 /// happens once the user actually selects the staged/unstaged view.
-pub fn list_changed_paths(repo: &Repository, kind: ChangeKind) -> Result<Vec<PathBuf>> {
+pub fn list_changed_paths(
+    repo: &Repository,
+    kind: ChangeKind,
+    include_untracked: bool,
+) -> Result<Vec<PathBuf>> {
     let diff = match kind {
         ChangeKind::Staged => {
             let head = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
@@ -79,11 +86,13 @@ pub fn list_changed_paths(repo: &Repository, kind: ChangeKind) -> Result<Vec<Pat
         ChangeKind::Unstaged => {
             let index = repo.index()?;
             let mut opts = diff_options(DiffWhitespaceMode::Normal);
-            opts.include_untracked(true);
-            // `show_untracked_content(false)` keeps libgit2 from reading each
-            // untracked file's bytes — only the paths are needed here.
-            opts.show_untracked_content(false);
-            opts.recurse_untracked_dirs(true);
+            if include_untracked {
+                opts.include_untracked(true);
+                // `show_untracked_content(false)` keeps libgit2 from reading each
+                // untracked file's bytes — only the paths are needed here.
+                opts.show_untracked_content(false);
+                opts.recurse_untracked_dirs(true);
+            }
             opts.skip_binary_check(true);
             repo.diff_index_to_workdir(Some(&index), Some(&mut opts))?
         }
@@ -106,13 +115,16 @@ pub fn list_changed_paths(repo: &Repository, kind: ChangeKind) -> Result<Vec<Pat
 pub fn get_unstaged_diff(
     repo: &Repository,
     whitespace_mode: DiffWhitespaceMode,
+    include_untracked: bool,
     highlighter: &SyntaxHighlighter,
 ) -> Result<Vec<DiffFile>> {
     let index = repo.index()?;
     let mut opts = diff_options(whitespace_mode);
-    opts.include_untracked(true);
-    opts.show_untracked_content(true);
-    opts.recurse_untracked_dirs(true);
+    if include_untracked {
+        opts.include_untracked(true);
+        opts.show_untracked_content(true);
+        opts.recurse_untracked_dirs(true);
+    }
 
     let diff = repo.diff_index_to_workdir(Some(&index), Some(&mut opts))?;
     let mut files = parse_diff(&diff, highlighter)?;
@@ -472,6 +484,7 @@ mod tests {
         let files = get_working_tree_diff(
             &repo,
             DiffWhitespaceMode::Normal,
+            true,
             &SyntaxHighlighter::default(),
         )
         .expect("failed to get diff");
@@ -500,6 +513,7 @@ mod tests {
         let files = get_working_tree_diff(
             &repo,
             DiffWhitespaceMode::Normal,
+            true,
             &SyntaxHighlighter::default(),
         )
         .expect("failed to get diff");
@@ -537,7 +551,7 @@ mod tests {
 
         let highlighter = SyntaxHighlighter::default();
 
-        let unstaged = get_unstaged_diff(&repo, DiffWhitespaceMode::Normal, &highlighter)
+        let unstaged = get_unstaged_diff(&repo, DiffWhitespaceMode::Normal, true, &highlighter)
             .expect("unstaged diff failed");
         assert_eq!(unstaged.len(), 1);
         assert!(matches!(
@@ -555,9 +569,76 @@ mod tests {
             .expect("staged diff failed");
         assert_eq!(staged.len(), 1);
         assert!(matches!(
-            get_unstaged_diff(&repo, DiffWhitespaceMode::Normal, &highlighter),
+            get_unstaged_diff(&repo, DiffWhitespaceMode::Normal, true, &highlighter),
             Err(TuicrError::NoChanges)
         ));
+    }
+
+    #[test]
+    fn should_exclude_untracked_files_from_unstaged_diff_when_disabled() {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let repo = Repository::init(temp_dir.path()).expect("failed to init repo");
+
+        create_initial_commit(&repo, "file.txt", "base\n");
+        fs::write(temp_dir.path().join("file.txt"), "changed\n")
+            .expect("failed to update tracked file");
+        fs::write(temp_dir.path().join("untracked.txt"), "new\n")
+            .expect("failed to write untracked file");
+
+        let highlighter = SyntaxHighlighter::default();
+
+        // Untracked files are excluded when include_untracked is false; the
+        // tracked modification still surfaces.
+        let unstaged = get_unstaged_diff(&repo, DiffWhitespaceMode::Normal, false, &highlighter)
+            .expect("unstaged diff failed");
+        assert_eq!(unstaged.len(), 1);
+        assert_eq!(unstaged[0].display_path(), Path::new("file.txt"));
+
+        // The default keeps surfacing untracked files as additions.
+        let unstaged = get_unstaged_diff(&repo, DiffWhitespaceMode::Normal, true, &highlighter)
+            .expect("unstaged diff failed");
+        assert_eq!(unstaged.len(), 2);
+    }
+
+    #[test]
+    fn should_report_no_changes_for_untracked_only_repo_when_untracked_disabled() {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let repo = Repository::init(temp_dir.path()).expect("failed to init repo");
+
+        create_initial_commit(&repo, "file.txt", "base\n");
+        fs::write(temp_dir.path().join("untracked.txt"), "new\n")
+            .expect("failed to write untracked file");
+
+        let highlighter = SyntaxHighlighter::default();
+
+        assert!(matches!(
+            get_unstaged_diff(&repo, DiffWhitespaceMode::Normal, false, &highlighter),
+            Err(TuicrError::NoChanges)
+        ));
+        assert!(matches!(
+            get_working_tree_diff(&repo, DiffWhitespaceMode::Normal, false, &highlighter),
+            Err(TuicrError::NoChanges)
+        ));
+    }
+
+    #[test]
+    fn should_list_changed_paths_without_untracked_when_disabled() {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let repo = Repository::init(temp_dir.path()).expect("failed to init repo");
+
+        create_initial_commit(&repo, "file.txt", "base\n");
+        fs::write(temp_dir.path().join("file.txt"), "changed\n")
+            .expect("failed to update tracked file");
+        fs::write(temp_dir.path().join("untracked.txt"), "new\n")
+            .expect("failed to write untracked file");
+
+        let paths = list_changed_paths(&repo, ChangeKind::Unstaged, false)
+            .expect("failed to list changed paths");
+        assert_eq!(paths, vec![PathBuf::from("file.txt")]);
+
+        let paths = list_changed_paths(&repo, ChangeKind::Unstaged, true)
+            .expect("failed to list changed paths");
+        assert_eq!(paths.len(), 2);
     }
 
     #[test]
@@ -575,6 +656,7 @@ mod tests {
         let files = get_working_tree_diff(
             &repo,
             DiffWhitespaceMode::Normal,
+            true,
             &SyntaxHighlighter::default(),
         )
         .expect("unborn HEAD should produce a diff against an empty tree");
@@ -598,6 +680,7 @@ mod tests {
         let files = get_working_tree_diff(
             &repo,
             DiffWhitespaceMode::IgnoreAll,
+            true,
             &SyntaxHighlighter::default(),
         )
         .expect("whitespace-only edit may surface as a no-op diff file");
@@ -610,6 +693,7 @@ mod tests {
         let files = get_working_tree_diff(
             &repo,
             DiffWhitespaceMode::IgnoreAll,
+            true,
             &SyntaxHighlighter::default(),
         )
         .expect("non-whitespace edit should still produce a diff");
@@ -635,6 +719,7 @@ mod tests {
         let files = get_working_tree_diff(
             &repo,
             DiffWhitespaceMode::IgnoreAll,
+            true,
             &SyntaxHighlighter::default(),
         )
         .expect("mode-only edit should still produce a diff");
@@ -763,14 +848,14 @@ mod tests {
             (
                 "libgit2",
                 Box::new(
-                    Libgit2Backend::discover_from(repo.path(), DiffWhitespaceMode::Normal)
+                    Libgit2Backend::discover_from(repo.path(), DiffWhitespaceMode::Normal, true)
                         .expect("failed to open libgit2 backend"),
                 ),
             ),
             (
                 "git cli",
                 Box::new(
-                    GitCliBackend::discover_from(repo.path(), DiffWhitespaceMode::Normal)
+                    GitCliBackend::discover_from(repo.path(), DiffWhitespaceMode::Normal, true)
                         .expect("failed to open git cli backend"),
                 ),
             ),
