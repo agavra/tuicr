@@ -1,6 +1,7 @@
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use crate::error::{Result, TuicrError};
 use crate::forge::remote_comments::{RemoteReviewSummary, RemoteReviewThread};
@@ -52,6 +53,13 @@ const PR_INFO_JSON_FIELDS_WITHOUT_CHECKS_OR_COMMENTS: &str = concat!(
     "number,title,url,state,isDraft,author,headRefName,baseRefName,",
     "headRefOid,baseRefOid,body,updatedAt,closed,mergedAt,",
     "reviewDecision,mergeable,mergeStateStatus,reviewRequests,latestReviews"
+);
+
+/// Minimal lookup for the PR's GraphQL node id, which the viewed-state
+/// mutations take instead of a number.
+const PR_NODE_ID_QUERY: &str = concat!(
+    "query($owner:String!,$name:String!,$number:Int!){",
+    "repository(owner:$owner,name:$name){pullRequest(number:$number){id}}}"
 );
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -162,6 +170,10 @@ pub struct GitHubGhBackend<R = SystemGhRunner> {
     /// Whether `get_pull_request_info` requests pull-request conversation
     /// comments from GitHub.
     show_pr_comments: bool,
+    /// PR node id resolved on demand for the viewed-state mutations, which
+    /// are GraphQL-only and take an `ID!` rather than a number. Cached so a
+    /// long-lived backend pays the lookup once per session.
+    pr_node_id: Arc<Mutex<Option<String>>>,
 }
 
 impl GitHubGhBackend<SystemGhRunner> {
@@ -172,6 +184,7 @@ impl GitHubGhBackend<SystemGhRunner> {
             local_checkout: None,
             show_pr_checks: false,
             show_pr_comments: true,
+            pr_node_id: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -192,6 +205,7 @@ where
             local_checkout: None,
             show_pr_checks: false,
             show_pr_comments: true,
+            pr_node_id: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -549,6 +563,42 @@ where
         Ok(content.lines().count() as u32)
     }
 
+    fn set_file_viewed(&self, pr: &PullRequestDetails, path: &Path, viewed: bool) -> Result<()> {
+        let node_id = self.pull_request_node_id(pr)?;
+        // `markFileAsViewed`/`unmarkFileAsViewed` have no REST equivalent, so
+        // this is GraphQL even though the rest of the file-level calls are not.
+        let mutation = if viewed {
+            concat!(
+                "mutation($pr:ID!,$path:String!){",
+                "markFileAsViewed(input:{pullRequestId:$pr,path:$path})",
+                "{clientMutationId}}"
+            )
+        } else {
+            concat!(
+                "mutation($pr:ID!,$path:String!){",
+                "unmarkFileAsViewed(input:{pullRequestId:$pr,path:$path})",
+                "{clientMutationId}}"
+            )
+        };
+        // `-f` keeps both variables strings; `-F` would coerce types and
+        // treat a leading `@` as a file read.
+        let mut args = vec![
+            "api".to_string(),
+            "graphql".to_string(),
+            "-f".to_string(),
+            format!("query={mutation}"),
+            "-f".to_string(),
+            format!("pr={node_id}"),
+            "-f".to_string(),
+            format!("path={}", path.to_string_lossy().replace('\\', "/")),
+        ];
+        if pr.repository.host != DEFAULT_GITHUB_HOST {
+            args.push("--hostname".to_string());
+            args.push(pr.repository.host.clone());
+        }
+        self.run_gh(args, &pr.repository.host).map(|_| ())
+    }
+
     fn create_review(
         &self,
         pr: &PullRequestDetails,
@@ -645,6 +695,29 @@ where
             args.push(pr.repository.host.clone());
         }
         args
+    }
+
+    /// Resolve (and memoize) the PR's GraphQL node id.
+    fn pull_request_node_id(&self, pr: &PullRequestDetails) -> Result<String> {
+        if let Some(id) = self.pr_node_id.lock().ok().and_then(|slot| slot.clone()) {
+            return Ok(id);
+        }
+        let args = self.build_graphql_args(pr, PR_NODE_ID_QUERY, None);
+        let output = self.run_gh(args, &pr.repository.host)?;
+        let payload: serde_json::Value = serde_json::from_str(&output)?;
+        let id = payload["data"]["repository"]["pullRequest"]["id"]
+            .as_str()
+            .ok_or_else(|| {
+                TuicrError::Forge(format!(
+                    "GitHub returned no node id for pull request #{}",
+                    pr.number
+                ))
+            })?
+            .to_string();
+        if let Ok(mut slot) = self.pr_node_id.lock() {
+            *slot = Some(id.clone());
+        }
+        Ok(id)
     }
 
     fn fetch_file_via_api(&self, request: &ForgeFileLinesRequest) -> Result<String> {
@@ -1157,7 +1230,11 @@ index 1111111..2222222 100644
                         .find(|a| a.starts_with("query="))
                         .map(String::as_str)
                         .unwrap_or("");
-                    if query.contains("reviewThreads(") {
+                    if query.contains("FileAsViewed(") {
+                        Ok(VIEWED_MUTATION_JSON.to_string())
+                    } else if query.contains("pullRequest(number:$number){id}") {
+                        Ok(PR_NODE_ID_JSON.to_string())
+                    } else if query.contains("reviewThreads(") {
                         Ok(REVIEW_THREADS_JSON.to_string())
                     } else if query.contains("viewer { login }") && query.contains("commit { oid }")
                     {
@@ -1257,6 +1334,14 @@ index 1111111..2222222 100644
 +    42
  }
 "##;
+
+    const PR_NODE_ID_JSON: &str = r##"{
+  "data": { "repository": { "pullRequest": { "id": "PR_kwDOABCD123" } } }
+}"##;
+
+    const VIEWED_MUTATION_JSON: &str = r##"{
+  "data": { "markFileAsViewed": { "clientMutationId": null } }
+}"##;
 
     const REVIEW_THREADS_JSON: &str = r##"{
         "data": {
@@ -1935,6 +2020,111 @@ Match host github-work
             .expect("expected review metadata graphql call");
         assert!(metadata_call.iter().any(|a| a == "owner=agavra"));
         assert!(metadata_call.iter().any(|a| a == "number=125"));
+    }
+
+    /// Returns the `gh api graphql` calls the backend placed, oldest first.
+    fn graphql_calls(calls: &[Vec<String>]) -> Vec<Vec<String>> {
+        calls
+            .iter()
+            .filter(|args| {
+                args.first().map(String::as_str) == Some("api")
+                    && args.get(1).map(String::as_str) == Some("graphql")
+            })
+            .cloned()
+            .collect()
+    }
+
+    fn query_of(args: &[String]) -> String {
+        args.iter()
+            .find(|a| a.starts_with("query="))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn should_mark_file_as_viewed_via_graphql_mutation() {
+        // given
+        let runner = FakeGhRunner::default();
+        let backend = GitHubGhBackend::with_runner(Some(repo()), runner);
+        let details = backend
+            .get_pull_request(parse_pull_request_target("125").unwrap())
+            .unwrap();
+
+        // when
+        backend
+            .set_file_viewed(&details, Path::new("src/main.rs"), true)
+            .unwrap();
+
+        // then — the node id is resolved first, then the mutation carries it
+        // alongside the repo-relative path.
+        let calls = backend.runner.calls.borrow();
+        let graphql = graphql_calls(&calls);
+        assert_eq!(graphql.len(), 2, "expected a node-id lookup and a mutation");
+        assert!(query_of(&graphql[0]).contains("pullRequest(number:$number){id}"));
+
+        let mutation = &graphql[1];
+        let query = query_of(mutation);
+        assert!(
+            query.contains("markFileAsViewed(") && !query.contains("unmarkFileAsViewed("),
+            "expected the mark mutation, got {query}"
+        );
+        assert!(mutation.iter().any(|a| a == "pr=PR_kwDOABCD123"));
+        assert!(mutation.iter().any(|a| a == "path=src/main.rs"));
+        // `-F` would coerce types and read `@`-prefixed values from disk.
+        assert!(
+            !mutation.iter().any(|a| a == "-F"),
+            "viewed-state variables must be passed as strings with -f"
+        );
+    }
+
+    #[test]
+    fn should_unmark_file_as_viewed_via_graphql_mutation() {
+        // given
+        let runner = FakeGhRunner::default();
+        let backend = GitHubGhBackend::with_runner(Some(repo()), runner);
+        let details = backend
+            .get_pull_request(parse_pull_request_target("125").unwrap())
+            .unwrap();
+
+        // when
+        backend
+            .set_file_viewed(&details, Path::new("src/main.rs"), false)
+            .unwrap();
+
+        // then
+        let calls = backend.runner.calls.borrow();
+        let graphql = graphql_calls(&calls);
+        let query = query_of(graphql.last().expect("expected a mutation call"));
+        assert!(
+            query.contains("unmarkFileAsViewed("),
+            "expected the unmark mutation, got {query}"
+        );
+    }
+
+    #[test]
+    fn should_resolve_pull_request_node_id_once_across_viewed_updates() {
+        // given — marking a whole PR reviewed fires one update per file, and
+        // each extra `gh` spawn is a visible delay in the TUI.
+        let runner = FakeGhRunner::default();
+        let backend = GitHubGhBackend::with_runner(Some(repo()), runner);
+        let details = backend
+            .get_pull_request(parse_pull_request_target("125").unwrap())
+            .unwrap();
+
+        // when
+        for path in ["src/main.rs", "src/lib.rs", "README.md"] {
+            backend
+                .set_file_viewed(&details, Path::new(path), true)
+                .unwrap();
+        }
+
+        // then — one lookup, three mutations.
+        let calls = backend.runner.calls.borrow();
+        let lookups = graphql_calls(&calls)
+            .iter()
+            .filter(|args| query_of(args).contains("pullRequest(number:$number){id}"))
+            .count();
+        assert_eq!(lookups, 1, "node id should be cached after the first call");
     }
 
     #[test]

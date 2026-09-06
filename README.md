@@ -255,6 +255,9 @@ editor = "nvim"               # editor for `e` / `:edit`; overrides $EDITOR
 comment_vim = false           # vim modal editing in the review comment box
 relative_line_numbers = false # show rendered-row distances in the diff gutter
 
+[forge]
+sync_viewed = false           # mirror `r` onto GitHub's per-file Viewed checkbox
+
 [[comment_types]]
 id = "issue"
 color = "red"
@@ -295,7 +298,7 @@ A first-session cheatsheet. Press `?` inside tuicr for the full reference.
 | `I` / `E` (file tree) | Clear the include / exclude filter |
 | `c` / `C` | Add line / file comment |
 | `v` / `V` | Visual mode (range comment) |
-| `r` | Toggle file reviewed |
+| `r` | Toggle file reviewed (mirrors GitHub's *Viewed* checkbox with `[forge] sync_viewed`) |
 | `R` | Toggle hunk reviewed |
 | `e` | Open focused file in `$EDITOR` |
 | `y` | Copy review to clipboard |

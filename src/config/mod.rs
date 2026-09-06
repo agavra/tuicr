@@ -24,12 +24,17 @@ pub struct ForgeConfig {
     /// reader can see the comment classification at a glance. Defaults to
     /// `true`; set to `false` to send the raw comment body.
     pub comment_type_prefix: bool,
+    /// Mirror file-reviewed toggles (`r`) onto GitHub's per-file "Viewed"
+    /// checkbox while reviewing a pull request. Off by default: it turns a
+    /// local marker into a write to GitHub under your account.
+    pub sync_viewed: bool,
 }
 
 impl Default for ForgeConfig {
     fn default() -> Self {
         Self {
             comment_type_prefix: true,
+            sync_viewed: false,
         }
     }
 }

@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::error::Result;
 use crate::forge::remote_comments::RemoteReviewThread;
@@ -559,6 +559,17 @@ pub trait ForgeBackend {
     /// this path as the source of truth for PR contents.
     fn local_checkout_path(&self) -> Option<PathBuf> {
         None
+    }
+
+    /// Mirror the viewer's per-file "viewed" checkbox on the forge.
+    ///
+    /// `path` is the repository-relative path as it appears in the PR diff.
+    /// The default reports the operation as unsupported; only forges with a
+    /// per-viewer file state (GitHub) override it.
+    fn set_file_viewed(&self, _pr: &PullRequestDetails, _path: &Path, _viewed: bool) -> Result<()> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "This forge does not track per-file viewed state".into(),
+        ))
     }
 
     /// Create a review on the PR. The payload-building details (event field
