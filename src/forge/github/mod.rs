@@ -5,3 +5,4 @@ pub mod review_metadata;
 pub mod review_summaries;
 pub mod review_threads;
 pub mod submit;
+pub mod viewed_files;

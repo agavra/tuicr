@@ -554,6 +554,8 @@ impl App {
             pr_threads_rx: None,
             viewed_sync: None,
             viewed_sync_rx: None,
+            viewed_seeded: None,
+            viewed_seed_rx: None,
             forge_config: crate::config::ForgeConfig::default(),
             username: crate::model::comment::DEFAULT_AUTHOR.to_string(),
             submit_state: None,

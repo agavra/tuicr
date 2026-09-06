@@ -70,6 +70,10 @@ fn file(path: &str) -> DiffFile {
 }
 
 fn app() -> App {
+    app_with(&["src/main.rs"])
+}
+
+fn app_with(paths: &[&str]) -> App {
     let vcs_info = VcsInfo {
         root_path: PathBuf::from("/tmp"),
         head_commit: "head".into(),
@@ -88,7 +92,7 @@ fn app() -> App {
         crate::theme::Theme::dark(),
         None,
         false,
-        vec![file("src/main.rs")],
+        paths.iter().map(|p| file(p)).collect(),
         session,
         DiffSource::WorkingTree,
         InputMode::Normal,
@@ -184,4 +188,87 @@ fn should_ignore_viewed_sync_results_with_no_worker() {
 
     // when/then — no channel, no repaint, no panic
     assert!(!app.poll_viewed_sync_events());
+}
+
+#[test]
+fn should_not_read_viewed_state_for_local_diffs() {
+    // given — the sync is on, but there is no pull request behind this review
+    let mut app = app();
+    app.forge_config.sync_viewed = true;
+
+    // when — the main loop pumps the sync on every tick
+    let redraw = app.poll_viewed_sync_events();
+
+    // then — no read was started
+    assert!(!redraw);
+    assert!(app.viewed_seeded.is_none());
+    assert!(app.viewed_seed_rx.is_none());
+}
+
+#[test]
+fn should_not_read_viewed_state_when_disabled_in_config() {
+    // given — a GitHub PR with the sync left off
+    let mut app = app();
+    enter_pr_mode(
+        &mut app,
+        ForgeRepository::github("github.com", "agavra", "tuicr"),
+    );
+
+    // when
+    app.poll_viewed_sync_events();
+
+    // then
+    assert!(app.viewed_seeded.is_none());
+}
+
+#[test]
+fn should_mark_files_the_forge_reports_as_viewed() {
+    // given — two files, neither reviewed locally
+    let mut app = app_with(&["src/main.rs", "src/lib.rs"]);
+
+    // when — GitHub says one of them is already ticked
+    let redraw = app.apply_remote_viewed_state(&[PathBuf::from("src/lib.rs")]);
+
+    // then
+    assert!(redraw);
+    assert!(app.session.is_file_reviewed(&PathBuf::from("src/lib.rs")));
+    assert!(!app.session.is_file_reviewed(&PathBuf::from("src/main.rs")));
+    // and — the seeded markers are worth persisting
+    assert!(app.dirty);
+}
+
+#[test]
+fn should_not_clear_local_markers_the_forge_does_not_report() {
+    // given — a file reviewed here but not ticked on GitHub, which is what a
+    // failed push, or a marker made before the sync was switched on, leaves
+    // behind
+    let mut app = app_with(&["src/main.rs", "src/lib.rs"]);
+    app.toggle_reviewed_for_file_idx(0, false);
+    assert!(app.session.is_file_reviewed(&PathBuf::from("src/main.rs")));
+
+    // when — the forge reports only the other file
+    app.apply_remote_viewed_state(&[PathBuf::from("src/lib.rs")]);
+
+    // then — the read adds markers, it never takes them away
+    assert!(app.session.is_file_reviewed(&PathBuf::from("src/main.rs")));
+    assert!(app.session.is_file_reviewed(&PathBuf::from("src/lib.rs")));
+}
+
+#[test]
+fn should_ignore_viewed_paths_outside_the_review() {
+    // given — the PR covers files this session filtered out, so GitHub
+    // reports paths the review knows nothing about
+    let mut app = app_with(&["src/main.rs"]);
+
+    // when
+    let redraw = app.apply_remote_viewed_state(&[PathBuf::from("docs/ignored.md")]);
+
+    // then — nothing marked, nothing to repaint, no session entry invented
+    assert!(!redraw);
+    assert!(!app.dirty);
+    assert!(
+        !app.session
+            .files
+            .contains_key(&PathBuf::from("docs/ignored.md"))
+    );
 }

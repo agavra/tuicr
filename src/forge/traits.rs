@@ -561,6 +561,13 @@ pub trait ForgeBackend {
         None
     }
 
+    /// Repository-relative paths the viewer has already marked viewed on
+    /// the forge. The default returns none, which reads as "nothing is
+    /// viewed" — the same answer a forge without the concept would give.
+    fn list_viewed_files(&self, _pr: &PullRequestDetails) -> Result<Vec<PathBuf>> {
+        Ok(Vec::new())
+    }
+
     /// Mirror the viewer's per-file "viewed" checkbox on the forge.
     ///
     /// `path` is the repository-relative path as it appears in the PR diff.

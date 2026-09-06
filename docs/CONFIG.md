@@ -244,7 +244,7 @@ comment_type_prefix = false
 | Key                   | Default | Description                                                                                                                                                                 |
 | --------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `comment_type_prefix` | `true`  | Prepend `[TYPE] ` to comment bodies on submit (e.g. `[ISSUE] Magic number should be a constant`). The tag uses the type's `label`, uppercased — the same text the TUI badge and export show. Set to `false` to send the raw comment body without a classification tag. |
-| `sync_viewed`         | `false` | Mirror `r` (toggle file reviewed) onto GitHub's per-file **Viewed** checkbox while reviewing a pull request. GitHub only; see [Viewed state](#viewed-state). |
+| `sync_viewed`         | `false` | Keep `r` (toggle file reviewed) and GitHub's per-file **Viewed** checkbox in step while reviewing a pull request, in both directions. GitHub only; see [Viewed state](#viewed-state). |
 
 When enabled (the default), submitted comments look like:
 
@@ -266,10 +266,16 @@ This applies to inline line comments, file-level comments, and review-level comm
 
 ### Viewed state
 
-With `sync_viewed = true`, marking a file reviewed in a GitHub pull request also
-ticks that file's **Viewed** checkbox on github.com, and unmarking it clears the
-checkbox. It is off by default because it turns a local marker into a write to
-GitHub under your account.
+With `sync_viewed = true`, tuicr's file-reviewed markers and GitHub's per-file
+**Viewed** checkboxes track each other on a pull request:
+
+- Marking a file reviewed with `r` ticks that file's checkbox on github.com,
+  and unmarking it clears the checkbox.
+- Files you already ticked on github.com open as reviewed here — collapsed in
+  the diff and counted in the tree's `reviewed/total`.
+
+It is off by default because it turns a local marker into a write to GitHub
+under your account.
 
 ```toml
 [forge]
@@ -279,15 +285,20 @@ sync_viewed = true
 Details worth knowing:
 
 - **GitHub pull requests only.** Local diffs, commit ranges, and GitLab,
-  Bitbucket, and Azure DevOps pull requests ignore the setting — none of them
-  expose a per-viewer file state.
+  Bitbucket, Gitea, and Azure DevOps pull requests ignore the setting — none of
+  them expose a per-viewer file state.
 - **Files, not hunks.** `R` (toggle hunk reviewed) has no GitHub equivalent and
   never syncs.
-- **Nothing blocks on the network.** The update is pushed on a background
-  worker; the local marker applies immediately and stays applied even if the
-  push fails. Failures appear once in the status bar.
-- **The sync is one-way.** Files you marked viewed on github.com before opening
-  tuicr do not come back as reviewed markers.
+- **The read only adds markers.** A file reviewed here stays reviewed even when
+  GitHub reports it unticked, so a failed push — or unticking a box on the web
+  by accident — never throws away local review progress. GitHub's `DISMISSED`
+  state (viewed, then changed by a later commit) does not count as viewed.
+- **The read runs once per session**, shortly after the PR opens, and again on
+  `:reload`. Paths the review does not cover, because `.tuicrignore` filtered
+  them or the commit selector narrowed the range, are skipped.
+- **Nothing blocks on the network.** Pushes run on a background worker and the
+  read on its own thread; local markers apply immediately and stay applied even
+  if the forge call fails. Failures appear once in the status bar.
 - Requires `gh` authenticated to the host with the `repo` scope, the same as
   `:submit`.
 
