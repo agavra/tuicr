@@ -72,6 +72,7 @@ src/
 │   │   ├── pr_info.rs   # Extended `gh pr view --json` parsing for PR description panel
 │   │   ├── review_threads.rs # GraphQL query for existing review threads
 │   │   ├── review_metadata.rs # GraphQL review commit metadata for since-last-review scoping
+│   │   ├── viewed_files.rs # GraphQL per-file viewerViewedState for the reviewed-marker sync
 │   │   └── submit.rs    # build_review_payload, create_review wiring
 │   ├── gitlab/          # GitLab backend via `glab` CLI
 │   │   ├── mod.rs       # GitLabGlabBackend export
@@ -252,6 +253,8 @@ Forge selection is host-driven: `parse_any_remote_url` tries Bitbucket (`bitbuck
 - `list_review_threads` — existing forge comments + resolved/outdated state.
 - `fetch_file_lines` — remote context expansion in the diff view.
 - `create_review` — POST a review with inline comments via `CreateReviewRequest`.
+- `set_file_viewed` — tick or clear the viewer's per-file viewed state (GitHub's "Viewed" checkbox). Defaults to `UnsupportedOperation`; only GitHub implements it.
+- `list_viewed_files` — paths the viewer has already marked viewed. Defaults to an empty list, which reads the same as a forge without the concept.
 
 ### Async pattern
 
@@ -263,6 +266,8 @@ Network calls run on a background thread. Parsing + state mutation run on the ma
 4. The main-thread `finish_*` function parses the diff and builds the `ReviewSession`. `SyntaxHighlighter` is not trivially `Send`, so parsing has to happen on the main thread.
 
 In-flight requests carry an identity tuple (repo, PR#, head SHA). A late result is discarded if the user has since opened a different PR.
+
+The viewed-state sync (`src/app/viewed_sync.rs`) is the one long-lived worker: it holds its own `ForgeBackend` for the life of a PR session so the node id its GraphQL mutations need is resolved once, and takes toggles over an `mpsc` sender instead of spawning per update. Both it and its one-shot companion read start from `poll_viewed_sync_events()` in the main loop rather than from the PR-open paths, because `App::forge_config` is applied after `App::new` returns — work started at open time cannot see `[forge] sync_viewed`.
 
 ### Session key + lifecycle
 
