@@ -286,10 +286,18 @@ impl App {
         if self.diff_state.wrap_lines {
             return;
         }
+        let viewport_width = if self.diff_view_mode == DiffViewMode::SideBySide {
+            self.diff_state
+                .viewport_width
+                .saturating_sub(crate::app::sbs_overhead(self.lineno_width()) as usize)
+                / 2
+        } else {
+            self.diff_state.viewport_width
+        };
         let max_scroll_x = self
             .diff_state
             .max_content_width
-            .saturating_sub(self.diff_state.viewport_width);
+            .saturating_sub(viewport_width);
         self.diff_state.scroll_x =
             (self.diff_state.scroll_x.saturating_add(cols)).min(max_scroll_x);
     }

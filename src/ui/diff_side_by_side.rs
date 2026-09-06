@@ -5,7 +5,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
 };
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{
     App, DiffSource, ExpandDirection, FocusedPanel, GAP_EXPAND_BATCH, GapId, InputMode,
@@ -14,10 +14,10 @@ use crate::model::{DiffLine, FileStatus, LineOrigin, LineRange, LineSide};
 use crate::theme::Theme;
 use crate::ui::comment_panel;
 use crate::ui::diff_view::{
-    apply_horizontal_scroll, comment_type_presentation, cursor_indicator, cursor_indicator_spaced,
-    diff_stat_title, hunk_header_text_and_style, paint_cursor_line_highlight,
-    paint_visual_selection_overlay, populate_row_to_annotation, render_expander_line,
-    render_hidden_lines, scroll_comment_input_into_view, skip_comment_box,
+    apply_horizontal_scroll, comment_box_row, comment_type_presentation, cursor_indicator,
+    cursor_indicator_spaced, diff_stat_title, hunk_header_text_and_style,
+    paint_cursor_line_highlight, paint_visual_selection_overlay, populate_row_to_annotation,
+    render_expander_line, render_hidden_lines, scroll_comment_input_into_view, skip_comment_box,
 };
 use crate::ui::styles;
 use crate::ui::text_utils::{
@@ -116,6 +116,59 @@ fn pad_spans_to_width(
         spans.push(Span::styled(" ".repeat(width - cur), pad_style));
     }
     spans
+}
+
+fn pan_spans(
+    spans: &[Span<'static>],
+    scroll_x: usize,
+    width: usize,
+    pad_style: Style,
+) -> Vec<Span<'static>> {
+    let mut skipped = 0;
+    let mut visible_width = 0;
+    let mut visible = Vec::new();
+    for span in spans {
+        let mut text = String::new();
+        for ch in span.content.chars() {
+            let ch_width = ch.width().unwrap_or(if ch == '\t' { 1 } else { 0 });
+            if skipped < scroll_x {
+                skipped += ch_width;
+            } else if visible_width + ch_width <= width {
+                text.push(ch);
+                visible_width += ch_width;
+            } else {
+                if !text.is_empty() {
+                    visible.push(Span::styled(text, span.style));
+                }
+                return pad_spans_to_width(visible, width, pad_style);
+            }
+        }
+        if !text.is_empty() {
+            visible.push(Span::styled(text, span.style));
+        }
+        if visible_width == width {
+            break;
+        }
+    }
+    pad_spans_to_width(visible, width, pad_style)
+}
+
+fn pan_sbs_row(meta: &SbsRowMeta, scroll_x: usize, content_width: usize) -> Line<'static> {
+    let mut spans = meta.left_prefix.clone();
+    spans.extend(pan_spans(
+        &meta.left_content,
+        scroll_x,
+        content_width,
+        meta.left_pad_style,
+    ));
+    spans.extend(meta.right_prefix.clone());
+    spans.extend(pan_spans(
+        &meta.right_content,
+        scroll_x,
+        content_width,
+        meta.right_pad_style,
+    ));
+    Line::from(spans)
 }
 
 struct SideSpec {
@@ -972,7 +1025,12 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
         })
         .collect();
 
-    let max_content_width = line_widths.iter().copied().max().unwrap_or(0);
+    let max_content_width = sbs_meta
+        .values()
+        .flat_map(|meta| [&meta.left_content, &meta.right_content])
+        .map(|spans| spans.iter().map(|span| span.content.width()).sum::<usize>())
+        .max()
+        .unwrap_or(0);
 
     app.sync_viewport_width(inner.width as usize);
     app.diff_state.max_content_width = max_content_width;
@@ -1045,7 +1103,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
         scroll_offset,
     );
 
-    let max_scroll_x = max_content_width.saturating_sub(viewport_width);
+    let max_scroll_x = max_content_width.saturating_sub(content_width);
     if app.diff_state.scroll_x > max_scroll_x {
         app.diff_state.scroll_x = max_scroll_x;
     }
@@ -1058,7 +1116,17 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
         Some(out) => out,
         None => visible_lines_unscrolled
             .into_iter()
-            .map(|line| apply_horizontal_scroll(line, scroll_x))
+            .enumerate()
+            .map(|(i, line)| {
+                if scroll_x == 0 || comment_box_row(&line).is_some() {
+                    line
+                } else {
+                    sbs_meta
+                        .get(&(scroll_offset + i))
+                        .map(|meta| pan_sbs_row(meta, scroll_x, content_width))
+                        .unwrap_or_else(|| apply_horizontal_scroll(line, scroll_x))
+                }
+            })
             .collect(),
     };
 
@@ -1073,6 +1141,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
         scroll_offset: app.diff_state.scroll_offset,
         theme: &app.theme,
         comment_bars: &comment_bars,
+        fixed_gutters: true,
     };
 
     // Section-marker row tint (hunk headers + expand/hidden stubs).
@@ -2108,7 +2177,8 @@ mod remote_comments_side_by_side_snapshot_tests {
     };
     use crate::forge::traits::{ForgeRepository, PrSessionKey};
     use crate::model::{
-        DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin, ReviewSession, SessionDiffSource,
+        DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin, LineSide, ReviewSession,
+        SessionDiffSource,
     };
     use crate::syntax::SyntaxHighlighter;
     use crate::theme::Theme;
@@ -2520,6 +2590,60 @@ mod remote_comments_side_by_side_snapshot_tests {
             rows_with_l, 1,
             "wrap-off should produce exactly one row of L, got {rows_with_l}"
         );
+    }
+
+    #[test]
+    fn should_pan_both_columns_when_wrap_is_disabled() {
+        let mut app = make_pr_app();
+        app.diff_files = vec![diff_file_with_pair(
+            &format!("0000LEFT{}", "L".repeat(100)),
+            &format!("0000RIGHT{}", "R".repeat(100)),
+        )];
+        app.set_diff_wrap(false);
+        app.rebuild_annotations();
+
+        let _ = draw_sbs(&mut app, 80, 20);
+        app.scroll_right(4);
+        let buf = draw_sbs(&mut app, 80, 20);
+
+        assert_eq!(app.diff_state.scroll_x, 4);
+        let body = body_text(&buf);
+        assert!(body.contains("LEFT"), "left column did not pan:\n{body}");
+        assert!(body.contains("RIGHT"), "right column did not pan:\n{body}");
+        assert!(
+            !body.contains("0000LEFT"),
+            "left column stayed put:\n{body}"
+        );
+        assert!(
+            !body.contains("0000RIGHT"),
+            "right column stayed put:\n{body}"
+        );
+
+        let row = (0..buf.area.height)
+            .find(|&y| {
+                (0..buf.area.width)
+                    .map(|x| char_at(&buf, x, y))
+                    .collect::<String>()
+                    .contains("LEFT")
+            })
+            .expect("panned diff row");
+        let lw = app.lineno_width();
+        let content_width = (78 - crate::app::sbs_overhead(lw) as usize) / 2;
+        let left_start = 1 + crate::app::sbs_left_gutter(lw);
+        let divider = left_start + content_width as u16 + 1;
+        let right_start = left_start + content_width as u16 + lw as u16 + 5;
+        assert_eq!(char_at(&buf, left_start, row), "L");
+        assert_eq!(char_at(&buf, divider, row), "│");
+        assert_eq!(char_at(&buf, right_start, row), "R");
+
+        app.enter_comment_mode(false, Some((1, LineSide::New)));
+        app.comment_buffer = "COMMENT".to_string();
+        app.comment_cursor = app.comment_buffer.len();
+        let buf = draw_sbs(&mut app, 80, 20);
+        let (cursor_x, cursor_y) = app.comment_cursor_screen_pos.expect("comment cursor");
+        assert_eq!(app.diff_state.scroll_x, 4);
+        assert!(body_text(&buf).contains("COMMENT"));
+        assert_eq!(char_at(&buf, cursor_x - 1, cursor_y), "T");
     }
 
     #[test]
