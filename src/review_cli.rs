@@ -1014,6 +1014,5 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(value["author"], "review-agent");
-        assert_eq!(value["author"], "review-agent");
     }
 }
