@@ -278,6 +278,21 @@ fn map_normal_mode_with_q_quits(key: KeyEvent, leader_key: char, q_quits: bool) 
     }
 }
 
+/// True when a `KeyCode::Char` event carries the modifier pair Windows uses to
+/// report AltGr.
+///
+/// The Windows console sets `RIGHT_ALT_PRESSED` together with
+/// `LEFT_CTRL_PRESSED` while AltGr is held, so crossterm reports
+/// `CONTROL | ALT` and hands back the already-composed character. On German,
+/// Nordic, Polish and Portuguese layouts AltGr is the only way to reach `@`,
+/// `\`, `|`, `[`, `]`, `{`, `}`, `~` and several accented letters, which the
+/// `:` command line, the `/` searches and the `i`/`e` regex filters all need.
+/// Every Ctrl-only chord is matched ahead of this, so `Ctrl-w` and `Ctrl-u`
+/// keep their meaning.
+fn is_altgr_text(modifiers: KeyModifiers) -> bool {
+    modifiers.contains(KeyModifiers::CONTROL | KeyModifiers::ALT)
+}
+
 fn map_command_mode(key: KeyEvent) -> Action {
     match (key.code, key.modifiers) {
         (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
@@ -288,6 +303,7 @@ fn map_command_mode(key: KeyEvent) -> Action {
         (KeyCode::Backspace, KeyModifiers::NONE) => Action::DeleteChar,
         (KeyCode::Char('w'), KeyModifiers::CONTROL) => Action::DeleteWord,
         (KeyCode::Char('u'), KeyModifiers::CONTROL) => Action::ClearLine,
+        (KeyCode::Char(c), mods) if is_altgr_text(mods) => Action::InsertChar(c),
         (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => Action::InsertChar(c),
         _ => Action::None,
     }
@@ -301,6 +317,7 @@ fn map_search_mode(key: KeyEvent) -> Action {
         (KeyCode::Backspace, KeyModifiers::NONE) => Action::DeleteChar,
         (KeyCode::Char('w'), KeyModifiers::CONTROL) => Action::DeleteWord,
         (KeyCode::Char('u'), KeyModifiers::CONTROL) => Action::ClearLine,
+        (KeyCode::Char(c), mods) if is_altgr_text(mods) => Action::InsertChar(c),
         (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => Action::InsertChar(c),
         _ => Action::None,
     }
@@ -528,6 +545,7 @@ pub fn map_file_tree_prompt_mode(key: KeyEvent) -> Action {
         (KeyCode::Backspace, KeyModifiers::NONE) => Action::DeleteChar,
         (KeyCode::Char('w'), KeyModifiers::CONTROL) => Action::DeleteWord,
         (KeyCode::Char('u'), KeyModifiers::CONTROL) => Action::ClearLine,
+        (KeyCode::Char(c), mods) if is_altgr_text(mods) => Action::InsertChar(c),
         (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => Action::InsertChar(c),
         _ => Action::None,
     }
@@ -544,6 +562,7 @@ pub fn map_target_filter_mode(key: KeyEvent) -> Action {
         (KeyCode::Char('u'), KeyModifiers::CONTROL) => Action::ClearLine,
         (KeyCode::Char('w'), KeyModifiers::CONTROL) => Action::DeleteWord,
         (KeyCode::Backspace, mods) if mods.contains(KeyModifiers::ALT) => Action::DeleteWord,
+        (KeyCode::Char(c), mods) if is_altgr_text(mods) => Action::InsertChar(c),
         (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => Action::InsertChar(c),
         _ => Action::None,
     }
@@ -840,6 +859,45 @@ mod tests {
 
         let action = map_normal_mode(key_shift('M'), DEFAULT_LEADER_KEY);
         assert_eq!(action, Action::PrevComment);
+    }
+
+    #[test]
+    fn should_type_altgr_composed_characters_in_every_text_prompt() {
+        // Windows reports AltGr as CONTROL | ALT and hands back the composed
+        // character, so on German, Nordic, Polish and Portuguese layouts these
+        // are the only way to type `@`, `\`, `[`, `|` and the accented
+        // letters. Every prompt has to take them as text.
+        let altgr =
+            |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL | KeyModifiers::ALT);
+        for c in ['@', '\\', '[', ']', '{', '}', '|', '~', 'ą'] {
+            assert_eq!(map_command_mode(altgr(c)), Action::InsertChar(c), "`:` {c}");
+            assert_eq!(map_search_mode(altgr(c)), Action::InsertChar(c), "`/` {c}");
+            assert_eq!(
+                map_file_tree_prompt_mode(altgr(c)),
+                Action::InsertChar(c),
+                "file tree prompt {c}"
+            );
+            assert_eq!(
+                map_target_filter_mode(altgr(c)),
+                Action::InsertChar(c),
+                "PR filter {c}"
+            );
+        }
+    }
+
+    #[test]
+    fn should_keep_ctrl_editing_chords_out_of_the_altgr_arm() {
+        // The AltGr arm must not swallow the Ctrl-only editing chords, which
+        // arrive without ALT set.
+        let ctrl = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+        assert_eq!(map_command_mode(ctrl('w')), Action::DeleteWord);
+        assert_eq!(map_command_mode(ctrl('u')), Action::ClearLine);
+        assert_eq!(map_search_mode(ctrl('w')), Action::DeleteWord);
+        assert_eq!(map_search_mode(ctrl('u')), Action::ClearLine);
+        assert_eq!(map_file_tree_prompt_mode(ctrl('w')), Action::DeleteWord);
+        assert_eq!(map_file_tree_prompt_mode(ctrl('u')), Action::ClearLine);
+        assert_eq!(map_target_filter_mode(ctrl('w')), Action::DeleteWord);
+        assert_eq!(map_target_filter_mode(ctrl('u')), Action::ClearLine);
     }
 
     #[test]

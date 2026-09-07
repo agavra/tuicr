@@ -315,6 +315,8 @@ These are non-obvious things the implementation chain hit. Worth preserving for 
 
 16. **GNU Linux release binaries must stay dynamically linked.** Static glibc binaries can crash when hostname lookup loads a host NSS module (for example Fedora's `libnss_myhostname`). The musl artifacts are the supported static Linux builds. Direct updates must preserve the running binary's GNU/musl target environment when selecting an asset.
 
+17. **The `[TYPE]` prefix uses the config-resolved `label`, not the `CommentType` id.** `CommentType` carries no label — it lives on `CommentTypeDefinition` (`App::comment_types`), so `as_str()` only ever yields the uppercased id. Four resolvers render this tag and must agree: `App::comment_type_label` (TUI), `export_comment_type_label` (`src/output/markdown.rs`), `SubmitContext::type_label` (`src/forge/submit.rs`), and `describe_row` (`src/ui/submit_modals.rs`). The last is easy to miss and previews the tag the user is deciding about, so disagreement means choosing Move-to-summary vs Omit against a tag that never gets posted. This is why the submit path takes a `SubmitContext` rather than a bare `&ForgeConfig`.
+
 ### Keeping Docs Updated
 
 When adding user-facing features, update the relevant documentation:

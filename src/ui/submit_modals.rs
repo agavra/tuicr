@@ -102,7 +102,10 @@ pub fn render_submit_resolver(frame: &mut Frame, app: &App) {
             Style::default()
         };
         lines.push(Line::from(Span::styled(
-            format!("{cursor} {action_label}  {row}", row = describe_row(item)),
+            format!(
+                "{cursor} {action_label}  {row}",
+                row = describe_row(app, item)
+            ),
             style,
         )));
     }
@@ -214,8 +217,15 @@ pub fn render_submit_confirm(frame: &mut Frame, app: &App) {
     frame.render_widget(paragraph, inner);
 }
 
-fn describe_row(item: &UnmappableItem) -> String {
-    let kind = item.comment.comment_type.as_str();
+/// The `[TYPE]` tag here must match what submit actually sends, so it resolves
+/// the configured `label` rather than the raw id.
+fn describe_row(app: &App, item: &UnmappableItem) -> String {
+    let label = app.comment_type_label(&item.comment.comment_type);
+    let type_tag = if label.is_empty() {
+        String::new()
+    } else {
+        format!("[{label}] ")
+    };
     let path = item.file.display();
     let preview: String = item.comment.content.chars().take(40).collect();
     let ellipsis = if item.comment.content.chars().count() > 40 {
@@ -224,7 +234,7 @@ fn describe_row(item: &UnmappableItem) -> String {
         ""
     };
     let reason = item.reason.human_label();
-    format!("{path} [{kind}] {preview}{ellipsis}  ({reason})")
+    format!("{path} {type_tag}{preview}{ellipsis}  ({reason})")
 }
 
 fn body_summary_label(app: &App, moved_count: usize) -> String {
@@ -517,6 +527,48 @@ mod tests {
         assert!(text.contains("Enter: toggle action"));
         // Cursor marker on row 0
         assert!(text.contains("> [x] Move to summary"));
+    }
+
+    #[test]
+    fn resolver_row_uses_configured_label_and_omits_tag_for_untyped() {
+        use crate::app::CommentTypeDefinition;
+        use crate::forge::submit::UnmappableReason;
+        let mut app = make_pr_app();
+        app.comment_types = vec![CommentTypeDefinition {
+            id: "note".to_string(),
+            label: "\u{1F4AC} note".to_string(),
+            definition: None,
+            color: None,
+        }];
+        app.submit_state = Some(SubmitState {
+            event: SubmitEvent::Comment,
+            mappable: Vec::new(),
+            unmappable: vec![
+                unmappable_item(
+                    "img.png",
+                    CommentType::from_id("note"),
+                    "binary art",
+                    UnmappableReason::BinaryFile,
+                ),
+                unmappable_item(
+                    "src/lib.rs",
+                    CommentType::None,
+                    "untyped remark",
+                    UnmappableReason::FileLevelNoAnchor,
+                ),
+            ],
+            resolver_choices: vec![ResolverAction::MoveToSummary, ResolverAction::MoveToSummary],
+            resolver_cursor: 0,
+            commit_id: "abcdef0123".to_string(),
+            skip_confirm: false,
+        });
+        let text = buffer_text(&draw_resolver(&app));
+        // The emoji spans two cells, so the buffer reads back with padding.
+        assert!(text.contains("\u{1F4AC}"), "emoji in tag: {text}");
+        assert!(text.contains("NOTE]"), "label tag: {text}");
+        // Untyped comments render no tag at all — never a literal `[NONE]`.
+        assert!(!text.contains("[NONE]"), "untyped tag leaked: {text}");
+        assert!(text.contains("untyped remark"), "untyped row: {text}");
     }
 
     #[test]

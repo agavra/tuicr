@@ -151,6 +151,36 @@ fn horizontal_keys_scroll_in_side_by_side_and_leave_side_unchanged() {
 }
 
 #[test]
+fn line_comment_preserves_horizontal_scroll() {
+    let mut app = build_app();
+    app.diff_view_mode = DiffViewMode::SideBySide;
+    app.diff_state.scroll_x = 12;
+
+    app.enter_comment_mode(false, Some((20, LineSide::New)));
+
+    assert_eq!(app.diff_state.scroll_x, 12);
+}
+
+#[test]
+fn range_comment_preserves_horizontal_scroll() {
+    let mut app = build_app();
+    app.diff_view_mode = DiffViewMode::SideBySide;
+    app.diff_state.scroll_x = 12;
+    app.input_mode = InputMode::VisualSelect;
+    app.line_annotations = vec![sbs_line(Some(10), Some(20))];
+    app.visual_selection = Some(VisualSelection::collapsed(SelPoint {
+        annotation_idx: 0,
+        char_offset: 0,
+        side: LineSide::New,
+    }));
+
+    app.enter_comment_from_visual();
+
+    assert_eq!(app.diff_state.scroll_x, 12);
+    assert_eq!(app.input_mode, InputMode::Comment);
+}
+
+#[test]
 fn leader_walk_steps_through_the_side_by_side_panes() {
     let mut app = build_app();
     app.diff_view_mode = DiffViewMode::SideBySide;

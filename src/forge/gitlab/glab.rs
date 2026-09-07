@@ -429,6 +429,9 @@ where
                 break;
             }
         }
+        // GitLab lists MR commits newest-first; the trait contract is
+        // oldest-first.
+        commits.reverse();
         Ok(commits)
     }
 
@@ -1350,6 +1353,28 @@ mod tests {
             !calls[0].0.iter().any(|arg| arg == "--output"),
             "glab 1.36 does not support `mr view --output`"
         );
+    }
+
+    #[test]
+    fn should_return_commits_oldest_first() {
+        // given — GitLab lists MR commits newest-first
+        let repo = ForgeRepository::gitlab("gitlab.com", "owner", "repo");
+        let pr = make_pr_details(repo.clone());
+        let runner = RecordingRunner::new_with_responses(vec![
+            r#"[
+              {"id":"64ad53963568726a9ed23fd96b6d73203176775d","short_id":"64ad5396","title":"fixup!","author_name":"Radek","committed_date":"2026-08-27T13:49:53Z"},
+              {"id":"e52022cd3bb22302b9775c7281ad27bddcf04f03","short_id":"e52022cd","title":"Edit README.md","author_name":"Radek","committed_date":"2026-08-27T13:48:53Z"}
+            ]"#
+                .to_string(),
+        ]);
+        let backend = GitLabGlabBackend::with_runner(Some(repo), runner);
+
+        // when
+        let commits = backend.list_pull_request_commits(&pr).unwrap();
+
+        // then — the trait contract is chronological
+        let summaries: Vec<&str> = commits.iter().map(|c| c.summary.as_str()).collect();
+        assert_eq!(summaries, vec!["Edit README.md", "fixup!"]);
     }
 
     #[test]

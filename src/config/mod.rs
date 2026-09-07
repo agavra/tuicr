@@ -62,6 +62,8 @@ pub struct ExportConfig {
     pub remote_comments_header: Option<String>,
     /// Whether to emit the `Comment types:` legend.
     pub legend: Option<bool>,
+    /// Whether to emit the `## Session: <slug>` header.
+    pub session_header: Option<bool>,
 }
 
 impl ExportConfig {
@@ -91,6 +93,10 @@ impl ExportConfig {
 
     pub fn legend(&self) -> bool {
         self.legend.unwrap_or(true)
+    }
+
+    pub fn session_header(&self) -> bool {
+        self.session_header.unwrap_or(true)
     }
 }
 
@@ -143,6 +149,7 @@ pub struct AppConfig {
     /// Defaults to 4 (matching diff tab expansion).
     pub comment_tab_width: Option<usize>,
     pub leader: Option<char>,
+    pub editor: Option<String>,
     pub transparent_background: Option<bool>,
     pub scroll_offset: Option<usize>,
     pub review_watch_interval_ms: Option<usize>,
@@ -209,6 +216,7 @@ const KNOWN_KEYS: &[&str] = &[
     "q_quits",
     "comment_tab_width",
     "leader",
+    "editor",
     "transparent_background",
     "scroll_offset",
     "review_watch_interval_ms",
@@ -229,6 +237,7 @@ const EXPORT_KNOWN_KEYS: &[&str] = &[
     "comments_header",
     "remote_comments_header",
     "legend",
+    "session_header",
 ];
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -450,6 +459,7 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         q_quits: read_bool(table, "q_quits", &mut warnings),
         comment_tab_width: read_usize(table, "comment_tab_width", &mut warnings),
         leader: read_leader(table, &mut warnings),
+        editor: read_string(table, "editor", &mut warnings),
         transparent_background: read_bool(table, "transparent_background", &mut warnings),
         scroll_offset: read_usize(table, "scroll_offset", &mut warnings),
         review_watch_interval_ms: read_usize(table, "review_watch_interval_ms", &mut warnings),
@@ -535,6 +545,7 @@ fn parse_export(value: &Value, warnings: &mut Vec<String>) -> Option<ExportConfi
             warnings,
         ),
         legend: read_section_bool(table, "export", "legend", warnings),
+        session_header: read_section_bool(table, "export", "session_header", warnings),
     };
 
     if cfg == ExportConfig::default() {
@@ -1419,6 +1430,32 @@ mod tests {
         );
     }
 
+    // editor
+
+    #[test]
+    fn should_parse_editor_command_with_args() {
+        let outcome = parse_config("editor = \"code -w\"\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.editor.clone()),
+            Some("code -w".to_string())
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_warn_and_ignore_editor_with_invalid_type() {
+        let outcome = parse_config("editor = 42\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.editor.clone()),
+            None
+        );
+        assert_eq!(outcome.warnings.len(), 1);
+        assert_eq!(
+            outcome.warnings[0],
+            "Warning: Config key 'editor' must be a string; ignoring value"
+        );
+    }
+
     // no_update_check
 
     #[test]
@@ -1732,6 +1769,7 @@ pr_metadata = false
 comments_header = "## Comments"
 remote_comments_header = "## Upstream"
 legend = false
+session_header = false
 "###,
         );
         let export = outcome
@@ -1745,6 +1783,7 @@ legend = false
         assert_eq!(export.comments_header(), "## Comments");
         assert_eq!(export.remote_comments_header(), "## Upstream");
         assert!(!export.legend());
+        assert!(!export.session_header());
         assert!(outcome.warnings.is_empty());
     }
 

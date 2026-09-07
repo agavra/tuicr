@@ -147,8 +147,9 @@ Shown below the file tree when local comments or visible remote PR threads exist
 `e` opens the file at the cursor's line. Terminal editors (`vim`, `nvim`, `nano`, …)
 take over the screen and tuicr reloads the diff once they exit. Windowed editors
 (`code`, `cursor`, `zed`, `subl`, …) open in their own window while tuicr stays on
-screen; reload with `:e` after editing. Adding `--wait` to `$EDITOR` opts a windowed
-editor back into the blocking behaviour.
+screen; reload with `:e` after editing. Adding `--wait` to the editor command opts a
+windowed editor back into the blocking behaviour. Set the `editor` config key to
+override `$EDITOR`.
 
 ## Visual mode
 

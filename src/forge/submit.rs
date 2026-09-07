@@ -10,9 +10,47 @@
 
 use std::path::PathBuf;
 
+use crate::app::CommentTypeDefinition;
 use crate::config::ForgeConfig;
-use crate::model::comment::Comment;
+use crate::model::comment::{Comment, CommentType};
 use crate::model::{DiffFile, FileStatus, LineOrigin, LineRange, LineSide};
+
+/// The `[forge]` settings plus the config-resolved comment types. The types
+/// are needed because `CommentType` carries only an id — the user-facing
+/// `label` lives on [`CommentTypeDefinition`].
+#[derive(Debug, Clone, Copy)]
+pub struct SubmitContext<'a> {
+    pub forge: &'a ForgeConfig,
+    pub comment_types: &'a [CommentTypeDefinition],
+}
+
+impl<'a> SubmitContext<'a> {
+    pub fn new(forge: &'a ForgeConfig, comment_types: &'a [CommentTypeDefinition]) -> Self {
+        Self {
+            forge,
+            comment_types,
+        }
+    }
+
+    /// Resolved `[TYPE]` text, or an empty string for `None` so callers omit
+    /// the tag. Mirrors `App::comment_type_label` and
+    /// `export_comment_type_label` — those three must agree.
+    fn type_label(&self, comment_type: &CommentType) -> String {
+        if comment_type.is_none() {
+            return String::new();
+        }
+
+        if let Some(definition) = self
+            .comment_types
+            .iter()
+            .find(|definition| definition.id == comment_type.id())
+        {
+            return definition.label.to_ascii_uppercase();
+        }
+
+        comment_type.as_str()
+    }
+}
 
 /// Which forge review event a `:submit*` command corresponds to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -175,16 +213,17 @@ pub enum MappedComment {
 
 /// Compute the inline body for `comment` honoring the `[TYPE]` prefix toggle.
 /// File-level bodies are prefixed `[TYPE] File-level:`.
-fn build_inline_body(comment: &Comment, file_level: bool, config: &ForgeConfig) -> String {
-    if !config.comment_type_prefix {
+fn build_inline_body(comment: &Comment, file_level: bool, ctx: SubmitContext<'_>) -> String {
+    if !ctx.forge.comment_type_prefix {
         return comment.content.clone();
     }
     // `None` comments carry no `[TYPE]` tag, but file-level ones keep the
     // `File-level:` marker so the reader still knows where the comment applies.
-    let type_tag = if comment.comment_type.is_none() {
+    let label = ctx.type_label(&comment.comment_type);
+    let type_tag = if label.is_empty() {
         String::new()
     } else {
-        format!("[{ty}] ", ty = comment.comment_type.as_str())
+        format!("[{label}] ")
     };
     let prefix = if file_level {
         format!("{type_tag}File-level: ")
@@ -217,7 +256,7 @@ pub fn map_comment(
     comment: &Comment,
     anchor: CommentAnchor,
     file: &DiffFile,
-    config: &ForgeConfig,
+    ctx: SubmitContext<'_>,
 ) -> MappedComment {
     let path = file.display_path().clone();
 
@@ -253,7 +292,7 @@ pub fn map_comment(
                     start_side: None,
                     range_anchors: None,
                     old_path,
-                    body: build_inline_body(comment, true, config),
+                    body: build_inline_body(comment, true, ctx),
                     comment_id: comment.id.clone(),
                 })
             }
@@ -264,7 +303,7 @@ pub fn map_comment(
             },
         },
         CommentAnchor::Range => match comment.line_range {
-            Some(range) => map_range(comment, file, config, range),
+            Some(range) => map_range(comment, file, ctx, range),
             None => MappedComment::Unmappable {
                 comment: comment.clone(),
                 file: path,
@@ -286,7 +325,7 @@ pub fn map_comment(
                 start_side: None,
                 range_anchors: None,
                 old_path,
-                body: build_inline_body(comment, false, config),
+                body: build_inline_body(comment, false, ctx),
                 comment_id: comment.id.clone(),
             }),
         },
@@ -382,7 +421,7 @@ fn find_diff_anchor(file: &DiffFile, line: u32, side: LineSide) -> Option<DiffAn
 fn map_range(
     comment: &Comment,
     file: &DiffFile,
-    config: &ForgeConfig,
+    ctx: SubmitContext<'_>,
     range: LineRange,
 ) -> MappedComment {
     let path = file.display_path().clone();
@@ -426,7 +465,7 @@ fn map_range(
             start_side: None,
             range_anchors: None,
             old_path,
-            body: build_inline_body(comment, false, config),
+            body: build_inline_body(comment, false, ctx),
             comment_id: comment.id.clone(),
         });
     }
@@ -444,7 +483,7 @@ fn map_range(
         start_side: Some(side.into()),
         range_anchors,
         old_path,
-        body: build_inline_body(comment, false, config),
+        body: build_inline_body(comment, false, ctx),
         comment_id: comment.id.clone(),
     })
 }
@@ -529,7 +568,7 @@ pub struct MovedToSummaryItem {
 pub fn build_review_body(
     review_level: &[Comment],
     moved_to_summary: &[MovedToSummaryItem],
-    config: &ForgeConfig,
+    ctx: SubmitContext<'_>,
 ) -> String {
     let mut sections: Vec<String> = Vec::new();
 
@@ -539,8 +578,9 @@ pub fn build_review_body(
             if i > 0 {
                 block.push_str("\n\n");
             }
-            if config.comment_type_prefix && !c.comment_type.is_none() {
-                block.push_str(&format!("[{}] ", c.comment_type.as_str()));
+            let label = ctx.type_label(&c.comment_type);
+            if ctx.forge.comment_type_prefix && !label.is_empty() {
+                block.push_str(&format!("[{label}] "));
             }
             block.push_str(&c.content);
         }
@@ -550,8 +590,9 @@ pub fn build_review_body(
     if !moved_to_summary.is_empty() {
         let mut block = String::from("## Unplaced comments\n");
         for item in moved_to_summary {
-            let prefix = if config.comment_type_prefix && !item.comment.comment_type.is_none() {
-                format!("[{}] ", item.comment.comment_type.as_str())
+            let label = ctx.type_label(&item.comment.comment_type);
+            let prefix = if ctx.forge.comment_type_prefix && !label.is_empty() {
+                format!("[{label}] ")
             } else {
                 String::new()
             };
@@ -623,6 +664,35 @@ mod tests {
 
     fn default_config() -> ForgeConfig {
         ForgeConfig::default()
+    }
+
+    /// `issue`/`note` label == id (most tests assert the uppercased id);
+    /// `emoji` carries a distinct label to pin label passthrough.
+    fn test_comment_types() -> Vec<CommentTypeDefinition> {
+        vec![
+            CommentTypeDefinition {
+                id: "issue".to_string(),
+                label: "issue".to_string(),
+                definition: None,
+                color: None,
+            },
+            CommentTypeDefinition {
+                id: "note".to_string(),
+                label: "note".to_string(),
+                definition: None,
+                color: None,
+            },
+            CommentTypeDefinition {
+                id: "emoji".to_string(),
+                label: "\u{1F4AC} note".to_string(),
+                definition: None,
+                color: None,
+            },
+        ]
+    }
+
+    fn ctx_of<'a>(forge: &'a ForgeConfig, types: &'a [CommentTypeDefinition]) -> SubmitContext<'a> {
+        SubmitContext::new(forge, types)
     }
 
     fn comment_with_line(side: LineSide, new: Option<u32>, old: Option<u32>) -> Comment {
@@ -720,7 +790,7 @@ mod tests {
             &comment,
             anchor_from(&comment),
             &typical_file(),
-            &default_config(),
+            ctx_of(&default_config(), &test_comment_types()),
         );
         match mapped {
             MappedComment::Inline(inline) => {
@@ -741,7 +811,7 @@ mod tests {
             &comment,
             anchor_from(&comment),
             &typical_file(),
-            &default_config(),
+            ctx_of(&default_config(), &test_comment_types()),
         );
         assert!(matches!(
             mapped,
@@ -762,7 +832,7 @@ mod tests {
             &comment,
             anchor_from(&comment),
             &typical_file(),
-            &default_config(),
+            ctx_of(&default_config(), &test_comment_types()),
         );
         match mapped {
             MappedComment::Inline(inline) => {
@@ -784,7 +854,7 @@ mod tests {
             &comment,
             anchor_from(&comment),
             &typical_file(),
-            &default_config(),
+            ctx_of(&default_config(), &test_comment_types()),
         );
         match mapped {
             MappedComment::Inline(inline) => {
@@ -803,7 +873,7 @@ mod tests {
             &comment,
             anchor_from(&comment),
             &typical_file(),
-            &default_config(),
+            ctx_of(&default_config(), &test_comment_types()),
         );
         match mapped {
             MappedComment::Inline(inline) => {
@@ -824,7 +894,12 @@ mod tests {
             line(LineOrigin::Addition, Some(12), None),
         ])]);
         let comment = comment_range(LineSide::New, LineRange::new(10, 12));
-        let mapped = map_comment(&comment, anchor_from(&comment), &file, &default_config());
+        let mapped = map_comment(
+            &comment,
+            anchor_from(&comment),
+            &file,
+            ctx_of(&default_config(), &test_comment_types()),
+        );
         match mapped {
             MappedComment::Inline(inline) => {
                 assert_eq!(inline.line, 12);
@@ -844,7 +919,12 @@ mod tests {
             line(LineOrigin::Deletion, None, Some(22)),
         ])]);
         let comment = comment_range(LineSide::Old, LineRange::new(20, 22));
-        let mapped = map_comment(&comment, anchor_from(&comment), &file, &default_config());
+        let mapped = map_comment(
+            &comment,
+            anchor_from(&comment),
+            &file,
+            ctx_of(&default_config(), &test_comment_types()),
+        );
         match mapped {
             MappedComment::Inline(inline) => {
                 assert_eq!(inline.line, 22);
@@ -860,7 +940,12 @@ mod tests {
     fn should_flatten_single_line_range_to_inline_without_start_fields() {
         let file = file_with_hunks(vec![hunk(vec![line(LineOrigin::Addition, Some(15), None)])]);
         let comment = comment_range(LineSide::New, LineRange::single(15));
-        let mapped = map_comment(&comment, anchor_from(&comment), &file, &default_config());
+        let mapped = map_comment(
+            &comment,
+            anchor_from(&comment),
+            &file,
+            ctx_of(&default_config(), &test_comment_types()),
+        );
         match mapped {
             MappedComment::Inline(inline) => {
                 assert_eq!(inline.line, 15);
@@ -881,7 +966,12 @@ mod tests {
             line(LineOrigin::Addition, Some(11), None),
         ])]);
         let comment = comment_range(LineSide::New, LineRange::new(10, 11));
-        let mapped = map_comment(&comment, anchor_from(&comment), &file, &default_config());
+        let mapped = map_comment(
+            &comment,
+            anchor_from(&comment),
+            &file,
+            ctx_of(&default_config(), &test_comment_types()),
+        );
         match mapped {
             MappedComment::Inline(inline) => {
                 let anchors = inline.range_anchors.expect("range anchors");
@@ -916,7 +1006,12 @@ mod tests {
             line(LineOrigin::Context, Some(12), Some(7)),
         ])]);
         let comment = comment_range(LineSide::New, LineRange::new(10, 12));
-        let mapped = map_comment(&comment, anchor_from(&comment), &file, &default_config());
+        let mapped = map_comment(
+            &comment,
+            anchor_from(&comment),
+            &file,
+            ctx_of(&default_config(), &test_comment_types()),
+        );
         match mapped {
             MappedComment::Inline(inline) => {
                 assert_eq!(inline.counterpart_line, Some(7));
@@ -943,7 +1038,12 @@ mod tests {
             line(LineOrigin::Deletion, None, Some(22)),
         ])]);
         let comment = comment_range(LineSide::New, LineRange::new(20, 22));
-        let mapped = map_comment(&comment, anchor_from(&comment), &file, &default_config());
+        let mapped = map_comment(
+            &comment,
+            anchor_from(&comment),
+            &file,
+            ctx_of(&default_config(), &test_comment_types()),
+        );
         match mapped {
             MappedComment::Unmappable { reason, .. } => {
                 assert_eq!(reason, UnmappableReason::MixedSideRange);
@@ -961,7 +1061,7 @@ mod tests {
             &comment,
             anchor_from(&comment),
             &typical_file(),
-            &default_config(),
+            ctx_of(&default_config(), &test_comment_types()),
         );
         match mapped {
             MappedComment::Inline(inline) => {
@@ -978,7 +1078,12 @@ mod tests {
         // Pure deletion file: nothing on the New side.
         let file = file_with_hunks(vec![hunk(vec![line(LineOrigin::Deletion, None, Some(5))])]);
         let comment = comment_file_level();
-        let mapped = map_comment(&comment, anchor_from(&comment), &file, &default_config());
+        let mapped = map_comment(
+            &comment,
+            anchor_from(&comment),
+            &file,
+            ctx_of(&default_config(), &test_comment_types()),
+        );
         match mapped {
             MappedComment::Unmappable { reason, .. } => {
                 assert_eq!(reason, UnmappableReason::FileLevelNoAnchor);
@@ -992,7 +1097,12 @@ mod tests {
         let mut file = typical_file();
         file.is_binary = true;
         let comment = comment_with_line(LineSide::New, Some(11), None);
-        let mapped = map_comment(&comment, anchor_from(&comment), &file, &default_config());
+        let mapped = map_comment(
+            &comment,
+            anchor_from(&comment),
+            &file,
+            ctx_of(&default_config(), &test_comment_types()),
+        );
         assert!(matches!(
             mapped,
             MappedComment::Unmappable {
@@ -1007,7 +1117,12 @@ mod tests {
         let mut file = typical_file();
         file.is_too_large = true;
         let comment = comment_file_level();
-        let mapped = map_comment(&comment, anchor_from(&comment), &file, &default_config());
+        let mapped = map_comment(
+            &comment,
+            anchor_from(&comment),
+            &file,
+            ctx_of(&default_config(), &test_comment_types()),
+        );
         assert!(matches!(
             mapped,
             MappedComment::Unmappable {
@@ -1025,7 +1140,12 @@ mod tests {
         let cfg = ForgeConfig {
             comment_type_prefix: false,
         };
-        let mapped = map_comment(&comment, anchor_from(&comment), &typical_file(), &cfg);
+        let mapped = map_comment(
+            &comment,
+            anchor_from(&comment),
+            &typical_file(),
+            ctx_of(&cfg, &test_comment_types()),
+        );
         match mapped {
             MappedComment::Inline(inline) => {
                 assert!(!inline.body.contains("[ISSUE]"));
@@ -1043,14 +1163,18 @@ mod tests {
 
     #[test]
     fn should_return_empty_body_when_no_inputs() {
-        let body = build_review_body(&[], &[], &default_config());
+        let body = build_review_body(&[], &[], ctx_of(&default_config(), &test_comment_types()));
         assert_eq!(body, "");
     }
 
     #[test]
     fn should_render_review_level_comments_with_type_prefix() {
         let comments = vec![note("first"), note("second")];
-        let body = build_review_body(&comments, &[], &default_config());
+        let body = build_review_body(
+            &comments,
+            &[],
+            ctx_of(&default_config(), &test_comment_types()),
+        );
         assert_eq!(body, "[NOTE] first\n\n[NOTE] second");
     }
 
@@ -1060,7 +1184,11 @@ mod tests {
             comment: Comment::new("kaboom".to_string(), CommentType::from_id("issue"), None),
             file: PathBuf::from("src/lib.rs"),
         };
-        let body = build_review_body(&[], &[item], &default_config());
+        let body = build_review_body(
+            &[],
+            &[item],
+            ctx_of(&default_config(), &test_comment_types()),
+        );
         assert!(body.contains("## Unplaced comments"));
         assert!(body.contains("- [ISSUE] src/lib.rs: kaboom"));
     }
@@ -1072,7 +1200,11 @@ mod tests {
             comment: Comment::new("middle".to_string(), CommentType::from_id("note"), None),
             file: PathBuf::from("a.rs"),
         }];
-        let body = build_review_body(&review, &summary, &default_config());
+        let body = build_review_body(
+            &review,
+            &summary,
+            ctx_of(&default_config(), &test_comment_types()),
+        );
         let top = body.find("[NOTE] top").expect("review comment");
         let middle = body.find("## Unplaced comments").expect("unplaced section");
         assert!(top < middle, "section ordering: {body}");
@@ -1084,7 +1216,7 @@ mod tests {
             comment_type_prefix: false,
         };
         let comments = vec![note("just text")];
-        let body = build_review_body(&comments, &[], &cfg);
+        let body = build_review_body(&comments, &[], ctx_of(&cfg, &test_comment_types()));
         assert_eq!(body, "just text");
     }
 
@@ -1095,7 +1227,11 @@ mod tests {
             comment: Comment::new("also untyped".to_string(), CommentType::None, None),
             file: PathBuf::from("a.rs"),
         }];
-        let body = build_review_body(&comments, &summary, &default_config());
+        let body = build_review_body(
+            &comments,
+            &summary,
+            ctx_of(&default_config(), &test_comment_types()),
+        );
         assert!(!body.contains('['), "no type tag expected on None: {body}");
         assert!(body.contains("untyped"));
         assert!(body.contains("- a.rs: also untyped"));
@@ -1106,13 +1242,84 @@ mod tests {
         let comment = Comment::new("untyped".to_string(), CommentType::None, None);
         // Line-level: raw content, no `[TYPE]`.
         assert_eq!(
-            build_inline_body(&comment, false, &default_config()),
+            build_inline_body(
+                &comment,
+                false,
+                ctx_of(&default_config(), &test_comment_types())
+            ),
             "untyped"
         );
         // File-level: keep the `File-level:` marker, drop the `[TYPE]`.
         assert_eq!(
-            build_inline_body(&comment, true, &default_config()),
+            build_inline_body(
+                &comment,
+                true,
+                ctx_of(&default_config(), &test_comment_types())
+            ),
             "File-level: untyped"
+        );
+    }
+
+    #[test]
+    fn should_use_configured_label_for_type_prefix_on_submit() {
+        let comment = Comment::new("looks odd".to_string(), CommentType::from_id("emoji"), None);
+        assert_eq!(
+            build_inline_body(
+                &comment,
+                false,
+                ctx_of(&default_config(), &test_comment_types())
+            ),
+            "[💬 NOTE] looks odd"
+        );
+        assert_eq!(
+            build_inline_body(
+                &comment,
+                true,
+                ctx_of(&default_config(), &test_comment_types())
+            ),
+            "[💬 NOTE] File-level: looks odd"
+        );
+    }
+
+    #[test]
+    fn should_fall_back_to_uppercased_id_for_unconfigured_type() {
+        let comment = Comment::new("fix".to_string(), CommentType::from_id("ghost"), None);
+        assert_eq!(
+            build_inline_body(
+                &comment,
+                false,
+                ctx_of(&default_config(), &test_comment_types())
+            ),
+            "[GHOST] fix"
+        );
+    }
+
+    #[test]
+    fn should_use_configured_label_in_review_body_and_unplaced_summary() {
+        let comments = vec![Comment::new(
+            "a thought".to_string(),
+            CommentType::from_id("emoji"),
+            None,
+        )];
+        let body = build_review_body(
+            &comments,
+            &[],
+            ctx_of(&default_config(), &test_comment_types()),
+        );
+        assert!(body.contains("[💬 NOTE] a thought"), "body was: {body}");
+
+        let item = MovedToSummaryItem {
+            comment: Comment::new("unplaced".to_string(), CommentType::from_id("emoji"), None),
+            file: PathBuf::from("a.rs"),
+        };
+        let body = build_review_body(
+            &[],
+            &[item],
+            ctx_of(&default_config(), &test_comment_types()),
+        );
+        assert!(
+            body.contains("[💬 NOTE] a.rs: unplaced"),
+            "body was: {body}"
         );
     }
 
