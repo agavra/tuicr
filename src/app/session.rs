@@ -21,17 +21,22 @@ impl App {
         }
     }
 
-    pub(in crate::app) fn reset_persisted_session_tracking(&mut self) {
+    pub(in crate::app) fn reset_persisted_session_tracking(&mut self) -> Result<()> {
         self.session_path = crate::persistence::storage::session_path(&self.session).ok();
         self.session_file_state = self
             .session_path
             .as_deref()
             .filter(|path| path.exists())
             .and_then(|path| SessionFileState::from_path(path).ok());
-        self.persisted_session_snapshot = self.session.clone();
+        self.persisted_session_snapshot =
+            match self.session_path.as_deref().filter(|path| path.exists()) {
+                Some(path) => crate::persistence::storage::load_session(path)?,
+                None => self.session.clone(),
+            };
         if let Err(e) = self.ensure_ephemeral_session_file() {
             self.set_warning(format!("Failed to initialize review session file: {e}"));
         }
+        Ok(())
     }
 
     fn mark_session_saved(&mut self, path: PathBuf, saved: ReviewSession) {

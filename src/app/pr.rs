@@ -35,7 +35,7 @@ impl App {
         self.vcs = Box::new(PrNoopVcs::new(self.vcs_info.clone()));
         self.session = session;
         self.diff_files = diff_files;
-        self.reset_persisted_session_tracking();
+        self.reset_persisted_session_tracking()?;
         self.diff_source = DiffSource::PullRequest(Box::new(pr_source));
         self.forge_backend = Some(backend);
         self.forge_repository = Some(key.repository.clone());

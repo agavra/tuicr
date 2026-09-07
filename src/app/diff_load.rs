@@ -429,7 +429,7 @@ impl App {
         for file in &diff_files {
             self.session.add_diff_file(file);
         }
-        self.reset_persisted_session_tracking();
+        self.reset_persisted_session_tracking()?;
 
         self.diff_files = diff_files;
         self.diff_source = DiffSource::StagedAndUnstaged;
@@ -469,7 +469,7 @@ impl App {
         for file in &diff_files {
             self.session.add_diff_file(file);
         }
-        self.reset_persisted_session_tracking();
+        self.reset_persisted_session_tracking()?;
 
         self.diff_files = diff_files;
         self.diff_source = DiffSource::WorkingTree;
@@ -504,7 +504,7 @@ impl App {
         for file in &diff_files {
             self.session.add_diff_file(file);
         }
-        self.reset_persisted_session_tracking();
+        self.reset_persisted_session_tracking()?;
 
         self.diff_files = diff_files;
         self.diff_source = DiffSource::Staged;
@@ -539,7 +539,7 @@ impl App {
         for file in &diff_files {
             self.session.add_diff_file(file);
         }
-        self.reset_persisted_session_tracking();
+        self.reset_persisted_session_tracking()?;
 
         self.diff_files = diff_files;
         self.diff_source = DiffSource::Unstaged;
@@ -937,7 +937,7 @@ impl App {
         for file in &diff_files {
             self.session.add_diff_file(file);
         }
-        self.reset_persisted_session_tracking();
+        self.reset_persisted_session_tracking()?;
 
         self.diff_files = diff_files;
         self.diff_source = DiffSource::StagedUnstagedAndCommits(selected_ids);

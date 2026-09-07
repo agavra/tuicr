@@ -164,6 +164,24 @@ fn build_app_with_scripted_vcs(initial_files: Vec<DiffFile>, vcs: ScriptedVcs) -
     .expect("failed to build test app")
 }
 
+struct TestReviewsDir {
+    _dir: tempfile::TempDir,
+}
+
+impl TestReviewsDir {
+    fn new() -> Self {
+        let dir = tempfile::tempdir().expect("failed to create test reviews dir");
+        crate::persistence::storage::set_test_reviews_dir(Some(dir.path().to_path_buf()));
+        Self { _dir: dir }
+    }
+}
+
+impl Drop for TestReviewsDir {
+    fn drop(&mut self) {
+        crate::persistence::storage::set_test_reviews_dir(None);
+    }
+}
+
 /// Hunks are left empty: these tests never render content.
 fn make_diff_file(path: &str, status: FileStatus, content_hash: u64) -> DiffFile {
     DiffFile {
@@ -215,6 +233,118 @@ fn should_reload_diff_files_installing_fetched_files() {
         [PathBuf::from("a.rs"), PathBuf::from("b.rs")]
             .into_iter()
             .collect()
+    );
+}
+
+#[test]
+fn should_keep_pre_reconciliation_session_as_persisted_snapshot() {
+    let old = make_diff_file("a.rs", FileStatus::Modified, 1);
+    let current = make_diff_file("a.rs", FileStatus::Modified, 2);
+    let vcs = ScriptedVcs::new();
+    let vcs_info = vcs.info().clone();
+    let mut session = ReviewSession::new(
+        vcs_info.root_path.clone(),
+        vcs_info.head_commit.clone(),
+        vcs_info.branch_name.clone(),
+        SessionDiffSource::WorkingTree,
+    );
+    session.add_diff_file(&old);
+
+    let app = App::build(
+        Box::new(vcs),
+        vcs_info,
+        Theme::dark(),
+        None,
+        false,
+        vec![current],
+        session,
+        DiffSource::WorkingTree,
+        InputMode::Normal,
+        Vec::new(),
+        None,
+        None,
+    )
+    .expect("app should build");
+
+    assert_eq!(
+        app.session
+            .files
+            .get(old.display_path())
+            .expect("working file should be registered")
+            .content_hash,
+        Some(2)
+    );
+    assert_eq!(
+        app.persisted_session_snapshot
+            .files
+            .get(old.display_path())
+            .expect("snapshot file should be registered")
+            .content_hash,
+        Some(1)
+    );
+}
+
+#[test]
+fn should_reload_persisted_snapshot_when_resetting_tracking() {
+    let _reviews = TestReviewsDir::new();
+    let old = make_diff_file("a.rs", FileStatus::Modified, 1);
+    let current = make_diff_file("a.rs", FileStatus::Modified, 2);
+    let vcs = ScriptedVcs::new();
+    let vcs_info = vcs.info().clone();
+    let mut session = ReviewSession::new(
+        vcs_info.root_path.clone(),
+        vcs_info.head_commit.clone(),
+        vcs_info.branch_name.clone(),
+        SessionDiffSource::WorkingTree,
+    );
+    session.add_diff_file(&old);
+    crate::persistence::storage::save_session(&session).expect("persisted session should save");
+    let mut app = App::build(
+        Box::new(vcs),
+        vcs_info,
+        Theme::dark(),
+        None,
+        false,
+        vec![current],
+        session,
+        DiffSource::WorkingTree,
+        InputMode::Normal,
+        Vec::new(),
+        None,
+        None,
+    )
+    .expect("app should build");
+
+    app.reset_persisted_session_tracking()
+        .expect("tracking reset should succeed");
+
+    assert_eq!(
+        app.persisted_session_snapshot
+            .files
+            .get(old.display_path())
+            .expect("snapshot file should be registered")
+            .content_hash,
+        Some(1)
+    );
+}
+
+#[test]
+fn should_propagate_corrupt_session_when_resetting_tracking() {
+    let _reviews = TestReviewsDir::new();
+    let file = make_diff_file("a.rs", FileStatus::Modified, 1);
+    let vcs = ScriptedVcs::new();
+    let mut app = build_app_with_scripted_vcs(vec![file], vcs);
+    let path = crate::persistence::storage::session_path(&app.session)
+        .expect("session path should resolve");
+    std::fs::create_dir_all(path.parent().expect("session path should have a parent"))
+        .expect("session directory should be created");
+    std::fs::write(&path, "{not valid json").expect("corrupt session should be written");
+
+    let result = app.reset_persisted_session_tracking();
+
+    assert!(
+        matches!(result, Err(TuicrError::CorruptedSession(_))),
+        "expected a corrupted-session error, got {result:?}"
     );
 }
 
