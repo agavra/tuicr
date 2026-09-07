@@ -5,7 +5,6 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem},
 };
-use std::path::Path;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, FileTreeItem, FocusedPanel};
@@ -53,13 +52,7 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
     let max_content_width = visible_items
         .iter()
         .map(|item| match item {
-            FileTreeItem::Directory { path, depth, .. } => {
-                let dir_name = Path::new(path)
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or(path);
-                depth * 2 + 2 + dir_name.width() + 1
-            }
+            FileTreeItem::Directory { label, depth, .. } => depth * 2 + 2 + label.width() + 1,
             FileTreeItem::File { file_idx, depth } => {
                 let file = &app.diff_files[*file_idx];
                 let filename = file
@@ -108,9 +101,10 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
         .map(|item| {
             let line = match item {
                 FileTreeItem::Directory {
-                    path,
+                    label,
                     depth,
                     expanded,
+                    ..
                 } => {
                     let indent = "  ".repeat(*depth);
                     let icon = if *expanded {
@@ -118,14 +112,10 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
                     } else {
                         COLLAPSED_GLYPH
                     };
-                    let dir_name = Path::new(path)
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or(path);
                     Line::from(vec![
                         Span::raw(indent),
                         Span::styled(format!("{icon} "), styles::dir_icon_style(&app.theme)),
-                        Span::raw(format!("{dir_name}/")),
+                        Span::raw(format!("{label}/")),
                     ])
                 }
                 FileTreeItem::File { file_idx, depth } => {
@@ -170,7 +160,11 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
                 }
             };
 
-            ListItem::new(apply_horizontal_scroll(line, scroll_x))
+            ListItem::new(if app.compact_folders {
+                scroll_compact_row(line, scroll_x)
+            } else {
+                apply_horizontal_scroll(line, scroll_x)
+            })
         })
         .collect();
 
@@ -193,6 +187,34 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
             y: area.y + area.height.saturating_sub(1),
         });
     }
+}
+
+/// Compact paths are measured in terminal columns; pan by the same unit,
+/// preserving grapheme clusters and padding a partially clipped wide glyph.
+fn scroll_compact_row(line: Line<'_>, mut columns: usize) -> Line<'_> {
+    if columns == 0 {
+        return line;
+    }
+    let spans = line
+        .spans
+        .into_iter()
+        .map(|span| {
+            let mut text = String::new();
+            for grapheme in span.styled_graphemes(Style::default()) {
+                let width = grapheme.symbol.width();
+                if columns == 0 {
+                    text.push_str(grapheme.symbol);
+                } else if columns >= width {
+                    columns -= width;
+                } else {
+                    text.push_str(&" ".repeat(width - columns));
+                    columns = 0;
+                }
+            }
+            Span::styled(text, span.style)
+        })
+        .collect::<Vec<_>>();
+    Line::from(spans)
 }
 
 /// Leading `│` border plus one space before the prompt sigil.
@@ -373,6 +395,62 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn compact_folders_scroll_preserves_partial_wide_and_combining_graphemes() {
+        use ratatui::text::Line;
+        let line = Line::from("界e\u{301}/next");
+        assert_eq!(
+            super::scroll_compact_row(line.clone(), 1).to_string(),
+            " e\u{301}/next"
+        );
+        assert_eq!(super::scroll_compact_row(line, 3).to_string(), "/next");
+    }
+
+    #[test]
+    fn compact_folders_render_joined_labels_and_shallow_filenames() {
+        let mut app = app_with(&["app/src/main/kotlin/Editor.kt"]);
+        app.compact_folders = true;
+        let mut terminal = Terminal::new(TestBackend::new(60, 8)).unwrap();
+        terminal
+            .draw(|frame| super::render_file_list(frame, &mut app, frame.area()))
+            .unwrap();
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(text.contains("▼ app/src/main/kotlin/"), "{text}");
+        assert!(text.contains("│  ▢ M Editor.kt"), "{text}");
+        app.collapse_all_dirs();
+        terminal
+            .draw(|frame| super::render_file_list(frame, &mut app, frame.area()))
+            .unwrap();
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(text.contains("▶ app/src/main/kotlin/"), "{text}");
+        assert!(!text.contains("Editor.kt"), "{text}");
+    }
+
+    #[test]
+    fn compact_folders_measure_and_scroll_unicode_labels() {
+        use unicode_width::UnicodeWidthStr;
+        let mut app = app_with(&["模块/éditeur/long_directory/file.kt"]);
+        app.compact_folders = true;
+        let mut terminal = Terminal::new(TestBackend::new(18, 8)).unwrap();
+        terminal
+            .draw(|frame| super::render_file_list(frame, &mut app, frame.area()))
+            .unwrap();
+        assert_eq!(
+            app.file_list_state.max_content_width,
+            "模块/éditeur/long_directory".width() + 3
+        );
+        app.file_list_state.scroll_x = usize::MAX;
+        terminal
+            .draw(|frame| super::render_file_list(frame, &mut app, frame.area()))
+            .unwrap();
+        assert_eq!(
+            app.file_list_state.scroll_x,
+            app.file_list_state.max_content_width - 16
+        );
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(text.contains("long_directory/"), "{text}");
     }
 
     #[test]

@@ -1,6 +1,11 @@
 use super::*;
 
 impl App {
+    pub fn set_compact_folders(&mut self, enabled: bool) {
+        self.compact_folders = enabled;
+        self.ensure_valid_tree_selection();
+    }
+
     pub fn file_list_down(&mut self, n: usize) {
         let visible_items = self.build_visible_items();
         let max_idx = visible_items.len().saturating_sub(1);
@@ -219,7 +224,17 @@ impl App {
     }
 
     pub fn toggle_directory(&mut self, dir_path: &str) {
-        if self.expanded_dirs.contains(dir_path) {
+        let expanded = self
+            .build_visible_items()
+            .iter()
+            .find_map(|item| match item {
+                FileTreeItem::Directory { path, expanded, .. } if path == dir_path => {
+                    Some(*expanded)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| self.expanded_dirs.contains(dir_path));
+        if expanded {
             self.expanded_dirs.remove(dir_path);
             if let Some(tree_idx) = self
                 .build_visible_items()
@@ -234,7 +249,18 @@ impl App {
                 self.ensure_valid_tree_selection();
             }
         } else {
-            self.expanded_dirs.insert(dir_path.to_string());
+            if self.compact_folders {
+                // A compact row can contain closed intermediate directories,
+                // notably after collapse-all. Open the whole represented chain.
+                for ancestor in std::path::Path::new(dir_path).ancestors() {
+                    if !ancestor.as_os_str().is_empty() {
+                        self.expanded_dirs
+                            .insert(ancestor.to_string_lossy().into_owned());
+                    }
+                }
+            } else {
+                self.expanded_dirs.insert(dir_path.to_string());
+            }
         }
     }
 
@@ -282,6 +308,11 @@ impl App {
     pub fn build_visible_items(&self) -> Vec<FileTreeItem> {
         use std::path::Path;
 
+        let single_children = if self.compact_folders {
+            self.single_child_directories()
+        } else {
+            HashMap::new()
+        };
         let mut items = Vec::new();
         let mut seen_dirs: HashSet<String> = HashSet::new();
 
@@ -305,31 +336,83 @@ impl App {
             ancestors.reverse();
 
             let mut visible = true;
-            for (depth, dir) in ancestors.iter().enumerate() {
-                if !seen_dirs.contains(dir) && visible {
-                    let expanded = self.expanded_dirs.contains(dir);
+            let mut start = 0;
+            let mut depth = 0;
+            while start < ancestors.len() && visible {
+                let mut end = start;
+                while end + 1 < ancestors.len()
+                    && single_children
+                        .get(&ancestors[end])
+                        .and_then(Option::as_ref)
+                        == Some(&ancestors[end + 1])
+                {
+                    end += 1;
+                }
+                let dir = &ancestors[end];
+                let expanded = ancestors[start..=end]
+                    .iter()
+                    .all(|path| self.expanded_dirs.contains(path));
+                if seen_dirs.insert(dir.clone()) {
+                    let parent = Path::new(&ancestors[start])
+                        .parent()
+                        .unwrap_or(Path::new(""));
+                    let label = Path::new(dir)
+                        .strip_prefix(parent)
+                        .unwrap_or(Path::new(dir))
+                        .to_string_lossy()
+                        .into_owned();
                     items.push(FileTreeItem::Directory {
                         path: dir.clone(),
+                        label,
                         depth,
                         expanded,
                     });
-                    seen_dirs.insert(dir.clone());
                 }
-
-                if !self.expanded_dirs.contains(dir) {
-                    visible = false;
-                }
+                visible = expanded;
+                depth += 1;
+                start = end + 1;
             }
 
             if visible {
-                items.push(FileTreeItem::File {
-                    file_idx,
-                    depth: ancestors.len(),
-                });
+                items.push(FileTreeItem::File { file_idx, depth });
             }
         }
 
         items
+    }
+
+    /// `Some(child)` identifies a mergeable directory; `None` marks a
+    /// branch point or a directory containing a direct file. Expansion state
+    /// does not affect chain shape, so collapsed rows keep their full label.
+    fn single_child_directories(&self) -> HashMap<String, Option<String>> {
+        let mut children: HashMap<String, Option<String>> = HashMap::new();
+        for file in self
+            .diff_files
+            .iter()
+            .filter(|file| self.file_passes_filter(file))
+        {
+            let Some(directory) = file.display_path().parent() else {
+                continue;
+            };
+            children.insert(directory.to_string_lossy().into_owned(), None);
+            let mut child = directory;
+            while let Some(parent) = child.parent() {
+                if parent.as_os_str().is_empty() {
+                    break;
+                }
+                let child_path = child.to_string_lossy().into_owned();
+                children
+                    .entry(parent.to_string_lossy().into_owned())
+                    .and_modify(|existing| {
+                        if existing.as_ref() != Some(&child_path) {
+                            *existing = None;
+                        }
+                    })
+                    .or_insert(Some(child_path));
+                child = parent;
+            }
+        }
+        children
     }
 
     pub fn get_selected_tree_item(&self) -> Option<FileTreeItem> {

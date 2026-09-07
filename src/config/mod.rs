@@ -110,6 +110,8 @@ pub struct AppConfig {
     pub backend: Option<String>,
     pub comment_types: Option<Vec<CommentTypeConfig>>,
     pub show_file_list: Option<bool>,
+    /// Join single-child directory chains in the file tree. Defaults to false.
+    pub compact_folders: Option<bool>,
     /// Whether pull-request CI checks are fetched and shown.
     /// Defaults to false.
     pub show_pr_checks: Option<bool>,
@@ -195,6 +197,7 @@ const KNOWN_KEYS: &[&str] = &[
     "backend",
     "comment_types",
     "show_file_list",
+    "compact_folders",
     "show_pr_checks",
     "show_pr_comments",
     "show_commits",
@@ -422,6 +425,7 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
             .get("comment_types")
             .and_then(|v| parse_comment_types(v, &mut warnings)),
         show_file_list: read_bool(table, "show_file_list", &mut warnings),
+        compact_folders: read_bool(table, "compact_folders", &mut warnings),
         show_pr_checks: read_bool(table, "show_pr_checks", &mut warnings),
         show_pr_comments: read_bool(table, "show_pr_comments", &mut warnings),
         show_commits: read_bool(table, "show_commits", &mut warnings),
@@ -908,6 +912,18 @@ mod tests {
             outcome.warnings[0],
             "Warning: Config key 'theme_dark' must be a string; ignoring value"
         );
+    }
+
+    #[test]
+    fn should_parse_compact_folders_and_reject_invalid_types() {
+        for value in [true, false] {
+            let outcome = parse_config(&format!("compact_folders = {value}\n"));
+            assert_eq!(outcome.config.unwrap().compact_folders, Some(value));
+            assert!(outcome.warnings.is_empty());
+        }
+        let outcome = parse_config("compact_folders = \"yes\"\n");
+        assert_eq!(outcome.config.unwrap().compact_folders, None);
+        assert_eq!(outcome.warnings.len(), 1);
     }
 
     // show_file_list

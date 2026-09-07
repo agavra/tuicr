@@ -78,6 +78,11 @@ impl TreeTestHarness {
                     let expanded = self.expanded_dirs.contains(dir);
                     items.push(FileTreeItem::Directory {
                         path: dir.clone(),
+                        label: Path::new(dir)
+                            .file_name()
+                            .unwrap()
+                            .to_string_lossy()
+                            .into_owned(),
                         depth,
                         expanded,
                     });
@@ -292,5 +297,106 @@ fn test_interleaved_paths_stay_under_own_directory() {
             ("ChronoStream.BuildTests/".to_string(), 0),
             ("ChronoStream.BuildTests/test.cs".to_string(), 1),
         ]
+    );
+}
+
+#[test]
+fn compact_folders_join_deep_chains_and_toggle_as_one_row() {
+    let mut app = app_with(&["app/src/main/kotlin/Editor.kt"]);
+    app.compact_folders = true;
+    app.expand_all_dirs();
+    assert_eq!(
+        rendered_tree(&app),
+        vec![
+            ("app/src/main/kotlin/".into(), 0),
+            ("app/src/main/kotlin/Editor.kt".into(), 1),
+        ]
+    );
+    app.collapse_all_dirs();
+    assert_eq!(app.build_visible_items().len(), 1);
+    app.toggle_directory("app/src/main/kotlin");
+    assert_eq!(app.build_visible_items().len(), 2);
+    app.toggle_directory("app/src/main/kotlin");
+    assert_eq!(app.build_visible_items().len(), 1);
+    assert_eq!(app.file_list_state.selected(), 0);
+}
+
+#[test]
+fn compact_folders_stop_at_files_and_branches() {
+    let mut app = app_with(&[
+        "README.md",
+        "a/b/direct.kt",
+        "a/b/c/d/one.kt",
+        "a/b/e/two.kt",
+    ]);
+    app.compact_folders = true;
+    assert_eq!(
+        rendered_tree(&app),
+        vec![
+            ("README.md".into(), 0),
+            ("a/b/".into(), 0),
+            ("a/b/direct.kt".into(), 1),
+            ("a/b/c/d/".into(), 1),
+            ("a/b/c/d/one.kt".into(), 2),
+            ("a/b/e/".into(), 1),
+            ("a/b/e/two.kt".into(), 2),
+        ]
+    );
+    app.collapse_all_dirs();
+    assert_eq!(
+        rendered_tree(&app),
+        vec![("README.md".into(), 0), ("a/b/".into(), 0)]
+    );
+    app.expand_all_dirs();
+    assert_eq!(app.build_visible_items().len(), 7);
+}
+
+#[test]
+fn compact_folders_recompute_after_filter_and_search_reveals_full_path() {
+    let mut app = app_with(&["a/b/c/one.kt", "a/b/d/two.kt"]);
+    app.compact_folders = true;
+    assert_eq!(app.build_visible_items().len(), 5);
+    app.begin_file_tree_prompt(FileTreePrompt::Include);
+    for ch in "one".chars() {
+        app.file_tree_prompt_insert_char(ch);
+    }
+    app.commit_file_tree_prompt();
+    assert_eq!(
+        rendered_tree(&app),
+        vec![("a/b/c/".into(), 0), ("a/b/c/one.kt".into(), 1)]
+    );
+    app.collapse_all_dirs();
+    app.begin_file_tree_prompt(FileTreePrompt::Search);
+    for ch in "a/b/c/one".chars() {
+        app.file_tree_prompt_insert_char(ch);
+    }
+    app.commit_file_tree_prompt();
+    assert!(matches!(
+        app.get_selected_tree_item(),
+        Some(FileTreeItem::File {
+            file_idx: 0,
+            depth: 1
+        })
+    ));
+    app.clear_include_filter();
+    assert_eq!(app.build_visible_items().len(), 4);
+    app.expand_all_dirs();
+    assert_eq!(app.build_visible_items().len(), 5);
+}
+
+#[test]
+fn compact_folders_are_disabled_by_default() {
+    let app = app_with(&["a/b/c/one.kt"]);
+    assert!(!app.compact_folders);
+    assert_eq!(app.build_visible_items().len(), 4);
+}
+
+#[test]
+fn compact_folders_startup_keeps_selection_on_current_file() {
+    let mut app = app_with(&["a/b/c/one.kt", "z/two.kt"]);
+    let current_file_idx = app.diff_state.current_file_idx;
+    app.set_compact_folders(true);
+    assert!(
+        matches!(app.get_selected_tree_item(), Some(FileTreeItem::File { file_idx, .. }) if file_idx == current_file_idx)
     );
 }
