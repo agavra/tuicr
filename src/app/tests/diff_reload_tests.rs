@@ -349,6 +349,57 @@ fn should_propagate_corrupt_session_when_resetting_tracking() {
 }
 
 #[test]
+fn should_observe_successfully_saved_session() {
+    let _reviews = TestReviewsDir::new();
+    let file = make_diff_file("a.rs", FileStatus::Modified, 1);
+    let vcs = ScriptedVcs::new();
+    let mut app = build_app_with_scripted_vcs(vec![file], vcs);
+    app.session.review_comments.push(Comment::new(
+        "saved".to_string(),
+        CommentType::from_id("note"),
+        None,
+    ));
+    app.dirty = true;
+
+    let path = app
+        .save_current_session_merging_external()
+        .expect("session should save");
+
+    assert_eq!(app.session_path.as_ref(), Some(&path));
+    assert!(app.session_file_state.is_some());
+    assert_eq!(app.persisted_session_snapshot.review_comments.len(), 1);
+    assert!(!app.dirty);
+}
+
+#[test]
+fn should_observe_externally_reloaded_session() {
+    let _reviews = TestReviewsDir::new();
+    let file = make_diff_file("a.rs", FileStatus::Modified, 1);
+    let vcs = ScriptedVcs::new();
+    let mut app = build_app_with_scripted_vcs(vec![file], vcs);
+    let path = app
+        .save_current_session_merging_external()
+        .expect("initial session should save");
+    let mut external =
+        crate::persistence::storage::load_session(&path).expect("persisted session should load");
+    external.review_comments.push(Comment::new(
+        "external".to_string(),
+        CommentType::from_id("note"),
+        None,
+    ));
+    crate::persistence::storage::save_session(&external).expect("external session should save");
+
+    let added = app
+        .reload_persisted_session_if_changed(true)
+        .expect("external session should reload");
+
+    assert_eq!(added, 1);
+    assert_eq!(app.session_path.as_ref(), Some(&path));
+    assert!(app.session_file_state.is_some());
+    assert_eq!(app.persisted_session_snapshot.review_comments.len(), 1);
+}
+
+#[test]
 fn should_return_none_when_fetched_diff_is_unchanged() {
     let files = vec![
         make_diff_file("a.rs", FileStatus::Modified, 1),
