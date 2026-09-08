@@ -152,6 +152,26 @@ impl App {
         Ok(path)
     }
 
+    pub(in crate::app) fn persist_diff_reconciliation(
+        &mut self,
+        diff_files: &[DiffFile],
+    ) -> Result<()> {
+        let identity = self.session.clone();
+        let base = self.persisted_session_snapshot.clone();
+        let (path, saved, ()) =
+            crate::persistence::storage::save_session_by_identity(&identity, |persisted| {
+                let mut saved = persisted.unwrap_or_else(|| base.clone());
+                saved.reconcile_diff_files(diff_files);
+                saved.updated_at = Utc::now();
+                Ok((saved, ()))
+            })?;
+        Self::merge_external_session_changes(&mut self.session, &base, &saved);
+        let state = SessionFileState::from_path(&path).ok();
+        self.observe_persisted_session(Some(path.clone()), state, || Ok(saved))?;
+        self.mark_current_session_active_at(&path);
+        Ok(())
+    }
+
     fn mark_current_session_active_at(&mut self, path: &Path) {
         if let Err(e) = crate::persistence::storage::mark_session_active(&self.session, path) {
             self.set_warning(format!("Failed to mark active review session: {e}"));

@@ -831,7 +831,23 @@ impl App {
     /// `invalidated_count` is the number of previously reviewed files whose content changed.
     pub fn reload_diff_files(&mut self) -> Result<(usize, usize)> {
         let diff_files = self.fetch_diff_files()?;
-        Ok(self.apply_diff_files(diff_files))
+        let full_reload = !Self::is_strict_commit_selection(
+            self.commit_selection_range,
+            self.review_commits.len(),
+        );
+        let invalidated = self.session.invalidated_diff_file_count(&diff_files);
+        if full_reload {
+            self.persist_diff_reconciliation(&diff_files)?;
+        }
+        let (count, applied_invalidated) = self.apply_diff_files(diff_files);
+        Ok((
+            count,
+            if full_reload {
+                invalidated
+            } else {
+                applied_invalidated
+            },
+        ))
     }
 
     /// Returns the freshly fetched diff only when it differs from what is

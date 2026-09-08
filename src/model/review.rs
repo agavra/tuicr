@@ -123,6 +123,10 @@ pub struct ReviewSession {
 }
 
 impl ReviewSession {
+    fn file_review_is_invalidated(review: &FileReview, content_hash: u64) -> bool {
+        review.reviewed && review.content_hash != Some(content_hash)
+    }
+
     pub fn new(
         repo_path: PathBuf,
         base_commit: String,
@@ -163,13 +167,12 @@ impl ReviewSession {
     /// reviewed but its content changed, causing reviewed status to be reset.
     pub fn add_file(&mut self, path: PathBuf, status: FileStatus, content_hash: u64) -> bool {
         if let Some(review) = self.files.get_mut(&path) {
-            let old_hash = review.content_hash;
+            let invalidated = Self::file_review_is_invalidated(review, content_hash);
             review.content_hash = Some(content_hash);
-            if review.reviewed && old_hash != Some(content_hash) {
+            if invalidated {
                 review.reviewed = false;
-                return true;
             }
-            return false;
+            return invalidated;
         }
         self.files
             .insert(path.clone(), FileReview::new(path, status, content_hash));
@@ -186,6 +189,23 @@ impl ReviewSession {
                 .retain(|key| valid_hunks.contains(key));
         }
         invalidated
+    }
+
+    pub(crate) fn reconcile_diff_files(&mut self, diff_files: &[DiffFile]) {
+        for file in diff_files {
+            self.add_diff_file(file);
+        }
+    }
+
+    pub(crate) fn invalidated_diff_file_count(&self, diff_files: &[DiffFile]) -> usize {
+        diff_files
+            .iter()
+            .filter(|file| {
+                self.files.get(file.display_path()).is_some_and(|review| {
+                    Self::file_review_is_invalidated(review, file.content_hash)
+                })
+            })
+            .count()
     }
 
     /// Register a transient filtered diff without dropping hunk keys that
