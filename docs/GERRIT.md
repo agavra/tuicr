@@ -57,7 +57,7 @@ deployments a git remote cannot describe:
 | --- | --- |
 | Gerrit under a path prefix | `GERRIT_URL=https://review.internal/gerrit` |
 | REST API on a non-default port | `GERRIT_URL=https://review.internal:8443` |
-| Plain HTTP | `GERRIT_URL=http://review.internal` |
+| Plain HTTP, read-only | `GERRIT_URL=http://review.internal` |
 | Web host differs from the SSH gateway in the remote | `GERRIT_URL=https://review.corp.com` |
 
 That last row is the one you cannot express any other way: with a remote of
@@ -67,6 +67,13 @@ A value without a scheme (`review.internal`, `review.internal:8443`) or an SSH U
 `git remote -v` (`ssh://jdoe@review.internal:29418`) is normalized onto HTTPS. A `29418` port is
 dropped — that is Gerrit's *SSH* port and means nothing over HTTPS — but any other port you write
 is kept. Use the full `http://…` form if your REST API is not on HTTPS.
+
+**Plain HTTP is anonymous-only.** With `GERRIT_USERNAME`/`GERRIT_PASSWORD` set, a `GERRIT_URL` on
+`http://` is refused before the request leaves tuicr. A Gerrit HTTP password is long-lived and
+authorizes `git push` as well as the REST API, and HTTP Basic puts it on the wire in a trivially
+reversible encoding — so an `http://` server can be browsed anonymously, but not authenticated to.
+There is no override. If you need to submit reviews, put the REST API behind HTTPS or reach it
+through a tunnel.
 
 Note that `GERRIT_URL` is a process-global environment variable, so it names *one* server. If you
 review on two Gerrits, scope it per checkout (direnv, a shell wrapper) or leave it unset where the
@@ -153,6 +160,8 @@ This is the first Gerrit slice. Not yet supported:
   `GERRIT_PASSWORD`.
 - **"Gerrit rejected the credentials…"** — `GERRIT_PASSWORD` must be the HTTP password from
   *Settings → HTTP Credentials*, not your account password.
+- **"refusing to send GERRIT_USERNAME/GERRIT_PASSWORD over plaintext HTTP…"** — `GERRIT_URL` is an
+  `http://` URL. Point it at HTTPS, or unset the two credential variables to browse anonymously.
 - **The Pull Requests tab says there is no supported remote** — your Gerrit host shows none of the
   three signals above. Set `GERRIT_URL` to the server root.
 - **Requests go to the wrong host** — the error names the server actually contacted. If that is

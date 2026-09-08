@@ -109,6 +109,33 @@ impl HttpsGerrit {
         }
     }
 
+    /// Refuse to put the HTTP Basic header on a plaintext request.
+    ///
+    /// A Gerrit HTTP password is a long-lived credential that also authorizes
+    /// `git push`, and Basic auth hands it to anything on the path in a
+    /// trivially reversible encoding. There is no opt-out: a flag to send it
+    /// anyway would be a flag to leak it, and the cases that would reach for
+    /// one — a lab instance, a local container — are better served by a
+    /// tunnel, or by reading anonymously.
+    ///
+    /// This only ever fires on a `GERRIT_URL` written as `http://`, since
+    /// every other route to a base URL is normalized onto HTTPS. Anonymous
+    /// plaintext reads stay allowed: there is no credential to leak.
+    fn reject_plaintext_credentials(&self, url: &str) -> GerritHttpResult<()> {
+        if self.auth_header.is_none() || !url.starts_with("http://") {
+            return Ok(());
+        }
+        Err(GerritHttpError::Failed {
+            status: None,
+            body: format!(
+                "refusing to send {USER_ENV_VAR}/{PASSWORD_ENV_VAR} over plaintext HTTP to \
+                 {url} — a Gerrit HTTP password sent as Basic auth is readable by anything on \
+                 the path, and it authorizes `git push` too. Point {URL_ENV_VAR} at an https:// \
+                 URL, or unset {USER_ENV_VAR}/{PASSWORD_ENV_VAR} to read anonymously."
+            ),
+        })
+    }
+
     /// Attach HTTP Basic credentials, when there are any. Gerrit reads public
     /// changes anonymously, so an unauthenticated request is not an error.
     fn authorized<B>(&self, builder: ureq::RequestBuilder<B>) -> ureq::RequestBuilder<B> {
@@ -125,6 +152,7 @@ impl GerritHttp for HttpsGerrit {
     }
 
     fn request(&self, method: &str, url: &str, body: Option<&str>) -> GerritHttpResult<String> {
+        self.reject_plaintext_credentials(url)?;
         // `ureq` gives with-body and without-body builders different types, so
         // the body-carrying methods share one arm and GET gets its own.
         let result = match method.to_ascii_uppercase().as_str() {
@@ -1525,6 +1553,53 @@ mod tests {
             // then
             assert_eq!(patch_set_ref(&pr), None, "{hostile} should be rejected");
         }
+    }
+
+    // ---- Plaintext credentials ----
+
+    #[test]
+    fn should_refuse_to_send_credentials_over_plaintext_http() {
+        // given
+        let http = HttpsGerrit::new(Some(("jdoe".to_string(), "s3cret".to_string())));
+        // when — no request is made; the guard fires first
+        let result = http.request(
+            "GET",
+            "http://review.internal/a/changes/?q=status:open",
+            None,
+        );
+        // then
+        let GerritHttpError::Failed { status, body } = result.expect_err("refused") else {
+            panic!("plaintext credentials should not read as an auth failure");
+        };
+        assert_eq!(status, None);
+        assert!(body.contains("plaintext HTTP"), "{body}");
+        assert!(
+            !body.contains("s3cret") && !body.contains("czNjcmV0"),
+            "the refusal must not echo the credential: {body}"
+        );
+    }
+
+    #[test]
+    fn should_allow_plaintext_when_there_are_no_credentials_to_leak() {
+        // given — anonymous reads over http:// stay usable
+        let http = HttpsGerrit::new(None);
+        // when
+        let refused = http
+            .reject_plaintext_credentials("http://review.internal/changes/")
+            .is_err();
+        // then
+        assert!(!refused);
+    }
+
+    #[test]
+    fn should_allow_credentials_over_https() {
+        // given
+        let http = HttpsGerrit::new(Some(("jdoe".to_string(), "s3cret".to_string())));
+        // when/then
+        assert!(
+            http.reject_plaintext_credentials("https://review.internal/a/changes/")
+                .is_ok()
+        );
     }
 
     #[test]
