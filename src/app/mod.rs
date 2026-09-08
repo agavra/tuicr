@@ -12,7 +12,7 @@ use crate::error::{Result, TuicrError};
 use crate::forge::context::{ContextProvider, ForgeContextProvider, VcsContextProvider};
 use crate::forge::selector::PullRequestsTab;
 use crate::forge::traits::{ForgeBackend, ForgeRepository};
-use crate::model::review::FileReview;
+use crate::model::review::{CommentLocation, FileReview};
 use crate::model::{
     ClearScope, Comment, CommentType, DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin,
     LineRange, LineSide, ReviewSession, SessionDiffSource,
@@ -1708,23 +1708,6 @@ pub struct SummaryState {
     /// commit selection, or file-tree filters.
     pub targets: Vec<Option<SummaryCommentTarget>>,
     pub(crate) selection_needs_scroll: bool,
-}
-
-/// Represents a comment location for deletion
-enum CommentLocation {
-    Review {
-        index: usize,
-    },
-    File {
-        path: std::path::PathBuf,
-        index: usize,
-    },
-    Line {
-        path: std::path::PathBuf,
-        line: u32,
-        side: LineSide,
-        index: usize,
-    },
 }
 
 /// What `detect_vcs` needs to open a backend. Bundled because these two

@@ -11,6 +11,7 @@ use crate::config;
 use crate::error::{Result, TuicrError};
 use crate::model::comment::{self, CommentLifecycleState};
 use crate::model::{Comment, CommentType, LineRange, LineSide, ReviewSession};
+use crate::persistence::storage;
 use crate::review_store::{
     AddCommentRequest, CommentTarget, ReviewStore, SessionRef, SessionSummary,
 };
@@ -51,7 +52,31 @@ fn run_with_writer(command: ReviewCommand, out: &mut impl Write) -> Result<()> {
             out,
         ),
         ReviewCommand::Comments { session, repo } => show_comments(&session, &repo, out),
+        ReviewCommand::Delete {
+            session,
+            comment_id,
+            repo,
+        } => delete_comment(&session, &repo, &comment_id, out),
     }
+}
+
+fn delete_comment(
+    session: &str,
+    repo: &Path,
+    comment_id: &str,
+    out: &mut impl Write,
+) -> Result<()> {
+    let store = ReviewStore::new();
+    let session_ref = resolve_session_ref(&store, repo, session)?;
+    if !store.delete_comment(&session_ref, comment_id)? {
+        return Err(TuicrError::InvalidInput(format!(
+            "no comment with id '{comment_id}' in session '{session}'"
+        )));
+    }
+    storage::delete_session_if_empty(session_ref.path())?;
+    serde_json::to_writer_pretty(&mut *out, &serde_json::json!({ "deleted": comment_id }))?;
+    writeln!(out)?;
+    Ok(())
 }
 
 fn list_sessions(repo: &Path, all: bool, out: &mut impl Write) -> Result<()> {

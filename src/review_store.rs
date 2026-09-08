@@ -83,6 +83,19 @@ impl ReviewStore {
         Ok(comment)
     }
 
+    /// Delete one comment by id from a persisted session.
+    pub fn delete_comment(&self, session_ref: &SessionRef, comment_id: &str) -> Result<bool> {
+        let reviews_dir = self.reviews_dir()?;
+        let (_session, removed) =
+            storage::update_session_in_dir(session_ref.path(), &reviews_dir, |session| {
+                let Some(location) = session.find_comment_by_id(comment_id) else {
+                    return Ok(false);
+                };
+                Ok(session.remove_comment(&location))
+            })?;
+        Ok(removed)
+    }
+
     /// Save a session through this store's storage root.
     pub fn save_review(&self, session: &ReviewSession) -> Result<SessionRef> {
         let reviews_dir = self.reviews_dir()?;
@@ -277,6 +290,7 @@ fn file_review_mut<'a>(
 mod tests {
     use super::*;
     use crate::model::{FileStatus, SessionDiffSource};
+    use tempfile::tempdir;
 
     fn test_session(repo_path: PathBuf) -> ReviewSession {
         let mut session = ReviewSession::new(
@@ -287,6 +301,24 @@ mod tests {
         );
         session.add_file(PathBuf::from("src/main.rs"), FileStatus::Modified, 0);
         session
+    }
+
+    #[test]
+    fn should_delete_comment_by_id_through_store() {
+        let temp = tempdir().unwrap();
+        let store = ReviewStore::with_reviews_dir(temp.path().join("reviews"));
+        let mut session = test_session(PathBuf::from("/repo"));
+        let comment = Comment::new("note".to_string(), CommentType::from_id("note"), None);
+        let comment_id = comment.id.clone();
+        session.review_comments.push(comment);
+        let session_ref = store.save_review(&session).unwrap();
+
+        let deleted = store.delete_comment(&session_ref, &comment_id).unwrap();
+
+        assert!(deleted);
+        let loaded = store.get_review(&session_ref).unwrap();
+        assert!(loaded.review_comments.is_empty());
+        assert!(!store.delete_comment(&session_ref, &comment_id).unwrap());
     }
 
     #[test]
