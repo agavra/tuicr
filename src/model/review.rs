@@ -223,11 +223,11 @@ impl ReviewSession {
                 }
             }
             CommentLocation::File { path, index } => {
-                if let Some(review) = self.get_file_mut(path) {
-                    if *index < review.file_comments.len() {
-                        review.file_comments.remove(*index);
-                        return true;
-                    }
+                if let Some(review) = self.get_file_mut(path)
+                    && *index < review.file_comments.len()
+                {
+                    review.file_comments.remove(*index);
+                    return true;
                 }
             }
             CommentLocation::Line {
@@ -238,16 +238,15 @@ impl ReviewSession {
             } => {
                 if let Some(review) = self.get_file_mut(path)
                     && let Some(comments) = review.line_comments.get_mut(line)
+                    && *index < comments.len()
                 {
-                    if *index < comments.len() {
-                        let comment_side = comments[*index].side.unwrap_or(LineSide::New);
-                        if comment_side == *side {
-                            comments.remove(*index);
-                            if comments.is_empty() {
-                                review.line_comments.remove(line);
-                            }
-                            return true;
+                    let comment_side = comments[*index].side.unwrap_or(LineSide::New);
+                    if comment_side == *side {
+                        comments.remove(*index);
+                        if comments.is_empty() {
+                            review.line_comments.remove(line);
                         }
+                        return true;
                     }
                 }
             }
