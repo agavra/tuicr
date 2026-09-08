@@ -1118,6 +1118,7 @@ impl App {
         let vcs = detect_vcs(
             vcs_open_options.git_backend_preference,
             vcs_open_options.diff_whitespace_mode,
+            vcs_open_options.include_untracked,
         )?;
         let root_path = &vcs.info().root_path;
         let fetch_source = Self::narrowed_fetch_source(

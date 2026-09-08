@@ -178,6 +178,12 @@ fn main() -> anyhow::Result<()> {
         DiffWhitespaceMode::Normal
     };
 
+    let include_untracked = config_outcome
+        .config
+        .as_ref()
+        .and_then(|cfg| cfg.include_untracked)
+        .unwrap_or(true);
+
     let commit_order = match config_outcome
         .config
         .as_ref()
@@ -221,6 +227,7 @@ fn main() -> anyhow::Result<()> {
                     .unwrap_or(true),
                 git_backend_preference,
                 diff_whitespace_mode,
+                include_untracked,
                 commit_selection,
                 pr_target: cli_args.pr_target.as_deref(),
                 repo_url_override: cli_args

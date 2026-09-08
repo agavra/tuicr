@@ -16,6 +16,7 @@ pub struct Libgit2Backend {
     repo: Repository,
     info: VcsInfo,
     whitespace_mode: DiffWhitespaceMode,
+    include_untracked: bool,
 }
 
 /// Declare libgit2 extensions tuicr understands so discovery doesn't refuse
@@ -38,7 +39,11 @@ fn register_supported_extensions() {
 }
 
 impl Libgit2Backend {
-    pub(super) fn discover_from(cwd: &Path, whitespace_mode: DiffWhitespaceMode) -> Result<Self> {
+    pub(super) fn discover_from(
+        cwd: &Path,
+        whitespace_mode: DiffWhitespaceMode,
+        include_untracked: bool,
+    ) -> Result<Self> {
         register_supported_extensions();
         let repo = Repository::discover(cwd).map_err(|_| TuicrError::NotARepository)?;
 
@@ -86,6 +91,7 @@ impl Libgit2Backend {
             repo,
             info,
             whitespace_mode,
+            include_untracked,
         })
     }
 }
@@ -100,7 +106,12 @@ impl VcsBackend for Libgit2Backend {
     }
 
     fn get_working_tree_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
-        diff::get_working_tree_diff(&self.repo, self.whitespace_mode, highlighter)
+        diff::get_working_tree_diff(
+            &self.repo,
+            self.whitespace_mode,
+            self.include_untracked,
+            highlighter,
+        )
     }
 
     fn get_staged_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
@@ -108,11 +119,16 @@ impl VcsBackend for Libgit2Backend {
     }
 
     fn get_unstaged_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
-        diff::get_unstaged_diff(&self.repo, self.whitespace_mode, highlighter)
+        diff::get_unstaged_diff(
+            &self.repo,
+            self.whitespace_mode,
+            self.include_untracked,
+            highlighter,
+        )
     }
 
     fn list_changed_paths(&self, kind: ChangeKind) -> Result<Vec<PathBuf>> {
-        diff::list_changed_paths(&self.repo, kind)
+        diff::list_changed_paths(&self.repo, kind, self.include_untracked)
     }
 
     fn fetch_context_lines(
@@ -285,7 +301,7 @@ mod tests {
         );
 
         // when
-        let backend = Libgit2Backend::discover_from(&worktree, DiffWhitespaceMode::Normal)
+        let backend = Libgit2Backend::discover_from(&worktree, DiffWhitespaceMode::Normal, true)
             .expect("worktree with relativeworktrees extension should open");
 
         // then
