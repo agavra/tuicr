@@ -921,9 +921,9 @@ impl App {
 
     pub fn enter_comment_mode(&mut self, file_level: bool, line: Option<(u32, LineSide)>) {
         self.input_mode = InputMode::Comment;
-        // Snap horizontal scroll back to the left edge so the inline input
-        // box renders inside the viewport on long lines.
-        self.diff_state.scroll_x = 0;
+        if self.diff_view_mode != DiffViewMode::SideBySide {
+            self.diff_state.scroll_x = 0;
+        }
         self.comment_buffer.clear();
         self.comment_cursor = 0;
         self.comment_type = self.default_comment_type();

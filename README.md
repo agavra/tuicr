@@ -207,6 +207,11 @@ so collaborative tools can add comments immediately. Empty auto-created session
 files are removed when the TUI exits. `tuicr review list` marks currently open
 TUI sessions with `"active": true`.
 
+Inside the TUI, the review target selector's **Sessions** tab lists the saved
+reviews for the current checkout, so you can resume one by picking it instead of
+retyping the commit range it was opened with. Open it with `:sessions` or cycle
+to it with `Tab`.
+
 ## Library API
 
 tuicr also exposes a Rust library API for tools that want to build on top of its
@@ -246,6 +251,7 @@ ignore_whitespace = false    # ignore all whitespace in local VCS diffs
 appearance = "system"        # or "dark" / "light"
 mouse = true
 leader = ";"                  # configurable prefix for leader shortcuts
+editor = "nvim"               # editor for `e` / `:edit`; overrides $EDITOR
 comment_vim = false           # vim modal editing in the review comment box
 relative_line_numbers = false # show rendered-row distances in the diff gutter
 

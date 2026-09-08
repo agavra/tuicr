@@ -104,6 +104,7 @@ impl App {
                 self.overlay_return_mode = self.input_mode;
                 self.input_mode = InputMode::Help;
                 self.help_state.scroll_offset = 0;
+                self.help_state.horizontal_offset = 0;
             }
         }
     }
@@ -118,6 +119,14 @@ impl App {
 
     pub fn help_scroll_up(&mut self, lines: usize) {
         self.help_state.scroll_offset = self.help_state.scroll_offset.saturating_sub(lines);
+    }
+
+    pub fn help_scroll_right(&mut self, columns: usize) {
+        self.help_state.scroll_right(columns);
+    }
+
+    pub fn help_scroll_left(&mut self, columns: usize) {
+        self.help_state.scroll_left(columns);
     }
 
     pub fn help_scroll_to_top(&mut self) {

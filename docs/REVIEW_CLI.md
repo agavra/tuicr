@@ -57,6 +57,16 @@ tuicr review list --repo slatedb/slatedb
 tuicr review comments --session gh:slatedb/slatedb/pr/1745
 ```
 
+Azure DevOps repos live under `organization/project/repository`, so their
+`owner` is `org/project` and a bare `owner/repo` selector cannot name them. Use
+a URL form, which is recognized by host:
+
+```bash
+tuicr review list --repo dev.azure.com/myorg/myproject/_git/myrepo
+tuicr review list --repo git@ssh.dev.azure.com:v3/myorg/myproject/myrepo
+#   -> [ ..., { "slug": "az:myorg/myproject/myrepo/pr/123", "kind": "pr", ... } ]
+```
+
 `--repo` for `add` / `comments` is only consulted when resolving a *local*
 slug; PR slugs and JSON paths ignore it.
 
@@ -80,6 +90,8 @@ Target flags:
 - add `--line <n>` for a line comment
 - add `--end-line <n>` for a range comment
 - use `--side old|new` for inline comments
+- use `--username <name>` to identify the comment author; otherwise tuicr uses
+  the configured `username` or `"user"`
 
 ## JSON Input
 
@@ -106,6 +118,8 @@ Flat JSON fields:
 - `line`: line number for a line comment
 - `start_line` and `end_line`: range bounds
 - `side`: `old` or `new`, defaults to `new`
+- `username` or `author`: comment author; uses the same fallback as
+  `--username`
 
 Nested targets are also accepted:
 
@@ -181,9 +195,13 @@ PR slug:
     "end_line": 42,
     "side": "new",
     "comment_type": "issue",
+    "author": "alice",
     "lifecycle_state": "local_draft",
     "created_at": "2026-05-22T17:20:00Z",
     "content": "Handle the empty case here."
   }
 ]
 ```
+
+The `author` field is the username stored with the comment. It is present in
+the JSON emitted by both `review add` and `review comments`.

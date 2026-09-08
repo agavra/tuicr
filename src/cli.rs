@@ -214,6 +214,8 @@ pub enum ReviewCommand {
 
         /// Comment classification. Defaults to `none` (no type, no `[TYPE]`
         /// prefix); pass a type configured via `comment_types` to classify.
+        /// An id absent from a configured `comment_types` warns on stderr but
+        /// is still stored.
         #[arg(long = "type", value_name = "TYPE", default_value = "none", value_parser = non_empty_comment_type)]
         comment_type: String,
 

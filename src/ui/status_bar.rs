@@ -150,10 +150,61 @@ pub fn render_header(frame: &mut Frame, app: &App, area: Rect) {
 
     let total_width = area.width as usize;
     let brand_width = brand.content.chars().count();
-    let right_width = source_width + update_width;
-    let pad_width = total_width.saturating_sub(brand_width + right_width);
 
-    let mut spans = vec![brand, Span::raw(" ".repeat(pad_width)), source_span];
+    // When the diff is the only pane it has no frame/title row, so fold the
+    // current file name (left, after the brand) and its diff stats (right,
+    // after the source cluster) into this single header line.
+    let sole = app.is_diff_sole_pane();
+    let (stat_spans, stat_width): (Vec<Span>, usize) = if sole {
+        let line = crate::ui::diff_view::diff_stat_title(app);
+        let w = line
+            .spans
+            .iter()
+            .map(|s| s.content.chars().count())
+            .sum::<usize>();
+        (line.spans, w)
+    } else {
+        (Vec::new(), 0)
+    };
+
+    let right_width = source_width + stat_width + update_width;
+
+    let (file_span, file_width) = if sole {
+        let label = if app.is_cursor_in_overview() || app.current_file_path().is_none() {
+            "Overview".to_string()
+        } else {
+            app.current_file_path()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default()
+        };
+        // Leave a two-column minimum gap between the file name and the right
+        // cluster; truncate the path (keeping the basename) to whatever fits.
+        let avail = total_width.saturating_sub(brand_width + right_width + 2);
+        let label = crate::ui::diff_view::truncate_path_smart(&label, avail);
+        let text = format!(" {label} ");
+        let width = text.chars().count();
+        (
+            Some(Span::styled(
+                text,
+                Style::default()
+                    .fg(theme.fg_secondary)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            width,
+        )
+    } else {
+        (None, 0)
+    };
+
+    let pad_width = total_width.saturating_sub(brand_width + file_width + right_width);
+
+    let mut spans = vec![brand];
+    if let Some(file_span) = file_span {
+        spans.push(file_span);
+    }
+    spans.push(Span::raw(" ".repeat(pad_width)));
+    spans.push(source_span);
+    spans.extend(stat_spans);
     if update_width > 0 {
         spans.push(update_span);
     }
@@ -888,6 +939,35 @@ mod header_snapshot_tests {
         let line = row_text(&buffer, 0);
         assert!(line.contains("PR Mode"), "got: {line:?}");
         assert!(!line.contains("read only"), "got: {line:?}");
+    }
+
+    #[test]
+    fn should_fold_file_and_stats_into_header_when_diff_is_sole_pane() {
+        // given a PR app with no other panes (file list hidden, no commit pane)
+        let mut app = build_pr_app(pr_source(false, false));
+        app.show_file_list = false;
+        assert!(app.is_diff_sole_pane());
+        // when
+        let buffer = draw_header(&app);
+        // then: the diff title row is gone; its file label + stats fold into
+        // this header line (no diff files -> "Overview" and +0/-0).
+        let line = row_text(&buffer, 0);
+        assert!(line.contains("PR Mode"), "got: {line:?}");
+        assert!(line.contains("Overview"), "got: {line:?}");
+        assert!(line.contains("+0") && line.contains("-0"), "got: {line:?}");
+    }
+
+    #[test]
+    fn should_not_fold_file_into_header_when_other_panes_visible() {
+        // given the file list is visible -> diff keeps its own framed title
+        let mut app = build_pr_app(pr_source(false, false));
+        app.show_file_list = true;
+        assert!(!app.is_diff_sole_pane());
+        // when
+        let buffer = draw_header(&app);
+        // then the header does not carry the file label
+        let line = row_text(&buffer, 0);
+        assert!(!line.contains("Overview"), "got: {line:?}");
     }
 
     #[test]

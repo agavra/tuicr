@@ -109,8 +109,8 @@ considers files that pass the active filters.
 | Key | Action |
 |-----|--------|
 | `Tab` / `Shift-Tab` | Cycle focus forward / backward between file list, comment navigator, diff, and commit selector |
-| `<leader>h` | Focus file list (left panel) |
-| `<leader>l` | Focus diff view (right panel) |
+| `<leader>h` | Move focus one panel left (side-by-side: new side → old side → file list) |
+| `<leader>l` | Move focus one panel right (side-by-side: file list → diff → old side → new side) |
 | `<leader>k` | Move focus up (comments to files, or diff/files to commit selector when visible) |
 | `<leader>j` | Move focus down (files to comments when visible, otherwise diff) |
 | `<leader>e` | Toggle file list visibility |
@@ -147,8 +147,9 @@ Shown below the file tree when local comments or visible remote PR threads exist
 `e` opens the file at the cursor's line. Terminal editors (`vim`, `nvim`, `nano`, …)
 take over the screen and tuicr reloads the diff once they exit. Windowed editors
 (`code`, `cursor`, `zed`, `subl`, …) open in their own window while tuicr stays on
-screen; reload with `:e` after editing. Adding `--wait` to `$EDITOR` opts a windowed
-editor back into the blocking behaviour.
+screen; reload with `:e` after editing. Adding `--wait` to the editor command opts a
+windowed editor back into the blocking behaviour. Set the `editor` config key to
+override `$EDITOR`.
 
 ## Visual mode
 
@@ -199,6 +200,7 @@ In command mode,
 | `:diff` | Toggle diff view (unified / side-by-side) |
 | `:vim` / `:novim` (`:set vim` / `:set novim`) | Enable/toggle/disable vim modal editing in the comment box (overrides `comment_vim`) |
 | `:commits` | Select commits to review |
+| `:sessions` (`:reviews`) | Resume a saved review for this checkout |
 | `:submit` | Open submit picker (Comment / Approve / Request changes / Draft) |
 | `:submit comment` | Submit a Comment review |
 | `:submit approve` | Submit an Approve review |
@@ -224,7 +226,9 @@ In command mode,
 | `ZZ` | Save and quit |
 | `ZQ` | Quit without saving |
 | `?` | Toggle help |
-| `q` | Quick quit |
+
+Pressing bare `q` no longer quits by default; it prints a reminder to use `:q` instead. Set
+`q_quits = true` to restore `q` as a quit key in review modes.
 
 The summary replaces the diff while leaving the file sidebar visible when it is open. The first
 pending comment is selected when the summary opens. Use `j`/`k` to select the next
@@ -240,13 +244,20 @@ losing their reviewed state.
 
 | Key | Action |
 |-----|--------|
-| `Tab` / `Shift-Tab` | Switch between Local and Pull Requests tabs |
+| `Tab` / `Shift-Tab` | Switch between Local, Pull Requests, and Sessions tabs |
 | `j` / `k` | Move selection |
 | `Space` | Toggle local commit selection |
-| `Enter` | Confirm local commit range, open PR, or load more PRs |
+| `Enter` | Confirm local commit range, open PR, load more PRs, or resume a saved review |
 | `/` | Filter currently loaded PR rows locally |
 | `r` | In Pull Requests tab, toggle all open PRs / PRs requesting your review |
-| `q` / `Esc` | Quit / return |
+| `Esc` | Return to the diff |
+| `:q` | Quit |
+
+The Sessions tab lists saved reviews for the current checkout, so you can pick one
+instead of retyping the commit range it was opened with. Rows show the review target,
+comment count, reviewed files, and age. Reviews with no comments and no reviewed files
+are omitted. Selecting a saved PR review re-fetches it from the forge, the same as
+opening it from the Pull Requests tab.
 
 ## Inline commit selector
 

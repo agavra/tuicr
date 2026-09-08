@@ -135,7 +135,9 @@ impl App {
             self.comment_line_range = Some((range, side));
             self.comment_line = Some((range.end, side));
             self.input_mode = InputMode::Comment;
-            self.diff_state.scroll_x = 0;
+            if self.diff_view_mode != DiffViewMode::SideBySide {
+                self.diff_state.scroll_x = 0;
+            }
             self.comment_buffer.clear();
             self.comment_cursor = 0;
             self.comment_type = self.default_comment_type();

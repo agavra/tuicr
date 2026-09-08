@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.25.0] - 2026-09-02
+
+### Bug Fixes
+
+- **ui:** Render a visible stand-in for whitespace leader keys in help (#646)
+- Address self-review findings (#651)
+- Update naersk lock for static.crates.io crate downloads (#661)
+- Resolve Azure DevOps remote owners as org/project (#654)
+- Apply .tuicrignore before parsing PR diffs (#668)
+- **pr:** Render Markdown in description panel (#671)
+- **gitlab:** Open merge requests through API (#665)
+
+### Features
+
+- **config:** Add confirm_quit to gate the bare q quit (#630)
+- **selector:** Add a Sessions tab to resume saved reviews (#669)
+- **help:** Pan the help popup with h/l (#673)
+
+### Side-by-side
+
+- Pick the comment side with the leader panel walk (#634)
 ## [0.24.0] - 2026-08-25
 
 ### Bug Fixes

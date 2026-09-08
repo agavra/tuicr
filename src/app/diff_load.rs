@@ -444,6 +444,46 @@ impl App {
         Ok(())
     }
 
+    /// Load a whole-working-tree review (`tuicr -w`).
+    ///
+    /// This must record `SessionDiffSource::WorkingTree`. The source is part of
+    /// the session identity, even though this loader and the staged-plus-
+    /// unstaged loader read the same diff.
+    pub(in crate::app) fn load_working_tree_selection(&mut self) -> Result<()> {
+        let highlighter = self.theme.syntax_highlighter();
+        let diff_files = match Self::get_working_tree_diff_with_ignore(
+            self.vcs.as_ref(),
+            &self.vcs_info.root_path,
+            highlighter,
+            self.path_filter.as_deref(),
+        ) {
+            Ok(diff_files) => diff_files,
+            Err(TuicrError::NoChanges) => {
+                self.set_message("No working tree changes");
+                return Ok(());
+            }
+            Err(e) => return Err(e),
+        };
+
+        self.session = Self::load_or_create_session(&self.vcs_info, SessionDiffSource::WorkingTree);
+        for file in &diff_files {
+            self.session.add_diff_file(file);
+        }
+        self.reset_persisted_session_tracking();
+
+        self.diff_files = diff_files;
+        self.diff_source = DiffSource::WorkingTree;
+        self.input_mode = InputMode::Normal;
+        self.diff_state = DiffState::default();
+        self.file_list_state = FileListState::default();
+        self.clear_expanded_gaps();
+        self.sort_files_by_directory(true);
+        self.expand_all_dirs();
+        self.rebuild_annotations();
+
+        Ok(())
+    }
+
     pub(in crate::app) fn load_staged_selection(&mut self) -> Result<()> {
         let highlighter = self.theme.syntax_highlighter();
         let diff_files = match Self::get_staged_diff_with_ignore(

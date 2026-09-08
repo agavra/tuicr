@@ -413,22 +413,23 @@ impl App {
         use crate::vcs::diff_parser::parse_file_patches;
 
         let highlighter = self.theme.syntax_highlighter();
+        let local_checkout = self
+            .forge_backend
+            .as_deref()
+            .and_then(|b| b.local_checkout_path());
+        // Filter before parsing so an ignored large file is never
+        // highlighted, exactly as in `prepare_open_pr`.
+        let patches = match local_checkout.as_deref() {
+            Some(root) => crate::tuicrignore::filter_file_patches(root, patches),
+            None => patches,
+        };
         let parsed = match parse_file_patches(patches, highlighter) {
             Ok(files) => files,
             Err(TuicrError::NoChanges) => Vec::new(),
             Err(e) => return Err(e),
         };
 
-        let local_checkout = self
-            .forge_backend
-            .as_deref()
-            .and_then(|b| b.local_checkout_path());
-        let files = match local_checkout.as_deref() {
-            Some(root) => crate::tuicrignore::filter_diff_files(root, parsed),
-            None => parsed,
-        };
-
-        self.diff_files = files;
+        self.diff_files = parsed;
         self.clear_expanded_gaps();
         // Range diffs can hide hunks that are still reviewed in the broader
         // PR session, so registration must not prune them.
@@ -871,7 +872,7 @@ impl App {
         let Some(summary) = self.pr_tab.cursor_pr().cloned() else {
             return false;
         };
-        self.spawn_pr_open(&summary);
+        self.spawn_pr_open(&summary.repository, summary.number);
         true
     }
 
@@ -894,17 +895,30 @@ impl App {
         crate::forge::local_checkout_for_repo(root, repo)
     }
 
+    /// Reopen a persisted PR review from the Sessions tab.
+    ///
+    /// Routes through the same background fetch as the Pull Requests tab: a PR
+    /// diff comes from the forge, not the checkout, and re-fetching also picks
+    /// up commits pushed since the review was saved. `load_pr_session` then
+    /// reattaches the stored comments by head SHA.
+    pub fn resume_pr_session(&mut self, key: &crate::forge::traits::PrSessionKey) {
+        if self.pr_open_state.is_some() {
+            return;
+        }
+        self.spawn_pr_open(&key.repository, key.number);
+    }
+
     /// Kick off the background fetch for a PR open. The main thread keeps
     /// rendering and pumping events; the resulting `PrOpenEvent::Done` is
     /// drained in `poll_pr_open_events` where parsing happens and PR mode
     /// is entered.
-    fn spawn_pr_open(&mut self, summary: &crate::forge::traits::PullRequestSummary) {
+    fn spawn_pr_open(&mut self, repository: &crate::forge::traits::ForgeRepository, number: u64) {
         use crate::forge::pr_open::fetch_pr_data;
         use crate::forge::traits::PullRequestTarget;
 
         let request = PrOpenRequest {
-            repository: summary.repository.clone(),
-            pr_number: summary.number,
+            repository: repository.clone(),
+            pr_number: number,
             started_at: Instant::now(),
         };
         self.pr_open_state = Some(request.clone());
@@ -912,11 +926,11 @@ impl App {
         let (tx, rx) = std::sync::mpsc::channel();
         self.pr_open_rx = Some(rx);
 
-        let summary_repo = summary.repository.clone();
-        let pr_number = summary.number;
+        let summary_repo = repository.clone();
+        let pr_number = number;
         // Resolve the local checkout up front so Azure DevOps can source its
         // diff from the clone when opening a PR from the selector.
-        let local_checkout = self.local_checkout_for(&summary.repository);
+        let local_checkout = self.local_checkout_for(repository);
         let show_pr_checks = self.show_pr_checks;
         let show_pr_comments = self.show_pr_comments;
         std::thread::spawn(move || {

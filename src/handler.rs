@@ -20,6 +20,10 @@ const WHEEL_LINES: usize = 3;
 /// interchangeable.
 const WHEEL_COLS: usize = 4;
 
+/// Shown when a bare `q` is pressed in a mode that used to quit on it.
+/// Transitional — drop this a few releases after the `q` removal has landed.
+const QUIT_HINT_MESSAGE: &str = "q no longer quits — use :q to quit";
+
 const COMMAND_SPECS: &[CommandSpec] = &[
     CommandSpec::new(&["q", "quit"], CommandKind::Quit),
     CommandSpec::new(&["q!", "quit!"], CommandKind::ForceQuit),
@@ -73,6 +77,10 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         CommandKind::Targets(TargetTab::Local),
     ),
     CommandSpec::new(&["prs"], CommandKind::Targets(TargetTab::PullRequests)),
+    CommandSpec::new(
+        &["sessions", "reviews"],
+        CommandKind::Targets(TargetTab::Sessions),
+    ),
     CommandSpec::new(&["submit"], CommandKind::SubmitPicker),
     CommandSpec::new(
         &["submit comment"],
@@ -549,6 +557,8 @@ pub fn handle_help_action(app: &mut App, action: Action) {
     match action {
         Action::CursorDown(n) => app.help_scroll_down(n),
         Action::CursorUp(n) => app.help_scroll_up(n),
+        Action::ScrollLeft(n) => app.help_scroll_left(n),
+        Action::ScrollRight(n) => app.help_scroll_right(n),
         Action::HalfPageDown => app.help_scroll_down(app.help_state.viewport_height / 2),
         Action::HalfPageUp => app.help_scroll_up(app.help_state.viewport_height / 2),
         Action::PageDown => app.help_scroll_down(app.help_state.viewport_height),
@@ -965,6 +975,10 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
                     app.set_error(format!("Failed to open PR selector: {e}"));
                     CommandAfterDispatch::ExitCommandMode
                 }
+                (TargetTab::Sessions, Err(e)) => {
+                    app.set_error(format!("Failed to open session selector: {e}"));
+                    CommandAfterDispatch::ExitCommandMode
+                }
             }
         }
         CommandKind::SubmitPicker => {
@@ -1252,6 +1266,7 @@ pub fn handle_commit_select_action(app: &mut App, action: Action) {
         Action::TargetSelectorTabPrev => app.cycle_target_tab(false),
         Action::EnterCommandMode => app.enter_command_mode(),
         Action::Quit => app.should_quit = true,
+        Action::QuitHint => app.set_message(QUIT_HINT_MESSAGE),
         Action::ExitMode => {
             // Esc during an in-flight PR open aborts the load and stays
             // in the selector. Takes precedence over the
@@ -1270,7 +1285,23 @@ pub fn handle_commit_select_action(app: &mut App, action: Action) {
         other => match app.target_tab {
             TargetTab::Local => handle_local_target_action(app, other),
             TargetTab::PullRequests => handle_pr_target_action(app, other),
+            TargetTab::Sessions => handle_sessions_target_action(app, other),
         },
+    }
+}
+
+fn handle_sessions_target_action(app: &mut App, action: Action) {
+    match action {
+        Action::CommitSelectUp => app.sessions_tab_cursor_up(),
+        Action::CommitSelectDown => app.sessions_tab_cursor_down(),
+        Action::ConfirmCommitSelect => {
+            if let Err(e) = app.sessions_tab_select() {
+                app.set_error(format!("Failed to open session: {e}"));
+            }
+        }
+        // Space is a no-op: sessions are picked, not multi-selected.
+        Action::ToggleCommitSelect => {}
+        _ => {}
     }
 }
 
@@ -1410,6 +1441,7 @@ pub fn handle_visual_action(app: &mut App, action: Action) {
         }
         Action::ExitMode => app.exit_visual_mode(),
         Action::Quit => app.should_quit = true,
+        Action::QuitHint => app.set_message(QUIT_HINT_MESSAGE),
         Action::ScrollViewDown(n) | Action::MouseScrollDown(n) => app.scroll_view_down(n),
         Action::ScrollViewUp(n) | Action::MouseScrollUp(n) => app.scroll_view_up(n),
         Action::HalfPageDown => app.page_down(app.diff_state.viewport_height / 2),
@@ -1607,6 +1639,7 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
                 app.should_quit = true;
             }
         }
+        Action::QuitHint => app.set_message(QUIT_HINT_MESSAGE),
         Action::ExitMode => {
             app.show_file_list = false;
             app.focused_panel = FocusedPanel::Diff;
@@ -1759,6 +1792,7 @@ pub fn handle_submit_action_picker_action(app: &mut App, action: Action) {
         Action::SubmitPickerConfirm => app.submit_picker_confirm(),
         Action::ExitMode => app.cancel_submit_action_picker(),
         Action::Quit => app.should_quit = true,
+        Action::QuitHint => app.set_message(QUIT_HINT_MESSAGE),
         _ => {}
     }
 }

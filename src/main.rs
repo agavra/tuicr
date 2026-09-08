@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -20,8 +20,8 @@ use tuicr::handler::{
     handle_submit_resolver_action, handle_summary_action, handle_visual_action,
 };
 use tuicr::input::{
-    Action, map_file_tree_mode, map_file_tree_prompt_mode, map_key_to_action,
-    map_target_filter_mode,
+    Action, map_file_tree_mode_with_q_quits, map_file_tree_prompt_mode,
+    map_key_to_action_with_q_quits, map_target_filter_mode,
 };
 use tuicr::terminal_state::{TerminalFeatures, TerminalSession};
 use tuicr::theme::resolve_theme_with_config;
@@ -47,6 +47,10 @@ fn event_drain_timeout(drained: usize) -> Option<Duration> {
         n if n < EVENT_DRAIN_LIMIT => Some(Duration::ZERO),
         _ => None,
     }
+}
+
+fn should_probe_keyboard_enhancement(output_to_stdout: bool, stdin_is_terminal: bool) -> bool {
+    !output_to_stdout && stdin_is_terminal
 }
 
 fn main() -> anyhow::Result<()> {
@@ -78,10 +82,13 @@ fn main() -> anyhow::Result<()> {
     // Check keyboard enhancement support before enabling raw mode.
     // Skip when --stdout is used because the probe writes escape sequences to stdout,
     // which would leak into the captured export output.
-    let keyboard_enhancement_supported = if cli_args.output_to_stdout {
-        false
-    } else {
+    let keyboard_enhancement_supported = if should_probe_keyboard_enhancement(
+        cli_args.output_to_stdout,
+        io::stdin().is_terminal(),
+    ) {
         matches!(supports_keyboard_enhancement(), Ok(true))
+    } else {
+        false
     };
 
     // --path implies --working-tree unless -r is explicitly provided
@@ -234,6 +241,8 @@ fn main() -> anyhow::Result<()> {
                     app.leader_key = leader;
                 }
                 app.comment_vim_enabled = cfg.comment_vim.unwrap_or(false);
+                app.q_quits = cfg.q_quits.unwrap_or(false);
+                app.editor_override = cfg.editor.clone();
                 if let Some(w) = cfg.comment_tab_width {
                     app.comment_tab_width = w;
                 }
@@ -586,13 +595,11 @@ fn main() -> anyhow::Result<()> {
                                 continue;
                             }
                             crossterm::event::KeyCode::Char('h') => {
-                                if app.show_file_list {
-                                    app.focused_panel = app::FocusedPanel::FileList;
-                                }
+                                app.focus_pane_left();
                                 continue;
                             }
                             crossterm::event::KeyCode::Char('l') => {
-                                app.focused_panel = app::FocusedPanel::Diff;
+                                app.focus_pane_right();
                                 continue;
                             }
                             crossterm::event::KeyCode::Char('k') => {
@@ -658,9 +665,14 @@ fn main() -> anyhow::Result<()> {
                     {
                         // The tree claims i/e/I/E and `/` for filtering; the
                         // diff keeps its own meanings for those keys.
-                        map_file_tree_mode(key, app.leader_key)
+                        map_file_tree_mode_with_q_quits(key, app.leader_key, app.q_quits)
                     } else {
-                        map_key_to_action(key, app.input_mode, app.leader_key)
+                        map_key_to_action_with_q_quits(
+                            key,
+                            app.input_mode,
+                            app.leader_key,
+                            app.q_quits,
+                        )
                     };
 
                     // Handle pending command setters (these work in any mode)
@@ -742,7 +754,11 @@ fn main() -> anyhow::Result<()> {
 
                     dispatch_action(&mut app, action);
                     if let Some(target) = app.take_pending_editor_target() {
-                        match run_editor_from_tui(&mut terminal, &target) {
+                        match run_editor_from_tui(
+                            &mut terminal,
+                            &target,
+                            app.editor_override.as_deref(),
+                        ) {
                             // The editor is still open, so there is nothing to
                             // pick up yet; the user reloads once they are done.
                             Ok(Ok(EditorOutcome::Detached(launch))) => {
@@ -821,6 +837,15 @@ fn main() -> anyhow::Result<()> {
     if let Err(e) = app.clear_active_session_marker() {
         eprintln!("Warning: failed to clear active review session marker: {e}");
     }
+
+    // Always report how the review ended, even with zero comments, so a
+    // human or agent watching the pane can tell "reviewed everything, had
+    // nothing to flag" apart from "quit without looking".
+    let reviewed = app.session.reviewed_count();
+    let total = app.session.files.len();
+    let comments = app.session.comment_count();
+    let comment_word = if comments == 1 { "comment" } else { "comments" };
+    eprintln!("tuicr-summary: reviewed {reviewed}/{total} files, {comments} {comment_word} added");
 
     // Print pending stdout output if --stdout was used
     if let Some(output) = app.pending_stdout_output {
@@ -941,8 +966,9 @@ enum EditorOutcome {
 fn run_editor_from_tui<W: Write>(
     terminal: &mut TerminalSession<W>,
     target: &EditorTarget,
+    editor_override: Option<&str>,
 ) -> anyhow::Result<Result<EditorOutcome, EditorError>> {
-    let command = EditorCommand::from_env(target);
+    let command = EditorCommand::from_env(editor_override, target);
     // Windowed editors never draw on our terminal, so suspending would only
     // blank the TUI for as long as the editor takes to come up.
     if command.surface() == EditorSurface::Gui {
@@ -975,5 +1001,12 @@ mod tests {
             None,
             "a capped burst must repaint instead of draining forever"
         );
+    }
+
+    #[test]
+    fn keyboard_enhancement_probe_requires_interactive_stdin() {
+        assert!(should_probe_keyboard_enhancement(false, true));
+        assert!(!should_probe_keyboard_enhancement(false, false));
+        assert!(!should_probe_keyboard_enhancement(true, true));
     }
 }

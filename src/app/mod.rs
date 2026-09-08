@@ -776,12 +776,12 @@ pub enum FocusedPanel {
 
 /// Active tab in the review target selector.
 ///
-/// The selector internally still goes through `InputMode::CommitSelect`,
-/// but it shows two tabs to the user.
+/// The selector internally still goes through `InputMode::CommitSelect`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TargetTab {
     Local,
     PullRequests,
+    Sessions,
 }
 
 /// Background-thread events that the PR tab consumes through `pr_load_rx`.
@@ -1124,6 +1124,7 @@ pub struct App {
     pub diff_files: Vec<DiffFile>,
     pub diff_source: DiffSource,
     pub pending_editor_target: Option<EditorTarget>,
+    pub editor_override: Option<String>,
     /// Windowed editors that have not exited yet; polled by
     /// `poll_editor_launches`.
     pub(crate) editor_launches: Vec<EditorLaunch>,
@@ -1132,6 +1133,10 @@ pub struct App {
     pub focused_panel: FocusedPanel,
     pub diff_view_mode: DiffViewMode,
     pub relative_line_numbers: bool,
+    /// Which side the cursor targets in side-by-side view (old/left vs
+    /// new/right). Drives the `▶` caret placement and the side a new line
+    /// comment attaches to. Ignored in unified view. Defaults to `New`.
+    pub cursor_side: LineSide,
 
     pub file_list_state: FileListState,
     pub comment_navigator_state: CommentNavigatorState,
@@ -1156,6 +1161,8 @@ pub struct App {
     pub comment_cursor: usize,
     /// Config `comment_vim`: vim modal editing in the comment box.
     pub comment_vim_enabled: bool,
+    /// Config `q_quits`: restore bare `q` as a quit key in review modes.
+    pub q_quits: bool,
     /// Spaces inserted by Tab while typing in the vim comment box (config
     /// `comment_tab_width`, default 4).
     pub comment_tab_width: usize,
@@ -1218,6 +1225,10 @@ pub struct App {
     /// When `Some`, the user is editing the local PR filter. Captured keys
     /// update this draft; pressing Enter commits it to the tab state.
     pub pr_filter_draft: Option<String>,
+    /// State for the Sessions tab: persisted reviews for this checkout.
+    pub sessions_tab: crate::app::sessions_tab::SessionsTab,
+    /// Viewport height of the session list (set during render).
+    pub sessions_list_viewport_height: usize,
     /// Background-thread channel that delivers PR list fetch results.
     /// `Receiver` is only present while a fetch is in flight.
     pub pr_load_rx: Option<std::sync::mpsc::Receiver<PrLoadEvent>>,
@@ -1652,11 +1663,31 @@ impl Default for FileTreeFilter {
 #[derive(Debug, Default)]
 pub struct HelpState {
     pub scroll_offset: usize,
+    pub horizontal_offset: usize,
     pub viewport_height: usize,
-    pub total_lines: usize, // Set during render
+    pub viewport_width: usize,
+    pub total_lines: usize,    // Set during render
+    pub max_line_width: usize, // Set during render
     pub(crate) searchable_lines: Vec<String>,
     pub(crate) last_search_pattern: Option<String>,
     pub(crate) current_match_line: Option<usize>,
+}
+
+impl HelpState {
+    /// Furthest left column the popup can be panned to, so the widest help
+    /// line's tail can still reach the viewport.
+    pub(crate) fn max_horizontal_offset(&self) -> usize {
+        self.max_line_width.saturating_sub(self.viewport_width)
+    }
+
+    pub(crate) fn scroll_right(&mut self, columns: usize) {
+        self.horizontal_offset =
+            (self.horizontal_offset + columns).min(self.max_horizontal_offset());
+    }
+
+    pub(crate) fn scroll_left(&mut self, columns: usize) {
+        self.horizontal_offset = self.horizontal_offset.saturating_sub(columns);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1778,6 +1809,7 @@ mod pr;
 mod reviewed;
 mod search;
 mod session;
+pub mod sessions_tab;
 mod submit;
 mod tree;
 mod visual;

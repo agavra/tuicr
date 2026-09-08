@@ -191,12 +191,7 @@ pub fn entry_from_session(
         None
     };
 
-    let comment_count = session.review_comments.len()
-        + session
-            .files
-            .values()
-            .map(|f| f.comment_count())
-            .sum::<usize>();
+    let comment_count = session.comment_count();
     let reviewed_count = session.reviewed_count();
     let file_count = session.files.len();
 

@@ -776,6 +776,8 @@ pub(super) struct DiffOverlayPaint<'a> {
     pub scroll_offset: usize,
     pub theme: &'a Theme,
     pub comment_bars: &'a [CommentBarAnchor],
+    /// Side-by-side scrolls within each content cell, leaving its gutters fixed.
+    pub fixed_gutters: bool,
 }
 
 /// Records that an inline comment box at `box_top_row` (logical line index
@@ -917,10 +919,14 @@ pub(super) fn paint_comment_box_bar(frame: &mut Frame, ctx: &DiffOverlayPaint) {
     if ctx.inner.width == 0 || ctx.viewport_width == 0 || ctx.comment_bars.is_empty() {
         return;
     }
-    if ctx.scroll_x > 4 {
+    if !ctx.fixed_gutters && ctx.scroll_x > 4 {
         return;
     }
-    let bar_screen_col = ctx.inner.x + 5 - ctx.scroll_x as u16;
+    let bar_screen_col = if ctx.fixed_gutters {
+        ctx.inner.x + 5
+    } else {
+        ctx.inner.x + 5 - ctx.scroll_x as u16
+    };
     if bar_screen_col >= ctx.inner.x + ctx.inner.width {
         return;
     }

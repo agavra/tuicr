@@ -23,7 +23,8 @@ impl App {
         skip_confirm: bool,
     ) {
         use crate::forge::submit::{
-            CommentAnchor, InlineComment, ResolverAction, UnmappableItem, map_comment,
+            CommentAnchor, InlineComment, ResolverAction, SubmitContext, UnmappableItem,
+            map_comment,
         };
 
         let DiffSource::PullRequest(pr) = &self.diff_source else {
@@ -61,6 +62,8 @@ impl App {
             None => self.diff_files.iter().collect(),
         };
 
+        let submit_ctx = SubmitContext::new(&self.forge_config, &self.comment_types);
+
         let mut mappable: Vec<InlineComment> = Vec::new();
         let mut unmappable: Vec<UnmappableItem> = Vec::new();
         let mut total_local_drafts = 0_usize;
@@ -78,7 +81,7 @@ impl App {
                 }
                 total_local_drafts += 1;
                 bucket_mapping(
-                    map_comment(comment, CommentAnchor::FileLevel, file, &self.forge_config),
+                    map_comment(comment, CommentAnchor::FileLevel, file, submit_ctx),
                     &mut mappable,
                     &mut unmappable,
                 );
@@ -100,7 +103,7 @@ impl App {
                         }
                     };
                     bucket_mapping(
-                        map_comment(comment, anchor, file, &self.forge_config),
+                        map_comment(comment, anchor, file, submit_ctx),
                         &mut mappable,
                         &mut unmappable,
                     );
@@ -270,7 +273,9 @@ impl App {
     /// network round-trip on a background thread. The result is applied
     /// later in `poll_pr_submit_events`.
     pub fn spawn_pr_submit(&mut self) -> Result<()> {
-        use crate::forge::submit::{MovedToSummaryItem, ResolverAction, build_review_body};
+        use crate::forge::submit::{
+            MovedToSummaryItem, ResolverAction, SubmitContext, build_review_body,
+        };
         use crate::forge::traits::{CreateReviewRequest, PullRequestTarget};
 
         // Snapshot identity from the PR diff source first so the borrow on
@@ -314,7 +319,7 @@ impl App {
         let body = build_review_body(
             &self.session.review_comments,
             &summary_items,
-            &self.forge_config,
+            SubmitContext::new(&self.forge_config, &self.comment_types),
         );
 
         // Save the session BEFORE the network call — keeps the user's

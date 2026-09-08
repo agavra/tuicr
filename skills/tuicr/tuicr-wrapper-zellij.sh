@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -e -u -o pipefail
 
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_tuicr-common.sh"
+
 # Configuration - override via environment variables
 TUICR_PANE_DIRECTION="${TUICR_PANE_DIRECTION:-stacked}"  # down or right or stacked
 ZELLIJ_BIN="${ZELLIJ_BIN:-zellij}"
@@ -32,12 +34,13 @@ log_error() {
 
 usage() {
   cat << EOF
-Usage: $(basename "$0") [directory]
+Usage: $(basename "$0") [directory] [-- tuicr-args...]
 
 Launch tuicr in a zellij split pane to review changes.
 
 Arguments:
   directory    Git or jj repository directory to review (default: current directory)
+  tuicr-args   Extra arguments passed through to tuicr (e.g. -w, -r <revset>)
 
 Environment variables:
   TUICR_PANE_DIRECTION  Split direction: down or right or stacked (default: stacked)
@@ -46,6 +49,7 @@ Environment variables:
 Examples:
   $(basename "$0")                            # Review changes in current directory
   $(basename "$0") ~/project                  # Review changes in ~/project
+  $(basename "$0") . -- -w                    # Review uncommitted working-tree changes
   TUICR_PANE_DIRECTION=right $(basename "$0") # Split to the right instead of below
 EOF
 }
@@ -64,11 +68,6 @@ check_tuicr() {
     return 1
   fi
   return 0
-}
-
-check_tuicr_stdout_support() {
-  # Check if tuicr supports --stdout flag
-  tuicr --help 2>&1 | grep -q -- '--stdout'
 }
 
 check_repo() {
@@ -94,6 +93,8 @@ check_tuicr_running() {
 
 launch_tuicr_pane() {
   local target_dir="$1"
+  shift
+  local tuicr_args=("$@")
 
   # Validate direction
   case "$TUICR_PANE_DIRECTION" in
@@ -114,10 +115,10 @@ launch_tuicr_pane() {
 
   # Optional --stdout capture
   local output_file=""
-  local tuicr_cmd="$(command -v tuicr)"
+  local tuicr_cmd="$(command -v tuicr)$(tuicr_quote_args "${tuicr_args[@]+"${tuicr_args[@]}"}")"
   local use_stdout=false
 
-  if check_tuicr_stdout_support; then
+  if tuicr_stdout_supported; then
     output_file=$(mktemp /tmp/tuicr-output.XXXXXX)
     tuicr_cmd="$tuicr_cmd --stdout > '$output_file'"
     use_stdout=true
@@ -136,7 +137,10 @@ launch_tuicr_pane() {
     zellij_args+=("--direction" "$TUICR_PANE_DIRECTION")
   fi
 
-  zellij_args+=(-- sh -c "$tuicr_cmd; echo done > '$fifo'")
+  # bash, not sh: $tuicr_cmd carries bash's printf %q quoting, which can emit
+  # non-POSIX $'...' forms that dash (the default /bin/sh on many Linux
+  # distros) does not understand.
+  zellij_args+=(-- bash -c "$tuicr_cmd; echo done > '$fifo'")
 
   "$ZELLIJ_BIN" run\
     "${zellij_args[@]}"
@@ -151,21 +155,7 @@ launch_tuicr_pane() {
 
   log_info "tuicr finished"
 
-  # Output captured instructions if --stdout was used
-  if [[ "$use_stdout" == true ]] && [[ -f "$output_file" ]]; then
-    if [[ -s "$output_file" ]]; then
-      echo ""
-      echo "=== TUICR INSTRUCTIONS ==="
-      cat "$output_file"
-      echo "=== END TUICR INSTRUCTIONS ==="
-    else
-      log_info "No instructions exported from tuicr"
-      log_info "If you exported to clipboard, paste the instructions here"
-    fi
-    rm -f "$output_file"
-  else
-    log_info "If you exported instructions, they are in your clipboard - paste them here"
-  fi
+  tuicr_report_stdout_output "$use_stdout" "$output_file"
 }
 
 main() {
@@ -180,8 +170,9 @@ main() {
     exit 1
   fi
 
-  # Determine target directory
-  local target_dir="${1:-.}"
+  # Determine target directory, then split off any pass-through tuicr args
+  tuicr_parse_args "$@"
+  local target_dir="$TUICR_TARGET_DIR"
   target_dir=$(cd "$target_dir" && pwd)  # Get absolute path
 
   # Verify it's a git or jj repo
@@ -211,7 +202,7 @@ main() {
   fi
 
   # Launch tuicr in a split pane
-  launch_tuicr_pane "$target_dir"
+  launch_tuicr_pane "$target_dir" "${TUICR_PASSTHROUGH_ARGS[@]+"${TUICR_PASSTHROUGH_ARGS[@]}"}"
 }
 
 main "$@"

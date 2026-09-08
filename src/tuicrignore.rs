@@ -2,7 +2,7 @@ use std::path::Path;
 
 use ignore::gitignore::GitignoreBuilder;
 
-use crate::model::DiffFile;
+use crate::model::{DiffFile, FilePatch};
 
 /// Apply `.tuicrignore` rules from the repository root to a diff file set.
 pub fn filter_diff_files(repo_root: &Path, diff_files: Vec<DiffFile>) -> Vec<DiffFile> {
@@ -16,6 +16,25 @@ pub fn filter_diff_files(repo_root: &Path, diff_files: Vec<DiffFile>) -> Vec<Dif
             !matcher
                 .matched_path_or_any_parents(file.display_path(), false)
                 .is_ignore()
+        })
+        .collect()
+}
+
+/// Apply `.tuicrignore` rules from the repository root to raw file patches,
+/// before hunks are parsed and highlighted, so an ignored file never pays
+/// the syntax-highlighting cost (a large minified bundle otherwise stalls
+/// PR open even though it is excluded from the review).
+pub fn filter_file_patches(repo_root: &Path, patches: Vec<FilePatch>) -> Vec<FilePatch> {
+    let Some(matcher) = load_matcher(repo_root) else {
+        return patches;
+    };
+
+    patches
+        .into_iter()
+        .filter(|patch| {
+            patch
+                .display_path()
+                .is_none_or(|path| !matcher.matched_path_or_any_parents(path, false).is_ignore())
         })
         .collect()
 }

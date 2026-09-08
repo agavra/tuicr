@@ -378,16 +378,9 @@ where
 
     fn get_pull_request(&self, target: PullRequestTarget) -> Result<PullRequestDetails> {
         let repository = self.resolve_repository(&target)?;
-        let args = vec![
-            "mr".to_string(),
-            "view".to_string(),
-            target.number.to_string(),
-            "--repo".to_string(),
-            Self::repo_arg(&repository),
-            "--output".to_string(),
-            "json".to_string(),
-        ];
-        let output = self.run_glab(args, &repository.host)?;
+        let project = gl_project_path(&repository.owner, &repository.name);
+        let endpoint = format!("projects/{project}/merge_requests/{}", target.number);
+        let output = self.run_api(&repository, endpoint)?;
         let mr: GlabMrDetails = serde_json::from_str(&output)?;
         mr.into_details(&repository)
     }
@@ -436,6 +429,9 @@ where
                 break;
             }
         }
+        // GitLab lists MR commits newest-first; the trait contract is
+        // oldest-first.
+        commits.reverse();
         Ok(commits)
     }
 
@@ -1319,6 +1315,66 @@ mod tests {
                 "--reviewer=@me",
             ]
         );
+    }
+
+    #[test]
+    fn get_pull_request_uses_version_compatible_api_endpoint() {
+        let repo = ForgeRepository::gitlab("gitlab.com", "owner", "repo");
+        let runner = RecordingRunner::new_with_responses(vec![
+            r#"{
+                "iid": 42,
+                "title": "Test MR",
+                "web_url": "https://gitlab.com/owner/repo/-/merge_requests/42",
+                "state": "opened",
+                "source_branch": "feature",
+                "target_branch": "main",
+                "diff_refs": {
+                    "base_sha": "basesha1",
+                    "head_sha": "headsha1",
+                    "start_sha": "startsha1"
+                }
+            }"#
+            .to_string(),
+        ]);
+        let backend = GitLabGlabBackend::with_runner(Some(repo), runner);
+
+        let details = backend
+            .get_pull_request(PullRequestTarget::number(42, "42"))
+            .unwrap();
+
+        assert_eq!(details.number, 42);
+        assert_eq!(details.head_sha, "headsha1");
+        let calls = backend.runner.calls.borrow();
+        assert_eq!(
+            calls[0].0,
+            vec!["api", "projects/owner%2Frepo/merge_requests/42"]
+        );
+        assert!(
+            !calls[0].0.iter().any(|arg| arg == "--output"),
+            "glab 1.36 does not support `mr view --output`"
+        );
+    }
+
+    #[test]
+    fn should_return_commits_oldest_first() {
+        // given — GitLab lists MR commits newest-first
+        let repo = ForgeRepository::gitlab("gitlab.com", "owner", "repo");
+        let pr = make_pr_details(repo.clone());
+        let runner = RecordingRunner::new_with_responses(vec![
+            r#"[
+              {"id":"64ad53963568726a9ed23fd96b6d73203176775d","short_id":"64ad5396","title":"fixup!","author_name":"Radek","committed_date":"2026-08-27T13:49:53Z"},
+              {"id":"e52022cd3bb22302b9775c7281ad27bddcf04f03","short_id":"e52022cd","title":"Edit README.md","author_name":"Radek","committed_date":"2026-08-27T13:48:53Z"}
+            ]"#
+                .to_string(),
+        ]);
+        let backend = GitLabGlabBackend::with_runner(Some(repo), runner);
+
+        // when
+        let commits = backend.list_pull_request_commits(&pr).unwrap();
+
+        // then — the trait contract is chronological
+        let summaries: Vec<&str> = commits.iter().map(|c| c.summary.as_str()).collect();
+        assert_eq!(summaries, vec!["Edit README.md", "fixup!"]);
     }
 
     #[test]

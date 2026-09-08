@@ -170,9 +170,11 @@ pub fn build_pr_info_lines(
     } else {
         details.body.clone()
     };
-    for paragraph in body.lines() {
-        push_wrapped_line(&mut lines, paragraph.to_string(), content_width);
-    }
+    lines.extend(comment_panel::markdown_body_lines(
+        theme,
+        &body,
+        content_width,
+    ));
 
     push_blank(&mut lines);
     push_section_header(
@@ -498,5 +500,40 @@ mod tests {
                 .iter()
                 .any(|line| { line.contains("https://github.com/owner/repo/actions/runs/1") })
         );
+    }
+
+    #[test]
+    fn should_render_pr_description_markdown() {
+        let mut info = sample_info();
+        info.details.body = "plain `code` plain".to_string();
+        let lines = build_pr_info_lines(&info, 80, &Theme::dark());
+        let description = &lines[1];
+
+        assert_eq!(
+            description
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>(),
+            info.details.body
+        );
+        assert!(
+            description.spans.len() > 1,
+            "expected markdown description to be highlighted into multiple spans"
+        );
+
+        info.details.body = "plain description".to_string();
+        let lines = build_pr_info_lines(&info, 80, &Theme::dark());
+        let description = &lines[1];
+
+        assert_eq!(
+            description
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>(),
+            info.details.body
+        );
+        assert_eq!(description.spans.len(), 1);
     }
 }
