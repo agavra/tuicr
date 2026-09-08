@@ -160,6 +160,10 @@ This is the first Gerrit slice. Not yet supported:
   Submitting again re-posts those, so delete them in Gerrit's web UI first, or publish from there.
   Drafts are private to you until published.
 
+Publishing a review is a single request and needs no such care: it carries
+`omit_duplicate_comments`, so if the response is lost after Gerrit committed it, submitting again
+will not post the inline comments twice. A second review *message* can still appear that way.
+
 ## Troubleshooting
 
 - **"Gerrit needs authentication for this request."** — set `GERRIT_USERNAME` and

@@ -661,6 +661,17 @@ impl ForgeBackend for GerritBackend {
         // Publishing a review would otherwise sweep up unrelated drafts the
         // user left in the Gerrit web UI.
         payload.insert("drafts".to_string(), Value::String("KEEP".to_string()));
+        // Make a resubmit safe. This POST is atomic on the server, but its
+        // *response* is not guaranteed to arrive: a dropped connection or a
+        // timeout after Gerrit has committed shows an error for a review that
+        // actually landed, and the obvious next move is to submit again.
+        // Gerrit then drops any input comment matching one already published
+        // on the change — same file, patch set, line, side, range, and message
+        // — so the retry adds nothing twice. The review message is not covered
+        // (a second one can still appear); the vote is, being the same value
+        // on the same label. The cost is that deliberately posting the same
+        // text twice on one line silently posts it once.
+        payload.insert("omit_duplicate_comments".to_string(), Value::Bool(true));
 
         self.send(
             &pr.repository,
@@ -1546,6 +1557,10 @@ mod tests {
         assert_eq!(payload["message"], "LGTM");
         assert_eq!(payload["labels"]["Code-Review"], 2);
         assert_eq!(payload["drafts"], "KEEP");
+        assert_eq!(
+            payload["omit_duplicate_comments"], true,
+            "a resubmit after a lost response must not double-post comments"
+        );
         let file = &payload["comments"]["src/main.rs"];
         assert_eq!(file[0]["line"], 12);
         assert_eq!(file[0]["side"], "REVISION");
