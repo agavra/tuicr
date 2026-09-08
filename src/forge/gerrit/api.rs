@@ -380,17 +380,18 @@ impl GerritBackend {
         let Some(remote) = remote_for_repository(root, &pr.repository) else {
             return false;
         };
+        let Some(ref_name) = patch_set_ref(pr) else {
+            return false;
+        };
         // A bare `git fetch <remote> <ref>` writes FETCH_HEAD only — it creates
-        // no branch and moves no existing ref in the user's repo.
+        // no branch and moves no existing ref in the user's repo. That holds
+        // only because [`patch_set_ref`] rebuilt `ref_name` out of digits: a
+        // server-controlled value in this position is both an option and a
+        // refspec, and would otherwise be free to move a local ref.
         let _ = run_command_output(
             "git",
             Some(root),
-            [
-                "fetch",
-                "--quiet",
-                remote.as_str(),
-                pr.head_ref_name.as_str(),
-            ],
+            ["fetch", "--quiet", remote.as_str(), ref_name.as_str()],
         );
         sha_present(root, &pr.base_sha) && sha_present(root, &pr.head_sha)
     }
@@ -428,12 +429,12 @@ impl GerritBackend {
             .as_deref()
             .ok_or_else(missing_checkout)?;
         if !self.ensure_revision_local(root, pr) {
+            let patch_set = patch_set_ref(pr).unwrap_or_else(|| pr.head_ref_name.clone());
             return Err(TuicrError::Forge(format!(
                 "Could not find {}..{} in the local checkout. Fetch the change's patch set \
-                 (`git fetch origin {}`) and retry.",
+                 (`git fetch origin {patch_set}`) and retry.",
                 short(a),
                 short(b),
-                pr.head_ref_name,
             )));
         }
         run_git_diff(root, &[format!("{a}..{b}").as_str()])
@@ -638,6 +639,39 @@ impl ForgeBackend for GerritBackend {
             .to_string(),
         })
     }
+}
+
+/// The patch-set ref to fetch for `pr`, rebuilt from its own digits.
+///
+/// `head_ref_name` comes from the Gerrit server and lands in `git fetch`'s
+/// refspec position, which is dangerous in two separate ways: git still reads
+/// option-shaped values there (`--upload-pack=…`), and a `<src>:<dst>` pair
+/// updates a local ref. So "FETCH_HEAD only" has to be enforced here rather
+/// than assumed.
+///
+/// Rebuilding beats validating, and beats an argument separator. The ref is
+/// parsed into the two numbers Gerrit composes it from and formatted back out
+/// of them, so what reaches git is digits and slashes by construction — no
+/// `:`, no leading `-`, nothing left to inspect for. (`--end-of-options` would
+/// only cover the option half; a `<src>:<dst>` refspec still moves a local ref
+/// behind it.) The change number has to be the change being fetched, and the
+/// shard has to be the one Gerrit derives from it.
+///
+/// `None` for anything else — including the patch-set-less fallback ref
+/// `GerritChange::head_ref` produces when revisions were not requested, which
+/// is not fetchable anyway.
+fn patch_set_ref(pr: &PullRequestDetails) -> Option<String> {
+    let mut parts = pr.head_ref_name.strip_prefix("refs/changes/")?.split('/');
+    let shard = parts.next()?;
+    let change: u64 = parts.next()?.parse().ok()?;
+    let patch_set: u64 = parts.next()?.parse().ok()?;
+    let expected_shard = format!("{:02}", change % 100);
+    if parts.next().is_some() || change != pr.number || shard != expected_shard {
+        return None;
+    }
+    Some(format!(
+        "refs/changes/{expected_shard}/{change}/{patch_set}"
+    ))
 }
 
 /// Patch-set number carried by a change ref (`refs/changes/65/3965/2` → 2).
@@ -1453,6 +1487,44 @@ mod tests {
         assert_eq!(review_vote(SubmitEvent::RequestChanges), Some(-1));
         assert_eq!(review_vote(SubmitEvent::Approve), Some(2));
         assert_eq!(review_vote(SubmitEvent::Comment), None);
+    }
+
+    // ---- Patch-set ref hardening ----
+
+    #[test]
+    fn should_rebuild_the_patch_set_ref_from_its_own_digits() {
+        // given/when — the shard, change, and patch set round-trip
+        let ref_name = patch_set_ref(&details());
+        // then
+        assert_eq!(ref_name.as_deref(), Some("refs/changes/65/3965/2"));
+    }
+
+    #[test]
+    fn should_reject_patch_set_refs_that_could_reach_git_as_options_or_refspecs() {
+        // given — every shape that would make `git fetch` do more than write
+        // FETCH_HEAD, plus the patch-set-less fallback ref
+        for hostile in [
+            "--upload-pack=touch /tmp/pwned",
+            "refs/changes/65/3965/2:refs/heads/main",
+            "refs/changes/65/3965/2:master",
+            "-refs/changes/65/3965/2",
+            "refs/changes/65/3965",
+            "refs/changes/65/3965/2/3",
+            "refs/heads/main",
+            // a different change than the one being fetched
+            "refs/changes/66/3966/2",
+            // a shard Gerrit would never derive from 3965
+            "refs/changes/01/3965/2",
+            "",
+        ] {
+            // when
+            let pr = PullRequestDetails {
+                head_ref_name: hostile.to_string(),
+                ..details()
+            };
+            // then
+            assert_eq!(patch_set_ref(&pr), None, "{hostile} should be rejected");
+        }
     }
 
     #[test]
