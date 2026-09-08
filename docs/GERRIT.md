@@ -153,6 +153,12 @@ This is the first Gerrit slice. Not yet supported:
 - **SSH transport.** Only the REST API is used; `ssh -p 29418 host gerrit review` is not called.
 - **Gerrit 3.3+ for the `r` toggle.** The attention set was introduced in Gerrit 3.3; an older
   server rejects `attention:self` outright. The rest of the backend has no such floor.
+- **Draft submits are not atomic.** Gerrit's `Create Draft` endpoint takes one comment per
+  request, and there is no batch equivalent, so saving a draft review is one `PUT` per comment. If
+  the connection drops part-way, the drafts before that point are already on the server while
+  tuicr still holds every comment locally — nothing is lost, and the error names how many landed.
+  Submitting again re-posts those, so delete them in Gerrit's web UI first, or publish from there.
+  Drafts are private to you until published.
 
 ## Troubleshooting
 

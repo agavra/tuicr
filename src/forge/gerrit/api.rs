@@ -471,6 +471,16 @@ impl GerritBackend {
     /// Post every inline comment, plus the review body, as *draft* comments.
     /// Gerrit drafts are per-comment rather than per-review, and the body has
     /// a home of its own: the `/PATCHSET_LEVEL` magic path.
+    ///
+    /// One `PUT` per comment, because that is all Gerrit offers: `Create
+    /// Draft` takes a single `CommentInput`, and `ReviewInput`'s `drafts`
+    /// field only decides what happens to drafts *already* stored. So the
+    /// sequence is not atomic, and a failure part-way leaves the drafts before
+    /// it on the server while tuicr keeps every comment locally. Nothing is
+    /// lost — but a resubmit re-posts the ones that landed, so the error says
+    /// how far it got rather than leaving the split state invisible. Drafts
+    /// are private and deletable in Gerrit's web UI, which is what keeps this
+    /// worth a message instead of a dedupe pass over the existing drafts.
     fn create_drafts(
         &self,
         pr: &PullRequestDetails,
@@ -484,13 +494,16 @@ impl GerritBackend {
             payload.insert("path".to_string(), json!(comment_path_key(comment)));
             Value::Object(payload)
         });
-        for payload in review_body.into_iter().chain(inline) {
+        let payloads: Vec<Value> = review_body.into_iter().chain(inline).collect();
+        let total = payloads.len();
+        for (stored, payload) in payloads.iter().enumerate() {
             self.send(
                 &pr.repository,
                 "PUT",
                 &path,
-                &serde_json::to_string(&payload)?,
-            )?;
+                &serde_json::to_string(payload)?,
+            )
+            .map_err(|err| partial_draft_error(err, stored, total))?;
         }
         Ok(())
     }
@@ -667,6 +680,24 @@ impl ForgeBackend for GerritBackend {
             .to_string(),
         })
     }
+}
+
+/// Name how much of a draft submit survived a mid-sequence failure.
+///
+/// `stored` drafts are already on the server; the rest are not. Saying so
+/// turns "the submit failed" into something the reader can act on, since a
+/// resubmit will duplicate exactly those `stored` drafts and Gerrit's web UI
+/// is where they get cleaned up. A failure on the very first `PUT` split
+/// nothing, so it passes through untouched.
+fn partial_draft_error(error: TuicrError, stored: usize, total: usize) -> TuicrError {
+    if stored == 0 {
+        return error;
+    }
+    TuicrError::Forge(format!(
+        "Gerrit stored {stored} of {total} draft comments before failing; the rest were not \
+         saved. Submitting again re-posts the {stored} that landed — delete them in Gerrit \
+         first, or publish from there. {error}"
+    ))
 }
 
 /// The patch-set ref to fetch for `pr`, rebuilt from its own digits.
@@ -1319,6 +1350,9 @@ mod tests {
         authenticated: bool,
         responses: Mutex<Vec<String>>,
         calls: Mutex<Vec<(String, String, Option<String>)>>,
+        /// Number of requests to serve before every later one fails, standing
+        /// in for a connection dropped part-way through a sequence.
+        succeed_first: Option<usize>,
     }
 
     impl FakeHttp {
@@ -1327,6 +1361,14 @@ mod tests {
                 authenticated,
                 responses: Mutex::new(responses.into_iter().rev().map(str::to_string).collect()),
                 calls: Mutex::new(Vec::new()),
+                succeed_first: None,
+            }
+        }
+
+        fn failing_after(authenticated: bool, succeed_first: usize) -> Self {
+            Self {
+                succeed_first: Some(succeed_first),
+                ..Self::new(authenticated, Vec::new())
             }
         }
     }
@@ -1350,6 +1392,15 @@ mod tests {
                 url.to_string(),
                 body.map(str::to_string),
             ));
+            if self
+                .succeed_first
+                .is_some_and(|limit| self.calls.lock().unwrap().len() > limit)
+            {
+                return Err(GerritHttpError::Failed {
+                    status: None,
+                    body: "connection closed".to_string(),
+                });
+            }
             Ok(self.responses.lock().unwrap().pop().unwrap_or_default())
         }
     }
@@ -1635,6 +1686,65 @@ mod tests {
         assert_eq!(inline["path"], "src/main.rs");
         assert_eq!(inline["line"], 12);
         assert_eq!(response.state, "PENDING");
+    }
+
+    #[test]
+    fn should_name_how_many_drafts_landed_when_the_sequence_fails_part_way() {
+        // given — the body and the first comment store, then the link drops
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        unsafe { std::env::remove_var(URL_ENV_VAR) };
+        let fake = Arc::new(FakeHttp::failing_after(true, 2));
+        let backend =
+            GerritBackend::with_transport(Some(gerrit_repo()), Box::new(Arc::clone(&fake)));
+        let comments = vec![
+            inline_comment(12, None, GhSide::Right),
+            inline_comment(20, Some(18), GhSide::Left),
+        ];
+        // when
+        let error = backend
+            .create_review(
+                &details(),
+                CreateReviewRequest {
+                    event: SubmitEvent::Draft,
+                    commit_id: "abc1234",
+                    body: "still thinking",
+                    comments: &comments,
+                },
+            )
+            .expect_err("the third PUT fails");
+        // then — the split state is named, not swallowed
+        let message = error.to_string();
+        assert!(
+            message.contains("stored 2 of 3 draft comments"),
+            "{message}"
+        );
+        assert!(message.contains("re-posts the 2 that landed"), "{message}");
+    }
+
+    #[test]
+    fn should_pass_through_a_failure_on_the_very_first_draft_untouched() {
+        // given — nothing landed, so there is no partial state to describe
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        unsafe { std::env::remove_var(URL_ENV_VAR) };
+        let fake = Arc::new(FakeHttp::failing_after(true, 0));
+        let backend =
+            GerritBackend::with_transport(Some(gerrit_repo()), Box::new(Arc::clone(&fake)));
+        // when
+        let error = backend
+            .create_review(
+                &details(),
+                CreateReviewRequest {
+                    event: SubmitEvent::Draft,
+                    commit_id: "abc1234",
+                    body: "still thinking",
+                    comments: &[],
+                },
+            )
+            .expect_err("the first PUT fails");
+        // then
+        let message = error.to_string();
+        assert!(!message.contains("stored"), "{message}");
+        assert!(message.contains("connection closed"), "{message}");
     }
 
     #[test]
