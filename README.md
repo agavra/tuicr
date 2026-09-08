@@ -190,7 +190,8 @@ tuicr --stdout | pbcopy
 ## Review session CLI
 
 `tuicr review` exposes saved sessions without opening the TUI. It can list
-sessions, add comments, and print stored comments for agent and script
+sessions, add, delete, and clear comments, and print stored comments for
+agent and script
 integrations. See [docs/REVIEW_CLI.md](docs/REVIEW_CLI.md).
 
 The TUI creates a persisted session file when a review target becomes active,

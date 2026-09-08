@@ -91,6 +91,32 @@ Target flags:
 - add `--end-line <n>` for a range comment
 - use `--side old|new` for inline comments
 
+## Delete and clear comments
+
+Delete one comment by id:
+
+```bash
+tuicr review delete --session agavra/tuicr@main/worktree --comment-id <id>
+```
+
+The id is the `id` field reported by `tuicr review comments`. Deleting a
+comment that does not exist is an error.
+
+Clear every comment in a session:
+
+```bash
+tuicr review clearc --session agavra/tuicr@main/worktree
+```
+
+`clearc` keeps review marks. `clear` also resets them:
+
+```bash
+tuicr review clear --session agavra/tuicr@main/worktree
+```
+
+All three commands remove the session itself once nothing is left — no
+comments and no review marks — the same cleanup the TUI performs on exit.
+
 ## JSON Input
 
 For machine input, pass a JSON payload with `--input`. The value can be literal
