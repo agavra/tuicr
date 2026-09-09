@@ -39,13 +39,14 @@ when its host contains `gitlab` or matches a self-hosted host configured in
 
 ## Submit a review
 
-`:submit` opens a picker. On GitLab it offers three events:
+`:submit` opens a picker. On GitLab it offers four events:
 
 | Event | Result |
 |-------|--------|
 | Comment | Posts your inline and review-level comments without changing approval state. |
 | Approve | Posts your comments and approves the merge request. |
 | Request changes | Posts your comments and sets the MR reviewer state to changes requested. |
+| Draft | Posts your comments as GitLab draft notes without publishing them or changing approval state. |
 
 Inline comments land on their lines as merge request discussion notes.
 Review-level comments post as the review summary.
@@ -55,8 +56,9 @@ request. GitLab only lets a reviewer set that state. If you are not a reviewer,
 tuicr surfaces the error GitLab returns rather than reporting success. tuicr does
 not add you as a reviewer on your behalf.
 
-`:submit draft` remains GitHub-only. Run it against a GitLab MR and tuicr returns
-an unsupported-operation error rather than submitting.
+`:submit draft` uses GitLab draft notes, the closest primitive to a GitHub pending
+review: your inline and review-level comments are stored but not published. Publish
+them yourself from GitLab's own "Submit review" control on the merge request.
 
 ## Self-hosted GitLab
 

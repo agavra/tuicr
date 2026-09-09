@@ -26,9 +26,12 @@ theme_light = "gruvbox-light"
 
 diff_view = "side-by-side"
 ignore_whitespace = false
+commit_order = "descending"
+initial_commit_selection = "all"
 show_file_list = true
 show_pr_checks = false
 show_pr_comments = true
+show_commits = true
 show_reviewed = true
 mouse = true
 leader = ","
@@ -68,6 +71,7 @@ pr_metadata = true
 comments_header = "## Local tuicr Comments"
 remote_comments_header = "## Existing GitHub Comments"
 legend = true
+session_header = true
 ```
 
 ## Options
@@ -233,7 +237,7 @@ comment_types = [
 
 ## Forge
 
-Settings under the `[forge]` section control how tuicr submits reviews to GitHub, GitLab, and Bitbucket.
+Settings under the `[forge]` section control how tuicr submits reviews to GitHub, GitLab, Gitea, Bitbucket, and Azure DevOps.
 
 ```toml
 [forge]
@@ -260,7 +264,7 @@ Magic number should be a named constant
 This module could use a doc comment
 ```
 
-This applies to inline line comments, file-level comments, and review-level comments pushed via `:submit`. The prefix works the same way on GitLab MR and Bitbucket PR submissions.
+This applies to inline line comments, file-level comments, and review-level comments pushed via `:submit`. The prefix works the same way on GitLab, Gitea, Bitbucket, and Azure DevOps submissions.
 
 ## Export
 

@@ -336,6 +336,7 @@ When adding user-facing features, update the relevant documentation:
 | `README.md`            | Keybindings, commands (`:*`), CLI flags, features list, installation methods, agent integration setup, forge limitations |
 | `src/ui/help_popup.rs` | Keybindings or commands (update the `help_text` vector)                                                                  |
 | `src/ui/status_bar.rs` | Keybindings worth advertising in the per-pane hint line                                                                  |
+| `docs/CLI.md`          | Any clap flag, subcommand, env var, stderr marker, or exit code: add a row to the matching table                          |
 | `docs/KEYBINDINGS.md`  | Any keybinding or `:` command: add a row to the pane's key table and the `:` command table, plus prose for new behavior  |
 | `AGENTS.md`            | Module structure, repo-managed agent integrations, key types, data flow, dependencies, forge invariants and gotchas      |
 | `docs/CONFIG.md`       | Any `config.toml` key: add a row to the Options table and a line to the Full example block                               |

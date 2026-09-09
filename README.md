@@ -89,10 +89,13 @@ tuicr update                # Update the active installation
 tuicr update 0.18.0         # Install a known-good version
 ```
 
+Every flag, environment variable, and exit code in [docs/CLI.md](docs/CLI.md).
+
 Inside tuicr, navigate with `j`/`k`, press `c` to comment, then `y` to copy the review or
-`:submit` to push it to GitHub, GitLab, or Bitbucket. When reopening a pull request you've reviewed
-before, tuicr preselects commits newer than your latest submitted review when that metadata is
-available; commits already covered by that review are marked with `✓` in the inline selector.
+`:submit` to push it to GitHub, GitLab, Gitea, Bitbucket, or Azure DevOps. When reopening a pull
+request you've reviewed before, tuicr preselects commits newer than your latest submitted review
+when that metadata is available; commits already covered by that review are marked with `✓` in
+the inline selector.
 (Bitbucket does not record which commit an approval covered, so that preselection does not apply
 there.)
 Use `:summary` during a review to show every pending local-draft comment. The summary replaces the
@@ -139,10 +142,11 @@ Requires `gh` authenticated to the repo.
 
 ### To GitLab
 
-`:submit` offers Comment, Approve, or Request changes on a GitLab MR. Inline comments post as
-discussion notes. Review-level comments become the summary. Requires `glab` authenticated to the
-host. Request changes needs your account to be an assigned reviewer. Only Draft is GitHub-only
-here. See [docs/GITLAB.md](docs/GITLAB.md) for setup, self-hosted instances, and troubleshooting.
+`:submit` offers Comment, Approve, Request changes, or Draft on a GitLab MR. Inline comments post
+as discussion notes, or as draft notes for Draft. Review-level comments become the summary.
+Requires `glab` authenticated to the host. Request changes needs your account to be an assigned
+reviewer. See [docs/GITLAB.md](docs/GITLAB.md) for setup, self-hosted instances, and
+troubleshooting.
 
 ### To Gitea
 
@@ -300,7 +304,7 @@ A first-session cheatsheet. Press `?` inside tuicr for the full reference.
 | `e` | Open focused file in `$EDITOR` |
 | `y` | Copy review to clipboard |
 | `:edit` | Open focused file in `$EDITOR` |
-| `:submit` | Push review to GitHub, GitLab, Gitea, or Bitbucket |
+| `:submit` | Push review to GitHub, GitLab, Gitea, Bitbucket, or Azure DevOps |
 | `Tab` in `:` prompt | Complete or cycle commands |
 | `?` | Toggle full help |
 
