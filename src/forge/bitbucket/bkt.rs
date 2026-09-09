@@ -22,9 +22,10 @@ use crate::forge::local_merge_base;
 use crate::forge::remote_comments::{RemoteReviewSummary, RemoteReviewThread};
 use crate::forge::submit::{GhSide, SubmitEvent};
 use crate::forge::traits::{
-    CreateReviewRequest, ForgeBackend, ForgeFileLinesRequest, ForgeRepository,
-    GhCreateReviewResponse, PagedPullRequests, PullRequestCommit, PullRequestDetails,
-    PullRequestListQuery, PullRequestListScope, PullRequestReviewMetadata, PullRequestTarget,
+    CreateReviewRequest, ForgeBackend, ForgeFileContentRequest, ForgeFileLinesRequest,
+    ForgeRepository, GhCreateReviewResponse, PagedPullRequests, PullRequestCommit,
+    PullRequestDetails, PullRequestListQuery, PullRequestListScope, PullRequestReviewMetadata,
+    PullRequestTarget,
 };
 use crate::model::{DiffLine, FilePatch};
 use crate::process::{CommandOutputError, CommandOutputErrorKind, run_command_output};
@@ -282,14 +283,14 @@ where
         self.collect_pages(path)
     }
 
-    fn fetch_file_via_api(&self, request: &ForgeFileLinesRequest) -> Result<String> {
+    fn fetch_file_via_api(&self, request: &ForgeFileContentRequest) -> Result<String> {
         let path_str = request.path.to_string_lossy().replace('\\', "/");
         // `bkt api` percent-encodes nothing for us, but the `src` endpoint
         // takes the path as literal path segments, so it needs no encoding.
         let path = format!(
             "{}/src/{}/{}",
             Self::repo_path(&request.repository),
-            request.sha(),
+            request.sha,
             path_str,
         );
         self.run_api(path, &[])
@@ -539,34 +540,39 @@ where
         Ok(review_summaries(&self.list_comments(pr)?))
     }
 
+    fn fetch_file_content(&self, request: ForgeFileContentRequest) -> Result<String> {
+        match self
+            .local_checkout
+            .as_deref()
+            .and_then(|root| read_blob_with_repo(root, &request.sha, request.path.as_path()))
+        {
+            Some(content) => Ok(content),
+            None => self.fetch_file_via_api(&request),
+        }
+    }
+
     fn fetch_file_lines(&self, request: ForgeFileLinesRequest) -> Result<Vec<DiffLine>> {
         if request.start_line == 0 || request.start_line > request.end_line {
             return Ok(Vec::new());
         }
-        let content = match self
-            .local_checkout
-            .as_deref()
-            .and_then(|root| read_blob_with_repo(root, request.sha(), request.path.as_path()))
-        {
-            Some(content) => content,
-            None => self.fetch_file_via_api(&request)?,
-        };
-        Ok(slice_context_lines(
-            &content,
-            request.start_line,
-            request.end_line,
-        ))
+        let start_line = request.start_line;
+        let end_line = request.end_line;
+        let sha = request.sha().to_string();
+        let content = self.fetch_file_content(ForgeFileContentRequest {
+            repository: request.repository,
+            sha,
+            path: request.path,
+        })?;
+        Ok(slice_context_lines(&content, start_line, end_line))
     }
 
     fn file_line_count(&self, request: ForgeFileLinesRequest) -> Result<u32> {
-        let content = match self
-            .local_checkout
-            .as_deref()
-            .and_then(|root| read_blob_with_repo(root, request.sha(), request.path.as_path()))
-        {
-            Some(content) => content,
-            None => self.fetch_file_via_api(&request)?,
-        };
+        let sha = request.sha().to_string();
+        let content = self.fetch_file_content(ForgeFileContentRequest {
+            repository: request.repository,
+            sha,
+            path: request.path,
+        })?;
         Ok(content.lines().count() as u32)
     }
 
@@ -1024,6 +1030,23 @@ mod tests {
     }
 
     // ---- command construction -------------------------------------------
+
+    #[test]
+    fn fetch_file_content_uses_exact_revision() {
+        let backend = backend(vec!["one\ntwo\n"]);
+        let content = backend
+            .fetch_file_content(ForgeFileContentRequest {
+                repository: repo(),
+                sha: "exact-revision".to_string(),
+                path: PathBuf::from("src/lib.rs"),
+            })
+            .unwrap();
+        assert_eq!(content, "one\ntwo\n");
+        assert_eq!(
+            backend.runner.calls.borrow()[0][1],
+            "/2.0/repositories/example-workspace/repo/src/exact-revision/src/lib.rs"
+        );
+    }
 
     #[test]
     fn should_always_pass_workspace_and_repo_to_first_class_commands() {

@@ -768,6 +768,10 @@ impl App {
                 &opened.commits,
                 &opened.review_metadata,
             );
+            // Cached cumulative diffs must retain the base resolved by this reload.
+            if let DiffSource::PullRequest(pr) = &mut self.diff_source {
+                pr.base_sha = opened.details.base_sha.clone();
+            }
             self.diff_files = opened.diff_files;
             self.install_pr_diff_endpoints(
                 opened.details.base_sha.clone(),
@@ -875,6 +879,10 @@ impl App {
                 &opened.commits,
                 &opened.review_metadata,
             );
+            // Cached cumulative diffs must retain the base resolved by this reload.
+            if let DiffSource::PullRequest(pr) = &mut self.diff_source {
+                pr.base_sha = opened.details.base_sha.clone();
+            }
             self.diff_files = opened.diff_files;
             self.install_pr_diff_endpoints(
                 opened.details.base_sha.clone(),

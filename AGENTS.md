@@ -250,7 +250,7 @@ Forge selection is host-driven: `parse_any_remote_url` tries Bitbucket (`bitbuck
   GitHub uses review metadata; GitLab combines `/user`, MR diff versions, approvals, and discussions; Bitbucket reads the PR's `participants` and reports account UUIDs (Cloud returns no usernames), with no commit OIDs since it does not record which commit an approval covered.
 - `get_pull_request_commit_range_diff` — structured cumulative changes for a contiguous subrange (`start_sha` is the parent of the first selected commit; `end_sha` is the last).
 - `list_review_threads` — existing forge comments + resolved/outdated state.
-- `fetch_file_content` — complete remote file contents at an exact SHA for lazy selected-file syntax hydration.
+- `fetch_file_content` — complete remote file contents at an exact SHA for lazy selected-file syntax hydration. All built-in forge backends implement this and share their content reader with context expansion.
 - `resolve_diff_base_sha` — optional refinement of `base_sha` to the merge base the displayed patch is actually taken from. Defaults to `None` ("already exact"); see gotcha 16.
 - `fetch_file_lines` — remote context expansion in the diff view.
 - `create_review` — POST a review with inline comments via `CreateReviewRequest`.
@@ -329,7 +329,7 @@ These are non-obvious things the implementation chain hit. Worth preserving for 
 
 20. **Gitea reports a mode-only change as file status `unchanged`.** It still emits a `diff --git` block, so the file must stay in the metadata list or every later file pairs against the wrong patch.
 
-21. **PR syntax hydration is revision- and generation-scoped.** The visible patch keeps provisional hunk highlighting while the selected file's complete old/new contents load. Background threads fetch strings only; Syntect runs on the main thread. Validate repository, PR, session head, active old/new endpoint SHAs, generation, paths, and `content_hash` before applying. Cumulative diffs use base/head; strict subsets use the installed range's start/end SHAs. Never derive hydration endpoints from a selection whose range reload is still in flight.
+21. **PR syntax hydration is revision- and generation-scoped.** The visible patch keeps provisional hunk highlighting while the selected file's complete old/new contents load. Background threads fetch strings only; Syntect runs on the main thread. Validate repository, PR, session head, active old/new endpoint SHAs, generation, paths, and `content_hash` before applying. Cumulative diffs use base/head; strict subsets use the installed range's start/end SHAs. Never derive hydration endpoints from a selection whose range reload is still in flight. Same-head reloads must refresh `diff_source.pr.base_sha` too: restoring the cached cumulative diff derives its endpoints from that field.
 
 22. **Hydrated spans must match the patch line byte-for-byte before they're applied.** `HighlightedSpans` carry their own text and the renderers draw *that* text, not `DiffLine::content` — so applying spans derived from the wrong revision would display wrong source code, not merely wrong colors. `apply_full_file_spans`'s `require_exact_content` flag is the guard; PR hydration passes `true`. It is not redundant with the identity checks in note 21: those establish *which* revisions are current, this one catches the case where a current revision still doesn't match the patch. Regression test: `mismatched_remote_content_keeps_provisional_diff_text`.
 
