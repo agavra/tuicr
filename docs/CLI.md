@@ -54,8 +54,8 @@ take the last one given and boolean flags stay on once set, so
 | `--version` | `-V` | | Print the version and exit |
 | `--help` | `-h` | | Print help and exit |
 
-`--repo-url` accepts GitHub, GitLab, Gitea, Bitbucket, and Azure DevOps repos in
-HTTPS, SCP-style SSH, or `ssh://` form — for example
+`--repo-url` accepts GitHub, GitLab, Gitea, Bitbucket, Azure DevOps, and Gerrit repos in HTTPS,
+SCP-style SSH, or `ssh://` form — for example
 `https://github.com/owner/repo`, `git@gitlab.com:owner/repo`, or
 `https://dev.azure.com/org/project/_git/repo`. It is what to reach for when the
 checkout's `origin` remote does not point at the forge repo you want to review
@@ -99,6 +99,8 @@ out to.
 | `TUICR_PROFILE` | Write a startup/render profile log. See below |
 | `TUICR_PROFILE_FILE` | Path for that log, overriding the default location |
 | `AZURE_DEVOPS_EXT_PAT`, `AZURE_DEVOPS_PAT` | Azure DevOps PAT. Checked in that order; without one tuicr falls back to `az rest`. See [AZURE.md](AZURE.md) |
+| `GERRIT_URL` | Gerrit server root; also identifies Gerrit remotes on otherwise neutral hostnames. See [GERRIT.md](GERRIT.md) |
+| `GERRIT_USERNAME`, `GERRIT_PASSWORD` | Gerrit REST API credentials. `GERRIT_PASSWORD` must be an HTTP password, not the account password |
 | `TUICR_GLAB_DEBUG` | Log `glab` invocations for debugging. See [GITLAB.md](GITLAB.md) |
 | `TMUX`, `ZELLIJ`, `SSH_TTY` | Detected to choose a clipboard path — OSC 52 over SSH, `tmux load-buffer` inside tmux |
 | `XDG_SESSION_TYPE` | Picks `wl-copy` on Wayland or `xclip` on X11 |
