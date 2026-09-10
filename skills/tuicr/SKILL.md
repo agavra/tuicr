@@ -162,6 +162,7 @@ The command emits JSON. Each comment includes fields like:
 - `end_line`
 - `side`
 - `comment_type`
+- `author`
 - `lifecycle_state`
 - `content`
 
@@ -240,9 +241,9 @@ tuicr review add --session <slug> --username "Codex" --input \
 Then verify. A line outside the diff stores, prints back, and exits 0, but
 never renders — invisible to the user, successful-looking to you. Re-read
 `tuicr review comments` and check each `start_line` exists on the side you gave
-(`new` for added or unchanged, `old` for removed). Keep the returned `id`s:
-`review comments` reports no author, so they are the only way to tell your
-comments from the user's.
+(`new` for added or unchanged, `old` for removed). Check `author` to distinguish
+your comments from the user's, and keep the returned `id`s to identify the exact
+comments in later reads.
 
 ## Legacy Export Output
 
