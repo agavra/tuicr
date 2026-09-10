@@ -92,9 +92,9 @@ impl ContextProvider for VcsContextProvider<'_> {
 
 /// Adapter over a `ForgeBackend` for PR review mode.
 ///
-/// Built from the PR's `PrSessionKey` (carries head SHA and repository) and
-/// the captured `base_sha`. Each `fetch_context_lines` call constructs the
-/// appropriate `ForgeFileLinesRequest` and delegates to the backend.
+/// Built from the PR repository plus the old/new revisions backing the
+/// currently installed cumulative or commit-range diff. Each context call
+/// constructs the appropriate `ForgeFileLinesRequest` and delegates to the backend.
 pub struct ForgeContextProvider<'a> {
     pub forge: &'a dyn ForgeBackend,
     pub repository: ForgeRepository,

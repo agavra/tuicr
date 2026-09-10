@@ -18,12 +18,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Result, TuicrError};
+use crate::forge::local_merge_base;
 use crate::forge::remote_comments::{RemoteReviewSummary, RemoteReviewThread};
 use crate::forge::submit::{GhSide, SubmitEvent};
 use crate::forge::traits::{
-    CreateReviewRequest, ForgeBackend, ForgeFileLinesRequest, ForgeRepository,
-    GhCreateReviewResponse, PagedPullRequests, PullRequestCommit, PullRequestDetails,
-    PullRequestListQuery, PullRequestListScope, PullRequestReviewMetadata, PullRequestTarget,
+    CreateReviewRequest, ForgeBackend, ForgeFileContentRequest, ForgeFileLinesRequest,
+    ForgeRepository, GhCreateReviewResponse, PagedPullRequests, PullRequestCommit,
+    PullRequestDetails, PullRequestListQuery, PullRequestListScope, PullRequestReviewMetadata,
+    PullRequestTarget,
 };
 use crate::model::{DiffLine, FilePatch};
 use crate::process::{CommandOutputError, CommandOutputErrorKind, run_command_output};
@@ -281,14 +283,14 @@ where
         self.collect_pages(path)
     }
 
-    fn fetch_file_via_api(&self, request: &ForgeFileLinesRequest) -> Result<String> {
+    fn fetch_file_via_api(&self, request: &ForgeFileContentRequest) -> Result<String> {
         let path_str = request.path.to_string_lossy().replace('\\', "/");
         // `bkt api` percent-encodes nothing for us, but the `src` endpoint
         // takes the path as literal path segments, so it needs no encoding.
         let path = format!(
             "{}/src/{}/{}",
             Self::repo_path(&request.repository),
-            request.sha(),
+            request.sha,
             path_str,
         );
         self.run_api(path, &[])
@@ -430,6 +432,30 @@ where
         pair_metadata_with_patch(metadata, patch.as_bytes())
     }
 
+    fn resolve_diff_base_sha(&self, pr: &PullRequestDetails) -> Option<String> {
+        // `base_sha` is `destination.commit.hash` — where the destination
+        // branch stood, which drifts ahead of the branch point as that branch
+        // moves. `bkt pr diff` stays three-dot, so the old side lives at the
+        // merge base.
+        if let Some(root) = self.local_checkout.as_deref()
+            && let Some(sha) = local_merge_base(root, &pr.base_sha, &pr.head_sha)
+        {
+            return Some(sha);
+        }
+        // `merge-base/{revspec}` takes a two-commit revspec and returns a
+        // commit object. Merge base is symmetric, so unlike this backend's
+        // `diff` spec the argument order carries no meaning here.
+        let path = format!(
+            "{}/merge-base/{}..{}",
+            Self::repo_path(&pr.repository),
+            pr.base_sha,
+            pr.head_sha,
+        );
+        let output = self.run_api(path, &[]).ok()?;
+        let commit: BbCommit = serde_json::from_str(&output).ok()?;
+        (!commit.hash.is_empty()).then_some(commit.hash)
+    }
+
     fn local_checkout_path(&self) -> Option<PathBuf> {
         self.local_checkout.clone()
     }
@@ -514,34 +540,39 @@ where
         Ok(review_summaries(&self.list_comments(pr)?))
     }
 
+    fn fetch_file_content(&self, request: ForgeFileContentRequest) -> Result<String> {
+        match self
+            .local_checkout
+            .as_deref()
+            .and_then(|root| read_blob_with_repo(root, &request.sha, request.path.as_path()))
+        {
+            Some(content) => Ok(content),
+            None => self.fetch_file_via_api(&request),
+        }
+    }
+
     fn fetch_file_lines(&self, request: ForgeFileLinesRequest) -> Result<Vec<DiffLine>> {
         if request.start_line == 0 || request.start_line > request.end_line {
             return Ok(Vec::new());
         }
-        let content = match self
-            .local_checkout
-            .as_deref()
-            .and_then(|root| read_blob_with_repo(root, request.sha(), request.path.as_path()))
-        {
-            Some(content) => content,
-            None => self.fetch_file_via_api(&request)?,
-        };
-        Ok(slice_context_lines(
-            &content,
-            request.start_line,
-            request.end_line,
-        ))
+        let start_line = request.start_line;
+        let end_line = request.end_line;
+        let sha = request.sha().to_string();
+        let content = self.fetch_file_content(ForgeFileContentRequest {
+            repository: request.repository,
+            sha,
+            path: request.path,
+        })?;
+        Ok(slice_context_lines(&content, start_line, end_line))
     }
 
     fn file_line_count(&self, request: ForgeFileLinesRequest) -> Result<u32> {
-        let content = match self
-            .local_checkout
-            .as_deref()
-            .and_then(|root| read_blob_with_repo(root, request.sha(), request.path.as_path()))
-        {
-            Some(content) => content,
-            None => self.fetch_file_via_api(&request)?,
-        };
+        let sha = request.sha().to_string();
+        let content = self.fetch_file_content(ForgeFileContentRequest {
+            repository: request.repository,
+            sha,
+            path: request.path,
+        })?;
         Ok(content.lines().count() as u32)
     }
 
@@ -999,6 +1030,23 @@ mod tests {
     }
 
     // ---- command construction -------------------------------------------
+
+    #[test]
+    fn fetch_file_content_uses_exact_revision() {
+        let backend = backend(vec!["one\ntwo\n"]);
+        let content = backend
+            .fetch_file_content(ForgeFileContentRequest {
+                repository: repo(),
+                sha: "exact-revision".to_string(),
+                path: PathBuf::from("src/lib.rs"),
+            })
+            .unwrap();
+        assert_eq!(content, "one\ntwo\n");
+        assert_eq!(
+            backend.runner.calls.borrow()[0][1],
+            "/2.0/repositories/example-workspace/repo/src/exact-revision/src/lib.rs"
+        );
+    }
 
     #[test]
     fn should_always_pass_workspace_and_repo_to_first_class_commands() {
@@ -1843,6 +1891,43 @@ mod tests {
                 println!("  #{} {} [{}]", row.number, row.title, row.state);
             }
         }
+    }
+
+    #[test]
+    fn resolve_diff_base_sha_uses_the_merge_base_endpoint_without_a_local_checkout() {
+        // given — the destination branch tip the PR reports, plus a merge
+        // base that differs because that branch has moved since the fork.
+        let backend = backend(vec![
+            r#"{"hash":"cccccccccccccccccccccccccccccccccccccccc","message":"fork point"}"#,
+        ]);
+        // when
+        let resolved = backend.resolve_diff_base_sha(&details());
+        // then
+        assert_eq!(resolved.as_deref(), Some("c".repeat(40).as_str()));
+        // and — it hit merge-base with a two-commit revspec, not `diff`.
+        let calls = backend.runner.calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0][0], "api");
+        assert_eq!(
+            calls[0][1],
+            format!(
+                "/2.0/repositories/example-workspace/repo/merge-base/{}..{}",
+                "b".repeat(40),
+                "a".repeat(40)
+            )
+        );
+    }
+
+    #[test]
+    fn resolve_diff_base_sha_is_none_when_the_merge_base_call_fails() {
+        let backend = BitbucketBktBackend::with_runner(
+            Some(repo()),
+            FailingRunner {
+                stderr: "network down".to_string(),
+            },
+        );
+        // Best-effort: callers keep the unrefined base_sha.
+        assert_eq!(backend.resolve_diff_base_sha(&details()), None);
     }
 
     #[test]

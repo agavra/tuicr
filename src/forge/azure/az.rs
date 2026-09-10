@@ -23,12 +23,13 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use serde_json::json;
 
 use crate::error::{Result, TuicrError};
+use crate::forge::local_merge_base;
 use crate::forge::remote_comments::RemoteReviewThread;
 use crate::forge::submit::{GhSide, SubmitEvent};
 use crate::forge::traits::{
-    CreateReviewRequest, ForgeBackend, ForgeFileLinesRequest, ForgeRepository,
-    GhCreateReviewResponse, PagedPullRequests, PullRequestCommit, PullRequestDetails,
-    PullRequestListQuery, PullRequestListScope, PullRequestTarget,
+    CreateReviewRequest, ForgeBackend, ForgeFileContentRequest, ForgeFileLinesRequest,
+    ForgeRepository, GhCreateReviewResponse, PagedPullRequests, PullRequestCommit,
+    PullRequestDetails, PullRequestListQuery, PullRequestListScope, PullRequestTarget,
 };
 use crate::model::{DiffLine, FilePatch};
 use crate::process::{CommandOutputError, CommandOutputErrorKind, run_command_output};
@@ -434,7 +435,7 @@ impl AzureDevOpsBackend {
             .filter(|id| !id.is_empty()))
     }
 
-    fn fetch_file_via_api(&self, request: &ForgeFileLinesRequest) -> Result<String> {
+    fn fetch_file_via_api(&self, request: &ForgeFileContentRequest) -> Result<String> {
         let base = git_api_base(&request.repository);
         let mut path = request.path.to_string_lossy().replace('\\', "/");
         if !path.starts_with('/') {
@@ -443,21 +444,9 @@ impl AzureDevOpsBackend {
         let url = format!(
             "{base}/items?path={}&versionDescriptor.version={}&versionDescriptor.versionType=commit&$format=text",
             encode_query_value(&path),
-            request.sha(),
+            request.sha,
         );
         self.get(&request.repository, url)
-    }
-
-    /// File content at the request's revision: local blob first, REST fallback.
-    fn file_content(&self, request: &ForgeFileLinesRequest) -> Result<String> {
-        let local = self
-            .local_checkout
-            .as_deref()
-            .and_then(|root| read_blob_with_repo(root, request.sha(), request.path.as_path()));
-        match local {
-            Some(content) => Ok(content),
-            None => self.fetch_file_via_api(request),
-        }
     }
 }
 
@@ -537,24 +526,52 @@ impl ForgeBackend for AzureDevOpsBackend {
         })
     }
 
+    fn resolve_diff_base_sha(&self, pr: &PullRequestDetails) -> Option<String> {
+        // `base_sha` is `lastMergeTargetCommit` — the target branch tip, which
+        // drifts ahead of the branch point as the target moves. The diff above
+        // is three-dot, so the old side lives at the merge base. Azure already
+        // requires a local checkout for diffing, so this needs no API call.
+        let root = self.local_checkout.as_deref()?;
+        local_merge_base(root, &pr.base_sha, &pr.head_sha)
+    }
+
     fn local_checkout_path(&self) -> Option<PathBuf> {
         self.local_checkout.clone()
+    }
+
+    fn fetch_file_content(&self, request: ForgeFileContentRequest) -> Result<String> {
+        let local = self
+            .local_checkout
+            .as_deref()
+            .and_then(|root| read_blob_with_repo(root, &request.sha, request.path.as_path()));
+        match local {
+            Some(content) => Ok(content),
+            None => self.fetch_file_via_api(&request),
+        }
     }
 
     fn fetch_file_lines(&self, request: ForgeFileLinesRequest) -> Result<Vec<DiffLine>> {
         if request.start_line == 0 || request.start_line > request.end_line {
             return Ok(Vec::new());
         }
-        let content = self.file_content(&request)?;
-        Ok(slice_context_lines(
-            &content,
-            request.start_line,
-            request.end_line,
-        ))
+        let start_line = request.start_line;
+        let end_line = request.end_line;
+        let sha = request.sha().to_string();
+        let content = self.fetch_file_content(ForgeFileContentRequest {
+            repository: request.repository,
+            sha,
+            path: request.path,
+        })?;
+        Ok(slice_context_lines(&content, start_line, end_line))
     }
 
     fn file_line_count(&self, request: ForgeFileLinesRequest) -> Result<u32> {
-        let content = self.file_content(&request)?;
+        let sha = request.sha().to_string();
+        let content = self.fetch_file_content(ForgeFileContentRequest {
+            repository: request.repository,
+            sha,
+            path: request.path,
+        })?;
         Ok(content.lines().count() as u32)
     }
 
@@ -954,6 +971,29 @@ mod tests {
     // ---- URL parsing ----
 
     #[test]
+    fn fetch_file_content_uses_exact_revision() {
+        let shared = SharedHttp::new(vec!["one\ntwo\n".to_string()]);
+        let backend =
+            AzureDevOpsBackend::with_transport(Some(azure_repo()), Box::new(shared.clone()));
+        let content = backend
+            .fetch_file_content(ForgeFileContentRequest {
+                repository: azure_repo(),
+                sha: "exact-revision".to_string(),
+                path: PathBuf::from("src/lib.rs"),
+            })
+            .unwrap();
+        assert_eq!(content, "one\ntwo\n");
+        let calls = shared.0.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert!(
+            calls[0]
+                .1
+                .contains("versionDescriptor.version=exact-revision")
+        );
+        assert!(calls[0].1.contains("versionDescriptor.versionType=commit"));
+    }
+
+    #[test]
     fn parses_https_dev_azure_remote() {
         let repo =
             parse_azure_remote_url("https://dev.azure.com/myorg/myproject/_git/myrepo").unwrap();
@@ -1219,6 +1259,71 @@ mod tests {
         let calls = shared.0.calls.lock().unwrap();
         assert_eq!(calls[0].0, "GET");
         assert!(calls[0].1.contains("/pullRequests/42?api-version="));
+    }
+
+    #[test]
+    fn resolve_diff_base_sha_returns_local_merge_base_not_the_target_branch_tip() {
+        use std::ffi::OsStr;
+        fn git(root: &std::path::Path, args: &[&str]) -> String {
+            crate::process::run_command_output(
+                "git",
+                Some(root),
+                args.iter().map(|a| OsStr::new(*a)),
+            )
+            .unwrap_or_else(|e| panic!("git {args:?} failed: {e:?}"))
+            .trim()
+            .to_string()
+        }
+        fn commit(root: &std::path::Path, name: &str) -> String {
+            std::fs::write(root.join(name), name).unwrap();
+            git(root, &["add", "."]);
+            git(root, &["commit", "-m", name, "--no-gpg-sign"]);
+            git(root, &["rev-parse", "HEAD"])
+        }
+
+        // given — the PR target branch has advanced past the branch point,
+        // which is what makes lastMergeTargetCommit the wrong old-side rev.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        git(root, &["init", "--quiet"]);
+        git(root, &["config", "user.email", "test@example.com"]);
+        git(root, &["config", "user.name", "Test"]);
+        git(root, &["config", "commit.gpgsign", "false"]);
+        let fork_point = commit(root, "a");
+        let pr_head = commit(root, "b");
+        git(root, &["checkout", "--quiet", &fork_point]);
+        let target_tip = commit(root, "c");
+        assert_ne!(target_tip, fork_point);
+
+        let shared = SharedHttp::new(vec![
+            r#"{"pullRequestId":42,"title":"t","status":"active","sourceRefName":"refs/heads/feature","targetRefName":"refs/heads/main"}"#.to_string(),
+        ]);
+        let backend = AzureDevOpsBackend::with_transport(Some(azure_repo()), Box::new(shared))
+            .with_local_checkout(Some(root.to_path_buf()));
+        let mut details = backend
+            .get_pull_request(PullRequestTarget::number(42, "42"))
+            .unwrap();
+        details.base_sha = target_tip;
+        details.head_sha = pr_head;
+
+        // when / then — the three-dot base, resolved without an API call.
+        assert_eq!(
+            backend.resolve_diff_base_sha(&details).as_deref(),
+            Some(fork_point.as_str())
+        );
+    }
+
+    #[test]
+    fn resolve_diff_base_sha_is_none_without_a_local_checkout() {
+        let shared = SharedHttp::new(vec![
+            r#"{"pullRequestId":42,"title":"t","status":"active","lastMergeSourceCommit":{"commitId":"head111"},"lastMergeTargetCommit":{"commitId":"base000"}}"#.to_string(),
+        ]);
+        let backend = AzureDevOpsBackend::with_transport(Some(azure_repo()), Box::new(shared));
+        let details = backend
+            .get_pull_request(PullRequestTarget::number(42, "42"))
+            .unwrap();
+        // Best-effort: no checkout means base_sha stays as reported.
+        assert_eq!(backend.resolve_diff_base_sha(&details), None);
     }
 
     #[test]
