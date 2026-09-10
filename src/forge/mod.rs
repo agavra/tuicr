@@ -13,6 +13,7 @@ pub mod gerrit;
 pub mod gitea;
 pub mod github;
 pub mod gitlab;
+pub mod local_git;
 pub mod pr_open;
 pub mod remote_comments;
 pub mod selector;

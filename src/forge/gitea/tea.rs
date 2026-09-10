@@ -27,6 +27,7 @@ use serde::de::DeserializeOwned;
 use serde_json::json;
 
 use crate::error::{Result, TuicrError};
+use crate::forge::local_git::read_blob;
 use crate::forge::remote_comments::{
     RemoteCommentSide, RemoteReviewComment, RemoteReviewState, RemoteReviewSummary,
     RemoteReviewThread,
@@ -628,18 +629,6 @@ where
         Ok(self.api(repo, "GET", &endpoint, None)?.body)
     }
 
-    /// File content at `request`'s revision, preferring a local clone.
-    fn file_content(&self, request: &ForgeFileLinesRequest) -> Result<String> {
-        if let Some(content) = self
-            .local_checkout
-            .as_deref()
-            .and_then(|root| read_blob_with_repo(root, request.sha(), request.path.as_path()))
-        {
-            return Ok(content);
-        }
-        self.raw_file(&request.repository, request.sha(), request.path.as_path())
-    }
-
     fn review_comments(
         &self,
         pr: &PullRequestDetails,
@@ -1000,16 +989,27 @@ where
         if request.start_line == 0 || request.start_line > request.end_line {
             return Ok(Vec::new());
         }
-        let content = self.file_content(&request)?;
-        Ok(slice_context_lines(
-            &content,
-            request.start_line,
-            request.end_line,
-        ))
+        let (start_line, end_line) = (request.start_line, request.end_line);
+        let content = self.fetch_file_content(request)?;
+        Ok(slice_context_lines(&content, start_line, end_line))
+    }
+
+    /// Local blob when the checkout has the PR's SHA, the raw endpoint
+    /// otherwise. The PR's exact SHAs may or may not be present locally; we
+    /// silently fall back.
+    fn fetch_file_content(&self, request: ForgeFileLinesRequest) -> Result<String> {
+        match self
+            .local_checkout
+            .as_deref()
+            .and_then(|root| read_blob(root, request.sha(), request.path.as_path()))
+        {
+            Some(content) => Ok(content),
+            None => self.raw_file(&request.repository, request.sha(), request.path.as_path()),
+        }
     }
 
     fn file_line_count(&self, request: ForgeFileLinesRequest) -> Result<u32> {
-        let content = self.file_content(&request)?;
+        let content = self.fetch_file_content(request)?;
         Ok(content.lines().count() as u32)
     }
 
@@ -1471,26 +1471,6 @@ fn parse_diff_git_line(line: &str) -> Option<(String, String)> {
 }
 
 // ----- Local checkout helpers -----
-
-/// Read a blob out of a local clone. `None` for anything that is not a clean
-/// hit, so callers fall back to the API.
-fn read_blob_with_repo(repo_root: &Path, sha: &str, path: &Path) -> Option<String> {
-    let spec = format!("{}:{}", sha, path.to_string_lossy());
-    run_command_output(
-        "git",
-        Some(repo_root),
-        ["cat-file", "-e", spec.as_str()]
-            .iter()
-            .map(|s| OsStr::new(*s)),
-    )
-    .ok()?;
-    run_command_output(
-        "git",
-        Some(repo_root),
-        ["show", spec.as_str()].iter().map(|s| OsStr::new(*s)),
-    )
-    .ok()
-}
 
 /// `Some(diff)` when both SHAs are present locally.
 fn local_range_diff(repo_root: &Path, start_sha: &str, end_sha: &str) -> Option<Vec<FilePatch>> {
