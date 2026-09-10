@@ -52,6 +52,24 @@ If the user's intent is ambiguous, ask which workflow they want.
    `[]` with exit 0 also means "not a repo root" — a subdirectory returns it
    too. Pass the root, then `--all`, before concluding nothing is open.
 
+   Remove one explicitly named session directly:
+
+   ```bash
+   tuicr review rm --session <slug-or-path>
+   ```
+
+   Preview bulk removal before applying it:
+
+   ```bash
+   tuicr review prune --empty --repo /path/to/repo --dry-run
+   tuicr review prune --older-than 30d --all --dry-run
+   ```
+
+   `rm` rejects an active session and `prune` skips active sessions unless
+   `--force` is passed. Never force-remove an active review unless the user
+   explicitly asked to discard it. After the user accepts a prune preview,
+   rerun the same command without `--dry-run`.
+
 3. Choose the session:
    - If the CLI clearly reports exactly one relevant active session with
      `"active": true`, attach to it.
