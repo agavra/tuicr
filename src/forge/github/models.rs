@@ -10,12 +10,16 @@ use crate::model::FileStatus;
 use crate::vcs::git::raw::FileMetadata;
 
 /// Machine-readable entry from the pull-request files REST endpoint.
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct GhPullRequestFile {
     pub filename: String,
     pub status: String,
     #[serde(default)]
     pub previous_filename: Option<String>,
+    /// Hunks for this file. GitHub omits it for binary files and for files
+    /// whose own diff is too large, so absent does not mean unchanged.
+    #[serde(default)]
+    pub patch: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -235,8 +239,114 @@ fn require_field(value: &str, field: &str) -> Result<()> {
     }
 }
 
+/// Rebuilds a unified diff from `pulls/<n>/files` rows.
+///
+/// `gh pr diff` refuses any pull request touching more than 300 files, but
+/// the files endpoint paginates and carries each file's hunks, so the diff
+/// can be reassembled client side. Emits exactly one `diff --git` block per
+/// row, including rows with no patch, because the caller pairs blocks with
+/// metadata positionally.
+pub(crate) fn synthesize_patch(files: &[GhPullRequestFile]) -> String {
+    let mut out = String::new();
+    for f in files {
+        let new_path = f.filename.as_str();
+        let old_path = match f.status.as_str() {
+            "renamed" => f.previous_filename.as_deref().unwrap_or(new_path),
+            _ => new_path,
+        };
+        out.push_str(&format!("diff --git a/{old_path} b/{new_path}\n"));
+        match f.status.as_str() {
+            "added" => {
+                out.push_str("--- /dev/null\n");
+                out.push_str(&format!("+++ b/{new_path}\n"));
+            }
+            "removed" => {
+                out.push_str(&format!("--- a/{old_path}\n"));
+                out.push_str("+++ /dev/null\n");
+            }
+            _ => {
+                out.push_str(&format!("--- a/{old_path}\n"));
+                out.push_str(&format!("+++ b/{new_path}\n"));
+            }
+        }
+        if let Some(patch) = f.patch.as_deref() {
+            out.push_str(patch);
+            if !patch.ends_with('\n') {
+                out.push('\n');
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
+
+    /// `gh pr diff` refuses a pull request over 300 files, so the diff is
+    /// rebuilt from the files endpoint. The caller pairs blocks with metadata
+    /// positionally, so every row must produce exactly one block, including
+    /// binary files, which carry no patch at all.
+    #[test]
+    fn should_emit_one_block_per_file_including_patchless_ones() {
+        let files = vec![
+            GhPullRequestFile {
+                filename: "a.rs".into(),
+                status: "modified".into(),
+                previous_filename: None,
+                patch: Some("@@ -1 +1 @@\n-a\n+b".into()),
+            },
+            GhPullRequestFile {
+                filename: "logo.png".into(),
+                status: "modified".into(),
+                previous_filename: None,
+                patch: None,
+            },
+        ];
+
+        let out = synthesize_patch(&files);
+
+        assert_eq!(out.matches("diff --git ").count(), 2);
+        assert!(out.contains("diff --git a/logo.png b/logo.png"));
+        assert!(out.ends_with('\n'));
+    }
+
+    #[test]
+    fn should_use_dev_null_for_added_and_removed_files() {
+        let files = vec![
+            GhPullRequestFile {
+                filename: "new.rs".into(),
+                status: "added".into(),
+                previous_filename: None,
+                patch: Some("@@ -0,0 +1 @@\n+x\n".into()),
+            },
+            GhPullRequestFile {
+                filename: "gone.rs".into(),
+                status: "removed".into(),
+                previous_filename: None,
+                patch: Some("@@ -1 +0,0 @@\n-y\n".into()),
+            },
+        ];
+
+        let out = synthesize_patch(&files);
+
+        assert!(out.contains("--- /dev/null\n+++ b/new.rs"));
+        assert!(out.contains("--- a/gone.rs\n+++ /dev/null"));
+    }
+
+    #[test]
+    fn should_name_both_sides_of_a_rename() {
+        let files = vec![GhPullRequestFile {
+            filename: "after.rs".into(),
+            status: "renamed".into(),
+            previous_filename: Some("before.rs".into()),
+            patch: None,
+        }];
+
+        let out = synthesize_patch(&files);
+
+        assert!(out.contains("diff --git a/before.rs b/after.rs"));
+        assert!(out.contains("--- a/before.rs\n+++ b/after.rs"));
+    }
     use super::*;
     use std::path::Path;
 
