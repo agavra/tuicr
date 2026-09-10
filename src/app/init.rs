@@ -432,6 +432,7 @@ impl App {
         path_filter: Option<&str>,
         repo_url_override: Option<ForgeRepository>,
     ) -> Result<Self> {
+        let persisted_session_snapshot = session.clone();
         // Ensure all diff files are registered in the session. Persisted PR
         // subsets hydrate through the full PR diff first; keep subset-specific
         // hunk keys alive until the selected diff is loaded.
@@ -459,8 +460,6 @@ impl App {
             .as_deref()
             .filter(|path| path.exists())
             .and_then(|path| SessionFileState::from_path(path).ok());
-        let persisted_session_snapshot = session.clone();
-
         let mut app = Self {
             theme,
             vcs,
