@@ -152,6 +152,7 @@ fn profile_unit_result(result: &Result<()>) -> String {
 pub enum FileTreeItem {
     Directory {
         path: String,
+        label: String,
         depth: usize,
         expanded: bool,
     },
@@ -1311,6 +1312,7 @@ pub struct App {
     pub pending_confirm: Option<ConfirmAction>,
     pub supports_keyboard_enhancement: bool,
     pub show_file_list: bool,
+    pub compact_folders: bool,
     /// `true` when the session was opened via `--all-files`. Drives the
     /// `PRISTINE · N files` chip in the status bar and prevents that chip
     /// from showing in the regular `--file <dir>` directory mode.

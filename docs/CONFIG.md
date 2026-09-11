@@ -29,6 +29,7 @@ ignore_whitespace = false
 commit_order = "descending"
 initial_commit_selection = "all"
 show_file_list = true
+compact_folders = false
 show_pr_checks = false
 show_pr_comments = true
 show_commits = true
@@ -87,6 +88,7 @@ session_header = true
 | `initial_commit_selection` | `all`        | Which commits are selected when a multi-commit review first opens: `all`, or `oldest` to start on just the oldest commit and walk forward with `(` / `)`.  |
 | `ignore_whitespace`        | `false`      | Ignore all whitespace in local Git, jj, and hg diffs. PR diffs are unchanged.                                                                              |
 | `show_file_list`           | `true`       | Whether the file list panel is visible on startup. Toggle with `<leader>e`.                                                                                |
+| `compact_folders` | `false` | Join single-child directory chains into one file-tree row. Restart tuicr after changing this setting. |
 | `show_pr_checks`           | `false`      | Whether PR CI checks are fetched and shown. Set to `true` to include GitHub check rollups.                                                           |
 | `show_pr_comments`         | `true`       | Whether PR conversation comments are fetched and shown. Set to `false` to skip PR comments.                                                         |
 | `show_commits`             | `true`       | Whether the inline commit selector pane is visible on startup for multi-commit reviews. Toggle with `<leader>s` or `:set commits!`.                        |
@@ -318,3 +320,16 @@ dist/
 *.lock
 !Cargo.lock
 ```
+
+## Compact folders
+
+Set `compact_folders = true` to reduce nesting in the file tree. For example,
+`app/src/main/kotlin/Editor.kt` appears as one `app/src/main/kotlin/` directory
+row with `Editor.kt` one level below it.
+
+A chain stops at a directory containing a review file directly or more than one
+child directory. Chains follow the active file filters, so hiding a sibling can
+join more directories. Opening or closing a joined row affects the whole chain;
+expand-all, collapse-all, and full-path search continue to work. Long labels use
+the existing horizontal scrolling. The default is `false`; there is no runtime
+toggle.
