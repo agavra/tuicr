@@ -1205,8 +1205,14 @@ pub fn handle_comment_action(app: &mut App, action: Action) {
 
 /// Handle actions in Confirm mode (Y/N prompts)
 pub fn handle_confirm_action(app: &mut App, action: Action) {
+    // Only the quit prompts end the session. A Sessions-tab delete answers
+    // in place and returns to the selector.
+    let quits = app.pending_confirm != Some(app::ConfirmAction::DeleteSession);
     match action {
         Action::ConfirmYes => {
+            if let Some(app::ConfirmAction::DeleteSession) = app.pending_confirm {
+                app.sessions_tab_delete_selected();
+            }
             if let Some(app::ConfirmAction::CopyAndQuit) = app.pending_confirm {
                 let slug = app.session_slug();
                 if app.output_to_stdout {
@@ -1236,11 +1242,11 @@ pub fn handle_confirm_action(app: &mut App, action: Action) {
                 }
             }
             app.exit_confirm_mode();
-            app.should_quit = true;
+            app.should_quit = quits;
         }
         Action::ConfirmNo => {
             app.exit_confirm_mode();
-            app.should_quit = true;
+            app.should_quit = quits;
         }
         Action::Quit => app.should_quit = true,
         _ => {}
@@ -1297,6 +1303,12 @@ fn handle_sessions_target_action(app: &mut App, action: Action) {
         Action::ConfirmCommitSelect => {
             if let Err(e) = app.sessions_tab_select() {
                 app.set_error(format!("Failed to open session: {e}"));
+            }
+        }
+        Action::SessionsTabToggleShowEmpty => app.sessions_tab_toggle_show_empty(),
+        Action::SessionsTabDelete => {
+            if app.sessions_tab.cursor_session().is_some() {
+                app.enter_confirm_mode(app::ConfirmAction::DeleteSession);
             }
         }
         // Space is a no-op: sessions are picked, not multi-selected.
