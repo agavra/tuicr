@@ -26,15 +26,19 @@ theme_light = "gruvbox-light"
 
 diff_view = "side-by-side"
 ignore_whitespace = false
+commit_order = "descending"
+initial_commit_selection = "all"
 show_file_list = true
 compact_folders = false
 show_pr_checks = false
 show_pr_comments = true
+show_commits = true
 show_reviewed = true
 mouse = true
 leader = ","
 editor = "nvim"
 comment_vim = false
+q_quits = false
 comment_tab_width = 4
 wrap = false
 relative_line_numbers = false
@@ -68,6 +72,7 @@ pr_metadata = true
 comments_header = "## Local tuicr Comments"
 remote_comments_header = "## Existing GitHub Comments"
 legend = true
+session_header = true
 ```
 
 ## Options
@@ -92,6 +97,7 @@ legend = true
 | `leader`                   | `;`          | Single-character prefix for panel focus, sidebar toggles, and review-comment shortcuts. Invalid multi-character values are ignored with a startup warning. |
 | `editor`                   | `$EDITOR`    | Editor command for the `e` / `:edit` handoff, split with shell-like quoting rules (e.g. `"code -w"`). Falls back to `$EDITOR`, then `vi`. |
 | `comment_vim`              | `false`      | Vim modal editing in the comment box; toggle at runtime with `:vim`. When off, default emacs/readline bindings.                                            |
+| `q_quits`                  | `false`      | Restore bare `q` as a quit key in review modes. `:q`, `ZZ`, and `ZQ` work regardless of this setting.                                                     |
 | `comment_tab_width`        | `4`          | Spaces inserted by Tab while typing in the vim comment box (Insert mode).                                                                                  |
 | `wrap`                     | `false`      | Line wrap in the diff view. Toggle with `:set wrap!`.                                                                                                      |
 | `relative_line_numbers`    | `false`      | Show gutter numbers as rendered-row distances from the cursor. Toggle with `:set relativenumber!`.                                                         |
@@ -233,7 +239,8 @@ comment_types = [
 
 ## Forge
 
-Settings under the `[forge]` section control how tuicr submits reviews to GitHub, GitLab, and Bitbucket.
+Settings under the `[forge]` section control how tuicr submits reviews to GitHub, GitLab, Gitea,
+Bitbucket, Azure DevOps, and Gerrit.
 
 ```toml
 [forge]
@@ -260,7 +267,9 @@ Magic number should be a named constant
 This module could use a doc comment
 ```
 
-This applies to inline line comments, file-level comments, and review-level comments pushed via `:submit`. The prefix works the same way on GitLab MR and Bitbucket PR submissions.
+This applies to inline line comments, file-level comments, and review-level comments pushed via
+`:submit`. The prefix works the same way on GitLab, Gitea, Bitbucket, Azure DevOps, and Gerrit
+submissions.
 
 ## Export
 

@@ -38,8 +38,9 @@ pub const GAP_EXPAND_BATCH: usize = 20;
 
 /// Create a forge backend for the given repository.
 /// Routes to the GitHub backend (via `gh`), the GitLab backend (via `glab`),
-/// the Bitbucket Cloud backend (via `bkt`), or the Azure DevOps backend (via
-/// `az`) based on `repo.kind`.
+/// the Gitea backend (via `tea`), the Bitbucket Cloud backend (via `bkt`),
+/// the Azure DevOps backend (via `az`), or the Gerrit backend (REST, no CLI)
+/// based on `repo.kind`.
 fn create_forge_backend(
     repo: &ForgeRepository,
     local_checkout: Option<PathBuf>,
@@ -61,6 +62,15 @@ fn create_forge_backend(
             use crate::forge::gitlab::GitLabGlabBackend;
             Box::new(GitLabGlabBackend::new(Some(repo.clone())).with_local_checkout(local_checkout))
         }
+        ForgeKind::Gitea => {
+            use crate::forge::gitea::GiteaTeaBackend;
+            Box::new(
+                GiteaTeaBackend::new(Some(repo.clone()))
+                    .with_local_checkout(local_checkout)
+                    .with_pr_checks(show_pr_checks)
+                    .with_pr_comments(show_pr_comments),
+            )
+        }
         ForgeKind::Bitbucket => {
             use crate::forge::bitbucket::BitbucketBktBackend;
             Box::new(
@@ -72,6 +82,10 @@ fn create_forge_backend(
             Box::new(
                 AzureDevOpsBackend::new(Some(repo.clone())).with_local_checkout(local_checkout),
             )
+        }
+        ForgeKind::Gerrit => {
+            use crate::forge::gerrit::GerritBackend;
+            Box::new(GerritBackend::new(Some(repo.clone())).with_local_checkout(local_checkout))
         }
     }
 }
@@ -1152,6 +1166,8 @@ pub struct App {
     pub comment_cursor: usize,
     /// Config `comment_vim`: vim modal editing in the comment box.
     pub comment_vim_enabled: bool,
+    /// Config `q_quits`: restore bare `q` as a quit key in review modes.
+    pub q_quits: bool,
     /// Spaces inserted by Tab while typing in the vim comment box (config
     /// `comment_tab_width`, default 4).
     pub comment_tab_width: usize,

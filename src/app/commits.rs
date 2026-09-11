@@ -479,7 +479,7 @@ impl App {
         // they can hand back a different session than the row that was picked
         // — a range saved on another branch, or an older working-tree session.
         // Install the selected one and keep its comments and reviewed state.
-        self.install_resumed_session(session);
+        self.install_resumed_session(session)?;
         Ok(())
     }
 
@@ -506,15 +506,16 @@ impl App {
 
     /// Adopt the session the user selected, carrying over the diff files the
     /// loader just resolved so reviewed state and comments still line up.
-    fn install_resumed_session(&mut self, session: ReviewSession) {
+    fn install_resumed_session(&mut self, session: ReviewSession) -> Result<()> {
         self.session = session;
         let diff_files = std::mem::take(&mut self.diff_files);
         for file in &diff_files {
             self.session.add_diff_file(file);
         }
         self.diff_files = diff_files;
-        self.reset_persisted_session_tracking();
+        self.reset_persisted_session_tracking()?;
         self.rebuild_annotations();
+        Ok(())
     }
 
     /// Whether the inline commit selector panel should be displayed.
@@ -994,7 +995,7 @@ impl App {
         for file in &diff_files {
             self.session.add_diff_file(file);
         }
-        self.reset_persisted_session_tracking();
+        self.reset_persisted_session_tracking()?;
 
         // Update app state
         self.diff_files = diff_files;

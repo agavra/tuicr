@@ -49,9 +49,10 @@ src/
 │   └── jj/              # Jujutsu backend (always compiled)
 │       └── mod.rs       # JjBackend: uses jj CLI, parses with diff_parser::GitStyle
 │
-├── forge/               # Remote forge integration (GitHub PR, GitLab MR, Bitbucket PR review)
-│   ├── mod.rs           # Detect and parse GitHub/GitLab/Bitbucket remotes
-│                        # (parse_any_remote_url: Bitbucket, then GitLab, then GitHub)
+├── forge/               # Remote forge integration (GitHub PR, GitLab MR, Bitbucket PR,
+│                        # Azure DevOps PR, Gerrit change review)
+│   ├── mod.rs           # Detect and parse GitHub/GitLab/Bitbucket/Azure/Gerrit remotes
+│                        # (parse_any_remote_url: Bitbucket, GitLab, Azure, Gerrit, then GitHub)
 │   ├── traits.rs        # ForgeBackend trait, ForgeRepository, PullRequestTarget,
 │   │                    # PullRequestDetails, PullRequestInfo, PrSessionKey,
 │   │                    # CreateReviewRequest, GhCreateReviewResponse, ForgeFileLinesRequest
@@ -61,6 +62,10 @@ src/
 │   ├── remote_comments.rs # RemoteReviewThread shape + visibility filter
 │   ├── submit.rs        # Submit pipeline: preflight mapping, resolver actions,
 │   │                    # InlineComment payload, build_review_body, SubmitEvent
+│   ├── gitea/           # Gitea backend via `tea` CLI
+│   │   ├── mod.rs       # GiteaTeaBackend: ForgeBackend impl
+│   │   ├── tea.rs       # TeaCommandRunner: spawn `tea api -i`, read HTTP status off stderr
+│   │   └── models.rs    # JSON parsing for Gitea REST v1 responses
 │   ├── github/          # GitHub backend via `gh` CLI
 │   │   ├── mod.rs       # GitHubGhBackend: ForgeBackend impl
 │   │   ├── gh.rs        # GhCommandRunner: spawn `gh`, parse output, error mapping
@@ -73,10 +78,18 @@ src/
 │   │   ├── mod.rs       # GitLabGlabBackend export
 │   │   ├── glab.rs      # ForgeBackend impl and glab command runner
 │   │   └── models.rs    # GitLab API response models
-│   └── bitbucket/       # Bitbucket Cloud backend via `bkt` CLI (no Data Center)
-│       ├── mod.rs       # BitbucketBktBackend export
-│       ├── bkt.rs       # ForgeBackend impl and bkt command runner
-│       └── models.rs    # Bitbucket Cloud REST 2.0 response models
+│   ├── bitbucket/       # Bitbucket Cloud backend via `bkt` CLI (no Data Center)
+│   │   ├── mod.rs       # BitbucketBktBackend export
+│   │   ├── bkt.rs       # ForgeBackend impl and bkt command runner
+│   │   └── models.rs    # Bitbucket Cloud REST 2.0 response models
+│   ├── azure/           # Azure DevOps backend via REST (PAT) or `az rest`
+│   │   ├── mod.rs       # AzureDevOpsBackend export
+│   │   ├── az.rs        # ForgeBackend impl, AzHttp transports, remote/target parsing
+│   │   └── models.rs    # Azure DevOps REST 7.1 response models
+│   └── gerrit/          # Gerrit backend via the Gerrit REST API (no CLI exists)
+│       ├── mod.rs       # GerritBackend export
+│       ├── api.rs       # ForgeBackend impl, GerritHttp transport, remote/target parsing
+│       └── models.rs    # Gerrit REST response models (ChangeInfo, CommentInfo)
 │
 ├── model/
 │   ├── mod.rs
@@ -191,13 +204,13 @@ Repository-managed agent integrations:
 
 ### Data Flow
 
-1. **Startup**: Parse CLI args (invalid `--theme` exits non-zero). `tuicr update` exits before TUI setup: Homebrew, Cargo, Mise, and Nix profile installs delegate to their package manager; direct binaries fetch the matching GitHub release asset, verify its GitHub-provided SHA-256 digest, and replace the executable. `tuicr update <version>` installs an exact Cargo or direct-binary release for rollback and release testing; managers without a safe generic pin command return an error. With no subcommand, or with explicit `tuicr tui`, load config from `$XDG_CONFIG_HOME/tuicr/config.toml` (default `~/.config/tuicr/config.toml`, or `%APPDATA%\tuicr\config.toml` on Windows), ignore unknown config keys with startup warnings, resolve theme precedence (`--theme` > config > dark), then call `App::new()`. Theme selection first checks bundled names, then local theme files from `$XDG_CONFIG_HOME/tuicr/themes/` (default `~/.config/tuicr/themes/`, or `%APPDATA%\tuicr\themes\` on Windows). Local theme files may reference a local `.tmTheme` syntax theme. Some bat-compatible Base16 `.tmTheme` files encode ANSI palette slots as placeholders, and `src/syntax/mod.rs` translates those at render time. `App::new()` calls `detect_vcs()` (Jujutsu first, then Git, then Mercurial), using config `backend = "libgit2"` or `backend = "cli"` for Git. Normal Git repos default to libgit2; sparse checkout repos automatically use the Git CLI backend and show a startup warning when that overrides the default. It filters diff files via repo-root `.tuicrignore`, then enters commit selection mode by default. If staged/unstaged changes exist, the first selection rows are "Staged changes" and/or "Unstaged changes". The Pull Requests tab can toggle between all open PRs and forge PRs/MRs requesting the current user's review with `r`, which refetches page 1 using `gh pr list --search "review-requested:@me"` on GitHub, `glab mr list --reviewer=@me` on GitLab, or a `q=state="OPEN" AND reviewers.uuid="…"` filter on Bitbucket (the state clause must live inside `q`; Cloud ignores a standalone `state` parameter once `q` is present). With `-r/--revisions`, it opens the requested commit range directly. Config `show_file_list = false` hides the file list panel on startup (toggleable with `<leader>e`, where `leader` defaults to `;`). Config `diff_view = "side-by-side"` sets the default diff layout (toggleable with `:diff`). Config `wrap = true` enables line wrapping (toggleable with `:set wrap!`). Config `review_watch_interval_ms = 1000` controls persisted-session polling; set it to `0` to disable. Config `diff_watch_interval_ms` (default `0`, disabled) periodically re-runs the local diff reload so uncommitted changes appear without `:e`; ignored for pull-request and `--all-files` reviews. The same tick refreshes the inline commit pane, so a commit written mid-review appears, and the "Staged changes" and "Unstaged changes" rows follow the tree as files are staged and unstaged.
+1. **Startup**: Parse CLI args (invalid `--theme` exits non-zero). `tuicr update` exits before TUI setup: Homebrew, Cargo, Mise, and Nix profile installs delegate to their package manager; direct binaries fetch the matching GitHub release asset, verify its GitHub-provided SHA-256 digest, and replace the executable. `tuicr update <version>` installs an exact Cargo or direct-binary release for rollback and release testing; managers without a safe generic pin command return an error. With no subcommand, or with explicit `tuicr tui`, load config from `$XDG_CONFIG_HOME/tuicr/config.toml` (default `~/.config/tuicr/config.toml`, or `%APPDATA%\tuicr\config.toml` on Windows), ignore unknown config keys with startup warnings, resolve theme precedence (`--theme` > config > dark), then call `App::new()`. Theme selection first checks bundled names, then local theme files from `$XDG_CONFIG_HOME/tuicr/themes/` (default `~/.config/tuicr/themes/`, or `%APPDATA%\tuicr\themes\` on Windows). Local theme files may reference a local `.tmTheme` syntax theme. Some bat-compatible Base16 `.tmTheme` files encode ANSI palette slots as placeholders, and `src/syntax/mod.rs` translates those at render time. `App::new()` calls `detect_vcs()` (Jujutsu first, then Git, then Mercurial), using config `backend = "libgit2"` or `backend = "cli"` for Git. Normal Git repos default to libgit2; sparse checkout repos automatically use the Git CLI backend and show a startup warning when that overrides the default. It filters diff files via repo-root `.tuicrignore`, then enters commit selection mode by default. If staged/unstaged changes exist, the first selection rows are "Staged changes" and/or "Unstaged changes". The Pull Requests tab can toggle between all open PRs and forge PRs/MRs requesting the current user's review with `r`, which refetches page 1 using `gh pr list --search "review-requested:@me"` on GitHub, `glab mr list --reviewer=@me` on GitLab, or a `q=state="OPEN" AND reviewers.uuid="…"` filter on Bitbucket (the state clause must live inside `q`; Cloud ignores a standalone `state` parameter once `q` is present). Gerrit is the exception: it queries `attention:self -owner:self`, not `reviewer:self`, because `reviewer:self` also matches changes already voted on and handed back to the author — see forge gotcha 19. With `-r/--revisions`, it opens the requested commit range directly. Config `show_file_list = false` hides the file list panel on startup (toggleable with `<leader>e`, where `leader` defaults to `;`). Config `diff_view = "side-by-side"` sets the default diff layout (toggleable with `:diff`). Config `wrap = true` enables line wrapping (toggleable with `:set wrap!`). Config `review_watch_interval_ms = 1000` controls persisted-session polling; set it to `0` to disable. Config `diff_watch_interval_ms` (default `0`, disabled) periodically re-runs the local diff reload so uncommitted changes appear without `:e`; ignored for pull-request and `--all-files` reviews. The same tick refreshes the inline commit pane, so a commit written mid-review appears, and the "Staged changes" and "Unstaged changes" rows follow the tree as files are staged and unstaged.
 2. **Render**: `ui::render()` draws the TUI based on `App` state. When rendered comments exist, the left sidebar splits vertically into file tree and comment navigator; the navigator is hidden when there are no rendered comment rows. `InputMode::Summary` replaces the diff while preserving the file sidebar when enabled, and lists every `local_draft` review-, file-, and line-level comment in the active session. The selected comment is highlighted, and the view scrolls as needed to keep it visible.
 3. **Input**: `crossterm` events → `map_key_to_action` → match on Action in main loop. The `:summary` command transitions from command mode to `InputMode::Summary` with the first pending comment selected. `j`/`k` selects the next or previous comment, `Enter` returns to the continuous diff from single-file view if necessary and moves the diff cursor to the selected comment; `Esc` returns to `Normal` without jumping. A reviewed file or hunk is revealed for the jump without clearing its persisted reviewed state.
 4. **Comments**: `App::save_comment()` builds an `AddCommentRequest` and calls `add_comment_to_session()` so TUI and library callers share insertion behavior. The TUI creates a persisted session file as soon as a review session becomes active, so `tuicr review add` can target it immediately. Successful comment submits autosave the session using a locked, atomic write that merges externally added comments first.
 5. **Review CLI**: `tuicr review list|add|comments` exits before TUI startup, uses `ReviewStore`, and always emits JSON; `review list` includes `active: true` for currently open TUI sessions and a `kind` (`local`/`pr`) per session, and `review add --input` accepts JSON literal, `@file`, or stdin payloads. `--repo` is a _selector_: a checkout path (matches its local sessions + PR sessions for its `origin` repo) or a forge coordinate like `owner/repo` / a repo URL (matches local + PR sessions by owner/repo, parsed from each session's slug). PR sessions thus surface by naming the repo; `review list --all` dumps everything. Resolve a PR session with its emitted slug (`gh:owner/repo/pr/N`), which is self-contained and needs no `--repo`.
 6. **Persistence**: active TUI sessions, comment submit, and `:w` save the session JSON to `~/.local/share/tuicr/reviews/`; library callers use `ReviewStore`. Open TUI sessions are also recorded in `active_sessions.json` beside `index.json` with pid, slug, path, and last-seen timestamp. TUI-created empty session files are deleted on normal exit if they still contain no comments and no reviewed files.
-7. **Reload diff/session**: `:e` reloads persisted comments/review state, then re-runs VCS diff loading and reapplies `.tuicrignore` filtering to refresh displayed files
+7. **Reload diff/session**: synchronous local reloads re-run VCS diff loading and `.tuicrignore` filtering. Full reloads persist resulting file hashes and invalidated review markers without saving unrelated dirty state; strict commit subsets remain live-only. Manual `:e` also reloads persisted comments before applying the diff.
 8. **Export**: `:clip` (alias `:export`) calls `export_to_clipboard()`, generating markdown and copying it to the clipboard (or stdout with `--stdout` flag)
 
 ### Important Implementation Details
@@ -229,9 +242,9 @@ Repository-managed agent integrations:
 
 ## Forge integration
 
-Forge review (`tuicr pr <target>`, `tuicr mr <target>`, or their explicit `tuicr tui` forms) is the only feature in `src/forge/`. GitHub operations shell out to `gh`; GitLab operations shell out to `glab`; Bitbucket Cloud operations shell out to `bkt`.
+Forge review (`tuicr pr <target>`, `tuicr mr <target>`, or their explicit `tuicr tui` forms) is the only feature in `src/forge/`. GitHub operations shell out to `gh`; GitLab operations shell out to `glab`; Gitea operations shell out to `tea`; Bitbucket Cloud operations shell out to `bkt`.
 
-Forge selection is host-driven: `parse_any_remote_url` tries Bitbucket (`bitbucket.org` only), then GitLab (host contains `gitlab`, or matches `glab config get host`), then GitHub. GitHub must stay last — its parser accepts any host, so it would otherwise claim every Bitbucket and self-hosted GitLab remote. Bitbucket Data Center is deliberately unsupported: it speaks REST 1.0, so those remotes are not claimed at all.
+Forge selection is host-driven: `parse_any_remote_url` tries Bitbucket (`bitbucket.org` only), then GitLab (host contains `gitlab`, or matches `glab config get host`), then Azure, then Gitea (host contains `gitea`, or matches a login in `tea logins list --output json`; forks like Forgejo are deliberately not matched by name), then GitHub. GitHub must stay last — its parser accepts any host, so it would otherwise claim every Bitbucket, self-hosted GitLab, and self-hosted Gitea remote. Bitbucket Data Center is deliberately unsupported: it speaks REST 1.0, so those remotes are not claimed at all.
 
 ### ForgeBackend trait
 
@@ -313,9 +326,23 @@ These are non-obvious things the implementation chain hit. Worth preserving for 
 
 15. **A diff file must be registered in the session before `r`, `R`, or a comment can land on it.** All three look the file up in `ReviewSession.files` by display path. The two review-mark toggles return silently when it is absent; `add_comment_to_session` returns `session does not contain file`. So any code path that assigns `self.diff_files` must also call `App::register_diff_files`. Narrowing the inline commit pane skipped this, so commit-only files could be neither marked nor commented on.
 
-16. **GNU Linux release binaries must stay dynamically linked.** Static glibc binaries can crash when hostname lookup loads a host NSS module (for example Fedora's `libnss_myhostname`). The musl artifacts are the supported static Linux builds. Direct updates must preserve the running binary's GNU/musl target environment when selecting an asset.
+16. **Gerrit's patch endpoint cannot be paired positionally with its file list.** `/revisions/{id}/patch` is ordered by git's rename-aware diff queue while `/files/` is keyed and sorted by path, so `pair_metadata_with_patch` would mis-zip any change containing a rename (and gotcha 2 rules out reading paths back out of the patch text). The Gerrit backend therefore builds diffs from a local clone with `git diff base..head`, fetching `refs/changes/NN/CCCC/P` first — that fetch writes `FETCH_HEAD` only and moves no ref in the user's repo.
+
+17. **Gerrit has no reserved hostname.** It is always self-hosted, so `parse_gerrit_remote_url` gates on the canonical SSH port `29418`, a `GERRIT_URL` naming the host, or a hostname containing "gerrit" — and it must stay ahead of the GitHub catch-all but behind every host-gated parser in `parse_any_remote_url`.
+
+18. **A Gerrit project is a path, not `owner/repo`.** `ForgeRepository::gerrit` packs the parent path into `owner` and the last segment into `name` (the Azure `org/project` trick), falling back to the *host* as owner for single-segment projects — an empty owner makes the PR slug `ge:/repo/pr/1`, which `parse_pr` rejects. `gerrit_project()` is the only supported way back to a project path.
+
+19. **Gerrit's review-requested toggle uses the attention set, not `reviewer:self`.** `reviewer:self` matches every open change the user reviews, including the ones they already voted on and handed back — the opposite of "needs my review", which makes the toggle useless. `attention:self` is Gerrit's own "it's your turn" signal (the dashboard's *Your Turn* section); `-owner:self` drops the user's own changes, which the attention set also holds when a reviewer replies. This is the one place a forge deliberately diverges from the shared "review-requested" semantics. Costs a Gerrit 3.3+ floor on that toggle alone.
+
+20. **GNU Linux release binaries must stay dynamically linked.** Static glibc binaries can crash when hostname lookup loads a host NSS module (for example Fedora's `libnss_myhostname`). The musl artifacts are the supported static Linux builds. Direct updates must preserve the running binary's GNU/musl target environment when selecting an asset.
 
 17. **The `[TYPE]` prefix uses the config-resolved `label`, not the `CommentType` id.** `CommentType` carries no label — it lives on `CommentTypeDefinition` (`App::comment_types`), so `as_str()` only ever yields the uppercased id. Four resolvers render this tag and must agree: `App::comment_type_label` (TUI), `export_comment_type_label` (`src/output/markdown.rs`), `SubmitContext::type_label` (`src/forge/submit.rs`), and `describe_row` (`src/ui/submit_modals.rs`). The last is easy to miss and previews the tag the user is deciding about, so disagreement means choosing Move-to-summary vs Omit against a tag that never gets posted. This is why the submit path takes a `SubmitContext` rather than a bare `&ForgeConfig`.
+
+18. **`tea api` exits 0 for every HTTP response.** It writes the body to stdout whether the status is 200 or 404, so a non-zero exit code never arrives and `run_command_output` would hand back an error page as if it were data. The Gitea backend passes `-i`, which puts the status line and headers on stderr, and reads the status from there — that is why it uses `run_command_streams` rather than `run_command_output`.
+
+19. **Gitea clamps `limit` to its `MaxResponseItems` setting** (default 50, instance-configurable). Requesting `limit=100` and stopping when fewer than 100 rows come back silently truncates at the first page. Pagination must drive off `X-Total-Count` and fall back to reading until a page comes up short *relative to the first page's size*, never relative to what was asked for. A truncated `/pulls/{n}/files` list is especially bad: it is paired positionally with the `.diff` text, so a short read turns into a hard "metadata records but N patch blocks" mismatch.
+
+20. **Gitea reports a mode-only change as file status `unchanged`.** It still emits a `diff --git` block, so the file must stay in the metadata list or every later file pairs against the wrong patch.
 
 ### Keeping Docs Updated
 
@@ -326,6 +353,7 @@ When adding user-facing features, update the relevant documentation:
 | `README.md`            | Keybindings, commands (`:*`), CLI flags, features list, installation methods, agent integration setup, forge limitations |
 | `src/ui/help_popup.rs` | Keybindings or commands (update the `help_text` vector)                                                                  |
 | `src/ui/status_bar.rs` | Keybindings worth advertising in the per-pane hint line                                                                  |
+| `docs/CLI.md`          | Any clap flag, subcommand, env var, stderr marker, or exit code: add a row to the matching table                          |
 | `docs/KEYBINDINGS.md`  | Any keybinding or `:` command: add a row to the pane's key table and the `:` command table, plus prose for new behavior  |
 | `AGENTS.md`            | Module structure, repo-managed agent integrations, key types, data flow, dependencies, forge invariants and gotchas      |
 | `docs/CONFIG.md`       | Any `config.toml` key: add a row to the Options table and a line to the Full example block                               |

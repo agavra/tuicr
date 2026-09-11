@@ -12,11 +12,16 @@ use crate::model::{DiffLine, FilePatch, FileStatus};
 pub enum ForgeKind {
     GitHub,
     GitLab,
+    /// Gitea, reached through the `tea` CLI.
+    Gitea,
     /// Bitbucket Cloud only. Data Center speaks an unrelated REST 1.0 API and
     /// is rejected during remote-URL parsing.
     Bitbucket,
     #[serde(rename = "azure_devops")]
     AzureDevOps,
+    /// Self-hosted Gerrit Code Review. A Gerrit *change* takes the place of a
+    /// pull request and its numeric change number is the PR number.
+    Gerrit,
 }
 
 impl ForgeKind {
@@ -25,8 +30,10 @@ impl ForgeKind {
         match self {
             ForgeKind::GitHub => "GitHub",
             ForgeKind::GitLab => "GitLab",
+            ForgeKind::Gitea => "Gitea",
             ForgeKind::Bitbucket => "Bitbucket",
             ForgeKind::AzureDevOps => "Azure DevOps",
+            ForgeKind::Gerrit => "Gerrit",
         }
     }
 }
@@ -60,6 +67,20 @@ impl ForgeRepository {
     ) -> Self {
         Self {
             kind: ForgeKind::GitLab,
+            host: host.into(),
+            owner: owner.into(),
+            name: name.into(),
+        }
+    }
+
+    /// Gitea repositories are always `<owner>/<repo>` — no nested groups.
+    pub fn gitea(
+        host: impl Into<String>,
+        owner: impl Into<String>,
+        name: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind: ForgeKind::Gitea,
             host: host.into(),
             owner: owner.into(),
             name: name.into(),
@@ -100,15 +121,52 @@ impl ForgeRepository {
         }
     }
 
+    /// Build a Gerrit repository coordinate from a project path.
+    ///
+    /// Gerrit has no owner/repo split: a project is a single path such as
+    /// `myrepo` or `platform/frameworks/base`. We keep the last segment in
+    /// `name` and the parent path in `owner` — the same packing Azure DevOps
+    /// uses for `org/project`, so PR slugs round-trip through
+    /// [`crate::slug::PrSlug`]. A single-segment project has no parent, and an
+    /// empty `owner` would produce the unparseable slug `ge:/repo/pr/1`, so it
+    /// falls back to the host. [`crate::forge::gerrit::api::gerrit_project`]
+    /// reverses the packing.
+    pub fn gerrit(host: impl Into<String>, project: impl Into<String>) -> Self {
+        let host = host.into();
+        let project = project.into();
+        let (owner, name) = match project.rsplit_once('/') {
+            Some((parent, last)) if !parent.is_empty() && !last.is_empty() => {
+                (parent.to_string(), last.to_string())
+            }
+            _ => (host.clone(), project),
+        };
+        Self {
+            kind: ForgeKind::Gerrit,
+            host,
+            owner,
+            name,
+        }
+    }
+
     pub fn slug(&self) -> String {
         format!("{}/{}", self.owner, self.name)
     }
 
     pub fn display_name(&self) -> String {
+        if self.kind == ForgeKind::Gerrit {
+            // `owner` mirrors the host for single-segment projects, so the
+            // generic `host/owner/name` shape would repeat it.
+            return format!(
+                "{}/{}",
+                self.host,
+                crate::forge::gerrit::api::gerrit_project(self)
+            );
+        }
         if self.host == "github.com"
             || self.host == "gitlab.com"
             || self.host == "bitbucket.org"
             || self.host == "dev.azure.com"
+            || self.host == "gitea.com"
         {
             self.slug()
         } else {

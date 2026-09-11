@@ -191,23 +191,29 @@ In command mode,
 |---------|--------|
 | `:{N}` | Jump to new-side line N in current file |
 | `:o{N}` | Jump to old-side line N in current file (matches deletions) |
-| `:w` | Save session |
+| `:w` (`:write`) | Save session |
 | `:e` (`:reload`) | Reload diff files |
 | `:edit` | Open focused file in `$EDITOR` |
 | `:clip` (`:export`) | Copy review to clipboard |
 | `:copy-url` | Copy the open PR URL to clipboard (PR mode) |
 | `:summary` | Show all pending local-draft comments; `j`/`k` select and `Enter` jumps |
 | `:diff` | Toggle diff view (unified / side-by-side) |
-| `:vim` / `:novim` (`:set vim` / `:set novim`) | Enable/toggle/disable vim modal editing in the comment box (overrides `comment_vim`) |
-| `:commits` | Select commits to review |
+| `:focus` (`:f`) | Toggle single-file view |
+| `:stage` | Stage reviewed files (unstaged diffs only) |
+| `:vim` (`:set vim!`) / `:novim` (`:set novim`) / `:set vim` | Toggle / disable / enable vim modal editing in the comment box (overrides `comment_vim`) |
+| `:commits` (`:targets`) | Select commits to review |
+| `:prs` | Open the review target selector on Pull Requests |
 | `:sessions` (`:reviews`) | Resume a saved review for this checkout |
 | `:submit` | Open submit picker (Comment / Approve / Request changes / Draft) |
 | `:submit comment` | Submit a Comment review |
 | `:submit approve` | Submit an Approve review |
 | `:submit request-changes` | Submit a Request-changes review |
-| `:submit draft` | Submit a Draft review (pending on GitHub) |
+| `:submit draft` | Submit a Draft (pending) review |
+| `:comments unresolved` | Show unresolved remote comments (PR mode, default) |
+| `:comments all` | Show all remote comments including resolved and outdated |
+| `:comments hide` | Hide remote comments in PR mode |
 | `:set wrap` | Enable line wrap in diff view |
-| `:set wrap!` | Toggle line wrap in diff view |
+| `:set wrap!` (`:wrap`) | Toggle line wrap in diff view |
 | `:set relativenumber` / `:set norelativenumber` | Enable / disable relative rendered-row numbers |
 | `:set relativenumber!` | Toggle relative rendered-row numbers |
 | `:set commits` | Show inline commit selector |
@@ -218,17 +224,19 @@ In command mode,
 | `:set reviewed!` / `:reviewed` | Toggle files already marked reviewed |
 | `:clear` | Clear all comments |
 | `:clearc` | Clear comments without clearing reviewed marks |
+| `:help` (`:h`) | Open the help screen |
+| `:messages` | Open full details for the current error |
 | `:version` | Show tuicr version |
 | `:update` | Check for updates |
-| `:q` | Quit (warns on unsaved comments; discards review-only state) |
-| `:q!` | Force quit |
+| `:q` (`:quit`) | Quit (warns on unsaved comments; discards review-only state) |
+| `:q!` (`:quit!`) | Force quit |
 | `:x` / `:wq` | Save and quit (prompts to copy if comments exist) |
 | `ZZ` | Save and quit |
 | `ZQ` | Quit without saving |
 | `?` | Toggle help |
 
-Pressing bare `q` no longer quits; it prints a reminder to use `:q` instead — a transitional
-affordance that will be removed in a future release.
+Pressing bare `q` no longer quits by default; it prints a reminder to use `:q` instead. Set
+`q_quits = true` to restore `q` as a quit key in review modes.
 
 The summary replaces the diff while leaving the file sidebar visible when it is open. The first
 pending comment is selected when the summary opens. Use `j`/`k` to select the next
@@ -237,8 +245,21 @@ to the continuous diff and jumps to the selected comment, leaving single-file vi
 while `Esc` returns without jumping. Reviewed files and hunks are revealed for the jump without
 losing their reviewed state.
 
-`draft` applies to GitHub only. `comment` and `approve` work on GitHub, GitLab, and Bitbucket.
-`request-changes` works on GitHub and GitLab, but not Bitbucket yet.
+Not every forge supports every event:
+
+| Event | GitHub | GitLab | Gitea | Bitbucket | Azure DevOps | Gerrit |
+|---|---|---|---|---|---|---|
+| `comment` | yes | yes | yes | yes | yes | yes |
+| `approve` | yes | yes | yes | yes | yes (vote +10) | yes (vote +2) |
+| `request-changes` | yes | yes | yes | no | yes (vote -10) | yes (vote -1) |
+| `draft` | yes | yes | yes | no | yes (plain comment) | yes |
+
+Bitbucket rejects `request-changes` and `draft` up front rather than silently downgrading them.
+Azure DevOps has no pending-review primitive, so `draft` posts as a plain comment with no vote.
+Gitea requires a review summary for `request-changes` and `draft`, and for `comment` when there
+are no inline comments; inline comments alone do not satisfy it. GitLab `draft` creates draft
+notes that the author publishes from GitLab's own "Submit review" UI. Gerrit `draft` stores draft
+comments that the author publishes from Gerrit's Reply UI.
 
 ## Commit selection / review target selector
 
