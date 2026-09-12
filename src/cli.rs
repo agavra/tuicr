@@ -265,6 +265,49 @@ pub enum ReviewCommand {
         #[arg(long, value_name = "PATH|OWNER/REPO", default_value = ".")]
         repo: PathBuf,
     },
+
+    /// Delete one local draft comment from a persisted session.
+    Delete {
+        /// Session slug from `tuicr review list` (local or PR), or path to a
+        /// session JSON file.
+        #[arg(long, value_name = "SESSION")]
+        session: String,
+
+        /// Id of the comment to delete, as reported by `tuicr review comments`.
+        #[arg(long = "comment-id", value_name = "ID")]
+        comment_id: String,
+
+        /// Repo selector used to resolve a local session slug (path or
+        /// `owner/repo`). PR slugs and JSON paths resolve without it.
+        #[arg(long, value_name = "PATH|OWNER/REPO", default_value = ".")]
+        repo: PathBuf,
+    },
+
+    /// Clear all comments in a persisted session, keeping review marks.
+    Clearc {
+        /// Session slug from `tuicr review list` (local or PR), or path to a
+        /// session JSON file.
+        #[arg(long, value_name = "SESSION")]
+        session: String,
+
+        /// Repo selector used to resolve a local session slug (path or
+        /// `owner/repo`). PR slugs and JSON paths resolve without it.
+        #[arg(long, value_name = "PATH|OWNER/REPO", default_value = ".")]
+        repo: PathBuf,
+    },
+
+    /// Clear all comments and review marks in a persisted session.
+    Clear {
+        /// Session slug from `tuicr review list` (local or PR), or path to a
+        /// session JSON file.
+        #[arg(long, value_name = "SESSION")]
+        session: String,
+
+        /// Repo selector used to resolve a local session slug (path or
+        /// `owner/repo`). PR slugs and JSON paths resolve without it.
+        #[arg(long, value_name = "PATH|OWNER/REPO", default_value = ".")]
+        repo: PathBuf,
+    },
 }
 
 /// Diff side accepted by `tuicr review add --side`.
