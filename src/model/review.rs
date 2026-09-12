@@ -217,14 +217,21 @@ impl ReviewSession {
     pub(crate) fn remove_comment(&mut self, location: &CommentLocation) -> bool {
         match location {
             CommentLocation::Review { index } => {
-                if *index < self.review_comments.len() {
+                if self
+                    .review_comments
+                    .get(*index)
+                    .is_some_and(|comment| !comment.is_locked())
+                {
                     self.review_comments.remove(*index);
                     return true;
                 }
             }
             CommentLocation::File { path, index } => {
                 if let Some(review) = self.get_file_mut(path)
-                    && *index < review.file_comments.len()
+                    && review
+                        .file_comments
+                        .get(*index)
+                        .is_some_and(|comment| !comment.is_locked())
                 {
                     review.file_comments.remove(*index);
                     return true;
@@ -238,16 +245,15 @@ impl ReviewSession {
             } => {
                 if let Some(review) = self.get_file_mut(path)
                     && let Some(comments) = review.line_comments.get_mut(line)
-                    && *index < comments.len()
+                    && comments.get(*index).is_some_and(|comment| {
+                        !comment.is_locked() && comment.side.unwrap_or(LineSide::New) == *side
+                    })
                 {
-                    let comment_side = comments[*index].side.unwrap_or(LineSide::New);
-                    if comment_side == *side {
-                        comments.remove(*index);
-                        if comments.is_empty() {
-                            review.line_comments.remove(line);
-                        }
-                        return true;
+                    comments.remove(*index);
+                    if comments.is_empty() {
+                        review.line_comments.remove(line);
                     }
+                    return true;
                 }
             }
         }

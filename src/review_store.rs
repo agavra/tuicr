@@ -91,7 +91,18 @@ impl ReviewStore {
                 let Some(location) = session.find_comment_by_id(comment_id) else {
                     return Ok(false);
                 };
-                Ok(session.remove_comment(&location))
+                if session.remove_comment(&location) {
+                    Ok(true)
+                } else {
+                    let forge = session
+                        .pr_session_key
+                        .as_ref()
+                        .map(|key| key.repository.display_name())
+                        .unwrap_or_else(|| "the forge".to_string());
+                    Err(TuicrError::InvalidInput(format!(
+                        "Comment already pushed to {forge} — read only in tuicr"
+                    )))
+                }
             })?;
         Ok(removed)
     }
@@ -303,6 +314,7 @@ fn file_review_mut<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::comment::CommentLifecycleState;
     use crate::model::{FileStatus, SessionDiffSource};
     use tempfile::tempdir;
 
@@ -383,6 +395,24 @@ mod tests {
         let loaded = store.get_review(&session_ref).unwrap();
         assert!(loaded.review_comments.is_empty());
         assert!(!loaded.files.get(&path).unwrap().reviewed);
+    }
+
+    #[test]
+    fn should_refuse_to_delete_pushed_comment() {
+        let temp = tempdir().unwrap();
+        let store = ReviewStore::with_reviews_dir(temp.path().join("reviews"));
+        let mut session = test_session(PathBuf::from("/repo"));
+        let mut comment = Comment::new("note".to_string(), CommentType::from_id("note"), None);
+        comment.lifecycle_state = CommentLifecycleState::PushedDraft;
+        let comment_id = comment.id.clone();
+        session.review_comments.push(comment);
+        let session_ref = store.save_review(&session).unwrap();
+
+        let result = store.delete_comment(&session_ref, &comment_id);
+
+        assert!(matches!(result, Err(TuicrError::InvalidInput(_))));
+        let loaded = store.get_review(&session_ref).unwrap();
+        assert_eq!(loaded.review_comments.len(), 1);
     }
 
     #[test]
