@@ -999,6 +999,44 @@ pub enum PrThreadsEvent {
     },
 }
 
+/// A viewed-state push queued for the background worker.
+#[derive(Debug)]
+pub enum ViewedSyncRequest {
+    Set { path: PathBuf, viewed: bool },
+}
+
+/// Failure reported back by the viewed-state worker. Successes stay silent —
+/// the local marker the user already sees is the confirmation.
+#[derive(Debug)]
+pub enum ViewedSyncEvent {
+    Failed {
+        path: PathBuf,
+        viewed: bool,
+        error: String,
+    },
+}
+
+/// Viewed state read back from the forge when a PR session opens.
+#[derive(Debug)]
+pub enum ViewedSeedEvent {
+    Done {
+        /// Session the read was started for; a result that outlives its
+        /// session is discarded rather than applied to another PR.
+        key: crate::forge::traits::PrSessionKey,
+        result: std::result::Result<Vec<PathBuf>, String>,
+    },
+}
+
+/// Live viewed-state worker for one PR session. Dropping the sender ends the
+/// thread, so switching PRs needs no explicit shutdown.
+#[derive(Debug)]
+pub struct ViewedSyncWorker {
+    /// PR the worker was started for. A toggle belonging to a different
+    /// session replaces it rather than writing to the wrong pull request.
+    pub key: crate::forge::traits::PrSessionKey,
+    pub tx: std::sync::mpsc::Sender<ViewedSyncRequest>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiffViewMode {
     Unified,
@@ -1269,6 +1307,19 @@ pub struct App {
     /// Background-thread channel that delivers remote-thread fetch results.
     /// `Receiver` is only present while a fetch is in flight.
     pub pr_threads_rx: Option<std::sync::mpsc::Receiver<PrThreadsEvent>>,
+    /// Background worker mirroring file-reviewed toggles onto GitHub's
+    /// per-file viewed checkbox. Spawned lazily on the first toggle of a PR
+    /// session (config `[forge] sync_viewed`), so it never starts for local
+    /// diffs or for users who leave the setting off.
+    pub viewed_sync: Option<ViewedSyncWorker>,
+    /// Failures reported by that worker; drained by
+    /// `poll_viewed_sync_events`.
+    pub viewed_sync_rx: Option<std::sync::mpsc::Receiver<ViewedSyncEvent>>,
+    /// PR session whose remote viewed state has already been requested. The
+    /// read happens once per session, on the first tick after it opens.
+    pub viewed_seeded: Option<crate::forge::traits::PrSessionKey>,
+    /// That read while it is in flight.
+    pub viewed_seed_rx: Option<std::sync::mpsc::Receiver<ViewedSeedEvent>>,
 
     /// `[forge]` section settings resolved at startup. Drives the body/footer
     /// formatting on submit. Defaults to `ForgeConfig::default()` when the
@@ -1818,6 +1869,7 @@ mod session;
 pub mod sessions_tab;
 mod submit;
 mod tree;
+mod viewed_sync;
 mod visual;
 
 #[cfg(test)]

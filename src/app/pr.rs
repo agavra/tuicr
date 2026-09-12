@@ -1059,6 +1059,9 @@ impl App {
     ) {
         self.forge_review_threads.clear();
         self.forge_review_threads_loading = true;
+        // Remote viewed state is part of the PR's remote state, so a reload
+        // re-reads it too; the next tick starts that read.
+        self.viewed_seeded = None;
 
         let (tx, rx) = std::sync::mpsc::channel();
         self.pr_threads_rx = Some(rx);

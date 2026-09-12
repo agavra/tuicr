@@ -24,12 +24,17 @@ pub struct ForgeConfig {
     /// reader can see the comment classification at a glance. Defaults to
     /// `true`; set to `false` to send the raw comment body.
     pub comment_type_prefix: bool,
+    /// Mirror file-reviewed toggles (`r`) onto GitHub's per-file "Viewed"
+    /// checkbox while reviewing a pull request. Off by default: it turns a
+    /// local marker into a write to GitHub under your account.
+    pub sync_viewed: bool,
 }
 
 impl Default for ForgeConfig {
     fn default() -> Self {
         Self {
             comment_type_prefix: true,
+            sync_viewed: false,
         }
     }
 }
@@ -231,7 +236,7 @@ const KNOWN_KEYS: &[&str] = &[
     "export",
 ];
 
-const FORGE_KNOWN_KEYS: &[&str] = &["comment_type_prefix"];
+const FORGE_KNOWN_KEYS: &[&str] = &["comment_type_prefix", "sync_viewed"];
 
 const EXPORT_KNOWN_KEYS: &[&str] = &[
     "intro",
@@ -514,6 +519,11 @@ fn parse_forge(value: &Value, warnings: &mut Vec<String>) -> Option<ForgeConfig>
 
     if let Some(v) = read_section_bool(table, "forge", "comment_type_prefix", warnings) {
         cfg.comment_type_prefix = v;
+        any_override = true;
+    }
+
+    if let Some(v) = read_section_bool(table, "forge", "sync_viewed", warnings) {
+        cfg.sync_viewed = v;
         any_override = true;
     }
 
@@ -1635,6 +1645,26 @@ comment_type_prefix = false
             .and_then(|cfg| cfg.forge.clone())
             .expect("forge section should parse");
         assert!(!forge.comment_type_prefix);
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_parse_sync_viewed_from_the_forge_section() {
+        // The `[forge]` table is read key by key, so a field added to
+        // `ForgeConfig` stays dead until it is listed here too.
+        let outcome = parse_config(
+            r#"[forge]
+sync_viewed = true
+"#,
+        );
+        let forge = outcome
+            .config
+            .as_ref()
+            .and_then(|cfg| cfg.forge.clone())
+            .expect("forge section should parse");
+        assert!(forge.sync_viewed);
+        // and — the default is untouched by naming only the one key
+        assert!(forge.comment_type_prefix);
         assert!(outcome.warnings.is_empty());
     }
 
