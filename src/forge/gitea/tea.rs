@@ -33,10 +33,10 @@ use crate::forge::remote_comments::{
 };
 use crate::forge::submit::{GhSide, SubmitEvent};
 use crate::forge::traits::{
-    CreateReviewRequest, ForgeBackend, ForgeFileLinesRequest, ForgeRepository,
-    GhCreateReviewResponse, PagedPullRequests, PullRequestCheckStatus, PullRequestCommit,
-    PullRequestDetails, PullRequestInfo, PullRequestIssueComment, PullRequestListQuery,
-    PullRequestListScope, PullRequestReviewMetadata, PullRequestReviewRecord,
+    CreateReviewRequest, ForgeBackend, ForgeFileContentRequest, ForgeFileLinesRequest,
+    ForgeRepository, GhCreateReviewResponse, PagedPullRequests, PullRequestCheckStatus,
+    PullRequestCommit, PullRequestDetails, PullRequestInfo, PullRequestIssueComment,
+    PullRequestListQuery, PullRequestListScope, PullRequestReviewMetadata, PullRequestReviewRecord,
     PullRequestReviewStatus, PullRequestSummary, PullRequestTarget,
 };
 use crate::model::{DiffLine, FilePatch, FileStatus};
@@ -628,18 +628,6 @@ where
         Ok(self.api(repo, "GET", &endpoint, None)?.body)
     }
 
-    /// File content at `request`'s revision, preferring a local clone.
-    fn file_content(&self, request: &ForgeFileLinesRequest) -> Result<String> {
-        if let Some(content) = self
-            .local_checkout
-            .as_deref()
-            .and_then(|root| read_blob_with_repo(root, request.sha(), request.path.as_path()))
-        {
-            return Ok(content);
-        }
-        self.raw_file(&request.repository, request.sha(), request.path.as_path())
-    }
-
     fn review_comments(
         &self,
         pr: &PullRequestDetails,
@@ -996,20 +984,39 @@ where
             .collect())
     }
 
+    fn fetch_file_content(&self, request: ForgeFileContentRequest) -> Result<String> {
+        if let Some(content) = self
+            .local_checkout
+            .as_deref()
+            .and_then(|root| read_blob_with_repo(root, &request.sha, request.path.as_path()))
+        {
+            return Ok(content);
+        }
+        self.raw_file(&request.repository, &request.sha, request.path.as_path())
+    }
+
     fn fetch_file_lines(&self, request: ForgeFileLinesRequest) -> Result<Vec<DiffLine>> {
         if request.start_line == 0 || request.start_line > request.end_line {
             return Ok(Vec::new());
         }
-        let content = self.file_content(&request)?;
-        Ok(slice_context_lines(
-            &content,
-            request.start_line,
-            request.end_line,
-        ))
+        let start_line = request.start_line;
+        let end_line = request.end_line;
+        let sha = request.sha().to_string();
+        let content = self.fetch_file_content(ForgeFileContentRequest {
+            repository: request.repository,
+            sha,
+            path: request.path,
+        })?;
+        Ok(slice_context_lines(&content, start_line, end_line))
     }
 
     fn file_line_count(&self, request: ForgeFileLinesRequest) -> Result<u32> {
-        let content = self.file_content(&request)?;
+        let sha = request.sha().to_string();
+        let content = self.fetch_file_content(ForgeFileContentRequest {
+            repository: request.repository,
+            sha,
+            path: request.path,
+        })?;
         Ok(content.lines().count() as u32)
     }
 
@@ -1722,6 +1729,28 @@ mod tests {
     }
 
     // ----- response envelope -----
+
+    #[test]
+    fn fetch_file_content_uses_exact_revision() {
+        let runner =
+            FakeTeaRunner::default().route("/raw/src/lib.rs?ref=exact-revision", "one\ntwo\n");
+        let backend = GiteaTeaBackend::with_runner(Some(repo()), runner);
+        let content = backend
+            .fetch_file_content(ForgeFileContentRequest {
+                repository: repo(),
+                sha: "exact-revision".to_string(),
+                path: PathBuf::from("src/lib.rs"),
+            })
+            .unwrap();
+        assert_eq!(content, "one\ntwo\n");
+        assert!(
+            backend.runner.calls.borrow()[0]
+                .0
+                .last()
+                .unwrap()
+                .ends_with("/raw/src/lib.rs?ref=exact-revision")
+        );
+    }
 
     #[test]
     fn should_read_status_from_the_last_http_status_line() {

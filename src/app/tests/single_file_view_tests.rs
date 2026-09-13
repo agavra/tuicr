@@ -1,3 +1,4 @@
+use super::FakeForgeBackend;
 use crate::app::*;
 use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin};
 use crate::vcs::traits::{VcsBackend, VcsInfo, VcsType};
@@ -223,67 +224,6 @@ fn editor_target_warns_for_missing_local_file() {
             .content
             .contains("file does not exist")
     );
-}
-
-struct FakeForgeBackend {
-    local_checkout: Option<PathBuf>,
-}
-
-impl crate::forge::traits::ForgeBackend for FakeForgeBackend {
-    fn list_pull_requests(
-        &self,
-        _query: crate::forge::traits::PullRequestListQuery,
-    ) -> crate::error::Result<crate::forge::traits::PagedPullRequests> {
-        unimplemented!()
-    }
-    fn get_pull_request(
-        &self,
-        _target: crate::forge::traits::PullRequestTarget,
-    ) -> crate::error::Result<crate::forge::traits::PullRequestDetails> {
-        unimplemented!()
-    }
-    fn get_pull_request_diff(
-        &self,
-        _pr: &crate::forge::traits::PullRequestDetails,
-    ) -> crate::error::Result<Vec<crate::model::FilePatch>> {
-        unimplemented!()
-    }
-    fn fetch_file_lines(
-        &self,
-        _request: crate::forge::traits::ForgeFileLinesRequest,
-    ) -> crate::error::Result<Vec<DiffLine>> {
-        unimplemented!()
-    }
-    fn list_review_threads(
-        &self,
-        _pr: &crate::forge::traits::PullRequestDetails,
-    ) -> crate::error::Result<Vec<crate::forge::remote_comments::RemoteReviewThread>> {
-        unimplemented!()
-    }
-    fn list_pull_request_commits(
-        &self,
-        _pr: &crate::forge::traits::PullRequestDetails,
-    ) -> crate::error::Result<Vec<crate::forge::traits::PullRequestCommit>> {
-        unimplemented!()
-    }
-    fn get_pull_request_commit_range_diff(
-        &self,
-        _pr: &crate::forge::traits::PullRequestDetails,
-        _start_sha: &str,
-        _end_sha: &str,
-    ) -> crate::error::Result<Vec<crate::model::FilePatch>> {
-        unimplemented!()
-    }
-    fn create_review(
-        &self,
-        _pr: &crate::forge::traits::PullRequestDetails,
-        _request: crate::forge::traits::CreateReviewRequest<'_>,
-    ) -> crate::error::Result<crate::forge::traits::GhCreateReviewResponse> {
-        unimplemented!()
-    }
-    fn local_checkout_path(&self) -> Option<PathBuf> {
-        self.local_checkout.clone()
-    }
 }
 
 #[test]

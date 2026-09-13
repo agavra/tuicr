@@ -82,7 +82,15 @@ pub fn open_pull_request(
 /// only, we still return the diff so PR review proceeds without the
 /// inline selector. The first two calls remain required.
 pub fn fetch_pr_data(backend: &dyn ForgeBackend, target: PullRequestTarget) -> Result<PrFetchData> {
-    let pr_info = backend.get_pull_request_info(target)?;
+    let mut pr_info = backend.get_pull_request_info(target)?;
+    // Pin `base_sha` to the commit the displayed patch is actually taken
+    // from before anything downstream reads it. Everything that resolves the
+    // old side of the diff — hydration endpoints, context expansion, the
+    // commit-range fallback parent — derives from this field, so refining it
+    // once here keeps those consistent by construction.
+    if let Some(base_sha) = backend.resolve_diff_base_sha(&pr_info.details) {
+        pr_info.details.base_sha = base_sha;
+    }
     let details = pr_info.details.clone();
     let patches = backend.get_pull_request_diff(&details)?;
     let commits = backend
@@ -221,9 +229,34 @@ mod tests {
         details: PullRequestDetails,
         patch: String,
         calls: RefCell<Vec<&'static str>>,
+        /// Stands in for a backend whose `base_sha` is the base branch tip
+        /// rather than the merge base the patch is taken from. `None` models
+        /// a backend that already reports the merge base (GitLab).
+        diff_base_sha: Option<String>,
+    }
+
+    impl StaticBackend {
+        fn new(details: PullRequestDetails, patch: &str) -> Self {
+            Self {
+                details,
+                patch: patch.to_string(),
+                calls: RefCell::new(Vec::new()),
+                diff_base_sha: None,
+            }
+        }
+
+        fn with_diff_base_sha(mut self, sha: &str) -> Self {
+            self.diff_base_sha = Some(sha.to_string());
+            self
+        }
     }
 
     impl ForgeBackend for StaticBackend {
+        fn resolve_diff_base_sha(&self, _pr: &PullRequestDetails) -> Option<String> {
+            self.calls.borrow_mut().push("resolve_diff_base_sha");
+            self.diff_base_sha.clone()
+        }
+
         fn list_pull_requests(&self, _query: PullRequestListQuery) -> Result<PagedPullRequests> {
             unimplemented!()
         }
@@ -285,11 +318,7 @@ index 1111111..2222222 100644
     #[test]
     fn should_parse_pr_diff_and_build_session_keyed_by_head_sha() {
         // given
-        let backend = StaticBackend {
-            details: details(),
-            patch: SIMPLE_PATCH.to_string(),
-            calls: RefCell::new(Vec::new()),
-        };
+        let backend = StaticBackend::new(details(), SIMPLE_PATCH);
         let target = PullRequestTarget::with_repository(repo(), 125, "125");
         let highlighter = SyntaxHighlighter::default();
         // when
@@ -307,10 +336,16 @@ index 1111111..2222222 100644
             opened.session.repo_path,
             PathBuf::from("forge:github.com/agavra/tuicr"),
         );
-        // and — both forge calls were made, in order
+        // and — the forge calls were made, in order. The diff base is
+        // resolved between metadata and patch so `base_sha` is already
+        // pinned to the patch's old side by the time anything reads it.
         assert_eq!(
             backend.calls.borrow().as_slice(),
-            &["get_pull_request", "get_pull_request_diff"],
+            &[
+                "get_pull_request",
+                "resolve_diff_base_sha",
+                "get_pull_request_diff"
+            ],
         );
     }
 
@@ -351,11 +386,7 @@ rename to new_name.rs
     #[test]
     fn should_parse_multi_status_pr_patch_into_correct_diff_files() {
         // given a backend serving a patch with add/modify/delete/rename
-        let backend = StaticBackend {
-            details: details(),
-            patch: MULTI_STATUS_PATCH.to_string(),
-            calls: RefCell::new(Vec::new()),
-        };
+        let backend = StaticBackend::new(details(), MULTI_STATUS_PATCH);
         let target = PullRequestTarget::with_repository(repo(), 125, "125");
         let highlighter = SyntaxHighlighter::default();
         // when
@@ -390,11 +421,7 @@ rename to new_name.rs
     #[test]
     fn should_surface_empty_pr_as_forge_error() {
         // given a PR with no file changes (empty patch)
-        let backend = StaticBackend {
-            details: details(),
-            patch: String::new(),
-            calls: RefCell::new(Vec::new()),
-        };
+        let backend = StaticBackend::new(details(), "");
         let target = PullRequestTarget::with_repository(repo(), 125, "125");
         let highlighter = SyntaxHighlighter::default();
         // when
@@ -474,5 +501,48 @@ rename to new_name.rs
         .expect("an ignored-only PR should open as an empty review");
 
         assert!(opened.diff_files.is_empty());
+    }
+
+    #[test]
+    fn should_pin_base_sha_to_the_resolved_diff_base_before_downstream_reads() {
+        // given — a backend reporting the base branch tip as base_sha, with
+        // the real three-dot merge base available separately.
+        let backend =
+            StaticBackend::new(details(), SIMPLE_PATCH).with_diff_base_sha("mergebase111");
+        let target = PullRequestTarget::with_repository(repo(), 125, "125");
+        let highlighter = SyntaxHighlighter::default();
+        // when
+        let opened = open_pull_request(&backend, target, None, &highlighter).unwrap();
+        // then — both the standalone details and the copy carried on pr_info
+        // report the merge base, so PR-mode entry, the info panel, and the
+        // reload paths can't disagree about the old side.
+        assert_eq!(opened.details.base_sha, "mergebase111");
+        assert_eq!(opened.pr_info.details.base_sha, "mergebase111");
+        // and — resolution happened before the patch was fetched, so nothing
+        // downstream ever observes the unrefined tip.
+        let calls = backend.calls.borrow();
+        let resolved_at = calls
+            .iter()
+            .position(|c| *c == "resolve_diff_base_sha")
+            .expect("expected a resolve_diff_base_sha call");
+        let diff_at = calls
+            .iter()
+            .position(|c| *c == "get_pull_request_diff")
+            .expect("expected a get_pull_request_diff call");
+        assert!(resolved_at < diff_at);
+    }
+
+    #[test]
+    fn should_keep_reported_base_sha_when_backend_needs_no_refinement() {
+        // given — a backend whose base_sha is already the merge base
+        // (GitLab's diff_refs.base_sha), modeled by returning None.
+        let backend = StaticBackend::new(details(), SIMPLE_PATCH);
+        let target = PullRequestTarget::with_repository(repo(), 125, "125");
+        let highlighter = SyntaxHighlighter::default();
+        // when
+        let opened = open_pull_request(&backend, target, None, &highlighter).unwrap();
+        // then — untouched.
+        assert_eq!(opened.details.base_sha, "1234567890abcdef");
+        assert_eq!(opened.pr_info.details.base_sha, "1234567890abcdef");
     }
 }

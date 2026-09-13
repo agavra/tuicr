@@ -345,11 +345,16 @@ impl App {
         if let (DiffSource::PullRequest(pr), Some(backend)) =
             (&self.diff_source, self.forge_backend.as_ref())
         {
+            let (old_sha, new_sha) = self
+                .pr_diff_endpoints
+                .as_ref()
+                .map(|endpoints| (endpoints.old_sha.clone(), endpoints.new_sha.clone()))
+                .unwrap_or_else(|| (pr.base_sha.clone(), pr.key.head_sha.clone()));
             Box::new(ForgeContextProvider {
                 forge: backend.as_ref(),
                 repository: pr.key.repository.clone(),
-                base_sha: pr.base_sha.clone(),
-                head_sha: pr.key.head_sha.clone(),
+                base_sha: old_sha,
+                head_sha: new_sha,
             })
         } else {
             Box::new(VcsContextProvider {
