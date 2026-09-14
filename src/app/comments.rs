@@ -524,45 +524,9 @@ impl App {
     /// edit/delete in tuicr to prevent the local state from drifting from
     /// what GitHub now stores.
     pub fn cursor_on_locked_comment(&self) -> bool {
-        let Some(location) = self.find_comment_at_cursor() else {
-            return false;
-        };
-        match location {
-            CommentLocation::Review { index } => self
-                .session
-                .review_comments
-                .get(index)
-                .is_some_and(|c| c.is_locked()),
-            CommentLocation::File { path, index } => self
-                .session
-                .files
-                .get(&path)
-                .and_then(|review| review.file_comments.get(index))
-                .is_some_and(|c| c.is_locked()),
-            CommentLocation::Line {
-                path,
-                line,
-                side,
-                index,
-            } => self
-                .session
-                .files
-                .get(&path)
-                .and_then(|review| review.line_comments.get(&line))
-                .and_then(|comments| {
-                    let mut side_idx = 0;
-                    for c in comments {
-                        if c.side.unwrap_or(LineSide::New) == side {
-                            if side_idx == index {
-                                return Some(c);
-                            }
-                            side_idx += 1;
-                        }
-                    }
-                    None
-                })
-                .is_some_and(|c| c.is_locked()),
-        }
+        self.find_comment_location_at_cursor()
+            .and_then(|location| self.find_comment(&location))
+            .is_some_and(|comment| comment.is_locked())
     }
 
     /// Find the comment at the current cursor position
@@ -577,7 +541,7 @@ impl App {
         )
     }
 
-    fn find_comment_at_cursor(&self) -> Option<CommentLocation> {
+    fn find_comment_location_at_cursor(&self) -> Option<CommentLocation> {
         let target = self.diff_state.cursor_line;
         let commit_set = self.selected_commit_set();
         match self.line_annotations.get(target) {
@@ -634,11 +598,39 @@ impl App {
         }
     }
 
+    /// Resolve `location` to the comment it points at.
+    ///
+    /// The single reader of an annotation's `comment_idx`: that index is the
+    /// absolute index into the stored `Vec` (see `push_comments`), so the side
+    /// is verified rather than used to re-count.
+    fn find_comment(&self, location: &CommentLocation) -> Option<&Comment> {
+        match location {
+            CommentLocation::Review { index } => self.session.review_comments.get(*index),
+            CommentLocation::File { path, index } => self
+                .session
+                .files
+                .get(path)
+                .and_then(|review| review.file_comments.get(*index)),
+            CommentLocation::Line {
+                path,
+                line,
+                side,
+                index,
+            } => self
+                .session
+                .files
+                .get(path)
+                .and_then(|review| review.line_comments.get(line))
+                .and_then(|comments| comments.get(*index))
+                .filter(|comment| comment.side.unwrap_or(LineSide::New) == *side),
+        }
+    }
+
     /// Content of the comment at the current cursor position, if any.
     /// Resolves through the same lookup `dd` and `i` use, so `Y` yanks
     /// exactly the comment the cursor is sitting on.
     pub fn comment_content_at_cursor(&self) -> Option<String> {
-        match self.find_comment_at_cursor()? {
+        match self.find_comment_location_at_cursor()? {
             CommentLocation::Review { index } => self
                 .session
                 .review_comments
@@ -672,7 +664,7 @@ impl App {
     /// Delete the comment at the current cursor position, if any
     /// Returns true if a comment was deleted
     pub fn delete_comment_at_cursor(&mut self) -> bool {
-        let location = self.find_comment_at_cursor();
+        let location = self.find_comment_location_at_cursor();
 
         match location {
             Some(CommentLocation::Review { index })
@@ -846,7 +838,7 @@ impl App {
     /// line (vim `A` / the default non-vim behavior); otherwise at its start
     /// (vim `i`). Returns true if a comment was found and edit mode entered.
     pub fn enter_edit_mode(&mut self, cursor_at_end: bool) -> bool {
-        let location = self.find_comment_at_cursor();
+        let location = self.find_comment_location_at_cursor();
         // First annotation row of the comment under the cursor, so we can place
         // the text cursor on the line the diff cursor is actually pointing at.
         let block_start = self.comment_block_start(self.diff_state.cursor_line);
