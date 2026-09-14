@@ -1729,7 +1729,7 @@ pub struct SummaryState {
 }
 
 /// Represents a comment location for deletion
-enum CommentLocation {
+pub(crate) enum CommentLocation {
     Review {
         index: usize,
     },

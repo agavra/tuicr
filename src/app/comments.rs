@@ -541,7 +541,7 @@ impl App {
         )
     }
 
-    fn find_comment_location_at_cursor(&self) -> Option<CommentLocation> {
+    pub(crate) fn find_comment_location_at_cursor(&self) -> Option<CommentLocation> {
         let target = self.diff_state.cursor_line;
         let commit_set = self.selected_commit_set();
         match self.line_annotations.get(target) {
@@ -603,7 +603,7 @@ impl App {
     /// The single reader of an annotation's `comment_idx`: that index is the
     /// absolute index into the stored `Vec` (see `push_comments`), so the side
     /// is verified rather than used to re-count.
-    fn find_comment(&self, location: &CommentLocation) -> Option<&Comment> {
+    pub(crate) fn find_comment(&self, location: &CommentLocation) -> Option<&Comment> {
         match location {
             CommentLocation::Review { index } => self.session.review_comments.get(*index),
             CommentLocation::File { path, index } => self

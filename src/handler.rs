@@ -2,8 +2,8 @@ use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Position;
 
 use crate::app::{
-    self, App, CommandCompletionState, ExpandDirection, FileTreeItem, FileTreePrompt, FocusedPanel,
-    GapCursorHit, InputMode, TargetTab, VisualSelection,
+    self, App, CommandCompletionState, CommentLocation, ExpandDirection, FileTreeItem,
+    FileTreePrompt, FocusedPanel, GapCursorHit, InputMode, TargetTab, VisualSelection,
 };
 use crate::forge::remote_comments::PrCommentsVisibility;
 use crate::forge::submit::SubmitEvent;
@@ -1709,13 +1709,26 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
         Action::ToggleHelp => app.toggle_help(),
         Action::EnterCommandMode => app.enter_command_mode(),
         Action::EnterSearchMode => app.enter_search_mode(),
-        Action::AddLineComment => {
-            if let Some((line, side)) = app.get_line_at_cursor() {
-                app.enter_line_comment_mode(line, side);
-            } else {
-                app.set_message("Move cursor to a diff line to add a line comment");
+        Action::AddLineComment => match app.find_comment_location_at_cursor() {
+            Some(location @ CommentLocation::Line { line, side, .. }) => {
+                match app
+                    .find_comment(&location)
+                    .and_then(|comment| comment.line_range)
+                {
+                    Some(range) => app.enter_range_comment_mode(range, side),
+                    None => app.enter_line_comment_mode(line, side),
+                }
             }
-        }
+            Some(CommentLocation::File { .. }) => app.enter_file_comment_mode(),
+            Some(CommentLocation::Review { .. }) => app.enter_review_comment_mode(),
+            None => {
+                if let Some((line, side)) = app.get_line_at_cursor() {
+                    app.enter_line_comment_mode(line, side);
+                } else {
+                    app.set_message("Move cursor to a diff line to add a line comment");
+                }
+            }
+        },
         Action::AddFileComment => app.enter_file_comment_mode(),
         // `i` edits the comment at cursor. In vim mode the text cursor starts at
         // the beginning; otherwise (and for `A`) it starts at the end.
