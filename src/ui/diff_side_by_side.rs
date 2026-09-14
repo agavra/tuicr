@@ -2641,7 +2641,7 @@ mod remote_comments_side_by_side_snapshot_tests {
         assert_eq!(char_at(&buf, divider, row), "│");
         assert_eq!(char_at(&buf, right_start, row), "R");
 
-        app.enter_comment_mode(false, Some((1, LineSide::New)));
+        app.enter_line_comment_mode(1, LineSide::New);
         app.comment_buffer = "COMMENT".to_string();
         app.comment_cursor = app.comment_buffer.len();
         let buf = draw_sbs(&mut app, 80, 20);

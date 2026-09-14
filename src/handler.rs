@@ -1710,14 +1710,13 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
         Action::EnterCommandMode => app.enter_command_mode(),
         Action::EnterSearchMode => app.enter_search_mode(),
         Action::AddLineComment => {
-            let line = app.get_line_at_cursor();
-            if line.is_some() {
-                app.enter_comment_mode(false, line);
+            if let Some((line, side)) = app.get_line_at_cursor() {
+                app.enter_line_comment_mode(line, side);
             } else {
                 app.set_message("Move cursor to a diff line to add a line comment");
             }
         }
-        Action::AddFileComment => app.enter_comment_mode(true, None),
+        Action::AddFileComment => app.enter_file_comment_mode(),
         // `i` edits the comment at cursor. In vim mode the text cursor starts at
         // the beginning; otherwise (and for `A`) it starts at the end.
         Action::EditComment => edit_comment_at_cursor(app, !app.comment_vim_enabled),

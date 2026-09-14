@@ -919,7 +919,8 @@ impl App {
         false
     }
 
-    pub fn enter_comment_mode(&mut self, file_level: bool, line: Option<(u32, LineSide)>) {
+    /// Opens the comment box on one line.
+    pub(crate) fn enter_line_comment_mode(&mut self, line: u32, side: LineSide) {
         self.input_mode = InputMode::Comment;
         if self.diff_view_mode != DiffViewMode::SideBySide {
             self.diff_state.scroll_x = 0;
@@ -928,8 +929,43 @@ impl App {
         self.comment_cursor = 0;
         self.comment_type = self.default_comment_type();
         self.comment_is_review_level = false;
-        self.comment_is_file_level = file_level;
-        self.comment_line = line;
+        self.comment_is_file_level = false;
+        self.comment_line = Some((line, side));
+        self.comment_line_range = None;
+        self.editing_comment_id = None;
+    }
+
+    /// Opens the comment box on the whole file.
+    pub(crate) fn enter_file_comment_mode(&mut self) {
+        self.input_mode = InputMode::Comment;
+        if self.diff_view_mode != DiffViewMode::SideBySide {
+            self.diff_state.scroll_x = 0;
+        }
+        self.comment_buffer.clear();
+        self.comment_cursor = 0;
+        self.comment_type = self.default_comment_type();
+        self.comment_is_review_level = false;
+        self.comment_is_file_level = true;
+        self.comment_line = None;
+        self.comment_line_range = None;
+        self.editing_comment_id = None;
+    }
+
+    /// Opens the comment box on a range. A range comment is keyed by the end of
+    /// its range, so the anchor line is written together with the range.
+    pub(crate) fn enter_range_comment_mode(&mut self, range: LineRange, side: LineSide) {
+        self.input_mode = InputMode::Comment;
+        if self.diff_view_mode != DiffViewMode::SideBySide {
+            self.diff_state.scroll_x = 0;
+        }
+        self.comment_buffer.clear();
+        self.comment_cursor = 0;
+        self.comment_type = self.default_comment_type();
+        self.comment_is_review_level = false;
+        self.comment_is_file_level = false;
+        self.comment_line = Some((range.end, side));
+        self.comment_line_range = Some((range, side));
+        self.editing_comment_id = None;
     }
 
     pub fn enter_review_comment_mode(&mut self) {
