@@ -165,11 +165,13 @@ impl GitBackend {
         preference: GitBackendPreference,
         whitespace_mode: DiffWhitespaceMode,
     ) -> Result<Self> {
-        // libgit2 doesn't support reftable or split index repositories, so we fallback to cli
+        // libgit2 doesn't support reftable, split index, or SHA-256 repositories.
         // TODO: remove reftable fallback logic when libgit2 supports it as part of https://github.com/libgit2/libgit2/issues/5352
         // TODO: remove split index fallback logic when libgit2 supports it as part of https://github.com/libgit2/libgit2/issues/6132
-        let use_cli =
-            preference == GitBackendPreference::Cli || uses_reftable(cwd) || uses_split_index(cwd);
+        let use_cli = preference == GitBackendPreference::Cli
+            || uses_reftable(cwd)
+            || uses_split_index(cwd)
+            || uses_sha256(cwd);
 
         if use_cli {
             return Ok(Self::Cli(GitCliBackend::discover_from(
@@ -235,6 +237,11 @@ fn git_fsmonitor_config_enabled(value: &str) -> bool {
     let value = value.trim();
     git_bool_config_enabled(value)
         || (!value.is_empty() && !matches!(value, "false" | "0" | "no" | "off"))
+}
+
+fn uses_sha256(cwd: &Path) -> bool {
+    run_git_command(cwd, &["rev-parse", "--show-object-format"])
+        .is_ok_and(|format| format.trim() == "sha256")
 }
 
 fn uses_reftable(cwd: &Path) -> bool {
@@ -610,6 +617,146 @@ mod tests {
             matches!(backend, GitBackend::Cli(_)),
             "split-index repo should use Git CLI backend, not libgit2"
         );
+    }
+
+    fn setup_object_format_repo(format: &str) -> tempfile::TempDir {
+        let dir = tempdir().unwrap();
+        run_git_command(dir.path(), &["init", &format!("--object-format={format}")]).unwrap();
+        setup_standard_repo(dir.path());
+        dir
+    }
+
+    #[test]
+    fn sha256_default_discovery_from_root_and_subdirectory_uses_cli() {
+        let dir = setup_object_format_repo("sha256");
+        for path in [dir.path().to_path_buf(), dir.path().join("src")] {
+            let backend = GitBackend::discover_from(
+                &path,
+                GitBackendPreference::Libgit2,
+                DiffWhitespaceMode::Normal,
+            )
+            .expect("SHA-256 repositories should open via the Git CLI");
+            assert!(matches!(backend, GitBackend::Cli(_)));
+            assert_eq!(backend.get_recent_commits(0, 10).unwrap()[0].id.len(), 64);
+        }
+    }
+
+    fn assert_root_diff_for_object_formats(target: &str) {
+        for format in ["sha1", "sha256"] {
+            let dir = setup_object_format_repo(format);
+            let backend = GitBackend::discover_from(
+                dir.path(),
+                GitBackendPreference::Cli,
+                DiffWhitespaceMode::Normal,
+            )
+            .unwrap();
+            let highlighter = SyntaxHighlighter::default();
+            let explicit = backend.resolve_revision_range("HEAD").unwrap();
+            let files = match target {
+                "explicit" => backend.get_commit_range_diff(&explicit, &highlighter),
+                "list" => backend.get_commit_range_diff(
+                    &ResolvedRevisionRange::from_owned_commit_ids(
+                        explicit.commit_ids.to_vec(),
+                        super::super::traits::RevisionDiffTarget::CommitList,
+                    ),
+                    &highlighter,
+                ),
+                "worktree" => {
+                    backend.get_working_tree_with_commits_diff(&explicit.commit_ids, &highlighter)
+                }
+                _ => unreachable!(),
+            }
+            .unwrap_or_else(|error| panic!("{format} {target} root diff failed: {error}"));
+            assert_eq!(files.len(), 1);
+            assert_eq!(files[0].new_path, Some(PathBuf::from("src/file.txt")));
+            assert_eq!(files[0].status, FileStatus::Added);
+            assert!(
+                files[0]
+                    .hunks
+                    .iter()
+                    .flat_map(|h| &h.lines)
+                    .any(|l| l.content.contains("one"))
+            );
+        }
+    }
+
+    #[test]
+    fn sha256_ranges_worktree_changes_and_context_keep_full_commit_ids() {
+        let dir = setup_object_format_repo("sha256");
+        let root = dir.path();
+        let first = run_git_command(root, &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
+        fs::write(root.join("src/file.txt"), "one\ntwo\n").unwrap();
+        run_git_command(root, &["add", "."]).unwrap();
+        run_git_command(root, &["commit", "-m", "second"]).unwrap();
+        let second = run_git_command(root, &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
+        let backend = GitBackend::discover_from(
+            root,
+            GitBackendPreference::Libgit2,
+            DiffWhitespaceMode::Normal,
+        )
+        .unwrap();
+        let highlighter = SyntaxHighlighter::default();
+        let range = backend
+            .resolve_revision_range(&format!("{first}..{second}"))
+            .unwrap();
+        assert_eq!(range.commit_ids.as_ref(), &[second.clone()]);
+        assert_eq!(
+            backend
+                .get_commits_info(&[first.clone(), second.clone()])
+                .unwrap()
+                .len(),
+            2
+        );
+        let files = backend.get_commit_range_diff(&range, &highlighter).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].status, FileStatus::Modified);
+        let context = backend
+            .fetch_context_lines(
+                Path::new("src/file.txt"),
+                FileStatus::Modified,
+                Some(&second),
+                1,
+                2,
+            )
+            .unwrap();
+        assert_eq!(context.len(), 2);
+        assert!(context[1].content.contains("two"));
+        fs::write(root.join("src/file.txt"), "one\ntwo\nstaged\n").unwrap();
+        run_git_command(root, &["add", "."]).unwrap();
+        fs::write(root.join("src/file.txt"), "one\ntwo\nstaged\nunstaged\n").unwrap();
+        assert_eq!(backend.get_staged_diff(&highlighter).unwrap().len(), 1);
+        assert_eq!(backend.get_unstaged_diff(&highlighter).unwrap().len(), 1);
+        assert_eq!(
+            backend.get_working_tree_diff(&highlighter).unwrap().len(),
+            1
+        );
+        assert_eq!(
+            run_git_command(root, &["rev-parse", "HEAD"])
+                .unwrap()
+                .trim(),
+            second
+        );
+    }
+
+    #[test]
+    fn sha256_root_commit_explicit_diff() {
+        assert_root_diff_for_object_formats("explicit");
+    }
+
+    #[test]
+    fn sha256_root_commit_list_diff() {
+        assert_root_diff_for_object_formats("list");
+    }
+
+    #[test]
+    fn sha256_root_commit_with_worktree_diff() {
+        assert_root_diff_for_object_formats("worktree");
     }
 
     fn setup_standard_repo(root: &Path) {

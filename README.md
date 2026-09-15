@@ -106,7 +106,8 @@ the view scrolls automatically to keep it visible. Press `Enter` to jump to the 
 in the continuous diff, leaving single-file view if necessary, or `Esc` to return to the diff. If
 its file or hunk is already marked reviewed, tuicr reveals the target without clearing that
 reviewed state.
-Auto-detects git, jj, or mercurial.
+Auto-detects git, jj, or mercurial. SHA-256 Git repositories automatically use the Git CLI backend,
+including when reviewing root commits; ordinary SHA-1 repositories still default to libgit2.
 
 ## How it compares
 

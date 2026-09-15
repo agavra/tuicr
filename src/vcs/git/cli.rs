@@ -31,7 +31,7 @@ use super::{
 // Untracked files larger than this are shown in the file list but their
 // content is not parsed: they are likely logs, dumps, or build artefacts.
 const MAX_UNTRACKED_FILE_SIZE: u64 = 10 * 1_024 * 1_024;
-const EMPTY_TREE_OID: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
 const COMMIT_FORMAT: &str = "--format=%H%x00%h%x00%an%x00%ct%x00%B%x1e";
 
 #[derive(Debug)]
@@ -338,11 +338,14 @@ impl VcsBackend for GitCliBackend {
 
         let (base_rev, newest_rev) = match &revision_range.diff_target {
             RevisionDiffTarget::CommitList => (
-                parent_rev_or_empty(&self.root_path, &revision_range.commit_ids[0]),
+                parent_rev_or_empty(&self.root_path, &revision_range.commit_ids[0])?,
                 revision_range.commit_ids.last().unwrap().clone(),
             ),
             RevisionDiffTarget::Explicit { base, head } => (
-                base.clone().unwrap_or_else(|| EMPTY_TREE_OID.to_string()),
+                match base {
+                    Some(base) => base.clone(),
+                    None => empty_tree_oid(&self.root_path)?,
+                },
                 head.clone(),
             ),
         };
@@ -388,7 +391,7 @@ impl VcsBackend for GitCliBackend {
             return Err(TuicrError::NoChanges);
         }
 
-        let base_rev = parent_rev_or_empty(&self.root_path, &commit_ids[0]);
+        let base_rev = parent_rev_or_empty(&self.root_path, &commit_ids[0])?;
         self.get_cli_diff(
             vec![
                 "diff".into(),
@@ -1165,11 +1168,18 @@ fn parse_commit_message(message: &str) -> (String, Option<String>) {
     (summary, body)
 }
 
-fn parent_rev_or_empty(workdir: &Path, commit_id: &str) -> String {
+fn empty_tree_oid(workdir: &Path) -> Result<String> {
+    // Command::output closes stdin. Hash empty tree bytes in the repository's
+    // object format without writing an object into the reviewed repository.
+    run_git_command(workdir, &["hash-object", "-t", "tree", "--stdin"])
+        .map(|oid| oid.trim().to_string())
+}
+
+fn parent_rev_or_empty(workdir: &Path, commit_id: &str) -> Result<String> {
     let parent_spec = format!("{commit_id}^");
     run_git_command(workdir, &["rev-parse", &parent_spec])
         .map(|rev| rev.trim().to_string())
-        .unwrap_or_else(|_| EMPTY_TREE_OID.to_string())
+        .or_else(|_| empty_tree_oid(workdir))
 }
 
 fn resolve_revision_range_cli(
