@@ -15,7 +15,7 @@ use crate::forge::github::gh::GhCommandRunner;
 use crate::forge::traits::ForgeRepository;
 
 /// Resolve `origin` to its canonical (parent) repository. Order:
-///   1. `override_repo` (from `--repo-url`) wins, no I/O.
+///   1. `override_repo` (resolved from `--repo-url` or `--remote`) wins, no I/O.
 ///   2. `gh api repos/<owner>/<repo>` parent lookup.
 ///   3. Fall back to `origin` if the lookup fails or the repo is not a fork.
 pub fn resolve_canonical_repository(

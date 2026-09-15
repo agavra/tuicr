@@ -51,6 +51,7 @@ take the last one given and boolean flags stay on once set, so
 | `--stdout` | | | Print the export to stdout instead of copying to the clipboard |
 | `--no-update-check` | | | Skip the startup update check (same as `no_update_check` in the config) |
 | `--repo-url` | | `URL` | Override the forge repo for PR operations |
+| `--remote` | | `NAME` | Use a named VCS remote's fetch/pull URL for PR operations; conflicts with `--repo-url` |
 | `--version` | `-V` | | Print the version and exit |
 | `--help` | `-h` | | Print help and exit |
 
@@ -60,6 +61,27 @@ SCP-style SSH, or `ssh://` form — for example
 `https://dev.azure.com/org/project/_git/repo`. It is what to reach for when the
 checkout's `origin` remote does not point at the forge repo you want to review
 against.
+
+If the repository is already configured as a remote, use its name instead:
+
+```bash
+tuicr pr 382 --remote staging-upstream
+```
+
+`--remote` discovers a Git repository from the current directory, including
+subdirectories and colocated Jujutsu workspaces. Remote lookup does not run `jj`.
+Non-colocated Jujutsu and Mercurial workspaces can use `--repo-url` instead.
+
+- Git uses `git remote get-url <name>` and honors `url.<base>.insteadOf` rewrites.
+
+The fetch/pull URL is used, not a push URL. A missing remote or unrecognized
+forge URL is an error, not a fallback to another remote. The URL must identify
+a repository on one of the supported forges.
+
+Both `--remote` and `--repo-url` select the repository directly, without a fork-parent
+lookup. They cannot be combined. When `--remote` is supplied, its lookup must
+succeed before a full PR URL or `owner/repo#N` target takes precedence. Omit
+`--remote` when using an explicit target outside a Git checkout.
 
 ### Scope selection
 

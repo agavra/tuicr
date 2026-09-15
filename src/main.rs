@@ -178,6 +178,18 @@ fn main() -> anyhow::Result<()> {
         DiffWhitespaceMode::Normal
     };
 
+    let repo_url_override = match cli_args.remote.as_deref() {
+        Some(name) => {
+            let vcs =
+                tuicr::vcs::GitBackend::discover(git_backend_preference, diff_whitespace_mode)?;
+            Some(tuicr::forge::resolve_remote_repository(&vcs, name)?)
+        }
+        None => cli_args
+            .repo_url
+            .as_deref()
+            .and_then(tuicr::forge::parse_any_remote_url),
+    };
+
     let commit_order = match config_outcome
         .config
         .as_ref()
@@ -223,10 +235,7 @@ fn main() -> anyhow::Result<()> {
                 diff_whitespace_mode,
                 commit_selection,
                 pr_target: cli_args.pr_target.as_deref(),
-                repo_url_override: cli_args
-                    .repo_url
-                    .as_deref()
-                    .and_then(tuicr::forge::parse_any_remote_url),
+                repo_url_override,
             },
         )
     }) {

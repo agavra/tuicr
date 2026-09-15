@@ -142,6 +142,7 @@ Repository-managed agent integrations:
 - Trait abstracting VCS operations
 - Methods: `info()`, `get_working_tree_diff()`, `fetch_context_lines()`, `get_recent_commits()`, `get_commit_range_diff()`
 - Capability hooks: `supports_sparse_checkout()` advertises whether the selected backend can operate on Git sparse-checkout repos
+- `remote_url(name)` resolves a named fetch/pull URL. New VCS adapters must implement this capability and update the Git-only discovery call in `main.rs`; keep forge parsing in `forge::resolve_remote_repository`, not in the VCS adapter.
 - Implementations: `GitBackend`, `HgBackend`, `JjBackend` (all always compiled)
 
 **FileTreeFilter** (`src/app/mod.rs`, impls in `src/app/file_filter.rs`):

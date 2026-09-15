@@ -161,6 +161,14 @@ pub trait VcsBackend: Send {
     /// Get repository information
     fn info(&self) -> &VcsInfo;
 
+    /// Resolve a named remote's fetch/pull URL using this VCS's configuration.
+    /// Missing remotes and unavailable URLs are errors, not fallback requests.
+    fn remote_url(&self, _name: &str) -> Result<String> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Named remotes not supported for this VCS".into(),
+        ))
+    }
+
     /// Non-fatal notices that should be shown after startup.
     fn startup_warnings(&self) -> Vec<String> {
         Vec::new()

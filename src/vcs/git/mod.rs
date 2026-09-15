@@ -191,6 +191,11 @@ impl GitBackend {
     }
 }
 
+/// Read a named remote's fetch URL, including Git's `insteadOf` rewrites.
+pub(super) fn remote_url(repo_root: &Path, name: &str) -> Result<String> {
+    run_git_command(repo_root, &["remote", "get-url", "--", name])
+}
+
 fn run_git_command(workdir: &Path, args: &[&str]) -> Result<String> {
     // `-c commit.gpgsign=false` is a no-op for the read-only `config`/`init`
     // calls this makes in production, but it keeps the test-only `commit`
@@ -252,6 +257,10 @@ impl VcsBackend for GitBackend {
             Self::Libgit2(backend) => backend.info(),
             Self::Cli(backend) => backend.info(),
         }
+    }
+
+    fn remote_url(&self, name: &str) -> Result<String> {
+        remote_url(&self.info().root_path, name)
     }
 
     fn startup_warnings(&self) -> Vec<String> {
@@ -399,8 +408,85 @@ impl VcsBackend for GitBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::forge::{resolve_remote_repository, traits::ForgeRepository};
+    use git2::Repository;
     use std::fs;
     use tempfile::tempdir;
+
+    fn init_repo_with_origin(url: &str) -> tempfile::TempDir {
+        let dir = tempdir().unwrap();
+        let repo = Repository::init(dir.path()).unwrap();
+        repo.remote("origin", url).unwrap();
+        dir
+    }
+
+    #[test]
+    fn resolves_named_remote_fetch_url_from_subdirectory() {
+        let dir = init_repo_with_origin("https://github.com/owner/repo");
+        let repo = Repository::open(dir.path()).unwrap();
+        repo.remote("staging-upstream", "git@github.com:org/repo-staging.git")
+            .unwrap();
+        repo.remote_set_pushurl(
+            "staging-upstream",
+            Some("https://github.com/contributor/repo-staging.git"),
+        )
+        .unwrap();
+        let nested = dir.path().join("nested");
+        std::fs::create_dir(&nested).unwrap();
+
+        for preference in [GitBackendPreference::Libgit2, GitBackendPreference::Cli] {
+            let backend =
+                GitBackend::discover_from(&nested, preference, DiffWhitespaceMode::Normal).unwrap();
+            assert_eq!(
+                resolve_remote_repository(&backend, "staging-upstream").unwrap(),
+                ForgeRepository::github("github.com", "org", "repo-staging")
+            );
+        }
+    }
+
+    #[test]
+    fn resolves_remote_url_rewrites_without_using_push_rewrites() {
+        let dir = init_repo_with_origin("https://github.com/owner/repo");
+        let repo = Repository::open(dir.path()).unwrap();
+        repo.remote("staging", "tuicr-test:group/repo.git").unwrap();
+        let mut config = repo.config().unwrap();
+        config
+            .set_str("url.https://gitlab.com/.insteadOf", "tuicr-test:")
+            .unwrap();
+        config
+            .set_str("url.https://github.com/.pushInsteadOf", "tuicr-test:")
+            .unwrap();
+        let backend = GitBackend::discover_from(
+            dir.path(),
+            GitBackendPreference::Libgit2,
+            DiffWhitespaceMode::Normal,
+        )
+        .unwrap();
+
+        assert_eq!(
+            resolve_remote_repository(&backend, "staging").unwrap(),
+            ForgeRepository::gitlab("gitlab.com", "group", "repo")
+        );
+    }
+
+    #[test]
+    fn rejects_unusable_named_remotes_instead_of_falling_back_to_origin() {
+        let dir = init_repo_with_origin("https://github.com/owner/repo");
+        let repo = Repository::open(dir.path()).unwrap();
+        repo.remote("invalid", "not-a-url").unwrap();
+        let backend = GitBackend::discover_from(
+            dir.path(),
+            GitBackendPreference::Libgit2,
+            DiffWhitespaceMode::Normal,
+        )
+        .unwrap();
+        for name in ["missing", "invalid", "--all"] {
+            assert!(matches!(
+                resolve_remote_repository(&backend, name),
+                Err(TuicrError::Forge(_))
+            ));
+        }
+    }
 
     #[test]
     fn derives_git_repo_mode_from_config() {

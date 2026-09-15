@@ -23,6 +23,7 @@ use std::path::{Path, PathBuf};
 
 use git2::Repository;
 
+use crate::error::{Result, TuicrError};
 use crate::forge::azure::az::parse_azure_remote_url;
 use crate::forge::bitbucket::bkt::parse_bitbucket_remote_url;
 use crate::forge::gerrit::api::parse_gerrit_remote_url;
@@ -30,6 +31,7 @@ use crate::forge::gitea::tea::parse_gitea_remote_url;
 use crate::forge::github::gh::parse_github_remote_url;
 use crate::forge::gitlab::glab::parse_gitlab_remote_url;
 use crate::forge::traits::ForgeRepository;
+use crate::vcs::VcsBackend;
 
 /// Try to detect a GitHub forge repository for the local checkout at `repo_root`.
 ///
@@ -160,6 +162,18 @@ pub fn detect_forge_repository(repo_root: &Path) -> Option<ForgeRepository> {
     remote_urls(repo_root)
         .iter()
         .find_map(|url| parse_any_remote_url(url))
+}
+
+/// Resolve a VCS remote to a supported forge repository.
+pub fn resolve_remote_repository(vcs: &dyn VcsBackend, name: &str) -> Result<ForgeRepository> {
+    let url = vcs
+        .remote_url(name)
+        .map_err(|err| TuicrError::Forge(format!("Failed to resolve remote '{name}': {err}")))?;
+    parse_any_remote_url(url.trim()).ok_or_else(|| {
+        TuicrError::Forge(format!(
+            "Remote '{name}' does not have a recognized forge fetch URL"
+        ))
+    })
 }
 
 /// `root`'s local checkout, but only when one of its remotes — not

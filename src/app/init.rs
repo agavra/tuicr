@@ -630,7 +630,7 @@ impl App {
     /// Lazily called during startup — running this synchronously is fine
     /// because it only reads local config, never the network.
     fn detect_forge_repository(&mut self) {
-        // `--repo-url` short-circuits detection: the user has told us
+        // An explicit repository override short-circuits detection: the user has told us
         // exactly which repo to target, so skip both the local-remote
         // probe and the `gh api` parent lookup that runs on PR-tab entry.
         if let Some(override_repo) = self.repo_url_override.clone() {
@@ -857,7 +857,7 @@ impl App {
 
         // Resolution order when the target lacks an explicit repo
         // (`tuicr pr 125`):
-        //   1. `--repo-url` override (explicit user intent; no I/O)
+        //   1. resolved `--repo-url` or `--remote` override
         //   2. canonical of the local `origin` (gh api parent lookup —
         //      so `tuicr pr 125` from a fork checkout opens the PR on
         //      the upstream, matching the PR-tab behavior)
