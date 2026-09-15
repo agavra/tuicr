@@ -2,23 +2,43 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [0.26.0] - 2026-09-15
+
+### Bug Fixes
+
+- **forge:** Use the comment type label in the submit prefix (#611)
+- Avoid keyboard probe for piped stdin (#678)
+- **cli:** Warn when review add --type is not a configured type (#682)
+- Stage deleted files with libgit2 (#684)
+- **forge:** Return GitLab MR commits oldest-first (#691)
+- Scroll side-by-side diffs horizontally (#693)
+- **input:** Type AltGr characters in the command, search and filter prompts (#694)
+- **cli:** Include comment author in review output (#690)
+- Persist reload reconciliation (#704)
+- **git:** Support SHA-256 repositories via CLI backend (#716)
+
+### Documentation
+
+- **skill:** Guide agents through seeding comments correctly (#680)
+- Add a CLI reference and correct stale forge claims (#705)
+- **skill:** Correct review comment author guidance (#706)
 
 ### Features
 
-- **gerrit:** Add Gerrit Code Review support over the Gerrit REST API (no CLI
-  needed). Open and browse changes, read existing comments — including
-  outdated ones from earlier patch sets — and push reviews with `:submit`
-  (Comment, Approve as `Code-Review +2`, Request changes as `-1`, and Draft as
-  Gerrit draft comments). Self-hosted hosts are detected by the canonical SSH
-  port 29418, a `GERRIT_URL`, or a hostname containing "gerrit". The `r`
-  toggle in the Pull Requests tab lists changes in your Gerrit *attention set*
-  (`attention:self -owner:self`) rather than every change you review, so it
-  answers "what needs me now"; that toggle needs Gerrit 3.3+. Auth is a Gerrit
-  HTTP password in `GERRIT_USERNAME` / `GERRIT_PASSWORD`. Reviewing needs a
-  local clone, and patch-set comparison is not supported yet. See
-  `docs/GERRIT.md`.
+- **export:** Add export.session_header to drop the session slug (#676)
+- **config:** Add editor key to override $EDITOR for e/:edit (#677)
+- **forge:** Add Gitea pull request review support (#652)
+- **gerrit:** Add Gerrit Code Review as a supported forge (#692)
+- Add opt-in compact folders to the file tree (#698)
+- **pr:** Add named remote selection (#715)
 
+### Diff
+
+- Drop the frame and fold the header when the diff is the sole pane (#666)
+
+### Skill
+
+- Put the zellij review pane where its caller is (#687)
 ## [0.25.0] - 2026-09-02
 
 ### Bug Fixes
