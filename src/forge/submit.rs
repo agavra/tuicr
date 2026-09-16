@@ -1139,6 +1139,7 @@ mod tests {
         let comment = comment_with_line(LineSide::New, Some(11), None);
         let cfg = ForgeConfig {
             comment_type_prefix: false,
+            sync_viewed: false,
         };
         let mapped = map_comment(
             &comment,
@@ -1214,6 +1215,7 @@ mod tests {
     fn should_omit_type_prefix_in_body_when_disabled() {
         let cfg = ForgeConfig {
             comment_type_prefix: false,
+            sync_viewed: false,
         };
         let comments = vec![note("just text")];
         let body = build_review_body(&comments, &[], ctx_of(&cfg, &test_comment_types()));

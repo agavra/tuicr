@@ -198,7 +198,11 @@ impl App {
         self.revealed_reviewed_file = None;
         if let Some(review) = self.session.get_file_mut(&path) {
             review.reviewed = !review.reviewed;
+            let now_reviewed = review.reviewed;
             self.dirty = true;
+            // Fire-and-forget: GitHub's viewed checkbox follows the local
+            // marker, it never gates it.
+            self.push_viewed_state(&path, now_reviewed);
 
             // Update current_file_idx before rebuilding annotations:
             // single-file view filters annotations against it.
