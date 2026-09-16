@@ -1,50 +1,43 @@
 # tuicr
 
-**A code review TUI with vim keybindings. Export to GitHub, GitLab, Gitea, Bitbucket, Azure DevOps, Gerrit, or clipboard.**
+**A code review TUI wior hunk //img.shields.io/badge/website-tuicr.dev-green)](https://tuicr.dev)
+(https://img.shargets: push a real review to GitHub, GitLab, Gitea, Bitbucket, Azure DevOps, or Gerrit, copy
+  structured markdown to your cth vim keybindings. Export to GitHub, GitLab, Gitea, Bitbucket, Azure DevOps, Gerrit, or clipboard.**
 
-[![Crates.io](https://img.shields.io/crates/v/tuicr)](https://crates.io/crates/tuicr)
-[![License](https://img.shields.io/crates/l/tuicr)](./LICENSE)
-[![Website](https://img.shields.io/badge/website-tuicr.dev-green)](https://tuicr.dev)
-
-![demo](./public/tuicr-demo.gif)
-
-> [!TIP]
-> Pronounced "tweaker".
-
+[![Crates.io]nts at the line, range, file, and review level. 
+- Review tracking at file lipboard, or pipe to stdout.
+- Works with git, jj, and mercurial. Reviews uncommitted changes, commit ranges, or any GitHub PR,
+  GitLab MR, Gitea PRiel
+> [!TIP]granularity, per
 ## What it does
 
 - GitHub-style continuous diff in the terminal. Scroll through every changed file in one stream.
-- PR-style comments at the line, range, file, and review level. 
-- Review tracking at file or hunk granularity, persisted across sessions.
-- Three export targets: push a real review to GitHub, GitLab, Gitea, Bitbucket, Azure DevOps, or Gerrit, copy
-  structured markdown to your clipboard, or pipe to stdout.
-- Works with git, jj, and mercurial. Reviews uncommitted changes, commit ranges, or any GitHub PR,
-  GitLab MR, Gitea PR, Bitbucket PR, Azure DevOps PR, or Gerrit change.
-
-## Install
-
-```bash
+- PR-style comme
+![demo](./public/tuicr-demo
 curl -fsSL tuicr.dev/install.sh | sh
 # or
 brew install tuicr
 # or
 sudo pacman -S tuicr
 ```
+.gif)
+isted across sessions.
+- Three export t, Bitbucsds.io/crates/v/tuicr)](https://crates.io/crates/tuicr)
+[![License](https://img.shields.io/crates/l/tuicr)](./LICENSE)
+[![Website](https:
+> Pronounced "f".
+ket PR, Azure DevOps PR, or Gerrit change.
 
-<details>
-<summary>Other install methods (cargo, mise, nix, binaries, source)</summary>
-
+## Install
 ```bash
 # Cargo
 cargo install tuicr
 
 # Mise
-mise use github:agavra/tuicr
 
-# Nix
-nix run github:agavra/tuicr
-```
-
+```bash
+<details>
+<summary>Other i
 Pre-built binaries: [GitHub Releases](https://github.com/agavra/tuicr/releases). Linux releases
 include dynamically linked GNU and static musl variants.
 
@@ -54,7 +47,14 @@ From source:
 git clone https://github.com/agavra/tuicr.git
 cd tuicr
 cargo install --path .
+```nstall methods (cargo, mise, nix, binaries, source)</summary>
+
+mise use github:agavra/tuicr
+
+# Nix
+nix run github:agavra/tuicr
 ```
+
 
 </details>
 
@@ -65,13 +65,13 @@ tuicr update
 tuicr update 0.18.0 # Install a known-good version
 ```
 
-`tuicr update` uses Homebrew, Cargo, Mise, or a Nix profile when that manager owns the
-executable. Install-script and manually downloaded binaries update in place from the matching
-GitHub release asset after SHA-256 verification. Exact-version installs support Cargo and direct
-binaries; use the package manager's pinning workflow for Homebrew, Mise, or Nix. A `nix run`
-invocation is temporary rather than installed; rerun it to use the current flake, or use
+`tuicr update`SHA-256 ve and manually  trsion installs support Cargo and direct
+binaries; use the package mandownloaded binaries update in place from the matching
+GitHub release asset a Homebrew, Mise, or Nix. A `nix run`
+invocation is temporary ratheragehan installed; rerun it to use the current flake, or use
 `nix profile install github:agavra/tuicr` for an installation that `tuicr update` can upgrade.
-
+usfter rification. Exact-ver's pinning workflow fores Homebrew, Cargo, Mise, or a Nix profile when that manager owns the
+executable. Install-script 
 ## Quick start
 
 ```bash
