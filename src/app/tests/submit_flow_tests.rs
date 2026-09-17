@@ -5,7 +5,7 @@ use crate::app::*;
 use crate::forge::submit::{ResolverAction, SubmitEvent, UnmappableReason};
 use crate::forge::traits::{ForgeRepository, PrSessionKey};
 use crate::model::comment::{Comment, CommentLifecycleState, CommentType, LineContext};
-use crate::model::diff_types::{DiffHunk, DiffLine, FileStatus, LineOrigin};
+use crate::model::diff_types::{DiffHunk, DiffLine, FileStatus, LineColoring, LineOrigin};
 use crate::vcs::traits::{VcsChangeStatus, VcsType};
 
 struct DummyVcs {
@@ -69,14 +69,14 @@ fn make_pr_app_with_single_modified_file(file_path: &str) -> App {
                     content: "a".to_string(),
                     old_lineno: Some(10),
                     new_lineno: Some(10),
-                    highlighted_spans: None,
+                    coloring: LineColoring::Pending,
                 },
                 DiffLine {
                     origin: LineOrigin::Addition,
                     content: "b".to_string(),
                     old_lineno: None,
                     new_lineno: Some(11),
-                    highlighted_spans: None,
+                    coloring: LineColoring::Pending,
                 },
             ],
         }],

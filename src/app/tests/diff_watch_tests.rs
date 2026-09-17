@@ -124,7 +124,7 @@ fn make_hunk(new_start: u32, new_count: u32) -> DiffHunk {
             content: format!("hunk line {}", new_start + i),
             old_lineno: Some(new_start + i),
             new_lineno: Some(new_start + i),
-            highlighted_spans: None,
+            coloring: LineColoring::Pending,
         });
     }
     DiffHunk {

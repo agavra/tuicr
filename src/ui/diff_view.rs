@@ -164,7 +164,26 @@ pub(super) fn diff_visible_range(app: &App, inner: Rect) -> (usize, usize) {
     }
 }
 
+/// Draws the diff, and redraws once if drawing moved the scroll offset.
+///
+/// Coloring ran against the offset held before this call. Either renderer can move it
+/// mid-draw through `scroll_comment_input_into_view`, keeping a grown comment box on
+/// screen, which lands the viewport on hunks nothing colored. Comparing the offset
+/// beats bounds arithmetic: unchanged means the drawn window is the colored one.
 pub(super) fn render_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {
+    let offset_before_render = app.diff_state.scroll_offset;
+    render_diff_view_once(frame, app, area);
+    if app.diff_state.scroll_offset == offset_before_render {
+        return;
+    }
+
+    // One retry suffices: `scroll_comment_input_into_view` only pulls the box back
+    // into view, so it settles on the first adjustment.
+    app.color_visible_hunks(frame.area().height as usize);
+    render_diff_view_once(frame, app, area);
+}
+
+fn render_diff_view_once(frame: &mut Frame, app: &mut App, area: Rect) {
     match app.diff_view_mode {
         DiffViewMode::Unified => render_unified_diff(frame, app, area),
         DiffViewMode::SideBySide => render_side_by_side_diff(frame, app, area),

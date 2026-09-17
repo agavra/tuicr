@@ -635,7 +635,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                         ];
                         let content_start = line_spans.len();
 
-                        if let Some(ref highlighted) = diff_line.highlighted_spans {
+                        if let Some(highlighted) = diff_line.coloring.spans() {
                             for (span_style, span_text) in highlighted {
                                 line_spans.push(Span::styled(span_text.clone(), *span_style));
                             }
@@ -650,7 +650,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                             LineOrigin::Addition | LineOrigin::Deletion
                         )
                         .then(|| {
-                            let eol_style = match diff_line.highlighted_spans.as_ref() {
+                            let eol_style = match diff_line.coloring.spans() {
                                 // For syntax-highlighted lines (including empty highlighted lines),
                                 // use syntax diff background so row fill matches code spans.
                                 Some(_) => {
@@ -1485,7 +1485,8 @@ mod remote_comments_snapshot_tests {
     };
     use crate::forge::traits::{ForgeRepository, PrSessionKey};
     use crate::model::{
-        DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin, ReviewSession, SessionDiffSource,
+        DiffFile, DiffHunk, DiffLine, FileStatus, LineColoring, LineOrigin, ReviewSession,
+        SessionDiffSource,
     };
     use crate::syntax::SyntaxHighlighter;
     use crate::theme::Theme;
@@ -1550,14 +1551,14 @@ mod remote_comments_snapshot_tests {
                 content: "first".to_string(),
                 old_lineno: Some(1),
                 new_lineno: Some(1),
-                highlighted_spans: None,
+                coloring: LineColoring::Pending,
             },
             DiffLine {
                 origin: LineOrigin::Addition,
                 content: "second".to_string(),
                 old_lineno: None,
                 new_lineno: Some(2),
-                highlighted_spans: None,
+                coloring: LineColoring::Pending,
             },
         ];
         let hunk = DiffHunk {
@@ -1737,7 +1738,7 @@ mod remote_comments_snapshot_tests {
                 content: line.to_string(),
                 old_lineno: None,
                 new_lineno: Some(i as u32 + 1),
-                highlighted_spans: None,
+                coloring: LineColoring::Pending,
             })
             .collect();
         let new_count = lines.len() as u32;
@@ -1975,7 +1976,7 @@ mod remote_comments_snapshot_tests {
                 content: long.clone(),
                 old_lineno: None,
                 new_lineno: Some(1),
-                highlighted_spans: None,
+                coloring: LineColoring::Pending,
             }],
             old_start: 0,
             old_count: 0,
@@ -2037,7 +2038,7 @@ mod remote_comments_snapshot_tests {
                 content: format!("line {n}"),
                 old_lineno: None,
                 new_lineno: Some(n),
-                highlighted_spans: None,
+                coloring: LineColoring::Pending,
             })
             .collect();
         let hunks = vec![DiffHunk {
@@ -2116,7 +2117,7 @@ mod remote_comments_snapshot_tests {
                 content: long.clone(),
                 old_lineno: None,
                 new_lineno: Some(i + 1),
-                highlighted_spans: None,
+                coloring: LineColoring::Pending,
             })
             .collect();
         lines.push(DiffLine {
@@ -2124,7 +2125,7 @@ mod remote_comments_snapshot_tests {
             content: "LASTLINEMARKER".to_string(),
             old_lineno: None,
             new_lineno: Some(31),
-            highlighted_spans: None,
+            coloring: LineColoring::Pending,
         });
         let hunk = DiffHunk {
             header: "@@ -0,0 +1,31 @@".to_string(),
@@ -2192,7 +2193,7 @@ mod remote_comments_snapshot_tests {
                 content: long.clone(),
                 old_lineno: None,
                 new_lineno: Some(1),
-                highlighted_spans: None,
+                coloring: LineColoring::Pending,
             }],
             old_start: 0,
             old_count: 0,

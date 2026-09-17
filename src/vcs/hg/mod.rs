@@ -100,11 +100,7 @@ impl HgBackend {
         Cow::Owned(args_with_whitespace)
     }
 
-    fn load_diff(
-        &self,
-        diff_args: &[&str],
-        highlighter: &SyntaxHighlighter,
-    ) -> Result<Vec<DiffFile>> {
+    fn load_diff(&self, diff_args: &[&str]) -> Result<Vec<DiffFile>> {
         let args = self.diff_args(diff_args);
         let mut patch_args: Vec<&str> = args.iter().copied().collect();
         patch_args.insert(1, "--git");
@@ -145,7 +141,7 @@ impl HgBackend {
             patches
         };
 
-        diff_parser::parse_file_patches(patches, highlighter)
+        diff_parser::parse_file_patches(patches)
     }
 }
 
@@ -258,7 +254,7 @@ impl VcsBackend for HgBackend {
     }
 
     fn get_working_tree_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
-        let mut files = self.load_diff(&["diff"], highlighter)?;
+        let mut files = self.load_diff(&["diff"])?;
         apply_container_full_file_highlight(
             &self.info.root_path,
             ".",
@@ -447,7 +443,7 @@ impl VcsBackend for HgBackend {
         };
 
         let diff_args = ["diff", "-r", &from_rev, "-r", newest_short];
-        let mut files = self.load_diff(&diff_args, highlighter)?;
+        let mut files = self.load_diff(&diff_args)?;
         apply_container_full_file_highlight(
             &self.info.root_path,
             &from_rev,
@@ -555,7 +551,7 @@ impl VcsBackend for HgBackend {
         };
 
         let diff_args = ["diff", "-r", &from_rev];
-        let mut files = self.load_diff(&diff_args, highlighter)?;
+        let mut files = self.load_diff(&diff_args)?;
         apply_container_full_file_highlight(
             &self.info.root_path,
             &from_rev,
@@ -1364,8 +1360,8 @@ mod tests {
 
         for line in changed_lines {
             let spans = line
-                .highlighted_spans
-                .as_ref()
+                .coloring
+                .spans()
                 .unwrap_or_else(|| panic!("vue line should be highlighted: {line:?}"));
             let unique_fgs: std::collections::HashSet<_> =
                 spans.iter().filter_map(|(s, _)| s.fg).collect();

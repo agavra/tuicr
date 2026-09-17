@@ -14,8 +14,8 @@ use crate::forge::selector::PullRequestsTab;
 use crate::forge::traits::{ForgeBackend, ForgeRepository};
 use crate::model::review::FileReview;
 use crate::model::{
-    ClearScope, Comment, CommentType, DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin,
-    LineRange, LineSide, ReviewSession, SessionDiffSource,
+    ClearScope, Comment, CommentType, DiffFile, DiffHunk, DiffLine, FileStatus, LineColoring,
+    LineOrigin, LineRange, LineSide, ReviewSession, SessionDiffSource,
 };
 use crate::persistence::load_latest_session_for_context;
 use crate::review_store::{AddCommentRequest, CommentTarget, add_comment_to_session};
@@ -1823,3 +1823,84 @@ mod visual;
 
 #[cfg(test)]
 mod tests;
+
+impl App {
+    /// Colors every hunk the window around the viewport covers, skipping any already
+    /// done. Runs before any line is built, because a colored line and an uncolored one
+    /// get different backgrounds, so a frame built partway through coloring shows both.
+    ///
+    /// `max_rows` is the frame's height. `diff_state.viewport_height` is no use here,
+    /// because it is written during render and so reads zero on the first frame.
+    pub(crate) fn color_visible_hunks(&mut self, max_rows: usize) {
+        let highlighter = self.theme.syntax_highlighter();
+        for (file_idx, hunk_idx) in self.visible_hunk_indices(max_rows) {
+            let Some(file) = self.diff_files.get_mut(file_idx) else {
+                continue;
+            };
+            let Some(path) = file.new_path.clone().or_else(|| file.old_path.clone()) else {
+                continue;
+            };
+            let Some(hunk) = file.hunks.get_mut(hunk_idx) else {
+                continue;
+            };
+            // Coloring state lives on the lines, so this reads them directly.
+            if hunk.lines.iter().any(|l| l.coloring.is_pending()) {
+                crate::vcs::color_hunk(hunk, &path, highlighter);
+            }
+        }
+    }
+
+    /// The hunks the window around `scroll_offset` covers, as `(file_idx, hunk_idx)`
+    /// pairs in render order, each listed once. Kept pure and separate from the
+    /// coloring so the window arithmetic can be asserted against a table of cases,
+    /// rather than only through a frame rendered into a fake terminal.
+    pub(crate) fn visible_hunk_indices(&self, max_rows: usize) -> Vec<(usize, usize)> {
+        let height = max_rows.max(1);
+        let offset = self
+            .diff_state
+            .scroll_offset
+            .min(self.line_annotations.len());
+
+        // One screen of margin either side, so an ordinary scroll never lands on an
+        // uncolored hunk. A page down moves exactly one screen, which is why the margin
+        // is a screen rather than a fixed row count.
+        let start = offset.saturating_sub(height);
+        let end = offset
+            .saturating_add(height * 2)
+            .min(self.line_annotations.len());
+
+        let mut wanted: Vec<(usize, usize)> = Vec::new();
+        for annotation in &self.line_annotations[start..end] {
+            let pair = match annotation {
+                AnnotatedLine::DiffLine {
+                    file_idx, hunk_idx, ..
+                }
+                | AnnotatedLine::SideBySideLine {
+                    file_idx, hunk_idx, ..
+                }
+                | AnnotatedLine::HunkHeader { file_idx, hunk_idx } => (*file_idx, *hunk_idx),
+                // exhaustive name variants so new ones don't accidentally compile
+                AnnotatedLine::PrInfoLine { .. }
+                | AnnotatedLine::IssueCommentsHeader
+                | AnnotatedLine::IssueComment { .. }
+                | AnnotatedLine::ReviewCommentsHeader
+                | AnnotatedLine::ReviewComment { .. }
+                | AnnotatedLine::RemoteReviewSummaryLine { .. }
+                | AnnotatedLine::FileHeader { .. }
+                | AnnotatedLine::ReviewedBanner { .. }
+                | AnnotatedLine::FileComment { .. }
+                | AnnotatedLine::Expander { .. }
+                | AnnotatedLine::HiddenLines { .. }
+                | AnnotatedLine::ExpandedContext { .. }
+                | AnnotatedLine::LineComment { .. }
+                | AnnotatedLine::RemoteThreadLine { .. }
+                | AnnotatedLine::BinaryOrEmpty { .. }
+                | AnnotatedLine::Spacing => continue,
+            };
+            if !wanted.contains(&pair) {
+                wanted.push(pair);
+            }
+        }
+        wanted
+    }
+}

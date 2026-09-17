@@ -70,15 +70,71 @@ pub enum LineOrigin {
     Deletion,
 }
 
+/// Where a diff line stands with respect to syntax coloring.
+///
+/// The coloring pass has to tell "not colored yet" from "no grammar matched". A renderer
+/// does not, and draws both plainly.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub enum LineColoring {
+    /// The coloring pass has not reached this line's hunk yet.
+    #[default]
+    Pending,
+    /// The pass ran and produced nothing: no grammar matched the file, or the grammar
+    /// yielded no spans for this line. Renders plainly and is never retried.
+    Plain,
+    /// The pass ran and produced these spans.
+    Spans(Vec<(Style, String)>),
+}
+
+impl LineColoring {
+    /// The spans to draw, if any.
+    ///
+    /// `Pending` and `Plain` both give `None`, because a renderer draws them identically.
+    /// The coloring pass tells them apart with `is_pending`.
+    pub fn spans(&self) -> Option<&Vec<(Style, String)>> {
+        match self {
+            Self::Spans(spans) => Some(spans),
+            Self::Pending | Self::Plain => None,
+        }
+    }
+
+    /// Whether this line still needs coloring. The pass skips everything else, which is
+    /// what keeps a visible hunk from being recolored on every frame.
+    pub fn is_pending(&self) -> bool {
+        matches!(self, Self::Pending)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct DiffLine {
     pub origin: LineOrigin,
     pub content: String,
     pub old_lineno: Option<u32>,
     pub new_lineno: Option<u32>,
-    /// Optional syntax-highlighted spans for this line
-    /// If None, use the default diff coloring
-    pub highlighted_spans: Option<Vec<(Style, String)>>,
+    /// Syntax coloring state.
+    pub coloring: LineColoring,
+}
+
+/// A line's syntax coloring as one compact, comparable string: each span's text with
+/// its foreground and background color.
+#[cfg(test)]
+pub(crate) fn span_signature(line: &DiffLine) -> String {
+    match line.coloring.spans() {
+        None => "<uncolored>".to_string(),
+        Some(spans) => spans
+            .iter()
+            .map(|(style, text)| {
+                let fg = style
+                    .fg
+                    .map_or_else(|| "-".to_string(), |c| format!("{c:?}"));
+                let bg = style
+                    .bg
+                    .map_or_else(|| "-".to_string(), |c| format!("{c:?}"));
+                format!("{text:?}[{fg}/{bg}]")
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -109,10 +165,25 @@ pub struct DiffFile {
     pub content_hash: u64,
 }
 
+impl DiffLine {
+    /// This line's review-hash input: origin marker and text, nothing else.
+    ///
+    /// A call site can still read the text back out of the coloring field, so this narrows
+    /// the mistake rather than preventing it.
+    /// `should_not_change_a_hunk_review_key_when_its_lines_are_colored` is what fails when
+    /// coloring reaches the hash. Closing it properly means moving coloring off `DiffLine` entirely.
+    fn for_content_hash(&self) -> (LineOrigin, &str) {
+        (self.origin, self.content.as_str())
+    }
+}
+
 impl DiffHunk {
     fn review_content_hash(&self) -> u64 {
         let mut hasher = Fnv1aHasher::new();
-        write_hunk_content_hash(&mut hasher, &self.lines);
+        write_hunk_content_hash(
+            &mut hasher,
+            self.lines.iter().map(DiffLine::for_content_hash),
+        );
         hasher.finish()
     }
 }
@@ -164,7 +235,10 @@ impl DiffFile {
     pub fn compute_content_hash(hunks: &[DiffHunk]) -> u64 {
         let mut hasher = Fnv1aHasher::new();
         for hunk in hunks {
-            write_hunk_content_hash(&mut hasher, &hunk.lines);
+            write_hunk_content_hash(
+                &mut hasher,
+                hunk.lines.iter().map(DiffLine::for_content_hash),
+            );
         }
         hasher.finish()
     }
@@ -250,14 +324,128 @@ fn format_hunk_review_span_key(hunk: &DiffHunk, hash: u64) -> String {
     )
 }
 
-fn write_hunk_content_hash(hasher: &mut Fnv1aHasher, lines: &[DiffLine]) {
-    for line in lines {
-        hasher.write(match line.origin {
+/// Writes the review hash's input: each line's origin marker and text, nothing else.
+///
+/// Takes an iterator of `(origin, content)` pairs, not `&[DiffLine]`, so this body never
+/// sees a `DiffLine` and cannot reach its coloring field. Both call sites build that
+/// iterator via `DiffLine::for_content_hash`, staying allocation-free on the parse path.
+fn write_hunk_content_hash<'a>(
+    hasher: &mut Fnv1aHasher,
+    lines: impl IntoIterator<Item = (LineOrigin, &'a str)>,
+) {
+    for (origin, content) in lines {
+        hasher.write(match origin {
             LineOrigin::Addition => b"+",
             LineOrigin::Deletion => b"-",
             LineOrigin::Context => b" ",
         });
-        hasher.write(line.content.as_bytes());
+        hasher.write(content.as_bytes());
         hasher.write(b"\n");
+    }
+}
+
+#[cfg(test)]
+mod hunk_review_key_tests {
+    use super::*;
+    use ratatui::style::{Color, Style};
+
+    fn line(content: &str, coloring: LineColoring) -> DiffLine {
+        DiffLine {
+            origin: LineOrigin::Addition,
+            content: content.to_string(),
+            old_lineno: None,
+            new_lineno: Some(1),
+            coloring,
+        }
+    }
+
+    fn hunk(lines: Vec<DiffLine>) -> DiffHunk {
+        DiffHunk {
+            header: "@@ -1,1 +1,1 @@".to_string(),
+            lines,
+            old_start: 1,
+            old_count: 1,
+            new_start: 1,
+            new_count: 1,
+        }
+    }
+
+    /// Characterization: pins `review_content_hash` to a literal so a future change to
+    /// `write_hunk_content_hash`'s input shape cannot silently rehash every persisted
+    /// reviewed-hunk key. A failing assertion against unmodified code supplied the
+    /// literal, never a computation from the function under test.
+    #[test]
+    fn should_not_silently_rehash_every_persisted_reviewed_hunk_key() {
+        let hunk = hunk(vec![
+            DiffLine {
+                origin: LineOrigin::Context,
+                content: "fn main() {".to_string(),
+                old_lineno: Some(1),
+                new_lineno: Some(1),
+                coloring: LineColoring::Pending,
+            },
+            DiffLine {
+                origin: LineOrigin::Deletion,
+                content: "    old();".to_string(),
+                old_lineno: Some(2),
+                new_lineno: None,
+                coloring: LineColoring::Pending,
+            },
+            DiffLine {
+                origin: LineOrigin::Addition,
+                content: "    new();".to_string(),
+                old_lineno: None,
+                new_lineno: Some(2),
+                coloring: LineColoring::Pending,
+            },
+        ]);
+
+        assert_eq!(hunk.review_content_hash(), 33278845365600689u64);
+    }
+
+    /// Coloring a hunk must not change the key that decides whether it is still the hunk
+    /// the reviewer marked reviewed.
+    ///
+    /// The key hashes origins and content and leaves coloring out, but nothing enforces
+    /// that. Coloring happens after parsing, so one session holds the same hunk both
+    /// uncolored and colored. If coloring entered the hash, a reviewed mark would drop
+    /// the moment the hunk scrolled into view.
+    #[test]
+    fn should_not_change_a_hunk_review_key_when_its_lines_are_colored() {
+        let uncolored = DiffFile {
+            old_path: None,
+            new_path: Some(PathBuf::from("a.rs")),
+            status: FileStatus::Modified,
+            hunks: vec![hunk(vec![
+                line("let x = 1;", LineColoring::Pending),
+                line("let y = 2;", LineColoring::Pending),
+            ])],
+            is_binary: false,
+            is_too_large: false,
+            is_commit_message: false,
+            content_hash: 0,
+        };
+
+        let colored = DiffFile {
+            hunks: vec![hunk(vec![
+                line(
+                    "let x = 1;",
+                    LineColoring::Spans(vec![(
+                        Style::default().fg(Color::Red),
+                        "let x = 1;".to_string(),
+                    )]),
+                ),
+                // Plain and Spans in one hunk, because the whole-file pass produces both.
+                line("let y = 2;", LineColoring::Plain),
+            ])],
+            ..uncolored.clone()
+        };
+
+        assert_eq!(
+            uncolored.hunk_review_keys(),
+            colored.hunk_review_keys(),
+            "coloring changed a hunk's review key, so scrolling to a reviewed hunk would \
+             silently clear its reviewed mark"
+        );
     }
 }

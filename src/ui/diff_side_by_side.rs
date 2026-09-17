@@ -47,7 +47,7 @@ fn content_spans_for_diff_line(
         LineOrigin::Addition => styles::diff_add_style(theme),
         LineOrigin::Deletion => styles::diff_del_style(theme),
     };
-    let spans: Vec<Span<'static>> = if let Some(ref h) = dl.highlighted_spans {
+    let spans: Vec<Span<'static>> = if let Some(h) = dl.coloring.spans() {
         h.iter().map(|(s, t)| Span::styled(t.clone(), *s)).collect()
     } else {
         vec![Span::styled(dl.content.clone(), base)]
@@ -90,14 +90,14 @@ fn column_pad_style(theme: &Theme, dl: &DiffLine, origin: LineOrigin) -> Style {
     match origin {
         LineOrigin::Context => styles::diff_context_style(theme),
         LineOrigin::Addition => {
-            if dl.highlighted_spans.is_some() {
+            if dl.coloring.spans().is_some() {
                 Style::default().fg(theme.diff_add).bg(theme.syntax_add_bg)
             } else {
                 styles::diff_add_style(theme)
             }
         }
         LineOrigin::Deletion => {
-            if dl.highlighted_spans.is_some() {
+            if dl.coloring.spans().is_some() {
                 Style::default().fg(theme.diff_del).bg(theme.syntax_del_bg)
             } else {
                 styles::diff_del_style(theme)
@@ -1403,7 +1403,7 @@ fn render_context_line_side_by_side(
         ];
 
         let search = ctx.search_for(line_idx);
-        let content_cell = if let Some(ref highlighted) = diff_line.highlighted_spans {
+        let content_cell = if let Some(highlighted) = diff_line.coloring.spans() {
             searched_cell_spans(
                 highlighted,
                 ctx.content_width,
@@ -1882,7 +1882,7 @@ fn add_deletion_spans(
     spans.push(Span::styled("▌".to_string(), styles::diff_del_style(theme)));
 
     // Use syntax highlighting if available
-    if let Some(ref highlighted) = diff_line.highlighted_spans {
+    if let Some(highlighted) = diff_line.coloring.spans() {
         let syntax_pad_style = Style::default().fg(theme.diff_del).bg(theme.syntax_del_bg);
         let content_spans =
             searched_cell_spans(highlighted, content_width, syntax_pad_style, search);
@@ -1918,7 +1918,7 @@ fn add_addition_spans(
     spans.push(Span::styled("▌".to_string(), styles::diff_add_style(theme)));
 
     // Use syntax highlighting if available
-    if let Some(ref highlighted) = diff_line.highlighted_spans {
+    if let Some(highlighted) = diff_line.coloring.spans() {
         let syntax_pad_style = Style::default().fg(theme.diff_add).bg(theme.syntax_add_bg);
         let content_spans =
             searched_cell_spans(highlighted, content_width, syntax_pad_style, search);
@@ -2182,8 +2182,8 @@ mod remote_comments_side_by_side_snapshot_tests {
     };
     use crate::forge::traits::{ForgeRepository, PrSessionKey};
     use crate::model::{
-        DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin, LineSide, ReviewSession,
-        SessionDiffSource,
+        DiffFile, DiffHunk, DiffLine, FileStatus, LineColoring, LineOrigin, LineSide,
+        ReviewSession, SessionDiffSource,
     };
     use crate::syntax::SyntaxHighlighter;
     use crate::theme::Theme;
@@ -2246,14 +2246,14 @@ mod remote_comments_side_by_side_snapshot_tests {
                 content: "first".to_string(),
                 old_lineno: Some(1),
                 new_lineno: Some(1),
-                highlighted_spans: None,
+                coloring: LineColoring::Pending,
             },
             DiffLine {
                 origin: LineOrigin::Addition,
                 content: "second".to_string(),
                 old_lineno: None,
                 new_lineno: Some(2),
-                highlighted_spans: None,
+                coloring: LineColoring::Pending,
             },
         ];
         let hunk = DiffHunk {
@@ -2383,7 +2383,7 @@ mod remote_comments_side_by_side_snapshot_tests {
                 content: format!("line {n}"),
                 old_lineno: None,
                 new_lineno: Some(n),
-                highlighted_spans: None,
+                coloring: LineColoring::Pending,
             })
             .collect();
         let hunks = vec![DiffHunk {
@@ -2477,14 +2477,14 @@ mod remote_comments_side_by_side_snapshot_tests {
                 content: left.to_string(),
                 old_lineno: Some(1),
                 new_lineno: None,
-                highlighted_spans: None,
+                coloring: LineColoring::Pending,
             },
             DiffLine {
                 origin: LineOrigin::Addition,
                 content: right.to_string(),
                 old_lineno: None,
                 new_lineno: Some(1),
-                highlighted_spans: None,
+                coloring: LineColoring::Pending,
             },
         ];
         let hunks = vec![DiffHunk {
@@ -2514,7 +2514,7 @@ mod remote_comments_side_by_side_snapshot_tests {
             content: left.to_string(),
             old_lineno: Some(1),
             new_lineno: None,
-            highlighted_spans: None,
+            coloring: LineColoring::Pending,
         }];
         let hunks = vec![DiffHunk {
             header: "@@ -1,1 +0,0 @@".to_string(),
@@ -2735,7 +2735,7 @@ mod remote_comments_side_by_side_snapshot_tests {
                 content: line.to_string(),
                 old_lineno: None,
                 new_lineno: Some(i as u32 + 1),
-                highlighted_spans: None,
+                coloring: LineColoring::Pending,
             })
             .collect();
         let new_count = lines.len() as u32;

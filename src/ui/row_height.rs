@@ -395,7 +395,7 @@ fn expanded_diff_line(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     //! Parity: for every fully visible logical line after render, the visual
     //! row count derived from `diff_row_to_annotation` must match
     //! `annotation_row_height`. The fixture also asserts coverage across all
@@ -413,8 +413,8 @@ mod tests {
     };
     use crate::forge::traits::{ForgeRepository, PrSessionKey};
     use crate::model::{
-        Comment, CommentType, DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin, LineSide,
-        ReviewSession, SessionDiffSource,
+        Comment, CommentType, DiffFile, DiffHunk, DiffLine, FileStatus, LineColoring, LineOrigin,
+        LineSide, ReviewSession, SessionDiffSource,
     };
     use crate::syntax::SyntaxHighlighter;
     use crate::theme::Theme;
@@ -453,7 +453,7 @@ mod tests {
                     content: format!("ctx line {n}"),
                     old_lineno: Some(n),
                     new_lineno: Some(n),
-                    highlighted_spans: None,
+                    coloring: LineColoring::Pending,
                 })
                 .collect())
         }
@@ -489,28 +489,28 @@ mod tests {
                     content: "context short".to_string(),
                     old_lineno: Some(30),
                     new_lineno: Some(30),
-                    highlighted_spans: None,
+                    coloring: LineColoring::Pending,
                 },
                 DiffLine {
                     origin: LineOrigin::Deletion,
                     content: long_left,
                     old_lineno: Some(31),
                     new_lineno: None,
-                    highlighted_spans: None,
+                    coloring: LineColoring::Pending,
                 },
                 DiffLine {
                     origin: LineOrigin::Addition,
                     content: long_right,
                     old_lineno: None,
                     new_lineno: Some(31),
-                    highlighted_spans: None,
+                    coloring: LineColoring::Pending,
                 },
                 DiffLine {
                     origin: LineOrigin::Addition,
                     content: "y".to_string(),
                     old_lineno: None,
                     new_lineno: Some(32),
-                    highlighted_spans: None,
+                    coloring: LineColoring::Pending,
                 },
             ],
             old_start: 30,
@@ -525,7 +525,7 @@ mod tests {
                 content: "tail".to_string(),
                 old_lineno: Some(100),
                 new_lineno: Some(100),
-                highlighted_spans: None,
+                coloring: LineColoring::Pending,
             }],
             old_start: 100,
             old_count: 1,
@@ -559,7 +559,16 @@ mod tests {
         }
     }
 
-    fn make_app() -> App {
+    /// Builds an app over `files`. Shared with the coloring tests in `app_layout`, which
+    /// need a diff longer than a few screens to prove the pass skips work.
+    pub(crate) fn make_app_with(files: Vec<DiffFile>) -> App {
+        let mut app = make_app();
+        app.diff_files = files;
+        app.rebuild_annotations();
+        app
+    }
+
+    pub(crate) fn make_app() -> App {
         let repo = ForgeRepository::github("github.com", "test", "tuicr");
         let pr = PullRequestDiffSource {
             key: PrSessionKey::new(repo, 1, "headsha".to_string()),
