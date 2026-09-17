@@ -39,23 +39,9 @@ use crate::vcs::VcsBackend;
 /// Looks at the `origin` remote first, then falls back to any remote whose URL
 /// parses as a GitHub host. Returns `None` when no GitHub remote is configured.
 pub fn detect_github_repository(repo_root: &Path) -> Option<ForgeRepository> {
-    let repo = Repository::discover(repo_root).ok()?;
-    if let Ok(remote) = repo.find_remote("origin")
-        && let Some(url) = remote.url()
-        && let Some(parsed) = parse_github_remote_url(url)
-    {
-        return Some(parsed);
-    }
-    let remotes = repo.remotes().ok()?;
-    for name in remotes.iter().flatten() {
-        if let Ok(remote) = repo.find_remote(name)
-            && let Some(url) = remote.url()
-            && let Some(parsed) = parse_github_remote_url(url)
-        {
-            return Some(parsed);
-        }
-    }
-    None
+    remote_urls(repo_root)
+        .iter()
+        .find_map(|url| parse_github_remote_url(url))
 }
 
 /// Try to detect a GitLab forge repository for the local checkout at `repo_root`.
@@ -63,29 +49,35 @@ pub fn detect_github_repository(repo_root: &Path) -> Option<ForgeRepository> {
 /// Looks at the `origin` remote first, then falls back to any remote whose URL
 /// parses as a GitLab host. Returns `None` when no GitLab remote is configured.
 pub fn detect_gitlab_repository(repo_root: &Path) -> Option<ForgeRepository> {
-    let repo = Repository::discover(repo_root).ok()?;
-    if let Ok(remote) = repo.find_remote("origin")
-        && let Some(url) = remote.url()
-        && let Some(parsed) = parse_gitlab_remote_url(url)
-    {
-        return Some(parsed);
-    }
-    let remotes = repo.remotes().ok()?;
-    for name in remotes.iter().flatten() {
-        if let Ok(remote) = repo.find_remote(name)
-            && let Some(url) = remote.url()
-            && let Some(parsed) = parse_gitlab_remote_url(url)
-        {
-            return Some(parsed);
-        }
-    }
-    None
+    remote_urls(repo_root)
+        .iter()
+        .find_map(|url| parse_gitlab_remote_url(url))
 }
 
 /// `repo_root`'s remote URLs, `origin` first, then every other remote.
 fn remote_urls(repo_root: &Path) -> Vec<String> {
     let Ok(repo) = Repository::discover(repo_root) else {
-        return Vec::new();
+        // Local VCS discovery already falls back to Git for repository formats
+        // libgit2 cannot open (notably reftable and SHA-256). Remote metadata
+        // needs the same fallback; no object access or network is necessary.
+        let Ok(names) = crate::process::run_command_output("git", Some(repo_root), ["remote"])
+        else {
+            return Vec::new();
+        };
+        let mut names: Vec<_> = names.lines().collect();
+        names.sort_by_key(|name| *name != "origin");
+        return names
+            .into_iter()
+            .filter_map(|name| {
+                crate::process::run_command_output(
+                    "git",
+                    Some(repo_root),
+                    ["remote", "get-url", "--", name],
+                )
+                .ok()
+                .map(|url| url.trim_end_matches(['\r', '\n']).to_string())
+            })
+            .collect();
     };
     let mut all_urls: Vec<String> = Vec::new();
 
