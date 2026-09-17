@@ -44,6 +44,27 @@ pub(crate) fn needs_full_file_highlight(path: &Path) -> bool {
     )
 }
 
+/// Oniguruma's process-wide cap on backtracking steps per match attempt, in place of
+/// its 10,000,000-step default. Some Markdown lines with inline code send it into
+/// a catastrophic backtracking loop. This could be as low as 1000 but that is not much
+/// faster in benchmarks than 100,000, so setting it to that for extra headroom.
+const ONIGURUMA_RETRY_LIMIT: std::os::raw::c_ulong = 100_000;
+
+/// Applies [`ONIGURUMA_RETRY_LIMIT`] once per process.
+fn cap_oniguruma_retry_limit() {
+    unsafe extern "C" {
+        fn onig_set_retry_limit_in_match(limit: std::os::raw::c_ulong) -> std::os::raw::c_int;
+    }
+
+    static INIT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    INIT.get_or_init(|| {
+        // SAFETY: writes one C global, takes no pointers, has no preconditions.
+        unsafe {
+            onig_set_retry_limit_in_match(ONIGURUMA_RETRY_LIMIT);
+        }
+    });
+}
+
 /// Helper to highlight lines of code from a diff
 pub struct SyntaxHighlighter {
     pub syntax_set: syntect::parsing::SyntaxSet,
@@ -84,6 +105,7 @@ impl SyntaxHighlighter {
 
     /// Create a new syntax highlighter with a preloaded syntect theme.
     pub fn with_theme(theme: syntect::highlighting::Theme, add_bg: Color, del_bg: Color) -> Self {
+        cap_oniguruma_retry_limit();
         let syntax_set = two_face::syntax::extra_newlines();
         let markdown_palette = cmark::MarkdownPalette::resolve(&theme);
         Self {
@@ -413,6 +435,17 @@ impl SyntaxHighlighter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn should_apply_oniguruma_retry_limit_once() {
+        unsafe extern "C" {
+            fn onig_get_retry_limit_in_match() -> std::os::raw::c_ulong;
+        }
+        cap_oniguruma_retry_limit();
+        // SAFETY: reads one C global, takes no pointers, has no preconditions.
+        let limit = unsafe { onig_get_retry_limit_in_match() };
+        assert_eq!(limit, ONIGURUMA_RETRY_LIMIT);
+    }
 
     #[test]
     fn should_resolve_no_syntax_for_any_path() {
