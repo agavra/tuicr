@@ -1748,7 +1748,7 @@ enum CommentLocation {
 /// What `detect_vcs` needs to open a backend. Bundled because these two
 /// always travel together: they are chosen once at startup and then replayed
 /// verbatim by the diff-watch worker when it opens its own backend.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct VcsOpenOptions {
     git_backend_preference: GitBackendPreference,
     diff_whitespace_mode: DiffWhitespaceMode,
@@ -1796,7 +1796,7 @@ impl AppStartupOptions<'_> {
     fn vcs_open_options(&self) -> VcsOpenOptions {
         VcsOpenOptions {
             git_backend_preference: self.git_backend_preference,
-            diff_whitespace_mode: self.diff_whitespace_mode,
+            diff_whitespace_mode: self.diff_whitespace_mode.clone(),
         }
     }
 }

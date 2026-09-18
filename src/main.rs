@@ -11,6 +11,7 @@ use crossterm::{
 
 use tuicr::app::{self, App, AppStartupOptions, FocusedPanel, InputMode};
 use tuicr::cli::parse_cli_args;
+use tuicr::config::IgnoreWhitespaceConfig;
 use tuicr::editor::{EditorCommand, EditorError, EditorLaunch, EditorSurface, EditorTarget};
 use tuicr::handler::{
     handle_command_action, handle_comment_action, handle_comment_navigator_action,
@@ -25,7 +26,7 @@ use tuicr::input::{
 };
 use tuicr::terminal_state::{TerminalFeatures, TerminalSession};
 use tuicr::theme::resolve_theme_with_config;
-use tuicr::vcs::{DiffWhitespaceMode, GitBackendPreference};
+use tuicr::vcs::{DiffWhitespaceMode, GitBackendPreference, WhitespaceAutoPolicy};
 use tuicr::{config, handler, profile, ui, update};
 
 /// Timeout for the "press Ctrl+C again to exit" feature
@@ -167,21 +168,23 @@ fn main() -> anyhow::Result<()> {
             .as_ref()
             .and_then(|cfg| cfg.backend.as_deref()),
     );
-    let diff_whitespace_mode = if config_outcome
-        .config
-        .as_ref()
-        .and_then(|cfg| cfg.ignore_whitespace)
-        .unwrap_or(false)
-    {
-        DiffWhitespaceMode::IgnoreAll
-    } else {
-        DiffWhitespaceMode::Normal
+    let diff_whitespace_mode = match config_outcome.config.as_ref() {
+        Some(cfg) => match cfg.ignore_whitespace {
+            Some(IgnoreWhitespaceConfig::Auto) => DiffWhitespaceMode::Auto(
+                WhitespaceAutoPolicy::with_overrides(cfg.ignore_whitespace_overrides.clone()),
+            ),
+            Some(IgnoreWhitespaceConfig::Bool(true)) => DiffWhitespaceMode::IgnoreAll,
+            Some(IgnoreWhitespaceConfig::Bool(false)) | None => DiffWhitespaceMode::Normal,
+        },
+        None => DiffWhitespaceMode::Normal,
     };
 
     let repo_url_override = match cli_args.remote.as_deref() {
         Some(name) => {
-            let vcs =
-                tuicr::vcs::GitBackend::discover(git_backend_preference, diff_whitespace_mode)?;
+            let vcs = tuicr::vcs::GitBackend::discover(
+                git_backend_preference,
+                diff_whitespace_mode.clone(),
+            )?;
             Some(tuicr::forge::resolve_remote_repository(&vcs, name)?)
         }
         None => cli_args

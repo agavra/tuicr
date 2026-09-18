@@ -16,6 +16,7 @@ use crate::vcs::traits::{
     CommitInfo, DiffWhitespaceMode, ResolvedRevisionRange, RevisionDiffTarget, VcsBackend, VcsInfo,
     VcsType,
 };
+use crate::vcs::whitespace::{WhitespaceComparison, materialize_diff};
 use crate::vcs::{
     BATCH_BOUNDARY, apply_container_full_file_highlight, parse_batched_files, slice_context_lines,
 };
@@ -88,8 +89,8 @@ impl HgBackend {
         })
     }
 
-    fn diff_args<'a>(&self, args: &'a [&'a str]) -> Cow<'a, [&'a str]> {
-        if !self.whitespace_mode.ignores_all() {
+    fn diff_args<'a>(comparison: WhitespaceComparison, args: &'a [&'a str]) -> Cow<'a, [&'a str]> {
+        if !comparison.ignores_all() {
             return Cow::Borrowed(args);
         }
 
@@ -105,7 +106,18 @@ impl HgBackend {
         diff_args: &[&str],
         highlighter: &SyntaxHighlighter,
     ) -> Result<Vec<DiffFile>> {
-        let args = self.diff_args(diff_args);
+        materialize_diff(&self.whitespace_mode, |comparison| {
+            self.load_diff_with_comparison(diff_args, comparison, highlighter)
+        })
+    }
+
+    fn load_diff_with_comparison(
+        &self,
+        diff_args: &[&str],
+        comparison: WhitespaceComparison,
+        highlighter: &SyntaxHighlighter,
+    ) -> Result<Vec<DiffFile>> {
+        let args = Self::diff_args(comparison, diff_args);
         let mut patch_args: Vec<&str> = args.iter().copied().collect();
         patch_args.insert(1, "--git");
         let patch = run_hg_command(&self.info.root_path, &patch_args)?;
@@ -861,6 +873,109 @@ mod tests {
             )
             .expect("non-whitespace edit should still produce a diff");
         assert_eq!(files.len(), 1);
+    }
+
+    fn write_mixed_hg_files(root: &Path) {
+        fs::write(root.join("data.json"), "{\"a\":1}\n").unwrap();
+        fs::write(root.join("lib.rs"), "fn x(){}\n").unwrap();
+        fs::write(root.join("app.py"), "x = 1\n").unwrap();
+        fs::write(root.join("cfg.yaml"), "a: 1\n").unwrap();
+        Command::new("hg")
+            .args(["add", "data.json", "lib.rs", "app.py", "cfg.yaml"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        Command::new("hg")
+            .args([
+                "commit",
+                "-m",
+                "mixed base",
+                "data.json",
+                "lib.rs",
+                "app.py",
+                "cfg.yaml",
+            ])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        fs::write(root.join("data.json"), "{ \"a\" : 1 }\n").unwrap();
+        fs::write(root.join("lib.rs"), "fn x(){ }\n").unwrap();
+        fs::write(root.join("app.py"), "x =  1\n").unwrap();
+        fs::write(root.join("cfg.yaml"), "a:  1\n").unwrap();
+    }
+
+    fn hg_file<'a>(files: &'a [DiffFile], path: &str) -> Option<&'a DiffFile> {
+        files
+            .iter()
+            .find(|file| file.display_path() == Path::new(path))
+    }
+
+    #[test]
+    fn test_hg_auto_whitespace_mixed_extensions_and_filtered_patch() {
+        let Some(temp) = setup_test_repo() else {
+            eprintln!("Skipping test: hg command not available");
+            return;
+        };
+        write_mixed_hg_files(temp.path());
+
+        let auto = HgBackend::from_path(
+            temp.path().to_path_buf(),
+            DiffWhitespaceMode::Auto(crate::vcs::WhitespaceAutoPolicy::builtin()),
+        )
+        .expect("Failed to create hg backend");
+        let files = auto
+            .get_working_tree_diff(&SyntaxHighlighter::default())
+            .expect("auto mixed hg diff");
+        assert!(
+            hg_file(&files, "data.json").is_none()
+                || hg_file(&files, "data.json").unwrap().hunks.is_empty(),
+            "json whitespace-only change should disappear from filtered hg patches"
+        );
+        assert!(
+            hg_file(&files, "lib.rs").is_none()
+                || hg_file(&files, "lib.rs").unwrap().hunks.is_empty()
+        );
+        assert!(
+            !hg_file(&files, "app.py")
+                .expect("python whitespace should remain")
+                .hunks
+                .is_empty()
+        );
+        assert!(
+            !hg_file(&files, "cfg.yaml")
+                .expect("yaml whitespace should remain")
+                .hunks
+                .is_empty()
+        );
+        assert!(
+            hg_file(&files, "hello.txt").is_some(),
+            "unrelated modified file should stay aligned with status metadata"
+        );
+
+        let ignore_all =
+            HgBackend::from_path(temp.path().to_path_buf(), DiffWhitespaceMode::IgnoreAll)
+                .expect("Failed to create hg backend");
+        let files = ignore_all
+            .get_working_tree_diff(&SyntaxHighlighter::default())
+            .expect("ignore-all still has the original hello.txt change");
+        assert!(
+            hg_file(&files, "app.py").is_none()
+                || hg_file(&files, "app.py").unwrap().hunks.is_empty()
+        );
+
+        let err = auto
+            .get_commit_range_diff(
+                &ResolvedRevisionRange::from_owned_commit_ids(
+                    vec!["not-a-real-revision".into()],
+                    RevisionDiffTarget::CommitList,
+                ),
+                &SyntaxHighlighter::default(),
+            )
+            .unwrap_err();
+        assert!(
+            !matches!(err, TuicrError::NoChanges),
+            "unexpected hg command failure must not look like a clean review: {err}"
+        );
     }
 
     #[test]
