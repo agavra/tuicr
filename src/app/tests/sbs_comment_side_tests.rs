@@ -156,7 +156,7 @@ fn line_comment_preserves_horizontal_scroll() {
     app.diff_view_mode = DiffViewMode::SideBySide;
     app.diff_state.scroll_x = 12;
 
-    app.enter_comment_mode(false, Some((20, LineSide::New)));
+    app.enter_line_comment_mode(20, LineSide::New);
 
     assert_eq!(app.diff_state.scroll_x, 12);
 }

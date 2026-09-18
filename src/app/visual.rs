@@ -132,17 +132,7 @@ impl App {
 
     pub fn enter_comment_from_visual(&mut self) {
         if let Some((range, side)) = self.visual_selection_line_range() {
-            self.comment_line_range = Some((range, side));
-            self.comment_line = Some((range.end, side));
-            self.input_mode = InputMode::Comment;
-            if self.diff_view_mode != DiffViewMode::SideBySide {
-                self.diff_state.scroll_x = 0;
-            }
-            self.comment_buffer.clear();
-            self.comment_cursor = 0;
-            self.comment_type = self.default_comment_type();
-            self.comment_is_review_level = false;
-            self.comment_is_file_level = false;
+            self.enter_range_comment_mode(range, side);
             self.visual_selection = None;
         } else {
             self.set_warning("Invalid visual selection");

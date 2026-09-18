@@ -285,7 +285,7 @@ fn build_app_rooted(
 #[test]
 fn default_comment_type_is_none_without_config() {
     let mut app = build_app();
-    app.enter_comment_mode(false, None);
+    app.enter_file_comment_mode();
     assert_eq!(app.input_mode, InputMode::Comment);
     // Out of the box the only type is None — untyped, no prefix.
     assert!(app.comment_type.is_none());
@@ -304,7 +304,7 @@ fn should_cycle_comment_type_on_tab_action() {
         comment_type_config("note"),
         comment_type_config("suggestion"),
     ]);
-    app.enter_comment_mode(false, None);
+    app.enter_file_comment_mode();
     assert_eq!(app.input_mode, InputMode::Comment);
     assert_eq!(app.comment_type.id(), "note");
 

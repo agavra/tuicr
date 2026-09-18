@@ -12,6 +12,7 @@ mod find_source_line_tests;
 mod persistence_merge_tests;
 mod pr_info_tests;
 mod render_perf_tests;
+mod reply_comment_tests;
 mod sbs_comment_side_tests;
 mod scroll_behavior_tests;
 mod scroll_tests;

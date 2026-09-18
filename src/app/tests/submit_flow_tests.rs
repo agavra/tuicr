@@ -40,7 +40,46 @@ impl VcsBackend for DummyVcs {
     }
 }
 
+fn context_line(lineno: u32, content: &str) -> DiffLine {
+    DiffLine {
+        origin: LineOrigin::Context,
+        content: content.to_string(),
+        old_lineno: Some(lineno),
+        new_lineno: Some(lineno),
+        highlighted_spans: None,
+    }
+}
+
+fn addition_line(lineno: u32, content: &str) -> DiffLine {
+    DiffLine {
+        origin: LineOrigin::Addition,
+        content: content.to_string(),
+        old_lineno: None,
+        new_lineno: Some(lineno),
+        highlighted_spans: None,
+    }
+}
+
+fn deletion_line(lineno: u32, content: &str) -> DiffLine {
+    DiffLine {
+        origin: LineOrigin::Deletion,
+        content: content.to_string(),
+        old_lineno: Some(lineno),
+        new_lineno: None,
+        highlighted_spans: None,
+    }
+}
+
 fn make_pr_app_with_single_modified_file(file_path: &str) -> App {
+    make_pr_app_with_lines(
+        file_path,
+        vec![context_line(10, "a"), addition_line(11, "b")],
+    )
+}
+
+/// The single-modified-file fixture's app, with the diff lines supplied by the
+/// caller so a test can put a line on both sides.
+fn make_pr_app_with_lines(file_path: &str, lines: Vec<DiffLine>) -> App {
     let vcs_info = VcsInfo {
         root_path: PathBuf::from("/tmp/repo"),
         head_commit: "abcdef0123".to_string(),
@@ -63,22 +102,7 @@ fn make_pr_app_with_single_modified_file(file_path: &str) -> App {
             old_count: 0,
             new_start: 1,
             new_count: 0,
-            lines: vec![
-                DiffLine {
-                    origin: LineOrigin::Context,
-                    content: "a".to_string(),
-                    old_lineno: Some(10),
-                    new_lineno: Some(10),
-                    highlighted_spans: None,
-                },
-                DiffLine {
-                    origin: LineOrigin::Addition,
-                    content: "b".to_string(),
-                    old_lineno: None,
-                    new_lineno: Some(11),
-                    highlighted_spans: None,
-                },
-            ],
+            lines,
         }],
         is_binary: false,
         is_too_large: false,
@@ -1122,7 +1146,7 @@ fn should_detect_locked_comment_under_cursor_for_dd_path() {
     c.lifecycle_state = CommentLifecycleState::PushedDraft;
     add_line_comment(&mut app, "src/lib.rs", 11, c);
     // No cursor positioning here — `cursor_on_locked_comment` resolves
-    // through `find_comment_at_cursor` which depends on annotations.
+    // through `find_comment_location_at_cursor` which depends on annotations.
     // The annotation indices use 0..N; with a single line comment on
     // line 11 there's exactly one LineComment annotation. We point the
     // cursor at it via diff_state.
@@ -1134,6 +1158,47 @@ fn should_detect_locked_comment_under_cursor_for_dd_path() {
         .position(|a| matches!(a, AnnotatedLine::LineComment { .. }))
         .expect("expected a LineComment annotation");
     app.diff_state.cursor_line = idx;
+    assert!(app.cursor_on_locked_comment());
+}
+
+#[test]
+fn should_pick_the_comment_the_cursor_is_on_when_a_line_has_two() {
+    // Two comments on one line, one per side: the annotation carries the
+    // absolute index into the stored vec, so the lookup must not re-count
+    // among side-matching comments — that would answer about the other one.
+    let mut app = make_pr_app_with_lines(
+        "src/lib.rs",
+        vec![
+            context_line(10, "a"),
+            deletion_line(11, "old"),
+            addition_line(11, "new"),
+        ],
+    );
+    add_line_comment(
+        &mut app,
+        "src/lib.rs",
+        11,
+        line_comment(LineSide::New, Some(11), None),
+    );
+    let mut old_side = line_comment(LineSide::Old, Some(11), None);
+    old_side.lifecycle_state = CommentLifecycleState::PushedDraft;
+    add_line_comment(&mut app, "src/lib.rs", 11, old_side);
+    app.rebuild_annotations();
+    let idx = app
+        .line_annotations
+        .iter()
+        .position(|a| {
+            matches!(
+                a,
+                AnnotatedLine::LineComment {
+                    side: LineSide::Old,
+                    ..
+                }
+            )
+        })
+        .expect("expected an old-side LineComment annotation");
+    app.diff_state.cursor_line = idx;
+
     assert!(app.cursor_on_locked_comment());
 }
 
