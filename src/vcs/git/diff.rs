@@ -7,11 +7,22 @@ use crate::syntax::{SyntaxHighlighter, needs_full_file_highlight};
 use crate::vcs::traits::{
     ChangeKind, DiffWhitespaceMode, ResolvedRevisionRange, RevisionDiffTarget,
 };
+use crate::vcs::whitespace::{WhitespaceComparison, materialize_diff};
 use crate::vcs::{enhance_with_full_file_highlight, tabify};
 
 pub fn get_working_tree_diff(
     repo: &Repository,
-    whitespace_mode: DiffWhitespaceMode,
+    whitespace_mode: &DiffWhitespaceMode,
+    highlighter: &SyntaxHighlighter,
+) -> Result<Vec<DiffFile>> {
+    materialize_diff(whitespace_mode, |comparison| {
+        get_working_tree_diff_once(repo, comparison, highlighter)
+    })
+}
+
+fn get_working_tree_diff_once(
+    repo: &Repository,
+    comparison: WhitespaceComparison,
     highlighter: &SyntaxHighlighter,
 ) -> Result<Vec<DiffFile>> {
     // Unborn HEAD (fresh `git init` / `git clone` of an empty remote) has no
@@ -19,7 +30,7 @@ pub fn get_working_tree_diff(
     // staged/added files still surface in the working-tree review.
     let head = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
 
-    let mut opts = diff_options(whitespace_mode);
+    let mut opts = diff_options(comparison);
     opts.include_untracked(true);
     opts.show_untracked_content(true);
     opts.recurse_untracked_dirs(true);
@@ -42,12 +53,22 @@ pub fn get_working_tree_diff(
 /// On repos with no commits (unborn HEAD), diffs against an empty tree.
 pub fn get_staged_diff(
     repo: &Repository,
-    whitespace_mode: DiffWhitespaceMode,
+    whitespace_mode: &DiffWhitespaceMode,
+    highlighter: &SyntaxHighlighter,
+) -> Result<Vec<DiffFile>> {
+    materialize_diff(whitespace_mode, |comparison| {
+        get_staged_diff_once(repo, comparison, highlighter)
+    })
+}
+
+fn get_staged_diff_once(
+    repo: &Repository,
+    comparison: WhitespaceComparison,
     highlighter: &SyntaxHighlighter,
 ) -> Result<Vec<DiffFile>> {
     let head = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
     let index = repo.index()?;
-    let mut opts = diff_options(whitespace_mode);
+    let mut opts = diff_options(comparison);
 
     let diff = repo.diff_tree_to_index(head.as_ref(), Some(&index), Some(&mut opts))?;
     let mut files = parse_diff(&diff, highlighter)?;
@@ -73,12 +94,12 @@ pub fn list_changed_paths(repo: &Repository, kind: ChangeKind) -> Result<Vec<Pat
         ChangeKind::Staged => {
             let head = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
             let index = repo.index()?;
-            let mut opts = diff_options(DiffWhitespaceMode::Normal);
+            let mut opts = diff_options(WhitespaceComparison::Normal);
             repo.diff_tree_to_index(head.as_ref(), Some(&index), Some(&mut opts))?
         }
         ChangeKind::Unstaged => {
             let index = repo.index()?;
-            let mut opts = diff_options(DiffWhitespaceMode::Normal);
+            let mut opts = diff_options(WhitespaceComparison::Normal);
             opts.include_untracked(true);
             // `show_untracked_content(false)` keeps libgit2 from reading each
             // untracked file's bytes — only the paths are needed here.
@@ -105,11 +126,21 @@ pub fn list_changed_paths(repo: &Repository, kind: ChangeKind) -> Result<Vec<Pat
 
 pub fn get_unstaged_diff(
     repo: &Repository,
-    whitespace_mode: DiffWhitespaceMode,
+    whitespace_mode: &DiffWhitespaceMode,
+    highlighter: &SyntaxHighlighter,
+) -> Result<Vec<DiffFile>> {
+    materialize_diff(whitespace_mode, |comparison| {
+        get_unstaged_diff_once(repo, comparison, highlighter)
+    })
+}
+
+fn get_unstaged_diff_once(
+    repo: &Repository,
+    comparison: WhitespaceComparison,
     highlighter: &SyntaxHighlighter,
 ) -> Result<Vec<DiffFile>> {
     let index = repo.index()?;
-    let mut opts = diff_options(whitespace_mode);
+    let mut opts = diff_options(comparison);
     opts.include_untracked(true);
     opts.show_untracked_content(true);
     opts.recurse_untracked_dirs(true);
@@ -131,7 +162,18 @@ pub fn get_unstaged_diff(
 pub fn get_commit_range_diff(
     repo: &Repository,
     revision_range: &ResolvedRevisionRange<'_>,
-    whitespace_mode: DiffWhitespaceMode,
+    whitespace_mode: &DiffWhitespaceMode,
+    highlighter: &SyntaxHighlighter,
+) -> Result<Vec<DiffFile>> {
+    materialize_diff(whitespace_mode, |comparison| {
+        get_commit_range_diff_once(repo, revision_range, comparison, highlighter)
+    })
+}
+
+fn get_commit_range_diff_once(
+    repo: &Repository,
+    revision_range: &ResolvedRevisionRange<'_>,
+    comparison: WhitespaceComparison,
     highlighter: &SyntaxHighlighter,
 ) -> Result<Vec<DiffFile>> {
     let (old_tree, new_tree) = match &revision_range.diff_target {
@@ -148,7 +190,7 @@ pub fn get_commit_range_diff(
         }
     };
 
-    diff_commit_trees(repo, old_tree, new_tree, whitespace_mode, highlighter)
+    diff_commit_trees(repo, old_tree, new_tree, comparison, highlighter)
 }
 
 fn commit_list_range_trees<'repo>(
@@ -185,10 +227,10 @@ fn diff_commit_trees(
     repo: &Repository,
     old_tree: Option<git2::Tree<'_>>,
     new_tree: git2::Tree<'_>,
-    whitespace_mode: DiffWhitespaceMode,
+    comparison: WhitespaceComparison,
     highlighter: &SyntaxHighlighter,
 ) -> Result<Vec<DiffFile>> {
-    let mut opts = diff_options(whitespace_mode);
+    let mut opts = diff_options(comparison);
 
     let diff = repo.diff_tree_to_tree(old_tree.as_ref(), Some(&new_tree), Some(&mut opts))?;
     let mut files = parse_diff(&diff, highlighter)?;
@@ -210,7 +252,18 @@ fn diff_commit_trees(
 pub fn get_working_tree_with_commits_diff(
     repo: &Repository,
     commit_ids: &[String],
-    whitespace_mode: DiffWhitespaceMode,
+    whitespace_mode: &DiffWhitespaceMode,
+    highlighter: &SyntaxHighlighter,
+) -> Result<Vec<DiffFile>> {
+    materialize_diff(whitespace_mode, |comparison| {
+        get_working_tree_with_commits_diff_once(repo, commit_ids, comparison, highlighter)
+    })
+}
+
+fn get_working_tree_with_commits_diff_once(
+    repo: &Repository,
+    commit_ids: &[String],
+    comparison: WhitespaceComparison,
     highlighter: &SyntaxHighlighter,
 ) -> Result<Vec<DiffFile>> {
     if commit_ids.is_empty() {
@@ -226,7 +279,7 @@ pub fn get_working_tree_with_commits_diff(
         None
     };
 
-    let mut opts = diff_options(whitespace_mode);
+    let mut opts = diff_options(comparison);
     opts.include_untracked(true);
     opts.show_untracked_content(true);
     opts.recurse_untracked_dirs(true);
@@ -246,9 +299,9 @@ pub fn get_working_tree_with_commits_diff(
     Ok(files)
 }
 
-fn diff_options(whitespace_mode: DiffWhitespaceMode) -> DiffOptions {
+fn diff_options(comparison: WhitespaceComparison) -> DiffOptions {
     let mut opts = DiffOptions::new();
-    opts.ignore_whitespace(whitespace_mode.ignores_all());
+    opts.ignore_whitespace(comparison.ignores_all());
     opts
 }
 
@@ -471,7 +524,7 @@ mod tests {
 
         let files = get_working_tree_diff(
             &repo,
-            DiffWhitespaceMode::Normal,
+            &DiffWhitespaceMode::Normal,
             &SyntaxHighlighter::default(),
         )
         .expect("failed to get diff");
@@ -499,7 +552,7 @@ mod tests {
 
         let files = get_working_tree_diff(
             &repo,
-            DiffWhitespaceMode::Normal,
+            &DiffWhitespaceMode::Normal,
             &SyntaxHighlighter::default(),
         )
         .expect("failed to get diff");
@@ -537,11 +590,11 @@ mod tests {
 
         let highlighter = SyntaxHighlighter::default();
 
-        let unstaged = get_unstaged_diff(&repo, DiffWhitespaceMode::Normal, &highlighter)
+        let unstaged = get_unstaged_diff(&repo, &DiffWhitespaceMode::Normal, &highlighter)
             .expect("unstaged diff failed");
         assert_eq!(unstaged.len(), 1);
         assert!(matches!(
-            get_staged_diff(&repo, DiffWhitespaceMode::Normal, &highlighter),
+            get_staged_diff(&repo, &DiffWhitespaceMode::Normal, &highlighter),
             Err(TuicrError::NoChanges)
         ));
 
@@ -551,11 +604,11 @@ mod tests {
             .expect("failed to add file to index");
         index.write().expect("failed to write index");
 
-        let staged = get_staged_diff(&repo, DiffWhitespaceMode::Normal, &highlighter)
+        let staged = get_staged_diff(&repo, &DiffWhitespaceMode::Normal, &highlighter)
             .expect("staged diff failed");
         assert_eq!(staged.len(), 1);
         assert!(matches!(
-            get_unstaged_diff(&repo, DiffWhitespaceMode::Normal, &highlighter),
+            get_unstaged_diff(&repo, &DiffWhitespaceMode::Normal, &highlighter),
             Err(TuicrError::NoChanges)
         ));
     }
@@ -574,7 +627,7 @@ mod tests {
         // when
         let files = get_working_tree_diff(
             &repo,
-            DiffWhitespaceMode::Normal,
+            &DiffWhitespaceMode::Normal,
             &SyntaxHighlighter::default(),
         )
         .expect("unborn HEAD should produce a diff against an empty tree");
@@ -597,7 +650,7 @@ mod tests {
 
         let files = get_working_tree_diff(
             &repo,
-            DiffWhitespaceMode::IgnoreAll,
+            &DiffWhitespaceMode::IgnoreAll,
             &SyntaxHighlighter::default(),
         )
         .expect("whitespace-only edit may surface as a no-op diff file");
@@ -609,7 +662,7 @@ mod tests {
 
         let files = get_working_tree_diff(
             &repo,
-            DiffWhitespaceMode::IgnoreAll,
+            &DiffWhitespaceMode::IgnoreAll,
             &SyntaxHighlighter::default(),
         )
         .expect("non-whitespace edit should still produce a diff");
@@ -634,7 +687,7 @@ mod tests {
 
         let files = get_working_tree_diff(
             &repo,
-            DiffWhitespaceMode::IgnoreAll,
+            &DiffWhitespaceMode::IgnoreAll,
             &SyntaxHighlighter::default(),
         )
         .expect("mode-only edit should still produce a diff");
@@ -785,6 +838,275 @@ mod tests {
                 .unwrap_or_else(|e| panic!("{label}: plain fetch failed: {e}"));
 
             assert_files_match(&highlighted, &plain, label);
+        }
+    }
+
+    fn file_named<'a>(files: &'a [DiffFile], path: &str) -> Option<&'a DiffFile> {
+        files
+            .iter()
+            .find(|file| file.display_path() == Path::new(path))
+    }
+
+    fn assert_ignored_whitespace(files: &[DiffFile], path: &str, context: &str) {
+        match file_named(files, path) {
+            None => {}
+            Some(file) => assert!(
+                file.hunks.is_empty(),
+                "{context}: {path} should omit whitespace hunks"
+            ),
+        }
+    }
+
+    fn assert_has_hunks(files: &[DiffFile], path: &str, context: &str) {
+        let file = file_named(files, path)
+            .unwrap_or_else(|| panic!("{context}: expected {path} to remain visible"));
+        assert!(
+            !file.hunks.is_empty(),
+            "{context}: {path} should retain hunks"
+        );
+    }
+
+    fn assert_visible(files: &[DiffFile], path: &str, context: &str) {
+        assert!(
+            file_named(files, path).is_some(),
+            "{context}: expected {path} to remain visible, got {:?}",
+            files
+                .iter()
+                .map(|file| file.display_path().display().to_string())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    fn auto_mode() -> DiffWhitespaceMode {
+        DiffWhitespaceMode::Auto(crate::vcs::WhitespaceAutoPolicy::builtin())
+    }
+
+    fn auto_with_overrides() -> DiffWhitespaceMode {
+        DiffWhitespaceMode::Auto(crate::vcs::WhitespaceAutoPolicy::with_overrides([
+            ("rs".into(), false),
+            ("custom".into(), true),
+        ]))
+    }
+
+    fn setup_mixed_whitespace_git_repo() -> (tempfile::TempDir, Vec<String>) {
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
+        let root = dir.path();
+        run_git(root, &["init"]);
+        run_git(root, &["config", "user.name", "Tuicr Test"]);
+        run_git(root, &["config", "user.email", "tuicr@example.com"]);
+        fs::write(root.join("data.json"), "{\"a\":1}\n").unwrap();
+        fs::write(root.join("lib.rs"), "fn x(){}\n").unwrap();
+        fs::write(root.join("app.py"), "x = 1\n").unwrap();
+        fs::write(root.join("cfg.yaml"), "a: 1\n").unwrap();
+        fs::write(root.join("keep.txt"), "hello\n").unwrap();
+        fs::write(root.join("gone.txt"), "bye\n").unwrap();
+        fs::write(root.join("renamed.txt"), "same\n").unwrap();
+        fs::write(root.join("mode.txt"), "alpha\n").unwrap();
+        fs::write(root.join("extra.custom"), "foo\n").unwrap();
+        fs::write(root.join("binary.bin"), [0, 1, 2, 3]).unwrap();
+        run_git(root, &["add", "-A"]);
+        run_git(root, &["commit", "-m", "base"]);
+        let first = run_git_rev_parse(root);
+
+        fs::write(root.join("keep.txt"), "hello\nrange\n").unwrap();
+        run_git(root, &["add", "keep.txt"]);
+        run_git(root, &["commit", "-m", "subset"]);
+        let second = run_git_rev_parse(root);
+
+        fs::write(root.join("data.json"), "{ \"a\" : 1 }\n").unwrap();
+        fs::write(root.join("lib.rs"), "fn x(){ }\n").unwrap();
+        fs::write(root.join("app.py"), "x =  1\n").unwrap();
+        fs::write(root.join("cfg.yaml"), "a:  1\n").unwrap();
+        fs::write(root.join("extra.custom"), " foo \n").unwrap();
+        fs::write(root.join("keep.txt"), "hello\nrange\nworld\n").unwrap();
+        fs::remove_file(root.join("gone.txt")).unwrap();
+        fs::write(root.join("added.txt"), "new\n").unwrap();
+        run_git(root, &["add", "added.txt"]);
+        run_git(root, &["mv", "renamed.txt", "renamed-new.txt"]);
+        fs::write(root.join("binary.bin"), [0, 1, 9, 3]).unwrap();
+        fs::write(root.join("untracked.json"), "{ }\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let path = root.join("mode.txt");
+            let mut permissions = fs::metadata(&path).unwrap().permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(path, permissions).unwrap();
+        }
+
+        (dir, vec![first, second])
+    }
+
+    fn run_git_rev_parse(dir: &Path) -> String {
+        let output = std::process::Command::new("git")
+            .args([
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "init.defaultRefFormat=files",
+                "rev-parse",
+                "HEAD",
+            ])
+            .current_dir(dir)
+            .output()
+            .expect("failed to run git rev-parse");
+        assert!(output.status.success());
+        String::from_utf8(output.stdout).unwrap().trim().to_string()
+    }
+
+    fn mixed_backends(
+        path: &Path,
+        mode: DiffWhitespaceMode,
+    ) -> Vec<(&'static str, Box<dyn VcsBackend>)> {
+        vec![
+            (
+                "libgit2",
+                Box::new(
+                    Libgit2Backend::discover_from(path, mode.clone())
+                        .expect("failed to open libgit2 backend"),
+                ),
+            ),
+            (
+                "git cli",
+                Box::new(
+                    GitCliBackend::discover_from(path, mode)
+                        .expect("failed to open git cli backend"),
+                ),
+            ),
+        ]
+    }
+
+    fn assert_auto_working_tree(files: &[DiffFile], context: &str) {
+        assert_ignored_whitespace(files, "data.json", context);
+        assert_ignored_whitespace(files, "lib.rs", context);
+        assert_has_hunks(files, "app.py", context);
+        assert_has_hunks(files, "cfg.yaml", context);
+        assert_has_hunks(files, "keep.txt", context);
+        assert_visible(files, "gone.txt", context);
+        assert_visible(files, "added.txt", context);
+        assert_visible(files, "binary.bin", context);
+        assert_visible(files, "untracked.json", context);
+        assert!(
+            file_named(files, "renamed-new.txt").is_some()
+                || file_named(files, "renamed.txt").is_some(),
+            "{context}: rename-only change should remain visible"
+        );
+        #[cfg(unix)]
+        assert_visible(files, "mode.txt", context);
+    }
+
+    #[test]
+    fn auto_whitespace_selects_per_extension_for_both_git_backends() {
+        let (repo, _ids) = setup_mixed_whitespace_git_repo();
+        let highlighter = SyntaxHighlighter::default();
+
+        for (label, backend) in mixed_backends(repo.path(), auto_mode()) {
+            let files = backend
+                .get_working_tree_diff(&highlighter)
+                .unwrap_or_else(|e| panic!("{label}: auto working tree failed: {e}"));
+            assert_auto_working_tree(&files, label);
+            assert_has_hunks(&files, "extra.custom", label);
+        }
+
+        for (label, backend) in mixed_backends(repo.path(), DiffWhitespaceMode::IgnoreAll) {
+            let files = backend
+                .get_working_tree_diff(&highlighter)
+                .unwrap_or_else(|e| panic!("{label}: ignore-all working tree failed: {e}"));
+            assert_ignored_whitespace(&files, "data.json", label);
+            assert_ignored_whitespace(&files, "app.py", label);
+            assert_ignored_whitespace(&files, "cfg.yaml", label);
+            assert_has_hunks(&files, "keep.txt", label);
+        }
+
+        for (label, backend) in mixed_backends(repo.path(), DiffWhitespaceMode::Normal) {
+            let files = backend
+                .get_working_tree_diff(&highlighter)
+                .unwrap_or_else(|e| panic!("{label}: normal working tree failed: {e}"));
+            assert_has_hunks(&files, "data.json", label);
+            assert_has_hunks(&files, "lib.rs", label);
+            assert_has_hunks(&files, "app.py", label);
+        }
+
+        for (label, backend) in mixed_backends(repo.path(), auto_with_overrides()) {
+            let files = backend
+                .get_working_tree_diff(&highlighter)
+                .unwrap_or_else(|e| panic!("{label}: override working tree failed: {e}"));
+            assert_ignored_whitespace(&files, "data.json", label);
+            assert_has_hunks(&files, "lib.rs", label);
+            assert_ignored_whitespace(&files, "extra.custom", label);
+            assert_has_hunks(&files, "app.py", label);
+        }
+    }
+
+    #[test]
+    fn auto_whitespace_covers_git_diff_endpoints() {
+        let (repo, ids) = setup_mixed_whitespace_git_repo();
+        let highlighter = SyntaxHighlighter::default();
+        let range = ResolvedRevisionRange::from_owned_commit_ids(
+            vec![ids[1].clone()],
+            crate::vcs::RevisionDiffTarget::CommitList,
+        );
+
+        for (label, backend) in mixed_backends(repo.path(), auto_mode()) {
+            let staged = backend
+                .get_staged_diff(&highlighter)
+                .unwrap_or_else(|e| panic!("{label}: staged failed: {e}"));
+            assert_visible(&staged, "added.txt", &format!("{label} staged"));
+
+            let unstaged = backend
+                .get_unstaged_diff(&highlighter)
+                .unwrap_or_else(|e| panic!("{label}: unstaged failed: {e}"));
+            assert_ignored_whitespace(&unstaged, "data.json", &format!("{label} unstaged"));
+            assert_has_hunks(&unstaged, "app.py", &format!("{label} unstaged"));
+
+            let range_files = backend
+                .get_commit_range_diff(&range, &highlighter)
+                .unwrap_or_else(|e| panic!("{label}: commit range failed: {e}"));
+            assert_has_hunks(&range_files, "keep.txt", &format!("{label} range"));
+
+            let combined = backend
+                .get_working_tree_with_commits_diff(&[ids[1].clone()], &highlighter)
+                .unwrap_or_else(|e| panic!("{label}: combined failed: {e}"));
+            assert_ignored_whitespace(&combined, "data.json", &format!("{label} combined"));
+            assert_has_hunks(&combined, "keep.txt", &format!("{label} combined"));
+        }
+    }
+
+    #[test]
+    fn auto_whitespace_surfaces_unborn_head_and_strict_subset() {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let repo = Repository::init(temp_dir.path()).expect("failed to init repo");
+        fs::write(temp_dir.path().join("data.json"), "{ \"a\" : 1 }\n").unwrap();
+        fs::write(temp_dir.path().join("app.py"), "x =  1\n").unwrap();
+        let mut index = repo.index().expect("open index");
+        index.add_path(Path::new("data.json")).unwrap();
+        index.add_path(Path::new("app.py")).unwrap();
+        index.write().unwrap();
+
+        let files = get_working_tree_diff(&repo, &auto_mode(), &SyntaxHighlighter::default())
+            .expect("unborn HEAD auto diff");
+        assert_visible(&files, "data.json", "unborn");
+        assert_visible(&files, "app.py", "unborn");
+
+        let staged = get_staged_diff(&repo, &auto_mode(), &SyntaxHighlighter::default())
+            .expect("unborn staged auto diff");
+        assert_visible(&staged, "data.json", "unborn staged");
+
+        let (repo, ids) = setup_mixed_whitespace_git_repo();
+        let subset = ResolvedRevisionRange::from_owned_commit_ids(
+            vec![ids[1].clone()],
+            crate::vcs::RevisionDiffTarget::CommitList,
+        );
+        for (label, backend) in mixed_backends(repo.path(), auto_mode()) {
+            let files = backend
+                .get_commit_range_diff(&subset, &SyntaxHighlighter::default())
+                .unwrap_or_else(|e| panic!("{label}: subset failed: {e}"));
+            assert_eq!(
+                files.len(),
+                1,
+                "{label}: strict subset should only include keep.txt"
+            );
+            assert_has_hunks(&files, "keep.txt", &format!("{label} subset"));
         }
     }
 }

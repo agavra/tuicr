@@ -1089,7 +1089,7 @@ impl App {
         let current = diff_files_fingerprint(&self.diff_files);
         let review_commits = self.review_commits.clone();
         let path_filter = self.path_filter.clone();
-        let vcs_open_options = self.vcs_open_options;
+        let vcs_open_options = self.vcs_open_options.clone();
         let highlighter = self.theme.syntax_highlighter_arc();
 
         let (tx, rx) = std::sync::mpsc::channel();
@@ -1752,5 +1752,213 @@ mod tests {
         let a = vec![file("ab"), file("c")];
         let b = vec![file("a"), file("bc")];
         assert_ne!(diff_files_fingerprint(&a), diff_files_fingerprint(&b));
+    }
+
+    struct PolicyGitVcs {
+        repo: git2::Repository,
+        info: VcsInfo,
+        whitespace_mode: DiffWhitespaceMode,
+    }
+
+    impl VcsBackend for PolicyGitVcs {
+        fn info(&self) -> &VcsInfo {
+            &self.info
+        }
+
+        fn get_working_tree_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+            crate::vcs::git::diff::get_working_tree_diff(
+                &self.repo,
+                &self.whitespace_mode,
+                highlighter,
+            )
+        }
+
+        fn fetch_context_lines(
+            &self,
+            _file_path: &Path,
+            _file_status: FileStatus,
+            _ref_commit: Option<&str>,
+            _start_line: u32,
+            _end_line: u32,
+        ) -> Result<Vec<DiffLine>> {
+            Ok(Vec::new())
+        }
+
+        fn file_line_count(
+            &self,
+            _file_path: &Path,
+            _file_status: FileStatus,
+            _ref_commit: Option<&str>,
+        ) -> Result<u32> {
+            Ok(0)
+        }
+    }
+
+    fn git_in(dir: &Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .args([
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "init.defaultRefFormat=files",
+            ])
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .expect("failed to run git");
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn mixed_watch_repo() -> (tempfile::TempDir, git2::Repository) {
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
+        let root = dir.path();
+        git_in(root, &["init"]);
+        git_in(root, &["config", "user.name", "Tuicr Test"]);
+        git_in(root, &["config", "user.email", "tuicr@example.com"]);
+        std::fs::write(root.join("data.json"), "{\"a\":1}\n").unwrap();
+        std::fs::write(root.join("lib.rs"), "fn x(){}\n").unwrap();
+        std::fs::write(root.join("app.py"), "x = 1\n").unwrap();
+        git_in(root, &["add", "-A"]);
+        git_in(root, &["commit", "-m", "base"]);
+        std::fs::write(root.join("data.json"), "{ \"a\" : 1 }\n").unwrap();
+        std::fs::write(root.join("lib.rs"), "fn x(){ }\n").unwrap();
+        std::fs::write(root.join("app.py"), "x =  1\n").unwrap();
+        let repo = git2::Repository::open(root).expect("open mixed repo");
+        (dir, repo)
+    }
+
+    fn policy_vcs(repo: git2::Repository, mode: DiffWhitespaceMode) -> PolicyGitVcs {
+        let root_path = repo.workdir().expect("workdir").to_path_buf();
+        PolicyGitVcs {
+            info: VcsInfo {
+                root_path,
+                head_commit: "HEAD".into(),
+                branch_name: None,
+                vcs_type: VcsType::Git,
+            },
+            repo,
+            whitespace_mode: mode,
+        }
+    }
+
+    fn named<'a>(files: &'a [DiffFile], path: &str) -> Option<&'a DiffFile> {
+        files
+            .iter()
+            .find(|file| file.display_path() == Path::new(path))
+    }
+
+    #[test]
+    fn watch_worker_open_options_retain_whitespace_overrides() {
+        let mode = DiffWhitespaceMode::Auto(crate::vcs::WhitespaceAutoPolicy::with_overrides([
+            ("rs".into(), false),
+            ("custom".into(), true),
+        ]));
+        let options = AppStartupOptions {
+            revisions: None,
+            working_tree: false,
+            path_filter: None,
+            file_path: None,
+            all_files: false,
+            show_pr_checks: false,
+            show_pr_comments: true,
+            git_backend_preference: GitBackendPreference::Cli,
+            diff_whitespace_mode: mode.clone(),
+            commit_selection: CommitSelectionStart::All,
+            pr_target: None,
+            repo_url_override: None,
+        };
+        let captured = options.vcs_open_options();
+        assert_eq!(captured.git_backend_preference, GitBackendPreference::Cli);
+        assert_eq!(captured.diff_whitespace_mode, mode);
+        assert_eq!(captured.clone().diff_whitespace_mode, mode);
+    }
+
+    #[test]
+    fn watch_reload_mixed_file_diff_matches_initial_auto_load() {
+        let (dir, repo) = mixed_watch_repo();
+        let mode = DiffWhitespaceMode::Auto(crate::vcs::WhitespaceAutoPolicy::with_overrides([
+            ("rs".into(), false),
+            ("custom".into(), true),
+        ]));
+        let captured = VcsOpenOptions {
+            git_backend_preference: GitBackendPreference::Libgit2,
+            diff_whitespace_mode: mode.clone(),
+        };
+        let vcs = policy_vcs(repo, captured.diff_whitespace_mode.clone());
+        let highlighter = SyntaxHighlighter::default();
+        let initial = App::fetch_diff_files_for_source(
+            &vcs,
+            &vcs.info.root_path,
+            &DiffSource::WorkingTree,
+            &highlighter,
+            None,
+        )
+        .expect("initial mixed load");
+        assert!(
+            named(&initial, "data.json")
+                .map(|file| file.hunks.is_empty())
+                .unwrap_or(true),
+            "json whitespace should be ignored in auto mode"
+        );
+        assert!(
+            named(&initial, "lib.rs")
+                .map(|file| !file.hunks.is_empty())
+                .unwrap_or(false),
+            "rs=false override should keep Rust whitespace"
+        );
+        assert!(
+            named(&initial, "app.py")
+                .map(|file| !file.hunks.is_empty())
+                .unwrap_or(false),
+            "python whitespace should remain"
+        );
+
+        let unchanged = App::changed_diff_files_for_source(
+            &vcs,
+            &vcs.info.root_path,
+            &DiffSource::WorkingTree,
+            &highlighter,
+            None,
+            diff_files_fingerprint(&initial),
+        )
+        .expect("unchanged watch fetch");
+        assert!(
+            unchanged.is_none(),
+            "watch refresh with the same policy must match the initial load"
+        );
+
+        std::fs::write(dir.path().join("app.py"), "x =  2\n").unwrap();
+        let refreshed = App::changed_diff_files_for_source(
+            &vcs,
+            &vcs.info.root_path,
+            &DiffSource::WorkingTree,
+            &highlighter,
+            None,
+            diff_files_fingerprint(&initial),
+        )
+        .expect("changed watch fetch")
+        .expect("python edit should change the fingerprint");
+        let reloaded = App::fetch_diff_files_for_source(
+            &vcs,
+            &vcs.info.root_path,
+            &DiffSource::WorkingTree,
+            &highlighter,
+            None,
+        )
+        .expect("reload after python edit");
+        assert_eq!(
+            diff_files_fingerprint(&refreshed),
+            diff_files_fingerprint(&reloaded)
+        );
+        assert!(
+            named(&refreshed, "lib.rs")
+                .map(|file| !file.hunks.is_empty())
+                .unwrap_or(false),
+            "watch reload must keep the rs=false override"
+        );
     }
 }

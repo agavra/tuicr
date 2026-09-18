@@ -15,6 +15,7 @@ use crate::vcs::git::raw::{
     pair_metadata_with_patch, parse_raw_metadata_from_patch_output, parse_raw_patch_output,
     patch_text_from_raw_patch_output, split_patch_blocks,
 };
+use crate::vcs::whitespace::{WhitespaceComparison, materialize_diff};
 use crate::vcs::{
     ChangeKind, CommitInfo, DiffWhitespaceMode, ResolvedRevisionRange, RevisionDiffTarget,
     VcsBackend, VcsChangeStatus, VcsInfo,
@@ -90,11 +91,32 @@ impl GitCliBackend {
 
     fn get_cli_diff(
         &self,
+        args: Vec<String>,
+        include_untracked: bool,
+        old_source: GitContentSource<'_>,
+        new_source: GitContentSource<'_>,
+        highlighter: &SyntaxHighlighter,
+    ) -> Result<Vec<DiffFile>> {
+        materialize_diff(&self.whitespace_mode, |comparison| {
+            self.get_cli_diff_with_comparison(
+                args.clone(),
+                include_untracked,
+                old_source,
+                new_source,
+                highlighter,
+                comparison,
+            )
+        })
+    }
+
+    fn get_cli_diff_with_comparison(
+        &self,
         mut args: Vec<String>,
         include_untracked: bool,
         old_source: GitContentSource<'_>,
         new_source: GitContentSource<'_>,
         highlighter: &SyntaxHighlighter,
+        comparison: WhitespaceComparison,
     ) -> Result<Vec<DiffFile>> {
         // Paths and status come from Git's NUL-delimited raw records. Patch
         // headers remain display-only and may follow any user quoting/prefix
@@ -102,13 +124,13 @@ impl GitCliBackend {
         args.insert(1, "-z".to_string());
         args.insert(1, "--raw".to_string());
         args.insert(1, "--patch".to_string());
-        if self.whitespace_mode.ignores_all() {
+        if comparison.ignores_all() {
             args.insert(1, "--ignore-all-space".to_string());
         }
         let mut files = match run_git_diff_command(
             &self.root_path,
             args,
-            self.whitespace_mode.ignores_all(),
+            comparison.ignores_all(),
             highlighter,
         ) {
             Ok(files) => files,
@@ -1726,20 +1748,20 @@ mod tests {
         assert_eq!(
             summarize_files(cli_backend.get_working_tree_diff(&highlighter).unwrap()),
             summarize_files(
-                diff::get_working_tree_diff(&repo, DiffWhitespaceMode::Normal, &highlighter)
+                diff::get_working_tree_diff(&repo, &DiffWhitespaceMode::Normal, &highlighter)
                     .unwrap()
             )
         );
         assert_eq!(
             summarize_files(cli_backend.get_staged_diff(&highlighter).unwrap()),
             summarize_files(
-                diff::get_staged_diff(&repo, DiffWhitespaceMode::Normal, &highlighter).unwrap()
+                diff::get_staged_diff(&repo, &DiffWhitespaceMode::Normal, &highlighter).unwrap()
             )
         );
         assert_eq!(
             summarize_files(cli_backend.get_unstaged_diff(&highlighter).unwrap()),
             summarize_files(
-                diff::get_unstaged_diff(&repo, DiffWhitespaceMode::Normal, &highlighter).unwrap()
+                diff::get_unstaged_diff(&repo, &DiffWhitespaceMode::Normal, &highlighter).unwrap()
             )
         );
         assert_eq!(
@@ -1761,7 +1783,7 @@ mod tests {
                         vec![ids[1].clone()],
                         RevisionDiffTarget::CommitList,
                     ),
-                    DiffWhitespaceMode::Normal,
+                    &DiffWhitespaceMode::Normal,
                     &highlighter,
                 )
                 .unwrap()
@@ -1777,7 +1799,7 @@ mod tests {
                 diff::get_working_tree_with_commits_diff(
                     &repo,
                     &[ids[1].clone()],
-                    DiffWhitespaceMode::Normal,
+                    &DiffWhitespaceMode::Normal,
                     &highlighter,
                 )
                 .unwrap()
@@ -1852,7 +1874,7 @@ mod tests {
         let libgit2_files = diff::get_commit_range_diff(
             &repo,
             &libgit2_range,
-            DiffWhitespaceMode::Normal,
+            &DiffWhitespaceMode::Normal,
             &highlighter,
         )
         .expect("failed to get libgit2 range diff");

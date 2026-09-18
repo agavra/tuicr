@@ -19,6 +19,7 @@ mod jj;
 pub mod pr_noop;
 pub mod pristine;
 pub(crate) mod traits;
+pub(crate) mod whitespace;
 
 pub use file::FileBackend;
 pub use git::{GitBackend, GitBackendPreference};
@@ -27,7 +28,7 @@ pub use jj::JjBackend;
 pub use pr_noop::PrNoopVcs;
 pub use traits::{
     ChangeKind, CommitInfo, DiffWhitespaceMode, ResolvedRevisionRange, RevisionDiffTarget,
-    VcsBackend, VcsChangeStatus, VcsInfo,
+    VcsBackend, VcsChangeStatus, VcsInfo, WhitespaceAutoPolicy,
 };
 
 use std::collections::HashMap;
@@ -330,12 +331,12 @@ pub fn detect_vcs(
     whitespace_mode: DiffWhitespaceMode,
 ) -> Result<Box<dyn VcsBackend>> {
     // Try jj first since jj repos are Git-backed
-    if let Ok(backend) = JjBackend::discover(whitespace_mode) {
+    if let Ok(backend) = JjBackend::discover(whitespace_mode.clone()) {
         return Ok(Box::new(backend));
     }
 
     // Try git
-    if let Ok(backend) = GitBackend::discover(git_backend_preference, whitespace_mode) {
+    if let Ok(backend) = GitBackend::discover(git_backend_preference, whitespace_mode.clone()) {
         return Ok(Box::new(backend));
     }
 
