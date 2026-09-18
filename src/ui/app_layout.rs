@@ -4,7 +4,7 @@ use ratatui::{
     widgets::Block,
 };
 
-use crate::app::{App, InputMode};
+use crate::app::{App, ConfirmAction, InputMode};
 use crate::ui::comment_navigator::render_comment_navigator;
 use crate::ui::diff_view::render_diff_view;
 use crate::ui::file_list::render_file_list;
@@ -28,6 +28,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
 
     let selector_background = app.input_mode == InputMode::CommitSelect
+        || (app.input_mode == InputMode::Confirm
+            && app.pending_confirm.map(ConfirmAction::return_mode)
+                == Some(InputMode::CommitSelect))
         || (app.input_mode == InputMode::Command
             && app.command_return_mode == InputMode::CommitSelect)
         || (app.input_mode == InputMode::Help
@@ -48,6 +51,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         }
         if app.input_mode == InputMode::Help || app.searching_help() {
             help_popup::render_help(frame, app);
+        }
+        if let Some(confirm) = app.pending_confirm {
+            comment_panel::render_confirm_dialog(frame, app, confirm.prompt());
         }
         return;
     }
@@ -77,8 +83,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // Comment input is now rendered inline in the diff view
 
     // Render confirm dialog if in confirm mode
-    if app.input_mode == InputMode::Confirm {
-        comment_panel::render_confirm_dialog(frame, app, "Copy review to clipboard?");
+    if let Some(confirm) = app.pending_confirm {
+        comment_panel::render_confirm_dialog(frame, app, confirm.prompt());
     }
 
     // Submit-flow modals.

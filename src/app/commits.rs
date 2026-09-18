@@ -348,16 +348,18 @@ impl App {
     ///
     /// Sessions with neither comments nor reviewed state are hidden because
     /// they hold no review progress to resume. A clean quit removes them
-    /// (`delete_session_if_empty`); a crash can leave one behind.
+    /// (`delete_session_if_empty`); a crash can leave one behind. `a` on the
+    /// tab unhides them so they can be cleaned up with `dd`.
     pub fn load_sessions_tab(&mut self) {
         let root = self.vcs_info.root_path.clone();
         let store = crate::review_store::ReviewStore::new();
+        let show_empty = self.sessions_tab.show_empty();
         let mut result = store
             .list_sessions_for_repo(&root)
             .map(|sessions| {
                 sessions
                     .into_iter()
-                    .filter(Self::is_resumable)
+                    .filter(|s| show_empty || Self::is_resumable(s))
                     .collect::<Vec<_>>()
             })
             .map_err(|e| e.to_string());
@@ -373,7 +375,7 @@ impl App {
                     let listed = sessions
                         .iter()
                         .any(|s| s.session_ref.path() == session.session_ref.path());
-                    if !listed && Self::is_resumable(&session) {
+                    if !listed && (show_empty || Self::is_resumable(&session)) {
                         sessions.push(session);
                     }
                 }
@@ -405,6 +407,49 @@ impl App {
                     .map(|name| name.to_string_lossy().into_owned())
             })
             .unwrap_or_else(|| root.display().to_string())
+    }
+
+    /// Toggle whether empty sessions are listed, then reload.
+    ///
+    /// The filter is applied while rows are gathered rather than at render
+    /// time, so revealing them needs a fresh listing.
+    pub fn sessions_tab_toggle_show_empty(&mut self) {
+        self.sessions_tab.toggle_show_empty();
+        self.load_sessions_tab();
+    }
+
+    /// Delete the session under the cursor. Called after the confirm dialog,
+    /// never straight from the keypress.
+    pub fn sessions_tab_delete_selected(&mut self) {
+        let index = self.sessions_tab.cursor();
+        let Some(summary) = self.sessions_tab.cursor_session() else {
+            return;
+        };
+        // An open session would be rewritten by the TUI holding it, so the
+        // file would come back moments after being deleted.
+        if summary.active {
+            self.set_message("That review is open in another tuicr — close it first");
+            return;
+        }
+
+        let session_ref = summary.session_ref.clone();
+        let slug = summary.slug.clone();
+        match crate::review_store::ReviewStore::new().delete_review(&session_ref) {
+            Ok(true) => {
+                self.sessions_tab.remove_row(index);
+                self.sessions_tab
+                    .ensure_cursor_visible(self.sessions_list_viewport_height);
+                self.set_message(format!("Deleted review {slug}"));
+            }
+            // Already gone on disk: drop the stale row rather than report an
+            // error the user can do nothing about.
+            Ok(false) => {
+                self.sessions_tab.remove_row(index);
+                self.sessions_tab
+                    .ensure_cursor_visible(self.sessions_list_viewport_height);
+            }
+            Err(e) => self.set_error(format!("Failed to delete review: {e}")),
+        }
     }
 
     pub fn sessions_tab_cursor_up(&mut self) {

@@ -6,6 +6,7 @@
 //! routed `WorkingTree` to the unstaged-only loader, so it guarded nothing.
 
 use crate::app::*;
+use crate::input::keybindings::Action;
 use crate::model::FileStatus;
 use crate::review_store::{SessionKind, SessionSummary};
 use crate::vcs::traits::{ResolvedRevisionRange, VcsType};
@@ -496,4 +497,128 @@ fn should_hide_sessions_with_no_review_progress() {
         vec!["repo@main/commits/aaa..ccc", "repo@main/worktree/bbb"],
         "a session with no comments and no reviewed files holds no progress"
     );
+}
+
+#[test]
+fn should_delete_the_selected_session_file_and_row() {
+    // given — one persisted session, listed on the tab
+    let _reviews = TestReviewsDir::new();
+    let (mut app, _calls) = build_app(vec![commit("aaa")]);
+    let summary = stage_session(&mut app, range_session(&["aaa"], Some("main")));
+    let path = summary.session_ref.path().to_path_buf();
+    assert!(
+        path.exists(),
+        "fixture should have persisted a session file"
+    );
+
+    // when
+    app.sessions_tab_delete_selected();
+
+    // then — gone from disk and from the listing, no reload needed
+    assert!(!path.exists(), "delete should remove the session file");
+    assert!(app.sessions_tab.is_empty());
+    assert!(
+        crate::review_store::ReviewStore::new()
+            .list_all_sessions()
+            .expect("list")
+            .is_empty(),
+        "delete should prune the manifest entry too"
+    );
+}
+
+#[test]
+fn should_refuse_to_delete_a_session_open_in_another_tuicr() {
+    // given — the listing row is marked active, as a running TUI records
+    let _reviews = TestReviewsDir::new();
+    let (mut app, _calls) = build_app(vec![commit("aaa")]);
+    let mut summary = stage_session(&mut app, range_session(&["aaa"], Some("main")));
+    summary.active = true;
+    let path = summary.session_ref.path().to_path_buf();
+    app.sessions_tab.apply_load(Ok(vec![summary]));
+
+    // when
+    app.sessions_tab_delete_selected();
+
+    // then — the owning process would just write it back, so refuse
+    assert!(path.exists(), "an open session must survive");
+    assert_eq!(app.sessions_tab.rows().len(), 1);
+    assert!(
+        app.message
+            .as_ref()
+            .is_some_and(|m| m.content.contains("close it first")),
+        "expected guidance, got {:?}",
+        app.message
+    );
+}
+
+#[test]
+fn should_confirm_before_deleting_and_return_to_the_selector() {
+    // given — the cursor is on a session
+    let _reviews = TestReviewsDir::new();
+    let (mut app, _calls) = build_app(vec![commit("aaa")]);
+    let summary = stage_session(&mut app, range_session(&["aaa"], Some("main")));
+    let path = summary.session_ref.path().to_path_buf();
+    app.target_tab = TargetTab::Sessions;
+
+    // when — dd raises the prompt rather than deleting outright
+    crate::handler::handle_commit_select_action(&mut app, Action::SessionsTabDelete);
+    assert_eq!(app.input_mode, InputMode::Confirm);
+    assert_eq!(app.pending_confirm, Some(ConfirmAction::DeleteSession));
+    assert!(path.exists(), "the prompt must not delete anything yet");
+
+    // and — declining keeps the session and stays in the selector
+    crate::handler::handle_confirm_action(&mut app, Action::ConfirmNo);
+    assert!(path.exists());
+    assert_eq!(app.input_mode, InputMode::CommitSelect);
+    assert!(!app.should_quit, "a delete prompt must not quit tuicr");
+
+    // and — confirming deletes, still without quitting
+    crate::handler::handle_commit_select_action(&mut app, Action::SessionsTabDelete);
+    crate::handler::handle_confirm_action(&mut app, Action::ConfirmYes);
+    assert!(!path.exists());
+    assert_eq!(app.input_mode, InputMode::CommitSelect);
+    assert!(!app.should_quit);
+}
+
+#[test]
+fn should_keep_quit_prompts_quitting() {
+    // given — the clipboard prompt, which shares the confirm plumbing
+    let (mut app, _calls) = build_app(vec![commit("aaa")]);
+    app.enter_confirm_mode(ConfirmAction::CopyAndQuit);
+
+    // when
+    crate::handler::handle_confirm_action(&mut app, Action::ConfirmNo);
+
+    // then — routing delete through Confirm must not have broken this
+    assert!(app.should_quit);
+    assert_eq!(app.input_mode, InputMode::Normal);
+}
+
+#[test]
+fn should_reveal_empty_sessions_only_when_toggled_on() {
+    // given — one session with no comments and no reviewed files
+    let _reviews = TestReviewsDir::new();
+    let (mut app, _calls) = build_app(vec![commit("aaa")]);
+    let store = crate::review_store::ReviewStore::new();
+    store
+        .save_review(&range_session(&["aaa"], Some("main")))
+        .expect("persist session");
+
+    // when — the default listing
+    app.load_sessions_tab();
+
+    // then — hidden, since there is no progress to resume
+    assert!(app.sessions_tab.is_empty());
+    assert!(!app.sessions_tab.show_empty());
+
+    // when — `a` unhides so it can be cleaned up
+    app.sessions_tab_toggle_show_empty();
+
+    // then
+    assert!(app.sessions_tab.show_empty());
+    assert_eq!(app.sessions_tab.rows().len(), 1);
+
+    // and — toggling back re-hides it
+    app.sessions_tab_toggle_show_empty();
+    assert!(app.sessions_tab.is_empty());
 }
