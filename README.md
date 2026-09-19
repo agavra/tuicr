@@ -265,8 +265,7 @@ Path: `~/.config/tuicr/config.toml` on Linux/macOS, `%APPDATA%\tuicr\config.toml
 ```toml
 theme = "catppuccin-mocha"
 diff_view = "side-by-side"   # or "unified"
-ignore_whitespace = "auto"   # local VCS only: ignore whitespace in json/js/jsx/mjs/cjs/ts/tsx/rs
-                             # true/false still set a global mode; omitted/false is the default
+ignore_whitespace = false    # ignore all whitespace in local VCS diffs
 appearance = "system"        # or "dark" / "light"
 mouse = true
 leader = ";"                  # configurable prefix for leader shortcuts
@@ -274,17 +273,11 @@ editor = "nvim"               # editor for `e` / `:edit`; overrides $EDITOR
 comment_vim = false           # vim modal editing in the review comment box
 relative_line_numbers = false # show rendered-row distances in the diff gutter
 
-[ignore_whitespace_overrides] # only used with ignore_whitespace = "auto"
-rs = false                    # keep Rust whitespace changes
-custom = true                 # ignore whitespace in *.custom files
-
 [[comment_types]]
 id = "issue"
 color = "red"
 definition = "must fix before merge"
 ```
-
-`ignore_whitespace = "auto"` is a review heuristic, not language-semantic equivalence: whitespace inside strings can still matter even in listed languages. Unknown extensions, extensionless files, Python, and YAML compare normally unless overridden. User override values replace the decision for that extension; they never invert another boolean. Pull-request diffs are unchanged.
 
 Bundled themes: `dark`, `light`, `ayu-light`, `ayu-mirage`, `onedark`, `github-light`,
 `github-dark`, `catppuccin-latte`, `catppuccin-frappe`, `catppuccin-macchiato`,

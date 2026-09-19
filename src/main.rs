@@ -209,6 +209,15 @@ fn main() -> anyhow::Result<()> {
         Some("oldest") => app::CommitSelectionStart::Oldest,
         _ => app::CommitSelectionStart::All,
     };
+    let pr_comments_visibility = match config_outcome
+        .config
+        .as_ref()
+        .and_then(|cfg| cfg.pr_comments_visibility.as_deref())
+    {
+        Some("all") => Some(tuicr::forge::remote_comments::PrCommentsVisibility::All),
+        Some("hide") => Some(tuicr::forge::remote_comments::PrCommentsVisibility::Hide),
+        _ => None,
+    };
 
     let mut app = match profile::time("startup.app_init", || {
         App::new(
@@ -234,6 +243,7 @@ fn main() -> anyhow::Result<()> {
                     .as_ref()
                     .and_then(|cfg| cfg.show_pr_comments)
                     .unwrap_or(true),
+                pr_comments_visibility,
                 git_backend_preference,
                 diff_whitespace_mode,
                 commit_selection,
@@ -328,6 +338,7 @@ fn main() -> anyhow::Result<()> {
     if let Some(ref cfg) = config_outcome.config {
         app.show_pr_checks = cfg.show_pr_checks.unwrap_or(false);
         app.show_pr_comments = cfg.show_pr_comments.unwrap_or(true);
+        app.initial_comments_visibility = pr_comments_visibility;
         app.set_compact_folders(cfg.compact_folders.unwrap_or(false));
         if cfg.show_file_list == Some(false) {
             app.show_file_list = false;

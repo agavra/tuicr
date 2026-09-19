@@ -1865,6 +1865,7 @@ mod tests {
             all_files: false,
             show_pr_checks: false,
             show_pr_comments: true,
+            pr_comments_visibility: None,
             git_backend_preference: GitBackendPreference::Cli,
             diff_whitespace_mode: mode.clone(),
             commit_selection: CommitSelectionStart::All,

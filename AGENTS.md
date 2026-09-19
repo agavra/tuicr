@@ -353,6 +353,10 @@ These are non-obvious things the implementation chain hit. Worth preserving for 
 
 When adding user-facing features, update the relevant documentation:
 
+Document every configuration option in `docs/CONFIG.md`. Only critical
+configuration options should also appear in `README.md`; document all other
+configuration options in `docs/CONFIG.md` only.
+
 | Document               | Update when adding/changing...                                                                                           |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | `README.md`            | Keybindings, commands (`:*`), CLI flags, features list, installation methods, agent integration setup, forge limitations |

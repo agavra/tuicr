@@ -166,6 +166,9 @@ pub struct AppConfig {
     /// Whether pull-request conversation comments are fetched and shown.
     /// Defaults to true.
     pub show_pr_comments: Option<bool>,
+    /// Default visibility for PR review comment threads:
+    /// `"unresolved"` (the default), `"all"` or `"hide"`.
+    pub pr_comments_visibility: Option<String>,
     /// Whether the inline commit selector pane is visible on startup for
     /// multi-commit reviews. Defaults to true; toggle at runtime with
     /// `<leader>s` or `:set commits!`.
@@ -255,6 +258,7 @@ const KNOWN_KEYS: &[&str] = &[
     "compact_folders",
     "show_pr_checks",
     "show_pr_comments",
+    "pr_comments_visibility",
     "show_commits",
     "show_reviewed",
     "diff_view",
@@ -583,6 +587,12 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         compact_folders: read_bool(table, "compact_folders", &mut warnings),
         show_pr_checks: read_bool(table, "show_pr_checks", &mut warnings),
         show_pr_comments: read_bool(table, "show_pr_comments", &mut warnings),
+        pr_comments_visibility: read_enum(
+            table,
+            "pr_comments_visibility",
+            &["unresolved", "all", "hide"],
+            &mut warnings,
+        ),
         show_commits: read_bool(table, "show_commits", &mut warnings),
         show_reviewed: read_bool(table, "show_reviewed", &mut warnings),
         diff_view: read_enum(
@@ -1324,6 +1334,54 @@ mod tests {
         assert_eq!(
             outcome.warnings[0],
             "Warning: Config key 'diff_view' must be a string; ignoring value"
+        );
+    }
+
+    // pr_comments_visibility
+
+    #[test]
+    fn should_parse_pr_comments_visibility_values() {
+        for value in ["unresolved", "all", "hide"] {
+            let outcome = parse_config(&format!("pr_comments_visibility = \"{value}\"\n"));
+            assert_eq!(
+                outcome
+                    .config
+                    .as_ref()
+                    .and_then(|cfg| cfg.pr_comments_visibility.as_deref()),
+                Some(value)
+            );
+            assert!(outcome.warnings.is_empty(), "{value} should parse cleanly");
+        }
+    }
+
+    #[test]
+    fn should_warn_and_ignore_pr_comments_visibility_with_invalid_value() {
+        let outcome = parse_config("pr_comments_visibility = \"shown\"\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.pr_comments_visibility.as_deref()),
+            None
+        );
+        assert_eq!(outcome.warnings.len(), 1);
+        assert!(outcome.warnings[0].contains("\"unresolved\" or \"all\" or \"hide\""));
+    }
+
+    #[test]
+    fn should_warn_and_ignore_pr_comments_visibility_with_invalid_type() {
+        let outcome = parse_config("pr_comments_visibility = true\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.pr_comments_visibility.as_deref()),
+            None
+        );
+        assert_eq!(outcome.warnings.len(), 1);
+        assert_eq!(
+            outcome.warnings[0],
+            "Warning: Config key 'pr_comments_visibility' must be a string; ignoring value"
         );
     }
 
