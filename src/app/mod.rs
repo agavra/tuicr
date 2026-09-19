@@ -1419,6 +1419,9 @@ pub struct App {
     pub commit_order: CommitOrder,
     /// Which commits are selected when a multi-commit review first opens.
     pub commit_selection_start: CommitSelectionStart,
+    /// Configured `pr_comments_visibility` default for fresh PR sessions;
+    /// a persisted session restores its own value.
+    pub initial_comments_visibility: Option<crate::forge::remote_comments::PrCommentsVisibility>,
     /// Cached individual/subrange diffs keyed by (start_idx, end_idx) into review_commits
     pub commit_diff_cache: HashMap<(usize, usize), Vec<DiffFile>>,
     /// The combined "all selected" diff, cached for quick restoration
@@ -1777,6 +1780,8 @@ pub struct AppStartupOptions<'a> {
     pub show_pr_checks: bool,
     /// Whether pull-request conversation comments are fetched and rendered.
     pub show_pr_comments: bool,
+    /// Configured `pr_comments_visibility` default for fresh PR sessions.
+    pub pr_comments_visibility: Option<crate::forge::remote_comments::PrCommentsVisibility>,
     pub git_backend_preference: GitBackendPreference,
     pub diff_whitespace_mode: DiffWhitespaceMode,
     /// Which commits are selected when a multi-commit review first opens.

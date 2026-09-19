@@ -266,6 +266,7 @@ Path: `~/.config/tuicr/config.toml` on Linux/macOS, `%APPDATA%\tuicr\config.toml
 theme = "catppuccin-mocha"
 diff_view = "side-by-side"   # or "unified"
 ignore_whitespace = false    # ignore all whitespace in local VCS diffs
+pr_comments_visibility = "unresolved"  # or "all" / "hide": default PR comment-thread visibility
 appearance = "system"        # or "dark" / "light"
 mouse = true
 leader = ";"                  # configurable prefix for leader shortcuts
