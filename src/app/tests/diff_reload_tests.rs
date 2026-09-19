@@ -629,7 +629,14 @@ fn should_not_persist_strict_subset_reload() {
 
     app.reload_diff_files().expect("reload should succeed");
 
-    assert_eq!(app.diff_files[0].content_hash, 2);
+    assert_eq!(
+        app.diff_files
+            .iter()
+            .find(|file| file.display_path() == initial.display_path())
+            .expect("reloaded file should remain visible")
+            .content_hash,
+        2
+    );
     let persisted =
         crate::persistence::storage::load_session(&path).expect("persisted session should load");
     assert_eq!(

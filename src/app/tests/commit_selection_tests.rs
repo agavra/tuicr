@@ -553,6 +553,99 @@ fn commit_message_file(app: &App) -> Option<&DiffFile> {
     app.diff_files.iter().find(|file| file.is_commit_message)
 }
 
+fn single_commit_review() -> App {
+    let mut app = build_app_with_range_diff(
+        vec![commit_with_body("c1", "why this change was made")],
+        vec![commit_only_file(
+            &PathBuf::from("src/only_in_commit.rs"),
+            vec![one_line_hunk()],
+        )],
+    );
+    app.commit_selection_range = Some((0, 0));
+    app.confirm_commit_selection().unwrap();
+    app
+}
+
+#[test]
+fn should_preserve_commit_message_and_comments_on_manual_reload() {
+    let mut app = single_commit_review();
+    let message = commit_message_file(&app).unwrap().clone();
+    let comment = crate::model::comment::Comment::new(
+        "Keep this explanation".into(),
+        crate::model::comment::CommentType::None,
+        Some(crate::model::comment::LineSide::New),
+    );
+    app.session
+        .files
+        .get_mut(message.display_path())
+        .unwrap()
+        .line_comments
+        .insert(3, vec![comment.clone()]);
+    app.save_current_session_merging_external().unwrap();
+
+    // Repeated :e must neither drop nor duplicate the synthetic file.
+    for _ in 0..2 {
+        app.reload_diff_files().unwrap();
+        assert_eq!(
+            app.diff_files
+                .iter()
+                .filter(|f| f.is_commit_message)
+                .count(),
+            1
+        );
+        assert_eq!(
+            commit_message_file(&app).unwrap().content_hash,
+            message.content_hash
+        );
+        assert_eq!(
+            app.session.files[message.display_path()].line_comments[&3][0].id,
+            comment.id
+        );
+    }
+}
+
+#[test]
+fn should_not_treat_commit_message_as_a_watched_diff_change() {
+    let app = single_commit_review();
+    assert!(commit_message_file(&app).is_some());
+    assert!(app.fetch_changed_diff_files().unwrap().is_none());
+}
+
+#[test]
+fn should_preserve_commit_message_when_watched_diff_changes() {
+    let mut app = single_commit_review();
+    let message_hash = commit_message_file(&app).unwrap().content_hash;
+    let changed = commit_only_file(
+        &PathBuf::from("src/newly_visible.rs"),
+        vec![one_line_hunk()],
+    );
+    let request = DiffWatchReloadRequest {
+        diff_source: app.diff_source.clone(),
+        commit_selection_range: app.commit_selection_range,
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    tx.send(DiffWatchReloadEvent::Done {
+        request: request.clone(),
+        result: Ok(Some(vec![changed.clone()])),
+        commits: None,
+        change_status: None,
+    })
+    .unwrap();
+    app.diff_watch_reload = Some(DiffWatchReload { request, rx });
+
+    assert!(app.poll_diff_watch_changes());
+    assert_eq!(
+        commit_message_file(&app).unwrap().content_hash,
+        message_hash
+    );
+    assert!(
+        app.diff_files
+            .iter()
+            .any(|f| f.display_path() == changed.display_path())
+    );
+    assert_eq!(app.diff_files.len(), 2);
+}
+
 #[test]
 fn should_add_and_drop_the_commit_message_as_the_inline_pane_narrows_and_widens() {
     let path = PathBuf::from("src/only_in_commit.rs");

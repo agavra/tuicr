@@ -605,11 +605,13 @@ impl App {
     ) -> Result<crate::forge::pr_open::OpenedPullRequest> {
         self.save_current_session_merging_external()?;
         let previous_session = self.session.clone();
+        let mut fresh_session = opened.session.clone();
+        self.seed_configured_visibility(&mut fresh_session);
         let session = match Self::load_pr_session_for_opened(&opened)? {
             Some(session) => session,
             None => Self::reviewed_state_carried_forward(
                 &previous_session,
-                opened.session.clone(),
+                fresh_session,
                 &opened.diff_files,
             ),
         };

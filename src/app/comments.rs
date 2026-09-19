@@ -672,58 +672,21 @@ impl App {
     /// Delete the comment at the current cursor position, if any
     /// Returns true if a comment was deleted
     pub fn delete_comment_at_cursor(&mut self) -> bool {
-        let location = self.find_comment_at_cursor();
-
-        match location {
-            Some(CommentLocation::Review { index })
-                if index < self.session.review_comments.len() =>
-            {
-                self.session.review_comments.remove(index);
-                self.dirty = true;
-                self.set_message("Review comment deleted");
-                self.rebuild_annotations();
-                return true;
-            }
-            Some(CommentLocation::File { path, index }) => {
-                if let Some(review) = self.session.get_file_mut(&path) {
-                    review.file_comments.remove(index);
-                    self.dirty = true;
-                    self.set_message("Comment deleted");
-                    self.rebuild_annotations();
-                    return true;
-                }
-            }
-            Some(CommentLocation::Line {
-                path,
-                line,
-                side,
-                index,
-            }) => {
-                if let Some(review) = self.session.get_file_mut(&path)
-                    && let Some(comments) = review.line_comments.get_mut(&line)
-                {
-                    // `comment_idx` from the annotation is the absolute index
-                    // into the stored Vec (see `push_comments`), so delete
-                    // directly — no side-filtered re-count.
-                    if index < comments.len() {
-                        let comment_side = comments[index].side.unwrap_or(LineSide::New);
-                        if comment_side == side {
-                            comments.remove(index);
-                            if comments.is_empty() {
-                                review.line_comments.remove(&line);
-                            }
-                            self.dirty = true;
-                            self.set_message(format!("Comment on line {line} deleted"));
-                            self.rebuild_annotations();
-                            return true;
-                        }
-                    }
-                }
-            }
-            Some(CommentLocation::Review { .. }) | None => {}
+        let Some(location) = self.find_comment_at_cursor() else {
+            return false;
+        };
+        if !self.session.remove_comment(&location) {
+            return false;
         }
-
-        false
+        let message = match location {
+            CommentLocation::Review { .. } => "Review comment deleted".to_string(),
+            CommentLocation::File { .. } => "Comment deleted".to_string(),
+            CommentLocation::Line { line, .. } => format!("Comment on line {line} deleted"),
+        };
+        self.dirty = true;
+        self.set_message(message);
+        self.rebuild_annotations();
+        true
     }
 
     pub fn clear_comments(&mut self, scope: ClearScope) {

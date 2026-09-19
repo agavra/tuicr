@@ -23,6 +23,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use serde_json::json;
 
 use crate::error::{Result, TuicrError};
+use crate::forge::local_git::read_blob;
 use crate::forge::remote_comments::RemoteReviewThread;
 use crate::forge::submit::{GhSide, SubmitEvent};
 use crate::forge::traits::{
@@ -238,28 +239,6 @@ fn default_transport() -> Box<dyn AzHttp> {
 
 // ---------- Local git helpers (mirror gh/glab) ----------
 
-/// Read a git blob from a checkout via `git show <sha>:<path>`. `None` on any
-/// failure so callers fall back to the REST API.
-fn read_blob_with_repo(repo_root: &Path, sha: &str, path: &Path) -> Option<String> {
-    let spec = format!("{}:{}", sha, path.to_string_lossy());
-    let exists = run_command_output(
-        "git",
-        Some(repo_root),
-        ["cat-file", "-e", spec.as_str()]
-            .iter()
-            .map(|s| OsStr::new(*s)),
-    );
-    if exists.is_err() {
-        return None;
-    }
-    run_command_output(
-        "git",
-        Some(repo_root),
-        ["show", spec.as_str()].iter().map(|s| OsStr::new(*s)),
-    )
-    .ok()
-}
-
 /// `git diff <a><sep><b>` in `repo_root`, returning `None` when either SHA is
 /// absent locally or the command fails.
 fn local_diff(repo_root: &Path, a: &str, b: &str, sep: &str) -> Option<Vec<FilePatch>> {
@@ -447,18 +426,6 @@ impl AzureDevOpsBackend {
         );
         self.get(&request.repository, url)
     }
-
-    /// File content at the request's revision: local blob first, REST fallback.
-    fn file_content(&self, request: &ForgeFileLinesRequest) -> Result<String> {
-        let local = self
-            .local_checkout
-            .as_deref()
-            .and_then(|root| read_blob_with_repo(root, request.sha(), request.path.as_path()));
-        match local {
-            Some(content) => Ok(content),
-            None => self.fetch_file_via_api(request),
-        }
-    }
 }
 
 impl ForgeBackend for AzureDevOpsBackend {
@@ -545,16 +512,25 @@ impl ForgeBackend for AzureDevOpsBackend {
         if request.start_line == 0 || request.start_line > request.end_line {
             return Ok(Vec::new());
         }
-        let content = self.file_content(&request)?;
-        Ok(slice_context_lines(
-            &content,
-            request.start_line,
-            request.end_line,
-        ))
+        let (start_line, end_line) = (request.start_line, request.end_line);
+        let content = self.fetch_file_content(request)?;
+        Ok(slice_context_lines(&content, start_line, end_line))
+    }
+
+    /// File content at the request's revision: local blob first, REST fallback.
+    fn fetch_file_content(&self, request: ForgeFileLinesRequest) -> Result<String> {
+        match self
+            .local_checkout
+            .as_deref()
+            .and_then(|root| read_blob(root, request.sha(), request.path.as_path()))
+        {
+            Some(content) => Ok(content),
+            None => self.fetch_file_via_api(&request),
+        }
     }
 
     fn file_line_count(&self, request: ForgeFileLinesRequest) -> Result<u32> {
-        let content = self.file_content(&request)?;
+        let content = self.fetch_file_content(request)?;
         Ok(content.lines().count() as u32)
     }
 
