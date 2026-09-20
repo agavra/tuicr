@@ -232,6 +232,127 @@ fn hunk_navigation_counts_paired_changes_and_wrapped_comments() {
 }
 
 #[test]
+fn hunk_navigation_renders_the_target_after_scrolling_expanded_context() {
+    use ratatui::{Terminal, backend::TestBackend};
+    for mode in [DiffViewMode::Unified, DiffViewMode::SideBySide] {
+        let file = make_file_with_hunks("test.rs", vec![make_hunk(1, 5), make_hunk(50, 5)]);
+        let mut app = build_app_with_files(vec![file], 100);
+        app.diff_view_mode = mode;
+        app.expand_gap(
+            GapId {
+                file_idx: 0,
+                hunk_idx: 1,
+            },
+            ExpandDirection::Both,
+            None,
+        )
+        .unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(100, 10)).unwrap();
+        let draw = |terminal: &mut Terminal<TestBackend>, app: &mut App| {
+            terminal
+                .draw(|frame| crate::ui::render(frame, app))
+                .unwrap();
+        };
+        draw(&mut terminal, &mut app);
+        app.diff_state.cursor_line = 1;
+        app.next_hunk();
+        draw(&mut terminal, &mut app);
+        assert!(app.diff_state.scroll_offset > 0);
+        assert!(
+            app.diff_row_to_annotation
+                .contains(&app.diff_state.cursor_line)
+        );
+        assert!(matches!(
+            app.line_annotations[app.diff_state.cursor_line],
+            AnnotatedLine::HunkHeader {
+                file_idx: 0,
+                hunk_idx: 1
+            }
+        ));
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(screen.contains("@@ -50,5 +50,5 @@"), "{mode:?}: {screen}");
+        app.prev_hunk();
+        draw(&mut terminal, &mut app);
+        assert!(
+            app.diff_row_to_annotation
+                .contains(&app.diff_state.cursor_line)
+        );
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(screen.contains("@@ -1,5 +1,5 @@"), "{mode:?}: {screen}");
+    }
+}
+
+#[test]
+fn hunk_navigation_crosses_asymmetric_files_with_hidden_middle_file() {
+    for mode in [DiffViewMode::Unified, DiffViewMode::SideBySide] {
+        let files = vec![
+            make_file_with_hunks("a.rs", vec![make_hunk(1, 5), make_hunk(50, 5)]),
+            make_file_with_hunks("hidden.rs", vec![make_hunk(1, 5)]),
+            make_file_with_hunks("z.rs", vec![make_hunk(30, 3)]),
+        ];
+        let mut app = build_app_with_files(files, 100);
+        app.diff_view_mode = mode;
+        let hidden = app.diff_files[1].display_path().clone();
+        app.session.get_file_mut(&hidden).unwrap().reviewed = true;
+        app.set_show_reviewed(false);
+        let last_path = app.diff_files[2].display_path().clone();
+        app.session
+            .get_file_mut(&last_path)
+            .unwrap()
+            .add_file_comment(Comment::new(
+                "first line\nsecond line".into(),
+                CommentType::from_id("note"),
+                None,
+            ));
+        app.is_single_file_view = true;
+        app.rebuild_annotations();
+        app.diff_state.cursor_line = app
+            .line_annotations
+            .iter()
+            .position(|line| {
+                matches!(
+                    line,
+                    AnnotatedLine::HunkHeader {
+                        file_idx: 0,
+                        hunk_idx: 1
+                    }
+                )
+            })
+            .unwrap();
+        app.next_hunk();
+        assert_eq!(app.diff_state.current_file_idx, 2);
+        assert!(matches!(
+            app.line_annotations[app.diff_state.cursor_line],
+            AnnotatedLine::HunkHeader {
+                file_idx: 2,
+                hunk_idx: 0
+            }
+        ));
+        app.prev_hunk();
+        assert_eq!(app.diff_state.current_file_idx, 0);
+        assert!(matches!(
+            app.line_annotations[app.diff_state.cursor_line],
+            AnnotatedLine::HunkHeader {
+                file_idx: 0,
+                hunk_idx: 1
+            }
+        ));
+    }
+}
+
+#[test]
 fn should_cycle_forward_through_review_file_and_line_comments() {
     let file = make_file_with_hunks("test.rs", vec![make_hunk(1, 3)]);
     let mut app = build_app_with_files(vec![file], 20);
