@@ -1099,6 +1099,10 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
     } else {
         (vec![1; visible_lines_unscrolled_for_overlay.len()], None)
     };
+    // SBS wraps per side with blank continuation prefixes, so the uniform
+    // packing model applies; drop any ranges a previous unified gutter
+    // render published.
+    app.gutter_sel_ranges.clear();
     app.diff_state.visible_line_count = populate_row_to_annotation(
         &mut app.diff_row_to_annotation,
         &row_heights,
@@ -1161,6 +1165,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
         &visible_lines_unscrolled_for_overlay,
         &row_heights,
         app,
+        app.diff_state.scroll_offset,
     );
 
     // Move the `▶` caret onto the active side for the cursor row.
