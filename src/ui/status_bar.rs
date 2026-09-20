@@ -341,6 +341,7 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             InputMode::SubmitResolver => " RESOLVE ".to_string(),
             InputMode::SubmitConfirm => " SUBMIT ".to_string(),
             InputMode::SubmitActionPicker => " SUBMIT ".to_string(),
+            InputMode::ThemePicker => " THEME ".to_string(),
         };
 
         let mode_span = Span::styled(mode_str, styles::mode_style(theme));
@@ -352,6 +353,8 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             // still reads NORMAL; the hint is what tells the user Enter/Esc
             // are the way out.
             Cow::Borrowed("   \u{21b5} apply \u{00b7} esc cancel")
+        } else if app.theme_picker_filtering() {
+            Cow::Borrowed("   \u{21b5} apply filter \u{00b7} esc cancel filter")
         } else {
             match app.input_mode {
                 InputMode::Normal if app.focused_panel == FocusedPanel::FileList => Cow::Borrowed(
@@ -386,6 +389,9 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                 InputMode::SubmitActionPicker => {
                     Cow::Borrowed("   j/k move \u{00b7} \u{21b5} submit \u{00b7} esc cancel")
                 }
+                InputMode::ThemePicker => Cow::Borrowed(
+                    "   j/k move \u{00b7} \u{21b5} apply \u{00b7} / filter \u{00b7} esc cancel",
+                ),
             }
         };
         let hints_span = Span::styled(hints, Style::default().fg(theme.fg_secondary));

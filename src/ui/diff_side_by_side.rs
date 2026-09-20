@@ -48,7 +48,14 @@ fn content_spans_for_diff_line(
         LineOrigin::Deletion => styles::diff_del_style(theme),
     };
     let spans: Vec<Span<'static>> = if let Some(ref h) = dl.highlighted_spans {
-        h.iter().map(|(s, t)| Span::styled(t.clone(), *s)).collect()
+        h.iter()
+            .map(|(s, t)| {
+                Span::styled(
+                    t.clone(),
+                    styles::patch_highlighted_span_bg(*s, theme, origin),
+                )
+            })
+            .collect()
     } else {
         vec![Span::styled(dl.content.clone(), base)]
     };
@@ -1884,8 +1891,16 @@ fn add_deletion_spans(
     // Use syntax highlighting if available
     if let Some(ref highlighted) = diff_line.highlighted_spans {
         let syntax_pad_style = Style::default().fg(theme.diff_del).bg(theme.syntax_del_bg);
-        let content_spans =
-            searched_cell_spans(highlighted, content_width, syntax_pad_style, search);
+        let patched: Vec<(Style, String)> = highlighted
+            .iter()
+            .map(|(s, t)| {
+                (
+                    styles::patch_highlighted_span_bg(*s, theme, LineOrigin::Deletion),
+                    t.clone(),
+                )
+            })
+            .collect();
+        let content_spans = searched_cell_spans(&patched, content_width, syntax_pad_style, search);
         spans.extend(content_spans);
     } else {
         spans.extend(plain_cell_spans(
@@ -1920,8 +1935,16 @@ fn add_addition_spans(
     // Use syntax highlighting if available
     if let Some(ref highlighted) = diff_line.highlighted_spans {
         let syntax_pad_style = Style::default().fg(theme.diff_add).bg(theme.syntax_add_bg);
-        let content_spans =
-            searched_cell_spans(highlighted, content_width, syntax_pad_style, search);
+        let patched: Vec<(Style, String)> = highlighted
+            .iter()
+            .map(|(s, t)| {
+                (
+                    styles::patch_highlighted_span_bg(*s, theme, LineOrigin::Addition),
+                    t.clone(),
+                )
+            })
+            .collect();
+        let content_spans = searched_cell_spans(&patched, content_width, syntax_pad_style, search);
         spans.extend(content_spans);
     } else {
         spans.extend(plain_cell_spans(

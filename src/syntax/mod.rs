@@ -4,7 +4,7 @@ use ratatui::style::{Color, Modifier, Style};
 use std::path::Path;
 use two_face::theme::EmbeddedThemeName;
 
-use crate::model::diff_types::LineOrigin;
+use crate::model::diff_types::{DiffFile, DiffHunk, LineOrigin};
 
 /// A single line of highlighted spans (style + text pairs).
 pub(crate) type HighlightedSpans = Vec<(Style, String)>;
@@ -268,6 +268,46 @@ impl SyntaxHighlighter {
         Some(self.apply_diff_background(spans, origin))
     }
 
+    /// Recompute `highlighted_spans` for every line of `hunk` in place, using
+    /// this highlighter. Mirrors the exact recipe `diff_parser::parse_hunk`
+    /// runs when a hunk is first parsed -- it only needs each line's already
+    /// -cached `content`/`origin`, so it reproduces identical output to a
+    /// fresh parse under this highlighter without re-reading the patch text.
+    ///
+    /// No-ops for container-grammar files (`needs_full_file_highlight`):
+    /// those need real full-file content this cache doesn't retain, so their
+    /// spans are left untouched rather than highlighted out of context.
+    pub(crate) fn rehighlight_hunk_in_place(&self, hunk: &mut DiffHunk, file_path: &Path) {
+        if needs_full_file_highlight(file_path) {
+            return;
+        }
+
+        let line_contents: Vec<String> = hunk.lines.iter().map(|l| l.content.clone()).collect();
+        let line_origins: Vec<LineOrigin> = hunk.lines.iter().map(|l| l.origin).collect();
+        let sequences = Self::split_diff_lines_for_highlighting(&line_contents, &line_origins);
+        let old_highlighted = self.highlight_file_lines(file_path, &sequences.old_lines);
+        let new_highlighted = self.highlight_file_lines(file_path, &sequences.new_lines);
+
+        for (index, line) in hunk.lines.iter_mut().enumerate() {
+            line.highlighted_spans = self.highlighted_line_for_diff_with_background(
+                old_highlighted.as_deref(),
+                new_highlighted.as_deref(),
+                sequences.old_line_indices[index],
+                sequences.new_line_indices[index],
+                line.origin,
+            );
+        }
+    }
+
+    /// Recompute `highlighted_spans` for every hunk of `file` in place. See
+    /// `rehighlight_hunk_in_place` for what this can and can't fix.
+    pub(crate) fn rehighlight_file_in_place(&self, file: &mut DiffFile) {
+        let file_path = file.display_path().clone();
+        for hunk in &mut file.hunks {
+            self.rehighlight_hunk_in_place(hunk, &file_path);
+        }
+    }
+
     fn syntect_to_ratatui_style(style: syntect::highlighting::Style) -> Style {
         let fg_color = Self::syntect_color_to_ratatui(style.foreground);
         let mut ratatui_style = Style::default().fg(fg_color);
@@ -413,6 +453,7 @@ impl SyntaxHighlighter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::diff_types::DiffLine;
 
     #[test]
     fn should_resolve_no_syntax_for_any_path() {
@@ -702,5 +743,148 @@ mod tests {
                 "line {i} spans should not contain newline, got: {full_text:?}"
             );
         }
+    }
+
+    #[test]
+    fn rehighlight_hunk_in_place_updates_bg_when_highlighter_changes() {
+        let old_highlighter = SyntaxHighlighter::new(
+            EmbeddedThemeName::Base16EightiesDark,
+            Color::Red,
+            Color::Blue,
+        );
+        let new_highlighter = SyntaxHighlighter::new(
+            EmbeddedThemeName::Base16EightiesDark,
+            Color::Green,
+            Color::Magenta,
+        );
+
+        let mut hunk = DiffHunk {
+            header: "@@ -1,1 +1,1 @@".to_string(),
+            lines: vec![DiffLine {
+                origin: LineOrigin::Addition,
+                content: "let x = 1;".to_string(),
+                old_lineno: None,
+                new_lineno: Some(1),
+                highlighted_spans: None,
+            }],
+            old_start: 1,
+            old_count: 0,
+            new_start: 1,
+            new_count: 1,
+        };
+
+        old_highlighter.rehighlight_hunk_in_place(&mut hunk, Path::new("test.rs"));
+        let baked_bg = hunk.lines[0]
+            .highlighted_spans
+            .as_ref()
+            .expect("should be highlighted")[0]
+            .0
+            .bg;
+        assert_eq!(baked_bg, Some(Color::Red));
+
+        // Simulate a theme swap: rehighlight in place with a different
+        // highlighter, without touching `content`/`origin`.
+        new_highlighter.rehighlight_hunk_in_place(&mut hunk, Path::new("test.rs"));
+        let updated_bg = hunk.lines[0]
+            .highlighted_spans
+            .as_ref()
+            .expect("should still be highlighted")[0]
+            .0
+            .bg;
+        assert_eq!(updated_bg, Some(Color::Green));
+    }
+
+    #[test]
+    fn rehighlight_hunk_in_place_skips_container_grammar_files() {
+        let highlighter = SyntaxHighlighter::new(
+            EmbeddedThemeName::Base16EightiesDark,
+            Color::Red,
+            Color::Blue,
+        );
+        let mut hunk = DiffHunk {
+            header: "@@ -1,1 +1,1 @@".to_string(),
+            lines: vec![DiffLine {
+                origin: LineOrigin::Addition,
+                content: "<script>let x = 1;</script>".to_string(),
+                old_lineno: None,
+                new_lineno: Some(1),
+                highlighted_spans: None,
+            }],
+            old_start: 1,
+            old_count: 0,
+            new_start: 1,
+            new_count: 1,
+        };
+
+        highlighter.rehighlight_hunk_in_place(&mut hunk, Path::new("App.vue"));
+
+        assert!(
+            hunk.lines[0].highlighted_spans.is_none(),
+            "container-grammar files need full-file context this recipe doesn't have, \
+             so they should be left untouched rather than highlighted out of context"
+        );
+    }
+
+    #[test]
+    fn rehighlight_file_in_place_covers_every_hunk() {
+        let highlighter = SyntaxHighlighter::new(
+            EmbeddedThemeName::Base16EightiesDark,
+            Color::Red,
+            Color::Blue,
+        );
+        let mut file = DiffFile {
+            old_path: None,
+            new_path: Some(std::path::PathBuf::from("test.rs")),
+            status: crate::model::diff_types::FileStatus::Modified,
+            hunks: vec![
+                DiffHunk {
+                    header: "@@ -1,1 +1,1 @@".to_string(),
+                    lines: vec![DiffLine {
+                        origin: LineOrigin::Addition,
+                        content: "let a = 1;".to_string(),
+                        old_lineno: None,
+                        new_lineno: Some(1),
+                        highlighted_spans: None,
+                    }],
+                    old_start: 1,
+                    old_count: 0,
+                    new_start: 1,
+                    new_count: 1,
+                },
+                DiffHunk {
+                    header: "@@ -10,1 +10,1 @@".to_string(),
+                    lines: vec![DiffLine {
+                        origin: LineOrigin::Deletion,
+                        content: "let b = 2;".to_string(),
+                        old_lineno: Some(10),
+                        new_lineno: None,
+                        highlighted_spans: None,
+                    }],
+                    old_start: 10,
+                    old_count: 1,
+                    new_start: 10,
+                    new_count: 0,
+                },
+            ],
+            is_binary: false,
+            is_too_large: false,
+            is_commit_message: false,
+            content_hash: 0,
+        };
+
+        highlighter.rehighlight_file_in_place(&mut file);
+
+        assert_eq!(
+            file.hunks[0].lines[0].highlighted_spans.as_ref().unwrap()[0]
+                .0
+                .bg,
+            Some(Color::Red)
+        );
+        assert_eq!(
+            file.hunks[1].lines[0].highlighted_spans.as_ref().unwrap()[0]
+                .0
+                .bg,
+            Some(Color::Blue)
+        );
     }
 }

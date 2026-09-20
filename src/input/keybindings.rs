@@ -155,6 +155,9 @@ pub enum Action {
     /// `/` — open the file-tree search prompt.
     FileTreeSearch,
 
+    /// `/` inside the theme picker — open its filter prompt.
+    ThemePickerFilter,
+
     // No-op
     None,
 }
@@ -186,6 +189,7 @@ pub fn map_key_to_action_with_q_quits(
         InputMode::SubmitResolver => map_submit_resolver_mode(key),
         InputMode::SubmitConfirm => map_submit_confirm_mode(key),
         InputMode::SubmitActionPicker => map_submit_action_picker_mode_with_q_quits(key, q_quits),
+        InputMode::ThemePicker => map_theme_picker_mode(key),
     }
 }
 
@@ -562,6 +566,36 @@ pub fn map_target_filter_mode(key: KeyEvent) -> Action {
         (KeyCode::Char('u'), KeyModifiers::CONTROL) => Action::ClearLine,
         (KeyCode::Char('w'), KeyModifiers::CONTROL) => Action::DeleteWord,
         (KeyCode::Backspace, mods) if mods.contains(KeyModifiers::ALT) => Action::DeleteWord,
+        (KeyCode::Char(c), mods) if is_altgr_text(mods) => Action::InsertChar(c),
+        (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => Action::InsertChar(c),
+        _ => Action::None,
+    }
+}
+
+/// Navigation key map for `InputMode::ThemePicker` while no `/` filter draft
+/// is open. `main.rs` routes to `map_theme_picker_filter_mode` instead when
+/// `App::theme_picker_filtering()` is true.
+fn map_theme_picker_mode(key: KeyEvent) -> Action {
+    match (key.code, key.modifiers) {
+        (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
+        (KeyCode::Enter, KeyModifiers::NONE) => Action::SubmitInput,
+        (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => Action::CursorDown(1),
+        (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => Action::CursorUp(1),
+        (KeyCode::Char('/'), KeyModifiers::NONE) => Action::ThemePickerFilter,
+        _ => Action::None,
+    }
+}
+
+/// Key map used while the theme picker's `/` filter draft is open. This is a
+/// sub-state of `InputMode::ThemePicker`; `main.rs` routes here when
+/// `App::theme_picker_filtering()` is true, mirroring
+/// `map_file_tree_prompt_mode`.
+pub fn map_theme_picker_filter_mode(key: KeyEvent) -> Action {
+    match (key.code, key.modifiers) {
+        (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
+        (KeyCode::Enter, KeyModifiers::NONE) => Action::SubmitInput,
+        (KeyCode::Backspace, KeyModifiers::NONE) => Action::DeleteChar,
+        (KeyCode::Char('u'), KeyModifiers::CONTROL) => Action::ClearLine,
         (KeyCode::Char(c), mods) if is_altgr_text(mods) => Action::InsertChar(c),
         (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => Action::InsertChar(c),
         _ => Action::None,

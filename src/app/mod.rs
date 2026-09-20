@@ -609,6 +609,10 @@ pub enum InputMode {
     /// no `SubmitConfirm` follows (resolver still runs if any comment is
     /// unmappable).
     SubmitActionPicker,
+    /// Runtime theme picker opened by `:theme`. Navigating the list applies
+    /// a live preview immediately; `/` opens a filter draft the same way the
+    /// file tree's `i`/`e`/`/` prompts work.
+    ThemePicker,
 }
 
 /// CommandCompletionState keeps one Tab-completion run anchored to the text
@@ -1150,6 +1154,8 @@ pub struct App {
     pub summary_state: SummaryState,
     /// File-tree include/exclude filters and `/` search.
     pub file_filter: FileTreeFilter,
+    /// Runtime `:theme` picker state.
+    pub theme_picker: ThemePickerState,
     pub command_buffer: String,
     pub(crate) command_completion: Option<CommandCompletionState>,
     pub(crate) command_return_mode: InputMode,
@@ -1666,6 +1672,67 @@ impl Default for FileTreeFilter {
     }
 }
 
+/// Runtime `:theme` picker state (`InputMode::ThemePicker`).
+///
+/// `candidates` is the full catalog (built-ins + local `*.toml` themes),
+/// built once when the picker opens. `filter` narrows the visible rows by
+/// substring; `draft` is the in-progress `/` prompt buffer, the same
+/// shape as `FileTreeDraft` -- `Some` steals keyboard input from
+/// navigation until it is committed (`Enter`) or discarded (`Esc`).
+#[derive(Default)]
+pub struct ThemePickerState {
+    pub candidates: Vec<String>,
+    pub filter: Option<String>,
+    pub draft: Option<String>,
+    /// Selection + scroll offset into the filtered view. A `ratatui::List`
+    /// rendered with this state auto-scrolls to keep the selection visible,
+    /// the same pattern as `FileListState`/`CommentNavigatorState`.
+    pub list_state: ratatui::widgets::ListState,
+    /// Snapshot of the theme active before the picker opened, restored on
+    /// `Esc`. `Theme` isn't cheap to identify by name (appearance/dark/light
+    /// resolution isn't invertible), so the picker keeps the actual value
+    /// rather than a name to re-resolve.
+    pub original: Option<Theme>,
+}
+
+impl ThemePickerState {
+    /// Indices into `candidates` that survive the applied `filter`
+    /// (case-insensitive substring match; empty/absent filter shows all).
+    pub fn filtered_indices(&self) -> Vec<usize> {
+        match &self.filter {
+            None => (0..self.candidates.len()).collect(),
+            Some(needle) if needle.is_empty() => (0..self.candidates.len()).collect(),
+            Some(needle) => {
+                let needle_lower = needle.to_ascii_lowercase();
+                self.candidates
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, name)| name.to_ascii_lowercase().contains(&needle_lower))
+                    .map(|(idx, _)| idx)
+                    .collect()
+            }
+        }
+    }
+
+    /// Index into the filtered view currently highlighted.
+    pub fn selected(&self) -> usize {
+        self.list_state.selected().unwrap_or(0)
+    }
+
+    pub fn select(&mut self, index: usize) {
+        self.list_state.select(Some(index));
+    }
+
+    /// The candidate name currently highlighted, if any rows are visible.
+    pub fn selected_name(&self) -> Option<&str> {
+        let filtered = self.filtered_indices();
+        filtered
+            .get(self.selected())
+            .and_then(|idx| self.candidates.get(*idx))
+            .map(|s| s.as_str())
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct HelpState {
     pub scroll_offset: usize,
@@ -1818,6 +1885,7 @@ mod search;
 mod session;
 pub mod sessions_tab;
 mod submit;
+mod theme_picker;
 mod tree;
 mod visual;
 

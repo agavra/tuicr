@@ -1,5 +1,6 @@
 use ratatui::style::{Color, Modifier, Style};
 
+use crate::model::LineOrigin;
 use crate::theme::Theme;
 
 pub fn selected_style(theme: &Theme) -> Style {
@@ -20,6 +21,32 @@ pub fn diff_del_style(theme: &Theme) -> Style {
 
 pub fn diff_context_style(theme: &Theme) -> Style {
     Style::default().fg(theme.diff_context)
+}
+
+/// Live background a syntax-highlighted diff span should show for a line of
+/// the given origin. `DiffLine.highlighted_spans` bakes in whatever
+/// `syntax_add_bg`/`syntax_del_bg` was active when the diff was loaded (or
+/// last rehighlighted); this lets renderers override that per-frame from the
+/// currently active theme instead of trusting the cached span's own
+/// background, so add/del backgrounds never lag behind the active theme even
+/// if a rehighlight was skipped or missed. `None` for context lines, which
+/// never carry a baked-in background (`syntax::apply_diff_background`
+/// intentionally excludes them).
+pub fn diff_syntax_bg(theme: &Theme, origin: LineOrigin) -> Option<Color> {
+    match origin {
+        LineOrigin::Addition => Some(theme.syntax_add_bg),
+        LineOrigin::Deletion => Some(theme.syntax_del_bg),
+        LineOrigin::Context => None,
+    }
+}
+
+/// Apply `diff_syntax_bg` to `style`, leaving it untouched when there is no
+/// live override for `origin` (context lines).
+pub fn patch_highlighted_span_bg(style: Style, theme: &Theme, origin: LineOrigin) -> Style {
+    match diff_syntax_bg(theme, origin) {
+        Some(bg) => style.bg(bg),
+        None => style,
+    }
 }
 
 pub fn expanded_context_style(theme: &Theme) -> Style {

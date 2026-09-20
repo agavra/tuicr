@@ -737,6 +737,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  :theme    ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Open the theme picker; :theme <name> applies directly"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  :focus    ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),

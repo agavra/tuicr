@@ -94,6 +94,61 @@ pub struct Theme {
     pub mode_bg: Color,
 }
 
+/// Manual `Clone` because `OnceLock` doesn't implement it. The cloned
+/// `Theme` starts with an empty highlighter cache -- it rebuilds lazily on
+/// first use, which only matters for the runtime theme picker's Esc-revert
+/// path (rare, not a render-time cost).
+impl Clone for Theme {
+    fn clone(&self) -> Self {
+        Self {
+            highlighter: OnceLock::new(),
+            panel_bg: self.panel_bg,
+            bg_highlight: self.bg_highlight,
+            fg_primary: self.fg_primary,
+            fg_secondary: self.fg_secondary,
+            fg_dim: self.fg_dim,
+            diff_add: self.diff_add,
+            diff_add_bg: self.diff_add_bg,
+            diff_del: self.diff_del,
+            diff_del_bg: self.diff_del_bg,
+            diff_context: self.diff_context,
+            diff_hunk_header: self.diff_hunk_header,
+            expanded_context_fg: self.expanded_context_fg,
+            syntax_add_bg: self.syntax_add_bg,
+            syntax_del_bg: self.syntax_del_bg,
+            syntax_theme: self.syntax_theme.clone(),
+            file_added: self.file_added,
+            file_modified: self.file_modified,
+            file_deleted: self.file_deleted,
+            file_renamed: self.file_renamed,
+            reviewed: self.reviewed,
+            pending: self.pending,
+            comment_note: self.comment_note,
+            comment_suggestion: self.comment_suggestion,
+            comment_issue: self.comment_issue,
+            comment_praise: self.comment_praise,
+            border_focused: self.border_focused,
+            border_unfocused: self.border_unfocused,
+            status_bar_bg: self.status_bar_bg,
+            cursor_color: self.cursor_color,
+            cursor_line_bg: self.cursor_line_bg,
+            search_match_bg: self.search_match_bg,
+            branch_name: self.branch_name,
+            help_indicator: self.help_indicator,
+            message_info_fg: self.message_info_fg,
+            message_info_bg: self.message_info_bg,
+            message_warning_fg: self.message_warning_fg,
+            message_warning_bg: self.message_warning_bg,
+            message_error_fg: self.message_error_fg,
+            message_error_bg: self.message_error_bg,
+            update_badge_fg: self.update_badge_fg,
+            update_badge_bg: self.update_badge_bg,
+            mode_fg: self.mode_fg,
+            mode_bg: self.mode_bg,
+        }
+    }
+}
+
 impl Default for Theme {
     fn default() -> Self {
         Self::dark()
@@ -1726,6 +1781,36 @@ pub(crate) fn built_in_theme_names_display() -> String {
     ThemeArg::valid_values_display()
 }
 
+/// Every bundled built-in theme name, in the fixed catalog order.
+pub(crate) fn built_in_theme_names() -> Vec<String> {
+    THEME_CHOICES
+        .iter()
+        .map(|(name, _)| name.to_string())
+        .collect()
+}
+
+/// Names of `*.toml` theme files in the user's local theme directory,
+/// sorted, without the `.toml` extension. Missing directory -> empty list.
+pub(crate) fn list_local_theme_names(theme_dir: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(theme_dir) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("toml") {
+                return None;
+            }
+            path.file_stem()
+                .and_then(|stem| stem.to_str())
+                .map(|s| s.to_string())
+        })
+        .collect();
+    names.sort();
+    names
+}
+
 impl AppearanceArg {
     fn choices() -> &'static [(&'static str, AppearanceArg)] {
         &APPEARANCE_CHOICES
@@ -2222,7 +2307,7 @@ fn normalize_local_theme_name(name: &str) -> Result<String, String> {
     Ok(trimmed.to_ascii_lowercase())
 }
 
-fn resolve_theme_name(
+pub(crate) fn resolve_theme_name(
     name: &str,
     theme_dir: &Path,
 ) -> Result<Option<(Theme, Vec<String>)>, String> {
@@ -2641,6 +2726,34 @@ mode_bg = "#82aaff"
         assert_eq!(theme.panel_bg, Color::Rgb(1, 22, 39));
         assert!(theme.uses_custom_syntax_theme());
         assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn list_local_theme_names_returns_empty_for_missing_directory() {
+        let dir = tempdir().expect("failed to create temp dir");
+        let missing = dir.path().join("does-not-exist");
+        assert!(list_local_theme_names(&missing).is_empty());
+    }
+
+    #[test]
+    fn list_local_theme_names_lists_only_toml_files_sorted() {
+        let dir = tempdir().expect("failed to create temp dir");
+        write_local_theme(dir.path(), "zeta", &sample_local_theme_body(""));
+        write_local_theme(dir.path(), "alpha", &sample_local_theme_body(""));
+        fs::write(dir.path().join("notes.txt"), "not a theme").expect("write stray file");
+
+        assert_eq!(
+            list_local_theme_names(dir.path()),
+            vec!["alpha".to_string(), "zeta".to_string()]
+        );
+    }
+
+    #[test]
+    fn built_in_theme_names_matches_known_count_and_values() {
+        let names = built_in_theme_names();
+        assert_eq!(names.len(), 24);
+        assert!(names.contains(&"dark".to_string()));
+        assert!(names.contains(&"catppuccin-mocha".to_string()));
     }
 
     #[test]

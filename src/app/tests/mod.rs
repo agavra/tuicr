@@ -19,5 +19,6 @@ mod sessions_resume_tests;
 mod single_file_view_tests;
 mod submit_flow_tests;
 mod target_selector_tests;
+mod theme_picker_tests;
 mod tree_tests;
 mod visual_selection_tests;

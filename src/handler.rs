@@ -96,6 +96,7 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     ),
     CommandSpec::new(&["submit draft"], CommandKind::Submit(SubmitEvent::Draft)),
     CommandSpec::new(&["summary"], CommandKind::Summary),
+    CommandSpec::new(&["theme"], CommandKind::ThemePicker),
     CommandSpec::new(
         &["comments unresolved"],
         CommandKind::Comments(PrCommentsVisibility::Unresolved),
@@ -160,6 +161,7 @@ enum CommandKind {
     SubmitPicker,
     Submit(SubmitEvent),
     Comments(PrCommentsVisibility),
+    ThemePicker,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -190,6 +192,9 @@ pub fn handle_mouse_event(app: &mut App, event: MouseEvent) {
             match app.input_mode {
                 InputMode::Help | InputMode::MessageDetails => handle_help_action(app, action),
                 InputMode::Summary => handle_summary_action(app, action),
+                InputMode::ThemePicker => {
+                    app.move_theme_picker_selection(if scroll_up { -1 } else { 1 });
+                }
                 InputMode::CommitSelect | InputMode::Normal if over_commit_list => {
                     wheel_commit_list(app, scroll_up);
                 }
@@ -651,6 +656,14 @@ pub fn handle_command_action(app: &mut App, action: Action) {
             } else if let Some((lineno, side)) = parse_lineno_command(&cmd) {
                 app.go_to_source_line(lineno, side);
                 CommandAfterDispatch::ExitCommandMode
+            } else if let Some(name) = cmd.strip_prefix("theme ") {
+                let name = name.trim();
+                if name.is_empty() {
+                    app.set_message(format!("Unknown command: {cmd}"));
+                } else {
+                    app.apply_and_persist_theme(name);
+                }
+                CommandAfterDispatch::ExitCommandMode
             } else {
                 app.set_message(format!("Unknown command: {cmd}"));
                 CommandAfterDispatch::ExitCommandMode
@@ -901,6 +914,11 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
             // the common post-dispatch cleanup cannot clobber Summary.
             app.exit_command_mode();
             app.enter_summary_mode();
+            CommandAfterDispatch::KeepMode
+        }
+        CommandKind::ThemePicker => {
+            app.exit_command_mode();
+            app.enter_theme_picker_mode();
             CommandAfterDispatch::KeepMode
         }
         CommandKind::Version => {
@@ -1515,6 +1533,39 @@ fn handle_file_tree_prompt_action(app: &mut App, action: Action) {
         Action::ClearLine => app.file_tree_prompt_clear_line(),
         Action::SubmitInput => app.commit_file_tree_prompt(),
         Action::ExitMode => app.cancel_file_tree_prompt(),
+        _ => {}
+    }
+}
+
+/// Handle actions in `InputMode::ThemePicker`. Mirrors
+/// `handle_file_list_action`'s prompt-editing gate: while the `/` filter
+/// draft is open, input goes to `handle_theme_picker_filter_action` instead
+/// of list navigation.
+pub fn handle_theme_picker_action(app: &mut App, action: Action) {
+    if app.theme_picker_filtering() {
+        handle_theme_picker_filter_action(app, action);
+        return;
+    }
+    match action {
+        Action::CursorDown(n) => app.move_theme_picker_selection(n as isize),
+        Action::CursorUp(n) => app.move_theme_picker_selection(-(n as isize)),
+        Action::ThemePickerFilter => app.begin_theme_picker_filter(),
+        Action::SubmitInput => app.confirm_theme_picker(),
+        Action::ExitMode => app.cancel_theme_picker(),
+        Action::Quit => app.should_quit = true,
+        _ => {}
+    }
+}
+
+/// Handle input while the theme picker's `/` filter draft is open. Mirrors
+/// `handle_file_tree_prompt_action`.
+fn handle_theme_picker_filter_action(app: &mut App, action: Action) {
+    match action {
+        Action::InsertChar(c) => app.theme_picker_filter_insert_char(c),
+        Action::DeleteChar => app.theme_picker_filter_delete_char(),
+        Action::ClearLine => app.theme_picker_filter_clear_line(),
+        Action::SubmitInput => app.commit_theme_picker_filter(),
+        Action::ExitMode => app.cancel_theme_picker_filter(),
         _ => {}
     }
 }

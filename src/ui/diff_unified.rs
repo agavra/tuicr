@@ -637,7 +637,12 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
 
                         if let Some(ref highlighted) = diff_line.highlighted_spans {
                             for (span_style, span_text) in highlighted {
-                                line_spans.push(Span::styled(span_text.clone(), *span_style));
+                                let live_style = styles::patch_highlighted_span_bg(
+                                    *span_style,
+                                    &app.theme,
+                                    diff_line.origin,
+                                );
+                                line_spans.push(Span::styled(span_text.clone(), live_style));
                             }
                         } else {
                             line_spans.push(Span::styled(diff_line.content.clone(), style));
@@ -2272,5 +2277,78 @@ mod remote_comments_snapshot_tests {
                 "expected │ at ({bar_x},{y}) between cap ({cap_y}) and box top ({box_top_y}), got {glyph:?}"
             );
         }
+    }
+
+    #[test]
+    fn addition_line_background_reflects_live_theme_not_a_stale_cached_span() {
+        use ratatui::style::{Color, Style};
+
+        fn find_text_cell(buffer: &Buffer, needle: &str) -> (u16, u16) {
+            for y in buffer.area.y..buffer.area.y + buffer.area.height {
+                for x in buffer.area.x..buffer.area.x + buffer.area.width {
+                    if buffer[(x, y)].symbol() == &needle[..1] {
+                        let matches = needle.chars().enumerate().all(|(offset, ch)| {
+                            buffer[(x + offset as u16, y)].symbol() == ch.to_string()
+                        });
+                        if matches {
+                            return (x, y);
+                        }
+                    }
+                }
+            }
+            panic!("could not find {needle:?} in rendered buffer");
+        }
+
+        // Marker background baked into `highlighted_spans`, standing in for
+        // "highlighted under whatever theme was active when the diff was
+        // loaded." No real syntax highlighter produces this exact color.
+        let marker_bg = Color::Rgb(1, 2, 3);
+        let lines = vec![DiffLine {
+            origin: LineOrigin::Addition,
+            content: "added".to_string(),
+            old_lineno: None,
+            new_lineno: Some(1),
+            highlighted_spans: Some(vec![(
+                Style::default().fg(Color::White).bg(marker_bg),
+                "added".to_string(),
+            )]),
+        }];
+        let hunk = DiffHunk {
+            header: "@@ -0,0 +1,1 @@".to_string(),
+            lines,
+            old_start: 1,
+            old_count: 0,
+            new_start: 1,
+            new_count: 1,
+        };
+        let hunks = vec![hunk];
+        let content_hash = DiffFile::compute_content_hash(&hunks);
+        let diff_file = DiffFile {
+            old_path: None,
+            new_path: Some(PathBuf::from("src/lib.rs")),
+            status: FileStatus::Added,
+            hunks,
+            is_binary: false,
+            is_too_large: false,
+            is_commit_message: false,
+            content_hash,
+        };
+
+        let mut app = make_revision_app(vec![diff_file]);
+        let expected_bg = app.theme.syntax_add_bg;
+        assert_ne!(
+            expected_bg, marker_bg,
+            "test needs the live theme's bg to differ from the stale marker"
+        );
+
+        let buffer = draw_unified_diff(&mut app);
+        let (x, y) = find_text_cell(&buffer, "added");
+
+        assert_eq!(
+            buffer[(x, y)].bg,
+            expected_bg,
+            "rendered addition-line background must come from the live theme, \
+             not the cached span's baked-in color"
+        );
     }
 }

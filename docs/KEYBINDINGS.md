@@ -207,6 +207,8 @@ In command mode,
 | `:copy-url` | Copy the open PR URL to clipboard (PR mode) |
 | `:summary` | Show all pending local-draft comments; `j`/`k` select and `Enter` jumps |
 | `:diff` | Toggle diff view (unified / side-by-side) |
+| `:theme` | Open the runtime theme picker (live preview; `/` filters, `Enter` applies and saves, `Esc` reverts) |
+| `:theme <name>` | Apply and save `<name>` directly, without opening the picker |
 | `:focus` (`:f`) | Toggle single-file view |
 | `:stage` | Stage reviewed files (unstaged diffs only) |
 | `:vim` (`:set vim!`) / `:novim` (`:set novim`) / `:set vim` | Toggle / disable / enable vim modal editing in the comment box (overrides `comment_vim`) |
@@ -253,6 +255,14 @@ or previous comment; the view scrolls automatically to keep the selection visibl
 to the continuous diff and jumps to the selected comment, leaving single-file view if necessary,
 while `Esc` returns without jumping. Reviewed files and hunks are revealed for the jump without
 losing their reviewed state.
+
+The theme picker lists every bundled theme plus any local `*.toml` themes in the theme directory.
+`j`/`k` move the selection and immediately repaint the UI with that theme (live preview) without
+saving anything. `/` opens a filter prompt — type to narrow the list by substring, `Enter` applies
+the filter and returns to navigation, `Esc` discards the filter edit without changing the list.
+`Enter` on the picker itself keeps the currently previewed theme and writes it to `config.toml`
+(`theme = "<name>"`), leaving other keys and comments untouched. `Esc` on the picker reverts the
+preview to whatever theme was active before it opened and closes without touching the config file.
 
 Not every forge supports every event:
 
