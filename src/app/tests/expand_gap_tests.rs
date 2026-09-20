@@ -133,6 +133,104 @@ fn hunk_diff_line(app: &App, file_idx: usize, hunk_idx: usize) -> usize {
         .expect("missing hunk diff annotation")
 }
 
+fn assert_hunk_jumps_follow_rendered_headers(app: &mut App) {
+    let headers: Vec<_> = app
+        .line_annotations
+        .iter()
+        .enumerate()
+        .filter_map(|(row, line)| matches!(line, AnnotatedLine::HunkHeader { .. }).then_some(row))
+        .collect();
+    assert!(headers.len() >= 2);
+    assert_eq!(app.hunk_positions(), headers);
+    for pair in headers.windows(2) {
+        app.diff_state.cursor_line = pair[0];
+        app.next_hunk();
+        assert_eq!(app.diff_state.cursor_line, pair[1]);
+        app.prev_hunk();
+        assert_eq!(app.diff_state.cursor_line, pair[0]);
+    }
+}
+
+#[test]
+fn hunk_navigation_tracks_expanded_and_collapsed_context() {
+    for mode in [DiffViewMode::Unified, DiffViewMode::SideBySide] {
+        for single in [false, true] {
+            let file = make_file_with_hunks("test.rs", vec![make_hunk(1, 5), make_hunk(50, 5)]);
+            let mut app = build_app_with_files(vec![file], 100);
+            app.diff_view_mode = mode;
+            app.is_single_file_view = single;
+            app.rebuild_annotations();
+            let gap = GapId {
+                file_idx: 0,
+                hunk_idx: 1,
+            };
+            for (direction, count) in [
+                (ExpandDirection::Down, Some(20)),
+                (ExpandDirection::Up, Some(10)),
+                (ExpandDirection::Both, None),
+            ] {
+                app.expand_gap(gap.clone(), direction, count).unwrap();
+                assert_hunk_jumps_follow_rendered_headers(&mut app);
+            }
+            app.collapse_gap(gap);
+            assert_hunk_jumps_follow_rendered_headers(&mut app);
+        }
+    }
+}
+
+#[test]
+fn hunk_navigation_counts_paired_changes_and_wrapped_comments() {
+    for mode in [DiffViewMode::Unified, DiffViewMode::SideBySide] {
+        let mut first = make_hunk(1, 2);
+        first.lines = vec![
+            DiffLine {
+                origin: LineOrigin::Deletion,
+                content: "before".into(),
+                old_lineno: Some(1),
+                new_lineno: None,
+                highlighted_spans: None,
+            },
+            DiffLine {
+                origin: LineOrigin::Addition,
+                content: "after".into(),
+                old_lineno: None,
+                new_lineno: Some(1),
+                highlighted_spans: None,
+            },
+            DiffLine {
+                origin: LineOrigin::Context,
+                content: "unchanged".into(),
+                old_lineno: Some(2),
+                new_lineno: Some(2),
+                highlighted_spans: None,
+            },
+        ];
+        let file = make_file_with_hunks("test.rs", vec![first, make_hunk(50, 5)]);
+        let mut app = build_app_with_files(vec![file], 100);
+        app.diff_view_mode = mode;
+        app.diff_state.viewport_width = 40;
+        let path = app.diff_files[0].display_path().clone();
+        app.session.get_file_mut(&path).unwrap().add_line_comment(
+            1,
+            Comment::new(
+                "A long comment that wraps over several rendered rows.\nAnother line.".into(),
+                CommentType::from_id("note"),
+                Some(LineSide::New),
+            ),
+        );
+        app.session
+            .get_file_mut(&path)
+            .unwrap()
+            .add_file_comment(Comment::new(
+                "file comment\nsecond line".into(),
+                CommentType::from_id("note"),
+                None,
+            ));
+        app.rebuild_annotations();
+        assert_hunk_jumps_follow_rendered_headers(&mut app);
+    }
+}
+
 #[test]
 fn should_cycle_forward_through_review_file_and_line_comments() {
     let file = make_file_with_hunks("test.rs", vec![make_hunk(1, 3)]);

@@ -484,9 +484,7 @@ fn should_keep_hunk_positions_aligned_with_the_rendered_rows_while_hiding() {
 
     app.set_show_reviewed(false);
 
-    // `hunk_positions` walks `diff_files` computing its own cumulative row
-    // offsets, so it has to drop exactly the rows the renderer drops —
-    // including the file header that a reviewed-but-visible file still gets.
+    // Hidden files must not leave stale hunk targets in the rendered rows.
     for pos in app.hunk_positions() {
         assert!(
             matches!(
