@@ -79,9 +79,11 @@ impl App {
                 side: *side,
                 comment_idx: *comment_idx,
             }),
-            AnnotatedLine::RemoteThreadLine { thread_idx } => Some(CommentNavigatorKey::Remote {
-                thread_idx: *thread_idx,
-            }),
+            AnnotatedLine::RemoteThreadLine { thread_idx, .. } => {
+                Some(CommentNavigatorKey::Remote {
+                    thread_idx: *thread_idx,
+                })
+            }
             AnnotatedLine::RemoteReviewSummaryLine { summary_idx } => {
                 Some(CommentNavigatorKey::RemoteReview {
                     summary_idx: *summary_idx,
@@ -667,6 +669,79 @@ impl App {
                 .filter(|c| c.side.unwrap_or(LineSide::New) == side)
                 .map(|c| c.content.clone()),
         }
+    }
+
+    /// Content of a remote review comment at the cursor.
+    ///
+    /// A remote thread is rendered after its anchor line, so accept both its
+    /// rendered rows and the diff row it is attached to. Rendered rows retain
+    /// their reply identity; an anchor line copies the thread's root comment.
+    /// Review-level summaries are already their own annotated rows.
+    pub fn remote_comment_content_at_cursor(&self) -> Option<String> {
+        use crate::forge::remote_comments::RemoteCommentSide;
+
+        let annotation = self.line_annotations.get(self.diff_state.cursor_line)?;
+        let thread_idx = match annotation {
+            AnnotatedLine::IssueComment { comment_idx } => {
+                return self
+                    .pr_info
+                    .as_ref()
+                    .and_then(|info| info.issue_comments.get(*comment_idx))
+                    .map(|comment| comment.body.clone());
+            }
+            AnnotatedLine::RemoteReviewSummaryLine { summary_idx } => {
+                return self
+                    .forge_review_summaries
+                    .get(*summary_idx)
+                    .map(|summary| summary.body.clone());
+            }
+            AnnotatedLine::RemoteThreadLine {
+                thread_idx,
+                comment_idx,
+            } => {
+                return self
+                    .forge_review_threads
+                    .get(*thread_idx)
+                    .and_then(|thread| thread.comments.get(*comment_idx))
+                    .map(|comment| comment.body.clone());
+            }
+            AnnotatedLine::DiffLine {
+                file_idx,
+                old_lineno,
+                new_lineno,
+                ..
+            }
+            | AnnotatedLine::SideBySideLine {
+                file_idx,
+                old_lineno,
+                new_lineno,
+                ..
+            } => {
+                let path = self
+                    .diff_files
+                    .get(*file_idx)?
+                    .display_path()
+                    .to_string_lossy();
+                self.forge_review_threads.iter().position(|thread| {
+                    thread.path == path
+                        && self
+                            .session
+                            .remote_comments_visibility
+                            .render_decision(thread)
+                            .is_some()
+                        && match thread.side {
+                            RemoteCommentSide::Left => thread.line == *old_lineno,
+                            RemoteCommentSide::Right => thread.line == *new_lineno,
+                        }
+                })
+            }
+            _ => None,
+        }?;
+
+        self.forge_review_threads
+            .get(thread_idx)
+            .and_then(|thread| thread.root())
+            .map(|comment| comment.body.clone())
     }
 
     /// Delete the comment at the current cursor position, if any

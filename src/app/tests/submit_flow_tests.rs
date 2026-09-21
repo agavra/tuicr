@@ -3,7 +3,9 @@
 //! handlers so we exercise the state machine directly.
 use crate::app::*;
 use crate::forge::submit::{ResolverAction, SubmitEvent, UnmappableReason};
-use crate::forge::traits::{ForgeRepository, PrSessionKey};
+use crate::forge::traits::{
+    ForgeRepository, PrSessionKey, PullRequestDetails, PullRequestInfo, PullRequestIssueComment,
+};
 use crate::model::comment::{Comment, CommentLifecycleState, CommentType, LineContext};
 use crate::model::diff_types::{DiffHunk, DiffLine, FileStatus, LineOrigin};
 use crate::vcs::traits::{VcsChangeStatus, VcsType};
@@ -1190,4 +1192,263 @@ fn should_yank_nothing_when_cursor_is_not_on_a_comment() {
         .expect("expected a diff line annotation");
     app.diff_state.cursor_line = idx;
     assert_eq!(app.comment_content_at_cursor(), None);
+}
+
+#[test]
+fn should_yank_remote_comment_from_its_anchor_line_or_thread() {
+    use crate::forge::remote_comments::{
+        RemoteCommentSide, RemoteReviewComment, RemoteReviewThread,
+    };
+
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    app.forge_review_threads = vec![RemoteReviewThread {
+        id: "thread-1".into(),
+        path: "src/lib.rs".into(),
+        line: Some(10),
+        side: RemoteCommentSide::Right,
+        is_resolved: false,
+        is_outdated: false,
+        comments: vec![
+            RemoteReviewComment {
+                id: "comment-1".into(),
+                author: Some("alice".into()),
+                body: "remote comment".into(),
+                created_at: None,
+                in_reply_to: None,
+                url: "https://example.com/comment-1".into(),
+            },
+            RemoteReviewComment {
+                id: "comment-2".into(),
+                author: Some("bob".into()),
+                body: "remote reply".into(),
+                created_at: None,
+                in_reply_to: Some("comment-1".into()),
+                url: "https://example.com/comment-2".into(),
+            },
+        ],
+    }];
+    app.rebuild_annotations();
+
+    let anchor = app
+        .line_annotations
+        .iter()
+        .position(|annotation| {
+            matches!(
+                annotation,
+                AnnotatedLine::DiffLine {
+                    new_lineno: Some(10),
+                    ..
+                }
+            )
+        })
+        .expect("expected remote thread anchor");
+    app.diff_state.cursor_line = anchor;
+    assert_eq!(
+        app.remote_comment_content_at_cursor(),
+        Some("remote comment".to_string())
+    );
+
+    let thread = app
+        .line_annotations
+        .iter()
+        .position(|annotation| matches!(annotation, AnnotatedLine::RemoteThreadLine { .. }))
+        .expect("expected rendered remote thread");
+    app.diff_state.cursor_line = thread;
+    assert_eq!(
+        app.remote_comment_content_at_cursor(),
+        Some("remote comment".to_string())
+    );
+
+    let reply = app
+        .line_annotations
+        .iter()
+        .position(|annotation| {
+            matches!(
+                annotation,
+                AnnotatedLine::RemoteThreadLine { comment_idx: 1, .. }
+            )
+        })
+        .expect("expected rendered remote reply");
+    app.diff_state.cursor_line = reply;
+    assert_eq!(
+        app.remote_comment_content_at_cursor(),
+        Some("remote reply".to_string())
+    );
+}
+
+#[test]
+fn should_yank_rendered_remote_thread_when_hidden_thread_shares_its_anchor() {
+    use crate::forge::remote_comments::{
+        RemoteCommentSide, RemoteReviewComment, RemoteReviewThread,
+    };
+
+    let comment = |id: &str, body: &str| RemoteReviewComment {
+        id: id.into(),
+        author: Some("alice".into()),
+        body: body.into(),
+        created_at: None,
+        in_reply_to: None,
+        url: format!("https://example.com/{id}"),
+    };
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    app.forge_review_threads = vec![
+        RemoteReviewThread {
+            id: "hidden-thread".into(),
+            path: "src/lib.rs".into(),
+            line: Some(10),
+            side: RemoteCommentSide::Right,
+            is_resolved: true,
+            is_outdated: false,
+            comments: vec![comment("hidden-comment", "hidden comment")],
+        },
+        RemoteReviewThread {
+            id: "visible-thread".into(),
+            path: "src/lib.rs".into(),
+            line: Some(10),
+            side: RemoteCommentSide::Right,
+            is_resolved: false,
+            is_outdated: false,
+            comments: vec![comment("visible-comment", "visible comment")],
+        },
+    ];
+    app.rebuild_annotations();
+
+    app.diff_state.cursor_line = app
+        .line_annotations
+        .iter()
+        .position(|annotation| {
+            matches!(
+                annotation,
+                AnnotatedLine::DiffLine {
+                    new_lineno: Some(10),
+                    ..
+                }
+            )
+        })
+        .expect("expected remote thread anchor");
+
+    assert_eq!(
+        app.remote_comment_content_at_cursor(),
+        Some("visible comment".to_string())
+    );
+}
+
+#[test]
+fn should_yank_reply_from_multiline_review_level_thread_footer() {
+    use crate::forge::remote_comments::{
+        RemoteCommentSide, RemoteReviewComment, RemoteReviewThread,
+    };
+
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    app.forge_review_threads = vec![RemoteReviewThread {
+        id: "review-level-thread".into(),
+        path: String::new(),
+        line: None,
+        side: RemoteCommentSide::Right,
+        is_resolved: false,
+        is_outdated: false,
+        comments: vec![
+            RemoteReviewComment {
+                id: "root".into(),
+                author: Some("alice".into()),
+                body: "root comment".into(),
+                created_at: None,
+                in_reply_to: None,
+                url: "https://example.com/root".into(),
+            },
+            RemoteReviewComment {
+                id: "reply".into(),
+                author: Some("bob".into()),
+                body: "first reply line\nsecond reply line".into(),
+                created_at: None,
+                in_reply_to: Some("root".into()),
+                url: "https://example.com/reply".into(),
+            },
+        ],
+    }];
+    app.rebuild_annotations();
+
+    app.diff_state.cursor_line = app
+        .line_annotations
+        .iter()
+        .rposition(|annotation| {
+            matches!(
+                annotation,
+                AnnotatedLine::RemoteThreadLine { comment_idx: 1, .. }
+            )
+        })
+        .expect("expected review-level thread footer");
+
+    assert_eq!(
+        app.remote_comment_content_at_cursor(),
+        Some("first reply line\nsecond reply line".to_string())
+    );
+}
+
+#[test]
+fn should_yank_remote_review_summary() {
+    use crate::forge::remote_comments::{RemoteReviewState, RemoteReviewSummary};
+
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    app.forge_review_summaries = vec![RemoteReviewSummary {
+        id: "review-1".into(),
+        author: Some("alice".into()),
+        body: "Overall looks good".into(),
+        state: RemoteReviewState::Approved,
+        created_at: None,
+        url: "https://example.com/review-1".into(),
+    }];
+    app.rebuild_annotations();
+
+    app.diff_state.cursor_line = app
+        .line_annotations
+        .iter()
+        .position(|annotation| matches!(annotation, AnnotatedLine::RemoteReviewSummaryLine { .. }))
+        .expect("expected rendered remote review summary");
+    assert_eq!(
+        app.remote_comment_content_at_cursor(),
+        Some("Overall looks good".to_string())
+    );
+}
+
+#[test]
+fn should_yank_top_level_pr_comment() {
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    let details = PullRequestDetails {
+        repository: ForgeRepository::github("github.com", "agavra", "tuicr"),
+        number: 125,
+        title: "test pr".into(),
+        url: "https://github.com/agavra/tuicr/pull/125".into(),
+        state: "OPEN".into(),
+        is_draft: false,
+        author: None,
+        head_ref_name: "feat".into(),
+        base_ref_name: "main".into(),
+        head_sha: "abcdef0123".into(),
+        base_sha: "0000".into(),
+        body: String::new(),
+        updated_at: None,
+        closed: false,
+        merged_at: None,
+        diff_start_sha: None,
+    };
+    let mut info = PullRequestInfo::from_details(details);
+    info.issue_comments = vec![PullRequestIssueComment {
+        author: Some("alice".into()),
+        body: "Top-level PR comment".into(),
+        url: None,
+        created_at: None,
+    }];
+    app.pr_info = Some(info);
+    app.rebuild_annotations();
+
+    app.diff_state.cursor_line = app
+        .line_annotations
+        .iter()
+        .position(|annotation| matches!(annotation, AnnotatedLine::IssueComment { .. }))
+        .expect("expected rendered top-level PR comment");
+    assert_eq!(
+        app.remote_comment_content_at_cursor(),
+        Some("Top-level PR comment".to_string())
+    );
 }

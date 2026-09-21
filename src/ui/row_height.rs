@@ -57,7 +57,7 @@ pub(crate) fn annotation_row_height(app: &App, idx: usize) -> usize {
             })
             .map_or(1, |line| formatted_line_height(line, viewport_width)),
 
-        AnnotatedLine::RemoteThreadLine { thread_idx } => app
+        AnnotatedLine::RemoteThreadLine { thread_idx, .. } => app
             .forge_review_threads
             .get(*thread_idx)
             .and_then(|thread| {
@@ -127,8 +127,9 @@ fn repeated_annotation_row(app: &App, idx: usize, annotation: &AnnotatedLine) ->
             (
                 AnnotatedLine::RemoteThreadLine {
                     thread_idx: candidate,
+                    ..
                 },
-                AnnotatedLine::RemoteThreadLine { thread_idx },
+                AnnotatedLine::RemoteThreadLine { thread_idx, .. },
             ) => candidate == thread_idx,
             _ => false,
         })

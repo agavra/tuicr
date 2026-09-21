@@ -214,7 +214,8 @@ impl App {
         let mut last_thread_match: Option<(usize, bool)> = None;
         for line_idx in 0..self.line_annotations.len() {
             let matched = match self.line_annotations.get(line_idx) {
-                Some(AnnotatedLine::RemoteThreadLine { thread_idx }) => match last_thread_match {
+                Some(AnnotatedLine::RemoteThreadLine { thread_idx, .. }) => match last_thread_match
+                {
                     Some((last_idx, last_matched)) if last_idx == *thread_idx => last_matched,
                     _ => {
                         let matched = self.thread_matches_search(*thread_idx, needle);

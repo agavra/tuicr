@@ -346,7 +346,11 @@ pub enum AnnotatedLine {
     /// A read-only line of a rendered remote review thread. Cursor cannot
     /// edit or reply to these in v1; the annotation is informational so
     /// hit-testing and scroll math stay correct.
-    RemoteThreadLine { thread_idx: usize },
+    RemoteThreadLine {
+        thread_idx: usize,
+        /// The root comment or reply whose rendered box row this is.
+        comment_idx: usize,
+    },
     /// Binary or empty file indicator
     BinaryOrEmpty { file_idx: usize },
     /// Spacing between files
