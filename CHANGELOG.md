@@ -2,6 +2,34 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.27.0] - 2026-09-23
+
+### Bug Fixes
+
+- **editor:** Open the PR revision with 'e', not the worktree copy (#627)
+- Address self-review findings (#729)
+- **forge:** Detect remotes in reftable and SHA-256 checkouts (#725)
+- **diff:** Show the commit message for a commit picked from the list (#727)
+- **editor:** Re-attach editor stdio to /dev/tty in --stdout mode (#740)
+- **navigation:** Target rendered hunk headers (#737)
+- **comments:** Copy all remote comment types at cursor (#733)
+
+### Documentation
+
+- Reserve README config entries for critical options (#731)
+
+### Features
+
+- **config:** Add pr_comments_visibility option (#730)
+- Add runtime theme picker with :theme command (#732)
+
+### Performance
+
+- **syntax:** Cap Oniguruma's backtracking budget (#726)
+
+### Skill
+
+- Put the tmux review pane where its caller is (#736)
 ## [0.26.0] - 2026-09-15
 
 ### Bug Fixes
