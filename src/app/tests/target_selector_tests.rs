@@ -1169,6 +1169,56 @@ fn should_load_persisted_pr_session_when_reopening_same_head() {
 }
 
 #[test]
+fn should_carry_persisted_pr_review_forward_when_reopening_at_new_head() {
+    // given a saved PR session at head A with both files reviewed and a draft
+    let _reviews = TestReviewsDir::new();
+    let mut app = build_app();
+    let summary = sample_pr(424247, "persisted");
+    let mut details_a = test_pr_details(424247, "persisted");
+    details_a.head_sha = "aaaaaaaaaaaaaaaa".to_string();
+    let stable_path = PathBuf::from("src/stable.rs");
+    let changed_path = PathBuf::from("src/changed.rs");
+    let backend = Box::new(FakeForgeBackend::open_pr_details(
+        details_a.clone(),
+        two_file_patch("new changed"),
+    ));
+    app.open_pr_with_backend(&summary, backend, None).unwrap();
+    app.session.get_file_mut(&stable_path).unwrap().reviewed = true;
+    app.session.get_file_mut(&changed_path).unwrap().reviewed = true;
+    app.session
+        .get_file_mut(&stable_path)
+        .unwrap()
+        .add_file_comment(Comment::new(
+            "persisted draft".to_string(),
+            CommentType::from_id("note"),
+            None,
+        ));
+    crate::persistence::save_session(&app.session).unwrap();
+
+    // when the PR is opened fresh after a push moved it to head B
+    let mut details_b = details_a.clone();
+    details_b.head_sha = "bbbbbbbbbbbbbbbb".to_string();
+    let mut reopened = build_app();
+    let backend = Box::new(FakeForgeBackend::open_pr_details(
+        details_b,
+        two_file_patch("newer changed"),
+    ));
+    reopened
+        .open_pr_with_backend(&summary, backend, None)
+        .unwrap();
+
+    // then the unchanged file keeps its review and draft; the changed one reopens.
+    let stable_review = reopened.session.files.get(&stable_path).unwrap();
+    assert!(stable_review.reviewed);
+    assert_eq!(stable_review.file_comments.len(), 1);
+    assert!(!reopened.session.is_file_reviewed(&changed_path));
+    assert_eq!(
+        reopened.session.pr_session_key.as_ref().unwrap().head_sha,
+        "bbbbbbbbbbbbbbbb"
+    );
+}
+
+#[test]
 fn should_keep_saved_pr_session_through_quit_reopen_and_same_head_reload() {
     // given a saved PR session with all files reviewed and local comments
     let _reviews = TestReviewsDir::new();
