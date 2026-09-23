@@ -437,10 +437,13 @@ fn handle_export(app: &mut App) {
 /// review stays out of the clipboard, so a single comment can go straight into
 /// a chat message or an agent prompt.
 fn handle_copy_comment_at_cursor(app: &mut App) {
-    let Some(content) = app.comment_content_at_cursor() else {
+    let Some(content) = app
+        .comment_content_at_cursor()
+        .or_else(|| app.remote_comment_content_at_cursor())
+    else {
         if app.cursor_on_remote_thread() {
             let forge = app.forge_display_name();
-            app.set_message(format!("Y copies local comments; this one is on {forge}"));
+            app.set_message(format!("No copyable comment in this {forge} thread"));
         } else {
             app.set_message("No comment at cursor");
         }

@@ -1018,7 +1018,7 @@ impl App {
 
         let local_checkout = self.local_checkout_for(&request.repository);
         let highlighter = self.theme.syntax_highlighter();
-        let opened = prepare_open_pr(
+        let mut opened = prepare_open_pr(
             details.clone(),
             patches,
             commits,
@@ -1027,6 +1027,7 @@ impl App {
             local_checkout.as_deref(),
             highlighter,
         )?;
+        self.seed_configured_visibility(&mut opened.session);
         let opened = Self::opened_pr_with_persisted_session(opened)?;
         let backend = create_forge_backend(
             &request.repository,
@@ -1185,6 +1186,18 @@ impl App {
         true
     }
 
+    /// Seed a fresh PR session with the configured `pr_comments_visibility`
+    /// default. Callers seed before the persisted-session restore, which
+    /// replaces the fresh session wholesale, so a saved visibility wins.
+    pub(in crate::app) fn seed_configured_visibility(
+        &self,
+        session: &mut crate::model::ReviewSession,
+    ) {
+        if let Some(visibility) = self.initial_comments_visibility {
+            session.remote_comments_visibility = visibility;
+        }
+    }
+
     /// Abort an in-flight PR open. Drops the receiver so the eventual
     /// thread send becomes a no-op; clears the spinner state.
     pub fn cancel_pr_open(&mut self) -> bool {
@@ -1254,12 +1267,13 @@ impl App {
             summary.number.to_string(),
         );
         let highlighter = self.theme.syntax_highlighter();
-        let opened = open_pull_request(
+        let mut opened = open_pull_request(
             backend.as_ref(),
             target,
             local_checkout.as_deref(),
             highlighter,
         )?;
+        self.seed_configured_visibility(&mut opened.session);
         let opened = Self::opened_pr_with_persisted_session(opened)?;
         // Sync thread + summary fetch — tests assert on
         // `app.forge_review_threads`/`forge_review_summaries` immediately

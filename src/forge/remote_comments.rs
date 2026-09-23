@@ -197,24 +197,35 @@ pub fn filter_threads(
         .collect()
 }
 
-/// Count the number of rendered lines a thread occupies in the diff view.
-/// Used by `App::rebuild_annotations` to push the matching number of
-/// annotations so cursor/hit-test math stays in sync with rendering.
+/// Map every rendered thread row to the comment whose content it displays.
+///
+/// The final closing rule belongs to the final comment. An empty thread has
+/// only its closing rule and uses index zero; it cannot resolve to content,
+/// but retaining that row preserves annotation/render parity for malformed
+/// forge data.
 ///
 /// Layout (must match `ui::comment_panel::format_remote_thread_lines`):
 /// - 1 header line for the root comment (`╭─ [github @author] L42 ──`)
 /// - 1 separator line per reply (`├─ ↳ @author ──`)
 /// - 1 body line per `\n`-split line in each comment's body
 /// - 1 footer line at the end of the thread (`╰────`)
-pub fn thread_display_lines(thread: &RemoteReviewThread) -> usize {
-    let mut total = 0;
-    for comment in &thread.comments {
-        // header (root) or separator (reply) + body lines
-        total += 1 + comment.body.split('\n').count();
+pub fn thread_display_comment_indices(thread: &RemoteReviewThread) -> Vec<usize> {
+    let mut indices = Vec::new();
+    for (comment_idx, comment) in thread.comments.iter().enumerate() {
+        indices.extend(std::iter::repeat_n(
+            comment_idx,
+            1 + comment.body.split('\n').count(),
+        ));
     }
-    // single closing rule for the whole thread
-    total += 1;
-    total
+    indices.push(thread.comments.len().saturating_sub(1));
+    indices
+}
+
+/// Count the number of rendered lines a thread occupies in the diff view.
+/// Uses the shared row-to-comment mapping so annotations and navigation
+/// cannot drift apart.
+pub fn thread_display_lines(thread: &RemoteReviewThread) -> usize {
+    thread_display_comment_indices(thread).len()
 }
 
 /// Count the number of rendered lines a review summary occupies in the

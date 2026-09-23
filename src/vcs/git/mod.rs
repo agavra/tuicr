@@ -180,7 +180,7 @@ impl GitBackend {
             )?));
         }
 
-        let backend = Self::Libgit2(Libgit2Backend::discover_from(cwd, whitespace_mode)?);
+        let backend = Self::Libgit2(Libgit2Backend::discover_from(cwd, whitespace_mode.clone())?);
         let repo_mode = GitRepoMode::detect(&backend.info().root_path)?;
         if repo_mode.is_sparse_checkout() && !backend.supports_sparse_checkout() {
             return Ok(Self::Cli(GitCliBackend::discover_from(

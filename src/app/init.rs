@@ -4,6 +4,7 @@ use super::*;
 struct PrDisplayOptions {
     show_checks: bool,
     show_comments: bool,
+    comments_visibility: Option<crate::forge::remote_comments::PrCommentsVisibility>,
 }
 
 impl App {
@@ -27,6 +28,7 @@ impl App {
                 PrDisplayOptions {
                     show_checks: options.show_pr_checks,
                     show_comments: options.show_pr_comments,
+                    comments_visibility: options.pr_comments_visibility,
                 },
             );
         }
@@ -133,7 +135,10 @@ impl App {
         }
 
         let vcs = crate::profile::time("startup.detect_vcs", || {
-            detect_vcs(options.git_backend_preference, options.diff_whitespace_mode)
+            detect_vcs(
+                options.git_backend_preference,
+                options.diff_whitespace_mode.clone(),
+            )
         })?;
         let vcs_info = vcs.info().clone();
         let highlighter =
@@ -608,6 +613,7 @@ impl App {
             show_commit_selector: false,
             commit_order: CommitOrder::default(),
             commit_selection_start: CommitSelectionStart::default(),
+            initial_comments_visibility: None,
             commit_diff_cache: HashMap::new(),
             range_diff_files: None,
             saved_inline_selection: None,
@@ -818,6 +824,7 @@ impl App {
             PrDisplayOptions {
                 show_checks: false,
                 show_comments: true,
+                comments_visibility: None,
             },
         )
     }
@@ -912,12 +919,17 @@ impl App {
             display_options.show_comments,
         );
         let highlighter = theme.syntax_highlighter();
-        let opened = open_pull_request(
+        let mut opened = open_pull_request(
             backend.as_ref(),
             parsed,
             local_checkout_for_target.as_deref(),
             highlighter,
         )?;
+        // Seed before the persisted-session restore, which replaces the
+        // fresh session wholesale, so a saved visibility always wins.
+        if let Some(visibility) = display_options.comments_visibility {
+            opened.session.remote_comments_visibility = visibility;
+        }
         let opened = Self::opened_pr_with_persisted_session(opened)?;
 
         let pr_source = PullRequestDiffSource::from_details(&opened.details);

@@ -100,15 +100,15 @@ impl VcsBackend for Libgit2Backend {
     }
 
     fn get_working_tree_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
-        diff::get_working_tree_diff(&self.repo, self.whitespace_mode, highlighter)
+        diff::get_working_tree_diff(&self.repo, &self.whitespace_mode, highlighter)
     }
 
     fn get_staged_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
-        diff::get_staged_diff(&self.repo, self.whitespace_mode, highlighter)
+        diff::get_staged_diff(&self.repo, &self.whitespace_mode, highlighter)
     }
 
     fn get_unstaged_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
-        diff::get_unstaged_diff(&self.repo, self.whitespace_mode, highlighter)
+        diff::get_unstaged_diff(&self.repo, &self.whitespace_mode, highlighter)
     }
 
     fn list_changed_paths(&self, kind: ChangeKind) -> Result<Vec<PathBuf>> {
@@ -170,7 +170,7 @@ impl VcsBackend for Libgit2Backend {
         diff::get_commit_range_diff(
             &self.repo,
             revision_range,
-            self.whitespace_mode,
+            &self.whitespace_mode,
             highlighter,
         )
     }
@@ -199,7 +199,7 @@ impl VcsBackend for Libgit2Backend {
         diff::get_working_tree_with_commits_diff(
             &self.repo,
             commit_ids,
-            self.whitespace_mode,
+            &self.whitespace_mode,
             highlighter,
         )
     }

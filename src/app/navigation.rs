@@ -879,47 +879,13 @@ impl App {
     /// reviewed-collapse behavior in multi-file view (skipped entirely)
     /// versus single-file view (body rendered under a banner).
     pub(in crate::app) fn hunk_positions(&self) -> Vec<usize> {
-        let single = self.is_single_file_view;
-        let current_idx = self.diff_state.current_file_idx;
-        let mut positions = Vec::new();
-        let mut cumulative = self.review_comments_render_height();
-        for (file_idx, file) in self.diff_files.iter().enumerate() {
-            if single && file_idx != current_idx {
-                continue;
-            }
-            if !self.file_passes_filter(file) {
-                continue;
-            }
-            let path = file.display_path();
-            let is_reviewed = self.session.is_file_reviewed(path);
-
-            if !single {
-                cumulative += 1; // File header
-            }
-            if self.should_collapse_file(file_idx) {
-                // multi-file collapsed: no body, no trailing spacing
-                continue;
-            }
-            if single && is_reviewed {
-                cumulative += 1; // banner
-            }
-            if let Some(review) = self.session.files.get(path) {
-                cumulative += review.file_comments.len();
-            }
-            if file.is_binary || file.hunks.is_empty() {
-                cumulative += 1;
-            } else {
-                for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
-                    positions.push(cumulative);
-                    cumulative += 1;
-                    if !self.should_collapse_hunk(file_idx, hunk_idx) {
-                        cumulative += hunk.lines.len();
-                    }
-                }
-            }
-            cumulative += 1; // trailing spacing or "next file" hint
-        }
-        positions
+        self.line_annotations
+            .iter()
+            .enumerate()
+            .filter_map(|(row, line)| {
+                matches!(line, AnnotatedLine::HunkHeader { .. }).then_some(row)
+            })
+            .collect()
     }
 
     pub fn next_hunk(&mut self) {

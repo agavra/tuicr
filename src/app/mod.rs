@@ -12,7 +12,7 @@ use crate::error::{Result, TuicrError};
 use crate::forge::context::{ContextProvider, ForgeContextProvider, VcsContextProvider};
 use crate::forge::selector::PullRequestsTab;
 use crate::forge::traits::{ForgeBackend, ForgeRepository};
-use crate::model::review::FileReview;
+use crate::model::review::{CommentLocation, FileReview};
 use crate::model::{
     ClearScope, Comment, CommentType, DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin,
     LineRange, LineSide, ReviewSession, SessionDiffSource,
@@ -346,7 +346,11 @@ pub enum AnnotatedLine {
     /// A read-only line of a rendered remote review thread. Cursor cannot
     /// edit or reply to these in v1; the annotation is informational so
     /// hit-testing and scroll math stay correct.
-    RemoteThreadLine { thread_idx: usize },
+    RemoteThreadLine {
+        thread_idx: usize,
+        /// The root comment or reply whose rendered box row this is.
+        comment_idx: usize,
+    },
     /// Binary or empty file indicator
     BinaryOrEmpty { file_idx: usize },
     /// Spacing between files
@@ -1425,6 +1429,9 @@ pub struct App {
     pub commit_order: CommitOrder,
     /// Which commits are selected when a multi-commit review first opens.
     pub commit_selection_start: CommitSelectionStart,
+    /// Configured `pr_comments_visibility` default for fresh PR sessions;
+    /// a persisted session restores its own value.
+    pub initial_comments_visibility: Option<crate::forge::remote_comments::PrCommentsVisibility>,
     /// Cached individual/subrange diffs keyed by (start_idx, end_idx) into review_commits
     pub commit_diff_cache: HashMap<(usize, usize), Vec<DiffFile>>,
     /// The combined "all selected" diff, cached for quick restoration
@@ -1795,27 +1802,10 @@ pub struct SummaryState {
     pub(crate) selection_needs_scroll: bool,
 }
 
-/// Represents a comment location for deletion
-enum CommentLocation {
-    Review {
-        index: usize,
-    },
-    File {
-        path: std::path::PathBuf,
-        index: usize,
-    },
-    Line {
-        path: std::path::PathBuf,
-        line: u32,
-        side: LineSide,
-        index: usize,
-    },
-}
-
 /// What `detect_vcs` needs to open a backend. Bundled because these two
 /// always travel together: they are chosen once at startup and then replayed
 /// verbatim by the diff-watch worker when it opens its own backend.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct VcsOpenOptions {
     git_backend_preference: GitBackendPreference,
     diff_whitespace_mode: DiffWhitespaceMode,
@@ -1844,6 +1834,8 @@ pub struct AppStartupOptions<'a> {
     pub show_pr_checks: bool,
     /// Whether pull-request conversation comments are fetched and rendered.
     pub show_pr_comments: bool,
+    /// Configured `pr_comments_visibility` default for fresh PR sessions.
+    pub pr_comments_visibility: Option<crate::forge::remote_comments::PrCommentsVisibility>,
     pub git_backend_preference: GitBackendPreference,
     pub diff_whitespace_mode: DiffWhitespaceMode,
     /// Which commits are selected when a multi-commit review first opens.
@@ -1863,7 +1855,7 @@ impl AppStartupOptions<'_> {
     fn vcs_open_options(&self) -> VcsOpenOptions {
         VcsOpenOptions {
             git_backend_preference: self.git_backend_preference,
-            diff_whitespace_mode: self.diff_whitespace_mode,
+            diff_whitespace_mode: self.diff_whitespace_mode.clone(),
         }
     }
 }

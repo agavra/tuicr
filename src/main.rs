@@ -11,6 +11,7 @@ use crossterm::{
 
 use tuicr::app::{self, App, AppStartupOptions, FocusedPanel, InputMode};
 use tuicr::cli::parse_cli_args;
+use tuicr::config::IgnoreWhitespaceConfig;
 use tuicr::editor::{EditorCommand, EditorError, EditorLaunch, EditorSurface, EditorTarget};
 use tuicr::handler::{
     handle_command_action, handle_comment_action, handle_comment_navigator_action,
@@ -26,7 +27,7 @@ use tuicr::input::{
 };
 use tuicr::terminal_state::{TerminalFeatures, TerminalSession};
 use tuicr::theme::resolve_theme_with_config;
-use tuicr::vcs::{DiffWhitespaceMode, GitBackendPreference};
+use tuicr::vcs::{DiffWhitespaceMode, GitBackendPreference, WhitespaceAutoPolicy};
 use tuicr::{config, handler, profile, ui, update};
 
 /// Timeout for the "press Ctrl+C again to exit" feature
@@ -168,21 +169,23 @@ fn main() -> anyhow::Result<()> {
             .as_ref()
             .and_then(|cfg| cfg.backend.as_deref()),
     );
-    let diff_whitespace_mode = if config_outcome
-        .config
-        .as_ref()
-        .and_then(|cfg| cfg.ignore_whitespace)
-        .unwrap_or(false)
-    {
-        DiffWhitespaceMode::IgnoreAll
-    } else {
-        DiffWhitespaceMode::Normal
+    let diff_whitespace_mode = match config_outcome.config.as_ref() {
+        Some(cfg) => match cfg.ignore_whitespace {
+            Some(IgnoreWhitespaceConfig::Auto) => DiffWhitespaceMode::Auto(
+                WhitespaceAutoPolicy::with_overrides(cfg.ignore_whitespace_overrides.clone()),
+            ),
+            Some(IgnoreWhitespaceConfig::Bool(true)) => DiffWhitespaceMode::IgnoreAll,
+            Some(IgnoreWhitespaceConfig::Bool(false)) | None => DiffWhitespaceMode::Normal,
+        },
+        None => DiffWhitespaceMode::Normal,
     };
 
     let repo_url_override = match cli_args.remote.as_deref() {
         Some(name) => {
-            let vcs =
-                tuicr::vcs::GitBackend::discover(git_backend_preference, diff_whitespace_mode)?;
+            let vcs = tuicr::vcs::GitBackend::discover(
+                git_backend_preference,
+                diff_whitespace_mode.clone(),
+            )?;
             Some(tuicr::forge::resolve_remote_repository(&vcs, name)?)
         }
         None => cli_args
@@ -206,6 +209,15 @@ fn main() -> anyhow::Result<()> {
     {
         Some("oldest") => app::CommitSelectionStart::Oldest,
         _ => app::CommitSelectionStart::All,
+    };
+    let pr_comments_visibility = match config_outcome
+        .config
+        .as_ref()
+        .and_then(|cfg| cfg.pr_comments_visibility.as_deref())
+    {
+        Some("all") => Some(tuicr::forge::remote_comments::PrCommentsVisibility::All),
+        Some("hide") => Some(tuicr::forge::remote_comments::PrCommentsVisibility::Hide),
+        _ => None,
     };
 
     let mut app = match profile::time("startup.app_init", || {
@@ -232,6 +244,7 @@ fn main() -> anyhow::Result<()> {
                     .as_ref()
                     .and_then(|cfg| cfg.show_pr_comments)
                     .unwrap_or(true),
+                pr_comments_visibility,
                 git_backend_preference,
                 diff_whitespace_mode,
                 commit_selection,
@@ -326,6 +339,7 @@ fn main() -> anyhow::Result<()> {
     if let Some(ref cfg) = config_outcome.config {
         app.show_pr_checks = cfg.show_pr_checks.unwrap_or(false);
         app.show_pr_comments = cfg.show_pr_comments.unwrap_or(true);
+        app.initial_comments_visibility = pr_comments_visibility;
         app.set_compact_folders(cfg.compact_folders.unwrap_or(false));
         if cfg.show_file_list == Some(false) {
             app.show_file_list = false;
@@ -775,6 +789,7 @@ fn main() -> anyhow::Result<()> {
                             &mut terminal,
                             &target,
                             app.editor_override.as_deref(),
+                            app.output_to_stdout,
                         ) {
                             // The editor is still open, so there is nothing to
                             // pick up yet; the user reloads once they are done.
@@ -985,6 +1000,7 @@ fn run_editor_from_tui<W: Write>(
     terminal: &mut TerminalSession<W>,
     target: &EditorTarget,
     editor_override: Option<&str>,
+    output_to_stdout: bool,
 ) -> anyhow::Result<Result<EditorOutcome, EditorError>> {
     let command = EditorCommand::from_env(editor_override, target);
     // Windowed editors never draw on our terminal, so suspending would only
@@ -993,7 +1009,16 @@ fn run_editor_from_tui<W: Write>(
         return Ok(tuicr::editor::launch_editor(&command).map(EditorOutcome::Detached));
     }
     let suspension = terminal.suspend()?;
-    let editor_result = tuicr::editor::run_editor(&command);
+    // When tuicr was launched with `--stdout`, its own stdout is a file or
+    // pipe. A terminal editor spawned via `.status()` would inherit that
+    // non-TTY stdout and refuse to render (e.g. `vim: Output is not to a
+    // terminal`). Re-attach the editor's stdio to `/dev/tty` — the same
+    // device tuicr already renders the TUI on in this mode.
+    let editor_result = if output_to_stdout {
+        tuicr::editor::run_editor_on_tty(&command)
+    } else {
+        tuicr::editor::run_editor(&command)
+    };
     suspension.resume()?;
     Ok(editor_result.map(|()| EditorOutcome::Finished))
 }

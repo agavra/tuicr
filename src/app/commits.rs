@@ -1029,6 +1029,7 @@ impl App {
         {
             self.reload_inline_selection()?;
         } else {
+            self.insert_commit_message_if_single();
             self.sort_files_by_directory(true);
             self.expand_all_dirs();
             self.rebuild_annotations();

@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -5,6 +6,53 @@ use std::path::{Path, PathBuf};
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use toml::Value;
+
+/// Parsed `ignore_whitespace` setting.
+///
+/// Booleans keep the legacy global modes. `"auto"` selects per-extension
+/// comparison using the built-in table plus `[ignore_whitespace_overrides]`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub enum IgnoreWhitespaceConfig {
+    Bool(bool),
+    Auto,
+}
+
+impl<'de> Deserialize<'de> for IgnoreWhitespaceConfig {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct IgnoreWhitespaceVisitor;
+
+        impl serde::de::Visitor<'_> for IgnoreWhitespaceVisitor {
+            type Value = IgnoreWhitespaceConfig;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a boolean or \"auto\"")
+            }
+
+            fn visit_bool<E>(self, value: bool) -> std::result::Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(IgnoreWhitespaceConfig::Bool(value))
+            }
+
+            fn visit_str<E>(self, value: &str) -> std::result::Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                if value == "auto" {
+                    Ok(IgnoreWhitespaceConfig::Auto)
+                } else {
+                    Err(E::invalid_value(serde::de::Unexpected::Str(value), &self))
+                }
+            }
+        }
+
+        deserializer.deserialize_any(IgnoreWhitespaceVisitor)
+    }
+}
 
 pub const DEFAULT_LEADER_KEY: char = ';';
 
@@ -118,6 +166,9 @@ pub struct AppConfig {
     /// Whether pull-request conversation comments are fetched and shown.
     /// Defaults to true.
     pub show_pr_comments: Option<bool>,
+    /// Default visibility for PR review comment threads:
+    /// `"unresolved"` (the default), `"all"` or `"hide"`.
+    pub pr_comments_visibility: Option<String>,
     /// Whether the inline commit selector pane is visible on startup for
     /// multi-commit reviews. Defaults to true; toggle at runtime with
     /// `<leader>s` or `:set commits!`.
@@ -134,7 +185,11 @@ pub struct AppConfig {
     /// `"all"` (the default) or `"oldest"` (only the oldest commit, for a
     /// walk-forward per-commit review).
     pub initial_commit_selection: Option<String>,
-    pub ignore_whitespace: Option<bool>,
+    pub ignore_whitespace: Option<IgnoreWhitespaceConfig>,
+    /// Extension → ignore-whitespace decisions used only when
+    /// `ignore_whitespace = "auto"`. Keys are stored already normalized
+    /// (ASCII lowercase, no leading dot).
+    pub ignore_whitespace_overrides: BTreeMap<String, bool>,
     pub wrap: Option<bool>,
     pub relative_line_numbers: Option<bool>,
     pub export_legend: Option<bool>,
@@ -203,12 +258,14 @@ const KNOWN_KEYS: &[&str] = &[
     "compact_folders",
     "show_pr_checks",
     "show_pr_comments",
+    "pr_comments_visibility",
     "show_commits",
     "show_reviewed",
     "diff_view",
     "commit_order",
     "initial_commit_selection",
     "ignore_whitespace",
+    "ignore_whitespace_overrides",
     "wrap",
     "relative_line_numbers",
     "export_legend",
@@ -450,6 +507,92 @@ fn read_enum(
     }
 }
 
+fn read_ignore_whitespace(
+    table: &toml::Table,
+    warnings: &mut Vec<String>,
+) -> Option<IgnoreWhitespaceConfig> {
+    let val = table.get("ignore_whitespace")?;
+    if let Some(b) = val.as_bool() {
+        return Some(IgnoreWhitespaceConfig::Bool(b));
+    }
+    if let Some(s) = val.as_str() {
+        if s == "auto" {
+            return Some(IgnoreWhitespaceConfig::Auto);
+        }
+        warnings.push(format!(
+            "Warning: Config key 'ignore_whitespace' must be true, false, or \"auto\"; got \"{s}\", ignoring"
+        ));
+        return None;
+    }
+    warnings.push(
+        "Warning: Config key 'ignore_whitespace' must be a boolean or \"auto\"; ignoring value"
+            .to_string(),
+    );
+    None
+}
+
+fn parse_ignore_whitespace_overrides(
+    table: &toml::Table,
+    warnings: &mut Vec<String>,
+) -> Option<BTreeMap<String, bool>> {
+    let val = table.get("ignore_whitespace_overrides")?;
+    let Some(overrides) = val.as_table() else {
+        warnings.push(
+            "Warning: Config key 'ignore_whitespace_overrides' must be a table; ignoring value"
+                .to_string(),
+        );
+        return None;
+    };
+
+    let mut parsed = BTreeMap::new();
+    for (raw_key, value) in overrides {
+        let Some(normalized) = normalize_override_extension(raw_key, warnings) else {
+            continue;
+        };
+        let Some(ignore) = value.as_bool() else {
+            warnings.push(format!(
+                "Warning: Config key 'ignore_whitespace_overrides.{raw_key}' must be a boolean; ignoring value"
+            ));
+            continue;
+        };
+        if parsed.contains_key(&normalized) {
+            warnings.push(format!(
+                "Warning: Config key 'ignore_whitespace_overrides.{raw_key}' collides with already-defined extension '{normalized}'; ignoring value"
+            ));
+            continue;
+        }
+        parsed.insert(normalized, ignore);
+    }
+    Some(parsed)
+}
+
+fn normalize_override_extension(raw_key: &str, warnings: &mut Vec<String>) -> Option<String> {
+    let key = raw_key.trim();
+    let invalid_reason = if key.is_empty() {
+        Some("must be a non-empty extension")
+    } else if key.starts_with('.') {
+        Some("must not start with a dot")
+    } else if key.contains('.')
+        || key.contains('/')
+        || key.contains('\\')
+        || key.contains('*')
+        || key.contains('?')
+        || key.contains('[')
+        || key.contains(']')
+    {
+        Some("must be a single extension without a path or glob")
+    } else {
+        None
+    };
+    if let Some(reason) = invalid_reason {
+        warnings.push(format!(
+            "Warning: Config key 'ignore_whitespace_overrides.{raw_key}' {reason}; ignoring value"
+        ));
+        return None;
+    }
+    Some(key.to_ascii_lowercase())
+}
+
 fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
     let contents = match fs::read_to_string(path) {
         Ok(contents) => contents,
@@ -464,6 +607,18 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
 
     let mut warnings = Vec::new();
 
+    let ignore_whitespace = read_ignore_whitespace(table, &mut warnings);
+    let parsed_overrides = parse_ignore_whitespace_overrides(table, &mut warnings);
+    if parsed_overrides.is_some()
+        && !matches!(ignore_whitespace, Some(IgnoreWhitespaceConfig::Auto))
+    {
+        warnings.push(
+            "Warning: Config key 'ignore_whitespace_overrides' is only used when ignore_whitespace = \"auto\"; ignoring table"
+                .to_string(),
+        );
+    }
+    let ignore_whitespace_overrides = parsed_overrides.unwrap_or_default();
+
     let config = AppConfig {
         theme: read_string(table, "theme", &mut warnings),
         theme_dark: read_string(table, "theme_dark", &mut warnings),
@@ -477,6 +632,12 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         compact_folders: read_bool(table, "compact_folders", &mut warnings),
         show_pr_checks: read_bool(table, "show_pr_checks", &mut warnings),
         show_pr_comments: read_bool(table, "show_pr_comments", &mut warnings),
+        pr_comments_visibility: read_enum(
+            table,
+            "pr_comments_visibility",
+            &["unresolved", "all", "hide"],
+            &mut warnings,
+        ),
         show_commits: read_bool(table, "show_commits", &mut warnings),
         show_reviewed: read_bool(table, "show_reviewed", &mut warnings),
         diff_view: read_enum(
@@ -498,7 +659,8 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
             &["all", "oldest"],
             &mut warnings,
         ),
-        ignore_whitespace: read_bool(table, "ignore_whitespace", &mut warnings),
+        ignore_whitespace,
+        ignore_whitespace_overrides,
         wrap: read_bool(table, "wrap", &mut warnings),
         export_legend: read_bool(table, "export_legend", &mut warnings),
         cursor_line: read_bool(table, "cursor_line", &mut warnings),
@@ -1261,6 +1423,54 @@ mod tests {
         );
     }
 
+    // pr_comments_visibility
+
+    #[test]
+    fn should_parse_pr_comments_visibility_values() {
+        for value in ["unresolved", "all", "hide"] {
+            let outcome = parse_config(&format!("pr_comments_visibility = \"{value}\"\n"));
+            assert_eq!(
+                outcome
+                    .config
+                    .as_ref()
+                    .and_then(|cfg| cfg.pr_comments_visibility.as_deref()),
+                Some(value)
+            );
+            assert!(outcome.warnings.is_empty(), "{value} should parse cleanly");
+        }
+    }
+
+    #[test]
+    fn should_warn_and_ignore_pr_comments_visibility_with_invalid_value() {
+        let outcome = parse_config("pr_comments_visibility = \"shown\"\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.pr_comments_visibility.as_deref()),
+            None
+        );
+        assert_eq!(outcome.warnings.len(), 1);
+        assert!(outcome.warnings[0].contains("\"unresolved\" or \"all\" or \"hide\""));
+    }
+
+    #[test]
+    fn should_warn_and_ignore_pr_comments_visibility_with_invalid_type() {
+        let outcome = parse_config("pr_comments_visibility = true\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.pr_comments_visibility.as_deref()),
+            None
+        );
+        assert_eq!(outcome.warnings.len(), 1);
+        assert_eq!(
+            outcome.warnings[0],
+            "Warning: Config key 'pr_comments_visibility' must be a string; ignoring value"
+        );
+    }
+
     // ignore_whitespace
 
     #[test]
@@ -1270,8 +1480,8 @@ mod tests {
             outcome
                 .config
                 .as_ref()
-                .and_then(|cfg| cfg.ignore_whitespace),
-            Some(true)
+                .and_then(|cfg| cfg.ignore_whitespace.clone()),
+            Some(IgnoreWhitespaceConfig::Bool(true))
         );
         assert!(outcome.warnings.is_empty());
     }
@@ -1283,26 +1493,186 @@ mod tests {
             outcome
                 .config
                 .as_ref()
-                .and_then(|cfg| cfg.ignore_whitespace),
-            Some(false)
+                .and_then(|cfg| cfg.ignore_whitespace.clone()),
+            Some(IgnoreWhitespaceConfig::Bool(false))
         );
         assert!(outcome.warnings.is_empty());
     }
 
     #[test]
-    fn should_warn_and_ignore_ignore_whitespace_with_invalid_type() {
-        let outcome = parse_config("ignore_whitespace = \"yes\"\n");
+    fn should_parse_ignore_whitespace_auto() {
+        let outcome = parse_config("ignore_whitespace = \"auto\"\n");
         assert_eq!(
             outcome
                 .config
                 .as_ref()
-                .and_then(|cfg| cfg.ignore_whitespace),
+                .and_then(|cfg| cfg.ignore_whitespace.clone()),
+            Some(IgnoreWhitespaceConfig::Auto)
+        );
+        assert!(
+            outcome
+                .config
+                .as_ref()
+                .map(|cfg| cfg.ignore_whitespace_overrides.is_empty())
+                .unwrap_or(false)
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_parse_ignore_whitespace_auto_with_explicit_overrides() {
+        let outcome = parse_config(
+            "ignore_whitespace = \"auto\"\n\
+             [ignore_whitespace_overrides]\n\
+             rs = false\n\
+             custom = true\n",
+        );
+        let config = outcome.config.expect("config should parse");
+        assert_eq!(config.ignore_whitespace, Some(IgnoreWhitespaceConfig::Auto));
+        assert_eq!(config.ignore_whitespace_overrides.get("rs"), Some(&false));
+        assert_eq!(
+            config.ignore_whitespace_overrides.get("custom"),
+            Some(&true)
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_parse_empty_ignore_whitespace_overrides_table() {
+        let outcome = parse_config(
+            "ignore_whitespace = \"auto\"\n\
+             [ignore_whitespace_overrides]\n",
+        );
+        let config = outcome.config.expect("config should parse");
+        assert_eq!(config.ignore_whitespace, Some(IgnoreWhitespaceConfig::Auto));
+        assert!(config.ignore_whitespace_overrides.is_empty());
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_warn_when_ignore_whitespace_overrides_are_inactive() {
+        let outcome = parse_config(
+            "ignore_whitespace = true\n\
+             [ignore_whitespace_overrides]\n\
+             rs = false\n",
+        );
+        let config = outcome.config.expect("config should parse");
+        assert_eq!(
+            config.ignore_whitespace,
+            Some(IgnoreWhitespaceConfig::Bool(true))
+        );
+        assert_eq!(config.ignore_whitespace_overrides.get("rs"), Some(&false));
+        assert_eq!(outcome.warnings.len(), 1);
+        assert_eq!(
+            outcome.warnings[0],
+            "Warning: Config key 'ignore_whitespace_overrides' is only used when ignore_whitespace = \"auto\"; ignoring table"
+        );
+    }
+
+    #[test]
+    fn should_normalize_override_extension_case() {
+        let outcome = parse_config(
+            "ignore_whitespace = \"auto\"\n\
+             [ignore_whitespace_overrides]\n\
+             RS = false\n",
+        );
+        let config = outcome.config.expect("config should parse");
+        assert_eq!(config.ignore_whitespace_overrides.get("rs"), Some(&false));
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_warn_and_ignore_malformed_override_keys() {
+        let outcome = parse_config(
+            "ignore_whitespace = \"auto\"\n\
+             [ignore_whitespace_overrides]\n\
+             \"\" = true\n\
+             \".rs\" = true\n\
+             \"src/foo\" = true\n\
+             \"*.json\" = true\n\
+             \"tar.gz\" = true\n\
+             custom = true\n",
+        );
+        let config = outcome.config.expect("config should parse");
+        assert_eq!(
+            config.ignore_whitespace_overrides.get("custom"),
+            Some(&true)
+        );
+        assert_eq!(config.ignore_whitespace_overrides.len(), 1);
+        assert_eq!(outcome.warnings.len(), 5);
+        assert!(
+            outcome
+                .warnings
+                .iter()
+                .all(|warning| warning.contains("ignore_whitespace_overrides"))
+        );
+    }
+
+    #[test]
+    fn should_warn_and_ignore_normalized_override_collisions() {
+        let outcome = parse_config(
+            "ignore_whitespace = \"auto\"\n\
+             [ignore_whitespace_overrides]\n\
+             RS = true\n\
+             rs = false\n",
+        );
+        let config = outcome.config.expect("config should parse");
+        assert_eq!(config.ignore_whitespace_overrides.len(), 1);
+        assert!(config.ignore_whitespace_overrides.contains_key("rs"));
+        assert_eq!(outcome.warnings.len(), 1);
+        assert!(outcome.warnings[0].contains("collides with already-defined extension 'rs'"));
+    }
+
+    #[test]
+    fn should_warn_and_ignore_override_with_invalid_type() {
+        let outcome = parse_config(
+            "ignore_whitespace = \"auto\"\n\
+             [ignore_whitespace_overrides]\n\
+             rs = \"yes\"\n\
+             custom = 1\n",
+        );
+        let config = outcome.config.expect("config should parse");
+        assert!(config.ignore_whitespace_overrides.is_empty());
+        assert_eq!(outcome.warnings.len(), 2);
+        assert!(
+            outcome
+                .warnings
+                .iter()
+                .all(|warning| warning.contains("must be a boolean"))
+        );
+    }
+
+    #[test]
+    fn should_warn_and_ignore_ignore_whitespace_with_invalid_type() {
+        let outcome = parse_config("ignore_whitespace = 1\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.ignore_whitespace.clone()),
             None
         );
         assert_eq!(outcome.warnings.len(), 1);
         assert_eq!(
             outcome.warnings[0],
-            "Warning: Config key 'ignore_whitespace' must be a boolean; ignoring value"
+            "Warning: Config key 'ignore_whitespace' must be a boolean or \"auto\"; ignoring value"
+        );
+    }
+
+    #[test]
+    fn should_warn_and_ignore_ignore_whitespace_with_invalid_string() {
+        let outcome = parse_config("ignore_whitespace = \"yes\"\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.ignore_whitespace.clone()),
+            None
+        );
+        assert_eq!(outcome.warnings.len(), 1);
+        assert_eq!(
+            outcome.warnings[0],
+            "Warning: Config key 'ignore_whitespace' must be true, false, or \"auto\"; got \"yes\", ignoring"
         );
     }
 

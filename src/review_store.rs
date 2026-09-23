@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 
 use crate::error::{Result, TuicrError};
-use crate::model::{Comment, CommentType, LineRange, LineSide, ReviewSession};
+use crate::model::{ClearScope, Comment, CommentType, LineRange, LineSide, ReviewSession};
 use crate::persistence::manifest::{ManifestEntry, ManifestKind};
 use crate::persistence::storage;
 
@@ -81,6 +81,44 @@ impl ReviewStore {
                 add_comment_to_session(session, request)
             })?;
         Ok(comment)
+    }
+
+    /// Delete one comment by id from a persisted session.
+    pub fn delete_comment(&self, session_ref: &SessionRef, comment_id: &str) -> Result<bool> {
+        let reviews_dir = self.reviews_dir()?;
+        let (_session, removed) =
+            storage::update_session_in_dir(session_ref.path(), &reviews_dir, |session| {
+                let Some(location) = session.find_comment_by_id(comment_id) else {
+                    return Ok(false);
+                };
+                if session.remove_comment(&location) {
+                    Ok(true)
+                } else {
+                    let forge = session
+                        .pr_session_key
+                        .as_ref()
+                        .map(|key| key.repository.display_name())
+                        .unwrap_or_else(|| "the forge".to_string());
+                    Err(TuicrError::InvalidInput(format!(
+                        "Comment already pushed to {forge} — read only in tuicr"
+                    )))
+                }
+            })?;
+        Ok(removed)
+    }
+
+    /// Clear comments from a persisted session.
+    pub fn clear_comments(
+        &self,
+        session_ref: &SessionRef,
+        scope: ClearScope,
+    ) -> Result<(usize, usize)> {
+        let reviews_dir = self.reviews_dir()?;
+        let (_session, counts) =
+            storage::update_session_in_dir(session_ref.path(), &reviews_dir, |session| {
+                Ok(session.clear_comments(scope))
+            })?;
+        Ok(counts)
     }
 
     /// Save a session through this store's storage root.
@@ -276,7 +314,9 @@ fn file_review_mut<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::comment::CommentLifecycleState;
     use crate::model::{FileStatus, SessionDiffSource};
+    use tempfile::tempdir;
 
     fn test_session(repo_path: PathBuf) -> ReviewSession {
         let mut session = ReviewSession::new(
@@ -287,6 +327,92 @@ mod tests {
         );
         session.add_file(PathBuf::from("src/main.rs"), FileStatus::Modified, 0);
         session
+    }
+
+    #[test]
+    fn should_delete_comment_by_id_through_store() {
+        let temp = tempdir().unwrap();
+        let store = ReviewStore::with_reviews_dir(temp.path().join("reviews"));
+        let mut session = test_session(PathBuf::from("/repo"));
+        let comment = Comment::new("note".to_string(), CommentType::from_id("note"), None);
+        let comment_id = comment.id.clone();
+        session.review_comments.push(comment);
+        let session_ref = store.save_review(&session).unwrap();
+
+        let deleted = store.delete_comment(&session_ref, &comment_id).unwrap();
+
+        assert!(deleted);
+        let loaded = store.get_review(&session_ref).unwrap();
+        assert!(loaded.review_comments.is_empty());
+        assert!(!store.delete_comment(&session_ref, &comment_id).unwrap());
+    }
+
+    #[test]
+    fn should_clear_comments_keeping_review_marks() {
+        let temp = tempdir().unwrap();
+        let store = ReviewStore::with_reviews_dir(temp.path().join("reviews"));
+        let mut session = test_session(PathBuf::from("/repo"));
+        session.review_comments.push(Comment::new(
+            "note".to_string(),
+            CommentType::from_id("note"),
+            None,
+        ));
+        let path = PathBuf::from("src/main.rs");
+        session.files.get_mut(&path).unwrap().reviewed = true;
+        let session_ref = store.save_review(&session).unwrap();
+
+        let (cleared, unreviewed) = store
+            .clear_comments(&session_ref, ClearScope::CommentsOnly)
+            .unwrap();
+
+        assert_eq!(cleared, 1);
+        assert_eq!(unreviewed, 0);
+        let loaded = store.get_review(&session_ref).unwrap();
+        assert!(loaded.review_comments.is_empty());
+        assert!(loaded.files.get(&path).unwrap().reviewed);
+    }
+
+    #[test]
+    fn should_clear_comments_and_review_marks() {
+        let temp = tempdir().unwrap();
+        let store = ReviewStore::with_reviews_dir(temp.path().join("reviews"));
+        let mut session = test_session(PathBuf::from("/repo"));
+        session.review_comments.push(Comment::new(
+            "note".to_string(),
+            CommentType::from_id("note"),
+            None,
+        ));
+        let path = PathBuf::from("src/main.rs");
+        session.files.get_mut(&path).unwrap().reviewed = true;
+        let session_ref = store.save_review(&session).unwrap();
+
+        let (cleared, unreviewed) = store
+            .clear_comments(&session_ref, ClearScope::CommentsAndReviewed)
+            .unwrap();
+
+        assert_eq!(cleared, 1);
+        assert_eq!(unreviewed, 1);
+        let loaded = store.get_review(&session_ref).unwrap();
+        assert!(loaded.review_comments.is_empty());
+        assert!(!loaded.files.get(&path).unwrap().reviewed);
+    }
+
+    #[test]
+    fn should_refuse_to_delete_pushed_comment() {
+        let temp = tempdir().unwrap();
+        let store = ReviewStore::with_reviews_dir(temp.path().join("reviews"));
+        let mut session = test_session(PathBuf::from("/repo"));
+        let mut comment = Comment::new("note".to_string(), CommentType::from_id("note"), None);
+        comment.lifecycle_state = CommentLifecycleState::PushedDraft;
+        let comment_id = comment.id.clone();
+        session.review_comments.push(comment);
+        let session_ref = store.save_review(&session).unwrap();
+
+        let result = store.delete_comment(&session_ref, &comment_id);
+
+        assert!(matches!(result, Err(TuicrError::InvalidInput(_))));
+        let loaded = store.get_review(&session_ref).unwrap();
+        assert_eq!(loaded.review_comments.len(), 1);
     }
 
     #[test]

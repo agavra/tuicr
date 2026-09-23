@@ -2644,6 +2644,95 @@ fn should_populate_remote_threads_when_opening_pr_through_test_seam() {
 }
 
 #[test]
+fn configured_comments_visibility_seeds_a_fresh_pr_session() {
+    let mut app = build_app();
+    app.initial_comments_visibility = Some(PrCommentsVisibility::All);
+    let summary = sample_pr(42, "answer");
+    let backend = Box::new(ThreadAwareForgeBackend::new(
+        test_pr_details(42, "answer"),
+        crate::forge::github::gh::tests_fixture::SIMPLE_PATCH.to_string(),
+        Vec::new(),
+    ));
+    app.open_pr_with_backend(&summary, backend, None).unwrap();
+    assert_eq!(
+        app.session.remote_comments_visibility,
+        PrCommentsVisibility::All
+    );
+}
+
+#[test]
+fn configured_comments_visibility_seeds_the_async_pr_open_path() {
+    let _reviews = TestReviewsDir::new();
+    let mut app = build_app();
+    app.initial_comments_visibility = Some(PrCommentsVisibility::All);
+    app.forge_repository = Some(ForgeRepository::gitlab("gitlab.com", "owner", "repo"));
+    app.pr_tab = loaded_pr_tab(vec![sample_pr(42, "answer")]);
+    app.target_tab = TargetTab::PullRequests;
+    let request = crate::app::PrOpenRequest {
+        repository: ForgeRepository::gitlab("gitlab.com", "owner", "repo"),
+        pr_number: 42,
+        started_at: std::time::Instant::now(),
+    };
+    app.pr_open_state = Some(request.clone());
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.pr_open_rx = Some(rx);
+    let mut details = test_pr_details(42, "answer");
+    details.repository = ForgeRepository::gitlab("gitlab.com", "owner", "repo");
+    tx.send(crate::app::PrOpenEvent::Done {
+        request,
+        result: Ok((
+            details.clone(),
+            structured_patch(crate::forge::github::gh::tests_fixture::SIMPLE_PATCH),
+            Vec::new(),
+            crate::forge::traits::PullRequestReviewMetadata::default(),
+            crate::forge::traits::PullRequestInfo::from_details(details.clone()),
+        )),
+    })
+    .unwrap();
+
+    app.poll_pr_open_events();
+
+    assert!(
+        matches!(&app.diff_source, DiffSource::PullRequest(_)),
+        "the async open should have entered PR mode"
+    );
+    assert_eq!(
+        app.session.remote_comments_visibility,
+        PrCommentsVisibility::All
+    );
+}
+
+#[test]
+fn configured_comments_default_does_not_override_a_persisted_visibility() {
+    let _reviews = TestReviewsDir::new();
+    for (saved, configured) in [
+        (PrCommentsVisibility::Unresolved, PrCommentsVisibility::All),
+        (PrCommentsVisibility::All, PrCommentsVisibility::Hide),
+    ] {
+        let mut app = build_app();
+        let summary = sample_pr(42, "answer");
+        let backend = Box::new(ThreadAwareForgeBackend::new(
+            test_pr_details(42, "answer"),
+            crate::forge::github::gh::tests_fixture::SIMPLE_PATCH.to_string(),
+            Vec::new(),
+        ));
+        app.open_pr_with_backend(&summary, backend, None).unwrap();
+        app.session.remote_comments_visibility = saved;
+        crate::persistence::storage::save_session(&app.session).unwrap();
+
+        let mut app = build_app();
+        app.initial_comments_visibility = Some(configured);
+        let backend = Box::new(ThreadAwareForgeBackend::new(
+            test_pr_details(42, "answer"),
+            crate::forge::github::gh::tests_fixture::SIMPLE_PATCH.to_string(),
+            Vec::new(),
+        ));
+        app.open_pr_with_backend(&summary, backend, None).unwrap();
+        assert_eq!(app.session.remote_comments_visibility, saved);
+    }
+}
+
+#[test]
 fn should_clear_remote_threads_without_refetch_when_setting_visibility_hide() {
     // given a PR open with one fetched thread
     let mut app = build_app();

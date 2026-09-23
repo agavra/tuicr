@@ -1,10 +1,15 @@
 use chrono::{DateTime, Utc};
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::error::Result;
 use crate::model::{DiffFile, DiffLine, FileStatus};
 use crate::syntax::SyntaxHighlighter;
+
+/// Extensions whose whitespace is ignored by the built-in auto table.
+pub(crate) const AUTO_IGNORE_WHITESPACE_EXTENSIONS: &[&str] =
+    &["json", "js", "jsx", "mjs", "cjs", "ts", "tsx", "rs"];
 
 /// Information about the VCS type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,23 +41,86 @@ pub struct VcsInfo {
     pub vcs_type: VcsType,
 }
 
+/// Per-extension ignore decisions used by [`DiffWhitespaceMode::Auto`].
+///
+/// Built-in ignored extensions are JSON/JavaScript/TypeScript/Rust. User
+/// overrides replace the decision for an extension; they never invert a
+/// separate boolean. Unknown extensions, extensionless files, Python, and
+/// YAML compare whitespace normally unless overridden.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WhitespaceAutoPolicy {
+    ignore_extensions: HashMap<String, bool>,
+}
+
+impl Default for WhitespaceAutoPolicy {
+    fn default() -> Self {
+        Self::builtin()
+    }
+}
+
+impl WhitespaceAutoPolicy {
+    pub fn builtin() -> Self {
+        Self {
+            ignore_extensions: AUTO_IGNORE_WHITESPACE_EXTENSIONS
+                .iter()
+                .map(|ext| ((*ext).to_string(), true))
+                .collect(),
+        }
+    }
+
+    pub fn with_overrides(overrides: impl IntoIterator<Item = (String, bool)>) -> Self {
+        let mut policy = Self::builtin();
+        for (ext, ignore) in overrides {
+            policy.ignore_extensions.insert(ext, ignore);
+        }
+        policy
+    }
+
+    pub fn ignores_extension(&self, ext: &str) -> bool {
+        self.ignore_extensions.get(ext).copied().unwrap_or(false)
+    }
+
+    pub fn ignores_diff_file(&self, file: &DiffFile) -> bool {
+        comparison_extension(file.old_path.as_deref(), file.new_path.as_deref())
+            .is_some_and(|ext| self.ignores_extension(&ext))
+    }
+}
+
+/// Extension used to choose a whitespace comparison, matching `DiffFile`
+/// display/syntax path precedence: destination for additions/renames/copies
+/// and modified files, source for deletions. Non-UTF-8 and missing
+/// extensions yield `None` (Normal comparison).
+pub(crate) fn comparison_extension(
+    old_path: Option<&Path>,
+    new_path: Option<&Path>,
+) -> Option<String> {
+    let path = new_path.or(old_path)?;
+    let ext = path.extension()?.to_str()?;
+    if ext.is_empty() {
+        return None;
+    }
+    Some(ext.to_ascii_lowercase())
+}
+
 /// Whitespace comparison policy used when a backend materializes diff hunks.
 ///
 /// This is a local-diff setting,
 /// not a review-session identity or forge option.
 /// Cheap change probes intentionally ignore it so selectors can still show
 /// staged/unstaged choices before the full diff is loaded.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum DiffWhitespaceMode {
     /// Compare whitespace normally.
     #[default]
     Normal,
     /// Ignore all whitespace while comparing lines.
     IgnoreAll,
+    /// Choose Normal vs IgnoreAll per file from an owned extension table.
+    Auto(WhitespaceAutoPolicy),
 }
 
 impl DiffWhitespaceMode {
-    pub fn ignores_all(self) -> bool {
+    pub fn ignores_all(&self) -> bool {
         matches!(self, Self::IgnoreAll)
     }
 }
