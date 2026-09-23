@@ -91,6 +91,38 @@ impl EditorCommand {
         Command::new(&self.program).args(&self.args).status()
     }
 
+    /// Runs the prepared editor command with stdin/stdout/stderr re-attached
+    /// to the controlling terminal at `/dev/tty`.
+    ///
+    /// Needed when tuicr was launched with `--stdout`: its own stdout is a
+    /// file or pipe, and a terminal editor spawned via `.status()` would
+    /// inherit that non-TTY stdout and refuse to render (e.g. vim's
+    /// "Output is not to a terminal" warning). The TUI itself already draws
+    /// on `/dev/tty` in that mode, so pointing the editor at the same device
+    /// is safe.
+    ///
+    /// On non-Unix targets `/dev/tty` doesn't exist, so this falls back to
+    /// [`Self::run`].
+    pub fn run_on_tty(&self) -> std::io::Result<std::process::ExitStatus> {
+        #[cfg(unix)]
+        {
+            use std::fs::OpenOptions;
+            let stdin = OpenOptions::new().read(true).open("/dev/tty")?;
+            let stdout = OpenOptions::new().write(true).open("/dev/tty")?;
+            let stderr = OpenOptions::new().write(true).open("/dev/tty")?;
+            Command::new(&self.program)
+                .args(&self.args)
+                .stdin(Stdio::from(stdin))
+                .stdout(Stdio::from(stdout))
+                .stderr(Stdio::from(stderr))
+                .status()
+        }
+        #[cfg(not(unix))]
+        {
+            self.run()
+        }
+    }
+
     /// Spawns the prepared editor command without waiting for it to exit.
     ///
     /// Standard streams are detached so a chatty editor cannot write over the
@@ -261,6 +293,17 @@ pub fn run_editor(command: &EditorCommand) -> Result<(), EditorError> {
     }
 }
 
+/// Runs `command` with stdin/stdout/stderr wired to `/dev/tty` instead of
+/// tuicr's inherited stdio. Used when tuicr was launched with `--stdout` so
+/// the editor still sees a terminal even though tuicr's own stdout is a file.
+pub fn run_editor_on_tty(command: &EditorCommand) -> Result<(), EditorError> {
+    match command.run_on_tty() {
+        Ok(status) if status.success() => Ok(()),
+        Ok(status) => Err(EditorError::Exit(status)),
+        Err(err) => Err(EditorError::Launch(err)),
+    }
+}
+
 /// Hands `command` to a windowed editor without waiting for it to exit.
 pub fn launch_editor(command: &EditorCommand) -> Result<EditorLaunch, EditorError> {
     command.spawn_detached().map_err(EditorError::Launch)
@@ -293,6 +336,27 @@ mod tests {
             assert_eq!(command.program, editor);
             assert_eq!(args(&command), vec!["+42", "/repo/src/main.rs"]);
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_on_tty_runs_true_and_reports_success() {
+        // /bin/true exits 0 immediately without reading stdin, so this
+        // exercises the /dev/tty wiring path without needing a real editor.
+        // CI and other headless runners have no controlling terminal, so
+        // /dev/tty returns ENXIO — skip cleanly in that case rather than
+        // fail on a machine that literally cannot exercise this code path.
+        if std::fs::File::open("/dev/tty").is_err() {
+            return;
+        }
+        let command = EditorCommand {
+            program: "true".to_string(),
+            args: Vec::new(),
+        };
+        let status = command
+            .run_on_tty()
+            .expect("run_on_tty must open /dev/tty and spawn");
+        assert!(status.success(), "true should exit 0");
     }
 
     #[test]

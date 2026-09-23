@@ -782,6 +782,7 @@ fn main() -> anyhow::Result<()> {
                             &mut terminal,
                             &target,
                             app.editor_override.as_deref(),
+                            app.output_to_stdout,
                         ) {
                             // The editor is still open, so there is nothing to
                             // pick up yet; the user reloads once they are done.
@@ -991,6 +992,7 @@ fn run_editor_from_tui<W: Write>(
     terminal: &mut TerminalSession<W>,
     target: &EditorTarget,
     editor_override: Option<&str>,
+    output_to_stdout: bool,
 ) -> anyhow::Result<Result<EditorOutcome, EditorError>> {
     let command = EditorCommand::from_env(editor_override, target);
     // Windowed editors never draw on our terminal, so suspending would only
@@ -999,7 +1001,16 @@ fn run_editor_from_tui<W: Write>(
         return Ok(tuicr::editor::launch_editor(&command).map(EditorOutcome::Detached));
     }
     let suspension = terminal.suspend()?;
-    let editor_result = tuicr::editor::run_editor(&command);
+    // When tuicr was launched with `--stdout`, its own stdout is a file or
+    // pipe. A terminal editor spawned via `.status()` would inherit that
+    // non-TTY stdout and refuse to render (e.g. `vim: Output is not to a
+    // terminal`). Re-attach the editor's stdio to `/dev/tty` — the same
+    // device tuicr already renders the TUI on in this mode.
+    let editor_result = if output_to_stdout {
+        tuicr::editor::run_editor_on_tty(&command)
+    } else {
+        tuicr::editor::run_editor(&command)
+    };
     suspension.resume()?;
     Ok(editor_result.map(|()| EditorOutcome::Finished))
 }
