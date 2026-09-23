@@ -45,16 +45,44 @@ use crate::syntax::{
 /// content effectively impossible.
 pub(crate) const BATCH_BOUNDARY: &str = "@@TUICR_BATCH_BOUNDARY_e97f2d44_8b1a@@";
 
+/// Whether `file` needs full-file (not hunk-scoped) syntax highlighting.
+///
+/// Container syntaxes (Vue, Svelte, ...) always need it, regardless of hunk
+/// content — see `needs_full_file_highlight`. Python only needs it when at
+/// least one hunk actually contains a `"""`/`'''` delimiter: a triple-quoted
+/// string that opens before the hunk starts leaves a hunk-local parse
+/// unaware it's already inside a string, so the delimiter that *closes* it
+/// reads as *opening* a new one, swallowing every line after it — real code,
+/// not documentation — into a phantom string. Most Python hunks never go
+/// near a docstring, so gating on the extension alone (like the container
+/// list does) would pay the full-file fetch-and-highlight cost on every
+/// Python diff for no benefit; gating on hunk content limits that cost to
+/// the diffs it can actually fix.
+pub(crate) fn file_needs_full_file_highlight(file: &DiffFile, syntax_path: &Path) -> bool {
+    if needs_full_file_highlight(syntax_path) {
+        return true;
+    }
+    if syntax_path.extension().and_then(|e| e.to_str()) != Some("py") {
+        return false;
+    }
+    file.hunks.iter().any(|hunk| {
+        hunk.lines
+            .iter()
+            .any(|line| line.content.contains("\"\"\"") || line.content.contains("'''"))
+    })
+}
+
 /// Collect the unique paths of files that need full-file syntax highlighting
-/// (Vue, Svelte, PHP and friends) on the given side, skipping binary, too-large,
-/// or empty entries. Used by hg / jj to know which files to batch-fetch.
+/// (Vue, Svelte, PHP and friends, plus Python files whose hunks touch a
+/// triple-quoted string) on the given side, skipping binary, too-large, or
+/// empty entries. Used by hg / jj to know which files to batch-fetch.
 pub(crate) fn container_file_paths(files: &[DiffFile], side: LineSide) -> Vec<PathBuf> {
     files
         .iter()
         .filter(|f| !f.is_binary && !f.is_too_large && !f.hunks.is_empty())
         .filter_map(|f| {
             let syntax_path = f.new_path.as_deref().or(f.old_path.as_deref())?;
-            if !needs_full_file_highlight(syntax_path) {
+            if !file_needs_full_file_highlight(f, syntax_path) {
                 return None;
             }
             match side {
@@ -167,9 +195,10 @@ where
 /// huge generated artefacts (lockfiles, vendored bundles, fixtures).
 const MAX_HIGHLIGHT_FILE_BYTES: usize = 1024 * 1024;
 
-/// Re-highlight each diff line using full-file context, for files whose
-/// grammar needs it (Vue, Svelte, Astro, MDX). Other files keep their existing
-/// per-hunk highlighting unchanged.
+/// Re-highlight each diff line using full-file context, for files that need
+/// it per `file_needs_full_file_highlight` (Vue, Svelte, Astro, MDX
+/// unconditionally; Python only when a hunk touches a triple-quoted string).
+/// Other files keep their existing per-hunk highlighting unchanged.
 ///
 /// `fetch_old`/`fetch_new` return the entire content of the file at the old
 /// and new sides respectively (or `None` if unavailable). When a side is
@@ -199,7 +228,7 @@ pub(crate) fn enhance_with_full_file_highlight<F, G>(
         let Some(syntax_path) = file.new_path.as_deref().or(file.old_path.as_deref()) else {
             continue;
         };
-        if !needs_full_file_highlight(syntax_path) {
+        if !file_needs_full_file_highlight(file, syntax_path) {
             continue;
         }
         let old_content = file.old_path.as_deref().and_then(&mut fetch_old);
@@ -524,6 +553,166 @@ mod tests {
         let files = highlight_n_vue_files(12);
         assert_eq!(files.len(), 12);
         assert_all_lines_highlighted(&files);
+    }
+
+    /// Regression test for the docstring/hunk-boundary bug: a hunk that
+    /// starts after a triple-quoted docstring's opening `"""` (outside the
+    /// hunk's own lines) makes a hunk-local, fresh-state parse misread the
+    /// docstring's *closing* `"""` as *opening* a new string, swallowing
+    /// every line after it — real code, not documentation — into a phantom
+    /// docstring. `file_needs_full_file_highlight` must catch this hunk so
+    /// `enhance_with_full_file_highlight` re-highlights with correct state.
+    #[test]
+    fn full_file_highlight_resolves_docstring_state_across_hunk_boundary() {
+        use crate::model::diff_types::{DiffHunk, DiffLine, FileStatus, LineOrigin};
+
+        let old = "def foo():\n\
+                    \x20\x20\x20\x20\"\"\"\n\
+                    \x20\x20\x20\x20This is a\n\
+                    \x20\x20\x20\x20multi-line docstring.\n\
+                    \x20\x20\x20\x20\"\"\"\n\
+                    \x20\x20\x20\x20x = 1\n";
+        let new = old.replace("x = 1", "x = 2");
+        let path = PathBuf::from("sample.py");
+
+        // The exact hunk `git diff -U3` (libgit2's default context radius,
+        // per `diff_options` in `vcs::git::diff` not overriding it) produces
+        // for this change: 3 lines of context before it, starting inside
+        // the docstring but well after its opening `"""` (line 2) — so
+        // `diff_parser::parse_hunk`'s fresh, hunk-local parse never sees it.
+        let hunk = DiffHunk {
+            header: "@@ -3,4 +3,4 @@".to_string(),
+            lines: vec![
+                DiffLine {
+                    origin: LineOrigin::Context,
+                    content: "    This is a".to_string(),
+                    old_lineno: Some(3),
+                    new_lineno: Some(3),
+                    highlighted_spans: None,
+                },
+                DiffLine {
+                    origin: LineOrigin::Context,
+                    content: "    multi-line docstring.".to_string(),
+                    old_lineno: Some(4),
+                    new_lineno: Some(4),
+                    highlighted_spans: None,
+                },
+                DiffLine {
+                    origin: LineOrigin::Context,
+                    content: "    \"\"\"".to_string(),
+                    old_lineno: Some(5),
+                    new_lineno: Some(5),
+                    highlighted_spans: None,
+                },
+                DiffLine {
+                    origin: LineOrigin::Deletion,
+                    content: "    x = 1".to_string(),
+                    old_lineno: Some(6),
+                    new_lineno: None,
+                    highlighted_spans: None,
+                },
+                DiffLine {
+                    origin: LineOrigin::Addition,
+                    content: "    x = 2".to_string(),
+                    old_lineno: None,
+                    new_lineno: Some(6),
+                    highlighted_spans: None,
+                },
+            ],
+            old_start: 3,
+            old_count: 4,
+            new_start: 3,
+            new_count: 4,
+        };
+        let mut files = vec![DiffFile {
+            old_path: Some(path.clone()),
+            new_path: Some(path.clone()),
+            status: FileStatus::Modified,
+            hunks: vec![hunk],
+            is_binary: false,
+            is_too_large: false,
+            is_commit_message: false,
+            content_hash: 0,
+        }];
+
+        assert!(
+            file_needs_full_file_highlight(&files[0], &path),
+            "a hunk touching a triple-quote delimiter must need full-file highlight"
+        );
+
+        let highlighter = SyntaxHighlighter::default();
+        enhance_with_full_file_highlight(
+            &mut files,
+            &highlighter,
+            |_| Some(old.to_string()),
+            |_| Some(new.clone()),
+        );
+
+        let added_line = &files[0].hunks[0].lines[4];
+        let spans = added_line
+            .highlighted_spans
+            .as_ref()
+            .expect("added line should be highlighted");
+        let unique_fgs: std::collections::HashSet<_> =
+            spans.iter().filter_map(|(s, _)| s.fg).collect();
+        assert!(
+            unique_fgs.len() > 1,
+            "code after the docstring's close should tokenize as real code \
+             (multiple fg colors for identifier/operator/number), not get \
+             swallowed into a single comment-colored span: {spans:?}"
+        );
+    }
+
+    /// A Python hunk that never mentions a triple-quote delimiter can't hit
+    /// the docstring/hunk-boundary bug, so it must not pay the full-file
+    /// fetch-and-highlight cost that every Python diff would otherwise pay.
+    #[test]
+    fn ordinary_python_hunk_does_not_need_full_file_highlight() {
+        use crate::model::diff_types::{DiffHunk, DiffLine, FileStatus, LineOrigin};
+
+        let path = PathBuf::from("plain.py");
+        let hunk = DiffHunk {
+            header: "@@ -1,2 +1,2 @@".to_string(),
+            lines: vec![
+                DiffLine {
+                    origin: LineOrigin::Deletion,
+                    content: "value = 1".to_string(),
+                    old_lineno: Some(1),
+                    new_lineno: None,
+                    highlighted_spans: None,
+                },
+                DiffLine {
+                    origin: LineOrigin::Addition,
+                    content: "value = 2".to_string(),
+                    old_lineno: None,
+                    new_lineno: Some(1),
+                    highlighted_spans: None,
+                },
+            ],
+            old_start: 1,
+            old_count: 1,
+            new_start: 1,
+            new_count: 1,
+        };
+        let file = DiffFile {
+            old_path: Some(path.clone()),
+            new_path: Some(path.clone()),
+            status: FileStatus::Modified,
+            hunks: vec![hunk],
+            is_binary: false,
+            is_too_large: false,
+            is_commit_message: false,
+            content_hash: 0,
+        };
+
+        assert!(
+            !file_needs_full_file_highlight(&file, &path),
+            "a Python hunk with no triple-quote delimiter must not trigger full-file highlight"
+        );
+        assert!(
+            container_file_paths(&[file], LineSide::New).is_empty(),
+            "such a file must not be queued for batched full-file fetch either"
+        );
     }
 
     fn synth_vue_file(idx: usize) -> (DiffFile, String, String) {
