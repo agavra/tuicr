@@ -320,7 +320,7 @@ A first-session cheatsheet. Press `?` inside tuicr for the full reference.
 | `y` | Copy review to clipboard |
 | `:edit` | Open focused file in `$EDITOR` |
 | `:submit` | Push review to GitHub, GitLab, Gitea, Bitbucket, Azure DevOps, or Gerrit |
-| `:theme` | Open a live-preview theme picker (`/` to filter); `:theme <name>` applies directly. Choice is saved to `config.toml` |
+| `:theme` | Open a live-preview theme picker (`/` to filter); `:theme <name>` applies directly. Session-only; set `theme` in `config.toml` to keep it |
 | `Tab` in `:` prompt | Complete or cycle commands |
 | `?` | Toggle full help |
 

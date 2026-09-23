@@ -2,7 +2,7 @@
 //! same shape as the file tree's `i`/`e`/`/` prompts (`app/file_filter.rs`).
 
 use super::*;
-use crate::config::{self, themes_dir};
+use crate::config::themes_dir;
 use crate::theme::{built_in_theme_names, list_local_theme_names, resolve_theme_name};
 
 impl App {
@@ -36,8 +36,8 @@ impl App {
         self.exit_theme_picker_mode();
     }
 
-    /// `Enter` on the picker itself: keep the currently previewed theme,
-    /// persist it to `config.toml`, and close.
+    /// `Enter` on the picker itself: keep the currently previewed theme for
+    /// this session and close.
     pub fn confirm_theme_picker(&mut self) {
         let name = self.theme_picker.selected_name().map(str::to_string);
         self.exit_theme_picker_mode();
@@ -45,7 +45,7 @@ impl App {
             self.set_warning("No theme selected");
             return;
         };
-        self.persist_theme_choice(&name);
+        self.announce_session_theme(&name);
         self.rehighlight_all_files();
     }
 
@@ -111,8 +111,8 @@ impl App {
         }
     }
 
-    /// Apply and persist `name` directly (`:theme <name>`, no picker).
-    pub fn apply_and_persist_theme(&mut self, name: &str) {
+    /// Apply `name` for this session directly (`:theme <name>`, no picker).
+    pub fn apply_theme(&mut self, name: &str) {
         let theme_dir = match themes_dir() {
             Ok(dir) => dir,
             Err(err) => {
@@ -126,7 +126,7 @@ impl App {
                 for warning in warnings {
                     self.set_warning(warning);
                 }
-                self.persist_theme_choice(name);
+                self.announce_session_theme(name);
                 self.rehighlight_all_files();
             }
             Ok(None) => {
@@ -141,17 +141,12 @@ impl App {
         }
     }
 
-    fn persist_theme_choice(&mut self, name: &str) {
-        match config::set_theme_in_config(name) {
-            Ok(()) => {
-                self.set_message(format!("Theme: {name}"));
-            }
-            Err(err) => {
-                self.set_warning(format!(
-                    "Theme applied for this session, but could not save to config.toml: {err}"
-                ));
-            }
-        }
+    /// Theme changes are session-only, like `:set`/`:wrap`; point the user at
+    /// the config key that makes the choice stick.
+    fn announce_session_theme(&mut self, name: &str) {
+        self.set_message(format!(
+            "Theme: {name} (this session; set theme = \"{name}\" in config.toml to keep it)"
+        ));
     }
 
     /// Re-derive `highlighted_spans` for the file currently on screen under
@@ -159,9 +154,7 @@ impl App {
     /// file's size, safe to call on every picker keystroke.
     ///
     /// `pub(crate)` (rather than private) so tests can exercise the
-    /// rehighlight scoping directly, without going through `confirm_theme_picker`
-    /// / `apply_and_persist_theme`, both of which write to the real user
-    /// config path.
+    /// rehighlight scoping directly.
     pub(crate) fn rehighlight_current_file(&mut self) {
         let highlighter = self.theme.syntax_highlighter();
         if let Some(file) = self.diff_files.get_mut(self.diff_state.current_file_idx) {

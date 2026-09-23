@@ -117,13 +117,6 @@ fn app_with_files(diff_files: Vec<DiffFile>) -> App {
     .expect("build app")
 }
 
-// NOTE: these tests deliberately never call `App::confirm_theme_picker` or
-// `App::apply_and_persist_theme` -- both call `config::set_theme_in_config`,
-// which resolves the *real* user config path (XDG/HOME/APPDATA) and would
-// write to the developer's actual `config.toml` if exercised here.
-// Persistence correctness is covered by the path-parameterized
-// `config::tests::set_theme_in_config_*` unit tests instead.
-
 #[test]
 fn entering_picker_populates_all_built_in_candidates_and_snapshots_original() {
     let mut app = app();
@@ -361,12 +354,8 @@ fn confirm_rehighlights_every_loaded_file_not_just_the_visible_one() {
     // already covers this) -- confirming must catch it up.
     assert_eq!(addition_bg(&app.diff_files[1]), Some(MARKER_BG));
 
-    // `confirm_theme_picker`/`apply_and_persist_theme` both write to the
-    // real user config path via `config::set_theme_in_config`, so tests call
-    // the underlying rehighlight step directly rather than going through
-    // `Action::SubmitInput`. Persistence itself is covered by the
-    // path-parameterized `config::tests::set_theme_in_config_*` tests.
-    app.rehighlight_all_files();
+    handle_theme_picker_action(&mut app, Action::SubmitInput);
+    assert_eq!(app.input_mode, InputMode::Normal);
 
     assert_eq!(addition_bg(&app.diff_files[0]), Some(chosen_syntax_add_bg));
     assert_eq!(addition_bg(&app.diff_files[1]), Some(chosen_syntax_add_bg));

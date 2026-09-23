@@ -664,7 +664,7 @@ pub fn handle_command_action(app: &mut App, action: Action) {
                 if name.is_empty() {
                     app.set_message(format!("Unknown command: {cmd}"));
                 } else {
-                    app.apply_and_persist_theme(name);
+                    app.apply_theme(name);
                 }
                 CommandAfterDispatch::ExitCommandMode
             } else {

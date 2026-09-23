@@ -189,7 +189,7 @@ Repository-managed agent integrations:
 - `Confirm` - Y/N confirmation dialog
 - `CommitSelect` - selecting commits to review
 - `VisualSelect` - visual mode for range comments
-- `ThemePicker` - runtime `:theme` picker (`src/app/theme_picker.rs`, `src/ui/theme_picker.rs`): `j`/`k` live-previews a theme by reassigning `App::theme` (cheap, no extra invalidation — every renderer reads `&app.theme` per frame); `/` opens a filter draft (same shape as the file tree's `i`/`e`/`/` prompts, committed on `Enter`, discarded on `Esc` without touching the applied filter); `Enter` on the picker keeps the preview and calls `config::set_theme_in_config` (a `toml_edit`-based edit that preserves comments/unrelated keys) — the only runtime command that persists to `config.toml`, unlike every other `:set`/`:vim`/`:wrap` toggle which is session-only; `Esc` on the picker reverts to a `Theme` snapshot taken on entry (`Theme` has a manual `Clone` impl since its `OnceLock` syntax-highlighter cache isn't `Clone`) and does not touch the config file. `:theme <name>` applies and persists directly without opening the picker.
+- `ThemePicker` - runtime `:theme` picker (`src/app/theme_picker.rs`, `src/ui/theme_picker.rs`): `j`/`k` live-previews a theme by reassigning `App::theme` (cheap, no extra invalidation — every renderer reads `&app.theme` per frame); `/` opens a filter draft (same shape as the file tree's `i`/`e`/`/` prompts, committed on `Enter`, discarded on `Esc` without touching the applied filter); `Enter` on the picker keeps the preview for the session — like every other `:set`/`:vim`/`:wrap` toggle it never writes `config.toml`; `Esc` on the picker reverts to a `Theme` snapshot taken on entry (`Theme` has a manual `Clone` impl since its `OnceLock` syntax-highlighter cache isn't `Clone`) `:theme <name>` applies directly without opening the picker.
 
 **ReviewSession** (`src/model/review.rs`):
 
@@ -240,7 +240,6 @@ Repository-managed agent integrations:
 - `sha2` + `flate2` + `tar` + `zip`: Verified direct-binary updates and release extraction
 - `self-replace` + `tempfile`: Guarded staging and cross-platform executable swaps
 - `toml`: User config parsing
-- `toml_edit`: Comment-preserving `config.toml` rewrites (`:theme` persistence)
 - `arboard`: Clipboard access
 - `ignore`: Gitignore-style matcher for `.tuicrignore`
 - `chrono`: Timestamps

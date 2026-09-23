@@ -260,9 +260,9 @@ The theme picker lists every bundled theme plus any local `*.toml` themes in the
 `j`/`k` move the selection and immediately repaint the UI with that theme (live preview) without
 saving anything. `/` opens a filter prompt — type to narrow the list by substring, `Enter` applies
 the filter and returns to navigation, `Esc` discards the filter edit without changing the list.
-`Enter` on the picker itself keeps the currently previewed theme and writes it to `config.toml`
-(`theme = "<name>"`), leaving other keys and comments untouched. `Esc` on the picker reverts the
-preview to whatever theme was active before it opened and closes without touching the config file.
+`Enter` on the picker itself keeps the currently previewed theme for the rest of the session. Like
+other `:` toggles, the choice is not written to `config.toml`; set `theme = "<name>"` there to keep
+it. `Esc` on the picker reverts the preview to whatever theme was active before it opened.
 
 Not every forge supports every event:
 

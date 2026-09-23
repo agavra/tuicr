@@ -376,51 +376,6 @@ pub fn load_config() -> Result<ConfigLoadOutcome> {
     load_config_from_path(&path)
 }
 
-/// Persist the runtime-selected theme name back to the user's `config.toml`.
-///
-/// Uses `toml_edit` so any existing comments, formatting, and unrelated keys
-/// survive untouched -- only the top-level `theme` key is inserted or
-/// replaced. If `theme_dark`/`theme_light`/`appearance` are also set in the
-/// file, they take precedence over `theme` on next launch (same precedence
-/// as `resolve_theme_with_config`); callers should warn the user about that
-/// rather than silently overwriting those keys too.
-pub fn set_theme_in_config(name: &str) -> Result<()> {
-    let path = config_path()?;
-    set_theme_in_config_at_path(&path, name)
-}
-
-fn set_theme_in_config_at_path(path: &Path, name: &str) -> Result<()> {
-    let existing = match fs::read_to_string(path) {
-        Ok(contents) => contents,
-        Err(err) if err.kind() == ErrorKind::NotFound => String::new(),
-        Err(err) => return Err(err.into()),
-    };
-
-    let mut doc = existing
-        .parse::<toml_edit::DocumentMut>()
-        .map_err(|err| anyhow!("Could not parse {}: {err}", path.display()))?;
-    doc["theme"] = toml_edit::value(name);
-
-    write_config_atomic(path, doc.to_string().as_bytes())
-}
-
-fn write_config_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| anyhow!("config path has no parent: {}", path.display()))?;
-    fs::create_dir_all(parent)?;
-
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("config.toml");
-    let tmp_path = parent.join(format!(".{file_name}.{}.tmp", uuid::Uuid::new_v4()));
-
-    fs::write(&tmp_path, bytes)?;
-    fs::rename(&tmp_path, path)?;
-    Ok(())
-}
-
 /// Read a string value from the table, pushing a warning if the type is wrong.
 fn read_string(table: &toml::Table, key: &str, warnings: &mut Vec<String>) -> Option<String> {
     let val = table.get(key)?;
@@ -997,47 +952,6 @@ mod tests {
         let outcome = load_config_from_path(&path).expect("missing config should not fail");
         assert_eq!(outcome.config, None);
         assert!(outcome.warnings.is_empty());
-    }
-
-    #[test]
-    fn set_theme_in_config_creates_file_when_missing() {
-        let dir = tempdir().expect("failed to create temp dir");
-        let path = dir.path().join("nested").join("config.toml");
-        set_theme_in_config_at_path(&path, "gruvbox-dark").expect("write should succeed");
-
-        let contents = fs::read_to_string(&path).expect("config file should exist");
-        assert!(contents.contains("theme = \"gruvbox-dark\""));
-    }
-
-    #[test]
-    fn set_theme_in_config_preserves_comments_and_unrelated_keys() {
-        let dir = tempdir().expect("failed to create temp dir");
-        let path = dir.path().join("config.toml");
-        fs::write(
-            &path,
-            "# leading comment\ntheme = \"dark\" # inline comment\nleader = \";\"\n",
-        )
-        .expect("failed to write config");
-
-        set_theme_in_config_at_path(&path, "nord-dark").expect("write should succeed");
-
-        let contents = fs::read_to_string(&path).expect("config file should exist");
-        assert!(contents.contains("# leading comment"));
-        assert!(contents.contains("theme = \"nord-dark\""));
-        assert!(contents.contains("leader = \";\""));
-    }
-
-    #[test]
-    fn set_theme_in_config_inserts_key_when_absent() {
-        let dir = tempdir().expect("failed to create temp dir");
-        let path = dir.path().join("config.toml");
-        fs::write(&path, "leader = \";\"\n").expect("failed to write config");
-
-        set_theme_in_config_at_path(&path, "onedark").expect("write should succeed");
-
-        let contents = fs::read_to_string(&path).expect("config file should exist");
-        assert!(contents.contains("theme = \"onedark\""));
-        assert!(contents.contains("leader = \";\""));
     }
 
     #[test]
