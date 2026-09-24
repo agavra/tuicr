@@ -514,6 +514,7 @@ impl App {
             overlay_return_mode: InputMode::Normal,
             comment_buffer: String::new(),
             comment_cursor: 0,
+            comment_preferred_column: None,
             comment_vim_enabled: false,
             q_quits: false,
             comment_tab_width: 4,

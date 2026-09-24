@@ -617,6 +617,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         comment_mode_row("Enter", "Save comment"),
         comment_mode_row("Ctrl-S", "Save comment"),
         comment_mode_row("Shift-Enter/Alt-Enter/Ctrl-J", "Insert newline"),
+        comment_mode_row("Up/Down", "Previous/next displayed row (default editor)"),
         comment_mode_row("Ctrl-A/E", "Line start/end"),
         comment_mode_row("Ctrl/Alt-Left/Right", "Word left/right"),
         comment_mode_row("Cmd-Left/Right", "Line start/end (macOS)"),
