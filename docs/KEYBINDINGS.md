@@ -175,10 +175,16 @@ from the checkout, never copied.
 | `Tab` / `Shift-Tab` | Cycle comment type forward / backward (per `comment_types` order) |
 | `Enter` / `Ctrl-Enter` / `Ctrl-s` | Save comment |
 | `Shift-Enter` / `Ctrl-j` | Insert newline |
-| `←` / `→` | Move cursor |
+| `←` / `→` | Move cursor left / right |
+| `↑` / `↓` | Move cursor up / down one displayed row (default editor) |
 | `Ctrl-w` / `Alt-Backspace` / `Cmd-Backspace` | Delete word |
 | `Ctrl-u` | Clear line |
 | `Esc` / `Ctrl-c` | Cancel |
+
+In the default editor, Up/Down move through wrapped rows and explicit newlines.
+The cursor keeps its column where possible and restores it after crossing a
+shorter row. Horizontal movement or editing sets the column for subsequent
+vertical movement. Up/Down stop at the first or last row.
 
 With `comment_vim = true` the box uses [`edtui`](https://github.com/preiter93/edtui)
 modal editing (Normal/Insert/Visual: `hjkl`, `w`/`b`/`e`, `dd`/`D`/`ciw`/`x`,

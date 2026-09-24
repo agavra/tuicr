@@ -324,6 +324,9 @@ A first-session cheatsheet. Press `?` inside tuicr for the full reference.
 | `Tab` in `:` prompt | Complete or cycle commands |
 | `?` | Toggle full help |
 
+While composing a comment in the default editor, `↑` / `↓` move one displayed row,
+including wrapped rows, preserving the column where possible.
+
 Full reference in [docs/KEYBINDINGS.md](docs/KEYBINDINGS.md).
 
 ## Sponsors
