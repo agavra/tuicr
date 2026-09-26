@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{Result, TuicrError};
 use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin};
-use crate::syntax::{SyntaxHighlighter, needs_full_file_highlight};
+use crate::syntax::SyntaxHighlighter;
 use crate::vcs::traits::{
     ChangeKind, DiffWhitespaceMode, ResolvedRevisionRange, RevisionDiffTarget,
 };
@@ -374,8 +374,8 @@ fn parse_diff(diff: &Diff, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFi
 fn parse_hunks(
     diff: &Diff,
     delta_idx: usize,
-    highlighter: &SyntaxHighlighter,
-    file_path: Option<&Path>,
+    _highlighter: &SyntaxHighlighter,
+    _file_path: Option<&Path>,
 ) -> Result<Vec<DiffHunk>> {
     let mut hunks: Vec<DiffHunk> = Vec::new();
 
@@ -413,37 +413,17 @@ fn parse_hunks(
                 line_numbers.push((line.old_lineno(), line.new_lineno()));
             }
 
-            let sequences =
-                SyntaxHighlighter::split_diff_lines_for_highlighting(&line_contents, &line_origins);
-            // Container grammars skip per-hunk highlighting; the full-file
-            // post-pass overwrites these spans anyway.
-            let (old_highlighted, new_highlighted) = match file_path {
-                Some(path) if !needs_full_file_highlight(path) => (
-                    highlighter.highlight_file_lines(path, &sequences.old_lines),
-                    highlighter.highlight_file_lines(path, &sequences.new_lines),
-                ),
-                _ => (None, None),
-            };
-
             let mut lines: Vec<DiffLine> = Vec::with_capacity(line_contents.len());
             for (idx, content) in line_contents.into_iter().enumerate() {
                 let origin = line_origins[idx];
                 let (old_lineno, new_lineno) = line_numbers[idx];
-
-                let highlighted_spans = highlighter.highlighted_line_for_diff_with_background(
-                    old_highlighted.as_deref(),
-                    new_highlighted.as_deref(),
-                    sequences.old_line_indices[idx],
-                    sequences.new_line_indices[idx],
-                    origin,
-                );
 
                 lines.push(DiffLine {
                     origin,
                     content,
                     old_lineno,
                     new_lineno,
-                    highlighted_spans,
+                    highlighted_spans: None,
                 });
             }
 

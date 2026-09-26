@@ -69,7 +69,7 @@ fn line(idx: usize) -> DiffLine {
     }
 }
 
-fn file(path: &str, lines_per_file: usize) -> DiffFile {
+pub(in crate::app) fn file(path: &str, lines_per_file: usize) -> DiffFile {
     let lines: Vec<DiffLine> = (0..lines_per_file).map(line).collect();
     let hunks = vec![DiffHunk {
         header: format!("@@ -1,{lines_per_file} +1,{lines_per_file} @@"),
@@ -92,7 +92,7 @@ fn file(path: &str, lines_per_file: usize) -> DiffFile {
     }
 }
 
-fn app_with(files: Vec<DiffFile>) -> App {
+pub(in crate::app) fn app_with(files: Vec<DiffFile>) -> App {
     let vcs_info = VcsInfo {
         root_path: PathBuf::from("/tmp"),
         head_commit: "head".into(),

@@ -157,7 +157,7 @@ impl FileBackend {
 
     fn build_diff_file_for_path(
         &self,
-        highlighter: &SyntaxHighlighter,
+        _highlighter: &SyntaxHighlighter,
         abs_path: &Path,
         file_size: u64,
     ) -> Option<DiffFile> {
@@ -200,28 +200,12 @@ impl FileBackend {
             FileMode::Single | FileMode::Directory => LineOrigin::Addition,
         };
 
-        // Build line contents and origins for syntax highlighting
         let line_contents: Vec<String> = lines.iter().map(|l| super::tabify(l)).collect();
-        let line_origins: Vec<LineOrigin> = vec![render_origin; line_contents.len()];
-
-        // Apply syntax highlighting
-        let highlight_sequences =
-            SyntaxHighlighter::split_diff_lines_for_highlighting(&line_contents, &line_origins);
-        let new_highlighted_lines =
-            highlighter.highlight_file_lines(abs_path, &highlight_sequences.new_lines);
 
         // Build DiffLines
         let mut diff_lines = Vec::with_capacity(lines.len());
         for (i, content) in line_contents.iter().enumerate() {
             let line_num = (i + 1) as u32;
-
-            let highlighted_spans = highlighter.highlighted_line_for_diff_with_background(
-                None,
-                new_highlighted_lines.as_deref(),
-                None,
-                highlight_sequences.new_line_indices[i],
-                render_origin,
-            );
 
             // Pristine context lines need both old_lineno and new_lineno
             // populated so the side-by-side and unified renderers walk the
@@ -236,7 +220,7 @@ impl FileBackend {
                 content: content.clone(),
                 old_lineno,
                 new_lineno: Some(line_num),
-                highlighted_spans,
+                highlighted_spans: None,
             });
         }
 
