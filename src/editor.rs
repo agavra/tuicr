@@ -818,7 +818,7 @@ mod tests {
 
     #[test]
     fn a_launcher_suffix_does_not_hide_the_editor_family() {
-        let installed = [std::path::MAIN_SEPARATOR, "code.cmd"].concat();
+        let installed = format!("{}code.cmd", std::path::MAIN_SEPARATOR);
         for editor in ["code", "code.cmd", "code.exe", installed.as_str()] {
             let command = EditorCommand::from_editor(editor, &target(Some(42)));
             assert_eq!(args(&command), vec!["--goto", "/repo/src/main.rs:42"]);
