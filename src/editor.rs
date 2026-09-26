@@ -431,7 +431,7 @@ fn pathext_candidates(pathext: Option<&str>) -> Vec<String> {
 fn is_batch_file(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension_is(BATCH_EXTENSIONS, extension))
+        .is_some_and(|extension| extension_is(&BATCH_EXTENSIONS, extension))
 }
 
 /// Whether this name already carries a suffix Windows treats as executable.
@@ -439,7 +439,7 @@ fn is_executable_file_name(name: &str) -> bool {
     Path::new(name)
         .extension()
         .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension_is(EXECUTABLE_EXTENSIONS, extension))
+        .is_some_and(|extension| extension_is(&EXECUTABLE_EXTENSIONS, extension))
 }
 
 fn extension_is(extensions: &[&str], extension: &str) -> bool {
@@ -463,7 +463,7 @@ fn program_stem(program: &str) -> &str {
     let Some((stem, extension)) = name.rsplit_once('.') else {
         return name;
     };
-    if stem.is_empty() || !extension_is(EXECUTABLE_EXTENSIONS, extension) {
+    if stem.is_empty() || !extension_is(&EXECUTABLE_EXTENSIONS, extension) {
         return name;
     }
     stem
