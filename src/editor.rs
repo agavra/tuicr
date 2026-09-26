@@ -384,7 +384,9 @@ fn launch_command(resolved: &ResolvedProgram, args: &[OsString]) -> (OsString, V
 fn is_bare_command_name(program: &str) -> bool {
     !program.is_empty()
         && !program.contains(['/', '\\'])
-        && Path::new(program).file_name().is_some_and(|name| name == program)
+        && Path::new(program)
+            .file_name()
+            .is_some_and(|name| name == program)
 }
 
 /// The first file on the search path that can serve as `program`.
@@ -783,7 +785,10 @@ mod tests {
         let (program, argv) = launch_spec_for("code", &search_path, Some(".EXE;.CMD"));
         let exe = dir.path().join("code.exe").to_string_lossy().into_owned();
         assert_eq!(program, exe);
-        assert_eq!(argv, vec!["--goto".to_string(), "/repo/src/main.rs:42".to_string()]);
+        assert_eq!(
+            argv,
+            vec!["--goto".to_string(), "/repo/src/main.rs:42".to_string()]
+        );
     }
 
     #[test]
@@ -791,7 +796,10 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let (program, argv) = launch_spec_for("code", &[dir.path().to_path_buf()], Some(".CMD"));
         assert_eq!(program, "code");
-        assert_eq!(argv, vec!["--goto".to_string(), "/repo/src/main.rs:42".to_string()]);
+        assert_eq!(
+            argv,
+            vec!["--goto".to_string(), "/repo/src/main.rs:42".to_string()]
+        );
     }
 
     #[test]
