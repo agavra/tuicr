@@ -705,7 +705,7 @@ mod tests {
         let range = backend
             .resolve_revision_range(&format!("{first}..{second}"))
             .unwrap();
-        assert_eq!(range.commit_ids.as_ref(), &[second.clone()]);
+        assert_eq!(range.commit_ids.as_ref(), std::slice::from_ref(&second));
         assert_eq!(
             backend
                 .get_commits_info(&[first.clone(), second.clone()])
