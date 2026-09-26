@@ -160,7 +160,7 @@ impl GitBackend {
         Self::discover_from(&cwd, preference, whitespace_mode)
     }
 
-    fn discover_from(
+    pub(crate) fn discover_from(
         cwd: &Path,
         preference: GitBackendPreference,
         whitespace_mode: DiffWhitespaceMode,
@@ -705,7 +705,7 @@ mod tests {
         let range = backend
             .resolve_revision_range(&format!("{first}..{second}"))
             .unwrap();
-        assert_eq!(range.commit_ids.as_ref(), &[second.clone()]);
+        assert_eq!(range.commit_ids.as_ref(), std::slice::from_ref(&second));
         assert_eq!(
             backend
                 .get_commits_info(&[first.clone(), second.clone()])

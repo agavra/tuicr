@@ -1388,6 +1388,10 @@ pub struct App {
     pub file_line_count_cache: HashMap<usize, u32>,
     /// Cached annotations describing what each rendered line represents
     pub line_annotations: Vec<AnnotatedLine>,
+    /// Hunks `color_visible_hunks` already visited, as `(file_idx, hunk_idx)`
+    /// so that they aren't re-colored.
+    /// Cleared by `rebuild_annotations`, which runs whenever the diff is replaced.
+    pub colored_hunks: HashSet<(usize, usize)>,
     /// Output to stdout instead of clipboard when exporting
     pub output_to_stdout: bool,
     /// Pending output to print to stdout after TUI exits
@@ -1861,6 +1865,7 @@ impl AppStartupOptions<'_> {
 }
 
 mod annotations;
+mod coloring;
 mod comment_vim;
 mod comments;
 mod commits;
