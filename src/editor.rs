@@ -813,7 +813,7 @@ mod tests {
 
     #[test]
     fn an_unset_pathext_falls_back_to_the_windows_default() {
-        assert_eq!(pathext_candidates(None), ["com", "exe", "bat", "cmd"]);
+        assert_eq!(pathext_candidates(None), [".com", ".exe", ".bat", ".cmd"]);
     }
 
     #[test]
