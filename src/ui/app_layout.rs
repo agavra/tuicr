@@ -17,6 +17,10 @@ const COMMENT_NAVIGATOR_MIN_HEIGHT: u16 = 4;
 const COMMENT_NAVIGATOR_MAX_HEIGHT: u16 = 12;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
+    // Color what this frame shows before any line is built; see
+    // `App::color_visible_hunks`.
+    app.color_visible_hunks(frame.area().height as usize);
+
     frame.render_widget(
         Block::default().style(styles::panel_style(&app.theme)),
         frame.area(),
