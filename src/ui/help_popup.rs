@@ -258,6 +258,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                format!("  {leader}n        "),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Toggle relative line numbers (also `:set relativenumber!`)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  h/l       ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
