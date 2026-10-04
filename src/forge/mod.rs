@@ -186,6 +186,8 @@ pub fn detect_forge_repository(repo_root: &Path) -> Option<ForgeRepository> {
         if let Some(repository) = parse_bitbucket_remote_url(url)
             .or_else(|| parse_gitlab_remote_url(url))
             .or_else(|| parse_azure_remote_url(url))
+            .or_else(|| parse_gitea_remote_url(url))
+            .or_else(|| parse_gerrit_remote_url(url))
         {
             return Some(repository);
         }
