@@ -133,18 +133,21 @@ pub fn detect_azure_repository(repo_root: &Path) -> Option<ForgeRepository> {
 ///
 /// Order matters. Bitbucket and GitLab both gate on the hostname, so trying
 /// them first won't claim GitHub Enterprise remotes. Azure next — its parser
-/// filters to `dev.azure.com` / `*.visualstudio.com` hosts. Gitea then, which
-/// recognizes its own public hosts by name and self-hosted ones through the
-/// logins configured in `tea`. Gerrit follows: it is always self-hosted, so it
-/// gates on the canonical SSH port `29418`, a configured `GERRIT_URL`, or a
-/// hostname containing "gerrit". GitHub must stay last because its parser
-/// accepts *any* host (covers github.com and GHE hosts whose hostname does not
-/// literally contain "github") — it would otherwise swallow every Bitbucket,
-/// self-hosted GitLab, Gitea, Azure, and Gerrit remote.
+/// filters to `dev.azure.com` / `*.visualstudio.com` hosts. Known Forgejo and
+/// Codeberg hosts come before Gitea so Forgejo remotes do not fall through to
+/// a Gitea-compatible CLI path. Gitea recognizes its own public hosts by name
+/// and self-hosted ones through the logins configured in `tea`. Gerrit follows:
+/// it is always self-hosted, so it gates on the canonical SSH port `29418`, a
+/// configured `GERRIT_URL`, or a hostname containing "gerrit". GitHub must stay
+/// last because its parser accepts *any* host (covers github.com and GHE hosts
+/// whose hostname does not literally contain "github") — it would otherwise
+/// swallow every Bitbucket, self-hosted GitLab, Forgejo, Gitea, Azure, and
+/// Gerrit remote.
 pub fn parse_any_remote_url(url: &str) -> Option<ForgeRepository> {
     parse_bitbucket_remote_url(url)
         .or_else(|| parse_gitlab_remote_url(url))
         .or_else(|| parse_azure_remote_url(url))
+        .or_else(|| parse_known_forgejo_remote_url(url))
         .or_else(|| parse_gitea_remote_url(url))
         .or_else(|| parse_gerrit_remote_url(url))
         .or_else(|| parse_github_remote_url(url))
@@ -164,11 +167,15 @@ pub fn parse_any_remote_url(url: &str) -> Option<ForgeRepository> {
 /// two; letting it claim unknown hosts would turn
 /// `code.example.com/git/owner/repo` into `git/owner`. Bitbucket is left out
 /// because a workspace is always one segment, so the fallback already agrees
-/// with it. Gerrit is included: its project path can be any depth, so the
-/// last-two-segments rule would mis-split `gerrit.example.com/platform/frameworks/base`,
-/// and its parser only reads the URL plus one env var.
+/// with it. Known Forgejo/Codeberg hosts are included because they are parsed
+/// without subprocesses or SSH config reads. Gerrit is included: its project
+/// path can be any depth, so the last-two-segments rule would mis-split
+/// `gerrit.example.com/platform/frameworks/base`, and its parser only reads
+/// the URL plus one env var.
 pub fn parse_any_remote_url_by_hostname(url: &str) -> Option<ForgeRepository> {
-    parse_azure_remote_url(url).or_else(|| parse_gerrit_remote_url(url))
+    parse_azure_remote_url(url)
+        .or_else(|| parse_known_forgejo_remote_url(url))
+        .or_else(|| parse_gerrit_remote_url(url))
 }
 
 /// Detect the forge repository for the local checkout at `repo_root`.
@@ -183,15 +190,15 @@ pub fn detect_forge_repository(repo_root: &Path) -> Option<ForgeRepository> {
             return Some(repository);
         }
     }
-    for (_, url) in named_remote_urls(repo_root) {
-        if parse_github_remote_url(&url).is_some_and(|repository| repository.host != "github.com")
-            && let Some(repository) = parse_forgejo_remote_url(&url)
-            && fj_has_login_for_host(&repository.host)
+    for (name, url) in named_remote_urls(repo_root) {
+        if let Some(repository) = parse_forgejo_remote_url(&url)
+            && repository.host != "github.com"
+            && should_treat_remote_as_forgejo(&name, &url, &repository)
         {
             return Some(repository);
         }
     }
-    urls.iter().find_map(|url| parse_github_remote_url(url))
+    github_fallback_repository(&urls)
 }
 
 /// Resolve a VCS remote to a supported forge repository.
@@ -210,10 +217,9 @@ pub fn resolve_remote_repository(vcs: &dyn VcsBackend, name: &str) -> Result<For
 /// necessarily `origin` — matches `target_repo`.
 pub fn local_checkout_for_repo(root: &Path, target_repo: &ForgeRepository) -> Option<PathBuf> {
     if target_repo.kind == crate::forge::traits::ForgeKind::Forgejo
-        && named_remote_urls(root).iter().any(|(_, url)| {
-            parse_github_remote_url(url).is_some_and(|repository| repository.host != "github.com")
-                && parse_forgejo_remote_url(url).as_ref() == Some(target_repo)
-                && fj_has_login_for_host(&target_repo.host)
+        && named_remote_urls(root).iter().any(|(name, url)| {
+            parse_forgejo_remote_url(url).as_ref() == Some(target_repo)
+                && should_treat_remote_as_forgejo(name, url, target_repo)
         })
     {
         return Some(root.to_path_buf());
@@ -226,6 +232,92 @@ pub fn local_checkout_for_repo(root: &Path, target_repo: &ForgeRepository) -> Op
 
 fn fj_has_login_for_host(host: &str) -> bool {
     fj_keys().is_some_and(|keys| keys.hosts.contains_key(host))
+}
+
+fn parse_known_forgejo_remote_url(url: &str) -> Option<ForgeRepository> {
+    let repository = parse_forgejo_remote_url(url)?;
+    is_known_forgejo_remote(url, &repository).then_some(repository)
+}
+
+fn should_treat_remote_as_forgejo(name: &str, url: &str, repository: &ForgeRepository) -> bool {
+    is_known_forgejo_remote(url, repository)
+        || is_known_forgejo_remote_name(name)
+        || fj_has_login_for_host(&repository.host)
+        || remote_url_host(url).is_some_and(|host| fj_has_login_for_host(&host))
+}
+
+fn is_known_forgejo_remote(url: &str, repository: &ForgeRepository) -> bool {
+    is_known_forgejo_host(&repository.host)
+        || remote_url_host(url).is_some_and(|host| is_known_forgejo_host(&host))
+}
+
+fn is_known_forgejo_host(host: &str) -> bool {
+    let host = host.to_ascii_lowercase();
+    host == "codeberg.org" || host.contains("forgejo")
+}
+
+fn is_known_forgejo_remote_name(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    name == "forgejo" || name == "codeberg" || name.contains("forgejo")
+}
+
+fn github_fallback_repository(urls: &[String]) -> Option<ForgeRepository> {
+    urls.iter()
+        .filter_map(|url| parse_github_remote_url(url))
+        .find(|repository| repository.host == "github.com")
+        .or_else(|| {
+            urls.iter()
+                .filter_map(|url| parse_github_remote_url(url))
+                .find(|repository| repository.host.contains("github"))
+        })
+        .or_else(|| urls.iter().find_map(|url| parse_github_remote_url(url)))
+}
+
+fn remote_url_host(remote_url: &str) -> Option<String> {
+    let trimmed = remote_url
+        .trim()
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(remote_url)
+        .trim_end_matches('/');
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if !trimmed.contains("://")
+        && let Some((host_part, path)) = trimmed.split_once(':')
+        && !host_part.contains('/')
+        && !path.is_empty()
+    {
+        return Some(strip_remote_user_and_port(host_part).to_string());
+    }
+
+    let without_scheme = trimmed
+        .strip_prefix("https://")
+        .or_else(|| trimmed.strip_prefix("http://"))
+        .or_else(|| trimmed.strip_prefix("ssh://"))
+        .unwrap_or(trimmed);
+    let without_user = without_scheme
+        .rsplit_once('@')
+        .map(|(_, rest)| rest)
+        .unwrap_or(without_scheme);
+    let host = without_user.split('/').next()?.trim();
+    if host.is_empty() {
+        None
+    } else {
+        Some(strip_remote_user_and_port(host).to_string())
+    }
+}
+
+fn strip_remote_user_and_port(value: &str) -> &str {
+    let host = value
+        .rsplit_once('@')
+        .map(|(_, host)| host)
+        .unwrap_or(value);
+    match host.rsplit_once(':') {
+        Some((host, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => host,
+        _ => host,
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -256,6 +348,80 @@ mod tests {
         assert_eq!(
             detect_forge_repository(dir.path()),
             Some(ForgeRepository::github("github.com", "agavra", "tuicr"))
+        );
+    }
+
+    #[test]
+    fn detects_forgejo_repository_from_forgejo_host() {
+        let dir = init_repo_with_origin("https://forgejo.example.test/team/service.git");
+        assert_eq!(
+            detect_forge_repository(dir.path()),
+            Some(ForgeRepository::forgejo(
+                "forgejo.example.test",
+                "team",
+                "service"
+            ))
+        );
+    }
+
+    #[test]
+    fn detects_forgejo_repository_from_codeberg_host() {
+        let dir = init_repo_with_origin("https://codeberg.org/team/service.git");
+        assert_eq!(
+            detect_forge_repository(dir.path()),
+            Some(ForgeRepository::forgejo("codeberg.org", "team", "service"))
+        );
+    }
+
+    #[test]
+    fn detects_forgejo_repository_from_ssh_alias_name() {
+        let dir = init_repo_with_origin("git@forgejo-test:team/service.git");
+        assert_eq!(
+            detect_forge_repository(dir.path()),
+            Some(ForgeRepository::forgejo("forgejo-test", "team", "service"))
+        );
+    }
+
+    #[test]
+    fn detects_forgejo_repository_from_named_remote_before_github_origin() {
+        let dir = init_repo_with_origin("https://github.com/team/service.git");
+        let repo = Repository::open(dir.path()).expect("open repo");
+        repo.remote("forgejo", "https://git-dev.example.test/team/service.git")
+            .expect("add forgejo remote");
+
+        assert_eq!(
+            detect_forge_repository(dir.path()),
+            Some(ForgeRepository::forgejo(
+                "git-dev.example.test",
+                "team",
+                "service"
+            ))
+        );
+    }
+
+    #[test]
+    fn github_fallback_prefers_github_com_over_unknown_origin() {
+        let dir = init_repo_with_origin("https://git.example.test/team/service.git");
+        let repo = Repository::open(dir.path()).expect("open repo");
+        repo.remote("github", "https://github.com/team/service.git")
+            .expect("add github remote");
+
+        assert_eq!(
+            detect_forge_repository(dir.path()),
+            Some(ForgeRepository::github("github.com", "team", "service"))
+        );
+    }
+
+    #[test]
+    fn github_fallback_keeps_enterprise_when_no_known_remote_exists() {
+        let dir = init_repo_with_origin("https://ghe.internal.example/team/service.git");
+        assert_eq!(
+            detect_forge_repository(dir.path()),
+            Some(ForgeRepository::github(
+                "ghe.internal.example",
+                "team",
+                "service"
+            ))
         );
     }
 

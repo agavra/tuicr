@@ -76,8 +76,10 @@ struct ForgejoPullRequest {
     #[serde(default)]
     state: String,
     user: Option<ForgejoUser>,
-    #[serde(default, alias = "html_url")]
+    #[serde(default)]
     url: String,
+    #[serde(default)]
+    html_url: String,
     head: ForgejoBranch,
     base: ForgejoBranch,
     #[serde(default)]
@@ -93,8 +95,17 @@ struct ForgejoPullRequest {
 }
 
 impl ForgejoPullRequest {
+    fn display_url(&self) -> String {
+        if self.html_url.is_empty() {
+            self.url.clone()
+        } else {
+            self.html_url.clone()
+        }
+    }
+
     /// Convert Forgejo's pull-request API response into Tuicr's neutral model.
     fn into_summary(self, repository: &ForgeRepository) -> PullRequestSummary {
+        let url = self.display_url();
         PullRequestSummary {
             repository: repository.clone(),
             number: self.number,
@@ -103,18 +114,19 @@ impl ForgejoPullRequest {
             head_ref_name: self.head.r#ref,
             base_ref_name: self.base.r#ref,
             updated_at: self.updated,
-            url: self.url,
+            url,
             state: self.state,
             is_draft: self.draft,
         }
     }
 
     fn into_details(self, repository: &ForgeRepository) -> PullRequestDetails {
+        let url = self.display_url();
         PullRequestDetails {
             repository: repository.clone(),
             number: self.number,
             title: self.title,
-            url: self.url,
+            url,
             state: self.state.clone(),
             is_draft: self.draft,
             author: self.user.map(|user| user.login),
@@ -913,6 +925,13 @@ pub fn parse_github_remote_url(remote_url: &str) -> Option<ForgeRepository> {
         return repository_from_path(&resolved, path);
     }
 
+    if let Some(rest) = trimmed.strip_prefix("ssh://") {
+        let without_user = rest.rsplit_once('@').map(|(_, rest)| rest).unwrap_or(rest);
+        let (host, path) = without_user.split_once('/')?;
+        let resolved = resolve_ssh_hostname(strip_port(host));
+        return repository_from_path(&resolved, path);
+    }
+
     let without_scheme = strip_scheme(trimmed).unwrap_or(trimmed);
     let without_user = without_scheme
         .rsplit_once('@')
@@ -925,7 +944,32 @@ pub fn parse_github_remote_url(remote_url: &str) -> Option<ForgeRepository> {
 /// Parse a Git remote into a Forgejo repository after the caller has decided
 /// the host should be treated as Forgejo.
 pub fn parse_forgejo_remote_url(remote_url: &str) -> Option<ForgeRepository> {
-    let repository = parse_github_remote_url(remote_url)?;
+    let trimmed = trim_url_suffix(remote_url.trim());
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if let Some((host, path)) = parse_scp_like_remote(trimmed) {
+        return forgejo_repository_from_path(host, path);
+    }
+
+    if let Some(rest) = trimmed.strip_prefix("ssh://") {
+        let without_user = rest.rsplit_once('@').map(|(_, rest)| rest).unwrap_or(rest);
+        let (host, path) = without_user.split_once('/')?;
+        return forgejo_repository_from_path(strip_port(host), path);
+    }
+
+    let without_scheme = strip_scheme(trimmed).unwrap_or(trimmed);
+    let without_user = without_scheme
+        .rsplit_once('@')
+        .map(|(_, rest)| rest)
+        .unwrap_or(without_scheme);
+    let (host, path) = without_user.split_once('/')?;
+    forgejo_repository_from_path(strip_port(host), path)
+}
+
+fn forgejo_repository_from_path(host: &str, path: &str) -> Option<ForgeRepository> {
+    let repository = repository_from_path(host, path)?;
     Some(ForgeRepository::forgejo(
         repository.host,
         repository.owner,
@@ -1179,49 +1223,54 @@ fn map_gh_error(error: GhCommandError, host: &str) -> TuicrError {
 }
 
 fn forgejo_api_get(repository: &ForgeRepository, endpoint: &str) -> Result<String> {
-    let url = format!("https://{}/api/v1{}", repository.host, endpoint);
     let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(30)))
+        .timeout_global(Some(std::time::Duration::from_secs(4)))
         .http_status_as_error(false)
         .build()
         .into();
 
-    let mut request = agent.get(&url);
-    if endpoint.ends_with(".diff") {
-        request = request.header("Accept", "application/vnd.github.diff");
-    }
-    if let Some(token) = fj_token_for_host(&repository.host) {
-        request = request.header("Authorization", &format!("token {token}"));
+    let mut errors = Vec::new();
+    for base_url in forgejo_api_base_urls(&repository.host) {
+        let url = format!("{}/api/v1{}", base_url.trim_end_matches('/'), endpoint);
+        let mut request = agent.get(&url);
+        if endpoint.ends_with(".diff") {
+            request = request.header("Accept", "application/vnd.github.diff");
+        }
+        if let Some(token) = fj_token_for_api_base(&repository.host, &base_url) {
+            request = request.header("Authorization", &format!("token {token}"));
+        }
+
+        let response = match request.call() {
+            Ok(response) => response,
+            Err(err) => {
+                errors.push(format!("{base_url}: {err}"));
+                continue;
+            }
+        };
+        let status = response.status().as_u16();
+        let body = response.into_body().read_to_string().map_err(|err| {
+            TuicrError::Forge(format!(
+                "Forgejo response from {base_url} could not be read: {err}"
+            ))
+        })?;
+
+        if (200..300).contains(&status) {
+            return Ok(body);
+        } else if status == 401 || status == 403 {
+            return Err(TuicrError::Forge(format!(
+                "Forgejo authentication failed for {}. Run `fj auth login` or `fj auth add-key`, then try again.",
+                repository.host
+            )));
+        } else {
+            errors.push(format!("{base_url}: HTTP {status}: {}", body.trim()));
+        }
     }
 
-    let response = request.call().map_err(|err| {
-        TuicrError::Forge(format!(
-            "Forgejo request failed for host {}: {err}",
-            repository.host
-        ))
-    })?;
-    let status = response.status().as_u16();
-    let body = response.into_body().read_to_string().map_err(|err| {
-        TuicrError::Forge(format!(
-            "Forgejo response from host {} could not be read: {err}",
-            repository.host
-        ))
-    })?;
-
-    if (200..300).contains(&status) {
-        Ok(body)
-    } else if status == 401 || status == 403 {
-        Err(TuicrError::Forge(format!(
-            "Forgejo authentication failed for host {}. Run `fj auth login` or `fj auth add-token`, then try again.",
-            repository.host
-        )))
-    } else {
-        Err(TuicrError::Forge(format!(
-            "Forgejo request failed for host {} with HTTP {status}: {}",
-            repository.host,
-            body.trim()
-        )))
-    }
+    Err(TuicrError::Forge(format!(
+        "Forgejo request failed for host {}. Tried: {}",
+        repository.host,
+        errors.join("; ")
+    )))
 }
 
 #[derive(serde::Deserialize)]
@@ -1243,6 +1292,208 @@ fn fj_token_for_host(host: &str) -> Option<String> {
     match keys.hosts.get(host)? {
         FjLoginInfo::Application { token } | FjLoginInfo::OAuth { token } => Some(token.clone()),
     }
+}
+
+fn fj_token_for_api_base(repository_host: &str, base_url: &str) -> Option<String> {
+    fj_token_for_host(repository_host)
+        .or_else(|| api_base_host(base_url).and_then(fj_token_for_host))
+}
+
+fn forgejo_api_base_urls(repository_host: &str) -> Vec<String> {
+    let mut hosts = Vec::new();
+    let resolved = resolve_ssh_hostname(repository_host);
+    let related = ssh_related_hostnames(repository_host);
+
+    if is_likely_self_hosted_api_host(repository_host) {
+        for host in related {
+            push_unique(&mut hosts, host);
+        }
+        if resolved != repository_host {
+            push_unique(&mut hosts, resolved);
+        }
+        push_unique(&mut hosts, repository_host.to_string());
+    } else {
+        push_unique(&mut hosts, repository_host.to_string());
+        if resolved != repository_host {
+            push_unique(&mut hosts, resolved);
+        }
+        for host in related {
+            push_unique(&mut hosts, host);
+        }
+    }
+
+    let mut candidates = Vec::new();
+    for host in hosts {
+        push_forgejo_base_candidates(&mut candidates, &host);
+    }
+    candidates
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct SshHostEntry {
+    aliases: Vec<String>,
+    hostname: Option<String>,
+    user: Option<String>,
+    port: Option<String>,
+    identity_file: Option<String>,
+}
+
+fn ssh_related_hostnames(host: &str) -> Vec<String> {
+    let Ok(home) = std::env::var("HOME") else {
+        return Vec::new();
+    };
+    let path = PathBuf::from(home).join(".ssh/config");
+    let Ok(content) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    ssh_related_hostnames_from_config(host, &content)
+}
+
+fn ssh_related_hostnames_from_config(host: &str, config: &str) -> Vec<String> {
+    let entries = parse_ssh_host_entries(config);
+    let Some(target) = entries.iter().find(|entry| entry.matches_host(host)) else {
+        return Vec::new();
+    };
+
+    let mut hostnames = Vec::new();
+    for entry in &entries {
+        if entry == target || !entry.shares_transport_identity(target) {
+            continue;
+        }
+        if let Some(hostname) = entry.hostname.as_deref() {
+            push_unique(
+                &mut hostnames,
+                normalize_ssh_transport_host(hostname).to_string(),
+            );
+        }
+    }
+    hostnames
+}
+
+fn parse_ssh_host_entries(config: &str) -> Vec<SshHostEntry> {
+    let mut entries = Vec::new();
+    let mut current: Option<SshHostEntry> = None;
+
+    for raw in config.lines() {
+        let line = raw.split_once('#').map_or(raw, |(before, _)| before).trim();
+        if line.is_empty() {
+            continue;
+        }
+        let (key, value) = line
+            .split_once(|c: char| c.is_whitespace() || c == '=')
+            .unwrap_or((line, ""));
+        let value = value
+            .trim_start_matches(|c: char| c.is_whitespace() || c == '=')
+            .trim();
+
+        if key.eq_ignore_ascii_case("Host") {
+            if let Some(entry) = current.take() {
+                entries.push(entry);
+            }
+            let aliases = value
+                .split_whitespace()
+                .filter(|alias| !alias.contains('*') && !alias.starts_with('!'))
+                .map(str::to_string)
+                .collect();
+            current = Some(SshHostEntry {
+                aliases,
+                ..SshHostEntry::default()
+            });
+        } else if key.eq_ignore_ascii_case("Match") {
+            if let Some(entry) = current.take() {
+                entries.push(entry);
+            }
+        } else if let Some(entry) = current.as_mut() {
+            if key.eq_ignore_ascii_case("HostName") {
+                entry.hostname = Some(value.to_string());
+            } else if key.eq_ignore_ascii_case("User") {
+                entry.user = Some(value.to_string());
+            } else if key.eq_ignore_ascii_case("Port") {
+                entry.port = Some(value.to_string());
+            } else if key.eq_ignore_ascii_case("IdentityFile") {
+                entry.identity_file = Some(value.to_string());
+            }
+        }
+    }
+    if let Some(entry) = current {
+        entries.push(entry);
+    }
+
+    entries
+}
+
+impl SshHostEntry {
+    fn matches_host(&self, host: &str) -> bool {
+        self.aliases.iter().any(|alias| alias == host) || self.hostname.as_deref() == Some(host)
+    }
+
+    fn shares_transport_identity(&self, other: &Self) -> bool {
+        let same_identity = self.identity_file.is_some()
+            && self.identity_file == other.identity_file
+            && (self.user.is_none() || other.user.is_none() || self.user == other.user)
+            && (self.port.is_none() || other.port.is_none() || self.port == other.port);
+        let same_user_port = self.identity_file.is_none()
+            && other.identity_file.is_none()
+            && self.user.is_some()
+            && self.user == other.user
+            && self.port.is_some()
+            && self.port == other.port;
+        same_identity || same_user_port
+    }
+}
+
+fn push_forgejo_base_candidates(candidates: &mut Vec<String>, host: &str) {
+    let host = strip_port(host);
+    if is_likely_self_hosted_api_host(host) {
+        for candidate in self_hosted_forgejo_base_urls(host) {
+            push_unique(candidates, candidate);
+        }
+        for candidate in [format!("https://{host}"), format!("http://{host}")] {
+            push_unique(candidates, candidate);
+        }
+    } else {
+        for candidate in [format!("https://{host}"), format!("http://{host}")] {
+            push_unique(candidates, candidate);
+        }
+        for candidate in self_hosted_forgejo_base_urls(host) {
+            push_unique(candidates, candidate);
+        }
+    }
+}
+
+fn self_hosted_forgejo_base_urls(host: &str) -> [String; 4] {
+    [
+        format!("http://{host}:3000"),
+        format!("https://{host}:3000"),
+        format!("http://{host}:8080"),
+        format!("https://{host}:8443"),
+    ]
+}
+
+fn is_likely_self_hosted_api_host(host: &str) -> bool {
+    if !host.contains('.') {
+        return true;
+    }
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        return match ip {
+            std::net::IpAddr::V4(ip) => ip.is_private() || ip.is_loopback() || ip.is_link_local(),
+            std::net::IpAddr::V6(ip) => ip.is_loopback() || ip.is_unique_local(),
+        };
+    }
+    false
+}
+
+fn push_unique(values: &mut Vec<String>, value: String) {
+    if !values.iter().any(|existing| existing == &value) {
+        values.push(value);
+    }
+}
+
+fn api_base_host(base_url: &str) -> Option<&str> {
+    let without_scheme = base_url
+        .strip_prefix("https://")
+        .or_else(|| base_url.strip_prefix("http://"))?;
+    without_scheme.split('/').next().map(strip_port)
 }
 
 fn looks_like_auth_failure(stderr: &str) -> bool {
@@ -1556,6 +1807,7 @@ index 1111111..2222222 100644
             "title": "Improve Forgejo support",
             "state": "open",
             "user": { "login": "reviewer" },
+            "url": "https://code.example.test/api/v1/repos/team/service/pulls/42",
             "html_url": "https://code.example.test/team/service/pulls/42",
             "head": { "ref": "feature/forgejo", "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
             "base": { "ref": "main", "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
@@ -1572,6 +1824,7 @@ index 1111111..2222222 100644
         "title": "Improve Forgejo support",
         "state": "open",
         "user": { "login": "reviewer" },
+        "url": "https://code.example.test/api/v1/repos/team/service/pulls/42",
         "html_url": "https://code.example.test/team/service/pulls/42",
         "head": { "ref": "feature/forgejo", "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
         "base": { "ref": "main", "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
@@ -1613,6 +1866,21 @@ index 1111111..2222222 100644
             }
         }
     }"##;
+
+    #[test]
+    fn forgejo_pull_request_accepts_api_and_html_urls() {
+        let pr: ForgejoPullRequest = serde_json::from_str(FORGEJO_PR_DETAILS_JSON).unwrap();
+        let details = pr.into_details(&ForgeRepository::forgejo(
+            "code.example.test",
+            "team",
+            "service",
+        ));
+
+        assert_eq!(
+            details.url,
+            "https://code.example.test/team/service/pulls/42"
+        );
+    }
 
     const REVIEW_SUMMARIES_JSON: &str = r##"{
         "data": {
@@ -1757,6 +2025,21 @@ index 1111111..2222222 100644
         let repository =
             parse_github_remote_url("ssh://git@github.example.com:2222/agavra/tuicr.git").unwrap();
         assert_eq!(repository.host, "github.example.com");
+        assert_eq!(repository.slug(), "agavra/tuicr");
+    }
+
+    #[test]
+    fn parses_forgejo_scp_remote_without_resolving_alias() {
+        let repository = parse_forgejo_remote_url("git@forgejo-dev:agavra/tuicr.git").unwrap();
+        assert_eq!(repository.host, "forgejo-dev");
+        assert_eq!(repository.slug(), "agavra/tuicr");
+    }
+
+    #[test]
+    fn parses_forgejo_ssh_remote_without_resolving_alias() {
+        let repository =
+            parse_forgejo_remote_url("ssh://git@forgejo-dev:2222/agavra/tuicr.git").unwrap();
+        assert_eq!(repository.host, "forgejo-dev");
         assert_eq!(repository.slug(), "agavra/tuicr");
     }
 
@@ -1940,6 +2223,76 @@ Match host github-work
         let repo = repository_from_path(&resolved, path).unwrap();
         assert_eq!(repo.host, "github.com");
         assert_eq!(repo.slug(), "example-org/example-repo");
+    }
+
+    #[test]
+    fn parse_ssh_scheme_url_with_alias_resolves_via_config() {
+        let config = "Host github-work\n    HostName github.com\n";
+        let url = "ssh://git@github-work:2222/example-org/example-repo.git";
+        let rest = url.strip_prefix("ssh://").unwrap();
+        let without_user = rest.rsplit_once('@').map(|(_, rest)| rest).unwrap_or(rest);
+        let (host, path) = without_user.split_once('/').unwrap();
+        let resolved = normalize_ssh_transport_host(&resolve_ssh_hostname_from_config(
+            strip_port(host),
+            config,
+        ))
+        .to_string();
+        let repo = repository_from_path(&resolved, path).unwrap();
+        assert_eq!(repo.host, "github.com");
+        assert_eq!(repo.slug(), "example-org/example-repo");
+    }
+
+    #[test]
+    fn ssh_related_hostnames_discovers_sibling_aliases_by_transport_identity() {
+        let config = r#"
+Host forge-primary
+  User git
+  Port 2224
+  HostName forge-primary.internal.example
+  IdentityFile ~/.ssh/forge-key
+
+Host forge-mesh
+  User git
+  Port 2224
+  HostName forge-mesh.internal.example
+  IdentityFile ~/.ssh/forge-key
+
+Host unrelated
+  User git
+  Port 2224
+  HostName unrelated.internal.example
+  IdentityFile ~/.ssh/other-key
+"#;
+
+        assert_eq!(
+            ssh_related_hostnames_from_config("forge-primary.internal.example", config),
+            vec!["forge-mesh.internal.example".to_string()]
+        );
+    }
+
+    #[test]
+    fn ssh_related_hostnames_discovers_sibling_aliases_without_identity_file() {
+        let config = r#"
+Host forge-a
+  User git
+  Port 2224
+  HostName forge-a.internal.example
+
+Host forge-b
+  User git
+  Port 2224
+  HostName forge-b.internal.example
+
+Host unrelated-default-ssh
+  User git
+  Port 22
+  HostName unrelated.internal.example
+"#;
+
+        assert_eq!(
+            ssh_related_hostnames_from_config("forge-a", config),
+            vec!["forge-b.internal.example".to_string()]
+        );
     }
 
     #[test]
