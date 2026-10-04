@@ -196,9 +196,10 @@ fn parse_jj_diff_metadata(output: &str) -> Result<Vec<FileMetadata>> {
         )));
     }
 
+    let (records, remainder) = records.as_chunks::<3>();
+    debug_assert!(remainder.is_empty());
+
     records
-        .as_chunks::<3>()
-        .0
         .iter()
         .map(|record| {
             let source = (!record[1].is_empty()).then(|| PathBuf::from(record[1]));
