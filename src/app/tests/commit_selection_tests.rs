@@ -594,10 +594,91 @@ fn should_not_show_a_message_when_a_fixup_targets_another_commit() {
 }
 
 #[test]
-fn should_not_show_a_message_for_non_fixup_autosquash_prefixes() {
+fn should_show_the_newest_message_for_an_amend_range() {
+    let path = PathBuf::from("src/only_in_commit.rs");
+    let newest = CommitInfo {
+        summary: "amend! Test commit".to_string(),
+        body: Some("new wording".to_string()),
+        ..normal_commit("c3")
+    };
+    let mut app = build_app(vec![
+        newest,
+        commit_with_summary("c2", "amend! Test commit"),
+        normal_commit("c1"),
+    ]);
+    app.review_commits = app.commit_list.clone();
+    app.range_diff_files = Some(vec![commit_only_file(&path, vec![one_line_hunk()])]);
+    app.commit_selection_range = Some((0, 2));
+    app.reload_inline_selection()
+        .expect("loading should succeed");
+
+    let message =
+        commit_message_file(&app).expect("an amend range should carry the newest message");
+    assert_eq!(message.display_path(), &commit_message_path("c3"));
+    let rendered: Vec<&str> = message.hunks[0]
+        .lines
+        .iter()
+        .map(|line| line.content.as_str())
+        .collect();
+    assert!(
+        rendered.contains(&"new wording"),
+        "the newest amend body should be readable, got {rendered:?}"
+    );
+}
+
+#[test]
+fn should_show_the_newest_message_for_a_reword_range() {
     let path = PathBuf::from("src/only_in_commit.rs");
     let mut app = build_app(vec![
-        commit_with_summary("c2", "amend! Test commit"),
+        commit_with_summary("c2", "reword! Test commit"),
+        normal_commit("c1"),
+    ]);
+    app.review_commits = app.commit_list.clone();
+    app.range_diff_files = Some(vec![commit_only_file(&path, vec![one_line_hunk()])]);
+    app.commit_selection_range = Some((0, 1));
+    app.reload_inline_selection()
+        .expect("loading should succeed");
+
+    assert_eq!(
+        commit_message_file(&app).map(|file| file.display_path().clone()),
+        Some(commit_message_path("c2")),
+        "a reword range should carry the newest message, not the original's"
+    );
+}
+
+#[test]
+fn should_prefer_the_newest_reword_over_fixups_in_a_mixed_range() {
+    let path = PathBuf::from("src/only_in_commit.rs");
+    let reword = CommitInfo {
+        summary: "reword! Test commit".to_string(),
+        body: Some("new wording".to_string()),
+        ..normal_commit("c3")
+    };
+    let mut app = build_app(vec![
+        commit_with_summary("c4", "fixup! Test commit"),
+        reword,
+        commit_with_summary("c2", "fixup! Test commit"),
+        normal_commit("c1"),
+    ]);
+    app.review_commits = app.commit_list.clone();
+    app.range_diff_files = Some(vec![commit_only_file(&path, vec![one_line_hunk()])]);
+    app.commit_selection_range = Some((0, 3));
+    app.reload_inline_selection()
+        .expect("loading should succeed");
+
+    // The newest commit is a `fixup!` whose message autosquash discards,
+    // so the message shown is the newest `reword!`, not the newest commit.
+    assert_eq!(
+        commit_message_file(&app).map(|file| file.display_path().clone()),
+        Some(commit_message_path("c3")),
+    );
+}
+
+#[test]
+fn should_not_show_a_message_when_an_amend_targets_another_commit() {
+    let path = PathBuf::from("src/only_in_commit.rs");
+    let mut app = build_app(vec![
+        commit_with_summary("c2", "amend! Something else"),
         normal_commit("c1"),
     ]);
     app.review_commits = app.commit_list.clone();
@@ -608,7 +689,26 @@ fn should_not_show_a_message_for_non_fixup_autosquash_prefixes() {
 
     assert!(
         commit_message_file(&app).is_none(),
-        "only fixup! commits count; amend! does not"
+        "an amend targeting another commit should not show this range's message"
+    );
+}
+
+#[test]
+fn should_not_show_a_message_when_the_original_is_itself_a_reword() {
+    let path = PathBuf::from("src/only_in_commit.rs");
+    let mut app = build_app(vec![
+        commit_with_summary("c2", "fixup! reword! Test commit"),
+        commit_with_summary("c1", "reword! Test commit"),
+    ]);
+    app.review_commits = app.commit_list.clone();
+    app.range_diff_files = Some(vec![commit_only_file(&path, vec![one_line_hunk()])]);
+    app.commit_selection_range = Some((0, 1));
+    app.reload_inline_selection()
+        .expect("loading should succeed");
+
+    assert!(
+        commit_message_file(&app).is_none(),
+        "a range whose oldest commit is itself a reword has no original to show"
     );
 }
 

@@ -2,6 +2,11 @@ use super::*;
 
 /// Prefix `git commit --fixup` prepends to the targeted commit's summary.
 const FIXUP_PREFIX: &str = "fixup! ";
+/// Prefixes `git commit --fixup=amend:` and `--fixup=reword:` prepend. Unlike
+/// `fixup!`, these carry a replacement message, so a stack containing them
+/// shows the newest such commit's message rather than the original's.
+const AMEND_PREFIX: &str = "amend! ";
+const REWORD_PREFIX: &str = "reword! ";
 
 impl App {
     pub(in crate::app) fn staged_commit_entry() -> CommitInfo {
@@ -29,8 +34,10 @@ impl App {
     }
 
     /// If we are viewing a single commit, or a fixup stack (an original
-    /// commit followed only by `fixup!` commits targeting it), insert a
-    /// "Commit Message" DiffFile at index 0 showing the original's message.
+    /// commit followed only by `fixup!`/`amend!`/`reword!` commits targeting
+    /// it), insert a "Commit Message" DiffFile at index 0. A pure `fixup!`
+    /// stack shows the original's message; any `amend!` or `reword!` commit
+    /// replaces the message, so the newest such commit's message is shown.
     ///
     /// The synthetic path embeds the commit's short id (`Commit Message (<sha>)`)
     /// so that comments on different commits' messages get distinct session keys
@@ -56,12 +63,12 @@ impl App {
             if start == end {
                 return self.review_commits.get(start);
             }
-            return Self::fixup_original(self.selected_range_slice(start, end));
+            return Self::stack_message_target(self.selected_range_slice(start, end));
         }
         if self.review_commits.len() == 1 {
             return self.review_commits.first();
         }
-        Self::fixup_original(&self.review_commits)
+        Self::stack_message_target(&self.review_commits)
     }
 
     /// The selected commits in display order (newest-first), or `None` when
@@ -74,10 +81,13 @@ impl App {
         &self.review_commits[start..=end]
     }
 
-    /// The original commit when `selected` (newest-first) is a fixup stack:
-    /// the oldest entry is the original and every newer entry is a `fixup!`
-    /// commit whose stripped summary equals the original's summary.
-    fn fixup_original(selected: &[CommitInfo]) -> Option<&CommitInfo> {
+    /// The commit whose message to show when `selected` (newest-first) is a
+    /// fixup stack: the oldest entry is the original and every newer entry
+    /// is a `fixup!`/`amend!`/`reword!` commit whose stripped summary equals
+    /// the original's summary. A pure `fixup!` stack resolves to the
+    /// original; otherwise the newest `amend!`/`reword!` commit wins, since
+    /// those replace the message while `fixup!` discards its own.
+    fn stack_message_target(selected: &[CommitInfo]) -> Option<&CommitInfo> {
         if selected.len() < 2 {
             return None;
         }
@@ -85,20 +95,31 @@ impl App {
         if Self::is_special_commit(original) {
             return None;
         }
-        if original.summary.starts_with(FIXUP_PREFIX) {
+        if Self::fixup_target(&original.summary).is_some()
+            || Self::reword_target(&original.summary).is_some()
+        {
             return None;
         }
+        // Newest-first, so the first `amend!`/`reword!` match is the most
+        // recent message-defining commit.
         let newer = &selected[..selected.len() - 1];
-        if newer.iter().any(Self::is_special_commit) {
+        let mut newest_reword: Option<&CommitInfo> = None;
+        for commit in newer {
+            if Self::is_special_commit(commit) {
+                return None;
+            }
+            if Self::fixup_target(&commit.summary).is_some_and(|t| t == original.summary) {
+                continue;
+            }
+            if Self::reword_target(&commit.summary).is_some_and(|t| t == original.summary) {
+                if newest_reword.is_none() {
+                    newest_reword = Some(commit);
+                }
+                continue;
+            }
             return None;
         }
-        let targets_original = |commit: &CommitInfo| {
-            Self::fixup_target(&commit.summary).is_some_and(|t| t == original.summary)
-        };
-        if !newer.iter().all(targets_original) {
-            return None;
-        }
-        Some(original)
+        newest_reword.or(Some(original))
     }
 
     /// The targeted summary when `summary` carries at least one `fixup! `
@@ -107,6 +128,25 @@ impl App {
         let mut rest = summary;
         let mut stripped = false;
         while let Some(next) = rest.strip_prefix(FIXUP_PREFIX) {
+            rest = next;
+            stripped = true;
+        }
+        if !stripped || rest.is_empty() {
+            return None;
+        }
+        Some(rest)
+    }
+
+    /// The targeted summary when `summary` carries at least one `amend! `
+    /// or `reword! ` prefix, stripping repeatedly so chained rewords still
+    /// resolve.
+    fn reword_target(summary: &str) -> Option<&str> {
+        let mut rest = summary;
+        let mut stripped = false;
+        while let Some(next) = rest
+            .strip_prefix(AMEND_PREFIX)
+            .or_else(|| rest.strip_prefix(REWORD_PREFIX))
+        {
             rest = next;
             stripped = true;
         }
