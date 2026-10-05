@@ -34,23 +34,32 @@ impl App {
     pub(in crate::app) fn insert_commit_message_if_single(&mut self) {
         self.diff_files.retain(|f| !f.is_commit_message);
 
-        let commit = if let Some((start, end)) = self.commit_selection_range {
-            if start == end {
-                self.review_commits.get(start)
-            } else {
-                None
-            }
-        } else if self.review_commits.len() == 1 {
-            self.review_commits.first()
-        } else {
-            None
+        let Some(commit) = self.commit_message_target().cloned() else {
+            return;
         };
-
-        let Some(commit) = commit else { return };
-        if Self::is_special_commit(commit) {
+        if Self::is_special_commit(&commit) {
             return;
         }
 
+        let commit_msg_file = Self::build_commit_message_file(&commit);
+        self.diff_files.insert(0, commit_msg_file);
+        self.session.add_diff_file(&self.diff_files[0]);
+    }
+
+    fn commit_message_target(&self) -> Option<&CommitInfo> {
+        if let Some((start, end)) = self.commit_selection_range {
+            if start == end {
+                return self.review_commits.get(start);
+            }
+            return None;
+        }
+        if self.review_commits.len() == 1 {
+            return self.review_commits.first();
+        }
+        None
+    }
+
+    fn build_commit_message_file(commit: &CommitInfo) -> DiffFile {
         let mut full_message = commit.summary.clone();
         if let Some(ref body) = commit.body {
             full_message.push('\n');
@@ -79,7 +88,7 @@ impl App {
             new_count: line_count,
         }];
         let content_hash = DiffFile::compute_content_hash(&hunks);
-        let commit_msg_file = DiffFile {
+        DiffFile {
             old_path: None,
             new_path: Some(PathBuf::from(format!(
                 "Commit Message ({})",
@@ -91,9 +100,7 @@ impl App {
             is_too_large: false,
             is_commit_message: true,
             content_hash,
-        };
-        self.diff_files.insert(0, commit_msg_file);
-        self.session.add_diff_file(&self.diff_files[0]);
+        }
     }
 
     pub(in crate::app) fn is_staged_commit(commit: &CommitInfo) -> bool {
