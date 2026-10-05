@@ -514,6 +514,125 @@ fn commit_with_body(id: &str, body: &str) -> CommitInfo {
     }
 }
 
+fn commit_with_summary(id: &str, summary: &str) -> CommitInfo {
+    CommitInfo {
+        summary: summary.to_string(),
+        ..normal_commit(id)
+    }
+}
+
+fn fixup_stack_review() -> App {
+    let path = PathBuf::from("src/only_in_commit.rs");
+    let original = commit_with_body("c1", "why this change was made");
+    let mut app = build_app(vec![
+        commit_with_summary("c3", "fixup! Test commit"),
+        commit_with_summary("c2", "fixup! Test commit"),
+        original,
+    ]);
+    app.review_commits = app.commit_list.clone();
+    app.range_diff_files = Some(vec![commit_only_file(&path, vec![one_line_hunk()])]);
+    app.commit_selection_range = Some((0, 2));
+    app
+}
+
+#[test]
+fn should_show_the_original_message_for_a_fixup_range() {
+    let mut app = fixup_stack_review();
+    app.reload_inline_selection()
+        .expect("loading a fixup range should succeed");
+
+    let message =
+        commit_message_file(&app).expect("a fixup range should carry the original's message");
+    assert_eq!(message.display_path(), &commit_message_path("c1"));
+    let rendered: Vec<&str> = message.hunks[0]
+        .lines
+        .iter()
+        .map(|line| line.content.as_str())
+        .collect();
+    assert!(
+        rendered.contains(&"why this change was made"),
+        "the original body should be readable, got {rendered:?}"
+    );
+}
+
+#[test]
+fn should_not_show_a_message_when_the_range_has_a_non_fixup_commit() {
+    let path = PathBuf::from("src/only_in_commit.rs");
+    let mut app = build_app(vec![
+        commit_with_summary("c2", "Unrelated change"),
+        normal_commit("c1"),
+    ]);
+    app.review_commits = app.commit_list.clone();
+    app.range_diff_files = Some(vec![commit_only_file(&path, vec![one_line_hunk()])]);
+    app.commit_selection_range = Some((0, 1));
+    app.reload_inline_selection()
+        .expect("loading should succeed");
+
+    assert!(
+        commit_message_file(&app).is_none(),
+        "a range with a non-fixup commit has no single message to show"
+    );
+}
+
+#[test]
+fn should_not_show_a_message_when_a_fixup_targets_another_commit() {
+    let path = PathBuf::from("src/only_in_commit.rs");
+    let mut app = build_app(vec![
+        commit_with_summary("c2", "fixup! Something else"),
+        normal_commit("c1"),
+    ]);
+    app.review_commits = app.commit_list.clone();
+    app.range_diff_files = Some(vec![commit_only_file(&path, vec![one_line_hunk()])]);
+    app.commit_selection_range = Some((0, 1));
+    app.reload_inline_selection()
+        .expect("loading should succeed");
+
+    assert!(
+        commit_message_file(&app).is_none(),
+        "a fixup targeting another commit should not show this range's message"
+    );
+}
+
+#[test]
+fn should_not_show_a_message_for_non_fixup_autosquash_prefixes() {
+    let path = PathBuf::from("src/only_in_commit.rs");
+    let mut app = build_app(vec![
+        commit_with_summary("c2", "amend! Test commit"),
+        normal_commit("c1"),
+    ]);
+    app.review_commits = app.commit_list.clone();
+    app.range_diff_files = Some(vec![commit_only_file(&path, vec![one_line_hunk()])]);
+    app.commit_selection_range = Some((0, 1));
+    app.reload_inline_selection()
+        .expect("loading should succeed");
+
+    assert!(
+        commit_message_file(&app).is_none(),
+        "only fixup! commits count; amend! does not"
+    );
+}
+
+#[test]
+fn should_resolve_a_fixup_of_a_fixup_to_the_original() {
+    let path = PathBuf::from("src/only_in_commit.rs");
+    let mut app = build_app(vec![
+        commit_with_summary("c3", "fixup! fixup! Test commit"),
+        commit_with_summary("c2", "fixup! Test commit"),
+        normal_commit("c1"),
+    ]);
+    app.review_commits = app.commit_list.clone();
+    app.range_diff_files = Some(vec![commit_only_file(&path, vec![one_line_hunk()])]);
+    app.commit_selection_range = Some((0, 2));
+    app.reload_inline_selection()
+        .expect("loading should succeed");
+
+    assert_eq!(
+        commit_message_file(&app).map(|file| file.display_path().clone()),
+        Some(commit_message_path("c1")),
+        "nested fixup! prefixes should still resolve to the original"
+    );
+}
+
 #[test]
 fn should_show_the_commit_message_when_one_commit_is_chosen_in_the_target_selector() {
     let path = PathBuf::from("src/only_in_commit.rs");

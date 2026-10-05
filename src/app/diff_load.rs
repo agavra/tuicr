@@ -1,5 +1,8 @@
 use super::*;
 
+/// Prefix `git commit --fixup` prepends to the targeted commit's summary.
+const FIXUP_PREFIX: &str = "fixup! ";
+
 impl App {
     pub(in crate::app) fn staged_commit_entry() -> CommitInfo {
         CommitInfo {
@@ -25,7 +28,9 @@ impl App {
         }
     }
 
-    /// If we are viewing a single commit, insert a "Commit Message" DiffFile at index 0.
+    /// If we are viewing a single commit, or a fixup stack (an original
+    /// commit followed only by `fixup!` commits targeting it), insert a
+    /// "Commit Message" DiffFile at index 0 showing the original's message.
     ///
     /// The synthetic path embeds the commit's short id (`Commit Message (<sha>)`)
     /// so that comments on different commits' messages get distinct session keys
@@ -51,12 +56,64 @@ impl App {
             if start == end {
                 return self.review_commits.get(start);
             }
-            return None;
+            return Self::fixup_original(self.selected_range_slice(start, end));
         }
         if self.review_commits.len() == 1 {
             return self.review_commits.first();
         }
-        None
+        Self::fixup_original(&self.review_commits)
+    }
+
+    /// The selected commits in display order (newest-first), or `None` when
+    /// the range endpoints are out of bounds. Callers treat `None` as "no
+    /// message", so a corrupt range never panics here.
+    fn selected_range_slice(&self, start: usize, end: usize) -> &[CommitInfo] {
+        if start > end || end >= self.review_commits.len() {
+            return &[];
+        }
+        &self.review_commits[start..=end]
+    }
+
+    /// The original commit when `selected` (newest-first) is a fixup stack:
+    /// the oldest entry is the original and every newer entry is a `fixup!`
+    /// commit whose stripped summary equals the original's summary.
+    fn fixup_original(selected: &[CommitInfo]) -> Option<&CommitInfo> {
+        if selected.len() < 2 {
+            return None;
+        }
+        let original = selected.last()?;
+        if Self::is_special_commit(original) {
+            return None;
+        }
+        if original.summary.starts_with(FIXUP_PREFIX) {
+            return None;
+        }
+        let newer = &selected[..selected.len() - 1];
+        if newer.iter().any(Self::is_special_commit) {
+            return None;
+        }
+        let targets_original = |commit: &CommitInfo| {
+            Self::fixup_target(&commit.summary).is_some_and(|t| t == original.summary)
+        };
+        if !newer.iter().all(targets_original) {
+            return None;
+        }
+        Some(original)
+    }
+
+    /// The targeted summary when `summary` carries at least one `fixup! `
+    /// prefix, stripping repeatedly so a fixup of a fixup still resolves.
+    fn fixup_target(summary: &str) -> Option<&str> {
+        let mut rest = summary;
+        let mut stripped = false;
+        while let Some(next) = rest.strip_prefix(FIXUP_PREFIX) {
+            rest = next;
+            stripped = true;
+        }
+        if !stripped || rest.is_empty() {
+            return None;
+        }
+        Some(rest)
     }
 
     fn build_commit_message_file(commit: &CommitInfo) -> DiffFile {
