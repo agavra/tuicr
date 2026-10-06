@@ -1165,7 +1165,7 @@ pub struct App {
     pub(crate) command_return_mode: InputMode,
     pub search_buffer: String,
     pub last_search_pattern: Option<String>,
-    pub(crate) search_needle_lower: Option<String>,
+    pub(crate) diff_search_pattern: Option<crate::ui::text_utils::SearchPattern>,
     pub(crate) search_matches: Vec<usize>,
     pub(crate) search_matches_stale: bool,
     pub(crate) search_highlight_visible: bool,

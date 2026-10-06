@@ -505,7 +505,7 @@ impl App {
             command_return_mode: InputMode::Normal,
             search_buffer: String::new(),
             last_search_pattern: None,
-            search_needle_lower: None,
+            diff_search_pattern: None,
             search_matches: Vec::new(),
             search_matches_stale: false,
             search_highlight_visible: false,

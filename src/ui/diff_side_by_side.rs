@@ -40,7 +40,7 @@ fn content_spans_for_diff_line(
     theme: &Theme,
     dl: &DiffLine,
     origin: LineOrigin,
-    search: Option<(&str, Style)>,
+    search: Option<(&crate::ui::text_utils::SearchPattern, Style)>,
 ) -> Vec<Span<'static>> {
     let base = match origin {
         LineOrigin::Context => styles::diff_context_style(theme),
@@ -69,7 +69,7 @@ fn searched_cell_spans(
     pairs: &[(Style, String)],
     width: usize,
     pad_style: Style,
-    search: Option<(&str, Style)>,
+    search: Option<(&crate::ui::text_utils::SearchPattern, Style)>,
 ) -> Vec<Span<'static>> {
     if let Some((needle, hl)) = search
         && let Some(highlighted) = apply_search_highlight_pairs(pairs, needle, hl)
@@ -83,7 +83,7 @@ fn plain_cell_spans(
     content: &str,
     style: Style,
     width: usize,
-    search: Option<(&str, Style)>,
+    search: Option<(&crate::ui::text_utils::SearchPattern, Style)>,
 ) -> Vec<Span<'static>> {
     if let Some((needle, hl)) = search
         && let Some(highlighted) = apply_search_highlight_text(content, style, needle, hl)
@@ -326,7 +326,10 @@ impl SideBySideContext<'_> {
         crate::ui::diff_view::comment_box_visible(top, rows, (self.visible_start, self.visible_end))
     }
 
-    fn search_for(&self, line_idx: usize) -> Option<(&str, Style)> {
+    fn search_for(
+        &self,
+        line_idx: usize,
+    ) -> Option<(&crate::ui::text_utils::SearchPattern, Style)> {
         let needle = self.app.search_paint_at(line_idx)?;
         Some((needle, self.search_style))
     }
@@ -1876,7 +1879,7 @@ fn add_deletion_spans(
     content_width: usize,
     lw: usize,
     display_lineno: Option<u32>,
-    search: Option<(&str, Style)>,
+    search: Option<(&crate::ui::text_utils::SearchPattern, Style)>,
 ) {
     let line_num = display_lineno
         .map(|n| format!("{n:>lw$}"))
@@ -1920,7 +1923,7 @@ fn add_addition_spans(
     content_width: usize,
     lw: usize,
     display_lineno: Option<u32>,
-    search: Option<(&str, Style)>,
+    search: Option<(&crate::ui::text_utils::SearchPattern, Style)>,
 ) {
     let line_num = display_lineno
         .map(|n| format!("{n:>lw$}"))
