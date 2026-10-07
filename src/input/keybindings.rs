@@ -83,6 +83,8 @@ pub enum Action {
     CompleteCommandReverse,
     TextCursorLeft,
     TextCursorRight,
+    TextCursorUp,
+    TextCursorDown,
     TextCursorLineStart,
     TextCursorLineEnd,
     TextCursorWordLeft,
@@ -379,6 +381,8 @@ fn map_comment_mode(key: KeyEvent) -> Action {
         {
             Action::TextCursorLineEnd
         }
+        (KeyCode::Up, KeyModifiers::NONE) => Action::TextCursorUp,
+        (KeyCode::Down, KeyModifiers::NONE) => Action::TextCursorDown,
         (KeyCode::Left, KeyModifiers::NONE) => Action::TextCursorLeft,
         (KeyCode::Right, KeyModifiers::NONE) => Action::TextCursorRight,
         // Editing

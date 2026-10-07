@@ -1174,6 +1174,8 @@ pub struct App {
     pub(crate) overlay_return_mode: InputMode,
     pub comment_buffer: String,
     pub comment_cursor: usize,
+    /// Screen column retained across consecutive vertical moves in the default editor.
+    pub(crate) comment_preferred_column: Option<usize>,
     /// Config `comment_vim`: vim modal editing in the comment box.
     pub comment_vim_enabled: bool,
     /// Config `q_quits`: restore bare `q` as a quit key in review modes.

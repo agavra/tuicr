@@ -1176,6 +1176,22 @@ pub fn handle_search_action(app: &mut App, action: Action) {
 
 /// Handle actions in Comment mode (text input for comments)
 pub fn handle_comment_action(app: &mut App, action: Action) {
+    if matches!(
+        action,
+        Action::InsertChar(_)
+            | Action::Paste(_)
+            | Action::DeleteChar
+            | Action::DeleteWord
+            | Action::ClearLine
+            | Action::TextCursorLeft
+            | Action::TextCursorRight
+            | Action::TextCursorLineStart
+            | Action::TextCursorLineEnd
+            | Action::TextCursorWordLeft
+            | Action::TextCursorWordRight
+    ) {
+        app.comment_preferred_column = None;
+    }
     match action {
         Action::InsertChar(c) => {
             app.comment_buffer.insert(app.comment_cursor, c);
@@ -1194,6 +1210,15 @@ pub fn handle_comment_action(app: &mut App, action: Action) {
         Action::SubmitInput => app.save_comment(),
         Action::CycleCommentType => app.cycle_comment_type(),
         Action::CycleCommentTypeReverse => app.cycle_comment_type_reverse(),
+        Action::TextCursorUp | Action::TextCursorDown => {
+            app.comment_cursor = crate::ui::comment_panel::move_comment_cursor(
+                &app.comment_buffer,
+                app.comment_cursor,
+                app.diff_state.viewport_width.saturating_sub(1),
+                matches!(action, Action::TextCursorDown),
+                &mut app.comment_preferred_column,
+            );
+        }
         Action::TextCursorLeft => {
             app.comment_cursor = prev_char_boundary(&app.comment_buffer, app.comment_cursor);
         }

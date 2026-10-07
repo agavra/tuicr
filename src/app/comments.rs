@@ -987,6 +987,7 @@ impl App {
         self.input_mode = InputMode::Normal;
         self.comment_buffer.clear();
         self.comment_cursor = 0;
+        self.comment_preferred_column = None;
         self.comment_vim_editor = None;
         self.comment_vim_command = None;
         self.comment_vim_pending = CommentVimPending::None;

@@ -367,6 +367,9 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                     Cow::Borrowed("   tab complete \u{00b7} \u{21b5} execute \u{00b7} esc cancel")
                 }
                 InputMode::Search => Cow::Borrowed("   \u{21b5} search \u{00b7} esc cancel"),
+                InputMode::Comment if !app.comment_vim_enabled => {
+                    Cow::Borrowed("   ↑/↓ row \u{00b7} ctrl-s save \u{00b7} esc cancel")
+                }
                 InputMode::Comment => Cow::Borrowed("   ctrl-s save \u{00b7} esc cancel"),
                 InputMode::Help => Cow::Borrowed("   / search · n/N match · q/?/esc close"),
                 InputMode::MessageDetails => Cow::Borrowed("   j/k scroll · q/esc close"),
