@@ -1406,6 +1406,9 @@ pub struct App {
     pub update_info: Option<UpdateInfo>,
     /// Accumulated digit count for {N}G jump-to-line
     pub pending_count: Option<usize>,
+    /// Source line from `--line`, applied once after the first render
+    /// (when the viewport height is known) so the target can be centered.
+    pub pending_start_line: Option<u32>,
 
     // Inline commit selector state (shown at top of diff view for multi-commit reviews)
     /// CommitInfo for commits in the current review (display order: newest first)

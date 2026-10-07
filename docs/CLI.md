@@ -47,6 +47,7 @@ take the last one given and boolean flags stay on once set, so
 | `--path` | `-p` | `PATH` | Filter the diff to a file or directory |
 | `--working-tree` | `-w` | | Include uncommitted changes and skip the target selector |
 | `--file` | | `PATH` | Open a file or directory for annotation with no VCS required |
+| `--line` | | `N` | Start with the cursor on line `N` (new side). Requires `--file` or `--path`; not with `pr` |
 | `--all-files` | `-A` | | Review every tracked file in the current repo |
 | `--stdout` | | | Print the export to stdout instead of copying to the clipboard |
 | `--no-update-check` | | | Skip the startup update check (same as `no_update_check` in the config) |
@@ -97,6 +98,21 @@ commit range instead:
 tuicr -p src/cli.rs                 # uncommitted changes to one file
 tuicr -r main..HEAD -p src/cli.rs   # that file's changes across a range
 ```
+
+### Starting at a line
+
+`--line N` puts the cursor on source line `N` of the first file in the review,
+on the new side, and centers it. It needs `--file` or `--path`, which name the
+file the line belongs to, and cannot be combined with `tuicr pr`:
+
+```bash
+tuicr --file README.md --line 42      # annotate a file, starting at line 42
+tuicr -p src/cli.rs --line 120        # uncommitted changes, starting at line 120
+```
+
+The jump works like `:N`. A line inside collapsed context expands to reach it,
+and a line outside the diff lands on the nearest line with a status message.
+Editors and viewers can use it to hand off the line the user is looking at.
 
 `--revisions` accepts leading hyphens, so revsets like `-r -3` reach the VCS
 rather than being read as another flag.
