@@ -667,6 +667,10 @@ fn main() -> anyhow::Result<()> {
                                 app.toggle_single_file_view();
                                 continue;
                             }
+                            crossterm::event::KeyCode::Char('n') => {
+                                app.relative_line_numbers = !app.relative_line_numbers;
+                                continue;
+                            }
                             _ => {}
                         }
                         // Otherwise fall through to normal handling
