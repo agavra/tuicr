@@ -264,6 +264,7 @@ Forge selection is host-driven: `parse_any_remote_url` tries Bitbucket (`bitbuck
   GitHub uses review metadata; GitLab combines `/user`, MR diff versions, approvals, and discussions; Bitbucket reads the PR's `participants` and reports account UUIDs (Cloud returns no usernames), with no commit OIDs since it does not record which commit an approval covered.
 - `get_pull_request_commit_range_diff` — structured cumulative changes for a contiguous subrange (`start_sha` is the parent of the first selected commit; `end_sha` is the last).
 - `list_review_threads` — existing forge comments + resolved/outdated state.
+- `resolve_diff_base_sha` — best-effort refinement of the reported PR base to the displayed diff's merge base; see the `base_sha` gotcha below.
 - `fetch_file_lines` — remote context expansion in the diff view.
 - `create_review` — POST a review with inline comments via `CreateReviewRequest`.
 
@@ -350,6 +351,8 @@ These are non-obvious things the implementation chain hit. Worth preserving for 
 20. **Gitea reports a mode-only change as file status `unchanged`.** It still emits a `diff --git` block, so the file must stay in the metadata list or every later file pairs against the wrong patch.
 
 21. **`e` in PR mode must not resolve against the working tree.** PR review installs `PrNoopVcs`, so there is no local VCS to ask, and `vcs_info.root_path` is the synthetic `forge:host/owner/repo` identity — the checkout can be on any branch, or absent. Editor targets go through `App::pr_editor_target`, which reads the reviewed revision (local blob via `forge::local_git::read_blob`, else `ForgeBackend::fetch_file_content`) and only hands over the worktree file when its content matches. Related: `fetch_file_lines` runs content through `slice_context_lines`, which expands tabs, so it is never byte-faithful — anything that writes content back to disk must use `fetch_file_content`.
+
+22. **`base_sha` means the merge base, not the base branch tip.** The old side of a three-dot PR patch lives at `merge-base(base, head)`. GitHub's `baseRefOid`, Azure's `lastMergeTargetCommit`, and Bitbucket's `destination.commit.hash` can instead report the base branch tip. `ForgeBackend::resolve_diff_base_sha` reconciles this once in `fetch_pr_data`, before fetching the patch, so context expansion, PR editor snapshots, and the commit-range fallback parent use the same revision. GitHub and Bitbucket resolve locally first and fall back to their compare/merge-base APIs; Azure resolves locally. GitLab and Gitea already report the merge base, and Gerrit uses the change's parent. Resolution is best-effort: `None` leaves the reported base unchanged. Same-head reloads must refresh `diff_source.pr.base_sha` too, including when a PR is retargeted.
 
 ### Keeping Docs Updated
 

@@ -595,6 +595,10 @@ impl App {
                 &opened.commits,
                 &opened.review_metadata,
             );
+            // Keep the active base in sync even when the head has not changed.
+            if let DiffSource::PullRequest(pr) = &mut self.diff_source {
+                pr.base_sha = opened.details.base_sha.clone();
+            }
             self.diff_files = opened.diff_files;
             self.pr_info = Some(opened.pr_info);
             self.clear_expanded_gaps();
@@ -692,6 +696,10 @@ impl App {
                 &opened.commits,
                 &opened.review_metadata,
             );
+            // Keep the active base in sync even when the head has not changed.
+            if let DiffSource::PullRequest(pr) = &mut self.diff_source {
+                pr.base_sha = opened.details.base_sha.clone();
+            }
             self.diff_files = opened.diff_files;
             self.pr_info = Some(opened.pr_info);
             self.clear_expanded_gaps();

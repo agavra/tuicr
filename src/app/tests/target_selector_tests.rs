@@ -1932,6 +1932,8 @@ fn should_keep_reviewed_state_through_finish_pr_reload_when_head_unchanged() {
         restore_overview_cursor: None,
     };
 
+    // Retargeting can change the base without changing the head.
+    details.base_sha = "retargeted-base".to_string();
     // when the async reload finish path refreshes the same head
     app.finish_pr_reload(
         details.clone(),
@@ -1946,6 +1948,10 @@ fn should_keep_reviewed_state_through_finish_pr_reload_when_head_unchanged() {
     // then reviewed file and hunk markers are preserved.
     assert!(app.session.is_file_reviewed(&stable_path));
     assert!(app.session.is_hunk_reviewed(&stable_path, &stable_key));
+    let DiffSource::PullRequest(pr) = &app.diff_source else {
+        panic!("expected PR");
+    };
+    assert_eq!(pr.base_sha, "retargeted-base");
 }
 
 #[test]
@@ -1960,7 +1966,9 @@ fn should_keep_session_when_pr_head_unchanged_on_reload() {
     ));
     app.open_pr_with_backend(&summary, backend, None).unwrap();
     let session_id_before = app.session.id.clone();
-    // when reloading with the same head
+    // when reloading with the same head but a different base
+    let mut details = details;
+    details.base_sha = "retargeted-base".to_string();
     let backend2 = Box::new(FakeForgeBackend::open_pr_details(
         details,
         crate::forge::github::gh::tests_fixture::SIMPLE_PATCH.to_string(),
@@ -1971,6 +1979,10 @@ fn should_keep_session_when_pr_head_unchanged_on_reload() {
     // then
     assert!(!changed);
     assert_eq!(app.session.id, session_id_before);
+    let DiffSource::PullRequest(pr) = &app.diff_source else {
+        panic!("expected PR");
+    };
+    assert_eq!(pr.base_sha, "retargeted-base");
 }
 
 struct FailingForgeBackend;
