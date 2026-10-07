@@ -30,9 +30,9 @@ use crate::error::{Result, TuicrError};
 use crate::forge::remote_comments::RemoteReviewThread;
 use crate::forge::submit::{GhSide, InlineComment, SubmitEvent};
 use crate::forge::traits::{
-    CreateReviewRequest, ForgeBackend, ForgeFileLinesRequest, ForgeRepository,
-    GhCreateReviewResponse, PagedPullRequests, PullRequestCommit, PullRequestDetails,
-    PullRequestListQuery, PullRequestListScope, PullRequestTarget,
+    CreateReviewRequest, ForgeBackend, ForgeFileContentRequest, ForgeFileLinesRequest,
+    ForgeRepository, GhCreateReviewResponse, PagedPullRequests, PullRequestCommit,
+    PullRequestDetails, PullRequestListQuery, PullRequestListScope, PullRequestTarget,
 };
 use crate::model::{DiffLine, FilePatch};
 use crate::process::run_command_output;
@@ -425,21 +425,21 @@ impl GerritBackend {
     }
 
     /// File content at the request's revision: local blob first, REST fallback.
-    fn file_content(&self, request: &ForgeFileLinesRequest) -> Result<String> {
+    fn file_content(&self, request: &ForgeFileContentRequest) -> Result<String> {
         if let Some(content) = self
             .local_checkout
             .as_deref()
-            .and_then(|root| read_blob(root, request.sha(), request.path.as_path()))
+            .and_then(|root| read_blob(root, &request.sha, request.path.as_path()))
         {
             return Ok(content);
         }
         // The project/commit endpoint, not the change/revision one: a
-        // `ForgeFileLinesRequest` carries SHAs but no change number, and this
+        // `ForgeFileContentRequest` carries a SHA but no change number, and this
         // shape addresses either side of the diff by its commit directly.
         let path = format!(
             "/projects/{}/commits/{}/files/{}/content",
             encode_path(&gerrit_project(&request.repository)),
-            request.sha(),
+            request.sha,
             encode_path(&request.path.to_string_lossy()),
         );
         let encoded = self.get(&request.repository, &path)?;
@@ -582,20 +582,21 @@ impl ForgeBackend for GerritBackend {
         self.local_checkout.clone()
     }
 
+    fn fetch_file_content(&self, request: ForgeFileContentRequest) -> Result<String> {
+        self.file_content(&request)
+    }
+
     fn fetch_file_lines(&self, request: ForgeFileLinesRequest) -> Result<Vec<DiffLine>> {
         if request.start_line == 0 || request.start_line > request.end_line {
             return Ok(Vec::new());
         }
-        let content = self.file_content(&request)?;
-        Ok(slice_context_lines(
-            &content,
-            request.start_line,
-            request.end_line,
-        ))
+        let (start_line, end_line) = (request.start_line, request.end_line);
+        let content = self.fetch_file_content(request.into())?;
+        Ok(slice_context_lines(&content, start_line, end_line))
     }
 
     fn file_line_count(&self, request: ForgeFileLinesRequest) -> Result<u32> {
-        let content = self.file_content(&request)?;
+        let content = self.fetch_file_content(request.into())?;
         Ok(content.lines().count() as u32)
     }
 
@@ -1824,6 +1825,27 @@ mod tests {
              /files/src%2Fdeep%2Fmain.rs/content"
         );
         assert_eq!(lines.len(), 2);
+    }
+
+    #[test]
+    fn full_file_content_preserves_tabs_at_exact_revision() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        unsafe { std::env::remove_var(URL_ENV_VAR) };
+        let content = "one\n\ttwo\nthree\n";
+        let (backend, http) = backend_with(true, vec![&BASE64.encode(content)]);
+        let fetched = backend
+            .fetch_file_content(ForgeFileContentRequest {
+                repository: gerrit_repo(),
+                sha: "exact-revision".to_string(),
+                path: PathBuf::from("src/deep/main.rs"),
+            })
+            .expect("full file content");
+
+        assert_eq!(fetched, content);
+        assert_eq!(
+            http.calls()[0].1,
+            "https://gerrit.example.com/a/projects/platform%2Fbase/commits/exact-revision/files/src%2Fdeep%2Fmain.rs/content"
+        );
     }
 
     #[test]

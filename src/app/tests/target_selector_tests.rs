@@ -1948,10 +1948,33 @@ fn should_keep_reviewed_state_through_finish_pr_reload_when_head_unchanged() {
     // then reviewed file and hunk markers are preserved.
     assert!(app.session.is_file_reviewed(&stable_path));
     assert!(app.session.is_hunk_reviewed(&stable_path, &stable_key));
+    assert_reloaded_cumulative_base(&mut app);
+}
+
+fn assert_reloaded_cumulative_base(app: &mut App) {
     let DiffSource::PullRequest(pr) = &app.diff_source else {
         panic!("expected PR");
     };
     assert_eq!(pr.base_sha, "retargeted-base");
+    // Restore the refreshed cumulative patch after viewing a subset.
+    app.range_diff_files = Some(app.diff_files.clone());
+    app.install_pr_diff_endpoints("subset-base".to_string(), "subset-head".to_string());
+    app.pr_commits = ["new", "old"]
+        .into_iter()
+        .map(|oid| crate::forge::traits::PullRequestCommit {
+            oid: oid.to_string(),
+            short_oid: oid.to_string(),
+            summary: oid.to_string(),
+            author: "author".to_string(),
+            timestamp: None,
+        })
+        .collect();
+    app.commit_selection_range = Some((0, 1));
+    app.reload_pr_inline_selection();
+    assert_eq!(
+        app.pr_diff_endpoints.as_ref().unwrap().old_sha,
+        "retargeted-base"
+    );
 }
 
 #[test]
@@ -1979,10 +2002,7 @@ fn should_keep_session_when_pr_head_unchanged_on_reload() {
     // then
     assert!(!changed);
     assert_eq!(app.session.id, session_id_before);
-    let DiffSource::PullRequest(pr) = &app.diff_source else {
-        panic!("expected PR");
-    };
-    assert_eq!(pr.base_sha, "retargeted-base");
+    assert_reloaded_cumulative_base(&mut app);
 }
 
 struct FailingForgeBackend;

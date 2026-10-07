@@ -276,7 +276,7 @@ impl App {
             Some(content) => content,
             None => match self.forge_backend.as_deref() {
                 Some(backend) => backend
-                    .fetch_file_content(request)
+                    .fetch_file_content(request.into())
                     .map_err(|err| format!("Cannot read {display_path} at {short}: {err}"))?,
                 None => {
                     return Err(format!(
