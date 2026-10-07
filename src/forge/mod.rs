@@ -30,7 +30,7 @@ use crate::forge::bitbucket::bkt::parse_bitbucket_remote_url;
 use crate::forge::gerrit::api::parse_gerrit_remote_url;
 use crate::forge::gitea::tea::parse_gitea_remote_url;
 use crate::forge::github::gh::parse_github_remote_url;
-use crate::forge::gitlab::glab::parse_gitlab_remote_url;
+use crate::forge::gitlab::glab::{parse_gitlab_remote_url, parse_gitlab_remote_url_by_hostname};
 use crate::forge::traits::ForgeRepository;
 use crate::vcs::VcsBackend;
 
@@ -142,11 +142,15 @@ pub fn parse_any_remote_url(url: &str) -> Option<ForgeRepository> {
 /// two; letting it claim unknown hosts would turn
 /// `code.example.com/git/owner/repo` into `git/owner`. Bitbucket is left out
 /// because a workspace is always one segment, so the fallback already agrees
-/// with it. Gerrit is included: its project path can be any depth, so the
+/// with it. GitLab enters as its hostname-only variant, which forgoes the
+/// `glab` config lookup that would otherwise recognize self-hosted instances on
+/// custom domains. Gerrit is included: its project path can be any depth, so the
 /// last-two-segments rule would mis-split `gerrit.example.com/platform/frameworks/base`,
 /// and its parser only reads the URL plus one env var.
 pub fn parse_any_remote_url_by_hostname(url: &str) -> Option<ForgeRepository> {
-    parse_azure_remote_url(url).or_else(|| parse_gerrit_remote_url(url))
+    parse_gitlab_remote_url_by_hostname(url)
+        .or_else(|| parse_azure_remote_url(url))
+        .or_else(|| parse_gerrit_remote_url(url))
 }
 
 /// Detect the forge repository for the local checkout at `repo_root`.
@@ -207,6 +211,10 @@ mod tests {
                 "myorg/myproject",
                 "myrepo"
             ))
+        );
+        assert_eq!(
+            parse_any_remote_url_by_hostname("git@gitlab.com:org/team/svc.git"),
+            Some(ForgeRepository::gitlab("gitlab.com", "org/team", "svc"))
         );
         // The GitHub catch-all is excluded, so anything it would have claimed
         // falls through to the caller's own rule. Were it in the chain, its

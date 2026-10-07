@@ -895,6 +895,16 @@ mod tests {
         )
     }
 
+    /// A repo in a nested GitLab group: the owner is the whole `org/team`
+    /// namespace, not just the group it sits directly under.
+    fn make_gitlab_pr_key(number: u64, head_sha: &str) -> PrSessionKey {
+        PrSessionKey::new(
+            ForgeRepository::gitlab("gitlab.com", "org/team", "svc"),
+            number,
+            head_sha.to_string(),
+        )
+    }
+
     /// A checkout with a real `origin`, so the selector's coordinate comes from
     /// the remote URL rather than the directory name.
     fn make_repo_with_origin(url: &str) -> tempfile::TempDir {
@@ -1555,6 +1565,53 @@ mod tests {
                 .iter()
                 .any(|s| s.starts_with("myorg/myproject/myrepo@main/worktree")),
             "expected the local session under an org/project owner, got {slugs:?}"
+        );
+    }
+
+    #[test]
+    fn should_find_gitlab_subgroup_pr_session_by_repo_url_coordinate() {
+        let _g = with_test_reviews_dir();
+        let reviews_dir = get_reviews_dir().unwrap();
+        let key = make_gitlab_pr_key(123, "abcdef0123456789");
+        save_session(&make_pr_session(&key)).unwrap();
+
+        let listed = list_sessions_for_selector_in_dir(
+            &reviews_dir,
+            Path::new("https://gitlab.com/org/team/svc"),
+        )
+        .unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].0, "gl:org/team/svc/pr/123");
+    }
+
+    #[test]
+    fn should_surface_gitlab_subgroup_pr_session_from_its_checkout() {
+        let _g = with_test_reviews_dir();
+        let reviews_dir = get_reviews_dir().unwrap();
+
+        let checkout = make_repo_with_origin("git@gitlab.com:org/team/svc.git");
+        save_session(&make_local_session(
+            checkout.path().to_path_buf(),
+            "abc1234",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
+            None,
+        ))
+        .unwrap();
+        let key = make_gitlab_pr_key(123, "abcdef0123456789");
+        save_session(&make_pr_session(&key)).unwrap();
+
+        let listed = list_sessions_for_selector_in_dir(&reviews_dir, checkout.path()).unwrap();
+        let slugs: Vec<&str> = listed.iter().map(|(slug, _)| slug.as_str()).collect();
+        assert!(
+            slugs.contains(&"gl:org/team/svc/pr/123"),
+            "expected the PR session, got {slugs:?}"
+        );
+        assert!(
+            slugs
+                .iter()
+                .any(|s| s.starts_with("org/team/svc@main/worktree")),
+            "expected the local session under the full namespace, got {slugs:?}"
         );
     }
 
