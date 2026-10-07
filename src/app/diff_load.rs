@@ -1159,7 +1159,9 @@ impl App {
         // would replace a current diff with a warning. The cost is that a
         // commit fetch failing over and over stays silent. The pane just stops
         // updating, which is how it behaved before this feature.
-        let commits = vcs.get_recent_commits(0, VISIBLE_COMMIT_COUNT).ok();
+        let commits = Self::pane_tracks_history(&request.diff_source)
+            .then(|| vcs.get_recent_commits(0, VISIBLE_COMMIT_COUNT).ok())
+            .flatten();
         // Same treatment, and for the same reason: staging a file leaves the
         // combined working-tree diff byte-identical, so the fingerprint above
         // reports nothing and only this can tell the pane that a side gained
@@ -1279,6 +1281,7 @@ impl App {
         fetched: Option<Vec<CommitInfo>>,
         change_status: Option<VcsChangeStatus>,
     ) -> bool {
+        let fetched = fetched.filter(|_| Self::pane_tracks_history(&self.diff_source));
         let Some(rebuilt) = self.rebuilt_commit_pane(fetched, change_status) else {
             return false;
         };
@@ -1293,6 +1296,15 @@ impl App {
             }
             CommitSelectionAnchor::Lost => false,
         }
+    }
+
+    /// Whether the pane lists HEAD's recent history. A commit-range pane lists
+    /// the range instead, so the newest-ten fetch must not replace it.
+    fn pane_tracks_history(source: &DiffSource) -> bool {
+        !matches!(
+            source,
+            DiffSource::CommitRange(_) | DiffSource::StagedUnstagedAndCommits(_)
+        )
     }
 
     /// The pane as it would look with `fetched` merged in, or `None` when
