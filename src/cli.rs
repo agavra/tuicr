@@ -28,6 +28,8 @@ pub struct CliArgs {
     pub file_path: Option<String>,
     /// Whole-repo annotation mode.
     pub all_files: bool,
+    /// Source line (new side) to put the cursor on at startup.
+    pub start_line: Option<u32>,
     /// Direct PR target from `tuicr pr <target>`.
     pub pr_target: Option<String>,
     /// Override the GitHub repo used for PR operations.
@@ -107,6 +109,11 @@ struct TuiOptions {
         conflicts_with_all = ["path_filter", "revisions", "working_tree", "all_files"],
     )]
     file_path: Option<String>,
+
+    /// Start with the cursor on this line of the file (new side). Requires
+    /// --file or --path; with several files, applies to the first.
+    #[arg(long = "line", value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
+    start_line: Option<u32>,
 
     /// Review every tracked file in the cwd's git repo.
     #[arg(
@@ -372,6 +379,7 @@ impl From<Cli> for CliArgs {
             path_filter: options.path_filter,
             file_path: options.file_path,
             all_files: options.all_files,
+            start_line: options.start_line,
             pr_target,
             repo_url: options.repo_url,
             remote: options.remote,
@@ -392,6 +400,7 @@ impl TuiOptions {
             || self.working_tree
             || self.path_filter.is_some()
             || self.file_path.is_some()
+            || self.start_line.is_some()
             || self.all_files
             || self.repo_url.is_some()
             || self.remote.is_some()
@@ -407,6 +416,7 @@ impl TuiOptions {
             working_tree: self.working_tree || later.working_tree,
             path_filter: later.path_filter.or(self.path_filter),
             file_path: later.file_path.or(self.file_path),
+            start_line: later.start_line.or(self.start_line),
             all_files: self.all_files || later.all_files,
             repo_url: later.repo_url.or(self.repo_url),
             remote: later.remote.or(self.remote),
@@ -428,6 +438,21 @@ impl Cli {
             )),
             _ => {
                 let args: CliArgs = self.into();
+                if args.start_line.is_some() && args.pr_target.is_some() {
+                    return Err(clap::Error::raw(
+                        clap::error::ErrorKind::ArgumentConflict,
+                        "--line cannot be used with `tuicr pr`\n",
+                    ));
+                }
+                if args.start_line.is_some()
+                    && args.file_path.is_none()
+                    && args.path_filter.is_none()
+                {
+                    return Err(clap::Error::raw(
+                        clap::error::ErrorKind::MissingRequiredArgument,
+                        "--line requires --file or --path\n",
+                    ));
+                }
                 if args.remote.is_some() && args.repo_url.is_some() {
                     return Err(clap::Error::raw(
                         clap::error::ErrorKind::ArgumentConflict,
@@ -522,6 +547,83 @@ mod tests {
 
     fn parse_for_test(args: &[&str]) -> Result<CliArgs, clap::Error> {
         Cli::try_parse_from(args).and_then(Cli::try_into_args)
+    }
+
+    #[test]
+    fn should_parse_line_with_file() {
+        let parsed = parse_for_test(&["tuicr", "--file", "README.md", "--line", "42"])
+            .expect("parse should succeed");
+        assert_eq!(parsed.file_path.as_deref(), Some("README.md"));
+        assert_eq!(parsed.start_line, Some(42));
+    }
+
+    #[test]
+    fn should_parse_line_with_path_filter() {
+        let parsed = parse_for_test(&["tuicr", "-w", "-p", "src/cli.rs", "--line", "7"])
+            .expect("parse should succeed");
+        assert_eq!(parsed.path_filter.as_deref(), Some("src/cli.rs"));
+        assert_eq!(parsed.start_line, Some(7));
+    }
+
+    #[test]
+    fn should_parse_line_after_tui_subcommand() {
+        let parsed = parse_for_test(&["tuicr", "tui", "--file", "a.md", "--line", "3"])
+            .expect("parse should succeed");
+        assert_eq!(parsed.start_line, Some(3));
+    }
+
+    #[test]
+    fn should_reject_line_without_file_or_path() {
+        let err = parse_for_test(&["tuicr", "--line", "42"]).expect_err("parse should fail");
+        assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
+        assert!(err.to_string().contains("--line requires --file or --path"));
+    }
+
+    #[test]
+    fn should_reject_line_with_pr_subcommand() {
+        for args in [
+            &["tuicr", "pr", "125", "-p", "src/cli.rs", "--line", "3"][..],
+            &[
+                "tuicr",
+                "tui",
+                "pr",
+                "125",
+                "-p",
+                "src/cli.rs",
+                "--line",
+                "3",
+            ][..],
+        ] {
+            let err = parse_for_test(args).expect_err("parse should fail");
+            assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
+            assert!(
+                err.to_string()
+                    .contains("--line cannot be used with `tuicr pr`")
+            );
+        }
+    }
+
+    #[test]
+    fn should_let_a_later_line_override_an_earlier_one() {
+        let parsed = parse_for_test(&[
+            "tuicr", "--line", "3", "tui", "--file", "a.md", "--line", "9",
+        ])
+        .expect("parse should succeed");
+        assert_eq!(parsed.start_line, Some(9));
+    }
+
+    #[test]
+    fn should_reject_line_zero() {
+        let err = parse_for_test(&["tuicr", "--file", "a.md", "--line", "0"])
+            .expect_err("parse should fail");
+        assert_eq!(err.kind(), ErrorKind::ValueValidation);
+    }
+
+    #[test]
+    fn should_reject_line_with_review_command() {
+        let err = parse_for_test(&["tuicr", "--line", "3", "review", "list"])
+            .expect_err("parse should fail");
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
     }
 
     #[test]

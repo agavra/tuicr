@@ -605,6 +605,7 @@ impl App {
             comment_input_annotation_offset: None,
             update_info: None,
             pending_count: None,
+            pending_start_line: None,
             review_commits: Vec::new(),
             pr_commits: Vec::new(),
             pr_last_reviewed_commit_index: None,

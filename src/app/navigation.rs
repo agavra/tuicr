@@ -440,6 +440,25 @@ impl App {
             .min(max_scroll);
     }
 
+    /// Apply the `--line` start position once the diff is on screen.
+    ///
+    /// Waits while a selector or other modal is open, and until a render
+    /// has measured the viewport, so `go_to_source_line` can center the
+    /// target. Returns true when it moved the cursor.
+    pub fn apply_pending_start_line(&mut self) -> bool {
+        if self.input_mode != InputMode::Normal
+            || self.line_annotations.is_empty()
+            || self.diff_state.viewport_height == 0
+        {
+            return false;
+        }
+        let Some(line) = self.pending_start_line.take() else {
+            return false;
+        };
+        self.go_to_source_line(line, LineSide::New);
+        true
+    }
+
     pub fn go_to_source_line(&mut self, target_lineno: u32, side: LineSide) {
         let current_file = self.diff_state.current_file_idx;
         let mut result = self.find_source_line_in_diff(target_lineno, side);

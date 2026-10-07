@@ -306,6 +306,7 @@ fn main() -> anyhow::Result<()> {
     // re-selections during the session (target selector, PR reload) honor it.
     app.commit_order = commit_order;
     app.commit_selection_start = commit_selection;
+    app.pending_start_line = cli_args.start_line;
 
     if let Err(e) = app.ensure_ephemeral_session_file() {
         startup_warnings.push(format!("Failed to initialize review session file: {e}"));
@@ -467,6 +468,14 @@ fn main() -> anyhow::Result<()> {
             terminal.draw(|frame| {
                 ui::render(frame, &mut app);
             })?;
+            // `--line` needs the viewport measured by the render above. When
+            // it moves the cursor, repaint inside the same synchronized
+            // update so the unpositioned frame is never presented.
+            if app.apply_pending_start_line() {
+                terminal.draw(|frame| {
+                    ui::render(frame, &mut app);
+                })?;
+            }
             execute!(terminal.backend_mut(), EndSynchronizedUpdate)?;
             needs_redraw = false;
         }
