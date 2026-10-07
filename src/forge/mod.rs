@@ -34,6 +34,36 @@ use crate::forge::gitlab::glab::{parse_gitlab_remote_url, parse_gitlab_remote_ur
 use crate::forge::traits::ForgeRepository;
 use crate::vcs::VcsBackend;
 
+/// Return `Some(sha)` for `git merge-base <base> <head>` when both commits
+/// are present in the checkout at `repo_root`.
+///
+/// Forge PR diffs are three-dot, so this — not the base branch tip a forge
+/// reports — is the revision the patch's old side lives at. Returns `None`
+/// when either object is missing or git fails, so callers can fall back to
+/// the forge (or leave `base_sha` unrefined). See the `base_sha` gotcha in AGENTS.md.
+pub(crate) fn local_merge_base(repo_root: &Path, base_sha: &str, head_sha: &str) -> Option<String> {
+    use std::ffi::OsStr;
+
+    for sha in [base_sha, head_sha] {
+        crate::process::run_command_output(
+            "git",
+            Some(repo_root),
+            ["cat-file", "-e", sha].iter().map(|s| OsStr::new(*s)),
+        )
+        .ok()?;
+    }
+    let output = crate::process::run_command_output(
+        "git",
+        Some(repo_root),
+        ["merge-base", base_sha, head_sha]
+            .iter()
+            .map(|s| OsStr::new(*s)),
+    )
+    .ok()?;
+    let sha = output.trim();
+    (!sha.is_empty()).then(|| sha.to_string())
+}
+
 /// Try to detect a GitHub forge repository for the local checkout at `repo_root`.
 ///
 /// Looks at the `origin` remote first, then falls back to any remote whose URL
