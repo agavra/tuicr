@@ -130,6 +130,53 @@ pub(super) fn truncate_or_pad_spans(
     }
 }
 
+/// A compiled diff search shared by navigation and rendering.
+pub(crate) struct SearchPattern {
+    regex: regex::Regex,
+    literal_folded: Option<String>,
+}
+
+impl SearchPattern {
+    pub(crate) fn new(source: &str) -> Result<Self, regex::Error> {
+        let regex = regex::RegexBuilder::new(source)
+            .case_insensitive(true)
+            .build()?;
+        // Preserve the existing Unicode folding for plain-text searches.
+        // Never fold regex syntax: e.g. \\S and \\s have different meanings.
+        let literal_folded = (!source.contains([
+            '\\', '.', '*', '+', '?', '(', ')', '|', '[', ']', '{', '}', '^', '$',
+        ]))
+        .then(|| fold_for_search(source));
+        Ok(Self {
+            regex,
+            literal_folded,
+        })
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        self.regex.as_str()
+    }
+
+    pub(crate) fn is_match(&self, text: &str) -> bool {
+        match &self.literal_folded {
+            Some(needle) => contains_fold(text, needle),
+            None => self.regex.is_match(text),
+        }
+    }
+
+    fn ranges(&self, text: &str) -> Vec<(usize, usize)> {
+        match &self.literal_folded {
+            Some(needle) => search_match_ranges(text, needle),
+            None => merge_touching_ranges(
+                self.regex
+                    .find_iter(text)
+                    .filter(|m| !m.is_empty())
+                    .map(|m| (m.start(), m.end())),
+            ),
+        }
+    }
+}
+
 fn fold_char(ch: char) -> impl Iterator<Item = char> {
     ch.to_lowercase().map(|c| if c == 'ς' { 'σ' } else { c })
 }
@@ -211,26 +258,42 @@ fn merge_touching_ranges(matches: impl Iterator<Item = (usize, usize)>) -> Vec<(
     ranges
 }
 
-pub(super) fn apply_search_highlight_pairs(
+pub(super) trait SearchMatcher {
+    fn match_ranges(&self, text: &str) -> Vec<(usize, usize)>;
+}
+
+impl SearchMatcher for str {
+    fn match_ranges(&self, text: &str) -> Vec<(usize, usize)> {
+        search_match_ranges(text, self)
+    }
+}
+
+impl SearchMatcher for SearchPattern {
+    fn match_ranges(&self, text: &str) -> Vec<(usize, usize)> {
+        self.ranges(text)
+    }
+}
+
+pub(super) fn apply_search_highlight_pairs<P: SearchMatcher + ?Sized>(
     pairs: &[(Style, String)],
-    needle_lower: &str,
+    pattern: &P,
     highlight: Style,
 ) -> Option<Vec<(Style, String)>> {
     let text: String = pairs.iter().map(|(_, t)| t.as_str()).collect();
-    let ranges = search_match_ranges(&text, needle_lower);
+    let ranges = pattern.match_ranges(&text);
     if ranges.is_empty() {
         return None;
     }
     Some(split_pairs_at_ranges(pairs, ranges, highlight))
 }
 
-pub(super) fn apply_search_highlight_text(
+pub(super) fn apply_search_highlight_text<P: SearchMatcher + ?Sized>(
     text: &str,
     style: Style,
-    needle_lower: &str,
+    pattern: &P,
     highlight: Style,
 ) -> Option<Vec<(Style, String)>> {
-    let ranges = search_match_ranges(text, needle_lower);
+    let ranges = pattern.match_ranges(text);
     if ranges.is_empty() {
         return None;
     }
@@ -241,13 +304,13 @@ pub(super) fn apply_search_highlight_text(
     ))
 }
 
-pub(super) fn apply_search_highlight_spans(
+pub(super) fn apply_search_highlight_spans<P: SearchMatcher + ?Sized>(
     spans: Vec<Span<'static>>,
-    needle_lower: &str,
+    pattern: &P,
     highlight: Style,
 ) -> Vec<Span<'static>> {
     let text: String = spans.iter().map(|span| span.content.as_ref()).collect();
-    let ranges = search_match_ranges(&text, needle_lower);
+    let ranges = pattern.match_ranges(&text);
     if ranges.is_empty() {
         return spans;
     }
@@ -537,6 +600,45 @@ mod tests {
             total_chars, width,
             "padded spans should have exactly {width} chars, got {total_chars}"
         );
+    }
+
+    #[test]
+    fn should_highlight_regex_matches_across_syntax_spans_and_unicode_boundaries() {
+        let red = Style::default().fg(Color::Red);
+        let blue = Style::default().fg(Color::Blue);
+        let hl = Style::default().bg(Color::Yellow);
+        let pairs = vec![(red, "éfoo".to_string()), (blue, "12 bar34!".to_string())];
+        let pattern = SearchPattern::new(r"(foo|bar)\d+").unwrap();
+        assert!(pattern.is_match("éfoo12 bar34!"));
+        assert_eq!(
+            apply_search_highlight_pairs(&pairs, &pattern, hl).unwrap(),
+            vec![
+                (red, "é".to_string()),
+                (red.patch(hl), "foo".to_string()),
+                (blue.patch(hl), "12".to_string()),
+                (blue, " ".to_string()),
+                (blue.patch(hl), "bar34".to_string()),
+                (blue, "!".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn should_navigate_zero_width_regex_matches_without_painting_empty_ranges() {
+        let pattern = SearchPattern::new(r"^|$").unwrap();
+        assert!(pattern.is_match("hello"));
+        assert!(pattern.ranges("hello").is_empty());
+        let pattern = SearchPattern::new(r"^|foo").unwrap();
+        assert_eq!(pattern.ranges("xfoo"), vec![(1, 4)]);
+    }
+
+    #[test]
+    fn should_preserve_unicode_folding_for_plain_search_patterns() {
+        for (text, query) in [("İstanbul", "i"), ("ΟΔΟΣ", "οδος")] {
+            let pattern = SearchPattern::new(query).unwrap();
+            assert!(pattern.is_match(text));
+            assert!(!pattern.ranges(text).is_empty());
+        }
     }
 
     #[test]

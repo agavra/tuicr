@@ -184,7 +184,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  /         ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Search within diff (case-insensitive)"),
+            Span::raw("Search within diff (case-insensitive regex)"),
         ]),
         Line::from(vec![
             Span::styled(

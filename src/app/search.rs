@@ -1,5 +1,5 @@
 use super::*;
-use crate::ui::text_utils::{contains_fold, fold_for_search};
+use crate::ui::text_utils::SearchPattern;
 use std::borrow::Cow;
 
 fn find_search_match(
@@ -113,7 +113,15 @@ impl App {
             return false;
         }
 
-        self.search_needle_lower = Some(fold_for_search(&pattern));
+        let compiled = match SearchPattern::new(&pattern) {
+            Ok(compiled) => compiled,
+            Err(err) => {
+                self.clear_search_highlight();
+                self.set_error(format!("Invalid regex: {err}"));
+                return false;
+            }
+        };
+        self.diff_search_pattern = Some(compiled);
         self.last_search_pattern = Some(pattern);
         self.recompute_search_matches();
         if self.line_annotations.is_empty() {
@@ -205,7 +213,7 @@ impl App {
 
     fn recompute_search_matches(&mut self) {
         self.search_matches_stale = false;
-        let Some(needle) = self.search_needle_lower.as_deref() else {
+        let Some(needle) = self.diff_search_pattern.as_ref() else {
             self.search_matches.clear();
             return;
         };
@@ -214,6 +222,22 @@ impl App {
         let mut last_thread_match: Option<(usize, bool)> = None;
         for line_idx in 0..self.line_annotations.len() {
             let matched = match self.line_annotations.get(line_idx) {
+                Some(AnnotatedLine::SideBySideLine {
+                    file_idx,
+                    hunk_idx,
+                    del_line_idx,
+                    add_line_idx,
+                    ..
+                }) => self
+                    .diff_files
+                    .get(*file_idx)
+                    .and_then(|file| file.hunks.get(*hunk_idx))
+                    .is_some_and(|hunk| {
+                        [del_line_idx, add_line_idx]
+                            .into_iter()
+                            .filter_map(|idx| idx.and_then(|idx| hunk.lines.get(idx)))
+                            .any(|line| needle.is_match(&line.content))
+                    }),
                 Some(AnnotatedLine::RemoteThreadLine { thread_idx, .. }) => match last_thread_match
                 {
                     Some((last_idx, last_matched)) if last_idx == *thread_idx => last_matched,
@@ -225,7 +249,7 @@ impl App {
                 },
                 _ => self
                     .line_text_for_search(line_idx, &mut pr_info_lines)
-                    .is_some_and(|text| contains_fold(&text, needle)),
+                    .is_some_and(|text| needle.is_match(&text)),
             };
             if matched {
                 matches.push(line_idx);
@@ -235,15 +259,15 @@ impl App {
         self.search_matches = matches;
     }
 
-    fn thread_matches_search(&self, thread_idx: usize, needle: &str) -> bool {
+    fn thread_matches_search(&self, thread_idx: usize, needle: &SearchPattern) -> bool {
         let Some(thread) = self.forge_review_threads.get(thread_idx) else {
             return false;
         };
-        contains_fold(&format!("github {}", thread.path), needle)
+        needle.is_match(&format!("github {}", thread.path))
             || thread
                 .comments
                 .iter()
-                .any(|comment| contains_fold(&comment.body, needle))
+                .any(|comment| needle.is_match(&comment.body))
     }
 
     pub fn clear_search_highlight(&mut self) {
@@ -268,13 +292,13 @@ impl App {
         {
             return None;
         }
-        self.search_needle_lower.as_deref()
+        self.diff_search_pattern.as_ref().map(SearchPattern::as_str)
     }
 
-    pub(crate) fn search_paint_at(&self, line_idx: usize) -> Option<&str> {
-        let needle = self.active_search_needle()?;
+    pub(crate) fn search_paint_at(&self, line_idx: usize) -> Option<&SearchPattern> {
+        self.active_search_needle()?;
         self.search_matches.binary_search(&line_idx).ok()?;
-        Some(needle)
+        self.diff_search_pattern.as_ref()
     }
 
     fn pr_info_search_lines(&self) -> Vec<String> {

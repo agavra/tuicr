@@ -1442,7 +1442,7 @@ fn render_expanded_context_line(
     theme: &Theme,
     lw: usize,
     relative_line_numbers: bool,
-    search: Option<(&str, Style)>,
+    search: Option<(&crate::ui::text_utils::SearchPattern, Style)>,
 ) {
     let indicator = cursor_indicator(*line_idx, current_line_idx);
     let line_num = if relative_line_numbers {

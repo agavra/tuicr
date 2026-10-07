@@ -20,13 +20,25 @@ Full reference. Press `?` inside tuicr for an in-app version of this list.
 | `{` / `}` | Jump to previous / next file |
 | `[` / `]` | Jump to previous / next hunk |
 | `m` / `M` | Jump to next / previous comment |
-| `/` | Search within diff (case-insensitive); matches on diff content are highlighted and the status bar shows the `[current/total]` position (headers, comments, and PR info are searchable but not highlighted) |
+| `/` | Search within diff (case-insensitive regex); matches on diff content are highlighted and the status bar shows the `[current/total]` position (headers, comments, and PR info are searchable but not highlighted) |
 | `n` / `N` | Next / previous search match (wraps around) |
 | `Esc` | Clear search-match highlighting; the pattern is kept so `n` / `N` still work |
 | `Enter` | Expand or collapse hidden context between hunks |
 | `zt` | Scroll cursor to top of screen |
 | `zz` | Center cursor on screen |
 | `zb` | Scroll cursor to bottom of screen |
+
+## Diff search
+
+Diff `/` search uses the Rust `regex` syntax, case-insensitively by default,
+like the file-tree include/exclude filters. For example, `foo|bar` matches either
+word, `^fn\s+` finds function declarations, and `foo\.bar` matches a literal dot.
+Plain-text searches keep their existing Unicode case folding. The same compiled
+pattern drives navigation and highlighting in both diff layouts; side-by-side
+columns are matched independently. Zero-width matches (such as `^`) are navigable
+but have no characters to highlight. An invalid expression reports an error
+without moving the cursor or replacing the previous valid search; `n` / `N` can
+still repeat that search. File-tree and help `/` searches remain text searches.
 
 ## Help
 
