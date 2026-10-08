@@ -191,6 +191,9 @@ pub struct AppConfig {
     /// (ASCII lowercase, no leading dot).
     pub ignore_whitespace_overrides: BTreeMap<String, bool>,
     pub wrap: Option<bool>,
+    /// Where wrapped unified diff rows continue: `"flow"` (the default) or
+    /// `"gutter"`.
+    pub wrap_style: Option<String>,
     pub relative_line_numbers: Option<bool>,
     pub export_legend: Option<bool>,
     pub cursor_line: Option<bool>,
@@ -267,6 +270,7 @@ const KNOWN_KEYS: &[&str] = &[
     "ignore_whitespace",
     "ignore_whitespace_overrides",
     "wrap",
+    "wrap_style",
     "relative_line_numbers",
     "export_legend",
     "cursor_line",
@@ -617,6 +621,7 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         ignore_whitespace,
         ignore_whitespace_overrides,
         wrap: read_bool(table, "wrap", &mut warnings),
+        wrap_style: read_enum(table, "wrap_style", &["flow", "gutter"], &mut warnings),
         export_legend: read_bool(table, "export_legend", &mut warnings),
         cursor_line: read_bool(table, "cursor_line", &mut warnings),
         search_highlight: read_bool(table, "search_highlight", &mut warnings),
@@ -1218,6 +1223,19 @@ mod tests {
                 .as_ref()
                 .and_then(|cfg| cfg.relative_line_numbers),
             Some(true)
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_parse_wrap_style() {
+        let outcome = parse_config("wrap_style = \"gutter\"\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.wrap_style.as_deref()),
+            Some("gutter")
         );
         assert!(outcome.warnings.is_empty());
     }

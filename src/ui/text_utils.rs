@@ -370,6 +370,40 @@ fn split_pairs_at_ranges(
     out
 }
 
+/// Char range `[start, end)` of `text` on each row `wrap_spans` breaks it into.
+pub(crate) fn wrapped_row_char_ranges(text: &str, width: usize) -> Vec<(usize, usize)> {
+    let mut start = 0;
+    wrap_spans(&[Span::raw(text)], width)
+        .iter()
+        .map(|row| {
+            let len: usize = row.iter().map(|span| span.content.chars().count()).sum();
+            let range = (start, start + len);
+            start += len;
+            range
+        })
+        .collect()
+}
+
+pub(super) fn wrap_spans_hanging<'a>(
+    spans: &[Span<'a>],
+    content_start: Option<usize>,
+    width: usize,
+) -> Vec<Vec<Span<'a>>> {
+    let Some((gutter, body)) = content_start.and_then(|start| spans.split_at_checked(start)) else {
+        return wrap_spans(spans, width);
+    };
+    let indent: usize = gutter.iter().map(|span| span.content.width()).sum();
+    if indent >= width {
+        return wrap_spans(spans, width);
+    }
+    let mut rows = wrap_spans(body, width - indent);
+    rows[0].splice(0..0, gutter.iter().cloned());
+    for row in &mut rows[1..] {
+        row.insert(0, Span::raw(" ".repeat(indent)));
+    }
+    rows
+}
+
 pub(super) fn wrap_spans<'a>(spans: &[Span<'a>], width: usize) -> Vec<Vec<Span<'a>>> {
     if width == 0 {
         return vec![spans.to_vec()];
@@ -778,6 +812,57 @@ mod tests {
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].style.fg, Some(Color::Cyan));
         assert_eq!(result[0].style.bg, Some(Color::Yellow));
+    }
+
+    #[test]
+    fn should_wrap_body_beside_gutter_with_blank_continuation_gutters() {
+        let green = Style::default().fg(Color::Green);
+        let blue = Style::default().fg(Color::Blue);
+        let gutter = [Span::raw(" 1 "), Span::styled("▌ ", green)];
+        for (body, width, expected) in [
+            (
+                "hello world foo",
+                11,
+                vec![" 1 ▌ hello ", "     world ", "     foo"],
+            ),
+            ("abcdefghij", 9, vec![" 1 ▌ abcd", "     efgh", "     ij"]),
+            ("中文測試", 9, vec![" 1 ▌ 中文", "     測試"]),
+            ("hello", 10, vec![" 1 ▌ hello"]),
+            ("", 10, vec![" 1 ▌ "]),
+        ] {
+            let mut spans = gutter.to_vec();
+            spans.push(Span::styled(body, blue));
+            let rows = wrap_spans_hanging(&spans, Some(gutter.len()), width);
+            let text: Vec<String> = rows
+                .iter()
+                .map(|row| row.iter().map(|span| span.content.as_ref()).collect())
+                .collect();
+            assert_eq!(text, expected);
+            assert_eq!(rows[0][1].style, green);
+            for row in rows {
+                assert!(row.iter().map(|span| span.content.width()).sum::<usize>() <= width);
+                if !body.is_empty() {
+                    assert_eq!(row.last().unwrap().style, blue);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn should_fall_back_to_plain_wrapping() {
+        let spans = [Span::raw(" 1 ▌ "), Span::raw("hello world")];
+        for width in 0..=5 {
+            assert_eq!(
+                wrap_spans_hanging(&spans, Some(1), width),
+                wrap_spans(&spans, width)
+            );
+        }
+        for content_start in [None, Some(3)] {
+            assert_eq!(
+                wrap_spans_hanging(&spans, content_start, 8),
+                wrap_spans(&spans, 8)
+            );
+        }
     }
 
     #[test]

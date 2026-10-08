@@ -1013,6 +1013,15 @@ pub enum DiffViewMode {
     SideBySide,
 }
 
+/// Where wrapped unified diff rows continue: `Flow` wraps the whole row from
+/// the left edge, `Gutter` keeps wrapped content after the line-number gutter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WrapStyle {
+    #[default]
+    Flow,
+    Gutter,
+}
+
 /// Display order for the inline commit selector. The stored `review_commits`
 /// list is always newest-first; this only flips presentation (render + input
 /// mapping), never the underlying data model.
@@ -1146,6 +1155,7 @@ pub struct App {
     pub focused_panel: FocusedPanel,
     pub diff_view_mode: DiffViewMode,
     pub relative_line_numbers: bool,
+    pub wrap_style: WrapStyle,
     /// Which side the cursor targets in side-by-side view (old/left vs
     /// new/right). Drives the `▶` caret placement and the side a new line
     /// comment attaches to. Ignored in unified view. Defaults to `New`.

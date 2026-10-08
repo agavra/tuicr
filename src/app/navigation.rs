@@ -723,6 +723,27 @@ impl App {
         }
     }
 
+    /// Char range `[start, end)` of `content` on each wrapped row of a pane
+    /// `content_width` cells wide.
+    pub(crate) fn content_row_char_ranges(
+        &self,
+        content: &str,
+        content_width: usize,
+    ) -> Vec<(usize, usize)> {
+        let rows_start_at_content =
+            self.diff_view_mode == DiffViewMode::SideBySide || self.wrap_style == WrapStyle::Gutter;
+        if self.diff_state.wrap_lines && rows_start_at_content {
+            return crate::ui::text_utils::wrapped_row_char_ranges(content, content_width);
+        }
+        // Flow-wrapped unified rows also span the gutter, so they keep this
+        // fixed-width approximation.
+        let total = content.chars().count();
+        let width = content_width.max(1);
+        (0..total.div_ceil(width).max(1))
+            .map(|row| ((row * width).min(total), ((row + 1) * width).min(total)))
+            .collect()
+    }
+
     pub fn side_at_x(
         &self,
         inner: ratatui::layout::Rect,
@@ -773,7 +794,12 @@ impl App {
         }
         let which_row = rel - walker;
         let total_chars = content.chars().count();
-        let char_offset = (which_row * geom.content_width + col_in_row).min(total_chars);
+        let (row_start, row_end) = self
+            .content_row_char_ranges(content, geom.content_width)
+            .get(which_row)
+            .copied()
+            .unwrap_or((total_chars, total_chars));
+        let char_offset = (row_start + col_in_row).min(row_end);
         Some(SelPoint {
             annotation_idx: idx,
             char_offset,

@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use ratatui::{
     Frame,
     layout::Rect,
@@ -8,7 +10,7 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{
-    App, DiffSource, ExpandDirection, FocusedPanel, GAP_EXPAND_BATCH, GapId, InputMode,
+    App, DiffSource, ExpandDirection, FocusedPanel, GAP_EXPAND_BATCH, GapId, InputMode, WrapStyle,
 };
 use crate::forge::remote_comments::PrCommentsVisibility;
 use crate::model::{FileStatus, LineOrigin, LineRange, LineSide};
@@ -22,14 +24,23 @@ use crate::ui::diff_view::{
     scroll_comment_input_into_view, skip_comment_box, unified_line_bg_style,
 };
 use crate::ui::styles;
+use crate::ui::text_utils::wrap_spans_hanging;
 use crate::vcs::git::calculate_gap;
 
-fn unified_row_height(lines: &[Line], idx: usize, wrap: bool, viewport_width: usize) -> usize {
+const GUTTER_SPANS: usize = 3;
+
+fn unified_row_height(
+    lines: &[Line],
+    idx: usize,
+    content_start: Option<usize>,
+    wrap: bool,
+    viewport_width: usize,
+) -> usize {
     if !wrap || viewport_width == 0 {
         return 1;
     }
     lines.get(idx).map_or(1, |line| {
-        crate::ui::text_utils::wrap_spans(&line.spans, viewport_width).len()
+        wrap_spans_hanging(&line.spans, content_start, viewport_width).len()
     })
 }
 
@@ -66,6 +77,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
     // Build all diff lines for infinite scroll
     // Track line index to mark the current line (cursor position)
     let mut lines: Vec<Line> = Vec::new();
+    let mut content_rows = HashSet::new();
     let mut line_idx: usize = 0;
     let current_line_idx = app.diff_state.cursor_line;
 
@@ -492,6 +504,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                 .map(|needle| (needle, search_style));
                             render_expanded_context_line(
                                 &mut lines,
+                                &mut content_rows,
                                 &mut line_idx,
                                 current_line_idx,
                                 expanded_line,
@@ -572,6 +585,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                 .map(|needle| (needle, search_style));
                             render_expanded_context_line(
                                 &mut lines,
+                                &mut content_rows,
                                 &mut line_idx,
                                 current_line_idx,
                                 expanded_line,
@@ -616,18 +630,14 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                         let style = base_style;
                         // A commit message is prose, not code: render it without
                         // line numbers, matching the side-by-side view.
-                        let line_num_str = if file.is_commit_message {
-                            " ".repeat(lw + 1)
-                        } else if app.relative_line_numbers {
-                            crate::ui::diff_view::relative_line_number_field(
-                                diff_line.new_lineno.or(diff_line.old_lineno),
-                                line_idx,
-                                current_line_idx,
-                                lw,
-                            )
-                        } else {
-                            crate::ui::diff_view::unified_line_number_field(diff_line, lw)
-                        };
+                        let line_num_str = crate::ui::diff_view::unified_line_number_field(
+                            diff_line,
+                            lw,
+                            app.relative_line_numbers,
+                            line_idx,
+                            current_line_idx,
+                            file.is_commit_message,
+                        );
                         let prefix = crate::ui::diff_view::unified_line_origin_marker(diff_line);
 
                         let indicator = cursor_indicator(line_idx, current_line_idx);
@@ -643,6 +653,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                             Span::styled(format!("{prefix} "), style),
                         ];
                         let content_start = line_spans.len();
+                        content_rows.insert(line_idx);
 
                         if let Some(ref highlighted) = diff_line.highlighted_spans {
                             for (span_style, span_text) in highlighted {
@@ -1112,6 +1123,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                             .map(|needle| (needle, search_style));
                         render_expanded_context_line(
                             &mut lines,
+                            &mut content_rows,
                             &mut line_idx,
                             current_line_idx,
                             expanded_line,
@@ -1152,6 +1164,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                             .map(|needle| (needle, search_style));
                         render_expanded_context_line(
                             &mut lines,
+                            &mut content_rows,
                             &mut line_idx,
                             current_line_idx,
                             expanded_line,
@@ -1202,13 +1215,16 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
     // place the input box off-screen and the user couldn't see what they type.
     let wrap = app.diff_state.wrap_lines;
     let viewport_width = inner.width as usize;
+    let gutter_wrap = app.wrap_style == WrapStyle::Gutter;
+    let content_start =
+        |idx: usize| (gutter_wrap && content_rows.contains(&idx)).then_some(GUTTER_SPANS);
     scroll_comment_input_into_view(
         &mut app.diff_state.scroll_offset,
         comment_input_box_range,
         comment_cursor_logical_line,
         inner.height as usize,
         lines.len(),
-        |idx| unified_row_height(&lines, idx, wrap, viewport_width),
+        |idx| unified_row_height(&lines, idx, content_start(idx), wrap, viewport_width),
     );
 
     let visible_lines_unscrolled: Vec<Line> = lines
@@ -1242,8 +1258,12 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
         if wrap && viewport_width > 0 {
             let mut heights = Vec::with_capacity(visible_lines_unscrolled_for_bg.len());
             let mut out: Vec<Line> = Vec::new();
-            for line in &visible_lines_unscrolled_for_bg {
-                let rows = crate::ui::text_utils::wrap_spans(&line.spans, viewport_width);
+            for (i, line) in visible_lines_unscrolled_for_bg.iter().enumerate() {
+                let rows = wrap_spans_hanging(
+                    &line.spans,
+                    content_start(scroll_offset + i),
+                    viewport_width,
+                );
                 heights.push(rows.len());
                 out.extend(rows.into_iter().map(Line::from));
             }
@@ -1446,6 +1466,7 @@ fn render_remote_threads_for_anchor(
 #[allow(clippy::too_many_arguments)]
 fn render_expanded_context_line(
     lines: &mut Vec<Line<'_>>,
+    content_rows: &mut HashSet<usize>,
     line_idx: &mut usize,
     current_line_idx: usize,
     expanded_line: &crate::model::DiffLine,
@@ -1455,22 +1476,20 @@ fn render_expanded_context_line(
     search: Option<(&crate::ui::text_utils::SearchPattern, Style)>,
 ) {
     let indicator = cursor_indicator(*line_idx, current_line_idx);
-    let line_num = if relative_line_numbers {
-        crate::ui::diff_view::relative_line_number_field(
-            expanded_line.new_lineno,
-            *line_idx,
-            current_line_idx,
-            lw,
-        )
-    } else {
-        crate::ui::diff_view::expanded_context_lineno_field(expanded_line, lw)
-    };
+    let line_num = crate::ui::diff_view::expanded_context_lineno_field(
+        expanded_line,
+        lw,
+        relative_line_numbers,
+        *line_idx,
+        current_line_idx,
+    );
     let mut line_spans = vec![
         Span::styled(indicator, styles::current_line_indicator_style(theme)),
         Span::styled(line_num, styles::expanded_context_style(theme)),
         Span::styled("  ", styles::expanded_context_style(theme)),
     ];
     let content_start = line_spans.len();
+    content_rows.insert(*line_idx);
     line_spans.push(Span::styled(
         expanded_line.content.clone(),
         styles::expanded_context_style(theme),
@@ -1492,7 +1511,10 @@ mod remote_comments_snapshot_tests {
     //! Render-snapshot tests for inline remote review threads in the
     //! unified diff. We drive `ui::render` against `TestBackend` and check
     //! for the provider badge text on the expected row.
-    use crate::app::{App, DiffSource, InputMode, PullRequestDiffSource};
+    use crate::app::{
+        AnnotatedLine, App, DiffSource, DiffViewMode, InputMode, PullRequestDiffSource, SelPoint,
+        VisualSelection, WrapStyle,
+    };
     use crate::error::Result as TuicrResult;
     use crate::error::TuicrError;
     use crate::forge::remote_comments::{
@@ -1724,6 +1746,17 @@ mod remote_comments_snapshot_tests {
         terminal.backend().buffer().clone()
     }
 
+    fn draw_diff(app: &mut App) -> Buffer {
+        let backend = TestBackend::new(100, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                crate::ui::diff_view::render_diff_view(frame, app, Rect::new(0, 0, 100, 12))
+            })
+            .expect("draw diff");
+        terminal.backend().buffer().clone()
+    }
+
     fn draw_unified_diff(app: &mut App) -> Buffer {
         let backend = TestBackend::new(100, 12);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -1806,6 +1839,190 @@ mod remote_comments_snapshot_tests {
             is_too_large: false,
             is_commit_message: false,
             content_hash,
+        }
+    }
+
+    #[test]
+    fn should_align_wrapped_diff_content_after_blank_gutters() {
+        for origin in [
+            LineOrigin::Addition,
+            LineOrigin::Deletion,
+            LineOrigin::Context,
+        ] {
+            for relative in [false, true] {
+                let mut file = wrapping_diff_file(1);
+                let line = &mut file.hunks[0].lines[0];
+                line.origin = origin;
+                line.old_lineno = (origin != LineOrigin::Addition).then_some(1);
+                line.new_lineno = (origin != LineOrigin::Deletion).then_some(1);
+                let mut app = make_revision_app(vec![file]);
+                app.relative_line_numbers = relative;
+                app.wrap_style = WrapStyle::Gutter;
+                app.set_diff_wrap(true);
+                let _ = draw_unified_diff(&mut app);
+                let inner = app.diff_inner_area.unwrap();
+                let gutter = crate::app::unified_gutter(app.lineno_width());
+                let content_width = (inner.width - gutter) as usize;
+                app.diff_files[0].hunks[0].lines[0].content = "x".repeat(2 * content_width + 5);
+                app.rebuild_annotations();
+                let buffer = draw_unified_diff(&mut app);
+                let annotation_idx = app
+                    .line_annotations
+                    .iter()
+                    .position(|annotation| {
+                        matches!(annotation, crate::app::AnnotatedLine::DiffLine { .. })
+                    })
+                    .unwrap();
+                let rows: Vec<usize> = app
+                    .diff_row_to_annotation
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(row, &idx)| (idx == annotation_idx).then_some(row))
+                    .collect();
+                assert_eq!(rows.len(), 3);
+                assert_eq!(
+                    crate::ui::row_height::annotation_row_height(&app, annotation_idx),
+                    3
+                );
+                for (i, row) in rows.into_iter().enumerate() {
+                    let y = inner.y + row as u16;
+                    assert_eq!(buffer[(inner.x + gutter, y)].symbol(), "x");
+                    if i == 0 {
+                        let marker = if origin == LineOrigin::Context {
+                            " "
+                        } else {
+                            "▌"
+                        };
+                        assert_eq!(buffer[(inner.x + gutter - 2, y)].symbol(), marker);
+                    } else {
+                        for x in inner.x..inner.x + gutter {
+                            assert_eq!(buffer[(x, y)].symbol(), " ");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn should_align_wrapped_code_after_comment_input_box() {
+        let mut file = wrapping_diff_file(2);
+        file.hunks[0].lines[0].content = "before the box".to_string();
+        file.hunks[0].lines[1].content = "y".repeat(190);
+        let mut app = make_revision_app(vec![file]);
+        app.wrap_style = WrapStyle::Gutter;
+        app.set_diff_wrap(true);
+        let _ = draw_unified_diff(&mut app);
+        app.enter_comment_mode(false, Some((1, LineSide::New)));
+        let mut terminal = Terminal::new(TestBackend::new(100, 40)).unwrap();
+        terminal
+            .draw(|frame| super::render_unified_diff(frame, &mut app, Rect::new(0, 0, 100, 40)))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        assert!(body_text(buffer).contains("Type your comment..."));
+        let inner = app.diff_inner_area.unwrap();
+        let gutter = crate::app::unified_gutter(app.lineno_width());
+        let rows: Vec<_> = (inner.y..inner.bottom())
+            .filter(|&y| buffer[(inner.x + gutter, y)].symbol() == "y")
+            .collect();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(buffer[(inner.x + gutter - 2, rows[0])].symbol(), "▌");
+        for &y in &rows[1..] {
+            for x in inner.x..inner.x + gutter {
+                assert_eq!(buffer[(x, y)].symbol(), " ");
+            }
+        }
+    }
+
+    #[test]
+    fn should_wrap_from_left_edge_by_default() {
+        let mut app = make_revision_app(vec![wrapping_diff_file(1)]);
+        app.set_diff_wrap(true);
+        let buffer = draw_unified_diff(&mut app);
+        let inner = app.diff_inner_area.unwrap();
+        let annotation_idx = app
+            .line_annotations
+            .iter()
+            .position(|annotation| matches!(annotation, AnnotatedLine::DiffLine { .. }))
+            .unwrap();
+        let continuation = app
+            .diff_row_to_annotation
+            .iter()
+            .enumerate()
+            .filter(|&(_, &idx)| idx == annotation_idx)
+            .nth(1)
+            .unwrap()
+            .0;
+        assert_eq!(
+            buffer[(inner.x, inner.y + continuation as u16)].symbol(),
+            "x"
+        );
+    }
+
+    #[test]
+    fn should_select_word_wrapped_rows_by_their_drawn_text() {
+        for mode in [DiffViewMode::Unified, DiffViewMode::SideBySide] {
+            let mut app = make_revision_app(vec![wrapping_diff_file(1)]);
+            app.diff_view_mode = mode;
+            app.wrap_style = WrapStyle::Gutter;
+            app.cursor_line_highlight = false;
+            app.set_diff_wrap(true);
+            let _ = draw_diff(&mut app);
+            let inner = app.diff_inner_area.unwrap();
+            let geom = app.pane_geometry(inner, LineSide::New);
+            let width = geom.content_width;
+            let content = format!("{} {} ccccc", "a".repeat(width - 3), "b".repeat(width - 2));
+            let total = content.chars().count();
+            app.diff_files[0].hunks[0].lines[0].content = content;
+            app.rebuild_annotations();
+            let _ = draw_diff(&mut app);
+            let annotation_idx = app
+                .line_annotations
+                .iter()
+                .position(|annotation| {
+                    matches!(
+                        annotation,
+                        AnnotatedLine::DiffLine { .. } | AnnotatedLine::SideBySideLine { .. }
+                    )
+                })
+                .unwrap();
+            let rows: Vec<u16> = app
+                .diff_row_to_annotation
+                .iter()
+                .enumerate()
+                .filter(|&(_, &idx)| idx == annotation_idx)
+                .map(|(row, _)| inner.y + row as u16)
+                .collect();
+            assert_eq!(rows.len(), 3, "{mode:?}");
+
+            // Rows hold "a… ", "b… " and "ccccc", so each starts after the
+            // previous row's text rather than at a multiple of the width.
+            let row_starts: Vec<usize> = rows
+                .iter()
+                .map(|&y| {
+                    app.cell_to_sel_point(geom.content_x_start, y)
+                        .unwrap()
+                        .char_offset
+                })
+                .collect();
+            assert_eq!(row_starts, [0, width - 2, 2 * width - 3], "{mode:?}");
+
+            let point = |char_offset| SelPoint {
+                annotation_idx,
+                char_offset,
+                side: LineSide::New,
+            };
+            app.visual_selection = Some(VisualSelection {
+                anchor: point(0),
+                head: point(total),
+            });
+            let buffer = draw_diff(&mut app);
+            let selected = |col: usize, y: u16| {
+                buffer[(geom.content_x_start + col as u16, y)].bg == app.theme.bg_highlight
+            };
+            assert!(selected(width - 3, rows[0]), "{mode:?}");
+            assert!(!selected(width - 2, rows[0]), "{mode:?}");
+            assert!(selected(4, rows[2]), "{mode:?}");
         }
     }
 
