@@ -1877,3 +1877,34 @@ fn should_refresh_only_the_synthetic_rows_of_a_range_with_working_tree_pane() {
         ],
     );
 }
+
+/// A plain `-r` review never shows working-tree rows. Adding them on a dirty
+/// tree let a whole-range selection, or a narrowing onto them, pull in
+/// uncommitted changes.
+#[test]
+fn should_not_add_working_tree_rows_to_a_commit_range_pane() {
+    let ids = vec!["c1".to_string(), "c2".to_string()];
+    let mut app = build_app(vec![], DiffSource::CommitRange(ids.clone()));
+    app.review_commits = vec![watch_commit("c2"), watch_commit("c1")];
+    app.commit_selection_range = Some((0, 1));
+
+    let request = DiffWatchReloadRequest {
+        diff_source: DiffSource::CommitRange(ids),
+        commit_selection_range: Some((0, 1)),
+    };
+    deliver(
+        &mut app,
+        request.clone(),
+        DiffWatchReloadEvent::Done {
+            request,
+            result: Ok(None),
+            change_status: Some(VcsChangeStatus {
+                staged: true,
+                unstaged: true,
+            }),
+            commits: None,
+        },
+    );
+
+    assert_eq!(pane_summaries(&app), ["commit c2", "commit c1"]);
+}
