@@ -812,7 +812,7 @@ fn is_simple_sparse_path(pattern: &str) -> bool {
 fn build_untracked_diff_file(
     path: &Path,
     full_path: &Path,
-    highlighter: &SyntaxHighlighter,
+    _highlighter: &SyntaxHighlighter,
 ) -> Option<DiffFile> {
     let metadata = full_path.metadata().ok()?;
     if metadata.len() > MAX_UNTRACKED_FILE_SIZE {
@@ -834,7 +834,6 @@ fn build_untracked_diff_file(
         return Some(diff_file_without_hunks(path, false, false));
     }
 
-    let highlighted = highlighter.highlight_file_lines(path, &lines);
     let diff_lines: Vec<DiffLine> = lines
         .into_iter()
         .enumerate()
@@ -843,13 +842,7 @@ fn build_untracked_diff_file(
             content,
             old_lineno: None,
             new_lineno: Some((idx + 1) as u32),
-            highlighted_spans: highlighter.highlighted_line_for_diff_with_background(
-                None,
-                highlighted.as_deref(),
-                None,
-                Some(idx),
-                LineOrigin::Addition,
-            ),
+            highlighted_spans: None,
         })
         .collect();
 

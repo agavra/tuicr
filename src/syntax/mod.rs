@@ -291,14 +291,14 @@ impl SyntaxHighlighter {
     }
 
     /// Recompute `highlighted_spans` for every line of `hunk` in place, using
-    /// this highlighter. Mirrors the exact recipe `diff_parser::parse_hunk`
-    /// runs when a hunk is first parsed -- it only needs each line's already
-    /// -cached `content`/`origin`, so it reproduces identical output to a
-    /// fresh parse under this highlighter without re-reading the patch text.
+    /// this highlighter. Use it for all per-hunk coloring: `app/coloring.rs`
+    /// calls it as hunks scroll into view, and theme changes call it to
+    /// recolor. It reads only each line's cached `content`/`origin`, never
+    /// the patch text.
     ///
-    /// No-ops for container-grammar files (`needs_full_file_highlight`):
-    /// those need real full-file content this cache doesn't retain, so their
-    /// spans are left untouched rather than highlighted out of context.
+    /// Skip container-grammar files (`needs_full_file_highlight`): they need
+    /// full-file content this cache doesn't hold, so keep their existing spans
+    /// rather than color them out of context.
     pub(crate) fn rehighlight_hunk_in_place(&self, hunk: &mut DiffHunk, file_path: &Path) {
         if needs_full_file_highlight(file_path) {
             return;

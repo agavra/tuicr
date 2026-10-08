@@ -1152,7 +1152,7 @@ mod tests {
         let calls = backend.runner.calls.borrow();
         assert_eq!(
             calls[1][1],
-            format!("/2.0/repositories/example-workspace/repo/commit/7d9bf1fa670a")
+            "/2.0/repositories/example-workspace/repo/commit/7d9bf1fa670a".to_string()
         );
     }
 
