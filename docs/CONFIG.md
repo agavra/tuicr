@@ -333,7 +333,7 @@ The top-level `export_legend` key predates this section and still works. When bo
 
 tuicr reads `.tuicrignore` from the repository root and excludes matching files from all review diffs. Rules follow gitignore-style pattern matching, including `!` negation.
 
-`.gitignore` is also honored automatically.
+`.gitignore` files are also honored automatically, at every directory level the way git applies them: a nested `.gitignore` can re-include what a parent one ignores.
 
 Example:
 
