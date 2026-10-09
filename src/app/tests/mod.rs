@@ -10,6 +10,7 @@ mod diff_watch_tests;
 mod expand_gap_tests;
 mod file_filter_tests;
 mod find_source_line_tests;
+mod locked_comment_tests;
 mod persistence_merge_tests;
 mod pr_info_tests;
 pub(in crate::app) mod render_perf_tests;
