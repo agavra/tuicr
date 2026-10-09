@@ -1802,3 +1802,109 @@ fn should_follow_the_same_commit_when_rows_shift_beneath_the_cursor() {
         "the cursor should still be on c1, not on whatever row index 1 now holds"
     );
 }
+
+/// A `-r` pane lists the range, not HEAD's history. Installing the watch's
+/// newest-ten fetch over it cut a 12-commit range down to its newest 10.
+#[test]
+fn should_keep_a_commit_range_pane_when_a_watch_result_carries_commits() {
+    let range: Vec<CommitInfo> = (1..=12)
+        .rev()
+        .map(|n| watch_commit(&format!("c{n}")))
+        .collect();
+    let ids: Vec<String> = range.iter().rev().map(|c| c.id.clone()).collect();
+    let mut app = build_app(vec![], DiffSource::CommitRange(ids.clone()));
+    app.review_commits = range.clone();
+    app.commit_selection_range = Some((0, 11));
+
+    let request = DiffWatchReloadRequest {
+        diff_source: DiffSource::CommitRange(ids),
+        commit_selection_range: Some((0, 11)),
+    };
+    deliver(
+        &mut app,
+        request.clone(),
+        DiffWatchReloadEvent::Done {
+            request,
+            result: Ok(None),
+            change_status: None,
+            commits: Some(range[..10].to_vec()),
+        },
+    );
+
+    assert_eq!(
+        app.review_commits, range,
+        "the range must keep all 12 commits"
+    );
+}
+
+/// `-r -w` keeps the range's commits but still tracks the synthetic rows.
+#[test]
+fn should_refresh_only_the_synthetic_rows_of_a_range_with_working_tree_pane() {
+    let ids = vec!["c1".to_string(), "c2".to_string()];
+    let mut app = build_app(vec![], DiffSource::StagedUnstagedAndCommits(ids.clone()));
+    app.review_commits = vec![
+        App::unstaged_commit_entry(),
+        watch_commit("c2"),
+        watch_commit("c1"),
+    ];
+    app.commit_selection_range = Some((0, 2));
+
+    let request = DiffWatchReloadRequest {
+        diff_source: DiffSource::StagedUnstagedAndCommits(ids),
+        commit_selection_range: Some((0, 2)),
+    };
+    deliver(
+        &mut app,
+        request.clone(),
+        DiffWatchReloadEvent::Done {
+            request,
+            result: Ok(None),
+            change_status: Some(VcsChangeStatus {
+                staged: true,
+                unstaged: true,
+            }),
+            commits: Some(vec![watch_commit("c3"), watch_commit("c2")]),
+        },
+    );
+
+    assert_eq!(
+        pane_summaries(&app),
+        [
+            "Unstaged changes",
+            "Staged changes",
+            "commit c2",
+            "commit c1"
+        ],
+    );
+}
+
+/// A plain `-r` review never shows working-tree rows. Adding them on a dirty
+/// tree let a whole-range selection, or a narrowing onto them, pull in
+/// uncommitted changes.
+#[test]
+fn should_not_add_working_tree_rows_to_a_commit_range_pane() {
+    let ids = vec!["c1".to_string(), "c2".to_string()];
+    let mut app = build_app(vec![], DiffSource::CommitRange(ids.clone()));
+    app.review_commits = vec![watch_commit("c2"), watch_commit("c1")];
+    app.commit_selection_range = Some((0, 1));
+
+    let request = DiffWatchReloadRequest {
+        diff_source: DiffSource::CommitRange(ids),
+        commit_selection_range: Some((0, 1)),
+    };
+    deliver(
+        &mut app,
+        request.clone(),
+        DiffWatchReloadEvent::Done {
+            request,
+            result: Ok(None),
+            change_status: Some(VcsChangeStatus {
+                staged: true,
+                unstaged: true,
+            }),
+            commits: None,
+        },
+    );
+
+    assert_eq!(pane_summaries(&app), ["commit c2", "commit c1"]);
+}
