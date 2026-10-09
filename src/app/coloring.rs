@@ -141,6 +141,28 @@ mod tests {
         assert!(!is_colored(&app, 0));
     }
 
+    /// Without a full-file pass (PR mode, --file, files over 1MB) a docstring
+    /// hunk still gets hunk-local colors, as it did before the full-file pass existed.
+    #[test]
+    fn should_color_python_docstring_hunks_when_no_full_file_pass_ran() {
+        let mut file = uncolored_file("src/mod.py", 5);
+        file.hunks[0].lines[2].content = "    \"\"\"".to_string();
+        let mut app = app_with(vec![file]);
+
+        app.color_visible_hunks(24);
+
+        assert!(is_colored(&app, 0));
+    }
+
+    #[test]
+    fn should_color_python_hunks_without_a_docstring_delimiter() {
+        let mut app = app_with(vec![uncolored_file("src/mod.py", 5)]);
+
+        app.color_visible_hunks(24);
+
+        assert!(is_colored(&app, 0));
+    }
+
     #[test]
     fn should_not_revisit_a_hunk_no_grammar_can_color() {
         let mut app = app_with(vec![uncolored_file("notes.zzzzz", 5)]);
