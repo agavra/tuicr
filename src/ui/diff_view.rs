@@ -66,8 +66,26 @@ pub(super) fn hidden_lines_body_text(count: usize) -> String {
 
 /// Unified-mode line-number gutter field for a diff line — a right-aligned
 /// number followed by a single space, or all spaces when the side is absent.
-pub(super) fn unified_line_number_field(dl: &DiffLine, lw: usize) -> String {
+pub(super) fn unified_line_number_field(
+    dl: &DiffLine,
+    lw: usize,
+    relative_line_numbers: bool,
+    line_idx: usize,
+    current_line_idx: usize,
+    is_commit_message: bool,
+) -> String {
     let blank = || " ".repeat(lw + 1);
+    if is_commit_message {
+        return blank();
+    }
+    if relative_line_numbers {
+        return relative_line_number_field(
+            dl.new_lineno.or(dl.old_lineno),
+            line_idx,
+            current_line_idx,
+            lw,
+        );
+    }
     let format_n = |n: u32| format!("{n:>lw$} ");
     match dl.origin {
         LineOrigin::Addition => dl.new_lineno.map(format_n).unwrap_or_else(blank),
@@ -138,7 +156,16 @@ pub(super) fn binary_or_empty_label(file: &DiffFile) -> &'static str {
 
 /// Line-number gutter field for an expanded-context row (uses new-side
 /// numbers only).
-pub(super) fn expanded_context_lineno_field(dl: &DiffLine, lw: usize) -> String {
+pub(super) fn expanded_context_lineno_field(
+    dl: &DiffLine,
+    lw: usize,
+    relative_line_numbers: bool,
+    line_idx: usize,
+    current_line_idx: usize,
+) -> String {
+    if relative_line_numbers {
+        return relative_line_number_field(dl.new_lineno, line_idx, current_line_idx, lw);
+    }
     dl.new_lineno
         .map(|n| format!("{n:>lw$} "))
         .unwrap_or_else(|| " ".repeat(lw + 1))
@@ -533,9 +560,12 @@ fn paint_annotation_group(
         return;
     }
 
+    let row_ranges = app.content_row_char_ranges(content, paint.geom.content_width);
     for which_row in 0..group_height {
-        let row_char_start = which_row * paint.geom.content_width;
-        let row_char_end = row_char_start + paint.geom.content_width;
+        let (row_char_start, row_char_end) = row_ranges
+            .get(which_row)
+            .copied()
+            .unwrap_or((total_chars, total_chars));
         let isect_lo = lo.max(row_char_start);
         let isect_hi = hi.min(row_char_end);
         if isect_hi <= isect_lo {
