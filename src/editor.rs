@@ -83,12 +83,24 @@ impl EditorCommand {
         Self { program, args }
     }
 
+    /// The program and arguments actually handed to the OS launcher.
+    ///
+    /// `$EDITOR` is expanded without a shell, so on Windows the command name
+    /// has to be resolved here rather than by `Command`. See
+    /// [`resolve_command`].
+    fn spawn_spec(&self) -> (OsString, Vec<OsString>) {
+        let lookup = host_command_lookup();
+        let resolved = resolve_command(&self.program, &lookup);
+        launch_command(&resolved, &self.args)
+    }
+
     /// Runs the prepared editor command and waits for it to exit.
     ///
     /// The caller owns terminal suspension and restoration around this process
     /// boundary.
     pub fn run(&self) -> std::io::Result<std::process::ExitStatus> {
-        Command::new(&self.program).args(&self.args).status()
+        let (program, args) = self.spawn_spec();
+        Command::new(program).args(args).status()
     }
 
     /// Runs the prepared editor command with stdin/stdout/stderr re-attached
@@ -110,8 +122,9 @@ impl EditorCommand {
             let stdin = OpenOptions::new().read(true).open("/dev/tty")?;
             let stdout = OpenOptions::new().write(true).open("/dev/tty")?;
             let stderr = OpenOptions::new().write(true).open("/dev/tty")?;
-            Command::new(&self.program)
-                .args(&self.args)
+            let (program, args) = self.spawn_spec();
+            Command::new(program)
+                .args(args)
                 .stdin(Stdio::from(stdin))
                 .stdout(Stdio::from(stdout))
                 .stderr(Stdio::from(stderr))
@@ -129,8 +142,9 @@ impl EditorCommand {
     /// TUI, which stays on screen for the whole handoff. The caller polls the
     /// returned handle so the finished process gets cleaned up.
     pub fn spawn_detached(&self) -> std::io::Result<EditorLaunch> {
-        let child = Command::new(&self.program)
-            .args(&self.args)
+        let (program, args) = self.spawn_spec();
+        let child = Command::new(program)
+            .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -208,10 +222,7 @@ pub enum EditorSurface {
 /// GUI editor costs a flicker, while not suspending for a terminal editor
 /// leaves two programs fighting over the same screen.
 fn is_windowed_editor(program: &str) -> bool {
-    let name = Path::new(program)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or(program);
+    let name = program_stem(program);
     matches!(
         name,
         "code"
@@ -253,15 +264,209 @@ fn resolve_editor(editor_override: Option<&str>, env_editor: &str) -> String {
 }
 
 fn editor_family(program: &str) -> EditorFamily {
-    let name = Path::new(program)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or(program);
+    let name = program_stem(program);
     match name {
         "vi" | "vim" | "nvim" | "nano" | "emacs" | "emacsclient" | "hx" => EditorFamily::PlusLine,
         "code" | "code-insiders" | "codium" | "cursor" => EditorFamily::GotoLine,
         _ => EditorFamily::Plain,
     }
+}
+
+/// Extensions only a command interpreter can execute.
+///
+/// `CreateProcess` runs `.exe` and `.com` files directly but cannot execute a
+/// batch file, so `.cmd` and `.bat` have to be handed to `cmd.exe /C`.
+const BATCH_EXTENSIONS: [&str; 2] = ["cmd", "bat"];
+
+/// Every suffix Windows treats as an executable command name.
+const EXECUTABLE_EXTENSIONS: [&str; 4] = ["exe", "com", "cmd", "bat"];
+
+/// Extensions Windows falls back to when `PATHEXT` is unset.
+const DEFAULT_PATHEXT: &str = ".COM;.EXE;.BAT;.CMD";
+
+/// A command name resolved the way the host would launch it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedProgram {
+    /// What the OS launcher is handed: the program as typed, or the file
+    /// found on the search path.
+    program: OsString,
+    /// Whether the file is a batch script, which needs a command interpreter.
+    via_shell: bool,
+}
+
+impl ResolvedProgram {
+    /// The program exactly as the user wrote it.
+    fn as_typed(program: &str) -> Self {
+        Self {
+            program: OsString::from(program),
+            via_shell: false,
+        }
+    }
+}
+
+/// How this host turns a bare command name into a program to run.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct CommandLookup {
+    /// `PATH` entries, in search order.
+    search_path: Vec<PathBuf>,
+    /// The `PATHEXT` list, lowercased. `None` means the host does not resolve
+    /// command names through an extension list at all.
+    pathext: Option<Vec<String>>,
+}
+
+/// The lookup this host performs for a bare command name.
+///
+/// `Command` expands no shell, and on Windows it only ever appends `.exe` to a
+/// bare name: it never reads `PATHEXT`. So `code` is not found on a machine
+/// where VS Code ships `code.cmd`, and the launch fails with "program not
+/// found" even though the very same command works in the user's shell. Doing
+/// the `PATHEXT` lookup here is what makes those editors launchable.
+///
+/// Unix resolves a command from `PATH` alone and has no `PATHEXT`, so it
+/// reports an empty lookup and [`resolve_command`] hands the program through
+/// untouched. `cfg!` rather than `#[cfg]` keeps the Windows branch compiled -
+/// and linted - on every platform.
+fn host_command_lookup() -> CommandLookup {
+    if cfg!(windows) {
+        let search_path = std::env::var_os("PATH")
+            .map(|path| std::env::split_paths(&path).collect())
+            .unwrap_or_default();
+        let pathext = std::env::var("PATHEXT").ok();
+        CommandLookup {
+            search_path,
+            pathext: Some(pathext_candidates(pathext.as_deref())),
+        }
+    } else {
+        CommandLookup::default()
+    }
+}
+
+/// Resolves a bare `program` name against a host lookup.
+///
+/// Returns the program untouched when it names a path the user spelled out,
+/// when the host does not use an extension list, or when nothing on the search
+/// path carries a listed extension - in that last case the OS reports its own
+/// "program not found" error, exactly as before.
+fn resolve_command(program: &str, lookup: &CommandLookup) -> ResolvedProgram {
+    if !is_bare_command_name(program) {
+        return ResolvedProgram::as_typed(program);
+    }
+    let Some(found) = find_command_on_path(program, lookup) else {
+        return ResolvedProgram::as_typed(program);
+    };
+    ResolvedProgram {
+        program: OsString::from(&found),
+        via_shell: is_batch_file(&found),
+    }
+}
+
+/// The program and arguments to hand the OS launcher.
+///
+/// A batch launcher is wrapped in `cmd.exe /C` because `CreateProcess` cannot
+/// execute one. The editor's own arguments - its flags, and the line
+/// navigation syntax chosen for it - follow the script path unchanged, so
+/// `EDITOR=code` still opens `code.cmd` straight at the requested line.
+fn launch_command(resolved: &ResolvedProgram, args: &[OsString]) -> (OsString, Vec<OsString>) {
+    if !resolved.via_shell {
+        return (resolved.program.clone(), args.to_vec());
+    }
+    let mut wrapped = Vec::with_capacity(args.len() + 2);
+    wrapped.push(OsString::from("/C"));
+    wrapped.push(resolved.program.clone());
+    wrapped.extend(args.iter().cloned());
+    (OsString::from("cmd.exe"), wrapped)
+}
+
+/// Whether `program` is a bare command name rather than a path the user
+/// spelled out.
+///
+/// A path is a file the user named: rewriting it would paper over a typo.
+fn is_bare_command_name(program: &str) -> bool {
+    !program.is_empty()
+        && !program.contains(['/', '\\'])
+        && Path::new(program)
+            .file_name()
+            .is_some_and(|name| name == program)
+}
+
+/// The first file on the search path that can serve as `program`.
+///
+/// Windows ranks a directory's candidates by `PATHEXT` order, so `.EXE` ahead
+/// of `.CMD` means `code` resolves to `code.exe` whenever both are installed
+/// side by side. A name that already carries an executable suffix is matched
+/// as written instead of gaining a second one.
+fn find_command_on_path(program: &str, lookup: &CommandLookup) -> Option<PathBuf> {
+    for dir in &lookup.search_path {
+        if is_executable_file_name(program) {
+            let candidate = dir.join(program);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+            continue;
+        }
+        let Some(extensions) = &lookup.pathext else {
+            return None;
+        };
+        for extension in extensions {
+            let candidate = dir.join(format!("{program}{extension}"));
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+/// The `PATHEXT` entries, lowercased, in the order Windows ranks them.
+fn pathext_candidates(pathext: Option<&str>) -> Vec<String> {
+    pathext
+        .unwrap_or(DEFAULT_PATHEXT)
+        .split(';')
+        .filter(|extension| !extension.trim().is_empty())
+        .map(|extension| extension.trim().to_ascii_lowercase())
+        .collect()
+}
+
+/// Whether only a command interpreter can execute this file.
+fn is_batch_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension_is(&BATCH_EXTENSIONS, extension))
+}
+
+/// Whether this name already carries a suffix Windows treats as executable.
+fn is_executable_file_name(name: &str) -> bool {
+    Path::new(name)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension_is(&EXECUTABLE_EXTENSIONS, extension))
+}
+
+fn extension_is(extensions: &[&str], extension: &str) -> bool {
+    let extension = extension.to_ascii_lowercase();
+    extensions.contains(&extension.as_str())
+}
+
+/// The editor's own name, without a directory or a launcher suffix.
+///
+/// `EDITOR=code` and `EDITOR=C:\...\code.cmd` have to name the same editor.
+/// Without stripping the suffix the `.cmd` spelling misses the editor family
+/// lookup, so it loses both its line-navigation syntax and its GUI surface,
+/// and a working `code.cmd` gets suspended like a terminal editor. Only the
+/// suffixes Windows itself treats as executable are stripped, so an editor
+/// whose real name contains a dot still matches nothing - as before.
+fn program_stem(program: &str) -> &str {
+    let name = Path::new(program)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(program);
+    let Some((stem, extension)) = name.rsplit_once('.') else {
+        return name;
+    };
+    if stem.is_empty() || !extension_is(&EXECUTABLE_EXTENSIONS, extension) {
+        return name;
+    }
+    stem
 }
 
 /// Error returned when handing control to the external editor fails.
@@ -513,5 +718,111 @@ mod tests {
     fn missing_env_and_config_fall_back_to_vi() {
         let command = EditorCommand::from_editor(&resolve_editor(None, ""), &target(None));
         assert_eq!(command.program, "vi");
+    }
+
+    /// A temporary directory holding one named launcher file, standing in for
+    /// a single entry of a Windows `PATH`.
+    fn launcher_dir(name: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("temp dir");
+        std::fs::write(dir.path().join(name), "@echo off\r\n").expect("write launcher");
+        dir
+    }
+
+    /// The command the OS would be handed for `editor`, with the search path
+    /// and `PATHEXT` supplied explicitly instead of read from the host.
+    fn launch_spec_for(
+        editor: &str,
+        search_path: &[PathBuf],
+        pathext: Option<&str>,
+    ) -> (String, Vec<String>) {
+        let lookup = CommandLookup {
+            search_path: search_path.to_vec(),
+            pathext: Some(pathext_candidates(pathext)),
+        };
+        let command = EditorCommand::from_editor(editor, &target(Some(42)));
+        let resolved = resolve_command(&command.program, &lookup);
+        let (program, argv) = launch_command(&resolved, &command.args);
+        let argv = argv
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        (program.to_string_lossy().into_owned(), argv)
+    }
+
+    #[test]
+    fn a_bare_vscode_command_reaches_its_cmd_launcher_and_its_line() {
+        // VS Code ships `code.cmd` on Windows and `Command` never consults
+        // PATHEXT, so this is the launch that reported "Failed to launch
+        // editor: program not found" while `code` worked in the shell.
+        let dir = launcher_dir("code.cmd");
+        let launcher = dir.path().join("code.cmd");
+        let (program, argv) = launch_spec_for("code", &[dir.path().to_path_buf()], None);
+        assert_eq!(program, "cmd.exe");
+        assert_eq!(
+            argv,
+            vec![
+                "/C".to_string(),
+                launcher.to_string_lossy().into_owned(),
+                "--goto".to_string(),
+                "/repo/src/main.rs:42".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_bat_launcher_also_goes_through_the_command_interpreter() {
+        let dir = launcher_dir("notepad.bat");
+        let (program, _) = launch_spec_for("notepad", &[dir.path().to_path_buf()], None);
+        assert_eq!(program, "cmd.exe");
+    }
+
+    #[test]
+    fn pathext_order_decides_which_launcher_wins() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        std::fs::write(dir.path().join("code.exe"), "").expect("write exe");
+        std::fs::write(dir.path().join("code.cmd"), "").expect("write cmd");
+        let search_path = [dir.path().to_path_buf()];
+        let (program, argv) = launch_spec_for("code", &search_path, Some(".EXE;.CMD"));
+        let exe = dir.path().join("code.exe").to_string_lossy().into_owned();
+        assert_eq!(program, exe);
+        assert_eq!(
+            argv,
+            vec!["--goto".to_string(), "/repo/src/main.rs:42".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_command_missing_from_the_search_path_is_left_to_the_os() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (program, argv) = launch_spec_for("code", &[dir.path().to_path_buf()], Some(".CMD"));
+        assert_eq!(program, "code");
+        assert_eq!(
+            argv,
+            vec!["--goto".to_string(), "/repo/src/main.rs:42".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_path_the_user_spelled_out_is_never_rewritten() {
+        let dir = launcher_dir("code.cmd");
+        let spelled = dir.path().join("code.cmd");
+        let search_path = [dir.path().to_path_buf()];
+        let (program, _) = launch_spec_for(&spelled.to_string_lossy(), &search_path, Some(".CMD"));
+        assert_eq!(program, spelled.to_string_lossy().into_owned());
+    }
+
+    #[test]
+    fn an_unset_pathext_falls_back_to_the_windows_default() {
+        assert_eq!(pathext_candidates(None), [".com", ".exe", ".bat", ".cmd"]);
+    }
+
+    #[test]
+    fn a_launcher_suffix_does_not_hide_the_editor_family() {
+        let installed = format!("{}code.cmd", std::path::MAIN_SEPARATOR);
+        for editor in ["code", "code.cmd", "code.exe", installed.as_str()] {
+            let command = EditorCommand::from_editor(editor, &target(Some(42)));
+            assert_eq!(args(&command), vec!["--goto", "/repo/src/main.rs:42"]);
+            assert_eq!(command.surface(), EditorSurface::Gui, "{editor}");
+        }
     }
 }
