@@ -28,9 +28,9 @@ use crate::forge::local_merge_base;
 use crate::forge::remote_comments::RemoteReviewThread;
 use crate::forge::submit::{GhSide, SubmitEvent};
 use crate::forge::traits::{
-    CreateReviewRequest, ForgeBackend, ForgeFileLinesRequest, ForgeRepository,
-    GhCreateReviewResponse, PagedPullRequests, PullRequestCommit, PullRequestDetails,
-    PullRequestListQuery, PullRequestListScope, PullRequestTarget,
+    CreateReviewRequest, ForgeBackend, ForgeFileContentRequest, ForgeFileLinesRequest,
+    ForgeRepository, GhCreateReviewResponse, PagedPullRequests, PullRequestCommit,
+    PullRequestDetails, PullRequestListQuery, PullRequestListScope, PullRequestTarget,
 };
 use crate::model::{DiffLine, FilePatch};
 use crate::process::{CommandOutputError, CommandOutputErrorKind, run_command_output};
@@ -414,7 +414,7 @@ impl AzureDevOpsBackend {
             .filter(|id| !id.is_empty()))
     }
 
-    fn fetch_file_via_api(&self, request: &ForgeFileLinesRequest) -> Result<String> {
+    fn fetch_file_via_api(&self, request: &ForgeFileContentRequest) -> Result<String> {
         let base = git_api_base(&request.repository);
         let mut path = request.path.to_string_lossy().replace('\\', "/");
         if !path.starts_with('/') {
@@ -423,7 +423,7 @@ impl AzureDevOpsBackend {
         let url = format!(
             "{base}/items?path={}&versionDescriptor.version={}&versionDescriptor.versionType=commit&$format=text",
             encode_query_value(&path),
-            request.sha(),
+            request.sha,
         );
         self.get(&request.repository, url)
     }
@@ -518,29 +518,28 @@ impl ForgeBackend for AzureDevOpsBackend {
         self.local_checkout.clone()
     }
 
-    fn fetch_file_lines(&self, request: ForgeFileLinesRequest) -> Result<Vec<DiffLine>> {
-        if request.start_line == 0 || request.start_line > request.end_line {
-            return Ok(Vec::new());
-        }
-        let (start_line, end_line) = (request.start_line, request.end_line);
-        let content = self.fetch_file_content(request)?;
-        Ok(slice_context_lines(&content, start_line, end_line))
-    }
-
-    /// File content at the request's revision: local blob first, REST fallback.
-    fn fetch_file_content(&self, request: ForgeFileLinesRequest) -> Result<String> {
-        match self
+    fn fetch_file_content(&self, request: ForgeFileContentRequest) -> Result<String> {
+        let local = self
             .local_checkout
             .as_deref()
-            .and_then(|root| read_blob(root, request.sha(), request.path.as_path()))
-        {
+            .and_then(|root| read_blob(root, &request.sha, request.path.as_path()));
+        match local {
             Some(content) => Ok(content),
             None => self.fetch_file_via_api(&request),
         }
     }
 
+    fn fetch_file_lines(&self, request: ForgeFileLinesRequest) -> Result<Vec<DiffLine>> {
+        if request.start_line == 0 || request.start_line > request.end_line {
+            return Ok(Vec::new());
+        }
+        let (start_line, end_line) = (request.start_line, request.end_line);
+        let content = self.fetch_file_content(request.into())?;
+        Ok(slice_context_lines(&content, start_line, end_line))
+    }
+
     fn file_line_count(&self, request: ForgeFileLinesRequest) -> Result<u32> {
-        let content = self.fetch_file_content(request)?;
+        let content = self.fetch_file_content(request.into())?;
         Ok(content.lines().count() as u32)
     }
 
@@ -938,6 +937,29 @@ mod tests {
     }
 
     // ---- URL parsing ----
+
+    #[test]
+    fn fetch_file_content_uses_exact_revision() {
+        let shared = SharedHttp::new(vec!["one\ntwo\n".to_string()]);
+        let backend =
+            AzureDevOpsBackend::with_transport(Some(azure_repo()), Box::new(shared.clone()));
+        let content = backend
+            .fetch_file_content(ForgeFileContentRequest {
+                repository: azure_repo(),
+                sha: "exact-revision".to_string(),
+                path: PathBuf::from("src/lib.rs"),
+            })
+            .unwrap();
+        assert_eq!(content, "one\ntwo\n");
+        let calls = shared.0.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert!(
+            calls[0]
+                .1
+                .contains("versionDescriptor.version=exact-revision")
+        );
+        assert!(calls[0].1.contains("versionDescriptor.versionType=commit"));
+    }
 
     #[test]
     fn parses_https_dev_azure_remote() {

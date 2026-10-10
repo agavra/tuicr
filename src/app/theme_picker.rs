@@ -156,6 +156,11 @@ impl App {
     /// `pub(crate)` (rather than private) so tests can exercise the
     /// rehighlight scoping directly.
     pub(crate) fn rehighlight_current_file(&mut self) {
+        // Hunk-only recoloring loses full-file parser state. Allow the selected
+        // PR file to hydrate again under the new theme on the next tick.
+        if let Some(request) = self.current_pr_file_highlight_request() {
+            self.pr_file_highlight_finished.remove(&request.key);
+        }
         let highlighter = self.theme.syntax_highlighter();
         if let Some(file) = self.diff_files.get_mut(self.diff_state.current_file_idx) {
             highlighter.rehighlight_file_in_place(file);
@@ -167,8 +172,9 @@ impl App {
     /// this is reserved for one-time actions (confirming a theme), not
     /// per-keystroke preview. No-op for container-grammar files, which need
     /// real full-file content this cache doesn't retain -- those stay stale
-    /// until an actual reload (`:e`).
+    /// until an actual reload (`:e`) or lazy PR hydration.
     pub(crate) fn rehighlight_all_files(&mut self) {
+        self.pr_file_highlight_finished.clear();
         let highlighter = self.theme.syntax_highlighter();
         for file in &mut self.diff_files {
             highlighter.rehighlight_file_in_place(file);

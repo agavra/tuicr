@@ -310,11 +310,11 @@ impl crate::forge::traits::ForgeBackend for FakeForgeBackend {
     }
     fn fetch_file_content(
         &self,
-        request: crate::forge::traits::ForgeFileLinesRequest,
+        request: crate::forge::traits::ForgeFileContentRequest,
     ) -> crate::error::Result<String> {
         match &self.error {
             Some(message) => Err(crate::error::TuicrError::Forge(message.clone())),
-            None => Ok(revision_content(request.sha())),
+            None => Ok(revision_content(&request.sha)),
         }
     }
     fn local_checkout_path(&self) -> Option<PathBuf> {

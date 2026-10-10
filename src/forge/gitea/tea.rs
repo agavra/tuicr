@@ -34,10 +34,10 @@ use crate::forge::remote_comments::{
 };
 use crate::forge::submit::{GhSide, SubmitEvent};
 use crate::forge::traits::{
-    CreateReviewRequest, ForgeBackend, ForgeFileLinesRequest, ForgeRepository,
-    GhCreateReviewResponse, PagedPullRequests, PullRequestCheckStatus, PullRequestCommit,
-    PullRequestDetails, PullRequestInfo, PullRequestIssueComment, PullRequestListQuery,
-    PullRequestListScope, PullRequestReviewMetadata, PullRequestReviewRecord,
+    CreateReviewRequest, ForgeBackend, ForgeFileContentRequest, ForgeFileLinesRequest,
+    ForgeRepository, GhCreateReviewResponse, PagedPullRequests, PullRequestCheckStatus,
+    PullRequestCommit, PullRequestDetails, PullRequestInfo, PullRequestIssueComment,
+    PullRequestListQuery, PullRequestListScope, PullRequestReviewMetadata, PullRequestReviewRecord,
     PullRequestReviewStatus, PullRequestSummary, PullRequestTarget,
 };
 use crate::model::{DiffLine, FilePatch, FileStatus};
@@ -985,31 +985,28 @@ where
             .collect())
     }
 
+    fn fetch_file_content(&self, request: ForgeFileContentRequest) -> Result<String> {
+        if let Some(content) = self
+            .local_checkout
+            .as_deref()
+            .and_then(|root| read_blob(root, &request.sha, request.path.as_path()))
+        {
+            return Ok(content);
+        }
+        self.raw_file(&request.repository, &request.sha, request.path.as_path())
+    }
+
     fn fetch_file_lines(&self, request: ForgeFileLinesRequest) -> Result<Vec<DiffLine>> {
         if request.start_line == 0 || request.start_line > request.end_line {
             return Ok(Vec::new());
         }
         let (start_line, end_line) = (request.start_line, request.end_line);
-        let content = self.fetch_file_content(request)?;
+        let content = self.fetch_file_content(request.into())?;
         Ok(slice_context_lines(&content, start_line, end_line))
     }
 
-    /// Local blob when the checkout has the PR's SHA, the raw endpoint
-    /// otherwise. The PR's exact SHAs may or may not be present locally; we
-    /// silently fall back.
-    fn fetch_file_content(&self, request: ForgeFileLinesRequest) -> Result<String> {
-        match self
-            .local_checkout
-            .as_deref()
-            .and_then(|root| read_blob(root, request.sha(), request.path.as_path()))
-        {
-            Some(content) => Ok(content),
-            None => self.raw_file(&request.repository, request.sha(), request.path.as_path()),
-        }
-    }
-
     fn file_line_count(&self, request: ForgeFileLinesRequest) -> Result<u32> {
-        let content = self.fetch_file_content(request)?;
+        let content = self.fetch_file_content(request.into())?;
         Ok(content.lines().count() as u32)
     }
 
@@ -1702,6 +1699,28 @@ mod tests {
     }
 
     // ----- response envelope -----
+
+    #[test]
+    fn fetch_file_content_uses_exact_revision() {
+        let runner =
+            FakeTeaRunner::default().route("/raw/src/lib.rs?ref=exact-revision", "one\ntwo\n");
+        let backend = GiteaTeaBackend::with_runner(Some(repo()), runner);
+        let content = backend
+            .fetch_file_content(ForgeFileContentRequest {
+                repository: repo(),
+                sha: "exact-revision".to_string(),
+                path: PathBuf::from("src/lib.rs"),
+            })
+            .unwrap();
+        assert_eq!(content, "one\ntwo\n");
+        assert!(
+            backend.runner.calls.borrow()[0]
+                .0
+                .last()
+                .unwrap()
+                .ends_with("/raw/src/lib.rs?ref=exact-revision")
+        );
+    }
 
     #[test]
     fn should_read_status_from_the_last_http_status_line() {

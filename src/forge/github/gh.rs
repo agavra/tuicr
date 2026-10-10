@@ -7,9 +7,9 @@ use crate::forge::local_git::read_blob;
 use crate::forge::local_merge_base;
 use crate::forge::remote_comments::{RemoteReviewSummary, RemoteReviewThread};
 use crate::forge::traits::{
-    ForgeBackend, ForgeFileLinesRequest, ForgeRepository, GhCreateReviewResponse,
-    PagedPullRequests, PullRequestCommit, PullRequestDetails, PullRequestInfo,
-    PullRequestListQuery, PullRequestListScope, PullRequestTarget,
+    ForgeBackend, ForgeFileContentRequest, ForgeFileLinesRequest, ForgeRepository,
+    GhCreateReviewResponse, PagedPullRequests, PullRequestCommit, PullRequestDetails,
+    PullRequestInfo, PullRequestListQuery, PullRequestListScope, PullRequestTarget,
 };
 use crate::model::{DiffLine, FilePatch};
 use crate::process::{
@@ -521,30 +521,28 @@ where
         Ok(all)
     }
 
+    fn fetch_file_content(&self, request: ForgeFileContentRequest) -> Result<String> {
+        // Local optimization: read the blob from a configured checkout when
+        // the exact forge SHA is present. Silently fall back to the forge;
+        // local working-tree contents are never authoritative for PR mode.
+        self.local_checkout
+            .as_deref()
+            .and_then(|root| read_blob(root, &request.sha, request.path.as_path()))
+            .map(Ok)
+            .unwrap_or_else(|| self.fetch_file_via_api(&request))
+    }
+
     fn fetch_file_lines(&self, request: ForgeFileLinesRequest) -> Result<Vec<DiffLine>> {
         if request.start_line == 0 || request.start_line > request.end_line {
             return Ok(Vec::new());
         }
         let (start_line, end_line) = (request.start_line, request.end_line);
-        let content = self.fetch_file_content(request)?;
+        let content = self.fetch_file_content(request.into())?;
         Ok(slice_context_lines(&content, start_line, end_line))
     }
 
-    /// Local blob when the checkout has the PR's SHA, REST otherwise. The PR's
-    /// exact SHAs may or may not be present locally; we silently fall back.
-    fn fetch_file_content(&self, request: ForgeFileLinesRequest) -> Result<String> {
-        match self
-            .local_checkout
-            .as_deref()
-            .and_then(|root| read_blob(root, request.sha(), request.path.as_path()))
-        {
-            Some(content) => Ok(content),
-            None => self.fetch_file_via_api(&request),
-        }
-    }
-
     fn file_line_count(&self, request: ForgeFileLinesRequest) -> Result<u32> {
-        let content = self.fetch_file_content(request)?;
+        let content = self.fetch_file_content(request.into())?;
         Ok(content.lines().count() as u32)
     }
 
@@ -646,19 +644,17 @@ where
         args
     }
 
-    fn fetch_file_via_api(&self, request: &ForgeFileLinesRequest) -> Result<String> {
+    fn fetch_file_via_api(&self, request: &ForgeFileContentRequest) -> Result<String> {
         // `gh api repos/<owner>/<repo>/contents/<path>?ref=<sha>` returns a
         // JSON object with base64-encoded `content` for text files. The
         // `Accept: application/vnd.github.raw` header skips JSON wrapping
         // and returns raw bytes, which we use here to keep parsing simple
         // and binary-safe (callers already gate binary files out).
         let path_str = request.path.to_string_lossy().replace('\\', "/");
+        let encoded_path = crate::forge::encode_api_path(&path_str, true);
         let endpoint = format!(
             "repos/{}/{}/contents/{}?ref={}",
-            request.repository.owner,
-            request.repository.name,
-            path_str,
-            request.sha(),
+            request.repository.owner, request.repository.name, encoded_path, request.sha,
         );
         let mut args = vec![
             "api".to_string(),
@@ -1199,6 +1195,10 @@ index 1111111..2222222 100644
                         Ok(COMPARE_JSON.to_string())
                     }
                 }
+                // gh api repos/.../contents/<path>?ref=<exact-sha>.
+                Some("api") if args.iter().any(|a| a.contains("/contents/")) => {
+                    Ok("remote file content\n".to_string())
+                }
                 _ => Err(GhCommandError::Failed {
                     status: Some(1),
                     stderr: "unexpected command".to_string(),
@@ -1351,6 +1351,25 @@ index 1111111..2222222 100644
 
     fn repo() -> ForgeRepository {
         ForgeRepository::github("github.com", "agavra", "tuicr")
+    }
+
+    #[test]
+    fn fetch_file_content_uses_exact_sha_in_github_api_request() {
+        let backend = GitHubGhBackend::with_runner(Some(repo()), FakeGhRunner::default());
+
+        let content = backend
+            .fetch_file_content(ForgeFileContentRequest {
+                repository: repo(),
+                sha: "exact-head-sha".to_string(),
+                path: PathBuf::from("dir/a #?%é.rs"),
+            })
+            .expect("file content fetch should succeed");
+
+        assert_eq!(content, "remote file content\n");
+        let calls = backend.runner.calls.borrow();
+        assert!(calls[0].iter().any(|arg| {
+            arg == "repos/agavra/tuicr/contents/dir/a%20%23%3F%25%C3%A9.rs?ref=exact-head-sha"
+        }));
     }
 
     #[test]
