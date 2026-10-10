@@ -1,22 +1,17 @@
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
-use ignore::gitignore::GitignoreBuilder;
+use ignore::Match;
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
 
 use crate::model::{DiffFile, FilePatch};
 
 /// Apply `.tuicrignore` rules from the repository root to a diff file set.
 pub fn filter_diff_files(repo_root: &Path, diff_files: Vec<DiffFile>) -> Vec<DiffFile> {
-    let Some(matcher) = load_matcher(repo_root) else {
-        return diff_files;
-    };
-
+    let mut matcher = Matcher::new(repo_root);
     diff_files
         .into_iter()
-        .filter(|file| {
-            !matcher
-                .matched_path_or_any_parents(file.display_path(), false)
-                .is_ignore()
-        })
+        .filter(|file| !matcher.is_ignored(file.display_path()))
         .collect()
 }
 
@@ -25,16 +20,13 @@ pub fn filter_diff_files(repo_root: &Path, diff_files: Vec<DiffFile>) -> Vec<Dif
 /// the syntax-highlighting cost (a large minified bundle otherwise stalls
 /// PR open even though it is excluded from the review).
 pub fn filter_file_patches(repo_root: &Path, patches: Vec<FilePatch>) -> Vec<FilePatch> {
-    let Some(matcher) = load_matcher(repo_root) else {
-        return patches;
-    };
-
+    let mut matcher = Matcher::new(repo_root);
     patches
         .into_iter()
         .filter(|patch| {
             patch
                 .display_path()
-                .is_none_or(|path| !matcher.matched_path_or_any_parents(path, false).is_ignore())
+                .is_none_or(|path| !matcher.is_ignored(path))
         })
         .collect()
 }
@@ -42,44 +34,75 @@ pub fn filter_file_patches(repo_root: &Path, patches: Vec<FilePatch>) -> Vec<Fil
 /// Apply `.tuicrignore` (and `.gitignore`, for `!`-unignore patterns) rules to a
 /// list of paths. Used by the cheap status probe to verify that survives the
 /// ignore filter without paying the full-diff cost.
-pub fn filter_paths(repo_root: &Path, paths: Vec<std::path::PathBuf>) -> Vec<std::path::PathBuf> {
-    let Some(matcher) = load_matcher(repo_root) else {
-        return paths;
-    };
-
+pub fn filter_paths(repo_root: &Path, paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut matcher = Matcher::new(repo_root);
     paths
         .into_iter()
-        .filter(|p| !matcher.matched_path_or_any_parents(p, false).is_ignore())
+        .filter(|p| !matcher.is_ignored(p))
         .collect()
-}
-
-/// Return true when repo-level ignore rules can affect tuicr's diff file list.
-pub fn has_ignore_rules(repo_root: &Path) -> bool {
-    repo_root.join(".gitignore").is_file() || repo_root.join(".tuicrignore").is_file()
 }
 
 pub fn has_tuicrignore(repo_root: &Path) -> bool {
     repo_root.join(".tuicrignore").is_file()
 }
 
-fn load_matcher(repo_root: &Path) -> Option<ignore::gitignore::Gitignore> {
-    let gitignore_file = repo_root.join(".gitignore");
-    let tuicrignore_file = repo_root.join(".tuicrignore");
+/// `.tuicrignore` at the repository root, then every `.gitignore` from a
+/// path's own directory up to the root. The first of those with a matching
+/// rule decides, so a nested `.gitignore` can re-include what a parent one
+/// ignores, as it does for git.
+struct Matcher<'a> {
+    repo_root: &'a Path,
+    tuicrignore: Option<Gitignore>,
+    /// `.gitignore` per repo-relative directory, loaded on first use.
+    gitignores: HashMap<PathBuf, Option<Gitignore>>,
+}
 
-    if !has_ignore_rules(repo_root) {
+impl<'a> Matcher<'a> {
+    fn new(repo_root: &'a Path) -> Self {
+        Self {
+            repo_root,
+            tuicrignore: load(repo_root, &repo_root.join(".tuicrignore")),
+            gitignores: HashMap::new(),
+        }
+    }
+
+    fn is_ignored(&mut self, path: &Path) -> bool {
+        if let Some(decided) = self.tuicrignore.as_ref().and_then(|m| decision(m, path)) {
+            return decided;
+        }
+        for dir in path.ancestors().skip(1) {
+            let repo_root = self.repo_root;
+            let gitignore = self.gitignores.entry(dir.to_path_buf()).or_insert_with(|| {
+                let dir = repo_root.join(dir);
+                load(&dir, &dir.join(".gitignore"))
+            });
+            let Ok(relative) = path.strip_prefix(dir) else {
+                continue;
+            };
+            if let Some(decided) = gitignore.as_ref().and_then(|m| decision(m, relative)) {
+                return decided;
+            }
+        }
+        false
+    }
+}
+
+/// `Some(true)` for an ignore rule, `Some(false)` for a `!` re-include, `None`
+/// when no rule in this file matches the path or one of its parents.
+fn decision(matcher: &Gitignore, path: &Path) -> Option<bool> {
+    match matcher.matched_path_or_any_parents(path, false) {
+        Match::None => None,
+        Match::Ignore(_) => Some(true),
+        Match::Whitelist(_) => Some(false),
+    }
+}
+
+fn load(root: &Path, file: &Path) -> Option<Gitignore> {
+    if !file.is_file() {
         return None;
     }
-
-    let mut builder = GitignoreBuilder::new(repo_root);
-
-    // Load .gitignore first so .tuicrignore rules can override with `!` patterns.
-    if gitignore_file.is_file() {
-        let _ = builder.add(&gitignore_file);
-    }
-    if tuicrignore_file.is_file() {
-        let _ = builder.add(&tuicrignore_file);
-    }
-
+    let mut builder = GitignoreBuilder::new(root);
+    let _ = builder.add(file);
     builder.build().ok()
 }
 
@@ -117,15 +140,6 @@ mod tests {
         let filtered = filter_diff_files(dir.path(), files);
 
         assert_eq!(filtered.len(), 2);
-    }
-
-    #[test]
-    fn detects_ignore_rule_files() {
-        let dir = tempdir().expect("failed to create temp dir");
-        assert!(!has_ignore_rules(dir.path()));
-
-        fs::write(dir.path().join(".gitignore"), "target/\n").expect("failed to write .gitignore");
-        assert!(has_ignore_rules(dir.path()));
     }
 
     #[test]
@@ -234,6 +248,64 @@ mod tests {
             .collect();
 
         assert_eq!(kept, vec!["src/index.ts"]);
+    }
+
+    #[test]
+    fn nested_gitignore_reincludes_what_the_root_one_ignores() {
+        let dir = tempdir().expect("failed to create temp dir");
+        fs::write(dir.path().join(".gitignore"), "**/packages/*\n")
+            .expect("failed to write .gitignore");
+        fs::create_dir(dir.path().join("ui")).expect("failed to create ui/");
+        fs::write(dir.path().join("ui/.gitignore"), "!packages/*\n")
+            .expect("failed to write ui/.gitignore");
+
+        let files = vec![
+            make_diff_file("ui/packages/utils/src/api.ts"),
+            make_diff_file("server/packages/Newtonsoft.Json/lib.dll"),
+        ];
+
+        let filtered = filter_diff_files(dir.path(), files);
+        let kept: Vec<String> = filtered
+            .iter()
+            .map(|f| f.display_path().display().to_string())
+            .collect();
+
+        assert_eq!(kept, vec!["ui/packages/utils/src/api.ts"]);
+    }
+
+    #[test]
+    fn nested_gitignore_ignores_relative_to_its_directory() {
+        let dir = tempdir().expect("failed to create temp dir");
+        fs::create_dir(dir.path().join("web")).expect("failed to create web/");
+        fs::write(dir.path().join("web/.gitignore"), "/dist\n")
+            .expect("failed to write web/.gitignore");
+
+        let files = vec![
+            make_diff_file("web/dist/bundle.js"),
+            make_diff_file("dist/release.txt"),
+        ];
+
+        let filtered = filter_diff_files(dir.path(), files);
+        let kept: Vec<String> = filtered
+            .iter()
+            .map(|f| f.display_path().display().to_string())
+            .collect();
+
+        assert_eq!(kept, vec!["dist/release.txt"]);
+    }
+
+    #[test]
+    fn tuicrignore_overrides_nested_gitignore() {
+        let dir = tempdir().expect("failed to create temp dir");
+        fs::create_dir(dir.path().join("web")).expect("failed to create web/");
+        fs::write(dir.path().join("web/.gitignore"), "*.lock\n")
+            .expect("failed to write web/.gitignore");
+        fs::write(dir.path().join(".tuicrignore"), "!web/yarn.lock\n")
+            .expect("failed to write .tuicrignore");
+
+        let files = vec![make_diff_file("web/yarn.lock")];
+
+        assert_eq!(filter_diff_files(dir.path(), files).len(), 1);
     }
 
     #[test]
