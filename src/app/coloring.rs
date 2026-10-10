@@ -1,4 +1,5 @@
 use super::*;
+use crate::vcs::file_needs_full_file_highlight;
 
 impl App {
     /// Color uncolored visible hunks. Call this before building a line.
@@ -18,20 +19,18 @@ impl App {
         unvisited
             .into_iter()
             .filter_map(|(file_idx, hunk_idx)| {
-                let DiffFile {
-                    old_path,
-                    new_path,
-                    hunks,
-                    ..
-                } = self.diff_files.get_mut(file_idx)?;
-                let path = new_path.as_deref().or(old_path.as_deref())?;
-                let hunk = hunks.get_mut(hunk_idx)?;
+                let file = self.diff_files.get_mut(file_idx)?;
+                let path = file.display_path().clone();
+                if file_needs_full_file_highlight(file, &path) {
+                    return Some(());
+                }
+                let hunk = file.hunks.get_mut(hunk_idx)?;
 
                 // only color uncolored lines
                 if hunk.lines.iter().any(|l| l.highlighted_spans.is_some()) {
                     return Some(());
                 }
-                highlighter.rehighlight_hunk_in_place(hunk, path);
+                highlighter.rehighlight_hunk_in_place(hunk, &path);
                 Some(())
             })
             .count()
@@ -139,6 +138,29 @@ mod tests {
         app.color_visible_hunks(24);
 
         assert!(!is_colored(&app, 0));
+    }
+
+    /// Leave a Python hunk uncolored when the whole-file pass could not color it
+    /// and the file has a docstring delimiter. A hunk-local parse reads the closing
+    /// `"""` as an opener and swallows every line after it.
+    #[test]
+    fn should_leave_python_docstring_hunks_uncolored() {
+        let mut file = uncolored_file("src/mod.py", 5);
+        file.hunks[0].lines[2].content = "    \"\"\"".to_string();
+        let mut app = app_with(vec![file]);
+
+        app.color_visible_hunks(24);
+
+        assert!(!is_colored(&app, 0));
+    }
+
+    #[test]
+    fn should_color_python_hunks_without_a_docstring_delimiter() {
+        let mut app = app_with(vec![uncolored_file("src/mod.py", 5)]);
+
+        app.color_visible_hunks(24);
+
+        assert!(is_colored(&app, 0));
     }
 
     #[test]

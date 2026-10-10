@@ -5,6 +5,7 @@ use std::path::Path;
 use two_face::theme::EmbeddedThemeName;
 
 use crate::model::diff_types::{DiffFile, DiffHunk, LineOrigin};
+use crate::vcs::file_needs_full_file_highlight;
 
 /// A single line of highlighted spans (style + text pairs).
 pub(crate) type HighlightedSpans = Vec<(Style, String)>;
@@ -322,9 +323,14 @@ impl SyntaxHighlighter {
     }
 
     /// Recompute `highlighted_spans` for every hunk of `file` in place. See
-    /// `rehighlight_hunk_in_place` for what this can and can't fix.
+    /// `rehighlight_hunk_in_place` for what this can and can't fix. Files
+    /// that `file_needs_full_file_highlight` flags are left untouched, since
+    /// a hunk-local parse can't highlight them correctly.
     pub(crate) fn rehighlight_file_in_place(&self, file: &mut DiffFile) {
         let file_path = file.display_path().clone();
+        if file_needs_full_file_highlight(file, &file_path) {
+            return;
+        }
         for hunk in &mut file.hunks {
             self.rehighlight_hunk_in_place(hunk, &file_path);
         }
@@ -828,34 +834,75 @@ mod tests {
     }
 
     #[test]
-    fn rehighlight_hunk_in_place_skips_container_grammar_files() {
+    fn rehighlight_file_in_place_skips_python_hunks_with_docstring_delimiter() {
         let highlighter = SyntaxHighlighter::new(
             EmbeddedThemeName::Base16EightiesDark,
             Color::Red,
             Color::Blue,
         );
-        let mut hunk = DiffHunk {
-            header: "@@ -1,1 +1,1 @@".to_string(),
-            lines: vec![DiffLine {
-                origin: LineOrigin::Addition,
-                content: "<script>let x = 1;</script>".to_string(),
-                old_lineno: None,
-                new_lineno: Some(1),
-                highlighted_spans: None,
+        let mut file = DiffFile {
+            old_path: None,
+            new_path: Some(std::path::PathBuf::from("mod.py")),
+            status: crate::model::FileStatus::Modified,
+            hunks: vec![DiffHunk {
+                header: "@@ -1,1 +1,1 @@".to_string(),
+                lines: vec![DiffLine {
+                    origin: LineOrigin::Addition,
+                    content: "    \"\"\"".to_string(),
+                    old_lineno: None,
+                    new_lineno: Some(1),
+                    highlighted_spans: None,
+                }],
+                old_start: 1,
+                old_count: 0,
+                new_start: 1,
+                new_count: 1,
             }],
-            old_start: 1,
-            old_count: 0,
-            new_start: 1,
-            new_count: 1,
+            is_binary: false,
+            is_too_large: false,
+            is_commit_message: false,
+            content_hash: 0,
         };
 
-        highlighter.rehighlight_hunk_in_place(&mut hunk, Path::new("App.vue"));
+        highlighter.rehighlight_file_in_place(&mut file);
 
-        assert!(
-            hunk.lines[0].highlighted_spans.is_none(),
-            "container-grammar files need full-file context this recipe doesn't have, \
-             so they should be left untouched rather than highlighted out of context"
+        assert!(file.hunks[0].lines[0].highlighted_spans.is_none());
+    }
+
+    #[test]
+    fn rehighlight_file_in_place_skips_container_grammar_files() {
+        let highlighter = SyntaxHighlighter::new(
+            EmbeddedThemeName::Base16EightiesDark,
+            Color::Red,
+            Color::Blue,
         );
+        let mut file = DiffFile {
+            old_path: None,
+            new_path: Some(std::path::PathBuf::from("App.vue")),
+            status: crate::model::FileStatus::Modified,
+            hunks: vec![DiffHunk {
+                header: "@@ -1,1 +1,1 @@".to_string(),
+                lines: vec![DiffLine {
+                    origin: LineOrigin::Addition,
+                    content: "<script>let x = 1;</script>".to_string(),
+                    old_lineno: None,
+                    new_lineno: Some(1),
+                    highlighted_spans: None,
+                }],
+                old_start: 1,
+                old_count: 0,
+                new_start: 1,
+                new_count: 1,
+            }],
+            is_binary: false,
+            is_too_large: false,
+            is_commit_message: false,
+            content_hash: 0,
+        };
+
+        highlighter.rehighlight_file_in_place(&mut file);
+
+        assert!(file.hunks[0].lines[0].highlighted_spans.is_none());
     }
 
     #[test]
