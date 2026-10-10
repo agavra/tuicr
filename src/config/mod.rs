@@ -177,6 +177,10 @@ pub struct AppConfig {
     /// diff. Defaults to true; toggle at runtime with `H` (file tree) or
     /// `:set reviewed!`.
     pub show_reviewed: Option<bool>,
+    /// Whether the bottom status bar is shown. Defaults to true. When false,
+    /// the mode indicator and transient messages move to the top header and
+    /// the bar only appears while typing a `:` command or `/` search.
+    pub show_status_bar: Option<bool>,
     pub diff_view: Option<String>,
     /// Inline commit selector display order: `"descending"` (newest-first,
     /// the default) or `"ascending"` (oldest-first).
@@ -264,6 +268,7 @@ const KNOWN_KEYS: &[&str] = &[
     "pr_comments_visibility",
     "show_commits",
     "show_reviewed",
+    "show_status_bar",
     "diff_view",
     "commit_order",
     "initial_commit_selection",
@@ -599,6 +604,7 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         ),
         show_commits: read_bool(table, "show_commits", &mut warnings),
         show_reviewed: read_bool(table, "show_reviewed", &mut warnings),
+        show_status_bar: read_bool(table, "show_status_bar", &mut warnings),
         diff_view: read_enum(
             table,
             "diff_view",
@@ -1236,6 +1242,16 @@ mod tests {
                 .as_ref()
                 .and_then(|cfg| cfg.wrap_style.as_deref()),
             Some("gutter")
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_parse_show_status_bar_false() {
+        let outcome = parse_config("show_status_bar = false\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.show_status_bar),
+            Some(false)
         );
         assert!(outcome.warnings.is_empty());
     }

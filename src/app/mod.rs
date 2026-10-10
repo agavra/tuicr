@@ -1461,6 +1461,10 @@ pub struct App {
     pub path_filter: Option<String>,
     /// Resolved `[export]` settings shaping the generated review markdown.
     pub export: ExportConfig,
+    /// Whether the bottom status bar is shown. Defaults to true. When false,
+    /// mode + transient messages move to the header and the bar only appears
+    /// while typing a command / search.
+    pub show_status_bar: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
