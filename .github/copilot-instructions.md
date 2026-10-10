@@ -62,7 +62,7 @@ A comment's line number lives in its `HashMap<u32, Vec<Comment>>` key — **not*
 
 ### Session keys for PR reviews
 
-`PrSessionKey { repository, number, head_sha }`. Same PR + same head SHA = same session (drafts reattach). New commit = new key = new session. Stale async results must be discarded by comparing this triple.
+`PrSessionKey { repository, number, head_sha }`. Same PR + same head SHA = same session (drafts reattach). New commit = new key = new session, seeded from the previous head's session (unchanged files keep reviewed marks and drafts) whether the head moved during a reload or between opens. Stale async results must be discarded by comparing this triple.
 
 ### `gh` API calls
 

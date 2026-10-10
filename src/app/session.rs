@@ -593,8 +593,20 @@ impl App {
     pub(in crate::app) fn opened_pr_with_persisted_session(
         opened: crate::forge::pr_open::OpenedPullRequest,
     ) -> Result<crate::forge::pr_open::OpenedPullRequest> {
-        match Self::load_pr_session_for_opened(&opened)? {
-            Some(session) => Ok(crate::forge::pr_open::OpenedPullRequest { session, ..opened }),
+        if let Some(session) = Self::load_pr_session_for_opened(&opened)? {
+            return Ok(crate::forge::pr_open::OpenedPullRequest { session, ..opened });
+        }
+        // First open since the head moved: carry the old head's review forward,
+        // as an in-app reload at a new head does.
+        match crate::persistence::load_previous_head_pr_session(&opened.key)? {
+            Some(previous) => {
+                let session = Self::reviewed_state_carried_forward(
+                    &previous,
+                    opened.session.clone(),
+                    &opened.diff_files,
+                );
+                Ok(crate::forge::pr_open::OpenedPullRequest { session, ..opened })
+            }
             None => Ok(opened),
         }
     }
