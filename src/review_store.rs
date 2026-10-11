@@ -6,6 +6,7 @@ use crate::error::{Result, TuicrError};
 use crate::model::{ClearScope, Comment, CommentType, LineRange, LineSide, ReviewSession};
 use crate::persistence::manifest::{ManifestEntry, ManifestKind};
 use crate::persistence::storage;
+pub use crate::persistence::storage::DeleteOutcome;
 
 /// File-backed access to persisted tuicr review sessions.
 #[derive(Debug, Clone, Default)]
@@ -121,14 +122,16 @@ impl ReviewStore {
         Ok(counts)
     }
 
-    /// Delete a persisted session and prune its manifest entry. Returns
-    /// `false` when there was no file to remove.
+    /// Delete a persisted session and prune its manifest entry, unless a
+    /// live tuicr has it open (checked at delete time, under the storage
+    /// lock). A file already gone from disk still has its manifest entry
+    /// pruned and reports [`DeleteOutcome::Missing`].
     ///
-    /// Unconditional: unlike quit-time cleanup this also discards sessions
-    /// that carry comments, so callers are expected to confirm first.
-    pub fn delete_review(&self, session_ref: &SessionRef) -> Result<bool> {
+    /// Unlike quit-time cleanup this also discards sessions that carry
+    /// comments, so callers are expected to confirm first.
+    pub fn delete_review(&self, session_ref: &SessionRef) -> Result<DeleteOutcome> {
         let reviews_dir = self.reviews_dir()?;
-        storage::delete_session_in_dir(session_ref.path(), &reviews_dir)
+        storage::delete_inactive_session_in_dir(session_ref.path(), &reviews_dir)
     }
 
     /// Save a session through this store's storage root.

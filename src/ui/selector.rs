@@ -1218,6 +1218,38 @@ mod selector_render_snapshot_tests {
     }
 
     #[test]
+    fn should_draw_confirm_prompt_only_while_keys_route_to_it() {
+        let render_full = |app: &mut App| {
+            let backend = TestBackend::new(120, 24);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal
+                .draw(|frame| crate::ui::app_layout::render(frame, app))
+                .expect("draw frame");
+            let buffer = terminal.backend().buffer().clone();
+            (0..buffer.area.height)
+                .map(|y| row_text(&buffer, y))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let mut app = make_app(vec![commit(0)]);
+        app.enter_confirm_mode(crate::app::ConfirmAction::DeleteSession);
+        let rendered = render_full(&mut app);
+        assert!(
+            rendered.contains("Delete this saved review?"),
+            "got:\n{rendered}"
+        );
+
+        // A prompt left behind after the mode moved on cannot be answered,
+        // so it must not be drawn.
+        app.input_mode = InputMode::Normal;
+        let rendered = render_full(&mut app);
+        assert!(
+            !rendered.contains("Delete this saved review?"),
+            "got:\n{rendered}"
+        );
+    }
+
+    #[test]
     fn should_keep_target_selector_behind_command_and_help_overlays() {
         let mut app = make_app(vec![commit(0)]);
         app.target_tab = crate::app::TargetTab::PullRequests;

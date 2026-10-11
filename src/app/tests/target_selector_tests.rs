@@ -2890,3 +2890,44 @@ fn should_discard_stale_remote_threads_event_after_switching_pr() {
     // then — stale result was dropped
     assert!(app.forge_review_threads.is_empty());
 }
+
+#[test]
+fn pr_open_landing_mid_delete_prompt_drops_the_prompt() {
+    // given — a PR open is in flight and the user raised a Sessions-tab
+    // delete prompt on the selector meanwhile
+    let _reviews = TestReviewsDir::new();
+    let mut app = build_app();
+    app.forge_repository = Some(ForgeRepository::gitlab("gitlab.com", "owner", "repo"));
+    app.pr_tab = loaded_pr_tab(vec![sample_pr(42, "answer")]);
+    let request = crate::app::PrOpenRequest {
+        repository: ForgeRepository::gitlab("gitlab.com", "owner", "repo"),
+        pr_number: 42,
+        started_at: std::time::Instant::now(),
+    };
+    app.pr_open_state = Some(request.clone());
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.pr_open_rx = Some(rx);
+    app.enter_confirm_mode(crate::app::ConfirmAction::DeleteSession);
+
+    // when — the open completes
+    let mut details = test_pr_details(42, "answer");
+    details.repository = ForgeRepository::gitlab("gitlab.com", "owner", "repo");
+    tx.send(crate::app::PrOpenEvent::Done {
+        request,
+        result: Ok((
+            details.clone(),
+            structured_patch(crate::forge::github::gh::tests_fixture::SIMPLE_PATCH),
+            Vec::new(),
+            crate::forge::traits::PullRequestReviewMetadata::default(),
+            crate::forge::traits::PullRequestInfo::from_details(details.clone()),
+        )),
+    })
+    .unwrap();
+    app.poll_pr_open_events();
+
+    // then — the prompt belonged to the selector; Normal mode cannot answer
+    // it, so it must not linger over the PR diff
+    assert!(matches!(&app.diff_source, DiffSource::PullRequest(_)));
+    assert_eq!(app.input_mode, InputMode::Normal);
+    assert_eq!(app.pending_confirm, None);
+}

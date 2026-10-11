@@ -49,6 +49,9 @@ impl App {
         // refreshed by future `gh pr view` calls in PR 6.
         self.current_pr_head = Some(details.head_sha.clone());
         self.input_mode = InputMode::Normal;
+        // A prompt raised on the selector (e.g. a Sessions-tab delete) while
+        // the PR was loading belongs to a screen that is now gone.
+        self.pending_confirm = None;
         self.focused_panel = FocusedPanel::Diff;
         self.clear_expanded_gaps();
         self.commit_list.clear();

@@ -170,24 +170,93 @@ pub(crate) fn delete_session(path: &Path) -> Result<bool> {
 
 pub(crate) fn delete_session_in_dir(path: &Path, reviews_dir: &Path) -> Result<bool> {
     maybe_migrate(reviews_dir)?;
+    with_reviews_dir_lock(reviews_dir, || delete_session_unlocked(path, reviews_dir))
+}
+
+/// Outcome of [`delete_inactive_session_in_dir`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeleteOutcome {
+    /// The session file and its manifest entry were removed.
+    Deleted,
+    /// No file was there; any manifest entry still pointing at it was pruned.
+    Missing,
+    /// Another live tuicr has the session open, so nothing was removed: its
+    /// next autosave would write the file straight back.
+    Active,
+}
+
+/// Like [`delete_session_in_dir`], but refuses a session a live tuicr has
+/// open. The active check runs under the same lock that
+/// [`mark_session_active_in_dir`] takes, so it sees the registry as of the
+/// delete, not as of whenever the caller listed sessions.
+///
+/// A process that has loaded a session but not yet registered it can still
+/// lose it here; that window is short and only costs it a recreated file.
+pub(crate) fn delete_inactive_session_in_dir(
+    path: &Path,
+    reviews_dir: &Path,
+) -> Result<DeleteOutcome> {
+    maybe_migrate(reviews_dir)?;
     with_reviews_dir_lock(reviews_dir, || {
-        if !path.exists() {
-            return Ok(false);
+        let target = normalize_active_path(path);
+        let active = load_active_sessions_unlocked(reviews_dir).unwrap_or_default();
+        if active
+            .sessions
+            .iter()
+            .any(|entry| entry.is_fresh() && normalize_active_path(&entry.path) == target)
+        {
+            return Ok(DeleteOutcome::Active);
         }
-        let session = load_session(path)?;
-        remove_session_at(path, reviews_dir, &session)?;
-        Ok(true)
+        Ok(if delete_session_unlocked(path, reviews_dir)? {
+            DeleteOutcome::Deleted
+        } else {
+            DeleteOutcome::Missing
+        })
     })
+}
+
+/// Remove the session at `path` and its manifest entry. The caller must hold
+/// the reviews-dir lock. A file that is already gone still has its manifest
+/// entry pruned, so listings stop surfacing it.
+fn delete_session_unlocked(path: &Path, reviews_dir: &Path) -> Result<bool> {
+    if !path.exists() {
+        prune_manifest_path(reviews_dir, path)?;
+        return Ok(false);
+    }
+    let session = load_session(path)?;
+    remove_session_at(path, reviews_dir, &session)?;
+    Ok(true)
+}
+
+/// Drop every manifest entry pointing at `path`, whatever its slug. Used when
+/// the file is gone and its slug can no longer be read from it.
+fn prune_manifest_path(reviews_dir: &Path, path: &Path) -> Result<()> {
+    let relative = manifest_relative_path(path, reviews_dir);
+    let Ok(mut manifest) = manifest::load_manifest(reviews_dir) else {
+        return Ok(());
+    };
+    let before = manifest.len();
+    for bucket in manifest.entries.values_mut() {
+        bucket.retain(|entry| entry.path != relative);
+    }
+    manifest.entries.retain(|_, bucket| !bucket.is_empty());
+    if manifest.len() != before {
+        manifest::save_manifest(reviews_dir, &manifest)?;
+    }
+    Ok(())
+}
+
+fn manifest_relative_path(path: &Path, reviews_dir: &Path) -> PathBuf {
+    path.strip_prefix(reviews_dir)
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// Remove `path` and prune its manifest entry. The caller must already hold
 /// the reviews-dir lock and have loaded `session` from `path`.
 fn remove_session_at(path: &Path, reviews_dir: &Path, session: &ReviewSession) -> Result<()> {
     let slug = slug_for_session(session)?.to_string();
-    let relative = path
-        .strip_prefix(reviews_dir)
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|_| path.to_path_buf());
+    let relative = manifest_relative_path(path, reviews_dir);
 
     let mut manifest = manifest::load_manifest(reviews_dir).unwrap_or_default();
     if let Some(bucket) = manifest.entries.get_mut(&slug) {
@@ -1008,6 +1077,57 @@ mod tests {
         let reviews_dir = get_reviews_dir().unwrap();
         let missing = reviews_dir.join("does-not-exist.json");
         assert!(!delete_session(&missing).unwrap());
+    }
+
+    #[test]
+    fn should_prune_manifest_entry_when_deleting_a_session_whose_file_is_gone() {
+        let _g = with_test_reviews_dir();
+        let reviews_dir = get_reviews_dir().unwrap();
+        let session = make_local_session(
+            make_repo(),
+            "abc1234",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
+            None,
+        );
+        let path = save_session(&session).unwrap();
+        fs::remove_file(&path).unwrap();
+        assert_eq!(list_all_sessions_in_dir(&reviews_dir).unwrap().len(), 1);
+
+        let outcome = delete_inactive_session_in_dir(&path, &reviews_dir).unwrap();
+
+        assert_eq!(outcome, DeleteOutcome::Missing);
+        assert!(
+            list_all_sessions_in_dir(&reviews_dir).unwrap().is_empty(),
+            "a stale manifest entry would resurrect the row on the next listing"
+        );
+    }
+
+    #[test]
+    fn should_refuse_to_delete_a_session_marked_active_after_listing() {
+        let _g = with_test_reviews_dir();
+        let reviews_dir = get_reviews_dir().unwrap();
+        let session = make_local_session(
+            make_repo(),
+            "abc1234",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
+            None,
+        );
+        let path = save_session(&session).unwrap();
+        // Registered only now, as if another tuicr opened it after a caller
+        // took its listing snapshot.
+        mark_session_active_in_dir(&session, &path, &reviews_dir).unwrap();
+
+        let outcome = delete_inactive_session_in_dir(&path, &reviews_dir).unwrap();
+
+        assert_eq!(outcome, DeleteOutcome::Active);
+        assert!(path.exists());
+
+        clear_active_session_for_pid_in_dir(&reviews_dir).unwrap();
+        let outcome = delete_inactive_session_in_dir(&path, &reviews_dir).unwrap();
+        assert_eq!(outcome, DeleteOutcome::Deleted);
+        assert!(!path.exists());
     }
 
     #[test]

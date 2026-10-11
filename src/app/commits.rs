@@ -1,4 +1,5 @@
 use super::*;
+use crate::review_store::DeleteOutcome;
 
 impl App {
     /// The commit-selection range a fresh multi-commit review opens with,
@@ -425,31 +426,32 @@ impl App {
         let Some(summary) = self.sessions_tab.cursor_session() else {
             return;
         };
-        // An open session would be rewritten by the TUI holding it, so the
-        // file would come back moments after being deleted.
-        if summary.active {
-            self.set_message("That review is open in another tuicr — close it first");
-            return;
-        }
-
         let session_ref = summary.session_ref.clone();
         let slug = summary.slug.clone();
-        match crate::review_store::ReviewStore::new().delete_review(&session_ref) {
-            Ok(true) => {
-                self.sessions_tab.remove_row(index);
-                self.sessions_tab
-                    .ensure_cursor_visible(self.sessions_list_viewport_height);
-                self.set_message(format!("Deleted review {slug}"));
+        // The store re-checks whether another tuicr has the session open at
+        // delete time; the row's `active` flag dates from the listing.
+        let outcome = match crate::review_store::ReviewStore::new().delete_review(&session_ref) {
+            Ok(outcome) => outcome,
+            Err(e) => {
+                self.set_error(format!("Failed to delete review: {e}"));
+                return;
             }
-            // Already gone on disk: drop the stale row rather than report an
-            // error the user can do nothing about.
-            Ok(false) => {
-                self.sessions_tab.remove_row(index);
-                self.sessions_tab
-                    .ensure_cursor_visible(self.sessions_list_viewport_height);
+        };
+        match outcome {
+            // An open session would be rewritten by the TUI holding it, so
+            // the file would come back moments after being deleted.
+            DeleteOutcome::Active => {
+                self.set_message("That review is open in another tuicr — close it first");
+                return;
             }
-            Err(e) => self.set_error(format!("Failed to delete review: {e}")),
+            DeleteOutcome::Deleted => self.set_message(format!("Deleted review {slug}")),
+            // Already gone on disk: the store pruned its manifest entry, so
+            // just drop the stale row rather than report an error.
+            DeleteOutcome::Missing => {}
         }
+        self.sessions_tab.remove_row(index);
+        self.sessions_tab
+            .ensure_cursor_visible(self.sessions_list_viewport_height);
     }
 
     pub fn sessions_tab_cursor_up(&mut self) {

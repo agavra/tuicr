@@ -528,13 +528,15 @@ fn should_delete_the_selected_session_file_and_row() {
 
 #[test]
 fn should_refuse_to_delete_a_session_open_in_another_tuicr() {
-    // given — the listing row is marked active, as a running TUI records
+    // given — a running tuicr registers the session as open *after* the
+    // tab listed it, so the row's cached `active` flag is still false
     let _reviews = TestReviewsDir::new();
     let (mut app, _calls) = build_app(vec![commit("aaa")]);
-    let mut summary = stage_session(&mut app, range_session(&["aaa"], Some("main")));
-    summary.active = true;
+    let session = range_session(&["aaa"], Some("main"));
+    let summary = stage_session(&mut app, session.clone());
+    assert!(!summary.active);
     let path = summary.session_ref.path().to_path_buf();
-    app.sessions_tab.apply_load(Ok(vec![summary]));
+    crate::persistence::storage::mark_session_active(&session, &path).expect("mark active");
 
     // when
     app.sessions_tab_delete_selected();
@@ -548,6 +550,28 @@ fn should_refuse_to_delete_a_session_open_in_another_tuicr() {
             .is_some_and(|m| m.content.contains("close it first")),
         "expected guidance, got {:?}",
         app.message
+    );
+}
+
+#[test]
+fn should_drop_a_stale_row_for_good_when_its_file_is_already_gone() {
+    // given — the session file vanished after the tab listed it
+    let _reviews = TestReviewsDir::new();
+    let (mut app, _calls) = build_app(vec![commit("aaa")]);
+    let summary = stage_session(&mut app, range_session(&["aaa"], Some("main")));
+    std::fs::remove_file(summary.session_ref.path()).expect("remove file");
+
+    // when
+    app.sessions_tab_delete_selected();
+
+    // then — the row goes, and the manifest no longer lists it either, so
+    // a reload (`a`, or reopening the tab) cannot bring it back
+    assert!(app.sessions_tab.is_empty());
+    assert!(
+        crate::review_store::ReviewStore::new()
+            .list_all_sessions()
+            .expect("list")
+            .is_empty()
     );
 }
 
