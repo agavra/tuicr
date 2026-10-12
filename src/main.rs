@@ -57,6 +57,7 @@ fn should_probe_keyboard_enhancement(output_to_stdout: bool, stdin_is_terminal: 
 
 fn main() -> anyhow::Result<()> {
     profile::init_from_env();
+    let launch_dir = std::env::current_dir().ok();
 
     // Setup panic hook to restore terminal on panic
     let original_hook = std::panic::take_hook();
@@ -408,6 +409,21 @@ fn main() -> anyhow::Result<()> {
         app.set_warning(message.clone());
     }
 
+    let mut hooks = tuicr::hooks::Hooks::start(
+        config_outcome
+            .config
+            .as_ref()
+            .and_then(|cfg| cfg.hooks.clone())
+            .unwrap_or_default(),
+        &app,
+        launch_dir,
+    );
+    if let Some(hooks) = hooks.as_mut()
+        && let Some(warning) = hooks.started()
+    {
+        show_hook_warning(&mut app, warning);
+    }
+
     // Track pending z command for zz centering
     let mut pending_z = false;
     // Track pending Z command for ZZ export+quit / ZQ quit
@@ -459,6 +475,7 @@ fn main() -> anyhow::Result<()> {
         needs_redraw |= app.poll_editor_launches();
         needs_redraw |= app.poll_persisted_session_changes();
         needs_redraw |= app.poll_diff_watch_changes();
+        needs_redraw |= observe_hooks(&mut hooks, &mut app);
         needs_redraw |= pr_pending;
 
         if needs_redraw {
@@ -879,6 +896,7 @@ fn main() -> anyhow::Result<()> {
                 }
                 _ => {}
             }
+            needs_redraw |= observe_hooks(&mut hooks, &mut app);
         }
 
         if app.should_quit {
@@ -887,6 +905,17 @@ fn main() -> anyhow::Result<()> {
     }
 
     terminal.restore()?;
+    if let Some(mut hooks) = hooks {
+        for warning in hooks.poll_failures() {
+            eprintln!("Warning: {warning}");
+        }
+        if let Some(warning) = hooks.observe(&app) {
+            eprintln!("Warning: {warning}");
+        }
+        if let Some(warning) = hooks.closed() {
+            eprintln!("Warning: {warning}");
+        }
+    }
 
     if let Err(e) = app.cleanup_empty_ephemeral_sessions() {
         eprintln!("Warning: failed to clean up empty review session: {e}");
@@ -910,6 +939,35 @@ fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn observe_hooks(hooks: &mut Option<tuicr::hooks::Hooks>, app: &mut App) -> bool {
+    let Some(hooks) = hooks.as_mut() else {
+        return false;
+    };
+    let mut warnings = hooks.poll_failures();
+    if let Some(warning) = hooks.observe(app) {
+        warnings.push(warning);
+    }
+    let changed = !warnings.is_empty();
+    if changed {
+        show_hook_warning(app, warnings.join("; "));
+    }
+    changed
+}
+
+fn show_hook_warning(app: &mut App, warning: String) {
+    if let Some(message) = app.message.as_mut()
+        && matches!(
+            message.message_type,
+            app::MessageType::Warning | app::MessageType::Error
+        )
+    {
+        message.content.push_str("; ");
+        message.content.push_str(&warning);
+    } else {
+        app.set_warning(warning);
+    }
 }
 
 fn dispatch_action(app: &mut App, action: Action) {
@@ -1051,6 +1109,51 @@ fn run_editor_from_tui<W: Write>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hook_warnings_preserve_startup_warnings_and_active_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("notes.txt");
+        std::fs::write(&file, "notes\n").unwrap();
+        let mut app = App::new(
+            tuicr::theme::Theme::dark(),
+            None,
+            false,
+            AppStartupOptions {
+                revisions: None,
+                working_tree: false,
+                path_filter: None,
+                file_path: file.to_str(),
+                all_files: false,
+                show_pr_checks: false,
+                show_pr_comments: false,
+                pr_comments_visibility: None,
+                git_backend_preference: GitBackendPreference::Libgit2,
+                diff_whitespace_mode: DiffWhitespaceMode::default(),
+                commit_selection: app::CommitSelectionStart::default(),
+                pr_target: None,
+                repo_url_override: None,
+            },
+        )
+        .unwrap();
+
+        app.set_warning("Startup warning");
+        let expires_at = app.message.as_ref().unwrap().expires_at;
+        show_hook_warning(&mut app, "Hook failed".into());
+        let message = app.message.as_ref().unwrap();
+        assert_eq!(message.content, "Startup warning; Hook failed");
+        assert_eq!(message.message_type, app::MessageType::Warning);
+        assert_eq!(message.expires_at, expires_at);
+
+        app.set_error("Save failed");
+        app.open_message_details();
+        show_hook_warning(&mut app, "Hook failed".into());
+        let message = app.message.as_ref().unwrap();
+        assert_eq!(message.content, "Save failed; Hook failed");
+        assert_eq!(message.message_type, app::MessageType::Error);
+        assert!(message.expires_at.is_none());
+        assert_eq!(app.input_mode, InputMode::MessageDetails);
+    }
 
     #[test]
     fn drain_blocks_once_then_takes_only_queued_events() {

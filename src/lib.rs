@@ -7,6 +7,7 @@ pub mod error;
 pub mod forge;
 pub mod handler;
 pub mod hash;
+pub mod hooks;
 pub mod input;
 pub mod model;
 pub mod output;

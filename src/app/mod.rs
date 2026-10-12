@@ -1137,6 +1137,7 @@ pub struct App {
     /// context, and Azure DevOps diffs, which have no unified-diff API).
     pub(crate) local_repo_root: Option<PathBuf>,
     pub session: ReviewSession,
+    pub(crate) review_target_selected: bool,
     pub(crate) persisted_session_snapshot: ReviewSession,
     pub(crate) session_path: Option<PathBuf>,
     pub(crate) session_file_state: Option<SessionFileState>,

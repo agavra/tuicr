@@ -166,6 +166,10 @@ still open, or after it exits. `tuicr-summary:` is printed on exit, always —
 including with zero comments, so a watcher can tell "reviewed everything, found
 nothing" apart from "quit without looking".
 
+For target changes and exact session-file/PR-head identity, configure optional
+[review lifecycle hooks](CONFIG.md#review-lifecycle-hooks). They deliver JSON on
+callback stdin without changing these markers, stdout, or exit codes.
+
 `--stdout` prints the export markdown to stdout when the TUI exits, with the
 TUI itself rendered to `/dev/tty`. Combined with the two stderr markers, that
 keeps stdout clean for a pipe.

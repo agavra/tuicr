@@ -79,6 +79,11 @@ comments_header = "## Local tuicr Comments"
 remote_comments_header = "## Existing GitHub Comments"
 legend = true
 session_header = true
+
+[hooks]
+review_started = ""        # empty or omitted disables this callback
+review_target_changed = ""
+review_closed = ""
 ```
 
 ## Options
@@ -122,6 +127,58 @@ session_header = true
 | `backend`                  | `libgit2`    | Git backend: `libgit2` or `cli`. Sparse-checkout repos auto-route to `cli`.                                                                                |
 | `comment_types`            | (none)       | Comment categories. Untyped by default. See [Comment types](#comment-types).                                                                               |
 | `export_legend`            | `true`       | Include the `Comment types:` legend in the exported review. Superseded by `legend` under [Export](#export).                                                |
+| `hooks.review_started` | (none) | Command run once after TUI initialization. |
+| `hooks.review_target_changed` | (none) | Command run when the active review changes. |
+| `hooks.review_closed` | (none) | Command run on normal TUI shutdown. |
+
+## Review lifecycle hooks
+
+Configure optional shell commands in your user config:
+
+```toml
+[hooks]
+review_started = "my-review-hook"
+review_target_changed = "my-review-hook"
+review_closed = "my-review-hook"
+```
+
+Each command receives one newline-terminated JSON object on stdin. Commands run
+through `sh -c` on Linux/macOS or `cmd /D /S /C` on Windows, inherit tuicr's
+environment and event working directory, and discard stdout/stderr. Omitted or
+empty commands are disabled.
+
+Hooks run independently without waiting for earlier hooks. They may finish out
+of order, have no execution timeout, and do not delay tuicr's exit. Integrations
+are responsible for consistency. Failures warn while the TUI is running;
+delivery is best-effort, including during shutdown.
+
+Target changes include the first selection and a PR advancing to a new head,
+not navigation, comment edits, or inline commit subsets. Reopening the selector
+retains the active review. Hooks do not run for `review` or `update` subcommands.
+
+JSON fields:
+
+| Field | Meaning |
+|---|---|
+| `schema_version` | Currently `1`. |
+| `event` | The configured hook's name. |
+| `sequence` | Increasing event number within this process; gaps are possible. |
+| `pid` | tuicr's process ID. |
+| `launch_dir` / `cwd` | Absolute working directory at startup / at the event. |
+| `worktree` | Canonical known checkout directory. |
+| `review` | Active review object, or `null` before the first selection. |
+| `review.kind` | `local` (including file annotation) or `pr`. |
+| `review.session_id` | Session UUID. |
+| `review.slug` | tuicr session slug. |
+| `review.session_file` | Absolute session-file path. |
+| `review.head_sha` | Full PR head SHA; `null` for local reviews. |
+
+For `worktree`, local VCS reviews use their root; PR reviews use the forge's
+associated checkout. File annotation without a known checkout reports `null`.
+An empty session file may be deleted on close.
+
+Unavailable paths and slugs are `null`. Payloads describe the event when it was
+produced; use the session-file path and head SHA to distinguish PR revisions.
 
 ## Whitespace comparison
 

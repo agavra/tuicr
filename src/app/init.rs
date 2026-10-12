@@ -472,6 +472,7 @@ impl App {
             local_repo_root,
             session,
             persisted_session_snapshot,
+            review_target_selected: input_mode != InputMode::CommitSelect,
             session_path,
             session_file_state,
             review_watch_interval: Some(Duration::from_millis(DEFAULT_REVIEW_WATCH_INTERVAL_MS)),

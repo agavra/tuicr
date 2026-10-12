@@ -38,7 +38,42 @@ impl App {
         if let Err(e) = self.ensure_ephemeral_session_file() {
             self.set_warning(format!("Failed to initialize review session file: {e}"));
         }
+        self.review_target_selected = true;
         Ok(())
+    }
+
+    pub(crate) fn review_hook_worktree(&self) -> Option<PathBuf> {
+        let checkout = if let Some(key) = self.session.pr_session_key.as_ref() {
+            let backend = self.forge_backend.as_deref()?;
+            if self.forge_repository.as_ref() != Some(&key.repository) {
+                return None;
+            }
+            backend.local_checkout_path()?
+        } else if self.vcs_info.vcs_type == VcsType::File && !self.is_pristine_mode {
+            return None;
+        } else {
+            self.vcs_info.root_path.clone()
+        };
+        checkout.canonicalize().ok()
+    }
+
+    pub(crate) fn review_hook_target(&self) -> Option<crate::hooks::ReviewTarget> {
+        self.review_target_selected
+            .then(|| crate::hooks::ReviewTarget {
+                kind: if self.session.pr_session_key.is_some() {
+                    "pr"
+                } else {
+                    "local"
+                },
+                session_id: self.session.id.clone(),
+                slug: self.session_slug(),
+                session_file: self.session_path.clone(),
+                head_sha: self
+                    .session
+                    .pr_session_key
+                    .as_ref()
+                    .map(|key| key.head_sha.clone()),
+            })
     }
 
     fn mark_session_saved(&mut self, path: PathBuf, saved: ReviewSession) -> Result<()> {
