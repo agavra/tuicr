@@ -1,4 +1,6 @@
 use super::*;
+use crate::syntax::SyntaxHighlighter;
+use crate::vcs::{apply_new_side_prefix_highlight, file_needs_full_file_highlight};
 
 impl App {
     /// Color uncolored visible hunks. Call this before building a line.
@@ -8,7 +10,7 @@ impl App {
     /// `max_rows` is the frame's height.
     /// `diff_state.viewport_height` is written during render.
     pub(crate) fn color_visible_hunks(&mut self, max_rows: usize) -> usize {
-        let highlighter = self.theme.syntax_highlighter();
+        let highlighter = self.theme.syntax_highlighter_arc();
         let unvisited: Vec<(usize, usize)> = self
             .visible_hunk_indices(max_rows)
             .into_iter()
@@ -18,23 +20,72 @@ impl App {
         unvisited
             .into_iter()
             .filter_map(|(file_idx, hunk_idx)| {
-                let DiffFile {
-                    old_path,
-                    new_path,
-                    hunks,
-                    ..
-                } = self.diff_files.get_mut(file_idx)?;
-                let path = new_path.as_deref().or(old_path.as_deref())?;
-                let hunk = hunks.get_mut(hunk_idx)?;
+                let file = self.diff_files.get(file_idx)?;
+                let hunk = file.hunks.get(hunk_idx)?;
 
                 // only color uncolored lines
                 if hunk.lines.iter().any(|l| l.highlighted_spans.is_some()) {
                     return Some(());
                 }
-                highlighter.rehighlight_hunk_in_place(hunk, path);
+                let path = file.display_path().clone();
+                if file_needs_full_file_highlight(file, &path)
+                    && self.full_file_attempted.insert(file_idx)
+                    && self.color_file_with_context(file_idx, &path, &highlighter)
+                {
+                    return Some(());
+                }
+                let hunk = self.diff_files.get_mut(file_idx)?.hunks.get_mut(hunk_idx)?;
+                highlighter.rehighlight_hunk_in_place(hunk, &path);
                 Some(())
             })
             .count()
+    }
+
+    /// Color every hunk of a file whose hunks need the lines before them
+    /// (e.g. Python docstrings), using the file content from the context
+    /// provider. Each hunk is first colored on its own, so deletion lines and
+    /// a failed highlight still get colors, then new-side lines are overlaid
+    /// with spans from the file prefix.
+    ///
+    /// Returns false, coloring nothing, when the content could not be fetched.
+    fn color_file_with_context(
+        &mut self,
+        file_idx: usize,
+        path: &Path,
+        highlighter: &SyntaxHighlighter,
+    ) -> bool {
+        let file = &self.diff_files[file_idx];
+        let Some(last_line) = file
+            .hunks
+            .iter()
+            .flat_map(|h| &h.lines)
+            .filter_map(|l| l.new_lineno)
+            .max()
+        else {
+            return false;
+        };
+        let fetched = self.context_provider().fetch_context_lines(
+            file.old_path.as_ref(),
+            file.new_path.as_ref(),
+            file.status,
+            1,
+            last_line,
+        );
+        let prefix: Vec<String> = match fetched {
+            Ok(lines) if lines.first().and_then(|l| l.new_lineno) == Some(1) => {
+                lines.into_iter().map(|l| l.content).collect()
+            }
+            _ => return false,
+        };
+
+        let file = &mut self.diff_files[file_idx];
+        for hunk in &mut file.hunks {
+            if hunk.lines.iter().all(|l| l.highlighted_spans.is_none()) {
+                highlighter.rehighlight_hunk_in_place(hunk, path);
+            }
+        }
+        apply_new_side_prefix_highlight(file, highlighter, path, &prefix);
+        true
     }
 
     /// Visible hunks are those in the viewport plus and minus one screen
@@ -92,11 +143,13 @@ impl AnnotatedLine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::tests::render_perf_tests::{app_with, file};
+    use crate::app::tests::render_perf_tests::{app_with, app_with_backend, file};
     use crate::model::{FilePatch, FileStatus};
     use crate::syntax::SyntaxHighlighter;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn uncolored_file(path: &str, lines_per_file: usize) -> DiffFile {
         let mut file = file(path, lines_per_file);
@@ -152,6 +205,178 @@ mod tests {
         app.color_visible_hunks(24);
 
         assert!(is_colored(&app, 0));
+    }
+
+    const DOCSTRING_SOURCE: [&str; 5] = [
+        "class A:",
+        "    \"\"\"Doc",
+        "    still doc",
+        "    \"\"\"",
+        "    x = 1",
+    ];
+
+    struct FileContentVcs {
+        info: VcsInfo,
+        lines: Option<Vec<String>>,
+        fetches: Arc<AtomicUsize>,
+    }
+
+    impl VcsBackend for FileContentVcs {
+        fn info(&self) -> &VcsInfo {
+            &self.info
+        }
+        fn get_working_tree_diff(
+            &self,
+            _: &SyntaxHighlighter,
+        ) -> crate::error::Result<Vec<DiffFile>> {
+            Ok(Vec::new())
+        }
+        fn fetch_context_lines(
+            &self,
+            _: &Path,
+            _: FileStatus,
+            _: Option<&str>,
+            start: u32,
+            end: u32,
+        ) -> crate::error::Result<Vec<DiffLine>> {
+            self.fetches.fetch_add(1, Ordering::SeqCst);
+            let lines = self.lines.as_ref().ok_or_else(|| {
+                crate::error::TuicrError::UnsupportedOperation("no content".into())
+            })?;
+            Ok((start..=end)
+                .filter_map(|n| {
+                    let content = lines.get(n as usize - 1)?.clone();
+                    Some(DiffLine {
+                        origin: LineOrigin::Context,
+                        content,
+                        old_lineno: Some(n),
+                        new_lineno: Some(n),
+                        highlighted_spans: None,
+                    })
+                })
+                .collect())
+        }
+        fn file_line_count(
+            &self,
+            _: &Path,
+            _: FileStatus,
+            _: Option<&str>,
+        ) -> crate::error::Result<u32> {
+            Ok(0)
+        }
+    }
+
+    /// A hunk showing only lines 3-5 of `DOCSTRING_SOURCE`: it starts inside the
+    /// docstring, so a hunk-local parse reads the closing `"""` as an opener
+    /// and colors `x = 1` as string text.
+    fn docstring_tail_file() -> DiffFile {
+        let mut file = uncolored_file("src/mod.py", 3);
+        for (line, n) in file.hunks[0].lines.iter_mut().zip(3u32..) {
+            line.origin = LineOrigin::Context;
+            line.content = DOCSTRING_SOURCE[n as usize - 1].to_string();
+            line.old_lineno = Some(n);
+            line.new_lineno = Some(n);
+        }
+        file
+    }
+
+    fn app_with_content(lines: Option<Vec<String>>, file: DiffFile) -> (App, Arc<AtomicUsize>) {
+        let fetches = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&fetches);
+        let app = app_with_backend(
+            move |info| {
+                Box::new(FileContentVcs {
+                    info,
+                    lines,
+                    fetches: counter,
+                })
+            },
+            vec![file],
+        );
+        (app, fetches)
+    }
+
+    fn full_file_signatures() -> Vec<String> {
+        let source: Vec<String> = DOCSTRING_SOURCE.iter().map(|l| l.to_string()).collect();
+        let highlighted = SyntaxHighlighter::default()
+            .highlight_file_lines(Path::new("src/mod.py"), &source)
+            .expect("python grammar");
+        highlighted[2..]
+            .iter()
+            .map(|spans| {
+                spans
+                    .as_ref()
+                    .expect("spans")
+                    .iter()
+                    .map(|(style, text)| format!("{text:?}[{:?}/{:?}]", style.fg, style.bg))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .collect()
+    }
+
+    #[test]
+    fn should_color_a_docstring_hunk_using_the_lines_before_it() {
+        let source = DOCSTRING_SOURCE.iter().map(|l| l.to_string()).collect();
+        let (mut app, _) = app_with_content(Some(source), docstring_tail_file());
+
+        app.color_visible_hunks(24);
+
+        assert_eq!(
+            span_signatures(&app.diff_files[0].hunks[0]),
+            full_file_signatures()
+        );
+    }
+
+    #[test]
+    fn should_fetch_the_file_once_for_all_of_its_hunks() {
+        let source = DOCSTRING_SOURCE.iter().map(|l| l.to_string()).collect();
+        let mut file = docstring_tail_file();
+        file.hunks.push(file.hunks[0].clone());
+        let (mut app, fetches) = app_with_content(Some(source), file);
+
+        app.color_visible_hunks(24);
+
+        assert_eq!(fetches.load(Ordering::SeqCst), 1);
+        assert!(
+            app.diff_files[0]
+                .hunks
+                .iter()
+                .all(|h| h.lines.iter().all(|l| l.highlighted_spans.is_some()))
+        );
+    }
+
+    #[test]
+    fn should_color_deleted_lines_of_a_docstring_hunk() {
+        let source = DOCSTRING_SOURCE.iter().map(|l| l.to_string()).collect();
+        let mut file = docstring_tail_file();
+        file.hunks[0].lines[2].origin = LineOrigin::Deletion;
+        file.hunks[0].lines[2].new_lineno = None;
+        let (mut app, _) = app_with_content(Some(source), file);
+
+        app.color_visible_hunks(24);
+
+        assert!(
+            app.diff_files[0].hunks[0]
+                .lines
+                .iter()
+                .all(|l| l.highlighted_spans.is_some())
+        );
+    }
+
+    #[test]
+    fn should_fall_back_to_hunk_colors_when_the_file_cannot_be_fetched() {
+        let (mut app, fetches) = app_with_content(None, docstring_tail_file());
+
+        app.color_visible_hunks(24);
+
+        assert_eq!(fetches.load(Ordering::SeqCst), 1);
+        assert!(is_colored(&app, 0));
+        assert_ne!(
+            span_signatures(&app.diff_files[0].hunks[0]),
+            full_file_signatures(),
+            "hunk-local colors differ from full-file colors, so the test above can tell them apart"
+        );
     }
 
     #[test]

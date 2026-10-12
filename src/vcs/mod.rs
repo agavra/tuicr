@@ -327,6 +327,23 @@ fn highlight_content(
     highlighter.highlight_file_lines(path, &lines)
 }
 
+/// Overlay new-side spans from `new_lines`, the file's first N lines, onto
+/// every context and addition line. Deletion lines keep their spans because
+/// the old side is not available here. A prefix is enough: the parse state at
+/// a line depends only on the lines before it.
+pub(crate) fn apply_new_side_prefix_highlight(
+    file: &mut DiffFile,
+    highlighter: &SyntaxHighlighter,
+    syntax_path: &Path,
+    new_lines: &[String],
+) {
+    let Some(new_highlight) = highlight_content(highlighter, syntax_path, &new_lines.join("\n"))
+    else {
+        return;
+    };
+    apply_full_file_spans(file, highlighter, None, Some(&new_highlight));
+}
+
 fn apply_full_file_spans(
     file: &mut DiffFile,
     highlighter: &SyntaxHighlighter,
