@@ -70,15 +70,13 @@ fn run_with_writer(command: ReviewCommand, out: &mut impl Write) -> Result<()> {
             session,
             repo,
             empty,
-            force,
-        } => remove_session(&session, &repo, empty, force, out),
+        } => remove_session(&session, &repo, empty, out),
         ReviewCommand::Prune {
             empty,
             older_than,
             repo,
             all,
             dry_run,
-            force,
         } => prune_sessions(
             PruneOptions {
                 empty,
@@ -86,7 +84,6 @@ fn run_with_writer(command: ReviewCommand, out: &mut impl Write) -> Result<()> {
                 repo: repo.as_deref(),
                 all,
                 dry_run,
-                force,
             },
             out,
         ),
@@ -448,15 +445,9 @@ fn show_comments(session: &str, repo: &Path, out: &mut impl Write) -> Result<()>
     Ok(())
 }
 
-fn remove_session(
-    session: &str,
-    repo: &Path,
-    empty: bool,
-    force: bool,
-    out: &mut impl Write,
-) -> Result<()> {
+fn remove_session(session: &str, repo: &Path, empty: bool, out: &mut impl Write) -> Result<()> {
     let store = ReviewStore::new();
-    remove_session_with_store(&store, session, repo, empty, force, out)
+    remove_session_with_store(&store, session, repo, empty, out)
 }
 
 fn remove_session_with_store(
@@ -464,16 +455,15 @@ fn remove_session_with_store(
     session: &str,
     repo: &Path,
     empty: bool,
-    force: bool,
     out: &mut impl Write,
 ) -> Result<()> {
     let session_ref = resolve_session_ref(store, repo, session)?;
-    let removed = match store.remove_review(&session_ref, empty, force)? {
+    let removed = match store.remove_review(&session_ref, empty)? {
         RemoveReviewOutcome::Removed(entry) => vec![SessionCleanupOutput::from(entry)],
         RemoveReviewOutcome::NotEmpty => Vec::new(),
         RemoveReviewOutcome::Active(entry) => {
             return Err(TuicrError::InvalidInput(format!(
-                "session '{}' is active; pass --force to delete it",
+                "session '{}' is active; close its TUI before deleting it",
                 entry.slug
             )));
         }
@@ -493,7 +483,6 @@ struct PruneOptions<'a> {
     repo: Option<&'a Path>,
     all: bool,
     dry_run: bool,
-    force: bool,
 }
 
 fn prune_sessions(options: PruneOptions<'_>, out: &mut impl Write) -> Result<()> {
@@ -525,7 +514,7 @@ fn prune_sessions_with_store(
     } else {
         Some(options.repo.unwrap_or_else(|| Path::new(".")))
     };
-    let removed = store.prune_reviews(selector, criterion, options.dry_run, options.force)?;
+    let removed = store.prune_reviews(selector, criterion, options.dry_run)?;
     let output: Vec<_> = removed
         .into_iter()
         .map(SessionCleanupOutput::from)
@@ -1282,7 +1271,7 @@ mod tests {
         let slug = store.list_sessions_for_repo(&repo).unwrap()[0].slug.clone();
         let mut out = Vec::new();
 
-        remove_session_with_store(&store, &slug, &repo, false, false, &mut out).unwrap();
+        remove_session_with_store(&store, &slug, &repo, false, &mut out).unwrap();
 
         let value: serde_json::Value = serde_json::from_slice(&out).unwrap();
         assert_eq!(value[0]["slug"], slug);
@@ -1307,7 +1296,7 @@ mod tests {
         let slug = store.list_sessions_for_repo(&repo).unwrap()[0].slug.clone();
         let mut out = Vec::new();
 
-        remove_session_with_store(&store, &slug, &repo, true, false, &mut out).unwrap();
+        remove_session_with_store(&store, &slug, &repo, true, &mut out).unwrap();
 
         let value: serde_json::Value = serde_json::from_slice(&out).unwrap();
         assert_eq!(value, serde_json::json!([]));
@@ -1315,7 +1304,7 @@ mod tests {
     }
 
     #[test]
-    fn should_reject_active_session_without_force() {
+    fn should_reject_active_session() {
         let temp = tempdir().unwrap();
         let repo = temp.path().join("repo");
         std::fs::create_dir_all(&repo).unwrap();
@@ -1331,10 +1320,11 @@ mod tests {
         .unwrap();
         let slug = store.list_sessions_for_repo(&repo).unwrap()[0].slug.clone();
 
-        let err = remove_session_with_store(&store, &slug, &repo, false, false, &mut Vec::new())
-            .unwrap_err();
+        let err =
+            remove_session_with_store(&store, &slug, &repo, false, &mut Vec::new()).unwrap_err();
 
         assert!(matches!(err, TuicrError::InvalidInput(_)));
+        assert!(err.to_string().contains("close its TUI before deleting it"));
         assert!(session_ref.path().exists());
     }
 
@@ -1348,7 +1338,6 @@ mod tests {
             &store,
             &missing.display().to_string(),
             Path::new("."),
-            false,
             false,
             &mut Vec::new(),
         )
@@ -1383,7 +1372,6 @@ mod tests {
                 repo: Some(&repo),
                 all: false,
                 dry_run: true,
-                force: false,
             },
             &mut preview,
         )
@@ -1400,7 +1388,6 @@ mod tests {
                 repo: Some(&repo),
                 all: false,
                 dry_run: false,
-                force: false,
             },
             &mut removed,
         )

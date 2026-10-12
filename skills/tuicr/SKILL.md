@@ -52,24 +52,6 @@ If the user's intent is ambiguous, ask which workflow they want.
    `[]` with exit 0 also means "not a repo root" — a subdirectory returns it
    too. Pass the root, then `--all`, before concluding nothing is open.
 
-   Remove one explicitly named session directly:
-
-   ```bash
-   tuicr review rm --session <slug-or-path>
-   ```
-
-   Preview bulk removal before applying it:
-
-   ```bash
-   tuicr review prune --empty --repo /path/to/repo --dry-run
-   tuicr review prune --older-than 30d --all --dry-run
-   ```
-
-   `rm` rejects an active session and `prune` skips active sessions unless
-   `--force` is passed. Never force-remove an active review unless the user
-   explicitly asked to discard it. After the user accepts a prune preview,
-   rerun the same command without `--dry-run`.
-
 3. Choose the session:
    - If the CLI clearly reports exactly one relevant active session with
      `"active": true`, attach to it.
@@ -87,6 +69,24 @@ If the user's intent is ambiguous, ask which workflow they want.
 
 The CLI works even if the agent is not running inside tmux, Zellij, or Herdr,
 so do not require a multiplexer just to connect to an existing active session.
+
+## Remove Saved Sessions
+
+Remove an explicitly named session with `tuicr review rm --session <slug-or-path>`.
+`rm` rejects an active session. Ask the user to close the owning TUI first.
+
+Preview bulk removal before applying it:
+
+```bash
+tuicr review prune --empty --repo /path/to/repo --dry-run
+tuicr review prune --older-than 30d --all --dry-run
+```
+
+`prune` skips active sessions in both modes. It checks which sessions match
+again when it runs, so the deletion can include sessions absent from the
+preview. Get approval for the scope and criterion before running without
+`--dry-run`. If approval covers only individual reviews, use `rm` for those
+sessions.
 
 ## Start A Session
 

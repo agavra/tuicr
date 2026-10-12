@@ -157,15 +157,14 @@ impl ReviewStore {
         storage::save_session_in_dir(session, &reviews_dir).map(SessionRef::from_path)
     }
 
-    /// Remove one persisted session, optionally protecting non-empty or active state.
+    /// Remove one inactive persisted session, optionally protecting non-empty state.
     pub(crate) fn remove_review(
         &self,
         session_ref: &SessionRef,
         if_empty: bool,
-        force: bool,
     ) -> Result<RemoveReviewOutcome> {
         let reviews_dir = self.reviews_dir()?;
-        storage::remove_review_session_in_dir(session_ref.path(), &reviews_dir, if_empty, force)
+        storage::remove_review_session_in_dir(session_ref.path(), &reviews_dir, if_empty)
     }
 
     /// Remove every persisted session in scope that matches `criterion`.
@@ -174,10 +173,9 @@ impl ReviewStore {
         selector: Option<&Path>,
         criterion: ReviewPruneCriterion,
         dry_run: bool,
-        force: bool,
     ) -> Result<Vec<SessionCleanup>> {
         let reviews_dir = self.reviews_dir()?;
-        storage::prune_review_sessions_in_dir(&reviews_dir, selector, criterion, dry_run, force)
+        storage::prune_review_sessions_in_dir(&reviews_dir, selector, criterion, dry_run)
     }
 
     fn reviews_dir(&self) -> Result<PathBuf> {
@@ -622,41 +620,39 @@ mod tests {
     }
 
     #[test]
-    fn should_require_force_to_remove_active_session() {
-        let temp = tempfile::tempdir().unwrap();
-        let repo = temp.path().join("repo");
-        std::fs::create_dir_all(&repo).unwrap();
-        let reviews_dir = temp.path().join("reviews");
-        let store = ReviewStore::with_reviews_dir(reviews_dir.clone());
-        let session = test_session(repo);
-        let session_ref = store.save_review(&session).unwrap();
-        crate::persistence::storage::mark_session_active_in_dir(
-            &session,
-            session_ref.path(),
-            &reviews_dir,
-        )
-        .unwrap();
+    fn should_refuse_to_remove_active_session_without_changing_storage() {
+        for if_empty in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let repo = temp.path().join("repo");
+            std::fs::create_dir_all(&repo).unwrap();
+            let reviews_dir = temp.path().join("reviews");
+            let store = ReviewStore::with_reviews_dir(&reviews_dir);
+            let session = test_session(repo.clone());
+            let session_ref = store.save_review(&session).unwrap();
+            crate::persistence::storage::mark_session_active_in_dir(
+                &session,
+                session_ref.path(),
+                &reviews_dir,
+            )
+            .unwrap();
+            assert!(store.list_sessions_for_repo(&repo).unwrap()[0].active);
+            let session_before = std::fs::read(session_ref.path()).unwrap();
+            let manifest_before = std::fs::read(reviews_dir.join("index.json")).unwrap();
+            let active_before = std::fs::read(reviews_dir.join("active_sessions.json")).unwrap();
 
-        let blocked = store.remove_review(&session_ref, false, false).unwrap();
-        assert!(matches!(blocked, RemoveReviewOutcome::Active(_)));
-        assert!(session_ref.path().exists());
+            let outcome = store.remove_review(&session_ref, if_empty).unwrap();
 
-        let removed = store.remove_review(&session_ref, false, true).unwrap();
-        assert!(matches!(
-            removed,
-            RemoveReviewOutcome::Removed(SessionCleanup { active: true, .. })
-        ));
-        assert!(!session_ref.path().exists());
-        assert!(
-            crate::persistence::storage::active_session_paths_in_dir(&reviews_dir)
-                .unwrap()
-                .is_empty()
-        );
-        let active: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(reviews_dir.join("active_sessions.json")).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(active["sessions"], serde_json::json!([]));
+            assert!(matches!(outcome, RemoveReviewOutcome::Active(_)));
+            assert_eq!(std::fs::read(session_ref.path()).unwrap(), session_before);
+            assert_eq!(
+                std::fs::read(reviews_dir.join("index.json")).unwrap(),
+                manifest_before
+            );
+            assert_eq!(
+                std::fs::read(reviews_dir.join("active_sessions.json")).unwrap(),
+                active_before
+            );
+        }
     }
 
     #[test]
@@ -669,7 +665,7 @@ mod tests {
         std::fs::write(&path, serde_json::to_vec_pretty(&session).unwrap()).unwrap();
 
         let removed = store
-            .remove_review(&SessionRef::from_path(&path), false, false)
+            .remove_review(&SessionRef::from_path(&path), false)
             .unwrap();
 
         assert!(matches!(
@@ -697,7 +693,7 @@ mod tests {
             .clone();
         assert_eq!(slug_a, slug_b, "precondition: the local slugs collide");
 
-        let removed = store.remove_review(&ref_a, false, false).unwrap();
+        let removed = store.remove_review(&ref_a, false).unwrap();
 
         assert!(matches!(removed, RemoveReviewOutcome::Removed(_)));
         assert!(!ref_a.path().exists());
@@ -724,7 +720,7 @@ mod tests {
         );
 
         let removed = store
-            .remove_review(&SessionRef::from_path(aliased_path), false, false)
+            .remove_review(&SessionRef::from_path(aliased_path), false)
             .unwrap();
 
         assert!(matches!(removed, RemoveReviewOutcome::Removed(_)));
@@ -740,7 +736,7 @@ mod tests {
         let session_ref = store.save_review(&test_session(repo.clone())).unwrap();
         std::fs::remove_file(session_ref.path()).unwrap();
 
-        let removed = store.remove_review(&session_ref, false, false).unwrap();
+        let removed = store.remove_review(&session_ref, false).unwrap();
 
         assert!(matches!(removed, RemoveReviewOutcome::Removed(_)));
         assert!(store.list_sessions_for_repo(&repo).unwrap().is_empty());
@@ -780,13 +776,13 @@ mod tests {
         std::fs::remove_file(missing_ref.path()).unwrap();
 
         let preview = store
-            .prune_reviews(Some(&repo), ReviewPruneCriterion::Empty, true, false)
+            .prune_reviews(Some(&repo), ReviewPruneCriterion::Empty, true)
             .unwrap();
         assert_eq!(preview.len(), 2);
         assert!(empty_ref.path().exists(), "dry-run must not delete files");
 
         let removed = store
-            .prune_reviews(Some(&repo), ReviewPruneCriterion::Empty, false, false)
+            .prune_reviews(Some(&repo), ReviewPruneCriterion::Empty, false)
             .unwrap();
         assert_eq!(
             removed
@@ -804,49 +800,72 @@ mod tests {
     }
 
     #[test]
-    fn should_skip_active_sessions_during_prune_unless_forced() {
-        let temp = tempfile::tempdir().unwrap();
-        let repo = temp.path().join("repo");
-        std::fs::create_dir_all(&repo).unwrap();
-        let reviews_dir = temp.path().join("reviews");
-        let store = ReviewStore::with_reviews_dir(&reviews_dir);
+    fn should_skip_active_sessions_during_prune_and_dry_run() {
+        for criterion in [
+            ReviewPruneCriterion::Empty,
+            ReviewPruneCriterion::UpdatedBefore(Utc::now()),
+        ] {
+            for dry_run in [true, false] {
+                let temp = tempfile::tempdir().unwrap();
+                let repo = temp.path().join("repo");
+                std::fs::create_dir_all(&repo).unwrap();
+                let reviews_dir = temp.path().join("reviews");
+                let store = ReviewStore::with_reviews_dir(&reviews_dir);
+                let mut active_session = test_session(repo.clone());
+                active_session.updated_at = Utc::now() - chrono::Duration::days(30);
+                let active_ref = store.save_review(&active_session).unwrap();
+                crate::persistence::storage::mark_session_active_in_dir(
+                    &active_session,
+                    active_ref.path(),
+                    &reviews_dir,
+                )
+                .unwrap();
+                let mut inactive_session = active_session.clone();
+                inactive_session.base_commit = "inactive".to_string();
+                let inactive_ref = store.save_review(&inactive_session).unwrap();
+                assert!(
+                    store
+                        .list_sessions_for_repo(&repo)
+                        .unwrap()
+                        .iter()
+                        .any(|entry| entry.active)
+                );
+                assert!(!active_session.has_comments() && !active_session.has_reviewed_state());
+                if let ReviewPruneCriterion::UpdatedBefore(cutoff) = &criterion {
+                    assert!(active_session.updated_at < *cutoff);
+                }
+                let session_before = std::fs::read(active_ref.path()).unwrap();
+                let manifest_before = std::fs::read(reviews_dir.join("index.json")).unwrap();
+                let active_before =
+                    std::fs::read(reviews_dir.join("active_sessions.json")).unwrap();
 
-        let active_session = test_session(repo.clone());
-        let active_ref = store.save_review(&active_session).unwrap();
-        crate::persistence::storage::mark_session_active_in_dir(
-            &active_session,
-            active_ref.path(),
-            &reviews_dir,
-        )
-        .unwrap();
+                let results = store
+                    .prune_reviews(Some(&repo), criterion.clone(), dry_run)
+                    .unwrap();
 
-        let mut inactive_session = test_session(repo.clone());
-        inactive_session.base_commit = "inactive".to_string();
-        let inactive_ref = store.save_review(&inactive_session).unwrap();
-
-        let removed = store
-            .prune_reviews(Some(&repo), ReviewPruneCriterion::Empty, false, false)
-            .unwrap();
-        assert_eq!(removed.len(), 1);
-        assert_eq!(removed[0].path, inactive_ref.path());
-        assert!(active_ref.path().exists());
-
-        let forced = store
-            .prune_reviews(Some(&repo), ReviewPruneCriterion::Empty, false, true)
-            .unwrap();
-        assert_eq!(forced.len(), 1);
-        assert!(forced[0].active);
-        assert!(!active_ref.path().exists());
-        assert!(
-            crate::persistence::storage::active_session_paths_in_dir(&reviews_dir)
-                .unwrap()
-                .is_empty()
-        );
-        let active: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(reviews_dir.join("active_sessions.json")).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(active["sessions"], serde_json::json!([]));
+                assert_eq!(results.len(), 1);
+                assert_eq!(results[0].path, inactive_ref.path());
+                assert!(!results[0].active);
+                assert_eq!(std::fs::read(active_ref.path()).unwrap(), session_before);
+                assert_eq!(
+                    std::fs::read(reviews_dir.join("active_sessions.json")).unwrap(),
+                    active_before
+                );
+                if dry_run {
+                    assert!(inactive_ref.path().exists());
+                    assert_eq!(
+                        std::fs::read(reviews_dir.join("index.json")).unwrap(),
+                        manifest_before
+                    );
+                } else {
+                    assert!(!inactive_ref.path().exists());
+                    let listed = store.list_sessions_for_repo(&repo).unwrap();
+                    assert_eq!(listed.len(), 1);
+                    assert_eq!(listed[0].session_ref, active_ref);
+                    assert!(listed[0].active);
+                }
+            }
+        }
     }
 
     #[test]
@@ -862,7 +881,7 @@ mod tests {
         std::fs::write(session_ref.path(), "{ invalid json").unwrap();
 
         let err = store
-            .prune_reviews(Some(&repo), ReviewPruneCriterion::Empty, false, false)
+            .prune_reviews(Some(&repo), ReviewPruneCriterion::Empty, false)
             .unwrap_err();
         assert!(matches!(err, TuicrError::CorruptedSession(_)));
         assert!(session_ref.path().exists());
@@ -872,7 +891,6 @@ mod tests {
             .prune_reviews(
                 Some(&repo),
                 ReviewPruneCriterion::UpdatedBefore(cutoff),
-                false,
                 false,
             )
             .unwrap();
@@ -893,7 +911,7 @@ mod tests {
         std::fs::write(corrupt_ref.path(), "{ invalid json").unwrap();
 
         let err = store
-            .prune_reviews(None, ReviewPruneCriterion::Empty, false, false)
+            .prune_reviews(None, ReviewPruneCriterion::Empty, false)
             .unwrap_err();
 
         assert!(matches!(err, TuicrError::CorruptedSession(_)));
@@ -930,7 +948,6 @@ mod tests {
                 Some(&repo),
                 ReviewPruneCriterion::UpdatedBefore(cutoff),
                 false,
-                false,
             )
             .unwrap();
 
@@ -941,12 +958,7 @@ mod tests {
         assert!(other_ref.path().exists());
 
         let removed = store
-            .prune_reviews(
-                None,
-                ReviewPruneCriterion::UpdatedBefore(cutoff),
-                false,
-                false,
-            )
+            .prune_reviews(None, ReviewPruneCriterion::UpdatedBefore(cutoff), false)
             .unwrap();
         assert_eq!(removed.len(), 1);
         assert_eq!(removed[0].path, other_ref.path());

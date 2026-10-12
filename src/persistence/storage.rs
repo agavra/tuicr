@@ -412,7 +412,6 @@ pub(crate) fn remove_review_session_in_dir(
     path: &Path,
     reviews_dir: &Path,
     if_empty: bool,
-    force: bool,
 ) -> Result<RemoveSessionOutcome> {
     maybe_migrate(reviews_dir)?;
     with_reviews_dir_lock(reviews_dir, || {
@@ -447,7 +446,7 @@ pub(crate) fn remove_review_session_in_dir(
             active,
         };
 
-        if active && !force {
+        if active {
             return Ok(RemoveSessionOutcome::Active(cleanup_entry));
         }
         if if_empty && path.exists() {
@@ -467,13 +466,6 @@ pub(crate) fn remove_review_session_in_dir(
             manifest::save_manifest(reviews_dir, &manifest)?;
         }
 
-        if force && active {
-            active_sessions
-                .sessions
-                .retain(|entry| normalize_active_path(&entry.path) != normalized_path);
-            save_active_sessions_unlocked(reviews_dir, &active_sessions)?;
-        }
-
         Ok(RemoveSessionOutcome::Removed(cleanup_entry))
     })
 }
@@ -483,7 +475,6 @@ pub(crate) fn prune_review_sessions_in_dir(
     selector: Option<&Path>,
     criterion: PruneCriterion,
     dry_run: bool,
-    force: bool,
 ) -> Result<Vec<SessionCleanupEntry>> {
     maybe_migrate(reviews_dir)?;
     with_reviews_dir_lock(reviews_dir, || {
@@ -505,7 +496,7 @@ pub(crate) fn prune_review_sessions_in_dir(
                 .as_ref()
                 .is_none_or(|target| target.matches(slug, entry));
             let active = active_paths.contains(&normalized_path);
-            if !in_scope || (active && !force) {
+            if !in_scope || active {
                 continue;
             }
 
@@ -533,10 +524,8 @@ pub(crate) fn prune_review_sessions_in_dir(
         }
 
         let mut removed = Vec::new();
-        let mut removed_active_paths = HashSet::new();
         let mut first_error = None;
         for candidate in candidates {
-            let normalized_path = normalize_active_path(&candidate.path);
             match fs::remove_file(&candidate.path) {
                 Ok(()) => {}
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
@@ -546,19 +535,10 @@ pub(crate) fn prune_review_sessions_in_dir(
                 }
             }
             remove_manifest_entries_for_path(&mut manifest, reviews_dir, &candidate.path);
-            if candidate.active {
-                removed_active_paths.insert(normalized_path);
-            }
             removed.push(candidate);
         }
 
         manifest::save_manifest(reviews_dir, &manifest)?;
-        if force {
-            active_sessions.sessions.retain(|entry| {
-                !removed_active_paths.contains(&normalize_active_path(&entry.path))
-            });
-            save_active_sessions_unlocked(reviews_dir, &active_sessions)?;
-        }
 
         match first_error {
             Some(err) => Err(err),

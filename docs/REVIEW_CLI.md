@@ -110,8 +110,8 @@ tuicr review rm --session ./saved-session.json
 files or hunks; a non-empty session is left in place and the command emits
 `[]`.
 
-An active TUI session is rejected unless `--force` is passed. A still-running
-TUI can recreate a forcibly removed session the next time it saves.
+An active TUI session is rejected. Close its TUI before removing the saved
+session; a still-running TUI can recreate the file the next time it saves.
 
 ## Prune Sessions
 
@@ -128,9 +128,8 @@ Manifest entries whose session file is already missing are also removed.
 `--older-than` accepts human durations such as `12h`, `30d`, or `6weeks` and
 uses the session's last-update timestamp.
 
-Pruning skips active sessions by default. Pass `--force` to include them; each
-forced result retains `"active": true` in the JSON output. Use `--dry-run` to
-emit the same candidates without changing session files, the manifest, or
+Pruning skips active sessions. Use `--dry-run` to emit the same candidates
+without changing session files or the manifest. Neither mode changes
 active-session markers.
 
 ## Add Comments

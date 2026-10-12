@@ -22,6 +22,8 @@ Related references: [CONFIG.md](CONFIG.md) for the config file and themes,
 | `tuicr review delete` | Delete one local draft comment (`--comment-id <ID>`) |
 | `tuicr review clearc` | Clear every comment in a session, keeping review marks |
 | `tuicr review clear` | Clear every comment and review mark in a session |
+| `tuicr review rm` (`tuicr review remove`) | Remove one inactive saved session; `--empty` protects sessions with comments or reviewed state |
+| `tuicr review prune` | Remove inactive sessions matching `--empty` or `--older-than DURATION`; scope with `--repo` or `--all`, preview with `--dry-run` |
 | `tuicr update [VERSION]` | Update the installed binary |
 
 `mr` is an alias of `pr`, and `get` an alias of `comments`; they behave
