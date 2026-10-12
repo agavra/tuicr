@@ -70,6 +70,12 @@ fn navigator_title(selected: Option<usize>, total: usize) -> String {
     }
 }
 
+/// The widest title `total` comments can produce. The layout sizes the
+/// sidebar to it, so moving the selection never resizes the panel.
+pub(super) fn widest_navigator_title(total: usize) -> String {
+    navigator_title(total.checked_sub(1), total)
+}
+
 fn render_comment_row(app: &App, item: &CommentNavigatorItem) -> Line<'static> {
     let (marker, marker_style) = match &item.kind {
         CommentNavigatorKind::Local(comment_type) => {
@@ -131,7 +137,7 @@ fn comment_location(item: &CommentNavigatorItem) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::navigator_title;
+    use super::{navigator_title, widest_navigator_title};
     use crate::app::{App, DiffSource, FocusedPanel, InputMode};
     use crate::model::{
         Comment, CommentType, DiffFile, DiffLine, FileStatus, ReviewSession, SessionDiffSource,
@@ -261,5 +267,36 @@ mod tests {
     fn should_show_only_the_total_without_a_valid_selection() {
         assert_eq!(navigator_title(None, 38), " Comments · 38 ");
         assert_eq!(navigator_title(Some(38), 38), " Comments · 38 ");
+    }
+
+    #[test]
+    fn should_measure_the_title_at_the_last_position() {
+        assert_eq!(widest_navigator_title(38), " Comments · 38/38 ");
+        assert_eq!(widest_navigator_title(9), " Comments · 9/9 ");
+    }
+
+    #[test]
+    fn should_keep_the_sidebar_width_while_the_selection_moves() {
+        // ` Comments · 1/10 ` is a column narrower than ` Comments · 10/10 `,
+        // and both outgrow the file rows and the ` Files · 0/10 ` title.
+        let paths: Vec<String> = (0..10).map(|i| format!("{i}.rs")).collect();
+        let paths: Vec<&str> = paths.iter().map(String::as_str).collect();
+        let mut app = app_with_file_comments(&paths);
+        app.focused_panel = FocusedPanel::Comments;
+        let mut terminal = Terminal::new(TestBackend::new(200, 40)).unwrap();
+
+        terminal
+            .draw(|frame| crate::ui::render(frame, &mut app))
+            .unwrap();
+        let first = app.comment_navigator_area.expect("navigator drawn");
+        assert!(terminal.backend().to_string().contains("Comments · 1/10"));
+        app.comment_navigator_down(9);
+        terminal
+            .draw(|frame| crate::ui::render(frame, &mut app))
+            .unwrap();
+
+        assert!(terminal.backend().to_string().contains("Comments · 10/10"));
+        assert_eq!(app.comment_navigator_area, Some(first));
+        assert_eq!(first.width, " Comments · 10/10 ".chars().count() as u16 + 2);
     }
 }
