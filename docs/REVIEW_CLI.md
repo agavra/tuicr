@@ -99,6 +99,7 @@ Target flags:
 - add `--line <n>` for a line comment
 - add `--end-line <n>` for a range comment
 - use `--side old|new` for inline comments
+- use `--commit <sha>` to scope a non-review comment to one commit
 - use `--username <name>` to identify the comment author; otherwise tuicr uses
   the configured `username` or `"user"`
 
@@ -155,6 +156,7 @@ Flat JSON fields:
 - `side`: `old` or `new`, defaults to `new`
 - `username` or `author`: comment author; uses the same fallback as
   `--username`
+- `commit_id` or `commit`: same as `--commit`
 
 Nested targets are also accepted:
 
@@ -232,11 +234,15 @@ PR slug:
     "comment_type": "issue",
     "author": "alice",
     "lifecycle_state": "local_draft",
+    "commit_id": null,
     "created_at": "2026-05-22T17:20:00Z",
     "content": "Handle the empty case here."
   }
 ]
 ```
+
+`commit_id` is the commit a comment is scoped to, or `null` when it applies
+to the whole review.
 
 The `author` field is the username stored with the comment. It is present in
 the JSON emitted by both `review add` and `review comments`.

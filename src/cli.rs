@@ -253,6 +253,13 @@ pub enum ReviewCommand {
         #[arg(long, value_enum, default_value_t = LineSideArg::New)]
         side: LineSideArg,
 
+        /// Scope a file, line, or range comment to one commit of a
+        /// multi-commit review, so it only shows while that commit is
+        /// selected. Accepts a full SHA or a unique prefix of a commit in the
+        /// session's range.
+        #[arg(long, value_name = "SHA")]
+        commit: Option<String>,
+
         /// Author stamped on the new comment. Pass an explicit value when
         /// invoking from an agent (e.g. `--username "Claude Opus 4.7"`) so
         /// human and agent comments are visually distinguished in the TUI.
@@ -1209,6 +1216,7 @@ mod tests {
                 line: Some(42),
                 end_line: None,
                 side: LineSideArg::Old,
+                commit: None,
                 username: None,
                 content: Some("Handle the empty case".to_string()),
             })
@@ -1241,6 +1249,7 @@ mod tests {
                 line: None,
                 end_line: None,
                 side: LineSideArg::New,
+                commit: None,
                 username: None,
                 content: None,
             })

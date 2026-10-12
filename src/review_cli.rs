@@ -34,6 +34,7 @@ fn run_with_writer(command: ReviewCommand, out: &mut impl Write) -> Result<()> {
             line,
             end_line,
             side,
+            commit,
             username,
             content,
         } => add_comment(
@@ -46,6 +47,7 @@ fn run_with_writer(command: ReviewCommand, out: &mut impl Write) -> Result<()> {
                 line,
                 end_line,
                 side,
+                commit,
                 username,
                 content,
             },
@@ -126,6 +128,7 @@ struct AddCommentOptions {
     line: Option<u32>,
     end_line: Option<u32>,
     side: LineSideArg,
+    commit: Option<String>,
     username: Option<String>,
     content: Option<String>,
 }
@@ -149,6 +152,13 @@ fn add_comment(
         eprintln!("{warning}");
     }
     let author = resolve_cli_author(request_parts.username, config.as_ref());
+    let commit_id = match request_parts.commit_id {
+        Some(commit) => Some(resolve_commit_id(
+            &store.get_review(&session_ref)?,
+            &commit,
+        )?),
+        None => None,
+    };
     let comment = store.add_comment(
         &session_ref,
         AddCommentRequest {
@@ -156,7 +166,7 @@ fn add_comment(
             content: request_parts.content,
             comment_type,
             author,
-            commit_id: None,
+            commit_id,
         },
     )?;
     let output = CommentOutput::from_target(&target, &comment);
@@ -169,7 +179,35 @@ struct AddRequestParts {
     target: CommentTarget,
     comment_type: String,
     content: String,
+    commit_id: Option<String>,
     username: Option<String>,
+}
+
+/// Expand `--commit` to the full SHA the TUI compares against.
+///
+/// Sessions that record a commit range accept a unique prefix of one of its
+/// commits. Sessions without one (PR sessions) store the value verbatim, since
+/// there is no list to check it against.
+fn resolve_commit_id(session: &ReviewSession, commit: &str) -> Result<String> {
+    let commit = commit.trim();
+    if commit.is_empty() {
+        return Err(TuicrError::InvalidInput(
+            "commit cannot be empty".to_string(),
+        ));
+    }
+    let Some(range) = &session.commit_range else {
+        return Ok(commit.to_string());
+    };
+    let matches: Vec<&String> = range.iter().filter(|id| id.starts_with(commit)).collect();
+    match matches.as_slice() {
+        [id] => Ok((*id).clone()),
+        [] => Err(TuicrError::InvalidInput(format!(
+            "commit '{commit}' is not in the session's commit range"
+        ))),
+        _ => Err(TuicrError::InvalidInput(format!(
+            "commit '{commit}' is ambiguous in the session's commit range"
+        ))),
+    }
 }
 
 /// Resolve the author for a CLI-authored comment.
@@ -231,6 +269,7 @@ fn build_add_request_parts(options: AddCommentOptions) -> Result<AddRequestParts
     let mut line = options.line;
     let mut end_line = options.end_line;
     let mut side = options.side;
+    let mut commit_id = options.commit;
     let mut username = options.username;
     let mut target = None;
 
@@ -244,6 +283,9 @@ fn build_add_request_parts(options: AddCommentOptions) -> Result<AddRequestParts
         }
         if payload.username.is_some() {
             username = payload.username;
+        }
+        if payload.commit_id.is_some() {
+            commit_id = payload.commit_id;
         }
         if let Some(payload_target) = payload.target {
             target = Some(payload_target.into_comment_target()?);
@@ -272,11 +314,17 @@ fn build_add_request_parts(options: AddCommentOptions) -> Result<AddRequestParts
         Some(target) => target,
         None => build_comment_target(file, line, end_line, side)?,
     };
+    if commit_id.is_some() && matches!(target, CommentTarget::Review) {
+        return Err(TuicrError::InvalidInput(
+            "a commit-scoped comment needs a file target; review-level comments apply to every commit".to_string(),
+        ));
+    }
 
     Ok(AddRequestParts {
         target,
         comment_type,
         content,
+        commit_id,
         username,
     })
 }
@@ -316,6 +364,8 @@ struct AddCommentPayload {
     end_line: Option<u32>,
     #[serde(default)]
     side: Option<String>,
+    #[serde(default, alias = "commit")]
+    commit_id: Option<String>,
     #[serde(default, alias = "author")]
     username: Option<String>,
 }
@@ -638,6 +688,7 @@ struct CommentOutput {
     comment_type: String,
     author: String,
     lifecycle_state: &'static str,
+    commit_id: Option<String>,
     created_at: String,
     content: String,
 }
@@ -688,6 +739,7 @@ impl CommentOutput {
             comment_type: comment.comment_type.id().to_string(),
             author: comment.author.clone(),
             lifecycle_state: lifecycle_id(comment.lifecycle_state),
+            commit_id: comment.commit_id.clone(),
             created_at: comment.created_at.to_rfc3339(),
             content: comment.content.clone(),
         }
@@ -762,6 +814,7 @@ mod tests {
             line: None,
             end_line: None,
             side: LineSideArg::New,
+            commit: None,
             username: None,
             content: None,
         })
@@ -791,6 +844,7 @@ mod tests {
             line: None,
             end_line: None,
             side: LineSideArg::New,
+            commit: None,
             username: None,
             content: None,
         })
@@ -805,6 +859,79 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    fn add_options(
+        input: Option<&str>,
+        file: Option<&str>,
+        commit: Option<&str>,
+    ) -> AddCommentOptions {
+        AddCommentOptions {
+            input: input.map(str::to_string),
+            comment_type: "none".to_string(),
+            file: file.map(PathBuf::from),
+            line: None,
+            end_line: None,
+            side: LineSideArg::New,
+            commit: commit.map(str::to_string),
+            username: None,
+            content: Some("body".to_string()),
+        }
+    }
+
+    #[test]
+    fn should_take_commit_from_json_payload() {
+        let parts = build_add_request_parts(add_options(
+            Some(r#"{"file":"src/main.rs","commit_id":"abc123","content":"x"}"#),
+            None,
+            None,
+        ))
+        .unwrap();
+        assert_eq!(parts.commit_id.as_deref(), Some("abc123"));
+    }
+
+    #[test]
+    fn should_reject_commit_on_review_level_comment() {
+        // add_comment_to_session drops commit_id for review comments, so
+        // accepting it would silently store an unscoped comment.
+        let result = build_add_request_parts(add_options(None, None, Some("abc123")));
+        assert!(matches!(result, Err(TuicrError::InvalidInput(_))));
+    }
+
+    fn commit_range_session(ids: &[&str]) -> ReviewSession {
+        let mut session = test_session(PathBuf::from("/tmp/repo"));
+        session.commit_range = Some(ids.iter().map(|id| id.to_string()).collect());
+        session
+    }
+
+    #[test]
+    fn should_expand_unique_commit_prefix_to_full_sha() {
+        let session = commit_range_session(&["aaaa1111", "bbbb2222"]);
+        assert_eq!(resolve_commit_id(&session, "bbbb").unwrap(), "bbbb2222");
+    }
+
+    #[test]
+    fn should_reject_commit_outside_session_range() {
+        let session = commit_range_session(&["aaaa1111"]);
+        assert!(resolve_commit_id(&session, "cccc").is_err());
+    }
+
+    #[test]
+    fn should_reject_ambiguous_commit_prefix() {
+        let session = commit_range_session(&["aaaa1111", "aaaa2222"]);
+        assert!(resolve_commit_id(&session, "aaaa").is_err());
+    }
+
+    #[test]
+    fn should_reject_empty_commit() {
+        let session = commit_range_session(&["aaaa1111"]);
+        assert!(resolve_commit_id(&session, " ").is_err());
+    }
+
+    #[test]
+    fn should_keep_commit_verbatim_without_session_range() {
+        let session = test_session(PathBuf::from("/tmp/repo"));
+        assert_eq!(resolve_commit_id(&session, "abc123").unwrap(), "abc123");
     }
 
     fn save_pr_session(store: &ReviewStore) -> SessionRef {

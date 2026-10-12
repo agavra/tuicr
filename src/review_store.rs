@@ -233,8 +233,8 @@ pub struct AddCommentRequest {
     pub author: String,
     /// Commit SHA to stamp on the comment when it was created while the
     /// inline commit selector showed exactly one commit. `None` for
-    /// review-level comments and full-range selections. Library callers
-    /// (the `review add` CLI) leave this `None`.
+    /// review-level comments and full-range selections. The `review add`
+    /// CLI sets it from `--commit`.
     pub commit_id: Option<String>,
 }
 

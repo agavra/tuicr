@@ -225,8 +225,9 @@ tuicr review add --repo /path/to/repo --session <slug> \
 ```
 
 Omit `--target-file` for a review-level comment. Add `--end-line` for a range
-comment. Use `--side old` for removed lines and `--side new` for added or
-unchanged lines in the new file.
+comment. Add `--commit <sha>` to scope a comment to one commit. Use
+`--side old` for removed lines and `--side new` for added or unchanged lines
+in the new file.
 
 For structured input, use `--input` with literal JSON, `@path/to/file.json`, or
 `-` for stdin. Supported target types are `review`, `file`, `line`, and
