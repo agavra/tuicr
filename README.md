@@ -20,6 +20,7 @@
   structured markdown to your clipboard, or pipe to stdout.
 - Works with git, jj, and mercurial. Reviews uncommitted changes, commit ranges, or any GitHub PR,
   GitLab MR, Gitea PR, Bitbucket PR, Azure DevOps PR, or Gerrit change.
+- Optional [review lifecycle hooks](docs/CONFIG.md#review-lifecycle-hooks) publish JSON to shell commands for external integrations.
 
 ## Install
 

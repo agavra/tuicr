@@ -1127,6 +1127,37 @@ fn should_switch_session_when_pr_head_advances_on_reload() {
 }
 
 #[test]
+fn hook_target_identity_changes_only_when_pr_head_changes() {
+    let _reviews = TestReviewsDir::new();
+    let mut app = build_app();
+    let summary = sample_pr(42, "head-a");
+    let mut details = test_pr_details(42, "head-a");
+    details.head_sha = "aaaaaaaaaaaaaaaa".into();
+    let backend = || {
+        Box::new(FakeForgeBackend::open_pr_details(
+            details.clone(),
+            crate::forge::github::gh::tests_fixture::SIMPLE_PATCH.to_string(),
+        ))
+    };
+    app.open_pr_with_backend(&summary, backend(), None).unwrap();
+    let initial = app.review_hook_target().unwrap();
+    app.reload_pull_request_with_backend(backend(), None)
+        .unwrap();
+    assert_eq!(app.review_hook_target().unwrap(), initial);
+    details.head_sha = "bbbbbbbbbbbbbbbb".into();
+    let backend = Box::new(FakeForgeBackend::open_pr_details(
+        details,
+        crate::forge::github::gh::tests_fixture::SIMPLE_PATCH.to_string(),
+    ));
+    app.reload_pull_request_with_backend(backend, None).unwrap();
+    let updated = app.review_hook_target().unwrap();
+    assert_eq!(initial.slug, updated.slug);
+    assert_ne!(initial.session_file, updated.session_file);
+    assert_eq!(initial.head_sha.as_deref(), Some("aaaaaaaaaaaaaaaa"));
+    assert_eq!(updated.head_sha.as_deref(), Some("bbbbbbbbbbbbbbbb"));
+}
+
+#[test]
 fn should_load_persisted_pr_session_when_reopening_same_head() {
     // given a saved PR session for the same PR head
     let _reviews = TestReviewsDir::new();

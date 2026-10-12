@@ -58,6 +58,14 @@ pub const DEFAULT_LEADER_KEY: char = ';';
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default)]
+pub struct HooksConfig {
+    pub review_started: Option<String>,
+    pub review_target_changed: Option<String>,
+    pub review_closed: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
 pub struct CommentTypeConfig {
     pub id: String,
     pub label: Option<String>,
@@ -231,6 +239,7 @@ pub struct AppConfig {
     /// `[export]` section settings. `None` means "no override"; downstream
     /// code should treat it as `ExportConfig::default()`.
     pub export: Option<ExportConfig>,
+    pub hooks: Option<HooksConfig>,
 }
 
 impl AppConfig {
@@ -290,9 +299,12 @@ const KNOWN_KEYS: &[&str] = &[
     "username",
     "forge",
     "export",
+    "hooks",
 ];
 
 const FORGE_KNOWN_KEYS: &[&str] = &["comment_type_prefix"];
+
+const HOOKS_KNOWN_KEYS: &[&str] = &["review_started", "review_target_changed", "review_closed"];
 
 const EXPORT_KNOWN_KEYS: &[&str] = &[
     "intro",
@@ -644,6 +656,9 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         export: table
             .get("export")
             .and_then(|v| parse_export(v, &mut warnings)),
+        hooks: table
+            .get("hooks")
+            .and_then(|v| parse_hooks(v, &mut warnings)),
     };
 
     for key in table.keys() {
@@ -685,6 +700,28 @@ fn parse_forge(value: &Value, warnings: &mut Vec<String>) -> Option<ForgeConfig>
     }
 
     if any_override { Some(cfg) } else { None }
+}
+
+fn parse_hooks(value: &Value, warnings: &mut Vec<String>) -> Option<HooksConfig> {
+    let Some(table) = value.as_table() else {
+        warnings.push("Warning: Config key 'hooks' must be a table; ignoring value".to_string());
+        return None;
+    };
+    for key in table.keys() {
+        if !HOOKS_KNOWN_KEYS.contains(&key.as_str()) {
+            warnings.push(format!(
+                "Warning: Unknown config key 'hooks.{key}', ignoring"
+            ));
+        }
+    }
+    let command = |key, warnings: &mut Vec<String>| {
+        read_section_string(table, "hooks", key, warnings).filter(|s| !s.trim().is_empty())
+    };
+    Some(HooksConfig {
+        review_started: command("review_started", warnings),
+        review_target_changed: command("review_target_changed", warnings),
+        review_closed: command("review_closed", warnings),
+    })
 }
 
 /// Parse the `[export]` section. Returns `Some` only when at least one
@@ -2337,6 +2374,26 @@ scope_line = "no"
         let export = cfg.resolved_export();
         assert!(!export.legend());
         assert_eq!(export.intro(), "");
+    }
+
+    #[test]
+    fn hooks_config_defaults_and_validation() {
+        assert!(parse_config("").config.unwrap().hooks.is_none());
+        let outcome = parse_config("[hooks]\nreview_started = 'cat'\nreview_closed = 'cleanup'\n");
+        assert!(outcome.warnings.is_empty());
+        let hooks = outcome.config.unwrap().hooks.unwrap();
+        assert_eq!(hooks.review_started.as_deref(), Some("cat"));
+        assert_eq!(hooks.review_closed.as_deref(), Some("cleanup"));
+        assert!(hooks.review_target_changed.is_none());
+        let outcome =
+            parse_config("[hooks]\nreview_started = 42\nunknown = true\nreview_closed = '  '\n");
+        let hooks = outcome.config.unwrap().hooks.unwrap();
+        assert!(hooks.review_started.is_none());
+        assert!(hooks.review_closed.is_none());
+        assert_eq!(outcome.warnings.len(), 2);
+        let outcome = parse_config("hooks = false\n");
+        assert!(outcome.config.unwrap().hooks.is_none());
+        assert_eq!(outcome.warnings.len(), 1);
     }
 
     // config path resolution

@@ -52,6 +52,13 @@ impl VcsBackend for RecordingVcs {
         &self.info
     }
 
+    fn get_change_status(&self) -> Result<crate::vcs::VcsChangeStatus> {
+        Ok(crate::vcs::VcsChangeStatus {
+            staged: true,
+            unstaged: false,
+        })
+    }
+
     /// Non-empty: a `-w` review of a fully staged tree still has a diff.
     fn get_working_tree_diff(&self, _highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
         self.calls.lock().unwrap().working_tree += 1;
@@ -241,6 +248,75 @@ fn should_pass_stored_commit_order_through_unchanged_when_resuming() {
         ]),
         "resume must not reverse the stored range"
     );
+}
+
+#[test]
+fn hook_target_identity_tracks_selection_and_saved_session_resume() {
+    let _reviews = TestReviewsDir::new();
+    let (mut app, _) = build_app(vec![commit("ccc"), commit("bbb"), commit("aaa")]);
+    app.ensure_ephemeral_session_file().unwrap();
+    assert!(
+        app.review_hook_target().is_none(),
+        "the selector's placeholder is not active"
+    );
+    app.load_staged_selection().unwrap();
+    let staged = app.review_hook_target().unwrap();
+    app.save_current_session_merging_external().unwrap();
+    assert_eq!(app.review_hook_target().unwrap(), staged);
+    app.enter_target_selector(TargetTab::Sessions).unwrap();
+    assert!(
+        app.review_hook_target().as_ref() == Some(&staged),
+        "opening the selector must retain the target"
+    );
+    let session = range_session(&["aaa", "bbb"], Some("saved-branch"));
+    let selected_id = session.id.clone();
+    stage_session(&mut app, session);
+    app.sessions_tab_select().unwrap();
+    let resumed = app.review_hook_target().unwrap();
+    assert_eq!(
+        resumed.session_id, selected_id,
+        "expose the selected session, not the provisional loader session"
+    );
+    assert_ne!(resumed.session_file, staged.session_file);
+}
+
+#[cfg(unix)]
+#[test]
+fn hooks_observe_the_first_selected_review() {
+    let reviews = TestReviewsDir::new();
+    let (mut app, _) = build_app(vec![commit("ccc")]);
+    let log = reviews._dir.path().join("hook.json");
+    let mut hooks = crate::hooks::Hooks::start(
+        crate::config::HooksConfig {
+            review_target_changed: Some(format!(
+                "cat > {}",
+                shlex::try_quote(log.to_str().unwrap()).unwrap()
+            )),
+            ..Default::default()
+        },
+        &app,
+        None,
+    )
+    .unwrap();
+    assert!(hooks.observe(&app).is_none());
+    app.load_staged_selection().unwrap();
+    assert!(hooks.observe(&app).is_none());
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let payload = loop {
+        if let Ok(bytes) = std::fs::read(&log)
+            && let Ok(payload) = serde_json::from_slice::<serde_json::Value>(&bytes)
+        {
+            break payload;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "first selection hook was not delivered"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    assert_eq!(payload["event"], "review_target_changed");
+    assert_eq!(payload["sequence"], 1);
+    assert_eq!(payload["review"]["session_id"], app.session.id);
 }
 
 #[test]
