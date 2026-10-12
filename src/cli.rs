@@ -255,8 +255,8 @@ pub enum ReviewCommand {
 
         /// Scope a file, line, or range comment to one commit of a
         /// multi-commit review, so it only shows while that commit is
-        /// selected. Accepts a full SHA or a unique prefix of a commit in the
-        /// session's range.
+        /// selected. Accepts a unique prefix of a commit in the session's
+        /// range; pull request sessions need the full SHA.
         #[arg(long, value_name = "SHA")]
         commit: Option<String>,
 

@@ -10,7 +10,9 @@ use crate::cli::{LineSideArg, ReviewCommand};
 use crate::config;
 use crate::error::{Result, TuicrError};
 use crate::model::comment::{self, CommentLifecycleState};
-use crate::model::{ClearScope, Comment, CommentType, LineRange, LineSide, ReviewSession};
+use crate::model::{
+    ClearScope, Comment, CommentType, LineRange, LineSide, ReviewSession, SessionDiffSource,
+};
 use crate::persistence::storage;
 use crate::review_store::{
     AddCommentRequest, CommentTarget, ReviewStore, SessionRef, SessionSummary,
@@ -186,19 +188,30 @@ struct AddRequestParts {
 /// Expand `--commit` to the full SHA the TUI compares against.
 ///
 /// Sessions that record a commit range accept a unique prefix of one of its
-/// commits. Sessions without one (PR sessions) store the value verbatim, since
-/// there is no list to check it against.
+/// commits. PR sessions record no commit list, so they need the full SHA:
+/// visibility is an exact match, and anything shorter would never show.
+/// Other sessions have no commit selector to scope to.
 fn resolve_commit_id(session: &ReviewSession, commit: &str) -> Result<String> {
-    let commit = commit.trim();
+    let commit = commit.trim().to_ascii_lowercase();
     if commit.is_empty() {
         return Err(TuicrError::InvalidInput(
             "commit cannot be empty".to_string(),
         ));
     }
     let Some(range) = &session.commit_range else {
-        return Ok(commit.to_string());
+        if session.diff_source != SessionDiffSource::PullRequest {
+            return Err(TuicrError::InvalidInput(
+                "session has no commits to scope a comment to".to_string(),
+            ));
+        }
+        if matches!(commit.len(), 40 | 64) && commit.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Ok(commit);
+        }
+        return Err(TuicrError::InvalidInput(format!(
+            "commit '{commit}' must be a full SHA for a pull request session"
+        )));
     };
-    let matches: Vec<&String> = range.iter().filter(|id| id.starts_with(commit)).collect();
+    let matches: Vec<&String> = range.iter().filter(|id| id.starts_with(&commit)).collect();
     match matches.as_slice() {
         [id] => Ok((*id).clone()),
         [] => Err(TuicrError::InvalidInput(format!(
@@ -929,9 +942,32 @@ mod tests {
     }
 
     #[test]
-    fn should_keep_commit_verbatim_without_session_range() {
+    fn should_match_commit_prefix_case_insensitively() {
+        let session = commit_range_session(&["aaaa1111"]);
+        assert_eq!(resolve_commit_id(&session, "AAAA").unwrap(), "aaaa1111");
+    }
+
+    #[test]
+    fn should_accept_full_sha_for_pr_session() {
+        let mut session = test_session(PathBuf::from("/tmp/repo"));
+        session.diff_source = SessionDiffSource::PullRequest;
+        let sha = "A".repeat(40);
+        assert_eq!(resolve_commit_id(&session, &sha).unwrap(), "a".repeat(40));
+    }
+
+    #[test]
+    fn should_reject_short_sha_for_pr_session() {
+        // Visibility is an exact match on the full oid, so a prefix would be
+        // stored but never shown or submitted.
+        let mut session = test_session(PathBuf::from("/tmp/repo"));
+        session.diff_source = SessionDiffSource::PullRequest;
+        assert!(resolve_commit_id(&session, "abc123").is_err());
+    }
+
+    #[test]
+    fn should_reject_commit_for_session_without_commits() {
         let session = test_session(PathBuf::from("/tmp/repo"));
-        assert_eq!(resolve_commit_id(&session, "abc123").unwrap(), "abc123");
+        assert!(resolve_commit_id(&session, "abc123").is_err());
     }
 
     fn save_pr_session(store: &ReviewStore) -> SessionRef {

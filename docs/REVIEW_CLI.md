@@ -99,7 +99,8 @@ Target flags:
 - add `--line <n>` for a line comment
 - add `--end-line <n>` for a range comment
 - use `--side old|new` for inline comments
-- use `--commit <sha>` to scope a non-review comment to one commit
+- use `--commit <sha>` to scope a non-review comment to one commit (full SHA
+  for PR sessions)
 - use `--username <name>` to identify the comment author; otherwise tuicr uses
   the configured `username` or `"user"`
 
