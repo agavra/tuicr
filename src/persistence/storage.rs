@@ -140,21 +140,56 @@ pub(crate) fn delete_session_if_empty(path: &Path) -> Result<bool> {
     delete_session_if_empty_in_dir(path, &reviews_dir)
 }
 
+/// Like [`delete_session_if_empty`], but leaves the file alone while a live
+/// tuicr has it open. For out-of-process callers such as `tuicr review
+/// delete`: the owning TUI polls the file to merge external edits, and
+/// cleans up an empty session itself on exit.
+pub(crate) fn delete_session_if_empty_and_inactive(path: &Path) -> Result<bool> {
+    let reviews_dir = get_reviews_dir()?;
+    delete_session_if_empty_and_inactive_in_dir(path, &reviews_dir)
+}
+
+pub(crate) fn delete_session_if_empty_and_inactive_in_dir(
+    path: &Path,
+    reviews_dir: &Path,
+) -> Result<bool> {
+    maybe_migrate(reviews_dir)?;
+    with_reviews_dir_lock(reviews_dir, || {
+        if is_session_active_unlocked(reviews_dir, path) {
+            return Ok(false);
+        }
+        delete_session_if_empty_unlocked(path, reviews_dir)
+    })
+}
+
 pub(crate) fn delete_session_if_empty_in_dir(path: &Path, reviews_dir: &Path) -> Result<bool> {
     maybe_migrate(reviews_dir)?;
     with_reviews_dir_lock(reviews_dir, || {
-        if !path.exists() {
-            return Ok(false);
-        }
-
-        let session = load_session(path)?;
-        if session.has_comments() || session.has_reviewed_state() {
-            return Ok(false);
-        }
-
-        remove_session_at(path, reviews_dir, &session)?;
-        Ok(true)
+        delete_session_if_empty_unlocked(path, reviews_dir)
     })
+}
+
+fn delete_session_if_empty_unlocked(path: &Path, reviews_dir: &Path) -> Result<bool> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    let session = load_session(path)?;
+    if session.has_comments() || session.has_reviewed_state() {
+        return Ok(false);
+    }
+    remove_session_at(path, reviews_dir, &session)?;
+    Ok(true)
+}
+
+/// Whether a live tuicr has `path` open. The caller must hold the reviews-dir
+/// lock, which [`mark_session_active_in_dir`] also takes.
+fn is_session_active_unlocked(reviews_dir: &Path, path: &Path) -> bool {
+    let target = normalize_active_path(path);
+    load_active_sessions_unlocked(reviews_dir)
+        .unwrap_or_default()
+        .sessions
+        .iter()
+        .any(|entry| entry.is_fresh() && normalize_active_path(&entry.path) == target)
 }
 
 /// Delete a session file and its manifest entry unconditionally. Returns
@@ -198,13 +233,7 @@ pub(crate) fn delete_inactive_session_in_dir(
 ) -> Result<DeleteOutcome> {
     maybe_migrate(reviews_dir)?;
     with_reviews_dir_lock(reviews_dir, || {
-        let target = normalize_active_path(path);
-        let active = load_active_sessions_unlocked(reviews_dir).unwrap_or_default();
-        if active
-            .sessions
-            .iter()
-            .any(|entry| entry.is_fresh() && normalize_active_path(&entry.path) == target)
-        {
+        if is_session_active_unlocked(reviews_dir, path) {
             return Ok(DeleteOutcome::Active);
         }
         Ok(if delete_session_unlocked(path, reviews_dir)? {
@@ -1014,6 +1043,31 @@ mod tests {
         let loaded = load_session(&path).unwrap();
         assert_eq!(session.id, loaded.id);
         assert_eq!(session.base_commit, loaded.base_commit);
+    }
+
+    #[test]
+    fn should_keep_an_empty_session_a_live_tuicr_has_open() {
+        // An agent emptying a session through `tuicr review delete` must not
+        // pull the file out from under the TUI polling it (#769).
+        let _g = with_test_reviews_dir();
+        let reviews_dir = get_reviews_dir().unwrap();
+        let session = make_local_session(
+            make_repo(),
+            "abc1234",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
+            None,
+        );
+        let path = save_session(&session).unwrap();
+        mark_session_active_in_dir(&session, &path, &reviews_dir).unwrap();
+
+        assert!(!delete_session_if_empty_and_inactive_in_dir(&path, &reviews_dir).unwrap());
+        assert!(path.exists(), "the open session must survive");
+
+        // Once the TUI is gone, an empty session is cleaned up as before.
+        clear_active_session_for_pid_in_dir(&reviews_dir).unwrap();
+        assert!(delete_session_if_empty_and_inactive_in_dir(&path, &reviews_dir).unwrap());
+        assert!(!path.exists());
     }
 
     #[test]

@@ -75,7 +75,7 @@ fn clear_comments(
     let store = ReviewStore::new();
     let session_ref = resolve_session_ref(&store, repo, session)?;
     let (cleared, unreviewed) = store.clear_comments(&session_ref, scope)?;
-    storage::delete_session_if_empty(session_ref.path())?;
+    storage::delete_session_if_empty_and_inactive(session_ref.path())?;
     serde_json::to_writer_pretty(
         &mut *out,
         &serde_json::json!({ "cleared": cleared, "unreviewed": unreviewed }),
@@ -97,7 +97,7 @@ fn delete_comment(
             "no comment with id '{comment_id}' in session '{session}'"
         )));
     }
-    storage::delete_session_if_empty(session_ref.path())?;
+    storage::delete_session_if_empty_and_inactive(session_ref.path())?;
     serde_json::to_writer_pretty(&mut *out, &serde_json::json!({ "deleted": comment_id }))?;
     writeln!(out)?;
     Ok(())
@@ -955,6 +955,57 @@ mod tests {
         assert_eq!(value[0]["author"], "review-agent");
         assert_eq!(value[0]["location"], "src/main.rs:42");
         assert_eq!(value[0]["content"], "check this");
+    }
+
+    #[test]
+    fn should_keep_a_session_a_tuicr_has_open_after_deleting_its_last_comment() {
+        // given — a session with one comment, open in a running TUI (#769)
+        let temp = tempdir().unwrap();
+        let repo = temp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let reviews = temp.path().join("reviews");
+        storage::set_test_reviews_dir(Some(reviews.clone()));
+        let store = ReviewStore::with_reviews_dir(&reviews);
+        let session = test_session(repo.clone());
+        let session_ref = store.save_review(&session).unwrap();
+        let comment = store
+            .add_comment(
+                &session_ref,
+                AddCommentRequest {
+                    target: CommentTarget::Review,
+                    content: "question?".to_string(),
+                    comment_type: CommentType::from_id("note"),
+                    author: "reviewer".to_string(),
+                    commit_id: None,
+                },
+            )
+            .unwrap();
+        storage::mark_session_active_in_dir(&session, session_ref.path(), &reviews).unwrap();
+        let session_arg = session_ref.path().display().to_string();
+
+        // when — an agent deletes the last comment through the CLI
+        let mut out = Vec::new();
+        run_with_writer(
+            ReviewCommand::Delete {
+                session: session_arg.clone(),
+                comment_id: comment.id,
+                repo: repo.clone(),
+            },
+            &mut out,
+        )
+        .unwrap();
+
+        // then — the file stays, so the TUI and the agent keep sharing it
+        let kept = session_ref.path().exists();
+        storage::set_test_reviews_dir(None);
+        assert!(kept, "an open session must survive losing its last comment");
+        assert!(
+            store
+                .get_review(&session_ref)
+                .unwrap()
+                .review_comments
+                .is_empty()
+        );
     }
 
     fn config_with_types(ids: &[&str]) -> config::AppConfig {

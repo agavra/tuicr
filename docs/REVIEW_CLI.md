@@ -127,6 +127,10 @@ tuicr review clear --session agavra/tuicr@main/worktree
 
 All three commands remove the session itself once nothing is left — no
 comments and no review marks — the same cleanup the TUI performs on exit.
+A session open in a running tuicr is kept, so an agent can empty it and keep
+adding to it while the TUI watches. If the TUI created that session it removes
+it on exit when still empty; otherwise the empty session stays behind, hidden
+on the Sessions tab (`a` shows it, `dd` deletes it).
 
 ## JSON Input
 

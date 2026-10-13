@@ -854,3 +854,33 @@ fn should_fetch_changed_diff_files_keeping_narrowed_commit_selection() {
         "diff-watch's probe fetch must use the narrowed selection, not the full commit range"
     );
 }
+
+#[test]
+fn should_request_a_redraw_when_an_external_writer_deletes_a_comment() {
+    // An agent deleting a comment through `tuicr review delete` adds nothing,
+    // but the open TUI still has to repaint to drop it from the screen (#769).
+    let _reviews = TestReviewsDir::new();
+    let file = make_diff_file("a.rs", FileStatus::Modified, 1);
+    let mut app = build_app_with_scripted_vcs(vec![file], ScriptedVcs::new());
+    app.session.review_comments.push(Comment::new(
+        "question?".to_string(),
+        CommentType::from_id("note"),
+        None,
+    ));
+    let path = app
+        .save_current_session_merging_external()
+        .expect("session should save");
+    let mut external =
+        crate::persistence::storage::load_session(&path).expect("persisted session should load");
+    external.review_comments.clear();
+    // Bump the mtime past the watcher's last observation.
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    crate::persistence::storage::save_session(&external).expect("external session should save");
+
+    app.review_watch_interval = Some(std::time::Duration::from_millis(1));
+    app.next_review_watch_at = std::time::Instant::now() - std::time::Duration::from_millis(1);
+    let redraw = app.poll_persisted_session_changes();
+
+    assert!(app.session.review_comments.is_empty());
+    assert!(redraw, "an external deletion must schedule a redraw");
+}

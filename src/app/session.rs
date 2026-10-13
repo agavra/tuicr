@@ -197,9 +197,8 @@ impl App {
             return false;
         }
 
-        match self.reload_persisted_session_if_changed(false) {
-            Ok(0) => false,
-            Ok(_) => true,
+        match self.reload_persisted_session(false) {
+            Ok(reload) => reload.changed > 0,
             Err(err) => {
                 self.set_warning(format!("Review reload failed: {err}"));
                 true
@@ -219,20 +218,26 @@ impl App {
             || self.pr_submit_rx.is_some()
     }
 
+    /// Merge external edits to the persisted session. Returns how many
+    /// comments were added.
     pub fn reload_persisted_session_if_changed(&mut self, force: bool) -> Result<usize> {
+        Ok(self.reload_persisted_session(force)?.added)
+    }
+
+    fn reload_persisted_session(&mut self, force: bool) -> Result<PersistedReload> {
         let path = match self.session_path_or_resolve() {
             Ok(path) => path,
-            Err(_) => return Ok(0),
+            Err(_) => return Ok(PersistedReload::default()),
         };
 
         if !path.exists() {
             self.session_file_state = None;
-            return Ok(0);
+            return Ok(PersistedReload::default());
         }
 
         let state = SessionFileState::from_path(&path)?;
         if !force && self.session_file_state == Some(state) {
-            return Ok(0);
+            return Ok(PersistedReload::default());
         }
 
         let latest = crate::persistence::storage::load_session(&path)?;
@@ -247,7 +252,10 @@ impl App {
             self.rebuild_annotations();
         }
         let after_count = Self::comment_count(&self.session);
-        Ok(after_count.saturating_sub(before_count))
+        Ok(PersistedReload {
+            added: after_count.saturating_sub(before_count),
+            changed,
+        })
     }
 
     pub(in crate::app) fn merge_external_session_changes(
@@ -711,4 +719,14 @@ impl App {
             })
             .collect()
     }
+}
+
+/// What [`App::reload_persisted_session`] merged from disk.
+#[derive(Debug, Default, Clone, Copy)]
+struct PersistedReload {
+    /// Comments added by another writer.
+    added: usize,
+    /// Every merged change, including external deletions and edits, which
+    /// need a redraw even though they add nothing.
+    changed: usize,
 }
