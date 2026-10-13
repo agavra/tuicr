@@ -884,3 +884,62 @@ fn should_request_a_redraw_when_an_external_writer_deletes_a_comment() {
     assert!(app.session.review_comments.is_empty());
     assert!(redraw, "an external deletion must schedule a redraw");
 }
+
+#[test]
+fn should_redraw_and_drop_the_annotation_when_one_of_two_line_comments_is_deleted() {
+    // Removing one comment from a line that keeps another must count as a
+    // change too, or the deleted comment stays on screen.
+    let _reviews = TestReviewsDir::new();
+    let mut file = make_diff_file("a.rs", FileStatus::Modified, 1);
+    file.hunks = vec![make_hunk(10, "line")];
+    let mut app = build_app_with_scripted_vcs(vec![file], ScriptedVcs::new());
+    let review = app
+        .session
+        .get_file_mut(&PathBuf::from("a.rs"))
+        .expect("file registered");
+    for text in ["first", "second"] {
+        review.add_line_comment(
+            10,
+            Comment::new(
+                text.to_string(),
+                CommentType::from_id("note"),
+                Some(LineSide::New),
+            ),
+        );
+    }
+    let path = app
+        .save_current_session_merging_external()
+        .expect("session should save");
+    let line_comment_rows = |app: &App| {
+        app.line_annotations
+            .iter()
+            .filter(|a| matches!(a, AnnotatedLine::LineComment { .. }))
+            .count()
+    };
+    let before = line_comment_rows(&app);
+
+    let mut external =
+        crate::persistence::storage::load_session(&path).expect("persisted session should load");
+    external
+        .get_file_mut(&PathBuf::from("a.rs"))
+        .expect("file")
+        .line_comments
+        .get_mut(&10)
+        .expect("line 10")
+        .remove(0);
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    crate::persistence::storage::save_session(&external).expect("external session should save");
+
+    app.review_watch_interval = Some(std::time::Duration::from_millis(1));
+    app.next_review_watch_at = std::time::Instant::now() - std::time::Duration::from_millis(1);
+    let redraw = app.poll_persisted_session_changes();
+
+    let remaining = &app.session.files[&PathBuf::from("a.rs")].line_comments[&10];
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].content, "second");
+    assert!(redraw, "a partial line deletion must schedule a redraw");
+    assert!(
+        line_comment_rows(&app) < before,
+        "the deleted comment must leave the annotation cache"
+    );
+}

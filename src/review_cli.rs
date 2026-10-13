@@ -957,55 +957,73 @@ mod tests {
         assert_eq!(value[0]["content"], "check this");
     }
 
+    /// Every CLI command that can empty a session must leave it in place
+    /// while a running tuicr has it open (#769).
     #[test]
-    fn should_keep_a_session_a_tuicr_has_open_after_deleting_its_last_comment() {
-        // given — a session with one comment, open in a running TUI (#769)
-        let temp = tempdir().unwrap();
-        let repo = temp.path().join("repo");
-        std::fs::create_dir_all(&repo).unwrap();
-        let reviews = temp.path().join("reviews");
-        storage::set_test_reviews_dir(Some(reviews.clone()));
-        let store = ReviewStore::with_reviews_dir(&reviews);
-        let session = test_session(repo.clone());
-        let session_ref = store.save_review(&session).unwrap();
-        let comment = store
-            .add_comment(
-                &session_ref,
-                AddCommentRequest {
-                    target: CommentTarget::Review,
-                    content: "question?".to_string(),
-                    comment_type: CommentType::from_id("note"),
-                    author: "reviewer".to_string(),
-                    commit_id: None,
-                },
-            )
-            .unwrap();
-        storage::mark_session_active_in_dir(&session, session_ref.path(), &reviews).unwrap();
-        let session_arg = session_ref.path().display().to_string();
+    fn should_keep_an_open_session_when_any_cli_command_empties_it() {
+        type MakeCommand = fn(String, String, PathBuf) -> ReviewCommand;
+        let cases: [(&str, MakeCommand); 3] = [
+            ("delete", |session, comment_id, repo| {
+                ReviewCommand::Delete {
+                    session,
+                    comment_id,
+                    repo,
+                }
+            }),
+            ("clearc", |session, _, repo| ReviewCommand::Clearc {
+                session,
+                repo,
+            }),
+            ("clear", |session, _, repo| ReviewCommand::Clear {
+                session,
+                repo,
+            }),
+        ];
+        for (name, make_command) in cases {
+            // given — a session with one comment, open in a running TUI
+            let temp = tempdir().unwrap();
+            let repo = temp.path().join("repo");
+            std::fs::create_dir_all(&repo).unwrap();
+            let reviews = temp.path().join("reviews");
+            storage::set_test_reviews_dir(Some(reviews.clone()));
+            let store = ReviewStore::with_reviews_dir(&reviews);
+            let session = test_session(repo.clone());
+            let session_ref = store.save_review(&session).unwrap();
+            let comment = store
+                .add_comment(
+                    &session_ref,
+                    AddCommentRequest {
+                        target: CommentTarget::Review,
+                        content: "question?".to_string(),
+                        comment_type: CommentType::from_id("note"),
+                        author: "reviewer".to_string(),
+                        commit_id: None,
+                    },
+                )
+                .unwrap();
+            storage::mark_session_active_in_dir(&session, session_ref.path(), &reviews).unwrap();
+            let session_arg = session_ref.path().display().to_string();
 
-        // when — an agent deletes the last comment through the CLI
-        let mut out = Vec::new();
-        run_with_writer(
-            ReviewCommand::Delete {
-                session: session_arg.clone(),
-                comment_id: comment.id,
-                repo: repo.clone(),
-            },
-            &mut out,
-        )
-        .unwrap();
+            // when — an agent removes the last comment through the CLI
+            let result = run_with_writer(
+                make_command(session_arg, comment.id, repo.clone()),
+                &mut Vec::new(),
+            );
 
-        // then — the file stays, so the TUI and the agent keep sharing it
-        let kept = session_ref.path().exists();
-        storage::set_test_reviews_dir(None);
-        assert!(kept, "an open session must survive losing its last comment");
-        assert!(
-            store
-                .get_review(&session_ref)
-                .unwrap()
-                .review_comments
-                .is_empty()
-        );
+            // then — the file stays, so the TUI and the agent keep sharing it
+            let kept = session_ref.path().exists();
+            storage::set_test_reviews_dir(None);
+            result.unwrap_or_else(|e| panic!("review {name} failed: {e}"));
+            assert!(kept, "review {name} must keep an open session");
+            assert!(
+                store
+                    .get_review(&session_ref)
+                    .unwrap()
+                    .review_comments
+                    .is_empty(),
+                "review {name} must still remove the comment"
+            );
+        }
     }
 
     fn config_with_types(ids: &[&str]) -> config::AppConfig {

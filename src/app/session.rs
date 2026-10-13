@@ -420,18 +420,18 @@ impl App {
                 return true;
             }
 
-            let mut emptied_line = None;
+            let mut removed_from_line = None;
             for (line, comments) in &mut review.line_comments {
                 if let Some(index) = comments.iter().position(|comment| comment.id == id) {
                     comments.remove(index);
-                    if comments.is_empty() {
-                        emptied_line = Some(*line);
-                    }
+                    removed_from_line = Some((*line, comments.is_empty()));
                     break;
                 }
             }
-            if let Some(line) = emptied_line {
-                review.line_comments.remove(&line);
+            if let Some((line, emptied)) = removed_from_line {
+                if emptied {
+                    review.line_comments.remove(&line);
+                }
                 return true;
             }
         }

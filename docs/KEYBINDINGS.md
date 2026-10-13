@@ -323,7 +323,7 @@ forge, the same as opening it from the Pull Requests tab.
 Press `dd` to delete the saved review under the cursor. tuicr asks to confirm first, and
 refuses to delete a review that is open in another tuicr, since that process would write
 it straight back. Combine `a` with `dd` to clear out empty sessions left behind by a
-crash.
+crash, or by `tuicr review delete`/`clear` emptying a review another tuicr had open.
 
 ## Inline commit selector
 
