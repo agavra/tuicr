@@ -97,7 +97,10 @@ consider sessions from every repo.
 
 ## Remove Sessions
 
-Delete one session by the same slug or JSON path accepted by `comments`:
+`rm` deletes a saved session file. For the `clear` variants, see
+[Delete and clear comments](#delete-and-clear-comments).
+
+Remove one session by the same slug or JSON path accepted by `comments`:
 
 ```bash
 tuicr review rm --session agavra/tuicr@main/worktree

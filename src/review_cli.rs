@@ -461,10 +461,9 @@ fn remove_session_with_store(
     let removed = match store.remove_review(&session_ref, empty)? {
         RemoveReviewOutcome::Removed(entry) => vec![SessionCleanupOutput::from(entry)],
         RemoveReviewOutcome::NotEmpty => Vec::new(),
-        RemoveReviewOutcome::Active(entry) => {
+        RemoveReviewOutcome::Active => {
             return Err(TuicrError::InvalidInput(format!(
-                "session '{}' is active; close its TUI before deleting it",
-                entry.slug
+                "session '{session}' is active; close its TUI before deleting it"
             )));
         }
         RemoveReviewOutcome::NotFound => {
@@ -501,7 +500,12 @@ fn prune_sessions_with_store(
             let age = chrono::Duration::from_std(duration).map_err(|_| {
                 TuicrError::InvalidInput("duration is too large to represent".to_string())
             })?;
-            ReviewPruneCriterion::UpdatedBefore(Utc::now() - age)
+            let cutoff = Utc::now().checked_sub_signed(age).ok_or_else(|| {
+                TuicrError::InvalidInput(
+                    "--older-than gives a date outside the supported range".to_string(),
+                )
+            })?;
+            ReviewPruneCriterion::UpdatedBefore(cutoff)
         }
         _ => {
             return Err(TuicrError::InvalidInput(
@@ -1339,6 +1343,29 @@ mod tests {
             &missing.display().to_string(),
             Path::new("."),
             false,
+            &mut Vec::new(),
+        )
+        .unwrap_err();
+
+        assert!(matches!(err, TuicrError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn should_reject_pruning_when_age_exceeds_calendar_range() {
+        let temp = tempdir().unwrap();
+        let store = ReviewStore::with_reviews_dir(temp.path().join("reviews"));
+        let age = humantime::parse_duration("1000000000d").unwrap();
+        assert!(chrono::Duration::from_std(age).is_ok());
+
+        let err = prune_sessions_with_store(
+            &store,
+            PruneOptions {
+                empty: false,
+                older_than: Some(age),
+                repo: None,
+                all: true,
+                dry_run: true,
+            },
             &mut Vec::new(),
         )
         .unwrap_err();

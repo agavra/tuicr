@@ -17,7 +17,7 @@
 //! walking `sessions/`.
 
 use std::cmp::Reverse;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -65,7 +65,7 @@ pub(crate) struct SessionCleanupEntry {
 pub(crate) enum RemoveSessionOutcome {
     Removed(SessionCleanupEntry),
     NotEmpty,
-    Active(SessionCleanupEntry),
+    Active,
     NotFound,
 }
 
@@ -194,6 +194,23 @@ pub(crate) fn session_marker_slug(session: &ReviewSession) -> Result<String> {
         Some(key) => Ok(Slug::from(key).to_string()),
         None => Ok(slug_for_session(session)?.to_string()),
     }
+}
+
+/// Return the usable slug for a manifest entry. Legacy PR keys omit the
+/// host, so the file's session key supplies the qualifier when needed.
+pub(crate) fn session_slug_from_manifest(slug: String, kind: &ManifestKind, path: &Path) -> String {
+    if !matches!(kind, ManifestKind::Pr { host: None, .. }) {
+        return slug;
+    }
+    load_session(path)
+        .ok()
+        .and_then(|session| session_marker_slug(&session).ok())
+        .filter(|marker| {
+            marker
+                .strip_prefix(&slug)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('@'))
+        })
+        .unwrap_or(slug)
 }
 
 pub(crate) fn delete_session_if_empty(path: &Path) -> Result<bool> {
@@ -415,27 +432,24 @@ pub(crate) fn remove_review_session_in_dir(
 ) -> Result<RemoveSessionOutcome> {
     maybe_migrate(reviews_dir)?;
     with_reviews_dir_lock(reviews_dir, || {
-        let mut manifest = manifest::load_manifest(reviews_dir).unwrap_or_default();
+        if active_session_paths_unlocked(reviews_dir)?.contains(&normalize_active_path(path)) {
+            return Ok(RemoveSessionOutcome::Active);
+        }
+
+        let mut manifest = manifest_for_update(reviews_dir)?;
         let registered = manifest_entry_for_path(&manifest, reviews_dir, path);
         if registered.is_none() && !path.exists() {
             return Ok(RemoveSessionOutcome::NotFound);
         }
 
-        let mut active_sessions = load_active_sessions_unlocked(reviews_dir)?;
-        active_sessions.prune_stale();
-        let normalized_path = normalize_active_path(path);
-        let active = active_sessions
-            .sessions
-            .iter()
-            .any(|entry| normalize_active_path(&entry.path) == normalized_path);
-
         let (slug, updated_at) = match registered {
-            Some((slug, entry)) => (slug, entry.updated_at),
+            Some((slug, entry)) => (
+                session_slug_from_manifest(slug, &entry.kind, path),
+                entry.updated_at,
+            ),
             None => {
                 let session = load_session(path)?;
-                let slug = slug_for_session(&session)
-                    .map(|slug| slug.to_string())
-                    .unwrap_or_else(|_| session.id.clone());
+                let slug = session_marker_slug(&session).unwrap_or_else(|_| session.id.clone());
                 (slug, session.updated_at)
             }
         };
@@ -443,12 +457,9 @@ pub(crate) fn remove_review_session_in_dir(
             slug,
             path: path.to_path_buf(),
             updated_at,
-            active,
+            active: false,
         };
 
-        if active {
-            return Ok(RemoveSessionOutcome::Active(cleanup_entry));
-        }
         if if_empty && path.exists() {
             let session = load_session(path)?;
             if session.has_comments() || session.has_reviewed_state() {
@@ -476,26 +487,42 @@ pub(crate) fn prune_review_sessions_in_dir(
     criterion: PruneCriterion,
     dry_run: bool,
 ) -> Result<Vec<SessionCleanupEntry>> {
-    maybe_migrate(reviews_dir)?;
+    if dry_run {
+        // A legacy directory would be moved aside by a real prune. A preview
+        // leaves it in place and has no current-layout sessions to report.
+        if !reviews_dir.join(SESSIONS_DIRNAME).exists() {
+            return Ok(Vec::new());
+        }
+    } else {
+        maybe_migrate(reviews_dir)?;
+    }
     with_reviews_dir_lock(reviews_dir, || {
-        let mut manifest = manifest::load_manifest(reviews_dir).unwrap_or_default();
+        let mut manifest = if dry_run {
+            manifest_for_preview(reviews_dir)?
+        } else {
+            manifest_for_update(reviews_dir)?
+        };
         let target = selector.map(RepoSelector::resolve);
-        let mut active_sessions = load_active_sessions_unlocked(reviews_dir)?;
-        active_sessions.prune_stale();
-        let active_paths: HashSet<_> = active_sessions
-            .sessions
+        let active_paths = active_session_paths_unlocked(reviews_dir)?;
+        // Capture identities before deleting files; canonicalization may change once they are gone.
+        let normalized_paths: HashMap<_, _> = manifest
             .iter()
-            .map(|entry| normalize_active_path(&entry.path))
+            .map(|(_, entry)| {
+                (
+                    entry.path.clone(),
+                    normalize_active_path(&reviews_dir.join(&entry.path)),
+                )
+            })
             .collect();
 
         let mut candidates = Vec::new();
         for (slug, entry) in manifest.iter() {
             let path = reviews_dir.join(&entry.path);
-            let normalized_path = normalize_active_path(&path);
+            let normalized_path = &normalized_paths[&entry.path];
             let in_scope = target
                 .as_ref()
                 .is_none_or(|target| target.matches(slug, entry));
-            let active = active_paths.contains(&normalized_path);
+            let active = active_paths.contains(normalized_path);
             if !in_scope || active {
                 continue;
             }
@@ -509,23 +536,27 @@ pub(crate) fn prune_review_sessions_in_dir(
                 PruneCriterion::UpdatedBefore(cutoff) => entry.updated_at < cutoff,
             };
             if eligible {
-                candidates.push(SessionCleanupEntry {
-                    slug: slug.clone(),
-                    path,
-                    updated_at: entry.updated_at,
-                    active,
-                });
+                candidates.push((
+                    SessionCleanupEntry {
+                        slug: session_slug_from_manifest(slug.clone(), &entry.kind, &path),
+                        path,
+                        updated_at: entry.updated_at,
+                        active,
+                    },
+                    normalized_path.clone(),
+                ));
             }
         }
-        candidates.sort_by_key(|entry| Reverse(entry.updated_at));
+        candidates.sort_by_key(|(entry, _)| Reverse(entry.updated_at));
 
         if dry_run {
-            return Ok(candidates);
+            return Ok(candidates.into_iter().map(|(entry, _)| entry).collect());
         }
 
         let mut removed = Vec::new();
+        let mut removed_paths = HashSet::new();
         let mut first_error = None;
-        for candidate in candidates {
+        for (candidate, normalized_path) in candidates {
             match fs::remove_file(&candidate.path) {
                 Ok(()) => {}
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
@@ -534,10 +565,14 @@ pub(crate) fn prune_review_sessions_in_dir(
                     break;
                 }
             }
-            remove_manifest_entries_for_path(&mut manifest, reviews_dir, &candidate.path);
+            removed_paths.insert(normalized_path);
             removed.push(candidate);
         }
 
+        manifest.entries.retain(|_, bucket| {
+            bucket.retain(|entry| !removed_paths.contains(&normalized_paths[&entry.path]));
+            !bucket.is_empty()
+        });
         manifest::save_manifest(reviews_dir, &manifest)?;
 
         match first_error {
@@ -651,11 +686,14 @@ pub(crate) fn clear_active_session_for_pid_in_dir(reviews_dir: &Path) -> Result<
 
 pub(crate) fn active_session_paths_in_dir(reviews_dir: &Path) -> Result<HashSet<PathBuf>> {
     maybe_migrate(reviews_dir)?;
-    let active = load_active_sessions_unlocked(reviews_dir).unwrap_or_default();
-    Ok(active
+    Ok(active_session_paths_unlocked(reviews_dir).unwrap_or_default())
+}
+
+fn active_session_paths_unlocked(reviews_dir: &Path) -> Result<HashSet<PathBuf>> {
+    Ok(load_active_sessions_unlocked(reviews_dir)?
         .sessions
         .into_iter()
-        .filter(|entry| entry.is_fresh())
+        .filter(ActiveSessionEntry::is_fresh)
         .map(|entry| normalize_active_path(&entry.path))
         .collect())
 }
@@ -918,6 +956,15 @@ fn read_manifest(reviews_dir: &Path) -> Result<manifest::Manifest> {
         Err(TuicrError::CorruptedSession(_)) => {
             with_reviews_dir_lock(reviews_dir, || manifest_for_update(reviews_dir))
         }
+        other => other,
+    }
+}
+
+/// Recover the view used for a cleanup preview without rewriting the index.
+fn manifest_for_preview(reviews_dir: &Path) -> Result<manifest::Manifest> {
+    match manifest::load_manifest(reviews_dir) {
+        Ok(_) if index_missing_with_sessions(reviews_dir) => rebuild_manifest(reviews_dir),
+        Err(TuicrError::CorruptedSession(_)) => rebuild_manifest(reviews_dir),
         other => other,
     }
 }
