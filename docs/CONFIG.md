@@ -71,6 +71,10 @@ custom = true                 # ignore whitespace in *.custom files
 [forge]
 comment_type_prefix = true
 
+[selection]
+marker_color = "#242d38"   # optional; omitted uses the current theme
+row_background = "#242d38" # optional; omitted uses the current theme
+
 [export]
 intro = "I reviewed your code and have the following comments. Please address them."
 scope_line = true
@@ -111,6 +115,8 @@ session_header = true
 | `wrap_style`               | `flow`       | Where wrapped unified diff rows continue: `flow` wraps from the left edge, `gutter` keeps wrapped content after the line-number gutter, leaving continuation rows without a line number or change bar. |
 | `relative_line_numbers`    | `false`      | Show gutter numbers as rendered-row distances from the cursor. Toggle with `:set relativenumber!`.                                                         |
 | `cursor_line`              | `true`       | Highlight the current cursor line and visual selection.                                                                                                    |
+| `selection.marker_color`   | (theme)      | Cursor markers and vertical commit-range selection bars. See [Selection appearance](#selection-appearance). |
+| `selection.row_background` | (theme)      | Active rows, selected commit ranges, and visual-selection backgrounds in both diff layouts. See [Selection appearance](#selection-appearance). |
 | `search_highlight`         | `true`       | Highlight `/` search matches in the diff view. Clear at runtime with `Esc`; `n` / `N` re-enable.                                                           |
 | `transparent_background`   | `true`       | Let the terminal background show through panels. `false` paints the theme's `panel_bg`.                                                                    |
 | `scroll_offset`            | `0`          | Minimum lines visible above and below the cursor when scrolling (like Vim's `scrolloff`).                                                                  |
@@ -122,6 +128,39 @@ session_header = true
 | `backend`                  | `libgit2`    | Git backend: `libgit2` or `cli`. Sparse-checkout repos auto-route to `cli`.                                                                                |
 | `comment_types`            | (none)       | Comment categories. Untyped by default. See [Comment types](#comment-types).                                                                               |
 | `export_legend`            | `true`       | Include the `Comment types:` legend in the exported review. Superseded by `legend` under [Export](#export).                                                |
+
+## Selection appearance
+
+Use `[selection]` in `config.toml` to customize selection colors independently
+of the theme's informational colors. For a matching marker and background:
+
+```toml
+[selection]
+marker_color = "#242d38"
+row_background = "#242d38"
+```
+
+Both keys are optional and accept the same named colors or `#RRGGBB` values as
+local themes. Invalid values are ignored with a startup warning; valid settings
+still apply.
+
+`marker_color` colors cursor indicators and the vertical selected-range bars in
+the fullscreen and inline commit selectors. `row_background` colors active rows,
+selected commit ranges, and multiline visual selections, including wrapped lines
+in unified and side-by-side diffs. The `cursor_line` setting still controls the
+diff cursor-row highlight.
+
+PR numbers, commit hashes, branch labels, and other informational text retain
+their theme colors. In particular, keep the theme's `cursor_color` at its readable
+accent value (GitHub Dark uses `#d29922`); use `selection.marker_color` for the
+selection marker instead of changing that shared accent.
+
+Omitting the section preserves the existing appearance. Each omitted key inherits
+the current renderer's theme color: diff markers and range bars use
+`border_focused`, selector pointers keep their existing foreground, cursor rows
+use `cursor_line_bg`, and list/visual selections use `bg_highlight`. Explicit
+overrides persist through `:theme <name>` and theme-picker preview, confirmation,
+and cancellation; inherited colors follow the active theme.
 
 ## Whitespace comparison
 

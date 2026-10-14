@@ -551,7 +551,10 @@ pub fn render_command_completion_popup(frame: &mut Frame, app: &App, status_area
             } else {
                 Style::default().fg(app.theme.fg_secondary)
             };
-            Line::from(Span::styled(format!("{marker} {command}"), style))
+            Line::from(vec![
+                Span::styled(marker, styles::selection_marker_style(&app.theme, style)),
+                Span::styled(format!(" {command}"), style),
+            ])
         })
         .collect();
 

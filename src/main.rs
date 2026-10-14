@@ -133,6 +133,13 @@ fn main() -> anyhow::Result<()> {
         std::process::exit(2);
     });
     startup_warnings.extend(theme_warnings);
+    if let Some(selection) = config_outcome
+        .config
+        .as_ref()
+        .and_then(|cfg| cfg.selection.as_ref())
+    {
+        theme.selection = selection.colors();
+    }
 
     let transparent = config_outcome
         .config
