@@ -366,13 +366,11 @@ impl SideBySideContext<'_> {
     }
 
     fn display_lineno(&self, source_line: Option<u32>, line_idx: usize) -> Option<u32> {
-        source_line.map(|line| {
-            if self.app.relative_line_numbers {
-                line_idx.abs_diff(self.current_line_idx) as u32
-            } else {
-                line
-            }
-        })
+        if self.app.relative_line_numbers {
+            crate::ui::diff_view::relative_line_number(source_line, line_idx, self.current_line_idx)
+        } else {
+            source_line
+        }
     }
 }
 

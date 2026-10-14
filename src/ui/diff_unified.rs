@@ -1777,6 +1777,206 @@ mod remote_comments_snapshot_tests {
             .join("\n")
     }
 
+    #[test]
+    fn should_render_hybrid_line_numbers_in_both_views() {
+        use crate::app::{AnnotatedLine, DiffViewMode, GapId};
+
+        // Different old/new numbers expose side-selection mistakes. Long
+        // content exercises the wrapped rendering path without changing the
+        // annotation distances that count-prefixed motions use.
+        let cases = [
+            ("CONTEXT", LineOrigin::Context, Some(4100), Some(5100), 5100),
+            ("DELETED", LineOrigin::Deletion, Some(4101), None, 4101),
+            ("ADDED", LineOrigin::Addition, None, Some(5101), 5101),
+            ("AFTER", LineOrigin::Context, Some(4102), Some(5102), 5102),
+            ("ONLY_ADD", LineOrigin::Addition, None, Some(5103), 5103),
+            ("END", LineOrigin::Context, Some(4103), Some(5104), 5104),
+            ("ONLY_DEL", LineOrigin::Deletion, Some(4104), None, 4104),
+            ("OLD_CONTEXT", LineOrigin::Context, Some(4105), None, 4105),
+        ];
+        let mut file = sample_diff_file();
+        file.hunks[0] = DiffHunk {
+            header: "@@ -4100,6 +5100,5 @@".to_string(),
+            old_start: 4100,
+            old_count: 6,
+            new_start: 5100,
+            new_count: 5,
+            lines: cases
+                .iter()
+                .map(|(marker, origin, old, new, _)| DiffLine {
+                    origin: *origin,
+                    content: if *marker == "CONTEXT" {
+                        format!("{marker} {}", "x".repeat(180))
+                    } else {
+                        marker.to_string()
+                    },
+                    old_lineno: *old,
+                    new_lineno: *new,
+                    highlighted_spans: None,
+                })
+                .collect(),
+        };
+        file.content_hash = DiffFile::compute_content_hash(&file.hunks);
+
+        for mode in [DiffViewMode::Unified, DiffViewMode::SideBySide] {
+            for wrap in [false, true] {
+                for single_file in [false, true] {
+                    let mut app = make_revision_app(vec![file.clone()]);
+                    app.diff_view_mode = mode;
+                    app.diff_state.wrap_lines = wrap;
+                    app.is_single_file_view = single_file;
+                    app.expanded_top.insert(
+                        GapId {
+                            file_idx: 0,
+                            hunk_idx: 0,
+                        },
+                        vec![DiffLine {
+                            origin: LineOrigin::Context,
+                            content: "EXPANDED".to_string(),
+                            old_lineno: Some(4099),
+                            new_lineno: Some(5099),
+                            highlighted_spans: None,
+                        }],
+                    );
+                    app.session
+                        .get_file_mut(&PathBuf::from("src/lib.rs"))
+                        .unwrap()
+                        .add_line_comment(
+                            5100,
+                            crate::model::Comment::new(
+                                "Intervening comment".to_string(),
+                                crate::model::CommentType::None,
+                                Some(LineSide::New),
+                            ),
+                        );
+                    app.rebuild_annotations();
+
+                    // Capture source numbers from the annotations, including
+                    // both sides of paired changes, rather than assuming the
+                    // two renderers give every source line its own row.
+                    let rows: Vec<_> = app
+                        .line_annotations
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(idx, row)| {
+                            let (marker, old, new, unified) = match row {
+                                AnnotatedLine::DiffLine { line_idx, .. } => {
+                                    let dl = &file.hunks[0].lines[*line_idx];
+                                    (
+                                        dl.content.split_whitespace().next().unwrap(),
+                                        dl.old_lineno,
+                                        dl.new_lineno,
+                                        Some(cases[*line_idx].4),
+                                    )
+                                }
+                                AnnotatedLine::SideBySideLine {
+                                    del_line_idx,
+                                    add_line_idx,
+                                    old_lineno,
+                                    new_lineno,
+                                    ..
+                                } => {
+                                    let dl = &file.hunks[0].lines
+                                        [del_line_idx.or(*add_line_idx).unwrap()];
+                                    (
+                                        dl.content.split_whitespace().next().unwrap(),
+                                        *old_lineno,
+                                        *new_lineno,
+                                        None,
+                                    )
+                                }
+                                AnnotatedLine::ExpandedContext { .. } => {
+                                    ("EXPANDED", Some(4099), Some(5099), Some(5099))
+                                }
+                                _ => return None,
+                            };
+                            Some((idx, marker, old, new, unified))
+                        })
+                        .collect();
+                    assert!(rows.iter().any(|(_, marker, ..)| *marker == "EXPANDED"));
+                    let header_idx = app
+                        .line_annotations
+                        .iter()
+                        .position(|row| matches!(row, AnnotatedLine::HunkHeader { .. }))
+                        .unwrap();
+
+                    for relative in [false, true] {
+                        app.relative_line_numbers = relative;
+                        // Moving through every row proves the former cursor
+                        // row returns to a distance. A header has no absolute
+                        // number, so every populated gutter stays relative.
+                        for cursor in rows.iter().map(|(idx, ..)| *idx).chain([header_idx]) {
+                            app.diff_state.cursor_line = cursor;
+                            let mut terminal = Terminal::new(TestBackend::new(160, 40)).unwrap();
+                            terminal
+                                .draw(|frame| {
+                                    crate::ui::diff_view::render_diff_view(
+                                        frame,
+                                        &mut app,
+                                        Rect::new(0, 0, 160, 40),
+                                    )
+                                })
+                                .unwrap();
+                            let buffer = terminal.backend().buffer();
+                            let inner = app.diff_inner_area.unwrap();
+                            let lw = app.lineno_width();
+                            for (idx, marker, old, new, unified) in &rows {
+                                let y = (0..buffer.area.height)
+                                    .find(|y| {
+                                        let text: String = (0..buffer.area.width)
+                                            .map(|x| buffer[(x, *y)].symbol())
+                                            .collect();
+                                        text.contains(marker)
+                                    })
+                                    .unwrap_or_else(|| {
+                                        panic!("missing {marker} in {}", body_text(buffer))
+                                    });
+                                let expected = |source: Option<u32>| {
+                                    source.map(|n| {
+                                        if relative && *idx != cursor {
+                                            idx.abs_diff(cursor) as u32
+                                        } else {
+                                            n
+                                        }
+                                    })
+                                };
+                                let assert_gutter = |x: u16, source: Option<u32>| {
+                                    // The following space can carry a comment
+                                    // bar overlay; inspect only the number.
+                                    let actual: String = (x..x + lw as u16)
+                                        .map(|x| buffer[(x, y)].symbol())
+                                        .collect();
+                                    let expected = expected(source)
+                                        .map(|n| format!("{n:>lw$}"))
+                                        .unwrap_or_else(|| " ".repeat(lw));
+                                    assert_eq!(
+                                        actual, expected,
+                                        "{mode:?}, wrap={wrap}, single={single_file}, relative={relative}, cursor={cursor}, row={idx}, marker={marker}"
+                                    );
+                                };
+                                if mode == DiffViewMode::Unified {
+                                    assert_gutter(inner.x + 1, *unified);
+                                } else {
+                                    assert_gutter(inner.x + 1, *old);
+                                    let content_width =
+                                        inner.width.saturating_sub(crate::app::sbs_overhead(lw))
+                                            / 2;
+                                    assert_gutter(
+                                        inner.x
+                                            + crate::app::sbs_left_gutter(lw)
+                                            + content_width
+                                            + 3,
+                                        *new,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     fn commit_message_file(message: &str) -> DiffFile {
         let lines: Vec<DiffLine> = message
             .lines()
@@ -1808,6 +2008,45 @@ mod remote_comments_snapshot_tests {
             is_too_large: false,
             is_commit_message: true,
             content_hash,
+        }
+    }
+
+    #[test]
+    fn should_keep_commit_messages_unnumbered_with_relative_line_numbers() {
+        use crate::app::{AnnotatedLine, DiffViewMode};
+
+        for mode in [DiffViewMode::Unified, DiffViewMode::SideBySide] {
+            let mut app = make_revision_app(vec![commit_message_file("COMMITMSG summary")]);
+            app.diff_view_mode = mode;
+            app.relative_line_numbers = true;
+            app.rebuild_annotations();
+            app.diff_state.cursor_line = app
+                .line_annotations
+                .iter()
+                .position(|row| {
+                    matches!(
+                        row,
+                        AnnotatedLine::DiffLine { .. } | AnnotatedLine::SideBySideLine { .. }
+                    )
+                })
+                .unwrap();
+            let mut terminal = Terminal::new(TestBackend::new(100, 12)).unwrap();
+            terminal
+                .draw(|frame| {
+                    crate::ui::diff_view::render_diff_view(
+                        frame,
+                        &mut app,
+                        Rect::new(0, 0, 100, 12),
+                    )
+                })
+                .unwrap();
+            let body = body_text(terminal.backend().buffer());
+            let row = body.lines().find(|row| row.contains("COMMITMSG")).unwrap();
+            let prefix = row.split("COMMITMSG").next().unwrap();
+            assert!(
+                !prefix.chars().any(|c| c.is_ascii_digit()),
+                "{mode:?} commit message should have no source number: {row}"
+            );
         }
     }
 
