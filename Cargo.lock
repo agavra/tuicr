@@ -2907,6 +2907,7 @@ dependencies = [
  "flate2",
  "git2",
  "ignore",
+ "libc",
  "pulldown-cmark",
  "ratatui",
  "regex",

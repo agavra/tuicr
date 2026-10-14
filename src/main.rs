@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use crossterm::{
     event::{self, Event, KeyEventKind},
     execute, queue,
-    terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate, supports_keyboard_enhancement},
+    terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate},
 };
 
 use tuicr::app::{self, App, AppStartupOptions, FocusedPanel, InputMode};
@@ -88,7 +88,7 @@ fn main() -> anyhow::Result<()> {
         cli_args.output_to_stdout,
         io::stdin().is_terminal(),
     ) {
-        matches!(supports_keyboard_enhancement(), Ok(true))
+        tuicr::terminal_state::supports_keyboard_enhancement()
     } else {
         false
     };
