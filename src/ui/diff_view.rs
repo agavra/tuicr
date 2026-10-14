@@ -14,6 +14,7 @@ use crate::ui::comment_panel;
 use crate::ui::diff_side_by_side::render_side_by_side_diff;
 use crate::ui::diff_unified::render_unified_diff;
 use crate::ui::styles;
+use crate::ui::text_utils::col_of_char;
 use unicode_width::UnicodeWidthStr;
 
 /// Static header rule used for file/section headers; avoids `"═".repeat(40)` per frame.
@@ -571,8 +572,8 @@ fn paint_annotation_group(
         if isect_hi <= isect_lo {
             continue;
         }
-        let col_lo_off = (isect_lo - row_char_start) as u16;
-        let col_hi_off = (isect_hi - row_char_start) as u16;
+        let col_lo_off = col_of_char(content, row_char_start, isect_lo) as u16;
+        let col_hi_off = col_of_char(content, row_char_start, isect_hi) as u16;
         let col_lo = (paint.geom.content_x_start + col_lo_off).min(pane_last_col);
         let col_hi_excl = paint.geom.content_x_start + col_hi_off;
         if col_hi_excl == 0 {

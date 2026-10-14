@@ -2027,6 +2027,95 @@ mod remote_comments_snapshot_tests {
     }
 
     #[test]
+    fn should_select_wide_chars_by_the_cells_they_are_drawn_in() {
+        for mode in [DiffViewMode::Unified, DiffViewMode::SideBySide] {
+            for wrap in [true, false] {
+                let case = format!("{mode:?} wrap={wrap}");
+                let mut app = make_revision_app(vec![wrapping_diff_file(1)]);
+                app.diff_view_mode = mode;
+                app.wrap_style = WrapStyle::Gutter;
+                app.cursor_line_highlight = false;
+                app.set_diff_wrap(wrap);
+                let _ = draw_diff(&mut app);
+                let inner = app.diff_inner_area.unwrap();
+                let geom = app.pane_geometry(inner, LineSide::New);
+                // Each row holds `per_row` two-cell chars.
+                let per_row = geom.content_width / 2;
+                let row_count = if wrap { 2 } else { 1 };
+                let content = "中".repeat(per_row * row_count);
+                let total = content.chars().count();
+                app.diff_files[0].hunks[0].lines[0].content = content;
+                app.rebuild_annotations();
+                let _ = draw_diff(&mut app);
+                let annotation_idx = app
+                    .line_annotations
+                    .iter()
+                    .position(|annotation| {
+                        matches!(
+                            annotation,
+                            AnnotatedLine::DiffLine { .. } | AnnotatedLine::SideBySideLine { .. }
+                        )
+                    })
+                    .unwrap();
+                let rows: Vec<u16> = app
+                    .diff_row_to_annotation
+                    .iter()
+                    .enumerate()
+                    .filter(|&(_, &idx)| idx == annotation_idx)
+                    .map(|(row, _)| inner.y + row as u16)
+                    .collect();
+                assert_eq!(rows.len(), row_count, "{case}");
+
+                // Both cells of a wide char map to that char.
+                for (row_idx, &y) in rows.iter().enumerate() {
+                    for col in 0..2 * per_row {
+                        let x = geom.content_x_start + col as u16;
+                        let offset = app.cell_to_sel_point(x, y).unwrap().char_offset;
+                        assert_eq!(offset, row_idx * per_row + col / 2, "{case} col {col}");
+                    }
+                }
+
+                let point = |char_offset| SelPoint {
+                    annotation_idx,
+                    char_offset,
+                    side: LineSide::New,
+                };
+                app.visual_selection = Some(VisualSelection {
+                    anchor: point(0),
+                    head: point(total),
+                });
+                // A wide char's style lives on its first cell; the terminal
+                // never receives the cell it covers.
+                let buffer = draw_diff(&mut app);
+                let selected = |col: usize, y: u16| {
+                    buffer[(geom.content_x_start + col as u16, y)].bg == app.theme.bg_highlight
+                };
+                for &y in &rows {
+                    assert!(
+                        (0..per_row).all(|k| selected(2 * k, y)),
+                        "{case}: row {y} is not fully selected"
+                    );
+                }
+
+                app.visual_selection = Some(VisualSelection {
+                    anchor: point(1),
+                    head: point(2),
+                });
+                let buffer = draw_diff(&mut app);
+                let selected = |k: usize| {
+                    buffer[(geom.content_x_start + 2 * k as u16, rows[0])].bg
+                        == app.theme.bg_highlight
+                };
+                assert_eq!(
+                    (0..3).map(selected).collect::<Vec<_>>(),
+                    [false, true, false],
+                    "{case}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn should_show_comment_input_at_eof_when_lines_wrap() {
         let mut app = make_revision_app(vec![wrapping_diff_file(40)]);
         app.diff_state.wrap_lines = true;
