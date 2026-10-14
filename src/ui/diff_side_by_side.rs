@@ -368,7 +368,7 @@ impl SideBySideContext<'_> {
     fn display_lineno(&self, source_line: Option<u32>, line_idx: usize) -> Option<u32> {
         source_line.map(|line| {
             if self.app.relative_line_numbers {
-                line_idx.abs_diff(self.current_line_idx) as u32
+                crate::ui::diff_view::relative_line_number(line, line_idx, self.current_line_idx)
             } else {
                 line
             }
@@ -2885,5 +2885,96 @@ mod remote_comments_side_by_side_snapshot_tests {
             body.contains("Type your comment..."),
             "expected the comment input box to be visible in:\n{body}"
         );
+    }
+
+    /// Context at old 40-41 / new 50-51, a deleted line 42 replaced by new 52,
+    /// then context at old 43 / new 53.
+    fn relative_numbering_file() -> DiffFile {
+        let line = |origin, content: &str, old_lineno, new_lineno| DiffLine {
+            origin,
+            content: content.to_string(),
+            old_lineno,
+            new_lineno,
+            highlighted_spans: None,
+        };
+        let lines = vec![
+            line(LineOrigin::Context, "alpha", Some(40), Some(50)),
+            line(LineOrigin::Context, "bravo", Some(41), Some(51)),
+            line(LineOrigin::Deletion, "charlie", Some(42), None),
+            line(LineOrigin::Addition, "delta", None, Some(52)),
+            line(LineOrigin::Context, "echo", Some(43), Some(53)),
+        ];
+        let hunks = vec![DiffHunk {
+            header: "@@ -40,4 +50,4 @@".to_string(),
+            lines,
+            old_start: 40,
+            old_count: 4,
+            new_start: 50,
+            new_count: 4,
+        }];
+        let content_hash = DiffFile::compute_content_hash(&hunks);
+        DiffFile {
+            old_path: Some(PathBuf::from("src/lib.rs")),
+            new_path: Some(PathBuf::from("src/lib.rs")),
+            status: FileStatus::Modified,
+            hunks,
+            is_binary: false,
+            is_too_large: false,
+            is_commit_message: false,
+            content_hash,
+        }
+    }
+
+    /// Numbers printed on the screen row of `annotation`. Content words in
+    /// `relative_numbering_file` have no digits, so these are the gutters.
+    fn gutter_numbers(app: &App, buffer: &Buffer, annotation: usize) -> Vec<u32> {
+        let inner = app.diff_inner_area.unwrap();
+        let row = app
+            .diff_row_to_annotation
+            .iter()
+            .position(|&idx| idx == annotation)
+            .unwrap();
+        let text: String = (inner.x..inner.x + inner.width)
+            .map(|x| buffer[(x, inner.y + row as u16)].symbol().to_string())
+            .collect();
+        text.split_whitespace()
+            .filter_map(|token| token.parse().ok())
+            .collect()
+    }
+
+    #[test]
+    fn should_show_absolute_numbers_on_cursor_row_with_relative_numbers() {
+        let mut app = make_pr_app_with(vec![relative_numbering_file()]);
+        app.relative_line_numbers = true;
+        app.rebuild_annotations();
+        let find = |app: &App, old: u32, new: u32| {
+            app.line_annotations
+                .iter()
+                .position(|annotation| {
+                    matches!(
+                        annotation,
+                        crate::app::AnnotatedLine::SideBySideLine { old_lineno, new_lineno, .. }
+                            if *old_lineno == Some(old) && *new_lineno == Some(new)
+                    )
+                })
+                .unwrap()
+        };
+        let alpha = find(&app, 40, 50);
+        let bravo = find(&app, 41, 51);
+        let changed = find(&app, 42, 52);
+        let echo = find(&app, 43, 53);
+
+        // Each gutter shows the cursor row's own old/new number.
+        app.diff_state.cursor_line = changed;
+        let buffer = draw_sbs(&mut app, 160, 20);
+        assert_eq!(gutter_numbers(&app, &buffer, changed), vec![42, 52]);
+        assert_eq!(gutter_numbers(&app, &buffer, bravo), vec![1, 1]);
+        assert_eq!(gutter_numbers(&app, &buffer, alpha), vec![2, 2]);
+        assert_eq!(gutter_numbers(&app, &buffer, echo), vec![1, 1]);
+
+        app.diff_state.cursor_line = bravo;
+        let buffer = draw_sbs(&mut app, 160, 20);
+        assert_eq!(gutter_numbers(&app, &buffer, bravo), vec![41, 51]);
+        assert_eq!(gutter_numbers(&app, &buffer, changed), vec![1, 1]);
     }
 }
