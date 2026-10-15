@@ -193,6 +193,13 @@ impl App {
             return;
         }
 
+        // Minimal mode lands on the first file after a reload too, not only at
+        // startup, so a commit switch or refresh never opens on the empty overview.
+        if self.minimal_ui && self.diff_files.iter().any(|f| self.file_passes_filter(f)) {
+            self.apply_minimal_ui_start();
+            return;
+        }
+
         // Start at the overview position (review comments header)
         // so the diff title shows total stats on launch.
         self.diff_state.cursor_line = 0;
