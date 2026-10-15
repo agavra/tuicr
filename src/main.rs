@@ -21,6 +21,7 @@ use tuicr::handler::{
     handle_submit_resolver_action, handle_summary_action, handle_theme_picker_action,
     handle_visual_action,
 };
+use tuicr::input::mappings::{self, Typeahead};
 use tuicr::input::{
     Action, map_file_tree_mode_with_q_quits, map_file_tree_prompt_mode,
     map_key_to_action_with_q_quits, map_target_filter_mode, map_theme_picker_filter_mode,
@@ -404,6 +405,13 @@ fn main() -> anyhow::Result<()> {
         app.focused_panel = FocusedPanel::Diff;
     }
 
+    let (key_mappings, mapping_warnings) = match config::mappings_path() {
+        Ok(path) => mappings::load(&path, app.leader_key),
+        Err(_) => Default::default(),
+    };
+    startup_warnings.extend(mapping_warnings);
+    let mut typeahead = Typeahead::new(key_mappings);
+
     if let Some(message) = startup_warnings.first() {
         app.set_warning(message.clone());
     }
@@ -488,16 +496,34 @@ fn main() -> anyhow::Result<()> {
         // terminal presents frames, and the intermediate frames are never seen.
         // `drained` caps a burst so continuous input still repaints.
         let mut drained = 0;
-        while !app.should_quit
-            && let Some(timeout) = event_drain_timeout(drained)
-            && event::poll(timeout)?
-        {
-            drained += 1;
-            // Set before reading so the many `continue` paths below (leader
+        while !app.should_quit {
+            let mode = if pending_z || pending_shift_z || pending_d || pending_leader {
+                None
+            } else {
+                app.mapping_mode()
+            };
+            let event = match typeahead.pop(mode, Instant::now()) {
+                Some(event) => event,
+                None => {
+                    let Some(timeout) = event_drain_timeout(drained) else {
+                        break;
+                    };
+                    if !event::poll(timeout)? {
+                        break;
+                    }
+                    drained += 1;
+                    let event = event::read()?;
+                    if typeahead.is_active() {
+                        typeahead.push(event, Instant::now());
+                        continue;
+                    }
+                    event
+                }
+            };
+            // Set before handling so the many `continue` paths below (leader
             // keys, zz/ZZ, dd, {count}G, …) still schedule a redraw on the
             // next iteration even though they short-circuit past the match.
             needs_redraw = true;
-            let event = event::read()?;
             // Down/Up Release flips the `*_released_since_arm` flag so the
             // primed two-press file walk in single-file view requires a
             // deliberate release + press; held-key auto-repeat (Repeat
