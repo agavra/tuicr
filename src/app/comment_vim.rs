@@ -122,6 +122,12 @@ impl App {
             .is_some_and(CommentVimEditor::is_normal_mode)
     }
 
+    pub fn comment_vim_in_insert_mode(&self) -> bool {
+        self.comment_vim_editor
+            .as_ref()
+            .is_none_or(CommentVimEditor::is_insert_mode)
+    }
+
     /// Feed a key to the vim overlay and sync the result into the canonical
     /// `comment_buffer`/`comment_cursor`.
     pub fn comment_vim_feed_key(&mut self, key: crossterm::event::KeyEvent) {
