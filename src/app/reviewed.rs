@@ -573,7 +573,64 @@ impl App {
     }
 
     /// Returns true when the cursor is in the review comments area above all files.
+    ///
+    /// Minimal mode opens on the first file via [`Self::apply_minimal_ui_start`],
+    /// so this is false at startup even when review-level rows still sit above it.
     pub fn is_cursor_in_overview(&self) -> bool {
         self.diff_state.cursor_line < self.review_comments_render_height()
+    }
+
+    /// Drop the diff panel's outer border and title.
+    ///
+    /// A sole diff pane already does this. Minimal mode does it even when the
+    /// file list or commit selector is open, so those panes keep their own chrome.
+    pub(crate) fn hide_diff_frame(&self) -> bool {
+        self.minimal_ui || self.is_diff_sole_pane()
+    }
+
+    /// Whether the bottom status row should be reserved.
+    ///
+    /// Minimal mode hides it while review input is idle. Commands, search,
+    /// comment entry, confirmation, help, and every other non-review mode
+    /// still need it, as do in-flight forge work, a dirty session, and
+    /// transient messages.
+    pub(crate) fn shows_status_bar(&self) -> bool {
+        if !self.minimal_ui {
+            return true;
+        }
+        if self.message.is_some()
+            || self.dirty
+            || self.pending_count.is_some()
+            || self.forge_review_threads_loading
+            || self.pr_submit_state.is_some()
+            || self.pr_reload_state.is_some()
+            || self.pr_range_reload_state.is_some()
+            || self.file_tree_prompt_editing()
+        {
+            return true;
+        }
+        !matches!(self.input_mode, InputMode::Normal)
+    }
+
+    /// Open on the first file instead of the overview landing.
+    ///
+    /// Review-level and inline comment rows stay in the document. The cursor
+    /// and scroll begin at the first file so an empty landing is not what
+    /// the review opens on.
+    pub fn apply_minimal_ui_start(&mut self) {
+        if !self.minimal_ui || self.diff_files.is_empty() {
+            return;
+        }
+        let Some(file_idx) = self
+            .diff_files
+            .iter()
+            .position(|file| self.file_passes_filter(file))
+        else {
+            return;
+        };
+        let start = self.calculate_file_scroll_offset(file_idx);
+        self.diff_state.current_file_idx = file_idx;
+        self.diff_state.cursor_line = start;
+        self.diff_state.scroll_offset = start;
     }
 }

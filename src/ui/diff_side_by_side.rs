@@ -379,15 +379,20 @@ impl SideBySideContext<'_> {
 pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focused_panel == FocusedPanel::Diff;
 
-    // When the diff is the only pane, drop the frame entirely — including its
-    // title row. The file name and stats are folded into the top header line
-    // instead (see status_bar::render_header) so there's a single header line.
-    let sole = app.is_diff_sole_pane();
+    // When the diff is the only pane, or minimal mode is on, drop the frame
+    // entirely — including its title row. File names stay on the in-diff
+    // file headers. A sole pane also folds the name into the top header
+    // (see status_bar::render_header); minimal mode hides that header too.
+    let frameless = app.hide_diff_frame();
     let mut block = Block::default()
-        .borders(if sole { Borders::NONE } else { Borders::ALL })
+        .borders(if frameless {
+            Borders::NONE
+        } else {
+            Borders::ALL
+        })
         .style(styles::panel_style(&app.theme))
         .border_style(styles::border_style(&app.theme, focused));
-    if !sole {
+    if !frameless {
         block = block
             .title(crate::ui::diff_view::diff_title(app, area.width))
             .title_top(diff_stat_title(app).right_aligned());
@@ -2885,5 +2890,60 @@ mod remote_comments_side_by_side_snapshot_tests {
             body.contains("Type your comment..."),
             "expected the comment input box to be visible in:\n{body}"
         );
+    }
+
+    #[test]
+    fn minimal_ui_drops_the_frame_and_keeps_the_side_by_side_diff() {
+        use ratatui::style::{Color, Style};
+
+        let mut app = make_pr_app();
+        let highlight = Color::Rgb(9, 8, 7);
+        app.diff_files[0].hunks[0].lines[1].highlighted_spans =
+            Some(vec![(Style::default().fg(highlight), "second".to_string())]);
+        let path = app.diff_files[0].display_path().clone();
+        app.session
+            .files
+            .get_mut(&path)
+            .expect("file is registered")
+            .line_comments
+            .entry(2)
+            .or_default()
+            .push(crate::model::Comment::new(
+                "line note stays".to_string(),
+                crate::model::CommentType::from_id("note"),
+                Some(LineSide::New),
+            ));
+        app.show_file_list = true;
+        app.rebuild_annotations();
+
+        let _buffer = draw(&mut app);
+        assert_ne!(
+            app.diff_inner_area.unwrap().y,
+            app.diff_area.unwrap().y,
+            "side-by-side keeps its frame when minimal mode is off"
+        );
+
+        app.minimal_ui = true;
+        app.apply_minimal_ui_start();
+        let buffer = draw(&mut app);
+        let text = body_text(&buffer);
+        assert!(!text.contains("tuicr"), "{text}");
+        assert!(!text.contains("Overview"), "{text}");
+        assert!(text.contains("src/lib.rs"), "{text}");
+        assert!(text.contains("@@"), "{text}");
+        assert!(text.contains("line note stays"), "{text}");
+        assert_eq!(app.diff_inner_area, app.diff_area);
+        let (x, y) = (0..buffer.area.height)
+            .find_map(|y| {
+                (0..buffer.area.width).find_map(|x| {
+                    let matches = "second".chars().enumerate().all(|(offset, ch)| {
+                        buffer[(x + offset as u16, y)].symbol() == ch.to_string()
+                    });
+                    matches.then_some((x, y))
+                })
+            })
+            .expect("highlighted addition");
+        assert_eq!(buffer[(x, y)].fg, highlight);
+        assert!(!app.is_cursor_in_overview());
     }
 }

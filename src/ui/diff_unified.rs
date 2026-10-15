@@ -47,15 +47,20 @@ fn unified_row_height(
 pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focused_panel == FocusedPanel::Diff;
 
-    // When the diff is the only pane, drop the frame entirely — including its
-    // title row. The file name and stats are folded into the top header line
-    // instead (see status_bar::render_header) so there's a single header line.
-    let sole = app.is_diff_sole_pane();
+    // When the diff is the only pane, or minimal mode is on, drop the frame
+    // entirely — including its title row. File names stay on the in-diff
+    // file headers. A sole pane also folds the name into the top header
+    // (see status_bar::render_header); minimal mode hides that header too.
+    let frameless = app.hide_diff_frame();
     let mut block = Block::default()
-        .borders(if sole { Borders::NONE } else { Borders::ALL })
+        .borders(if frameless {
+            Borders::NONE
+        } else {
+            Borders::ALL
+        })
         .style(styles::panel_style(&app.theme))
         .border_style(styles::border_style(&app.theme, focused));
-    if !sole {
+    if !frameless {
         block = block
             .title(crate::ui::diff_view::diff_title(app, area.width))
             .title_top(diff_stat_title(app).right_aligned());
@@ -2621,5 +2626,132 @@ mod remote_comments_snapshot_tests {
             "rendered addition-line background must come from the live theme, \
              not the cached span's baked-in color"
         );
+    }
+
+    fn row_text(buffer: &Buffer, y: u16) -> String {
+        (0..buffer.area.width)
+            .map(|x| buffer[(x, y)].symbol().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn minimal_ui_drops_chrome_and_keeps_the_diff() {
+        use ratatui::style::{Color, Style};
+
+        let mut app = make_revision_app(vec![sample_diff_file()]);
+        let highlight = Color::Rgb(9, 8, 7);
+        app.diff_files[0].hunks[0].lines[1].highlighted_spans =
+            Some(vec![(Style::default().fg(highlight), "second".to_string())]);
+        let path = app.diff_files[0].display_path().clone();
+        app.session.review_comments.push(crate::model::Comment::new(
+            "review note stays".to_string(),
+            crate::model::CommentType::from_id("note"),
+            None,
+        ));
+        app.session
+            .files
+            .get_mut(&path)
+            .expect("file is registered")
+            .line_comments
+            .entry(2)
+            .or_default()
+            .push(crate::model::Comment::new(
+                "line note stays".to_string(),
+                crate::model::CommentType::from_id("note"),
+                Some(LineSide::New),
+            ));
+        app.rebuild_annotations();
+
+        let buffer = draw(&mut app);
+        assert!(row_text(&buffer, 0).contains("tuicr"));
+        assert!(row_text(&buffer, buffer.area.height - 1).contains("NORMAL"));
+        let diff = app.diff_area.unwrap();
+        let inner = app.diff_inner_area.unwrap();
+        assert_eq!(inner.y, diff.y + 1, "the diff frame should inset the body");
+
+        app.minimal_ui = true;
+        app.apply_minimal_ui_start();
+        app.rebuild_annotations();
+        assert!(!app.is_cursor_in_overview());
+        assert_eq!(app.current_file_path(), Some(&path));
+
+        let buffer = draw(&mut app);
+        let text = body_text(&buffer);
+        assert!(
+            !row_text(&buffer, 0).contains("tuicr"),
+            "minimal mode has no brand header:\n{text}"
+        );
+        assert!(
+            !row_text(&buffer, buffer.area.height - 1).contains("NORMAL"),
+            "idle minimal mode has no footer:\n{text}"
+        );
+        assert!(!text.contains("Overview"), "{text}");
+        assert!(text.contains("src/lib.rs"), "{text}");
+        assert!(text.contains("@@"), "{text}");
+        assert!(text.contains("line note stays"), "{text}");
+        assert!(text.contains("Files"), "{text}");
+        assert_eq!(app.diff_inner_area, app.diff_area);
+        let (x, y) = (0..buffer.area.height)
+            .find_map(|y| {
+                (0..buffer.area.width).find_map(|x| {
+                    let matches = "second".chars().enumerate().all(|(offset, ch)| {
+                        buffer[(x + offset as u16, y)].symbol() == ch.to_string()
+                    });
+                    matches.then_some((x, y))
+                })
+            })
+            .expect("highlighted addition");
+        assert_eq!(buffer[(x, y)].fg, highlight);
+
+        // Review-level rows are still rendered; the opening scroll just
+        // starts below them.
+        app.diff_state.scroll_offset = 0;
+        let text = body_text(&draw(&mut app));
+        assert!(text.contains("review note stays"), "{text}");
+
+        app.show_file_list = false;
+        let text = body_text(&draw(&mut app));
+        assert!(!text.contains("Files"), "{text}");
+        assert!(text.contains("src/lib.rs"), "{text}");
+
+        app.show_file_list = true;
+        app.set_error("reload failed");
+        let text = body_text(&draw(&mut app));
+        assert!(text.contains("reload failed"), "{text}");
+
+        app.message = None;
+        app.input_mode = InputMode::Command;
+        app.command_buffer = "w".to_string();
+        let text = body_text(&draw(&mut app));
+        assert!(text.contains(":w"), "{text}");
+
+        app.input_mode = InputMode::Search;
+        app.search_buffer = "fn".to_string();
+        let text = body_text(&draw(&mut app));
+        assert!(text.contains("/fn"), "{text}");
+
+        app.input_mode = InputMode::Comment;
+        let text = body_text(&draw(&mut app));
+        assert!(text.contains("COMMENT"), "{text}");
+
+        app.input_mode = InputMode::Confirm;
+        app.pending_confirm = Some(crate::app::ConfirmAction::CopyAndQuit);
+        let text = body_text(&draw(&mut app));
+        assert!(text.contains("CONFIRM"), "{text}");
+
+        app.input_mode = InputMode::Help;
+        app.pending_confirm = None;
+        let text = body_text(&draw(&mut app));
+        assert!(text.contains("HELP"), "{text}");
+
+        app.input_mode = InputMode::Normal;
+        app.dirty = true;
+        let text = body_text(&draw(&mut app));
+        assert!(text.contains("modified"), "{text}");
+
+        app.dirty = false;
+        app.forge_review_threads_loading = true;
+        let text = body_text(&draw(&mut app));
+        assert!(text.contains("loading remote comments"), "{text}");
     }
 }
