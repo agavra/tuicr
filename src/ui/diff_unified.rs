@@ -53,7 +53,11 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
     // (see status_bar::render_header); minimal mode hides that header too.
     let frameless = app.hide_diff_frame();
     let mut block = Block::default()
-        .borders(if frameless { Borders::NONE } else { Borders::ALL })
+        .borders(if frameless {
+            Borders::NONE
+        } else {
+            Borders::ALL
+        })
         .style(styles::panel_style(&app.theme))
         .border_style(styles::border_style(&app.theme, focused));
     if !frameless {
@@ -2636,10 +2640,8 @@ mod remote_comments_snapshot_tests {
 
         let mut app = make_revision_app(vec![sample_diff_file()]);
         let highlight = Color::Rgb(9, 8, 7);
-        app.diff_files[0].hunks[0].lines[1].highlighted_spans = Some(vec![(
-            Style::default().fg(highlight),
-            "second".to_string(),
-        )]);
+        app.diff_files[0].hunks[0].lines[1].highlighted_spans =
+            Some(vec![(Style::default().fg(highlight), "second".to_string())]);
         let path = app.diff_files[0].display_path().clone();
         app.session.review_comments.push(crate::model::Comment::new(
             "review note stays".to_string(),

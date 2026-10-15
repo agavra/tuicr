@@ -385,7 +385,11 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
     // (see status_bar::render_header); minimal mode hides that header too.
     let frameless = app.hide_diff_frame();
     let mut block = Block::default()
-        .borders(if frameless { Borders::NONE } else { Borders::ALL })
+        .borders(if frameless {
+            Borders::NONE
+        } else {
+            Borders::ALL
+        })
         .style(styles::panel_style(&app.theme))
         .border_style(styles::border_style(&app.theme, focused));
     if !frameless {
@@ -2894,10 +2898,8 @@ mod remote_comments_side_by_side_snapshot_tests {
 
         let mut app = make_pr_app();
         let highlight = Color::Rgb(9, 8, 7);
-        app.diff_files[0].hunks[0].lines[1].highlighted_spans = Some(vec![(
-            Style::default().fg(highlight),
-            "second".to_string(),
-        )]);
+        app.diff_files[0].hunks[0].lines[1].highlighted_spans =
+            Some(vec![(Style::default().fg(highlight), "second".to_string())]);
         let path = app.diff_files[0].display_path().clone();
         app.session
             .files
