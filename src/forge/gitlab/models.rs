@@ -110,8 +110,9 @@ pub struct GlabMrDetails {
     pub sha: String,
     #[serde(default)]
     pub diff_refs: Option<GlabDiffRefs>,
+    /// GitLab returns `null` (not an empty string) for an MR with no description.
     #[serde(default)]
-    pub description: String,
+    pub description: Option<String>,
     #[serde(default)]
     pub updated_at: Option<DateTime<Utc>>,
     #[serde(default)]
@@ -148,7 +149,7 @@ impl GlabMrDetails {
             base_ref_name: self.target_branch,
             head_sha,
             base_sha,
-            body: self.description,
+            body: self.description.unwrap_or_default(),
             updated_at: self.updated_at,
             closed,
             merged_at: self.merged_at,
@@ -470,6 +471,29 @@ mod tests {
         assert_eq!(pr.base_sha, "base000");
         assert_eq!(pr.diff_start_sha, Some("start222".to_string()));
         assert!(!pr.closed);
+    }
+
+    #[test]
+    fn should_deserialize_glab_mr_details_with_null_description() {
+        let json = r#"{
+            "iid": 42,
+            "title": "My MR",
+            "web_url": "https://gitlab.com/owner/repo/-/merge_requests/42",
+            "state": "opened",
+            "draft": false,
+            "source_branch": "feature",
+            "target_branch": "main",
+            "sha": "head111",
+            "diff_refs": {
+                "base_sha": "base000",
+                "head_sha": "head111",
+                "start_sha": "start222"
+            },
+            "description": null
+        }"#;
+        let details: GlabMrDetails = serde_json::from_str(json).unwrap();
+        let pr = details.into_details(&gitlab_repo()).unwrap();
+        assert_eq!(pr.body, "");
     }
 
     #[test]
