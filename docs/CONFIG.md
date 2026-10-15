@@ -210,6 +210,48 @@ Invalid `--theme` values cause an immediate non-zero exit. The same is true when
 local theme file exists but is invalid. Invalid config-selected local themes emit startup warnings
 and fall back through normal precedence.
 
+## Key mappings
+
+Remap keys with Vim's non-recursive mapping commands in `mappings.vim`, next to
+`config.toml` (default: `~/.config/tuicr/mappings.vim`):
+
+```vim
+" Move between panels with Ctrl+h/j/k/l
+nnoremap <C-h> <leader>h
+nnoremap <C-j> <leader>j
+nnoremap <C-k> <leader>k
+nnoremap <C-l> <leader>l
+
+" Run a command with one key sequence
+nnoremap <leader>S :submit<CR>
+
+" Disable a key
+nnoremap q <Nop>
+```
+
+| Command                 | Applies in                                                      |
+| ----------------------- | --------------------------------------------------------------- |
+| `nnoremap`              | Normal mode (diff, file list, comment navigator, commit pane)   |
+| `xnoremap` / `vnoremap` | Visual selection                                                |
+| `inoremap`              | Comment box (with `comment_vim`, only its Insert mode)          |
+| `cnoremap`              | `:` and `/` prompts (also the comment box's vim `:`), filters   |
+| `noremap`               | Normal and visual                                               |
+| `noremap!`              | Comment box and prompts                                         |
+
+The right-hand side runs tuicr's built-in keys and is never remapped again, so
+`nnoremap a b` plus `nnoremap b c` makes `a` act as the original `b`. Recursive
+commands (`map`, `nmap`, …) are rejected with a startup warning.
+
+- Keys use Vim notation: `<C-x>`, `<A-x>`/`<M-x>`, `<S-x>`, `<CR>`, `<Esc>`, `<Tab>`, `<S-Tab>`,
+  `<BS>`, `<Del>`, `<Space>`, `<lt>`, `<Bar>`, `<Bslash>`, arrows, `<Home>`, `<End>`,
+  `<PageUp>`, `<PageDown>`, `<F1>`–`<F12>`, `<leader>` (the configured `leader`) and `<Nop>`.
+- When a typed sequence is both a mapping and the start of a longer one, tuicr waits one second for
+  the next key, like Vim's `timeoutlen`. Prefix the mapping with `<nowait>` to skip the wait.
+  `<silent>` and `<unique>` are accepted and ignored.
+- Keys typed right after a pending built-in prefix (`z`, `Z`, `d`, `<leader>`) are not remapped.
+- Lines starting with `"` are comments. A later mapping for the same keys and mode replaces the
+  earlier one. Invalid lines are skipped with a startup warning naming the line.
+
 ## Comment types
 
 Comment categories control:
