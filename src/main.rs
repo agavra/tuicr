@@ -346,6 +346,9 @@ fn main() -> anyhow::Result<()> {
             app.show_file_list = false;
             app.focused_panel = FocusedPanel::Diff;
         }
+        if cfg.minimal_ui == Some(true) {
+            app.minimal_ui = true;
+        }
         // Start with the commit selector pane hidden. `(` / `)` still cycle the
         // selected commit while hidden; `<leader>s` / `:set commits!` reveal it.
         if cfg.show_commits == Some(false) {
@@ -377,6 +380,12 @@ fn main() -> anyhow::Result<()> {
         // only toggle if it's still off.
         if cfg.single_file_view == Some(true) && !app.is_single_file_view {
             app.toggle_single_file_view();
+        }
+        // Build ran before this flag existed on the app, so the opening
+        // cursor is still the overview landing. Move it onto the first file
+        // once the other view options have been applied.
+        if app.minimal_ui {
+            app.apply_minimal_ui_start();
         }
         app.export = cfg.resolved_export();
         if cfg.cursor_line == Some(false) {

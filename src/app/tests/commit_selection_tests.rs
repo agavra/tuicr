@@ -463,6 +463,133 @@ fn should_comment_on_a_commit_only_file_after_narrowing_the_commit_pane() {
 }
 
 #[test]
+fn minimal_ui_starts_on_the_first_file_and_keeps_comment_rows() {
+    use crate::model::comment::{Comment, CommentType, LineSide};
+
+    let path = PathBuf::from("src/lib.rs");
+    let mut app = build_app(vec![]);
+    app.diff_files = vec![commit_only_file(&path, vec![one_line_hunk()])];
+    App::register_diff_files(&mut app.session, &app.diff_files, false);
+    app.session.review_comments.push(Comment::new(
+        "review note stays".to_string(),
+        CommentType::from_id("note"),
+        None,
+    ));
+    app.session
+        .files
+        .get_mut(&path)
+        .expect("file is registered")
+        .line_comments
+        .entry(1)
+        .or_default()
+        .push(Comment::new(
+            "line note stays".to_string(),
+            CommentType::from_id("note"),
+            Some(LineSide::New),
+        ));
+    app.rebuild_annotations();
+
+    // The default landing is the review-comments overview, above the file.
+    assert!(app.is_cursor_in_overview());
+    assert!(app.show_review_comments_header());
+
+    app.minimal_ui = true;
+    app.sort_files_by_directory(true);
+    app.rebuild_annotations();
+
+    assert!(!app.is_cursor_in_overview());
+    assert_eq!(app.current_file_path(), Some(&path));
+    assert_eq!(
+        app.diff_state.cursor_line,
+        app.review_comments_render_height()
+    );
+    assert!(matches!(
+        app.line_annotations.get(app.diff_state.cursor_line),
+        Some(AnnotatedLine::FileHeader { file_idx: 0 })
+    ));
+    assert!(
+        app.line_annotations
+            .iter()
+            .any(|line| matches!(line, AnnotatedLine::ReviewComment { .. }))
+    );
+    assert!(
+        app.line_annotations
+            .iter()
+            .any(|line| matches!(line, AnnotatedLine::LineComment { .. }))
+    );
+    assert!(app.show_review_comments_header());
+
+    let before = app.diff_state.cursor_line;
+    app.next_hunk();
+    assert!(app.diff_state.cursor_line > before);
+    assert!(matches!(
+        app.line_annotations[app.diff_state.cursor_line],
+        AnnotatedLine::HunkHeader { .. }
+    ));
+
+    app.queue_editor_for_focused_item();
+    let message = app
+        .message
+        .as_ref()
+        .map(|message| message.content.as_str())
+        .unwrap_or("");
+    assert!(
+        message.contains("src/lib.rs"),
+        "editor handoff should resolve the open file, got {message:?}"
+    );
+}
+
+#[test]
+fn minimal_ui_status_bar_stays_for_operating_state() {
+    let mut app = build_app(vec![]);
+    assert!(app.shows_status_bar());
+
+    app.input_mode = InputMode::Normal;
+    app.minimal_ui = true;
+    assert!(!app.shows_status_bar());
+
+    for mode in [
+        InputMode::Command,
+        InputMode::Search,
+        InputMode::Comment,
+        InputMode::Confirm,
+        InputMode::Help,
+    ] {
+        app.input_mode = mode;
+        assert!(app.shows_status_bar(), "{mode:?}");
+    }
+
+    app.input_mode = InputMode::Normal;
+    app.set_error("reload failed");
+    assert!(app.shows_status_bar());
+    app.message = None;
+    app.dirty = true;
+    assert!(app.shows_status_bar());
+    app.dirty = false;
+    app.forge_review_threads_loading = true;
+    assert!(app.shows_status_bar());
+    app.forge_review_threads_loading = false;
+    app.pr_reload_state = Some(PrReloadRequest {
+        repository: crate::forge::traits::ForgeRepository::github("github.com", "a", "b"),
+        pr_number: 1,
+        head_sha: "abc".to_string(),
+        started_at: std::time::Instant::now(),
+        anchor: None,
+        restore_overview_cursor: None,
+    });
+    assert!(app.shows_status_bar());
+    app.pr_reload_state = None;
+    app.pending_count = Some(4);
+    assert!(app.shows_status_bar());
+    app.pending_count = None;
+    app.begin_file_tree_prompt(FileTreePrompt::Include);
+    assert!(app.shows_status_bar());
+
+    app.file_filter.draft = None;
+    assert!(!app.shows_status_bar());
+}
+
+#[test]
 fn is_diff_sole_pane_only_when_no_other_panes_visible() {
     let mut app = build_app(vec![normal_commit("a"), normal_commit("b")]);
     app.review_commits = app.commit_list.clone();
