@@ -1,5 +1,6 @@
 pub mod handler;
 pub mod keybindings;
+pub mod mappings;
 pub mod mode;
 
 pub use keybindings::{
