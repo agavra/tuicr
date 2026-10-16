@@ -95,6 +95,9 @@ pub enum SessionDiffSource {
     /// `ReviewSession::pr_session_key`; this variant is a discriminator so
     /// the persistence layer can route to PR-specific filename construction.
     PullRequest,
+    /// Single-file annotation surface opened with `--file <file>`. The
+    /// persisted `base_commit` is a stable hash of the canonical target path.
+    File,
     /// Whole-repo annotation surface. Every tracked file is shown in
     /// context-only rendering, sourced from `git ls-files`. The persisted
     /// `base_commit` for these sessions starts with `"pristine:"` so the

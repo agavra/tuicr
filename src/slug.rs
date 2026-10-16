@@ -1,8 +1,9 @@
-//! Deterministic identifiers for review changesets.
+//! Deterministic identifiers for review targets.
 //!
-//! A `Slug` is the agent-facing identity for a review session. It is intended
-//! to be human-readable and computable from public information about the
-//! repository and the kind of review being performed.
+//! A `Slug` is the agent-facing identity for a review session. Repository and
+//! pull-request slugs are human-readable. A single-file review encodes its
+//! canonical local path as a stable, fixed-width token that fits the slug
+//! grammar.
 //!
 //! Grammar:
 //!
@@ -17,10 +18,10 @@
 //! `/pr/`.
 //!
 //! Where `<anchor>` is either a sanitized branch/bookmark name (no `/`) or
-//! `~<short-sha>` for detached / anonymous heads, and `<source>` is one of the
-//! diff-source variants (`worktree/<head>`, `staged/<head>`,
-//! `unstaged/<head>`, `staged-and-unstaged/<head>`, `pristine`,
-//! `commits/<base>..<head>`, etc.).
+//! `~<short-token>` for detached, anonymous, or synthetic targets, and
+//! `<source>` is one of the diff-source variants (`worktree/<head>`,
+//! `staged/<head>`, `unstaged/<head>`, `staged-and-unstaged/<head>`,
+//! `pristine`, `file/<target-hash>`, `commits/<base>..<head>`, etc.).
 //!
 //! The "live" working-tree sources (`worktree`, `staged`, `unstaged`,
 //! `staged-and-unstaged`) embed the short SHA of the current HEAD so that a
@@ -67,8 +68,9 @@ pub enum SlugAnchor {
     /// Named branch/bookmark. Slashes are sanitized to `-` at construction
     /// time so the anchor segment never contains `/`.
     Branch(String),
-    /// Detached / anonymous head. Short SHA or change-id prefix without the
-    /// leading `~`.
+    /// Unnamed target token. A short commit/change identifier for VCS reviews,
+    /// or a short synthetic identity for file reviews, without the leading
+    /// `~`.
     Anonymous(String),
 }
 
@@ -80,6 +82,7 @@ pub enum SlugSource {
     Staged(String),
     Unstaged(String),
     StagedAndUnstaged(String),
+    File(String),
     Pristine,
     Commits(CommitRange),
     WorktreeAndCommits(CommitRange),
@@ -135,7 +138,7 @@ impl fmt::Display for SlugAnchor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             SlugAnchor::Branch(name) => f.write_str(name),
-            SlugAnchor::Anonymous(sha) => write!(f, "~{sha}"),
+            SlugAnchor::Anonymous(token) => write!(f, "~{token}"),
         }
     }
 }
@@ -147,6 +150,7 @@ impl fmt::Display for SlugSource {
             SlugSource::Staged(head) => write!(f, "staged/{head}"),
             SlugSource::Unstaged(head) => write!(f, "unstaged/{head}"),
             SlugSource::StagedAndUnstaged(head) => write!(f, "staged-and-unstaged/{head}"),
+            SlugSource::File(identity) => write!(f, "file/{identity}"),
             SlugSource::Pristine => f.write_str("pristine"),
             SlugSource::Commits(r) => write!(f, "commits/{}..{}", r.base, r.head),
             SlugSource::WorktreeAndCommits(r) => {
@@ -289,6 +293,9 @@ fn parse_source(s: &str) -> Result<SlugSource, SlugParseError> {
     }
     if s == "pristine" {
         return Ok(SlugSource::Pristine);
+    }
+    if let Some(identity) = s.strip_prefix("file/") {
+        return live_source(identity, s, SlugSource::File);
     }
     if let Some(head) = s.strip_prefix("worktree/") {
         return live_source(head, s, SlugSource::Worktree);
@@ -567,6 +574,7 @@ fn build_source(
         SessionDiffSource::Staged => Ok(SlugSource::Staged(live_head())),
         SessionDiffSource::Unstaged => Ok(SlugSource::Unstaged(live_head())),
         SessionDiffSource::StagedAndUnstaged => Ok(SlugSource::StagedAndUnstaged(live_head())),
+        SessionDiffSource::File => Ok(SlugSource::File(head_commit.to_string())),
         SessionDiffSource::Pristine => Ok(SlugSource::Pristine),
         SessionDiffSource::CommitRange => {
             Ok(SlugSource::Commits(range_from(commit_range, diff_source)?))
@@ -1004,6 +1012,21 @@ mod tests {
         )
         .unwrap();
         assert_eq!(slug.to_string(), "agavra/tuicr@~abcdef0/worktree/abcdef0");
+    }
+
+    #[test]
+    fn should_keep_full_single_file_identity_in_slug() {
+        let slug = build_local_slug(
+            (None, "files".to_string()),
+            None,
+            "0123456789abcdef",
+            SessionDiffSource::File,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(slug.to_string(), "files@~0123456/file/0123456789abcdef");
+        assert_eq!(Slug::from_str(&slug.to_string()), Ok(Slug::Local(slug)));
     }
 
     #[test]

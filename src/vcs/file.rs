@@ -94,14 +94,23 @@ impl FileBackend {
             )));
         };
 
+        let head_commit = match mode {
+            FileMode::Single => single_file_session_identity(&files[0].0),
+            FileMode::Directory => "file".to_string(),
+            FileMode::Pristine => unreachable!("pristine mode uses new_pristine"),
+        };
         let info = VcsInfo {
             root_path,
-            head_commit: "file".to_string(),
+            head_commit,
             branch_name: None,
             vcs_type: VcsType::File,
         };
 
         Ok(Self { info, files, mode })
+    }
+
+    pub(crate) fn mode(&self) -> FileMode {
+        self.mode
     }
 
     /// Create a [`FileBackend`] in pristine mode from a pre-enumerated
@@ -329,6 +338,11 @@ impl VcsBackend for FileBackend {
     }
 }
 
+fn single_file_session_identity(path: &Path) -> String {
+    let hash = crate::hash::fnv1a_64(path.as_os_str().as_encoded_bytes());
+    format!("{hash:016x}")
+}
+
 fn collect_text_files(root: &Path) -> Vec<(PathBuf, u64)> {
     let mut builder = WalkBuilder::new(root);
     builder
@@ -391,6 +405,96 @@ mod tests {
             Path::new("hello.txt")
         );
         assert_eq!(diffs[0].hunks[0].lines.len(), 2);
+    }
+
+    #[test]
+    fn single_file_session_identity_distinguishes_siblings_and_ignores_contents() {
+        let dir = tempfile::tempdir().unwrap();
+        let path_a = dir.path().join("a.md");
+        let path_b = dir.path().join("b.md");
+        fs::write(&path_a, "first").unwrap();
+        fs::write(&path_b, "second").unwrap();
+
+        let identity_a = FileBackend::new(path_a.to_str().unwrap())
+            .unwrap()
+            .info()
+            .head_commit
+            .clone();
+        let identity_b = FileBackend::new(path_b.to_str().unwrap())
+            .unwrap()
+            .info()
+            .head_commit
+            .clone();
+
+        assert_ne!(identity_a, identity_b);
+        fs::write(&path_a, "changed contents").unwrap();
+        let changed_identity_a = FileBackend::new(path_a.to_str().unwrap())
+            .unwrap()
+            .info()
+            .head_commit
+            .clone();
+        assert_eq!(identity_a, changed_identity_a);
+    }
+
+    #[test]
+    fn single_file_session_identity_uses_canonical_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("review.md");
+        fs::write(&path, "content").unwrap();
+        let alias = dir.path().join(".").join("review.md");
+
+        let direct = FileBackend::new(path.to_str().unwrap())
+            .unwrap()
+            .info()
+            .head_commit
+            .clone();
+        let aliased = FileBackend::new(alias.to_str().unwrap())
+            .unwrap()
+            .info()
+            .head_commit
+            .clone();
+
+        assert_eq!(direct, aliased);
+    }
+
+    #[test]
+    fn single_file_session_identity_preserves_canonical_path_case() {
+        let upper = single_file_session_identity(Path::new("C:\\review\\A.md"));
+        let lower = single_file_session_identity(Path::new("C:\\review\\a.md"));
+
+        assert_ne!(upper, lower);
+    }
+
+    #[test]
+    fn moving_a_single_file_changes_its_session_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = dir.path().join("original.md");
+        let moved = dir.path().join("moved.md");
+        fs::write(&original, "content").unwrap();
+        let original_identity = FileBackend::new(original.to_str().unwrap())
+            .unwrap()
+            .info()
+            .head_commit
+            .clone();
+
+        fs::rename(&original, &moved).unwrap();
+        let moved_identity = FileBackend::new(moved.to_str().unwrap())
+            .unwrap()
+            .info()
+            .head_commit
+            .clone();
+
+        assert_ne!(original_identity, moved_identity);
+    }
+
+    #[test]
+    fn directory_mode_keeps_legacy_session_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.md"), "content").unwrap();
+
+        let backend = FileBackend::new(dir.path().to_str().unwrap()).unwrap();
+
+        assert_eq!(backend.info().head_commit, "file");
     }
 
     #[test]

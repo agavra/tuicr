@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Bug Fixes
+
+- **file:** Give single-file `--file` reviews target-specific session
+  identities so files in the same directory do not share comments or review
+  state. Existing sessions remain available through `tuicr review list` but
+  are not automatically reopened.
+
 ## [0.27.0] - 2026-09-23
 
 ### Bug Fixes

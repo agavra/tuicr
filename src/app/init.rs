@@ -35,11 +35,19 @@ impl App {
 
         // --file mode: open a single file for annotation without VCS
         if let Some(file_path) = options.file_path {
-            let vcs = Box::new(FileBackend::new(file_path)?);
+            let file_backend = FileBackend::new(file_path)?;
+            let session_source = match file_backend.mode() {
+                crate::vcs::file::FileMode::Single => SessionDiffSource::File,
+                crate::vcs::file::FileMode::Directory => SessionDiffSource::WorkingTree,
+                crate::vcs::file::FileMode::Pristine => {
+                    unreachable!("--file does not construct pristine mode")
+                }
+            };
+            let vcs = Box::new(file_backend);
             let vcs_info = vcs.info().clone();
             let highlighter = theme.syntax_highlighter();
             let diff_files = vcs.get_working_tree_diff(highlighter)?;
-            let session = Self::load_or_create_session(&vcs_info, SessionDiffSource::WorkingTree);
+            let session = Self::load_or_create_session(&vcs_info, session_source);
 
             let mut app = Self::build(
                 vcs,
