@@ -15,6 +15,7 @@ impl App {
         }
 
         self.theme_picker.original = Some(self.theme.clone());
+        self.theme_picker.original_message = self.message.clone();
         self.theme_picker.candidates = candidates;
         self.theme_picker.filter = None;
         self.theme_picker.draft = None;
@@ -33,6 +34,7 @@ impl App {
             // that was never actually chosen.
             self.rehighlight_current_file();
         }
+        self.message = self.theme_picker.original_message.take();
         self.exit_theme_picker_mode();
     }
 
@@ -56,6 +58,7 @@ impl App {
         self.theme_picker.draft = None;
         self.theme_picker.list_state = ratatui::widgets::ListState::default();
         self.theme_picker.original = None;
+        self.theme_picker.original_message = None;
     }
 
     /// Move the highlighted row within the filtered view and live-preview
@@ -98,9 +101,7 @@ impl App {
             Ok(Some((theme, warnings))) => {
                 self.theme = theme;
                 self.rehighlight_current_file();
-                if let Some(first) = warnings.into_iter().next() {
-                    self.set_warning(first);
-                }
+                self.show_theme_preview_warnings(&warnings);
             }
             Ok(None) => {
                 self.set_warning(format!("Unknown theme '{name}'"));
@@ -123,9 +124,7 @@ impl App {
         match resolve_theme_name(name, &theme_dir) {
             Ok(Some((theme, warnings))) => {
                 self.theme = theme;
-                for warning in warnings {
-                    self.set_warning(warning);
-                }
+                self.show_theme_preview_warnings(&warnings);
                 self.announce_session_theme(name);
                 self.rehighlight_all_files();
             }
@@ -141,9 +140,38 @@ impl App {
         }
     }
 
+    pub(super) fn show_theme_preview_warnings(&mut self, warnings: &[String]) {
+        if let Some(warning) = warnings
+            .iter()
+            .find(|warning| crate::theme::is_syntax_theme_fallback_warning(warning))
+            .or_else(|| warnings.first())
+        {
+            if crate::theme::is_syntax_theme_fallback_warning(warning) {
+                self.set_sticky_warning(warning.clone());
+            } else {
+                self.set_warning(warning.clone());
+            }
+        } else if self
+            .message
+            .as_ref()
+            .is_some_and(is_syntax_theme_fallback_warning)
+        {
+            self.message = None;
+        }
+    }
+
     /// Theme changes are session-only, like `:set`/`:wrap`; point the user at
-    /// the config key that makes the choice stick.
-    fn announce_session_theme(&mut self, name: &str) {
+    /// the config key that makes the choice stick. Keep an active warning
+    /// visible; applying a local theme can produce one when its syntax theme
+    /// falls back to a bundled theme.
+    pub(super) fn announce_session_theme(&mut self, name: &str) {
+        if self
+            .message
+            .as_ref()
+            .is_some_and(is_syntax_theme_fallback_warning)
+        {
+            return;
+        }
         self.set_message(format!(
             "Theme: {name} (this session; set theme = \"{name}\" in config.toml to keep it)"
         ));
@@ -228,4 +256,9 @@ impl App {
         self.theme_picker.select(0);
         self.preview_selected_theme();
     }
+}
+
+fn is_syntax_theme_fallback_warning(message: &Message) -> bool {
+    message.message_type == MessageType::Warning
+        && crate::theme::is_syntax_theme_fallback_warning(&message.content)
 }

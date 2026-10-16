@@ -16,6 +16,13 @@ use two_face::theme::EmbeddedThemeName;
 use crate::config::themes_dir;
 use crate::syntax::SyntaxHighlighter;
 
+/// Whether a theme warning reports that its syntax theme fell back to a
+/// bundled theme. Shared by startup and the runtime theme picker.
+pub fn is_syntax_theme_fallback_warning(warning: &str) -> bool {
+    (warning.contains("syntax theme") || warning.contains("syntax_theme"))
+        && warning.contains("bundled")
+}
+
 #[derive(Clone)]
 pub enum SyntaxThemeSource {
     Embedded(EmbeddedThemeName),
@@ -2137,10 +2144,19 @@ fn load_custom_syntect_theme(
     let resolved = if syntax_path.is_absolute() {
         syntax_path.to_path_buf()
     } else {
-        theme_path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join(syntax_path)
+        let theme_dir = theme_path.parent().unwrap_or_else(|| Path::new("."));
+        let link_relative = theme_dir.join(syntax_path);
+
+        if link_relative.exists() || !theme_path.is_symlink() {
+            link_relative
+        } else {
+            theme_path
+                .canonicalize()
+                .ok()
+                .and_then(|target| target.parent().map(|parent| parent.join(syntax_path)))
+                .filter(|target_relative| target_relative.exists())
+                .unwrap_or(link_relative)
+        }
     };
 
     if resolved.extension().and_then(|ext| ext.to_str()) != Some("tmTheme") {
@@ -2234,9 +2250,27 @@ fn load_local_theme_from_path(path: &Path) -> Result<(Theme, Vec<String>), Strin
             path.display()
         ));
     }
-    let syntax_theme = parse_optional_local_theme_string(table, "syntax_theme")?;
+    let syntax_theme = match parse_optional_local_theme_string(table, "syntax_theme") {
+        Ok(syntax_theme) => syntax_theme,
+        Err(err) => {
+            warnings.push(format!(
+                "Warning: Invalid syntax_theme in local theme '{}': {err}; using bundled syntax theme",
+                path.display()
+            ));
+            None
+        }
+    };
     let syntax_theme = match syntax_theme.as_deref() {
-        Some(value) => SyntaxThemeSource::Custom(Box::new(load_custom_syntect_theme(path, value)?)),
+        Some(value) => match load_custom_syntect_theme(path, value) {
+            Ok(theme) => SyntaxThemeSource::Custom(Box::new(theme)),
+            Err(err) => {
+                warnings.push(format!(
+                    "Warning: Failed to load syntax theme for local theme '{}': {err}; using bundled syntax theme",
+                    path.display()
+                ));
+                SyntaxThemeSource::Embedded(fallback_embedded_theme_for_panel_bg(panel_bg))
+            }
+        },
         None => SyntaxThemeSource::Embedded(fallback_embedded_theme_for_panel_bg(panel_bg)),
     };
 
@@ -2726,6 +2760,113 @@ mode_bg = "#82aaff"
         assert_eq!(theme.panel_bg, Color::Rgb(1, 22, 39));
         assert!(theme.uses_custom_syntax_theme());
         assert!(warnings.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_resolve_local_syntax_theme_relative_to_symlink_target() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().expect("failed to create temp dir");
+        let source_dir = dir.path().join("source");
+        let themes_dir = dir.path().join("themes");
+        fs::create_dir(&source_dir).expect("failed to create source directory");
+        fs::create_dir(&themes_dir).expect("failed to create themes directory");
+
+        let source_theme = write_local_theme(
+            &source_dir,
+            "local-teal",
+            &sample_local_theme_body(r#"syntax_theme = "example.tmTheme""#),
+        );
+        fs::write(source_dir.join("example.tmTheme"), sample_tm_theme())
+            .expect("failed to write tmTheme");
+        let linked_theme = themes_dir.join("local-teal.toml");
+        symlink(&source_theme, &linked_theme).expect("failed to symlink local theme");
+
+        let (theme, warnings) = load_local_theme_from_path(&linked_theme)
+            .expect("symlinked theme should load its target-relative syntax theme");
+        assert_eq!(theme.panel_bg, Color::Rgb(1, 22, 39));
+        assert!(theme.uses_custom_syntax_theme());
+        assert!(warnings.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_prefer_syntax_theme_next_to_symlink_over_target() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().expect("failed to create temp dir");
+        let source_dir = dir.path().join("source");
+        let themes_dir = dir.path().join("themes");
+        fs::create_dir(&source_dir).expect("failed to create source directory");
+        fs::create_dir(&themes_dir).expect("failed to create themes directory");
+
+        let source_theme = write_local_theme(
+            &source_dir,
+            "local-teal",
+            &sample_local_theme_body(r#"syntax_theme = "example.tmTheme""#),
+        );
+        fs::write(source_dir.join("example.tmTheme"), sample_tm_theme())
+            .expect("failed to write target tmTheme");
+        fs::write(
+            themes_dir.join("example.tmTheme"),
+            sample_tm_theme().replace("Fixture Theme", "Link Theme"),
+        )
+        .expect("failed to write link-adjacent tmTheme");
+        let linked_theme = themes_dir.join("local-teal.toml");
+        symlink(&source_theme, &linked_theme).expect("failed to symlink local theme");
+
+        let (theme, warnings) = load_local_theme_from_path(&linked_theme)
+            .expect("link-adjacent syntax theme should load");
+        let SyntaxThemeSource::Custom(syntax_theme) = theme.syntax_theme else {
+            panic!("local syntax theme should be used");
+        };
+        assert_eq!(syntax_theme.name.as_deref(), Some("Link Theme"));
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn should_keep_local_theme_when_syntax_theme_is_missing() {
+        let dir = tempdir().expect("failed to create temp dir");
+        let path = write_local_theme(
+            dir.path(),
+            "local-teal",
+            &sample_local_theme_body(r#"syntax_theme = "missing.tmTheme""#),
+        );
+
+        let (theme, warnings) = load_local_theme_from_path(&path)
+            .expect("a missing syntax theme should not reject the local UI theme");
+        assert_eq!(theme.panel_bg, Color::Rgb(1, 22, 39));
+        assert_eq!(
+            theme.embedded_syntax_theme_name(),
+            Some(EmbeddedThemeName::Base16EightiesDark)
+        );
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("Failed to load syntax theme"));
+    }
+
+    #[test]
+    fn should_keep_local_theme_when_syntax_theme_setting_is_invalid() {
+        let dir = tempdir().expect("failed to create temp dir");
+
+        for syntax_setting in [r#"syntax_theme = 42"#, r#"syntax_theme = """#] {
+            let path = write_local_theme(
+                dir.path(),
+                "local-teal",
+                &sample_local_theme_body(syntax_setting),
+            );
+
+            let (theme, warnings) = load_local_theme_from_path(&path)
+                .expect("an invalid syntax_theme setting should not reject the local UI theme");
+            assert_eq!(theme.panel_bg, Color::Rgb(1, 22, 39));
+            assert_eq!(
+                theme.embedded_syntax_theme_name(),
+                Some(EmbeddedThemeName::Base16EightiesDark)
+            );
+            assert_eq!(warnings.len(), 1);
+            assert!(warnings[0].contains("syntax_theme"));
+            assert!(warnings[0].contains("using bundled syntax theme"));
+        }
     }
 
     #[test]

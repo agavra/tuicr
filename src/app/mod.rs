@@ -1740,6 +1740,9 @@ pub struct ThemePickerState {
     /// resolution isn't invertible), so the picker keeps the actual value
     /// rather than a name to re-resolve.
     pub original: Option<Theme>,
+    /// Message active before the picker opened, restored with the theme on
+    /// `Esc` so preview warnings do not leak past a cancelled selection.
+    pub original_message: Option<Message>,
 }
 
 impl ThemePickerState {

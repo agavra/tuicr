@@ -150,6 +150,109 @@ fn navigation_previews_theme_live() {
 }
 
 #[test]
+fn session_theme_announcement_does_not_overwrite_a_syntax_theme_fallback_warning() {
+    let mut app = app();
+    let warning = "Failed to load syntax theme; using bundled syntax theme";
+    app.set_warning(warning);
+
+    app.announce_session_theme("local-teal");
+
+    let message = app.message.expect("syntax theme fallback warning");
+    assert_eq!(message.message_type, MessageType::Warning);
+    assert_eq!(message.content, warning);
+}
+
+#[test]
+fn picker_confirmation_keeps_syntax_theme_fallback_warning_after_it_would_expire() {
+    let mut app = app();
+    let warning = "Failed to load syntax theme; using bundled syntax theme";
+    app.theme_picker.candidates = vec!["local-teal".to_string()];
+    app.theme_picker.select(0);
+    app.show_theme_preview_warnings(&[warning.to_string()]);
+
+    assert_eq!(
+        app.message.as_ref().and_then(|message| message.expires_at),
+        None
+    );
+    assert!(!app.clear_expired_message());
+
+    app.confirm_theme_picker();
+
+    let message = app.message.expect("syntax theme fallback warning");
+    assert_eq!(message.message_type, MessageType::Warning);
+    assert_eq!(message.content, warning);
+}
+
+#[test]
+fn cancelling_picker_restores_the_message_that_was_visible_before_preview() {
+    let mut app = app();
+    app.set_message("Message before opening picker");
+    let original_message = app.message.clone();
+    app.enter_theme_picker_mode();
+    app.show_theme_preview_warnings(&[
+        "Failed to load syntax theme; using bundled syntax theme".to_string()
+    ]);
+
+    app.cancel_theme_picker();
+
+    assert_eq!(app.message, original_message);
+}
+
+#[test]
+fn cancelling_picker_clears_a_fallback_warning_when_no_message_was_present() {
+    let mut app = app();
+    assert!(app.message.is_none());
+    app.enter_theme_picker_mode();
+    app.show_theme_preview_warnings(&[
+        "Failed to load syntax theme; using bundled syntax theme".to_string()
+    ]);
+
+    app.cancel_theme_picker();
+
+    assert!(app.message.is_none());
+}
+
+#[test]
+fn session_theme_announcement_replaces_unrelated_warning() {
+    let mut app = app();
+    app.set_warning("An unrelated warning");
+
+    app.announce_session_theme("light");
+
+    let message = app.message.expect("session theme announcement");
+    assert_eq!(message.message_type, MessageType::Info);
+    assert!(message.content.starts_with("Theme: light"));
+}
+
+#[test]
+fn picker_preview_prefers_syntax_theme_warnings_over_other_theme_warnings() {
+    let mut app = app();
+    let warnings = vec![
+        "Warning: Unknown local theme key 'extra'".to_string(),
+        "Warning: Invalid syntax_theme; using bundled syntax theme".to_string(),
+    ];
+
+    app.show_theme_preview_warnings(&warnings);
+
+    let message = app.message.expect("syntax theme fallback warning");
+    assert_eq!(message.message_type, MessageType::Warning);
+    assert_eq!(message.content, warnings[1]);
+}
+
+#[test]
+fn warning_free_picker_preview_clears_stale_syntax_fallback_warning() {
+    let mut app = app();
+    app.set_warning("Invalid syntax_theme; using bundled syntax theme");
+
+    app.show_theme_preview_warnings(&[]);
+    app.announce_session_theme("light");
+
+    let message = app.message.expect("session theme announcement");
+    assert_eq!(message.message_type, MessageType::Info);
+    assert!(message.content.starts_with("Theme: light"));
+}
+
+#[test]
 fn cursor_up_at_top_clamps_instead_of_wrapping() {
     let mut app = app();
     app.enter_theme_picker_mode();
