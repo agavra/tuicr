@@ -28,7 +28,7 @@ use tuicr::input::{
 use tuicr::terminal_state::{TerminalFeatures, TerminalSession};
 use tuicr::theme::resolve_theme_with_config;
 use tuicr::vcs::{DiffWhitespaceMode, GitBackendPreference, WhitespaceAutoPolicy};
-use tuicr::{config, handler, profile, ui, update};
+use tuicr::{config, handler, profile, syntax, ui, update};
 
 /// Timeout for the "press Ctrl+C again to exit" feature
 const CTRL_C_EXIT_TIMEOUT: Duration = Duration::from_secs(2);
@@ -133,6 +133,11 @@ fn main() -> anyhow::Result<()> {
         std::process::exit(2);
     });
     startup_warnings.extend(theme_warnings);
+    if let Ok(dir) = config::syntaxes_dir() {
+        startup_warnings.extend(profile::time("startup.load_user_syntaxes", || {
+            syntax::load_user_syntaxes(&dir)
+        }));
+    }
 
     let transparent = config_outcome
         .config
