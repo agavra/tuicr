@@ -78,24 +78,37 @@ pub(super) fn unified_line_number_field(
     if is_commit_message {
         return blank();
     }
+    let source_line = unified_source_line_number(dl);
     if relative_line_numbers {
-        return relative_line_number_field(
-            dl.new_lineno.or(dl.old_lineno),
-            line_idx,
-            current_line_idx,
-            lw,
-        );
+        return relative_line_number_field(source_line, line_idx, current_line_idx, lw);
     }
-    let format_n = |n: u32| format!("{n:>lw$} ");
+    source_line
+        .map(|n| format!("{n:>lw$} "))
+        .unwrap_or_else(blank)
+}
+
+pub(super) fn unified_source_line_number(dl: &DiffLine) -> Option<u32> {
     match dl.origin {
-        LineOrigin::Addition => dl.new_lineno.map(format_n).unwrap_or_else(blank),
-        LineOrigin::Deletion => dl.old_lineno.map(format_n).unwrap_or_else(blank),
-        LineOrigin::Context => dl
-            .new_lineno
-            .or(dl.old_lineno)
-            .map(format_n)
-            .unwrap_or_else(blank),
+        LineOrigin::Addition => dl.new_lineno,
+        LineOrigin::Deletion => dl.old_lineno,
+        LineOrigin::Context => dl.new_lineno.or(dl.old_lineno),
     }
+}
+
+/// Hybrid relative numbering: the cursor row shows its source number and
+/// surrounding rows show navigation distances. Missing sides stay blank.
+pub(super) fn relative_line_number(
+    source_line: Option<u32>,
+    line_idx: usize,
+    current_line_idx: usize,
+) -> Option<u32> {
+    source_line.map(|line| {
+        if line_idx == current_line_idx {
+            line
+        } else {
+            line_idx.abs_diff(current_line_idx) as u32
+        }
+    })
 }
 
 pub(super) fn relative_line_number_field(
@@ -104,8 +117,8 @@ pub(super) fn relative_line_number_field(
     current_line_idx: usize,
     lw: usize,
 ) -> String {
-    source_line
-        .map(|_| format!("{:>lw$} ", line_idx.abs_diff(current_line_idx)))
+    relative_line_number(source_line, line_idx, current_line_idx)
+        .map(|n| format!("{n:>lw$} "))
         .unwrap_or_else(|| " ".repeat(lw + 1))
 }
 
@@ -116,8 +129,10 @@ mod relative_line_number_tests {
     #[test]
     fn uses_rendered_row_distance_and_preserves_missing_sides() {
         assert_eq!(relative_line_number_field(Some(100), 14, 10, 3), "  4 ");
-        assert_eq!(relative_line_number_field(Some(100), 10, 10, 3), "  0 ");
+        assert_eq!(relative_line_number_field(Some(100), 6, 10, 3), "  4 ");
+        assert_eq!(relative_line_number_field(Some(100), 10, 10, 3), "100 ");
         assert_eq!(relative_line_number_field(None, 14, 10, 3), "    ");
+        assert_eq!(relative_line_number_field(None, 10, 10, 3), "    ");
     }
 }
 
