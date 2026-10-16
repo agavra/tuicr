@@ -1481,9 +1481,13 @@ pub fn handle_visual_action(app: &mut App, action: Action) {
             app.cursor_up(n);
             app.extend_visual_to_cursor();
         }
-        Action::AddRangeComment => {
+        Action::AddRangeComment | Action::AddRangeSuggestion => {
             if app.visual_selection_line_range().is_some() {
-                app.enter_comment_from_visual();
+                if action == Action::AddRangeSuggestion {
+                    app.enter_suggestion_from_visual();
+                } else {
+                    app.enter_comment_from_visual();
+                }
             } else {
                 app.set_warning("Invalid selection - move cursor to a diff line");
                 app.exit_visual_mode();

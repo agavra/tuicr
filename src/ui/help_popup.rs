@@ -623,6 +623,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  s         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Suggest changes to selected code"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  Esc/v/V   ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
