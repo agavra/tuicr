@@ -179,6 +179,7 @@ from the checkout, never copied.
 |-----|--------|
 | `j` / `k` | Extend selection down / up |
 | `c` / `Enter` | Create comment for selected range |
+| `s` | Start an editable suggestion prefilled with the selected code lines |
 | `Esc` / `v` / `V` | Cancel selection |
 
 ## Comment mode
