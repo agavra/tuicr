@@ -1,5 +1,6 @@
-use ratatui::{style::Style, text::Span};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use ratatui::{buffer::CellWidth, style::Style, text::Span};
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 pub(super) fn truncate_str(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
@@ -370,6 +371,89 @@ fn split_pairs_at_ranges(
     out
 }
 
+/// Cells one grapheme cluster takes when ratatui draws it. Tabs count as one
+/// cell, as they always have in `wrap_spans`; other control characters are
+/// not drawn at all.
+fn grapheme_cells(grapheme: &str) -> usize {
+    if grapheme == "\t" {
+        1
+    } else if grapheme.contains(char::is_control) {
+        0
+    } else {
+        usize::from(grapheme.cell_width())
+    }
+}
+
+/// Cells `text` takes when ratatui draws it.
+fn text_cells(text: &str) -> usize {
+    text.graphemes(true).map(grapheme_cells).sum()
+}
+
+/// `text` from char `start` on.
+fn chars_from(text: &str, start: usize) -> &str {
+    let byte = text
+        .char_indices()
+        .nth(start)
+        .map_or(text.len(), |(b, _)| b);
+    &text[byte..]
+}
+
+/// Cell column of char `offset` on a row of `text` that starts at char
+/// `row_start`. An offset inside a grapheme cluster resolves to the start of
+/// that cluster.
+pub(crate) fn col_of_char(text: &str, row_start: usize, offset: usize) -> usize {
+    let mut char_idx = row_start;
+    let mut col = 0;
+    for grapheme in chars_from(text, row_start).graphemes(true) {
+        char_idx += grapheme.chars().count();
+        if char_idx > offset {
+            break;
+        }
+        col += grapheme_cells(grapheme);
+    }
+    col
+}
+
+/// Char offset of the grapheme cluster drawn at cell `col` on the row of
+/// `text` spanning chars `[start, end)`, or `end` past the row's last cell.
+/// Every cell of a wide cluster maps to the cluster's first char.
+pub(crate) fn char_at_col(text: &str, (start, end): (usize, usize), col: usize) -> usize {
+    let mut char_idx = start;
+    let mut cluster_col = 0;
+    for grapheme in chars_from(text, start).graphemes(true) {
+        if char_idx >= end {
+            break;
+        }
+        let cells = grapheme_cells(grapheme);
+        if cells > 0 && col < cluster_col + cells {
+            return char_idx;
+        }
+        cluster_col += cells;
+        char_idx += grapheme.chars().count();
+    }
+    end
+}
+
+/// Char range `[start, end)` of `text` on each row when it is cut every
+/// `width` cells, keeping grapheme clusters whole.
+pub(crate) fn fixed_width_row_char_ranges(text: &str, width: usize) -> Vec<(usize, usize)> {
+    let width = width.max(1);
+    let mut ranges = Vec::new();
+    let (mut start, mut end, mut row_cells) = (0, 0, 0);
+    for grapheme in text.graphemes(true) {
+        let cells = grapheme_cells(grapheme);
+        if row_cells + cells > width && end > start {
+            ranges.push((start, end));
+            start = end;
+            row_cells = 0;
+        }
+        row_cells += cells;
+        end += grapheme.chars().count();
+    }
+    ranges.push((start, end));
+    ranges
+}
+
 /// Char range `[start, end)` of `text` on each row `wrap_spans` breaks it into.
 pub(crate) fn wrapped_row_char_ranges(text: &str, width: usize) -> Vec<(usize, usize)> {
     let mut start = 0;
@@ -411,24 +495,24 @@ pub(super) fn wrap_spans<'a>(spans: &[Span<'a>], width: usize) -> Vec<Vec<Span<'
     if spans.is_empty() || spans.iter().all(|s| s.content.is_empty()) {
         return vec![vec![]];
     }
-    let total: usize = spans.iter().map(|s| s.content.width()).sum();
+    let total: usize = spans.iter().map(|s| text_cells(&s.content)).sum();
     if total <= width {
         return vec![spans.to_vec()];
     }
 
     #[derive(Clone, Copy)]
-    struct Item {
-        ch: char,
+    struct Item<'s> {
+        grapheme: &'s str,
         style: Style,
         w: usize,
     }
 
-    fn flush_unit(
-        unit: &mut Vec<Item>,
+    fn flush_unit<'s>(
+        unit: &mut Vec<Item<'s>>,
         unit_w: &mut usize,
-        current: &mut Vec<Item>,
+        current: &mut Vec<Item<'s>>,
         current_w: &mut usize,
-        rows: &mut Vec<Vec<Item>>,
+        rows: &mut Vec<Vec<Item<'s>>>,
         width: usize,
     ) {
         if unit.is_empty() {
@@ -487,14 +571,14 @@ pub(super) fn wrap_spans<'a>(spans: &[Span<'a>], width: usize) -> Vec<Vec<Span<'
     let mut word_w: usize = 0;
 
     for span in spans {
-        for ch in span.content.chars() {
-            let w = UnicodeWidthChar::width(ch).unwrap_or(if ch == '\t' { 1 } else { 0 });
+        for grapheme in span.content.graphemes(true) {
+            let w = grapheme_cells(grapheme);
             let item = Item {
-                ch,
+                grapheme,
                 style: span.style,
                 w,
             };
-            if ch == ' ' || ch == '\t' {
+            if grapheme == " " || grapheme == "\t" {
                 flush_unit(
                     &mut word,
                     &mut word_w,
@@ -538,13 +622,13 @@ pub(super) fn wrap_spans<'a>(spans: &[Span<'a>], width: usize) -> Vec<Vec<Span<'
             let mut cur_style: Option<Style> = None;
             for it in row {
                 match cur_style {
-                    Some(s) if s == it.style => buf.push(it.ch),
+                    Some(s) if s == it.style => buf.push_str(it.grapheme),
                     _ => {
                         if let Some(s) = cur_style {
                             out.push(Span::styled(std::mem::take(&mut buf), s));
                         }
                         cur_style = Some(it.style);
-                        buf.push(it.ch);
+                        buf.push_str(it.grapheme);
                     }
                 }
             }
@@ -959,6 +1043,87 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0][0].content, "中文");
         assert_eq!(rows[1][0].content, "測試");
+    }
+
+    #[test]
+    fn should_wrap_emoji_presentation_sequences_as_two_cells() {
+        // given - U+2764 is one cell on its own; with U+FE0F it is drawn as two
+        let spans = vec![Span::raw("❤\u{FE0F}❤\u{FE0F}")];
+        // when
+        let rows = wrap_spans(&spans, 3);
+        // then
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0][0].content, "❤\u{FE0F}");
+        assert_eq!(rows[1][0].content, "❤\u{FE0F}");
+    }
+
+    #[test]
+    fn should_not_split_zwj_sequences_across_rows() {
+        // given
+        let family = "👨\u{200D}👩\u{200D}👧";
+        let spans = vec![Span::raw(format!("ab{family}"))];
+        // when
+        let rows = wrap_spans(&spans, 3);
+        // then
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0][0].content, "ab");
+        assert_eq!(rows[1][0].content, family);
+    }
+
+    #[test]
+    fn should_map_cells_to_the_grapheme_cluster_drawn_there() {
+        // given - cells: 中 0-1, e+U+0301 2, family 3-4, ❤️ 5-6, x 7
+        let text = "中e\u{301}👨\u{200D}👩\u{200D}👧❤\u{FE0F}x";
+        let total = text.chars().count();
+        // when
+        let offsets: Vec<usize> = (0..9)
+            .map(|col| char_at_col(text, (0, total), col))
+            .collect();
+        // then
+        assert_eq!(offsets, [0, 0, 1, 3, 3, 8, 8, 10, 11]);
+    }
+
+    #[test]
+    fn should_map_cells_relative_to_the_row_start() {
+        // given - the row holds "文測" out of "中文測試"
+        let text = "中文測試";
+        // when
+        let offsets: Vec<usize> = (0..5).map(|col| char_at_col(text, (1, 3), col)).collect();
+        // then
+        assert_eq!(offsets, [1, 1, 2, 2, 3]);
+    }
+
+    #[test]
+    fn should_place_chars_at_the_cell_their_cluster_starts_on() {
+        // given
+        let text = "中e\u{301}👨\u{200D}👩\u{200D}👧❤\u{FE0F}x";
+        // when
+        let cols: Vec<usize> = (0..=11)
+            .map(|offset| col_of_char(text, 0, offset))
+            .collect();
+        // then - offsets inside a cluster resolve to the cluster's first cell
+        assert_eq!(cols, [0, 2, 2, 3, 3, 3, 3, 3, 5, 5, 7, 8]);
+        assert_eq!(col_of_char("中文測試", 2, 4), 4);
+    }
+
+    #[test]
+    fn should_cut_fixed_width_rows_by_cells_without_splitting_clusters() {
+        assert_eq!(fixed_width_row_char_ranges("中文測試", 5), [(0, 2), (2, 4)]);
+        assert_eq!(
+            fixed_width_row_char_ranges("ae\u{301}bc", 2),
+            [(0, 3), (3, 5)]
+        );
+        assert_eq!(fixed_width_row_char_ranges("中", 1), [(0, 1)]);
+        assert_eq!(fixed_width_row_char_ranges("", 4), [(0, 0)]);
+    }
+
+    #[test]
+    fn should_report_wrapped_row_ranges_in_chars_for_wide_text() {
+        assert_eq!(wrapped_row_char_ranges("中文測試", 5), [(0, 2), (2, 4)]);
+        assert_eq!(
+            wrapped_row_char_ranges("ab👨\u{200D}👩\u{200D}👧", 3),
+            [(0, 2), (2, 7)]
+        );
     }
 
     #[test]

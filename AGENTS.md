@@ -236,6 +236,7 @@ Repository-managed agent integrations:
 ### Dependencies
 
 - `ratatui` + `crossterm`: TUI framework
+- `unicode-width` + `unicode-segmentation`: Display width per grapheme cluster, so wrapping and selection agree with how ratatui draws text
 - `git2`: Native git operations
 - `serde` + `serde_json`: Session serialization and GitHub release metadata
 - `sha2` + `flate2` + `tar` + `zip`: Verified direct-binary updates and release extraction
