@@ -4,7 +4,18 @@ use crate::model::LineOrigin;
 use crate::theme::Theme;
 
 pub fn selected_style(theme: &Theme) -> Style {
-    Style::default().bg(theme.bg_highlight).fg(theme.fg_primary)
+    Style::default()
+        .bg(theme.selection.row_background.unwrap_or(theme.bg_highlight))
+        .fg(theme.fg_primary)
+}
+
+/// Explicit row override for selectors that historically highlight only
+/// parts of a row. An omitted background leaves that appearance intact.
+pub fn selection_row_style(theme: &Theme, selected: bool) -> Style {
+    match theme.selection.row_background.filter(|_| selected) {
+        Some(bg) => Style::default().bg(bg),
+        None => Style::default(),
+    }
 }
 
 pub fn dim_style(theme: &Theme) -> Style {
@@ -113,8 +124,16 @@ pub fn file_status_style(theme: &Theme, status: char) -> Style {
     Style::default().fg(color)
 }
 
+/// Apply a marker override without changing the caller's legacy style.
+pub fn selection_marker_style(theme: &Theme, fallback: Style) -> Style {
+    match theme.selection.marker_color {
+        Some(color) => fallback.fg(color),
+        None => fallback,
+    }
+}
+
 pub fn current_line_indicator_style(theme: &Theme) -> Style {
-    Style::default().fg(theme.border_focused)
+    selection_marker_style(theme, Style::default().fg(theme.border_focused))
 }
 
 pub fn hash_style(theme: &Theme) -> Style {
@@ -187,7 +206,7 @@ pub fn comment_border_style_for_author(theme: &Theme, viewer: &str, author: &str
 }
 
 pub fn visual_selection_style(theme: &Theme) -> Style {
-    Style::default().bg(theme.bg_highlight)
+    Style::default().bg(theme.selection.row_background.unwrap_or(theme.bg_highlight))
 }
 
 pub fn search_match_style(theme: &Theme) -> Style {
@@ -199,7 +218,7 @@ pub fn help_indicator_style(theme: &Theme) -> Style {
 }
 
 pub fn range_bar_style(theme: &Theme) -> Style {
-    Style::default().fg(theme.border_focused)
+    current_line_indicator_style(theme)
 }
 
 pub fn error_inline_style(theme: &Theme) -> Style {

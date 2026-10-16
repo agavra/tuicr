@@ -148,9 +148,33 @@ impl ExportConfig {
     }
 }
 
+/// Optional selection colors; strings use the same syntax as local themes.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct SelectionConfig {
+    pub marker_color: Option<String>,
+    pub row_background: Option<String>,
+}
+
+impl SelectionConfig {
+    pub fn colors(&self) -> crate::theme::SelectionColors {
+        crate::theme::SelectionColors {
+            marker_color: self
+                .marker_color
+                .as_deref()
+                .and_then(crate::theme::parse_color_value),
+            row_background: self
+                .row_background
+                .as_deref()
+                .and_then(crate::theme::parse_color_value),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct AppConfig {
+    pub selection: Option<SelectionConfig>,
     pub theme: Option<String>,
     pub theme_dark: Option<String>,
     pub theme_light: Option<String>,
@@ -288,6 +312,7 @@ const KNOWN_KEYS: &[&str] = &[
     "no_update_check",
     "single_file_view",
     "username",
+    "selection",
     "forge",
     "export",
 ];
@@ -579,6 +604,9 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
     let ignore_whitespace_overrides = parsed_overrides.unwrap_or_default();
 
     let config = AppConfig {
+        selection: table
+            .get("selection")
+            .and_then(|v| parse_selection(v, &mut warnings)),
         theme: read_string(table, "theme", &mut warnings),
         theme_dark: read_string(table, "theme_dark", &mut warnings),
         theme_light: read_string(table, "theme_light", &mut warnings),
@@ -656,6 +684,35 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         config: Some(config),
         warnings,
     })
+}
+
+fn parse_selection(value: &Value, warnings: &mut Vec<String>) -> Option<SelectionConfig> {
+    let Some(table) = value.as_table() else {
+        warnings
+            .push("Warning: Config key 'selection' must be a table; ignoring value".to_string());
+        return None;
+    };
+    for key in table.keys() {
+        if !["marker_color", "row_background"].contains(&key.as_str()) {
+            warnings.push(format!(
+                "Warning: Unknown config key 'selection.{key}', ignoring"
+            ));
+        }
+    }
+    let mut read_color = |key| {
+        let raw = read_section_string(table, "selection", key, warnings)?;
+        if crate::theme::parse_color_value(&raw).is_some() {
+            Some(raw)
+        } else {
+            warnings.push(format!("Warning: Config key 'selection.{key}' must be a named color or #RRGGBB; ignoring value"));
+            None
+        }
+    };
+    let selection = SelectionConfig {
+        marker_color: read_color("marker_color"),
+        row_background: read_color("row_background"),
+    };
+    (selection != SelectionConfig::default()).then_some(selection)
 }
 
 /// Parse the `[forge]` section, returning `Some` with overridden values when
@@ -1996,6 +2053,72 @@ mod tests {
         assert_eq!(comment_types.len(), 1);
         assert_eq!(comment_types[0].id, "note");
         assert_eq!(outcome.warnings.len(), 3);
+    }
+
+    #[test]
+    fn selection_settings_are_independently_optional() {
+        for fields in [
+            "",
+            "marker_color = \"#242d38\"",
+            "row_background = \"#242d38\"",
+            "marker_color = \"#242d38\"\nrow_background = \"#242d38\"",
+        ] {
+            let outcome = parse_config(&format!("[selection]\n{fields}\n"));
+            assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
+            let colors = outcome
+                .config
+                .unwrap()
+                .selection
+                .unwrap_or_default()
+                .colors();
+            assert_eq!(
+                colors.marker_color,
+                fields
+                    .contains("marker_color")
+                    .then_some(ratatui::style::Color::Rgb(36, 45, 56))
+            );
+            assert_eq!(
+                colors.row_background,
+                fields
+                    .contains("row_background")
+                    .then_some(ratatui::style::Color::Rgb(36, 45, 56))
+            );
+        }
+        assert_eq!(parse_config("").config.unwrap().selection, None);
+    }
+
+    #[test]
+    fn invalid_selection_colors_warn_without_discarding_valid_settings() {
+        for invalid in [
+            "true",
+            "42",
+            "\"#12\"",
+            "\"#é2345\"",
+            "\"#zzzzzz\"",
+            "\"unknown\"",
+        ] {
+            let outcome = parse_config(&format!(
+                "[selection]\nmarker_color = {invalid}\nrow_background = \"light_blue\""
+            ));
+            let colors = outcome.config.unwrap().selection.unwrap().colors();
+            assert_eq!(colors.marker_color, None);
+            assert_eq!(
+                colors.row_background,
+                Some(ratatui::style::Color::LightBlue)
+            );
+            assert_eq!(outcome.warnings.len(), 1);
+            assert!(outcome.warnings[0].contains("selection.marker_color"));
+        }
+    }
+
+    #[test]
+    fn selection_section_reports_unknown_keys_and_wrong_types() {
+        let outcome = parse_config("[selection]\nmarker_colour = \"red\"\n");
+        assert_eq!(outcome.config.unwrap().selection, None);
+        assert!(outcome.warnings[0].contains("selection.marker_colour"));
+        let outcome = parse_config("selection = false");
+        assert_eq!(outcome.config.unwrap().selection, None);
+        assert!(outcome.warnings[0].contains("must be a table"));
     }
 
     // forge

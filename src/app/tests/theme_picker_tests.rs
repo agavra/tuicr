@@ -360,3 +360,58 @@ fn confirm_rehighlights_every_loaded_file_not_just_the_visible_one() {
     assert_eq!(addition_bg(&app.diff_files[0]), Some(chosen_syntax_add_bg));
     assert_eq!(addition_bg(&app.diff_files[1]), Some(chosen_syntax_add_bg));
 }
+
+#[test]
+fn selection_overrides_survive_theme_apply_preview_cancel_and_confirm() {
+    use crate::theme::SelectionColors;
+    use crate::ui::styles;
+    let fixed = Color::Rgb(36, 45, 56);
+    for marker_color in [None, Some(fixed)] {
+        for row_background in [None, Some(fixed)] {
+            let mut app = app();
+            let selection = SelectionColors {
+                marker_color,
+                row_background,
+            };
+            app.theme.selection = selection;
+            let check = |app: &App| {
+                assert_eq!(app.theme.selection, selection);
+                assert_eq!(
+                    styles::current_line_indicator_style(&app.theme).fg,
+                    Some(marker_color.unwrap_or(app.theme.border_focused))
+                );
+                assert_eq!(
+                    styles::visual_selection_style(&app.theme).bg,
+                    Some(row_background.unwrap_or(app.theme.bg_highlight))
+                );
+                assert_eq!(
+                    styles::hash_style(&app.theme).fg,
+                    Some(app.theme.cursor_color)
+                );
+            };
+            app.apply_theme("github-dark");
+            check(&app);
+            app.enter_theme_picker_mode();
+            app.move_theme_picker_selection(1); // preview light
+            assert_eq!(
+                app.theme.cursor_line_bg,
+                crate::theme::Theme::light().cursor_line_bg
+            );
+            check(&app);
+            app.cancel_theme_picker();
+            assert_eq!(
+                app.theme.cursor_line_bg,
+                crate::theme::Theme::github_dark().cursor_line_bg
+            );
+            check(&app);
+            app.enter_theme_picker_mode();
+            app.move_theme_picker_selection(1);
+            app.confirm_theme_picker();
+            assert_eq!(
+                app.theme.cursor_line_bg,
+                crate::theme::Theme::light().cursor_line_bg
+            );
+            check(&app);
+        }
+    }
+}

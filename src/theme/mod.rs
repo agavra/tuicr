@@ -22,8 +22,18 @@ pub enum SyntaxThemeSource {
     Custom(Box<syntect::highlighting::Theme>),
 }
 
+/// Config overrides kept separate from palette colors. Missing values are
+/// resolved by each selection renderer against the live theme.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SelectionColors {
+    pub marker_color: Option<Color>,
+    pub row_background: Option<Color>,
+}
+
 /// Complete color theme for the application
 pub struct Theme {
+    /// Runtime `[selection]` overrides, independent of the theme palette.
+    pub selection: SelectionColors,
     /// Cached syntax highlighter (lazily initialized). `Arc`-wrapped so a
     /// diff-watch worker thread can hold a cloned handle without rebuilding
     /// the grammar set, which is most of the cost this cache exists to avoid.
@@ -102,6 +112,7 @@ impl Clone for Theme {
     fn clone(&self) -> Self {
         Self {
             highlighter: OnceLock::new(),
+            selection: self.selection,
             panel_bg: self.panel_bg,
             bg_highlight: self.bg_highlight,
             fg_primary: self.fg_primary,
@@ -160,6 +171,7 @@ impl Theme {
     pub fn dark() -> Self {
         Self {
             highlighter: OnceLock::new(),
+            selection: SelectionColors::default(),
 
             // Base colors
             panel_bg: Color::Rgb(24, 24, 28),
@@ -230,6 +242,7 @@ impl Theme {
     pub fn light() -> Self {
         Self {
             highlighter: OnceLock::new(),
+            selection: SelectionColors::default(),
 
             // Base colors - dark text on light background
             panel_bg: Color::Rgb(245, 243, 232),
@@ -315,6 +328,7 @@ impl Theme {
 
         Self {
             highlighter: OnceLock::new(),
+            selection: SelectionColors::default(),
 
             panel_bg: base3,
             bg_highlight: base2,
@@ -388,6 +402,7 @@ impl Theme {
 
         Self {
             highlighter: OnceLock::new(),
+            selection: SelectionColors::default(),
 
             panel_bg: base03,
             bg_highlight: base02,
@@ -543,6 +558,7 @@ impl Theme {
     pub fn ayu_light() -> Self {
         Self {
             highlighter: OnceLock::new(),
+            selection: SelectionColors::default(),
 
             // Base colors
             panel_bg: Color::Rgb(250, 250, 250),
@@ -634,6 +650,7 @@ impl Theme {
 
         Self {
             highlighter: OnceLock::new(),
+            selection: SelectionColors::default(),
 
             panel_bg: bg,
             bg_highlight: selection,
@@ -694,6 +711,7 @@ impl Theme {
     pub fn onedark() -> Self {
         Self {
             highlighter: OnceLock::new(),
+            selection: SelectionColors::default(),
 
             // Base colors
             panel_bg: Color::Rgb(40, 44, 52),
@@ -764,6 +782,7 @@ impl Theme {
     pub fn github_light() -> Self {
         Self {
             highlighter: OnceLock::new(),
+            selection: SelectionColors::default(),
 
             panel_bg: Color::Rgb(255, 255, 255),
             bg_highlight: Color::Rgb(221, 244, 255),
@@ -824,6 +843,7 @@ impl Theme {
     pub fn github_dark() -> Self {
         Self {
             highlighter: OnceLock::new(),
+            selection: SelectionColors::default(),
 
             panel_bg: Color::Rgb(13, 17, 23),
             bg_highlight: Color::Rgb(33, 38, 45),
@@ -884,6 +904,7 @@ impl Theme {
     pub fn github_dark_colorblind() -> Self {
         Self {
             highlighter: OnceLock::new(),
+            selection: SelectionColors::default(),
             panel_bg: Color::Rgb(0x0d, 0x11, 0x17),
             bg_highlight: Color::Rgb(0x1e, 0x42, 0x73),
             fg_primary: Color::Rgb(0xf0, 0xf6, 0xfc),
@@ -959,6 +980,7 @@ impl Theme {
 
         Self {
             highlighter: OnceLock::new(),
+            selection: SelectionColors::default(),
 
             panel_bg: bg,
             bg_highlight,
@@ -1036,6 +1058,7 @@ impl Theme {
 
         Self {
             highlighter: OnceLock::new(),
+            selection: SelectionColors::default(),
 
             panel_bg: bg,
             bg_highlight,
@@ -1401,6 +1424,7 @@ fn catppuccin_theme(flavor: CatppuccinFlavor, syntect_theme: EmbeddedThemeName) 
 
     Theme {
         highlighter: OnceLock::new(),
+        selection: SelectionColors::default(),
 
         // Base colors
         panel_bg: flavor.base,
@@ -1477,6 +1501,7 @@ fn gruvbox_theme(flavor: GruvboxFlavor) -> Theme {
 
     Theme {
         highlighter: OnceLock::new(),
+        selection: SelectionColors::default(),
 
         // Base colors
         panel_bg: flavor.bg0,
@@ -1550,6 +1575,7 @@ fn everforest_theme(flavor: EverforestFlavor) -> Theme {
 
     Theme {
         highlighter: OnceLock::new(),
+        selection: SelectionColors::default(),
 
         panel_bg: flavor.bg0,
         bg_highlight: flavor.bg3,
@@ -1615,6 +1641,7 @@ fn nord_theme(flavor: NordFlavor) -> Theme {
 
     Theme {
         highlighter: OnceLock::new(),
+        selection: SelectionColors::default(),
 
         panel_bg: flavor.bg0,
         bg_highlight: flavor.bg1,
@@ -2066,7 +2093,10 @@ fn is_supported_color_value(value: &str) -> bool {
     )
 }
 
-fn parse_color_value(value: &str) -> Option<Color> {
+pub(crate) fn parse_color_value(value: &str) -> Option<Color> {
+    if !is_supported_color_value(value) {
+        return None;
+    }
     let normalized = value.trim().to_ascii_lowercase();
     if let Some(hex) = normalized.strip_prefix('#') {
         let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
@@ -2242,6 +2272,7 @@ fn load_local_theme_from_path(path: &Path) -> Result<(Theme, Vec<String>), Strin
 
     let theme = Theme {
         highlighter: OnceLock::new(),
+        selection: SelectionColors::default(),
         panel_bg,
         bg_highlight: require_local_theme_color(table, "bg_highlight")?,
         fg_primary: require_local_theme_color(table, "fg_primary")?,
