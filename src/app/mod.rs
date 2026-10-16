@@ -1910,6 +1910,7 @@ mod editor_target;
 mod file_filter;
 mod gaps;
 mod init;
+mod mapping_mode;
 mod modes;
 mod navigation;
 mod pr;
