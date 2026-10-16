@@ -130,6 +130,26 @@ impl App {
         }
     }
 
+    pub fn enter_suggestion_from_visual(&mut self) {
+        let Some(sel) = self.get_visual_selection().copied() else {
+            return;
+        };
+        let (start, end) = sel.ordered();
+        // Suggestions replace whole lines, even for a partial mouse selection.
+        // Only include the selected side, skipping headers and opposite-side lines.
+        let code = (start.annotation_idx..=end.annotation_idx)
+            .filter(|&idx| self.annotation_line_for_side(idx, start.side).is_some())
+            .filter_map(|idx| self.content_for_side(idx, start.side))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        self.enter_comment_from_visual();
+        if self.input_mode == InputMode::Comment {
+            self.comment_buffer = format!("\n```suggestion\n{code}\n```");
+            self.comment_cursor = 0;
+        }
+    }
+
     pub fn enter_comment_from_visual(&mut self) {
         if let Some((range, side)) = self.visual_selection_line_range() {
             self.comment_line_range = Some((range, side));

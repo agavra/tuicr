@@ -381,7 +381,7 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                     "   j/k navigate \u{00b7} space select \u{00b7} \u{21b5} confirm \u{00b7} esc back",
                 ),
                 InputMode::VisualSelect => Cow::Borrowed(
-                    "   j/k extend \u{00b7} c/\u{21b5} comment \u{00b7} y yank \u{00b7} esc/V cancel",
+                    "   j/k extend \u{00b7} c/\u{21b5} comment \u{00b7} s suggest \u{00b7} y yank \u{00b7} esc/V cancel",
                 ),
                 InputMode::SubmitResolver => Cow::Borrowed(
                     "   j/k move \u{00b7} \u{21b5} toggle \u{00b7} s submit \u{00b7} esc cancel",

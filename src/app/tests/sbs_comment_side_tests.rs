@@ -242,3 +242,126 @@ fn horizontal_keys_scroll_in_unified_and_leave_side_unchanged() {
     assert_eq!(app.diff_state.scroll_x, 4);
     assert_eq!(app.cursor_side, LineSide::New);
 }
+
+#[test]
+fn visual_suggestion_prefills_selected_side_in_both_views() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    for view in [DiffViewMode::Unified, DiffViewMode::SideBySide] {
+        for side in [LineSide::Old, LineSide::New] {
+            for reverse in [false, true] {
+                let mut app = build_app();
+                app.diff_view_mode = view;
+                let lines = [
+                    (LineOrigin::Deletion, Some(10), None, "    old α"),
+                    (LineOrigin::Deletion, Some(11), None, ""),
+                    (LineOrigin::Addition, None, Some(20), "    new β"),
+                    (LineOrigin::Addition, None, Some(21), ""),
+                ]
+                .into_iter()
+                .map(|(origin, old_lineno, new_lineno, content)| DiffLine {
+                    origin,
+                    old_lineno,
+                    new_lineno,
+                    content: content.into(),
+                    highlighted_spans: None,
+                })
+                .collect();
+                app.diff_files = vec![DiffFile {
+                    old_path: Some("test.rs".into()),
+                    new_path: Some("test.rs".into()),
+                    status: FileStatus::Modified,
+                    hunks: vec![DiffHunk {
+                        header: "@@ -10,2 +20,2 @@".into(),
+                        old_start: 10,
+                        old_count: 2,
+                        new_start: 20,
+                        new_count: 2,
+                        lines,
+                    }],
+                    is_binary: false,
+                    is_too_large: false,
+                    is_commit_message: false,
+                    content_hash: 0,
+                }];
+                app.line_annotations = if view == DiffViewMode::SideBySide {
+                    (0..2)
+                        .map(|i| AnnotatedLine::SideBySideLine {
+                            file_idx: 0,
+                            hunk_idx: 0,
+                            del_line_idx: Some(i),
+                            add_line_idx: Some(i + 2),
+                            old_lineno: Some(10 + i as u32),
+                            new_lineno: Some(20 + i as u32),
+                        })
+                        .collect()
+                } else {
+                    app.diff_files[0].hunks[0]
+                        .lines
+                        .iter()
+                        .enumerate()
+                        .map(|(i, line)| AnnotatedLine::DiffLine {
+                            file_idx: 0,
+                            hunk_idx: 0,
+                            line_idx: i,
+                            old_lineno: line.old_lineno,
+                            new_lineno: line.new_lineno,
+                        })
+                        .collect()
+                };
+                let first = if view == DiffViewMode::Unified && side == LineSide::New {
+                    2
+                } else {
+                    0
+                };
+                // A partial mouse selection still needs the full replacement lines.
+                let start = SelPoint {
+                    annotation_idx: first,
+                    char_offset: 4,
+                    side,
+                };
+                let end = SelPoint {
+                    annotation_idx: first + 1,
+                    char_offset: 0,
+                    side,
+                };
+                app.visual_selection = Some(if reverse {
+                    VisualSelection {
+                        anchor: end,
+                        head: start,
+                    }
+                } else {
+                    VisualSelection {
+                        anchor: start,
+                        head: end,
+                    }
+                });
+                app.input_mode = InputMode::VisualSelect;
+                let action = crate::input::map_key_to_action(
+                    KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE),
+                    InputMode::VisualSelect,
+                    crate::config::DEFAULT_LEADER_KEY,
+                );
+                crate::handler::handle_visual_action(&mut app, action);
+
+                let (code, line) = if side == LineSide::Old {
+                    ("    old α", 10)
+                } else {
+                    ("    new β", 20)
+                };
+                assert_eq!(
+                    app.comment_buffer,
+                    format!("\n```suggestion\n{code}\n\n```")
+                );
+                assert_eq!(app.comment_cursor, 0);
+                assert_eq!(
+                    app.comment_line_range,
+                    Some((LineRange::new(line, line + 1), side))
+                );
+                assert_eq!(app.comment_line, Some((line + 1, side)));
+                assert_eq!(app.input_mode, InputMode::Comment);
+                assert!(app.visual_selection.is_none());
+            }
+        }
+    }
+}
