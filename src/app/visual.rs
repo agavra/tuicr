@@ -136,6 +136,20 @@ impl App {
         };
         let (start, end) = sel.ordered();
         // Suggestions replace whole lines, even for a partial mouse selection.
+        let Some((range, _)) = self.visual_selection_line_range() else {
+            self.set_warning("Invalid visual selection");
+            return;
+        };
+        let info = if self.forge_kind() == Some(crate::forge::traits::ForgeKind::GitLab) {
+            let above = range.end - range.start;
+            if above > 100 {
+                self.set_warning("GitLab suggestions can cover at most 100 lines above the anchor");
+                return;
+            }
+            format!("suggestion:-{above}+0")
+        } else {
+            "suggestion".to_string()
+        };
         // Require one hunk with a new-side source line on every selected row.
         let mut selected_hunk = None;
         let mut seen_addition = false;
@@ -183,7 +197,7 @@ impl App {
 
         self.enter_comment_from_visual();
         if self.input_mode == InputMode::Comment {
-            self.comment_buffer = format!("\n```suggestion\n{code}\n```");
+            self.comment_buffer = format!("\n```{info}\n{code}\n```");
             self.comment_cursor = 0;
         }
     }

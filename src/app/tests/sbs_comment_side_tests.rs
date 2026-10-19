@@ -559,3 +559,37 @@ fn visual_suggestion_rejects_deleted_line_gaps_inside_a_hunk() {
         assert!(app.comment_line_range.is_none());
     }
 }
+
+#[test]
+fn visual_suggestion_uses_gitlab_offsets_relative_to_range_end() {
+    use crate::forge::traits::{ForgeRepository, PrSessionKey};
+    for (patch, expected) in [
+        (
+            "@@ -1 +1 @@\n-old\n+new\n",
+            "\n```suggestion:-0+0\nnew\n```",
+        ),
+        (
+            "@@ -1,2 +1,2 @@\n first\n second\n",
+            "\n```suggestion:-1+0\nfirst\nsecond\n```",
+        ),
+    ] {
+        let mut app = suggestion_app_from_patch(patch);
+        app.diff_source = DiffSource::PullRequest(Box::new(PullRequestDiffSource {
+            key: PrSessionKey::new(
+                ForgeRepository::gitlab("gitlab.com", "owner", "repo"),
+                1,
+                "head",
+            ),
+            base_sha: "base".into(),
+            title: String::new(),
+            url: String::new(),
+            head_ref_name: String::new(),
+            base_ref_name: String::new(),
+            state: "OPEN".into(),
+            closed: false,
+            merged: false,
+        }));
+        app.enter_suggestion_from_visual();
+        assert_eq!(app.comment_buffer, expected);
+    }
+}
