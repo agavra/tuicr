@@ -264,6 +264,9 @@ fn visual_suggestion_prefills_selected_side_in_both_views() {
                     old_lineno,
                     new_lineno,
                     content: content.into(),
+                    raw_content: content
+                        .starts_with("    ")
+                        .then(|| content.replacen("    ", "\t", 1)),
                     highlighted_spans: None,
                 })
                 .collect();
@@ -345,9 +348,9 @@ fn visual_suggestion_prefills_selected_side_in_both_views() {
                 crate::handler::handle_visual_action(&mut app, action);
 
                 let (code, line) = if side == LineSide::Old {
-                    ("    old α", 10)
+                    ("\told α", 10)
                 } else {
-                    ("    new β", 20)
+                    ("\tnew β", 20)
                 };
                 assert_eq!(
                     app.comment_buffer,

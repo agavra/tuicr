@@ -40,6 +40,7 @@ fn line(origin: LineOrigin, content: &str, old: Option<u32>, new: Option<u32>) -
         content: content.to_string(),
         old_lineno: old,
         new_lineno: new,
+        raw_content: None,
         highlighted_spans: None,
     }
 }

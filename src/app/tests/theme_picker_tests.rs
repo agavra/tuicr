@@ -54,6 +54,7 @@ fn diff_file_with_marker_bg(path: &str, marker_bg: Color) -> DiffFile {
             content: "let x = 1;".to_string(),
             old_lineno: None,
             new_lineno: Some(1),
+            raw_content: None,
             highlighted_spans: Some(vec![(
                 Style::default().bg(marker_bg),
                 "let x = 1;".to_string(),

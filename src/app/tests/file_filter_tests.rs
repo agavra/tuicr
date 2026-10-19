@@ -44,6 +44,7 @@ fn hunk() -> DiffHunk {
                 content: "context".to_string(),
                 old_lineno: Some(1),
                 new_lineno: Some(1),
+                raw_content: None,
                 highlighted_spans: None,
             },
             DiffLine {
@@ -51,6 +52,7 @@ fn hunk() -> DiffHunk {
                 content: "added".to_string(),
                 old_lineno: None,
                 new_lineno: Some(2),
+                raw_content: None,
                 highlighted_spans: None,
             },
         ],

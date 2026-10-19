@@ -139,7 +139,8 @@ impl App {
         // Only include the selected side, skipping headers and opposite-side lines.
         let code = (start.annotation_idx..=end.annotation_idx)
             .filter(|&idx| self.annotation_line_for_side(idx, start.side).is_some())
-            .filter_map(|idx| self.content_for_side(idx, start.side))
+            .filter_map(|idx| self.diff_line_for_side(idx, start.side))
+            .map(|line| line.raw_content.as_deref().unwrap_or(&line.content))
             .collect::<Vec<_>>()
             .join("\n");
 

@@ -306,6 +306,7 @@ fn one_line_hunk() -> DiffHunk {
             content: "let x = 1;".to_string(),
             old_lineno: None,
             new_lineno: Some(1),
+            raw_content: None,
             highlighted_spans: None,
         }],
         old_start: 1,

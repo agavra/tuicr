@@ -48,6 +48,7 @@ fn build_scroll_app(n: usize, viewport: usize, scroll_offset_config: usize) -> A
             content: format!("line {i}"),
             old_lineno: Some(i as u32),
             new_lineno: Some(i as u32),
+            raw_content: None,
             highlighted_spans: None,
         })
         .collect();

@@ -434,6 +434,7 @@ mod tests {
                 content: format!("line {}", start + offset),
                 old_lineno: Some(start + offset),
                 new_lineno: Some(start + offset),
+                raw_content: None,
                 highlighted_spans: None,
             })
             .collect();
