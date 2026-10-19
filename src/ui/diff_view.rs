@@ -696,11 +696,7 @@ pub(super) fn paint_cursor_line_highlight(
     let preserve_bg = app
         .search_paint_at(app.diff_state.cursor_line)
         .map(|_| app.theme.search_match_bg);
-    let cursor_style = Style::default().bg(app
-        .theme
-        .selection
-        .row_background
-        .unwrap_or(app.theme.cursor_line_bg));
+    let cursor_style = Style::default().bg(app.theme.cursor_line_bg);
     let buf = frame.buffer_mut();
     for_each_styled_row(
         inner,

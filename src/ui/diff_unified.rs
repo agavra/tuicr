@@ -1960,92 +1960,89 @@ mod remote_comments_snapshot_tests {
     }
 
     #[test]
-    fn selection_overrides_cover_cursor_and_multiline_diff_in_both_views() {
+    fn selection_marker_matches_existing_row_colors_in_both_views() {
         use ratatui::style::Color;
         let matching = Color::Rgb(36, 45, 56);
         for mode in [DiffViewMode::Unified, DiffViewMode::SideBySide] {
             for wrap in [false, true] {
                 for marker in [None, Some(matching)] {
-                    for background in [None, Some(matching)] {
-                        let mut file = wrapping_diff_file(2);
-                        for line in &mut file.hunks[0].lines {
-                            line.content = "x".repeat(110);
-                        }
-                        let mut app = make_revision_app(vec![file]);
-                        app.diff_view_mode = mode;
-                        app.wrap_style = WrapStyle::Gutter;
-                        app.theme.selection = crate::theme::SelectionColors {
-                            marker_color: marker,
-                            row_background: background,
-                        };
-                        app.set_diff_wrap(wrap);
-                        draw_diff(&mut app);
-                        let indices: Vec<_> = app
-                            .line_annotations
-                            .iter()
-                            .enumerate()
-                            .filter_map(|(idx, ann)| {
-                                matches!(
-                                    ann,
-                                    AnnotatedLine::DiffLine { .. }
-                                        | AnnotatedLine::SideBySideLine { .. }
-                                )
-                                .then_some(idx)
-                            })
-                            .collect();
-                        assert_eq!(indices.len(), 2);
-                        app.diff_state.cursor_line = indices[0];
-                        app.diff_state.scroll_offset = indices[0];
-                        let buffer = draw_diff(&mut app);
-                        let inner = app.diff_inner_area.unwrap();
-                        let cursor_bg = background.unwrap_or(app.theme.cursor_line_bg);
-                        let mut cursor_rows = 0;
-                        for (row, &idx) in app.diff_row_to_annotation.iter().enumerate() {
-                            if idx == indices[0] {
-                                cursor_rows += 1;
-                                let y = inner.y + row as u16;
-                                for x in inner.x..inner.right() {
-                                    assert_eq!(
-                                        buffer[(x, y)].bg,
-                                        cursor_bg,
-                                        "{mode:?}, wrap={wrap}, x={x}, y={y}"
-                                    );
-                                }
-                            }
-                        }
-                        assert!(cursor_rows > 0);
-                        if wrap {
-                            assert!(cursor_rows > 1);
-                        }
-                        let caret = buffer
-                            .content
-                            .iter()
-                            .find(|cell| cell.symbol() == "▶")
-                            .expect("cursor marker");
-                        assert_eq!(caret.fg, marker.unwrap_or(app.theme.border_focused));
-
-                        app.enter_visual_mode_at_cursor();
-                        app.diff_state.cursor_line = indices[1];
-                        app.extend_visual_to_cursor();
-                        let buffer = draw_diff(&mut app);
-                        let geom = app.pane_geometry(inner, LineSide::New);
-                        let selection_bg = background.unwrap_or(app.theme.bg_highlight);
-                        for idx in indices {
-                            let rows: Vec<_> = app
-                                .diff_row_to_annotation
-                                .iter()
-                                .enumerate()
-                                .filter(|(_, annotation)| **annotation == idx)
-                                .collect();
-                            assert!(!rows.is_empty(), "both selected lines must be visible");
-                            for (row, _) in rows {
-                                let y = inner.y + row as u16;
+                    let mut file = wrapping_diff_file(2);
+                    for line in &mut file.hunks[0].lines {
+                        line.content = "x".repeat(110);
+                    }
+                    let mut app = make_revision_app(vec![file]);
+                    app.diff_view_mode = mode;
+                    app.wrap_style = WrapStyle::Gutter;
+                    app.theme.selection_marker = marker;
+                    app.theme.cursor_line_bg = matching;
+                    app.theme.bg_highlight = matching;
+                    app.set_diff_wrap(wrap);
+                    draw_diff(&mut app);
+                    let indices: Vec<_> = app
+                        .line_annotations
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(idx, ann)| {
+                            matches!(
+                                ann,
+                                AnnotatedLine::DiffLine { .. }
+                                    | AnnotatedLine::SideBySideLine { .. }
+                            )
+                            .then_some(idx)
+                        })
+                        .collect();
+                    assert_eq!(indices.len(), 2);
+                    app.diff_state.cursor_line = indices[0];
+                    app.diff_state.scroll_offset = indices[0];
+                    let buffer = draw_diff(&mut app);
+                    let inner = app.diff_inner_area.unwrap();
+                    let cursor_bg = app.theme.cursor_line_bg;
+                    let mut cursor_rows = 0;
+                    for (row, &idx) in app.diff_row_to_annotation.iter().enumerate() {
+                        if idx == indices[0] {
+                            cursor_rows += 1;
+                            let y = inner.y + row as u16;
+                            for x in inner.x..inner.right() {
                                 assert_eq!(
-                                    buffer[(geom.content_x_start, y)].bg,
-                                    selection_bg,
-                                    "{mode:?}, wrap={wrap}"
+                                    buffer[(x, y)].bg,
+                                    cursor_bg,
+                                    "{mode:?}, wrap={wrap}, x={x}, y={y}"
                                 );
                             }
+                        }
+                    }
+                    assert!(cursor_rows > 0);
+                    if wrap {
+                        assert!(cursor_rows > 1);
+                    }
+                    let caret = buffer
+                        .content
+                        .iter()
+                        .find(|cell| cell.symbol() == "▶")
+                        .expect("cursor marker");
+                    assert_eq!(caret.fg, marker.unwrap_or(app.theme.border_focused));
+
+                    app.enter_visual_mode_at_cursor();
+                    app.diff_state.cursor_line = indices[1];
+                    app.extend_visual_to_cursor();
+                    let buffer = draw_diff(&mut app);
+                    let geom = app.pane_geometry(inner, LineSide::New);
+                    let selection_bg = app.theme.bg_highlight;
+                    for idx in indices {
+                        let rows: Vec<_> = app
+                            .diff_row_to_annotation
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, annotation)| **annotation == idx)
+                            .collect();
+                        assert!(!rows.is_empty(), "both selected lines must be visible");
+                        for (row, _) in rows {
+                            let y = inner.y + row as u16;
+                            assert_eq!(
+                                buffer[(geom.content_x_start, y)].bg,
+                                selection_bg,
+                                "{mode:?}, wrap={wrap}"
+                            );
                         }
                     }
                 }

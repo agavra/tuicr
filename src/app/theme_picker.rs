@@ -95,8 +95,7 @@ impl App {
             }
         };
         match resolve_theme_name(name, &theme_dir) {
-            Ok(Some((mut theme, warnings))) => {
-                theme.selection = self.theme.selection;
+            Ok(Some((theme, warnings))) => {
                 self.theme = theme;
                 self.rehighlight_current_file();
                 if let Some(first) = warnings.into_iter().next() {
@@ -122,8 +121,7 @@ impl App {
             }
         };
         match resolve_theme_name(name, &theme_dir) {
-            Ok(Some((mut theme, warnings))) => {
-                theme.selection = self.theme.selection;
+            Ok(Some((theme, warnings))) => {
                 self.theme = theme;
                 for warning in warnings {
                     self.set_warning(warning);

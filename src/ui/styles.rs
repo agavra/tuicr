@@ -4,18 +4,7 @@ use crate::model::LineOrigin;
 use crate::theme::Theme;
 
 pub fn selected_style(theme: &Theme) -> Style {
-    Style::default()
-        .bg(theme.selection.row_background.unwrap_or(theme.bg_highlight))
-        .fg(theme.fg_primary)
-}
-
-/// Explicit row override for selectors that historically highlight only
-/// parts of a row. An omitted background leaves that appearance intact.
-pub fn selection_row_style(theme: &Theme, selected: bool) -> Style {
-    match theme.selection.row_background.filter(|_| selected) {
-        Some(bg) => Style::default().bg(bg),
-        None => Style::default(),
-    }
+    Style::default().bg(theme.bg_highlight).fg(theme.fg_primary)
 }
 
 pub fn dim_style(theme: &Theme) -> Style {
@@ -124,9 +113,9 @@ pub fn file_status_style(theme: &Theme, status: char) -> Style {
     Style::default().fg(color)
 }
 
-/// Apply a marker override without changing the caller's legacy style.
+/// Override only the marker foreground, preserving the caller's legacy style.
 pub fn selection_marker_style(theme: &Theme, fallback: Style) -> Style {
-    match theme.selection.marker_color {
+    match theme.selection_marker {
         Some(color) => fallback.fg(color),
         None => fallback,
     }
@@ -206,7 +195,7 @@ pub fn comment_border_style_for_author(theme: &Theme, viewer: &str, author: &str
 }
 
 pub fn visual_selection_style(theme: &Theme) -> Style {
-    Style::default().bg(theme.selection.row_background.unwrap_or(theme.bg_highlight))
+    Style::default().bg(theme.bg_highlight)
 }
 
 pub fn search_match_style(theme: &Theme) -> Style {
@@ -229,4 +218,50 @@ pub fn error_inline_style(theme: &Theme) -> Style {
 
 pub fn pseudo_commit_tag_style(theme: &Theme) -> Style {
     Style::default().fg(theme.file_modified)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn selection_marker_changes_only_marker_foregrounds() {
+        let mut theme = Theme::github_dark();
+        let legacy_pointer = selected_style(&theme);
+        assert_eq!(
+            selection_marker_style(&theme, legacy_pointer),
+            legacy_pointer
+        );
+        assert_eq!(
+            current_line_indicator_style(&theme).fg,
+            Some(theme.border_focused)
+        );
+        assert_eq!(range_bar_style(&theme).fg, Some(theme.border_focused));
+        let unchanged = (
+            border_style(&theme, true),
+            hash_style(&theme),
+            selected_style(&theme),
+            visual_selection_style(&theme),
+        );
+
+        theme.selection_marker = Some(Color::Rgb(36, 45, 56));
+        assert_eq!(
+            current_line_indicator_style(&theme).fg,
+            theme.selection_marker
+        );
+        assert_eq!(range_bar_style(&theme).fg, theme.selection_marker);
+        assert_eq!(
+            selection_marker_style(&theme, legacy_pointer).bg,
+            legacy_pointer.bg
+        );
+        assert_eq!(
+            unchanged,
+            (
+                border_style(&theme, true),
+                hash_style(&theme),
+                selected_style(&theme),
+                visual_selection_style(&theme)
+            )
+        );
+    }
 }

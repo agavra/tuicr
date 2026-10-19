@@ -221,7 +221,7 @@ Repository-managed agent integrations:
 
 ### Important Implementation Details
 
-- **Selection colors**: `Theme::selection` holds optional `[selection]` config overrides separately from palette colors. Selection styles resolve missing values against the live theme; never overwrite `cursor_color` (PR numbers/hashes), `border_focused` (borders), or `bg_highlight` globally. Runtime theme replacement must carry `selection` forward, and theme snapshots clone it for picker cancellation.
+- **Selection colors**: Optional local-theme `selection_marker` controls cursor indicators and commit-range bars independently of `border_focused`. Missing values preserve each indicator's legacy foreground; row backgrounds still use `bg_highlight`/`cursor_line_bg`, and PR numbers/hashes still use `cursor_color`. The marker belongs to the theme and follows normal theme switching and picker snapshots.
 - **Infinite scroll**: All files rendered into one `Vec<Line>`, then sliced by `scroll_offset`
 - **Inline comments**: Comments are rendered in `app_layout.rs` after file headers and after relevant diff lines
 - **Comment navigator**: Built from `line_annotations` in rendered order. Local review/file/line comments and visible remote threads appear as compact rows; selecting one calls `move_cursor_to_annotation()` so the diff viewport scrolls to the comment.

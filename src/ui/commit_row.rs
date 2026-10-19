@@ -101,10 +101,7 @@ pub fn render_commit_row<'a>(spec: &CommitRowSpec<'a>) -> Line<'a> {
         };
         spans.push(Span::styled(tag, styles::pseudo_commit_tag_style(theme)));
         spans.push(Span::styled(spec.commit.summary.clone(), row_text_style));
-        return Line::from(spans).style(styles::selection_row_style(
-            theme,
-            spec.is_cursor || spec.is_selected,
-        ));
+        return Line::from(spans);
     }
 
     let hash_content_width = (HASH_COL_WIDTH - 1).max(spec.commit.short_id.chars().count());
@@ -150,10 +147,7 @@ pub fn render_commit_row<'a>(spec: &CommitRowSpec<'a>) -> Line<'a> {
         Style::default().fg(theme.fg_secondary),
     ));
 
-    Line::from(spans).style(styles::selection_row_style(
-        theme,
-        spec.is_cursor || spec.is_selected,
-    ))
+    Line::from(spans)
 }
 
 fn commit_column_widths(available_width: usize, hash_col_width: usize) -> (usize, usize) {
