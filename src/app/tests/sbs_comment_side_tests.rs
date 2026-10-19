@@ -347,6 +347,13 @@ fn visual_suggestion_prefills_selected_side_in_both_views() {
                 );
                 crate::handler::handle_visual_action(&mut app, action);
 
+                if side == LineSide::Old {
+                    assert_eq!(app.input_mode, InputMode::VisualSelect);
+                    assert!(app.comment_buffer.is_empty());
+                    assert!(app.comment_line_range.is_none());
+                    continue;
+                }
+
                 let (code, line) = if side == LineSide::Old {
                     ("\told α", 10)
                 } else {
@@ -366,5 +373,189 @@ fn visual_suggestion_prefills_selected_side_in_both_views() {
                 assert!(app.visual_selection.is_none());
             }
         }
+    }
+}
+
+#[test]
+fn visual_suggestion_rejects_gaps_expanded_context_and_other_hunks() {
+    let gap_id = GapId {
+        file_idx: 0,
+        hunk_idx: 1,
+    };
+    for middle in [
+        AnnotatedLine::HiddenLines {
+            gap_id: gap_id.clone(),
+            count: 3,
+        },
+        AnnotatedLine::ExpandedContext {
+            gap_id,
+            line_idx: 0,
+        },
+        AnnotatedLine::HunkHeader {
+            file_idx: 0,
+            hunk_idx: 1,
+        },
+        AnnotatedLine::SideBySideLine {
+            file_idx: 0,
+            hunk_idx: 1,
+            del_line_idx: None,
+            add_line_idx: Some(0),
+            old_lineno: None,
+            new_lineno: Some(21),
+        },
+        AnnotatedLine::SideBySideLine {
+            file_idx: 1,
+            hunk_idx: 0,
+            del_line_idx: None,
+            add_line_idx: Some(0),
+            old_lineno: None,
+            new_lineno: Some(21),
+        },
+    ] {
+        let mut app = build_app();
+        app.line_annotations = vec![sbs_line(None, Some(20)), middle, sbs_line(None, Some(24))];
+        app.input_mode = InputMode::VisualSelect;
+        app.visual_selection = Some(VisualSelection {
+            anchor: SelPoint {
+                annotation_idx: 0,
+                char_offset: 0,
+                side: LineSide::New,
+            },
+            head: SelPoint {
+                annotation_idx: 2,
+                char_offset: 1,
+                side: LineSide::New,
+            },
+        });
+        crate::handler::handle_visual_action(&mut app, Action::AddRangeSuggestion);
+        assert_eq!(app.input_mode, InputMode::VisualSelect);
+        assert!(app.comment_buffer.is_empty());
+        assert!(app.comment_line_range.is_none());
+    }
+}
+
+fn suggestion_app_from_patch(patch: &str) -> App {
+    suggestion_app_from_patch_in_view(patch, DiffViewMode::Unified)
+}
+
+fn suggestion_app_from_patch_in_view(patch: &str, view: DiffViewMode) -> App {
+    let mut app = build_app();
+    app.diff_view_mode = view;
+    app.diff_files = crate::vcs::diff_parser::parse_file_patches(
+        vec![crate::model::FilePatch::new(
+            Some("test.rs".into()),
+            Some("test.rs".into()),
+            FileStatus::Modified,
+            patch,
+        )],
+        &SyntaxHighlighter::default(),
+    )
+    .unwrap();
+    app.rebuild_annotations();
+    let indices: Vec<_> = app
+        .line_annotations
+        .iter()
+        .enumerate()
+        .filter_map(|(i, ann)| {
+            matches!(
+                ann,
+                AnnotatedLine::DiffLine {
+                    new_lineno: Some(_),
+                    ..
+                } | AnnotatedLine::SideBySideLine {
+                    new_lineno: Some(_),
+                    ..
+                }
+            )
+            .then_some(i)
+        })
+        .collect();
+    app.input_mode = InputMode::VisualSelect;
+    app.visual_selection = Some(VisualSelection {
+        anchor: SelPoint {
+            annotation_idx: indices[0],
+            char_offset: 0,
+            side: LineSide::New,
+        },
+        head: SelPoint {
+            annotation_idx: *indices.last().unwrap(),
+            char_offset: 0,
+            side: LineSide::New,
+        },
+    });
+    app
+}
+
+#[test]
+fn visual_suggestion_rejects_context_between_added_blocks() {
+    for view in [DiffViewMode::Unified, DiffViewMode::SideBySide] {
+        for context in ["", "unchanged"] {
+            for reverse in [false, true] {
+                let patch = format!("@@ -1 +1,3 @@\n+first\n {context}\n+second\n");
+                let mut app = suggestion_app_from_patch_in_view(&patch, view);
+                if reverse {
+                    let sel = app.visual_selection.as_mut().unwrap();
+                    std::mem::swap(&mut sel.anchor, &mut sel.head);
+                }
+                crate::handler::handle_visual_action(&mut app, Action::AddRangeSuggestion);
+                assert_eq!(app.input_mode, InputMode::VisualSelect);
+                assert!(app.visual_selection.is_some());
+                assert!(app.comment_buffer.is_empty());
+                assert!(app.comment_line_range.is_none());
+            }
+        }
+    }
+}
+
+#[test]
+fn visual_suggestion_allows_context_around_one_added_block() {
+    for view in [DiffViewMode::Unified, DiffViewMode::SideBySide] {
+        let mut app = suggestion_app_from_patch_in_view(
+            "@@ -1,2 +1,5 @@\n before\n+first\n+\n+second\n after\n",
+            view,
+        );
+        app.enter_suggestion_from_visual();
+        assert_eq!(app.input_mode, InputMode::Comment);
+        assert_eq!(
+            app.comment_buffer,
+            "\n```suggestion\nbefore\nfirst\n\nsecond\nafter\n```"
+        );
+    }
+}
+
+#[test]
+fn visual_suggestion_rejects_deleted_line_gaps_inside_a_hunk() {
+    for view in [DiffViewMode::Unified, DiffViewMode::SideBySide] {
+        let mut app = suggestion_app_from_patch("@@ -1,3 +1,2 @@\n before\n-deleted\n after\n");
+        app.diff_view_mode = view;
+        app.rebuild_annotations();
+        let indices: Vec<_> = app
+            .line_annotations
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, ann)| {
+                matches!(
+                    ann,
+                    AnnotatedLine::DiffLine {
+                        new_lineno: Some(_),
+                        ..
+                    } | AnnotatedLine::SideBySideLine {
+                        new_lineno: Some(_),
+                        ..
+                    }
+                )
+                .then_some(idx)
+            })
+            .collect();
+        let selection = app.visual_selection.as_mut().unwrap();
+        selection.anchor.annotation_idx = indices[0];
+        selection.head.annotation_idx = *indices.last().unwrap();
+
+        crate::handler::handle_visual_action(&mut app, Action::AddRangeSuggestion);
+
+        assert_eq!(app.input_mode, InputMode::VisualSelect);
+        assert!(app.visual_selection.is_some());
+        assert!(app.comment_buffer.is_empty());
+        assert!(app.comment_line_range.is_none());
     }
 }

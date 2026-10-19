@@ -136,9 +136,46 @@ impl App {
         };
         let (start, end) = sel.ordered();
         // Suggestions replace whole lines, even for a partial mouse selection.
-        // Only include the selected side, skipping headers and opposite-side lines.
+        // Require one hunk with a new-side source line on every selected row.
+        let mut selected_hunk = None;
+        let mut seen_addition = false;
+        let mut context_after_addition = false;
+        for idx in start.annotation_idx..=end.annotation_idx {
+            let hunk = match self.line_annotations.get(idx) {
+                Some(AnnotatedLine::DiffLine {
+                    file_idx, hunk_idx, ..
+                })
+                | Some(AnnotatedLine::SideBySideLine {
+                    file_idx, hunk_idx, ..
+                }) => Some((*file_idx, *hunk_idx)),
+                _ => None,
+            };
+            if hunk.is_none()
+                || selected_hunk.is_some_and(|selected| Some(selected) != hunk)
+                || self.annotation_line_for_side(idx, LineSide::New).is_none()
+            {
+                self.set_warning(
+                    "Suggestions must stay within one diff hunk, without gaps or expanded context",
+                );
+                return;
+            }
+            selected_hunk = hunk;
+            match self
+                .diff_line_for_side(idx, LineSide::New)
+                .map(|line| line.origin)
+            {
+                Some(LineOrigin::Addition) if context_after_addition => {
+                    self.set_warning(
+                        "Suggestions cannot span unchanged context between added code blocks",
+                    );
+                    return;
+                }
+                Some(LineOrigin::Addition) => seen_addition = true,
+                Some(LineOrigin::Context) if seen_addition => context_after_addition = true,
+                _ => {}
+            }
+        }
         let code = (start.annotation_idx..=end.annotation_idx)
-            .filter(|&idx| self.annotation_line_for_side(idx, start.side).is_some())
             .filter_map(|idx| self.diff_line_for_side(idx, start.side))
             .map(|line| line.raw_content.as_deref().unwrap_or(&line.content))
             .collect::<Vec<_>>()
