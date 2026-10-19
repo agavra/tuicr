@@ -34,6 +34,30 @@ use crate::forge::gitlab::glab::{parse_gitlab_remote_url, parse_gitlab_remote_ur
 use crate::forge::traits::ForgeRepository;
 use crate::vcs::VcsBackend;
 
+/// Run two independent forge requests at the same time and return both
+/// results in argument order.
+///
+/// `first` runs on the calling thread and `second` on a scoped thread, so a
+/// call costs the slower of the two round trips instead of their sum. Both
+/// always run to completion; callers decide which error wins, which keeps
+/// error reporting as deterministic as the sequential code it replaces. A
+/// panic in `second` is re-raised on the calling thread once `first` returns.
+pub(crate) fn join<A, B, RA, RB>(first: A, second: B) -> (RA, RB)
+where
+    A: FnOnce() -> RA,
+    B: FnOnce() -> RB + Send,
+    RB: Send,
+{
+    std::thread::scope(|scope| {
+        let second = scope.spawn(second);
+        let first = first();
+        let second = second
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+        (first, second)
+    })
+}
+
 /// Return `Some(sha)` for `git merge-base <base> <head>` when both commits
 /// are present in the checkout at `repo_root`.
 ///
@@ -215,6 +239,18 @@ pub fn local_checkout_for_repo(root: &Path, target_repo: &ForgeRepository) -> Op
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn join_returns_both_results_in_argument_order() {
+        let (first, second) = join(|| "first", || 2);
+        assert_eq!((first, second), ("first", 2));
+    }
+
+    #[test]
+    #[should_panic(expected = "second failed")]
+    fn join_re_raises_a_panic_from_the_spawned_side() {
+        join(|| (), || -> () { panic!("second failed") });
+    }
 
     fn init_repo_with_origin(url: &str) -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("tempdir");

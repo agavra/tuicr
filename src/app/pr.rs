@@ -659,7 +659,7 @@ impl App {
     #[allow(dead_code)]
     pub fn reload_pull_request_with_backend(
         &mut self,
-        backend: Box<dyn ForgeBackend>,
+        backend: Box<dyn ForgeBackend + Sync>,
         local_checkout: Option<std::path::PathBuf>,
     ) -> Result<bool> {
         use crate::forge::pr_open::open_pull_request;
@@ -1266,7 +1266,7 @@ impl App {
     pub fn open_pr_with_backend(
         &mut self,
         summary: &crate::forge::traits::PullRequestSummary,
-        backend: Box<dyn ForgeBackend>,
+        backend: Box<dyn ForgeBackend + Sync>,
         local_checkout: Option<std::path::PathBuf>,
     ) -> Result<()> {
         use crate::forge::pr_open::open_pull_request;

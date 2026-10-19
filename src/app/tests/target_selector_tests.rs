@@ -2659,7 +2659,7 @@ struct ThreadAwareForgeBackend {
     details: crate::forge::traits::PullRequestDetails,
     patch: String,
     threads: Vec<RemoteReviewThread>,
-    calls: std::cell::Cell<u32>,
+    calls: std::sync::atomic::AtomicU32,
 }
 
 impl ThreadAwareForgeBackend {
@@ -2672,7 +2672,7 @@ impl ThreadAwareForgeBackend {
             details,
             patch,
             threads,
-            calls: std::cell::Cell::new(0),
+            calls: std::sync::atomic::AtomicU32::new(0),
         }
     }
 }
@@ -2706,7 +2706,8 @@ impl crate::forge::traits::ForgeBackend for ThreadAwareForgeBackend {
         &self,
         _pr: &crate::forge::traits::PullRequestDetails,
     ) -> Result<Vec<RemoteReviewThread>> {
-        self.calls.set(self.calls.get() + 1);
+        self.calls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(self.threads.clone())
     }
     fn list_pull_request_commits(

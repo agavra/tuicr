@@ -46,7 +46,7 @@ fn create_forge_backend(
     local_checkout: Option<PathBuf>,
     show_pr_checks: bool,
     show_pr_comments: bool,
-) -> Box<dyn ForgeBackend> {
+) -> Box<dyn ForgeBackend + Sync> {
     use crate::forge::traits::ForgeKind;
     match repo.kind {
         ForgeKind::GitHub => {

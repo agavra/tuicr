@@ -244,7 +244,7 @@ where
 
 impl<R> ForgeBackend for GitHubGhBackend<R>
 where
-    R: GhCommandRunner,
+    R: GhCommandRunner + Sync,
 {
     fn list_pull_requests(&self, query: PullRequestListQuery) -> Result<PagedPullRequests> {
         let page_size = query.page_size.max(1);
@@ -318,19 +318,29 @@ where
         // into duplicate `DiffFile`s. Plain `gh pr diff` (no `--patch`)
         // returns the single cumulative diff. Hard-won lesson; see the
         // duplicate-files-in-list bug.
-        let metadata = self.pull_request_file_metadata(pr)?;
-        let patch = self.run_gh(
-            vec![
-                "pr".to_string(),
-                "diff".to_string(),
-                pr.number.to_string(),
-                "--repo".to_string(),
-                gh_repo_arg(&pr.repository),
-                "--color".to_string(),
-                "never".to_string(),
-            ],
-            &pr.repository.host,
-        )?;
+        //
+        // The file list and the patch text are independent requests, so they
+        // run concurrently. A file-list error still wins over a patch error,
+        // as it did when the file list was fetched first.
+        let (metadata, patch) = crate::forge::join(
+            || self.pull_request_file_metadata(pr),
+            || {
+                self.run_gh(
+                    vec![
+                        "pr".to_string(),
+                        "diff".to_string(),
+                        pr.number.to_string(),
+                        "--repo".to_string(),
+                        gh_repo_arg(&pr.repository),
+                        "--color".to_string(),
+                        "never".to_string(),
+                    ],
+                    &pr.repository.host,
+                )
+            },
+        );
+        let metadata = metadata?;
+        let patch = patch?;
         pair_metadata_with_patch(metadata, patch.as_bytes())
     }
 
@@ -1056,7 +1066,7 @@ index 1111111..2222222 100644
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
+    use std::sync::Mutex;
 
     use super::*;
     use crate::forge::traits::ForgeBackend;
@@ -1121,21 +1131,21 @@ index 1111111..2222222 100644
 
     #[derive(Default)]
     struct FakeGhRunner {
-        calls: RefCell<Vec<Vec<String>>>,
+        calls: Mutex<Vec<Vec<String>>>,
         /// Captured stdin payloads, paired in order with `calls` entries that
         /// went through `run_with_stdin`. Empty for plain `run` invocations.
-        stdin_calls: RefCell<Vec<(Vec<String>, String)>>,
+        stdin_calls: Mutex<Vec<(Vec<String>, String)>>,
         /// When set, `run_with_stdin` returns this error instead of a stub
         /// success response. Lets tests exercise error mapping.
-        stdin_error: RefCell<Option<GhCommandError>>,
+        stdin_error: Mutex<Option<GhCommandError>>,
         /// When set, `run_with_stdin` returns this body as the success output.
         /// Defaults to `CREATE_REVIEW_RESPONSE_JSON` when None.
-        stdin_response: RefCell<Option<String>>,
+        stdin_response: Mutex<Option<String>>,
     }
 
     impl GhCommandRunner for FakeGhRunner {
         fn run(&self, args: &[String]) -> GhCommandResult<String> {
-            self.calls.borrow_mut().push(args.to_vec());
+            self.calls.lock().unwrap().push(args.to_vec());
             match args.first().map(String::as_str) {
                 // gh pr list/view/diff — second arg is the subcommand.
                 Some("pr") => match args.get(1).map(String::as_str) {
@@ -1207,16 +1217,18 @@ index 1111111..2222222 100644
         }
 
         fn run_with_stdin(&self, args: &[String], stdin: &str) -> GhCommandResult<String> {
-            self.calls.borrow_mut().push(args.to_vec());
+            self.calls.lock().unwrap().push(args.to_vec());
             self.stdin_calls
-                .borrow_mut()
+                .lock()
+                .unwrap()
                 .push((args.to_vec(), stdin.to_string()));
-            if let Some(err) = self.stdin_error.borrow().clone() {
+            if let Some(err) = self.stdin_error.lock().unwrap().clone() {
                 return Err(err);
             }
             Ok(self
                 .stdin_response
-                .borrow()
+                .lock()
+                .unwrap()
                 .clone()
                 .unwrap_or_else(|| CREATE_REVIEW_RESPONSE_JSON.to_string()))
         }
@@ -1644,7 +1656,7 @@ Match host github-work
         assert_eq!(result.pull_requests[0].number, 148);
         assert_eq!(result.pull_requests[0].author.as_deref(), Some("alice"));
 
-        let calls = backend.runner.calls.borrow();
+        let calls = backend.runner.calls.lock().unwrap();
         assert_eq!(
             calls[0],
             vec![
@@ -1674,7 +1686,7 @@ Match host github-work
             ))
             .unwrap();
 
-        let calls = backend.runner.calls.borrow();
+        let calls = backend.runner.calls.lock().unwrap();
         assert_eq!(
             calls[0],
             vec![
@@ -1712,7 +1724,7 @@ Match host github-work
         assert_eq!(result.total_loaded, 2);
         assert_eq!(result.pull_requests[0].number, 125);
 
-        let calls = backend.runner.calls.borrow();
+        let calls = backend.runner.calls.lock().unwrap();
         assert_eq!(
             calls[0],
             vec![
@@ -1739,7 +1751,7 @@ Match host github-work
             .list_pull_requests(PullRequestListQuery::first_page(repository, 1))
             .unwrap();
 
-        let calls = backend.runner.calls.borrow();
+        let calls = backend.runner.calls.lock().unwrap();
         assert_eq!(calls[0][3], "github.example.com/agavra/tuicr");
     }
 
@@ -1766,7 +1778,7 @@ Match host github-work
             .unwrap();
 
         assert!(info.checks.is_empty());
-        let calls = backend.runner.calls.borrow();
+        let calls = backend.runner.calls.lock().unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(
             calls[0].last().map(String::as_str),
@@ -1792,7 +1804,7 @@ Match host github-work
             .unwrap();
 
         assert!(info.issue_comments.is_empty());
-        let calls = backend.runner.calls.borrow();
+        let calls = backend.runner.calls.lock().unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(
             calls[0].last().map(String::as_str),
@@ -1848,7 +1860,7 @@ Match host github-work
             .unwrap();
         let _ = backend.get_pull_request_diff(&details).unwrap();
 
-        let calls = backend.runner.calls.borrow();
+        let calls = backend.runner.calls.lock().unwrap();
         let diff_call = calls
             .iter()
             .find(|args| {
@@ -1860,6 +1872,115 @@ Match host github-work
             !diff_call.iter().any(|a| a == "--patch"),
             "`gh pr diff` must NOT pass --patch (mbox output duplicates files); got {diff_call:?}"
         );
+    }
+
+    /// Wraps `FakeGhRunner`, sleeping on every call and optionally failing
+    /// the file-list or `gh pr diff` request, to exercise the concurrent
+    /// fetch in `get_pull_request_diff`.
+    #[derive(Default)]
+    struct SlowGhRunner {
+        inner: FakeGhRunner,
+        delay_ms: u64,
+        fail_files: bool,
+        fail_diff: bool,
+        in_flight: std::sync::atomic::AtomicUsize,
+        peak_in_flight: std::sync::atomic::AtomicUsize,
+    }
+
+    impl GhCommandRunner for SlowGhRunner {
+        fn run(&self, args: &[String]) -> GhCommandResult<String> {
+            use std::sync::atomic::Ordering::SeqCst;
+            let now = self.in_flight.fetch_add(1, SeqCst) + 1;
+            self.peak_in_flight.fetch_max(now, SeqCst);
+            std::thread::sleep(std::time::Duration::from_millis(self.delay_ms));
+            self.in_flight.fetch_sub(1, SeqCst);
+            let is_files = args
+                .iter()
+                .any(|a| a.contains("/pulls/") && a.contains("/files"));
+            let is_diff = args.first().map(String::as_str) == Some("pr")
+                && args.get(1).map(String::as_str) == Some("diff");
+            if (self.fail_files && is_files) || (self.fail_diff && is_diff) {
+                return Err(GhCommandError::Failed {
+                    status: Some(1),
+                    stderr: if is_files {
+                        "files failed"
+                    } else {
+                        "diff failed"
+                    }
+                    .to_string(),
+                });
+            }
+            self.inner.run(args)
+        }
+    }
+
+    #[test]
+    fn should_fetch_pr_file_list_and_patch_concurrently() {
+        // given — every gh call takes 150ms.
+        let runner = SlowGhRunner {
+            delay_ms: 150,
+            ..Default::default()
+        };
+        let backend = GitHubGhBackend::with_runner(Some(repo()), runner);
+        let details = backend
+            .get_pull_request(parse_pull_request_target("125").unwrap())
+            .unwrap();
+        // when
+        let started = std::time::Instant::now();
+        let patches = backend.get_pull_request_diff(&details).unwrap();
+        let elapsed = started.elapsed();
+        // then — both requests overlapped, so the pair costs one round trip.
+        assert_eq!(patches.len(), 1);
+        assert_eq!(
+            backend
+                .runner
+                .peak_in_flight
+                .load(std::sync::atomic::Ordering::SeqCst),
+            2
+        );
+        assert!(
+            elapsed < std::time::Duration::from_millis(300),
+            "expected ~150ms, took {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn should_report_pr_diff_errors_in_the_sequential_order() {
+        let gh_error = |stderr: &str| {
+            map_gh_error(
+                GhCommandError::Failed {
+                    status: Some(1),
+                    stderr: stderr.to_string(),
+                },
+                DEFAULT_GITHUB_HOST,
+            )
+            .to_string()
+        };
+        // The file list used to be fetched first, so its error wins.
+        for (fail_files, fail_diff, expected) in [
+            (true, false, gh_error("files failed")),
+            (false, true, gh_error("diff failed")),
+            (true, true, gh_error("files failed")),
+        ] {
+            // given
+            let runner = SlowGhRunner {
+                fail_files,
+                fail_diff,
+                ..Default::default()
+            };
+            let backend = GitHubGhBackend::with_runner(Some(repo()), runner);
+            let details = backend
+                .get_pull_request(parse_pull_request_target("125").unwrap())
+                .unwrap();
+            // when
+            let error = backend.get_pull_request_diff(&details).unwrap_err();
+            // then
+            assert_eq!(
+                error.to_string(),
+                expected,
+                "fail_files={fail_files} fail_diff={fail_diff}"
+            );
+        }
     }
 
     #[test]
@@ -1878,7 +1999,7 @@ Match host github-work
         assert_eq!(threads[0].path, "src/lib.rs");
         // and — the API call was placed against `gh api graphql` with the
         // owner/name/number parameters.
-        let calls = backend.runner.calls.borrow();
+        let calls = backend.runner.calls.lock().unwrap();
         let graphql_call = calls
             .iter()
             .find(|args| args.first().map(String::as_str) == Some("api"))
@@ -1905,7 +2026,7 @@ Match host github-work
         assert_eq!(summaries[0].author.as_deref(), Some("alice"));
         assert_eq!(summaries[0].body, "Overall LGTM");
         // and — the call routes the `reviews(` query, not `reviewThreads(`.
-        let calls = backend.runner.calls.borrow();
+        let calls = backend.runner.calls.lock().unwrap();
         let summaries_call = calls
             .iter()
             .find(|args| {
@@ -1936,7 +2057,7 @@ Match host github-work
             Some("bbbbbbb2222222222222222222222222222bbbb")
         );
         // and — the query requests viewer login and review commit oids.
-        let calls = backend.runner.calls.borrow();
+        let calls = backend.runner.calls.lock().unwrap();
         let metadata_call = calls
             .iter()
             .find(|args| {
@@ -1968,7 +2089,7 @@ Match host github-work
         assert!(commits[0].timestamp.is_some());
         assert_eq!(commits[1].summary, "Second commit");
         // and — the call targeted the pulls/<n>/commits endpoint.
-        let calls = backend.runner.calls.borrow();
+        let calls = backend.runner.calls.lock().unwrap();
         let commits_call = calls
             .iter()
             .find(|args| {
@@ -1995,7 +2116,7 @@ Match host github-work
         assert_eq!(diff.len(), 1);
         assert!(diff[0].patch.contains("diff --git a/src/lib.rs"));
         // and — the call hit the compare endpoint with the Accept diff header.
-        let calls = backend.runner.calls.borrow();
+        let calls = backend.runner.calls.lock().unwrap();
         let compare_call = calls
             .iter()
             .find(|args| {
@@ -2025,7 +2146,7 @@ Match host github-work
         assert_eq!(resolved.as_deref(), Some("mergebase111"));
         // and — it hit compare between the reported base and head, without
         // the diff Accept header that would return patch text instead.
-        let calls = backend.runner.calls.borrow();
+        let calls = backend.runner.calls.lock().unwrap();
         let compare_call = calls
             .iter()
             .find(|args| {
@@ -2110,7 +2231,8 @@ Match host github-work
             !backend
                 .runner
                 .calls
-                .borrow()
+                .lock()
+                .unwrap()
                 .iter()
                 .any(|args| args.iter().any(|a| a.contains("/compare/"))),
             "local merge-base must not fall through to the compare API"
@@ -2202,7 +2324,7 @@ Match host github-work
         assert!(response.html_url.contains("pullrequestreview-123456"));
 
         // and — the call hit the expected endpoint with stdin
-        let stdin_calls = backend.runner.stdin_calls.borrow();
+        let stdin_calls = backend.runner.stdin_calls.lock().unwrap();
         assert_eq!(stdin_calls.len(), 1);
         let (args, stdin) = &stdin_calls[0];
         assert_eq!(args[0], "api");
@@ -2246,7 +2368,7 @@ Match host github-work
             )
             .unwrap();
         // then — the payload omits `event`
-        let stdin_calls = backend.runner.stdin_calls.borrow();
+        let stdin_calls = backend.runner.stdin_calls.lock().unwrap();
         let (_, stdin) = &stdin_calls[0];
         let payload: serde_json::Value = serde_json::from_str(stdin).unwrap();
         assert!(payload.get("event").is_none());
@@ -2275,7 +2397,7 @@ Match host github-work
             )
             .unwrap();
         // then
-        let stdin_calls = backend.runner.stdin_calls.borrow();
+        let stdin_calls = backend.runner.stdin_calls.lock().unwrap();
         let (args, _) = &stdin_calls[0];
         assert!(args.iter().any(|a| a == "--hostname"));
         assert!(args.iter().any(|a| a == "github.example.com"));
@@ -2285,7 +2407,7 @@ Match host github-work
     fn should_map_permission_failure_to_pull_request_write_message() {
         // given — a runner that fails with a 403-style stderr
         let runner = FakeGhRunner::default();
-        *runner.stdin_error.borrow_mut() = Some(GhCommandError::Failed {
+        *runner.stdin_error.lock().unwrap() = Some(GhCommandError::Failed {
             status: Some(1),
             stderr: "HTTP 403: Resource not accessible by integration".to_string(),
         });
@@ -2317,7 +2439,7 @@ Match host github-work
     fn should_map_auth_failure_during_create_review() {
         // given — a runner that fails with auth-failure stderr
         let runner = FakeGhRunner::default();
-        *runner.stdin_error.borrow_mut() = Some(GhCommandError::Failed {
+        *runner.stdin_error.lock().unwrap() = Some(GhCommandError::Failed {
             status: Some(4),
             stderr: "Run `gh auth login` to authenticate".to_string(),
         });
@@ -2345,7 +2467,7 @@ Match host github-work
     fn should_map_missing_gh_during_create_review() {
         // given — gh is not installed
         let runner = FakeGhRunner::default();
-        *runner.stdin_error.borrow_mut() = Some(GhCommandError::MissingGh);
+        *runner.stdin_error.lock().unwrap() = Some(GhCommandError::MissingGh);
         let backend = GitHubGhBackend::with_runner(Some(repo()), runner);
         let details = backend
             .get_pull_request(parse_pull_request_target("125").unwrap())
@@ -2370,7 +2492,7 @@ Match host github-work
     fn should_error_when_create_review_response_is_missing_id() {
         // given — malformed response from gh
         let runner = FakeGhRunner::default();
-        *runner.stdin_response.borrow_mut() =
+        *runner.stdin_response.lock().unwrap() =
             Some(r#"{"html_url": "x", "state": "COMMENTED"}"#.to_string());
         let backend = GitHubGhBackend::with_runner(Some(repo()), runner);
         let details = backend
@@ -2396,7 +2518,7 @@ Match host github-work
     fn should_recognize_must_have_pull_request_write_as_permission_failure() {
         // given
         let runner = FakeGhRunner::default();
-        *runner.stdin_error.borrow_mut() = Some(GhCommandError::Failed {
+        *runner.stdin_error.lock().unwrap() = Some(GhCommandError::Failed {
             status: Some(1),
             stderr: "must have pull request write permission".to_string(),
         });
@@ -2425,7 +2547,7 @@ Match host github-work
         // 422 from GitHub when a pending review already exists for this user
         // on this PR. We surface a clear actionable message.
         let runner = FakeGhRunner::default();
-        *runner.stdin_error.borrow_mut() = Some(GhCommandError::Failed {
+        *runner.stdin_error.lock().unwrap() = Some(GhCommandError::Failed {
             status: Some(22),
             stderr: "gh: Unprocessable Entity (HTTP 422)\n\
                 {\"message\":\"Unprocessable Entity\",\"errors\":\
@@ -2460,7 +2582,7 @@ Match host github-work
         // 422 from GitHub when commit_id isn't part of the PR (e.g., the PR
         // was force-pushed since the session loaded).
         let runner = FakeGhRunner::default();
-        *runner.stdin_error.borrow_mut() = Some(GhCommandError::Failed {
+        *runner.stdin_error.lock().unwrap() = Some(GhCommandError::Failed {
             status: Some(22),
             stderr: "gh: Unprocessable Entity (HTTP 422)\n\
                 {\"message\":\"Unprocessable Entity\",\"errors\":\

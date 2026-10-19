@@ -1828,7 +1828,7 @@ mod tests {
 
     #[test]
     fn backend_is_send_and_sync() {
-        // `fetch_pr_data` takes `&dyn ForgeBackend` on a background thread.
+        // `fetch_pr_data` shares the backend across scoped threads.
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<GerritBackend>();
     }
