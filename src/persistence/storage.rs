@@ -740,6 +740,30 @@ pub(crate) fn pr_session_path_in_dir(reviews_dir: &Path, slug: &str) -> Result<O
 /// requested head (the old head's file may still be on disk but is not
 /// surfaced).
 pub fn load_pr_session(key: &PrSessionKey) -> Result<Option<(PathBuf, ReviewSession)>> {
+    load_manifest_pr_session(key, |head_sha| head_sha == key.head_sha)
+}
+
+/// Look up the persisted session this PR was last reviewed at when that was
+/// a different head (the PR was pushed to or rebased since). Returns `None`
+/// if no entry exists for the slug, the entry is already at `key`'s head, or
+/// it belongs to another repository or PR: slugs leave out the host, so the
+/// same `owner/repo#N` on two hosts shares an entry.
+pub fn load_previous_head_pr_session(key: &PrSessionKey) -> Result<Option<ReviewSession>> {
+    Ok(
+        load_manifest_pr_session(key, |head_sha| head_sha != key.head_sha)?
+            .map(|(_path, session)| session)
+            .filter(|session| {
+                session.pr_session_key.as_ref().is_some_and(|previous| {
+                    previous.repository == key.repository && previous.number == key.number
+                })
+            }),
+    )
+}
+
+fn load_manifest_pr_session(
+    key: &PrSessionKey,
+    head_matches: impl Fn(&str) -> bool,
+) -> Result<Option<(PathBuf, ReviewSession)>> {
     let reviews_dir = get_reviews_dir()?;
     maybe_migrate(&reviews_dir)?;
 
@@ -750,7 +774,7 @@ pub fn load_pr_session(key: &PrSessionKey) -> Result<Option<(PathBuf, ReviewSess
     };
 
     match &entry.kind {
-        ManifestKind::Pr { head_sha, .. } if head_sha == &key.head_sha => {
+        ManifestKind::Pr { head_sha, .. } if head_matches(head_sha) => {
             let full_path = reviews_dir.join(&entry.path);
             let session = load_session(&full_path)?;
             Ok(Some((full_path, session)))

@@ -737,11 +737,7 @@ impl App {
         }
         // Flow-wrapped unified rows also span the gutter, so they keep this
         // fixed-width approximation.
-        let total = content.chars().count();
-        let width = content_width.max(1);
-        (0..total.div_ceil(width).max(1))
-            .map(|row| ((row * width).min(total), ((row + 1) * width).min(total)))
-            .collect()
+        crate::ui::text_utils::fixed_width_row_char_ranges(content, content_width)
     }
 
     pub fn side_at_x(
@@ -794,12 +790,12 @@ impl App {
         }
         let which_row = rel - walker;
         let total_chars = content.chars().count();
-        let (row_start, row_end) = self
+        let row = self
             .content_row_char_ranges(content, geom.content_width)
             .get(which_row)
             .copied()
             .unwrap_or((total_chars, total_chars));
-        let char_offset = (row_start + col_in_row).min(row_end);
+        let char_offset = crate::ui::text_utils::char_at_col(content, row, col_in_row);
         Some(SelPoint {
             annotation_idx: idx,
             char_offset,

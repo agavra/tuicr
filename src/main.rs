@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use crossterm::{
     event::{self, Event, KeyEventKind},
     execute, queue,
-    terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate, supports_keyboard_enhancement},
+    terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate},
 };
 
 use tuicr::app::{self, App, AppStartupOptions, FocusedPanel, InputMode};
@@ -26,7 +26,7 @@ use tuicr::input::{
     map_key_to_action_with_q_quits, map_target_filter_mode, map_theme_picker_filter_mode,
 };
 use tuicr::terminal_state::{TerminalFeatures, TerminalSession};
-use tuicr::theme::resolve_theme_with_config;
+use tuicr::theme::{is_syntax_theme_fallback_warning, resolve_theme_with_config};
 use tuicr::vcs::{DiffWhitespaceMode, GitBackendPreference, WhitespaceAutoPolicy};
 use tuicr::{config, handler, profile, ui, update};
 
@@ -39,6 +39,14 @@ const MIN_WIDTH_FOR_FILE_LIST: u16 = 100;
 /// trackpad gesture collapses into one frame, low enough that held-key
 /// auto-repeat still shows progress instead of sitting on a stale frame.
 const EVENT_DRAIN_LIMIT: usize = 32;
+
+fn preferred_startup_warning(warnings: &[String]) -> Option<&str> {
+    warnings
+        .iter()
+        .find(|warning| is_syntax_theme_fallback_warning(warning))
+        .or_else(|| warnings.first())
+        .map(String::as_str)
+}
 
 /// How long the loop may wait for the next event after already consuming
 /// `drained` of them: the first blocks so an idle TUI costs nothing, later ones
@@ -88,7 +96,7 @@ fn main() -> anyhow::Result<()> {
         cli_args.output_to_stdout,
         io::stdin().is_terminal(),
     ) {
-        matches!(supports_keyboard_enhancement(), Ok(true))
+        tuicr::terminal_state::supports_keyboard_enhancement()
     } else {
         false
     };
@@ -413,8 +421,8 @@ fn main() -> anyhow::Result<()> {
         app.focused_panel = FocusedPanel::Diff;
     }
 
-    if let Some(message) = startup_warnings.first() {
-        app.set_warning(message.clone());
+    if let Some(message) = preferred_startup_warning(&startup_warnings) {
+        app.set_warning(message);
     }
 
     // Track pending z command for zz centering
@@ -1063,6 +1071,19 @@ fn run_editor_from_tui<W: Write>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn startup_warning_prefers_syntax_theme_fallback() {
+        let warnings = vec![
+            "Warning: Unknown local theme key 'extra'".to_string(),
+            "Warning: Failed to load syntax theme; using bundled syntax theme".to_string(),
+        ];
+
+        assert_eq!(
+            preferred_startup_warning(&warnings),
+            Some(warnings[1].as_str())
+        );
+    }
 
     #[test]
     fn drain_blocks_once_then_takes_only_queued_events() {

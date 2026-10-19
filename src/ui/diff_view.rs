@@ -14,6 +14,7 @@ use crate::ui::comment_panel;
 use crate::ui::diff_side_by_side::render_side_by_side_diff;
 use crate::ui::diff_unified::render_unified_diff;
 use crate::ui::styles;
+use crate::ui::text_utils::col_of_char;
 use unicode_width::UnicodeWidthStr;
 
 /// Static header rule used for file/section headers; avoids `"═".repeat(40)` per frame.
@@ -98,6 +99,21 @@ pub(super) fn unified_line_number_field(
     }
 }
 
+/// Gutter number for `source_line` under relative numbering: the rendered-row
+/// distance from the cursor, except on the cursor row itself, which keeps its
+/// source line number (Vim's `number` + `relativenumber`).
+pub(super) fn relative_line_number(
+    source_line: u32,
+    line_idx: usize,
+    current_line_idx: usize,
+) -> u32 {
+    if line_idx == current_line_idx {
+        source_line
+    } else {
+        line_idx.abs_diff(current_line_idx) as u32
+    }
+}
+
 pub(super) fn relative_line_number_field(
     source_line: Option<u32>,
     line_idx: usize,
@@ -105,19 +121,57 @@ pub(super) fn relative_line_number_field(
     lw: usize,
 ) -> String {
     source_line
-        .map(|_| format!("{:>lw$} ", line_idx.abs_diff(current_line_idx)))
+        .map(|line| {
+            let n = relative_line_number(line, line_idx, current_line_idx);
+            format!("{n:>lw$} ")
+        })
         .unwrap_or_else(|| " ".repeat(lw + 1))
 }
 
 #[cfg(test)]
 mod relative_line_number_tests {
-    use super::relative_line_number_field;
+    use super::{relative_line_number_field, unified_line_number_field};
+    use crate::model::{DiffLine, LineOrigin};
+
+    fn line(origin: LineOrigin, old: Option<u32>, new: Option<u32>) -> DiffLine {
+        DiffLine {
+            origin,
+            content: String::new(),
+            old_lineno: old,
+            new_lineno: new,
+            highlighted_spans: None,
+        }
+    }
 
     #[test]
     fn uses_rendered_row_distance_and_preserves_missing_sides() {
         assert_eq!(relative_line_number_field(Some(100), 14, 10, 3), "  4 ");
-        assert_eq!(relative_line_number_field(Some(100), 10, 10, 3), "  0 ");
+        assert_eq!(relative_line_number_field(Some(100), 6, 10, 3), "  4 ");
         assert_eq!(relative_line_number_field(None, 14, 10, 3), "    ");
+    }
+
+    #[test]
+    fn cursor_row_shows_its_source_line_number() {
+        assert_eq!(relative_line_number_field(Some(100), 10, 10, 3), "100 ");
+        assert_eq!(relative_line_number_field(None, 10, 10, 3), "    ");
+    }
+
+    #[test]
+    fn unified_cursor_row_matches_absolute_numbering() {
+        let cases = [
+            line(LineOrigin::Addition, None, Some(52)),
+            line(LineOrigin::Deletion, Some(42), None),
+            line(LineOrigin::Context, Some(41), Some(51)),
+        ];
+        for dl in cases {
+            assert_eq!(
+                unified_line_number_field(&dl, 3, true, 7, 7, false),
+                unified_line_number_field(&dl, 3, false, 7, 7, false),
+                "{:?}",
+                dl.origin
+            );
+            assert_eq!(unified_line_number_field(&dl, 3, true, 9, 7, false), "  2 ");
+        }
     }
 }
 
@@ -571,8 +625,8 @@ fn paint_annotation_group(
         if isect_hi <= isect_lo {
             continue;
         }
-        let col_lo_off = (isect_lo - row_char_start) as u16;
-        let col_hi_off = (isect_hi - row_char_start) as u16;
+        let col_lo_off = col_of_char(content, row_char_start, isect_lo) as u16;
+        let col_hi_off = col_of_char(content, row_char_start, isect_hi) as u16;
         let col_lo = (paint.geom.content_x_start + col_lo_off).min(pane_last_col);
         let col_hi_excl = paint.geom.content_x_start + col_hi_off;
         if col_hi_excl == 0 {

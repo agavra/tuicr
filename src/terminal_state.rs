@@ -10,6 +10,10 @@ use crossterm::{
 };
 use ratatui::{Frame, Terminal, backend::CrosstermBackend};
 
+mod keyboard_probe;
+
+pub use keyboard_probe::supports_keyboard_enhancement;
+
 /// Terminal capabilities enabled for one tuicr TUI session.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TerminalFeatures {

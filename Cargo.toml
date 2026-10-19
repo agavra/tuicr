@@ -42,6 +42,8 @@ clap = { version = "4", features = ["derive"] }
 directories = "6.0"
 ureq = { version = "3", features = ["json"] }
 unicode-width = "0.2"
+# Measure text one grapheme cluster at a time, the way ratatui draws it.
+unicode-segmentation = "1"
 uuid = { version = "1.0", features = ["v4"] }
 arboard = { version = "3.4", features = ["wayland-data-control"] }
 base64 = "0.22"
@@ -73,6 +75,10 @@ two-face = { version = "0.5", default-features = false, features = ["syntect-def
 # Terminal background detection
 terminal-colorsaurus = "1"
 pulldown-cmark = { version = "0.13.4", default-features = false }
+
+# Bounded wait on /dev/tty for the startup keyboard protocol probe.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 # Git operations
 [target.'cfg(not(target_env = "musl"))'.dependencies]

@@ -101,7 +101,9 @@ impl<'a> Matcher<'a> {
             let repo_root = self.repo_root;
             let gitignore = self.gitignores.entry(dir.to_path_buf()).or_insert_with(|| {
                 let dir = repo_root.join(dir);
-                load(&dir, &dir.join(".gitignore"))
+                let file = dir.join(".gitignore");
+                // Git refuses to follow an in-tree `.gitignore` symlink.
+                (!file.is_symlink()).then(|| load(&dir, &file)).flatten()
             });
             let (Some(gitignore), Ok(relative)) = (gitignore.as_ref(), path.strip_prefix(dir))
             else {
@@ -311,6 +313,28 @@ mod tests {
             .collect();
 
         assert_eq!(kept, vec!["dist/release.txt"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn does_not_follow_symlinked_gitignore() {
+        let dir = tempdir().expect("failed to create temp dir");
+        fs::create_dir(dir.path().join("sub")).expect("failed to create sub/");
+        fs::write(dir.path().join("rules"), "*.log\n").expect("failed to write rules");
+        std::os::unix::fs::symlink("../rules", dir.path().join("sub/.gitignore"))
+            .expect("failed to link sub/.gitignore");
+        std::os::unix::fs::symlink("rules", dir.path().join(".gitignore"))
+            .expect("failed to link .gitignore");
+
+        let files = vec![make_diff_file("sub/a.log"), make_diff_file("b.log")];
+
+        let filtered = filter_diff_files(dir.path(), files);
+        let kept: Vec<String> = filtered
+            .iter()
+            .map(|f| f.display_path().display().to_string())
+            .collect();
+
+        assert_eq!(kept, vec!["sub/a.log", "b.log"]);
     }
 
     #[test]

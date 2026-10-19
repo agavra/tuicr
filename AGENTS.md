@@ -236,6 +236,7 @@ Repository-managed agent integrations:
 ### Dependencies
 
 - `ratatui` + `crossterm`: TUI framework
+- `unicode-width` + `unicode-segmentation`: Display width per grapheme cluster, so wrapping and selection agree with how ratatui draws text
 - `git2`: Native git operations
 - `serde` + `serde_json`: Session serialization and GitHub release metadata
 - `sha2` + `flate2` + `tar` + `zip`: Verified direct-binary updates and release extraction
@@ -282,7 +283,7 @@ In-flight requests carry an identity tuple (repo, PR#, head SHA). A late result 
 
 ### Session key + lifecycle
 
-`PrSessionKey { repository, number, head_sha }` identifies a PR review session. Same PR + same head = same session = drafts reattach. New commit on the PR = new key = new session.
+`PrSessionKey { repository, number, head_sha }` identifies a PR review session. Same PR + same head = same session = drafts reattach. New commit on the PR = new key = new session, seeded from the previous head's session of the same repository (host included) and PR (unchanged files keep reviewed marks and drafts) whether the head moved during a reload or between opens. Seeding is best-effort: an unreadable old-head session gives a fresh one.
 
 Each `Comment` carries a `lifecycle` field:
 

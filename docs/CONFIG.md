@@ -111,7 +111,7 @@ session_header = true
 | `comment_tab_width`        | `4`          | Spaces inserted by Tab while typing in the vim comment box (Insert mode).                                                                                  |
 | `wrap`                     | `false`      | Line wrap in the diff view. Toggle with `:set wrap!`.                                                                                                      |
 | `wrap_style`               | `flow`       | Where wrapped unified diff rows continue: `flow` wraps from the left edge, `gutter` keeps wrapped content after the line-number gutter, leaving continuation rows without a line number or change bar. |
-| `relative_line_numbers`    | `false`      | Show gutter numbers as rendered-row distances from the cursor. Toggle with `:set relativenumber!`.                                                         |
+| `relative_line_numbers`    | `false`      | Show gutter numbers as rendered-row distances from the cursor; the cursor line keeps its own line number. Toggle with `:set relativenumber!`.              |
 | `cursor_line`              | `true`       | Highlight the current cursor line and visual selection.                                                                                                    |
 | `search_highlight`         | `true`       | Highlight `/` search matches in the diff view. Clear at runtime with `Esc`; `n` / `N` re-enable.                                                           |
 | `transparent_background`   | `true`       | Let the terminal background show through panels. `false` paints the theme's `panel_bg`.                                                                    |
@@ -183,8 +183,9 @@ Notes:
 - Every listed color key is required.
 - Color values accept named terminal colors or `#RRGGBB`.
 - `syntax_theme` is optional. When present it must point to a local `.tmTheme` file.
-- Relative `syntax_theme` paths resolve relative to the local theme TOML file.
+- Relative `syntax_theme` paths resolve relative to the local theme TOML file. If the local theme TOML file is a symlink and the syntax theme is not beside the symlink, tuicr also looks beside the symlink target.
 - If `syntax_theme` is omitted, tuicr falls back to a bundled dark or light syntax theme based on the local theme background.
+- If the configured syntax theme is missing or invalid, tuicr warns and uses the bundled syntax theme while keeping the local UI theme.
 - `theme`, `theme_dark`, and `theme_light` may name either a bundled theme or a local theme file without the `.toml` suffix.
 - A ready-to-copy example lives at [`examples/tuicr-teal.toml`](../examples/tuicr-teal.toml) with its matching [`examples/tuicr-teal-syntax.tmTheme`](../examples/tuicr-teal-syntax.tmTheme) syntax theme.
 
