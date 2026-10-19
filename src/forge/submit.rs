@@ -230,7 +230,12 @@ fn build_inline_body(comment: &Comment, file_level: bool, ctx: SubmitContext<'_>
     } else {
         type_tag
     };
-    format!("{prefix}{body}", body = comment.content)
+    let separator = if !prefix.is_empty() && comment.content.trim_start().starts_with("```") {
+        "\n"
+    } else {
+        ""
+    };
+    format!("{prefix}{separator}{body}", body = comment.content)
 }
 
 /// Where a local comment is anchored. The caller knows this from how it
@@ -1133,6 +1138,19 @@ mod tests {
     }
 
     // Body prefix toggle
+
+    #[test]
+    fn should_keep_suggestion_fence_on_its_own_line_after_type_prefix() {
+        let comment = note("```suggestion\nreplacement\n```");
+        assert_eq!(
+            build_inline_body(
+                &comment,
+                false,
+                ctx_of(&default_config(), &test_comment_types())
+            ),
+            "[NOTE] \n```suggestion\nreplacement\n```"
+        );
+    }
 
     #[test]
     fn should_omit_type_prefix_when_config_disables_it() {
