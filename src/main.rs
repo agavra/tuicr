@@ -382,8 +382,8 @@ fn main() -> anyhow::Result<()> {
             app.toggle_single_file_view();
         }
         // Build ran before this flag existed on the app, so the opening
-        // cursor is still the overview landing. Move it onto the first file
-        // once the other view options have been applied.
+        // cursor is still the overview landing. Queue the move onto the
+        // first file; it lands after the first render measures the viewport.
         if app.minimal_ui {
             app.apply_minimal_ui_start();
         }
@@ -480,10 +480,13 @@ fn main() -> anyhow::Result<()> {
             terminal.draw(|frame| {
                 ui::render(frame, &mut app);
             })?;
-            // `--line` needs the viewport measured by the render above. When
-            // it moves the cursor, repaint inside the same synchronized
-            // update so the unpositioned frame is never presented.
-            if app.apply_pending_start_line() {
+            // Minimal mode's first-file landing and `--line` both need the
+            // viewport measured by the render above. When either moves the
+            // cursor, repaint inside the same synchronized update so the
+            // unpositioned frame is never presented. `--line` runs second so
+            // an explicit target wins.
+            let landed = app.apply_pending_minimal_ui_start();
+            if app.apply_pending_start_line() || landed {
                 terminal.draw(|frame| {
                     ui::render(frame, &mut app);
                 })?;

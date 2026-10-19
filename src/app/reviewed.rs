@@ -588,12 +588,13 @@ impl App {
         self.minimal_ui || self.is_diff_sole_pane()
     }
 
-    /// Whether the bottom status row should be reserved.
+    /// Whether the bottom status row should draw its contents.
     ///
-    /// Minimal mode hides it while review input is idle. Commands, search,
-    /// comment entry, confirmation, help, and every other non-review mode
-    /// still need it, as do in-flight forge work, a dirty session, and
-    /// transient messages.
+    /// The row itself is always reserved, so the diff never shifts when a
+    /// message comes or goes. Minimal mode leaves it blank while review
+    /// input is idle. Commands, search, comment entry, confirmation, help,
+    /// and every other non-review mode still draw it, as do in-flight forge
+    /// work, a dirty session, and transient messages.
     pub(crate) fn shows_status_bar(&self) -> bool {
         if !self.minimal_ui {
             return true;
@@ -617,8 +618,17 @@ impl App {
     /// Review-level and inline comment rows stay in the document. The cursor
     /// and scroll begin at the first file so an empty landing is not what
     /// the review opens on.
+    ///
+    /// Before a render has measured the diff viewport, row heights such as a
+    /// wrapped PR description are not yet known, so the landing is deferred
+    /// to [`Self::apply_pending_minimal_ui_start`].
     pub fn apply_minimal_ui_start(&mut self) {
+        self.pending_minimal_ui_start = false;
         if !self.minimal_ui || self.diff_files.is_empty() {
+            return;
+        }
+        if self.diff_state.viewport_width == 0 {
+            self.pending_minimal_ui_start = true;
             return;
         }
         let Some(file_idx) = self
@@ -632,5 +642,28 @@ impl App {
         self.diff_state.current_file_idx = file_idx;
         self.diff_state.cursor_line = start;
         self.diff_state.scroll_offset = start;
+    }
+
+    /// Land a deferred minimal-mode start once a render has measured the
+    /// diff viewport. Returns true when it moved the cursor.
+    pub fn apply_pending_minimal_ui_start(&mut self) -> bool {
+        if !self.pending_minimal_ui_start || self.diff_state.viewport_width == 0 {
+            return false;
+        }
+        self.apply_minimal_ui_start();
+        true
+    }
+
+    /// Switch minimal mode mid-review (`:set minimal` / `:set nominimal` /
+    /// `:set minimal!`). Only the chrome changes; the cursor stays put.
+    pub fn set_minimal_ui(&mut self, enabled: bool) {
+        self.minimal_ui = enabled;
+        if !enabled {
+            self.pending_minimal_ui_start = false;
+        }
+    }
+
+    pub fn toggle_minimal_ui(&mut self) {
+        self.set_minimal_ui(!self.minimal_ui);
     }
 }

@@ -67,35 +67,31 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // Clear cursor position before rendering (will be set if in Comment mode)
     app.comment_cursor_screen_pos = None;
 
-    // Minimal mode gives the diff the brand header's row, and the footer's
-    // row too while the review is idle. Commands, modals, in-flight work,
-    // a dirty session, and transient messages still reserve the footer.
+    // Minimal mode gives the diff the brand header's row. The footer row is
+    // always reserved so the diff never shifts by a line when a message or
+    // the dirty flag comes and goes; idle minimal mode just leaves it blank.
     let show_header = !app.minimal_ui;
-    let show_footer = app.shows_status_bar();
     let mut constraints = Vec::with_capacity(3);
     if show_header {
         constraints.push(Constraint::Length(1));
     }
     constraints.push(Constraint::Min(0));
-    if show_footer {
-        constraints.push(Constraint::Length(1));
-    }
+    constraints.push(Constraint::Length(1));
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(constraints)
         .split(frame.area());
 
-    let mut next = 0;
-    if show_header {
-        status_bar::render_header(frame, app, chunks[next]);
-        next += 1;
-    }
-    let main = chunks[next];
-    next += 1;
+    let (main, footer) = if show_header {
+        status_bar::render_header(frame, app, chunks[0]);
+        (chunks[1], chunks[2])
+    } else {
+        (chunks[0], chunks[1])
+    };
     render_main_content(frame, app, main);
-    if show_footer {
-        status_bar::render_status_bar(frame, app, chunks[next]);
-        status_bar::render_command_completion_popup(frame, app, chunks[next]);
+    if app.shows_status_bar() {
+        status_bar::render_status_bar(frame, app, footer);
+        status_bar::render_command_completion_popup(frame, app, footer);
     }
 
     // Keep help visible while its search prompt is active.

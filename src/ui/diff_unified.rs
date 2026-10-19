@@ -2715,9 +2715,20 @@ mod remote_comments_snapshot_tests {
         assert!(text.contains("src/lib.rs"), "{text}");
 
         app.show_file_list = true;
+        draw(&mut app);
+        let idle_diff_area = app.diff_area;
         app.set_error("reload failed");
         let text = body_text(&draw(&mut app));
         assert!(text.contains("reload failed"), "{text}");
+        assert_eq!(
+            app.diff_area, idle_diff_area,
+            "a message must not shift the diff by a footer row"
+        );
+        app.message = None;
+        app.dirty = true;
+        draw(&mut app);
+        assert_eq!(app.diff_area, idle_diff_area);
+        app.dirty = false;
 
         app.message = None;
         app.input_mode = InputMode::Command;

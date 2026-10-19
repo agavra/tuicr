@@ -494,8 +494,10 @@ fn minimal_ui_starts_on_the_first_file_and_keeps_comment_rows() {
     assert!(app.show_review_comments_header());
 
     app.minimal_ui = true;
+    app.diff_state.viewport_width = 80;
     app.sort_files_by_directory(true);
     app.rebuild_annotations();
+    assert!(!app.pending_minimal_ui_start);
 
     assert!(!app.is_cursor_in_overview());
     assert_eq!(app.current_file_path(), Some(&path));
