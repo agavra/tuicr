@@ -185,6 +185,7 @@ from the checkout, never copied.
 Suggestions replace whole lines on the new side of a single diff hunk. Selections
 across gaps (including deleted-only rows) or expanded context are rejected.
 Unchanged context between separate blocks of added code also counts as a gap.
+GitLab suggestions can include at most 100 lines above the final selected line.
 
 ## Comment mode
 

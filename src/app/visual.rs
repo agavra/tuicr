@@ -136,6 +136,10 @@ impl App {
         };
         let (start, end) = sel.ordered();
         // Suggestions replace whole lines, even for a partial mouse selection.
+        if start.side != LineSide::New || end.side != LineSide::New {
+            self.set_warning("Suggestions can only replace lines on the new side of the diff");
+            return;
+        }
         let Some((range, _)) = self.visual_selection_line_range() else {
             self.set_warning("Invalid visual selection");
             return;
@@ -194,10 +198,12 @@ impl App {
             .map(|line| line.raw_content.as_deref().unwrap_or(&line.content))
             .collect::<Vec<_>>()
             .join("\n");
+        let fence_len = code.split(|c| c != '`').map(str::len).max().unwrap_or(0) + 1;
+        let fence = "`".repeat(fence_len.max(3));
 
         self.enter_comment_from_visual();
         if self.input_mode == InputMode::Comment {
-            self.comment_buffer = format!("\n```{info}\n{code}\n```");
+            self.comment_buffer = format!("\n{fence}{info}\n{code}\n{fence}");
             self.comment_cursor = 0;
         }
     }
