@@ -288,7 +288,10 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         )),
         Line::from(""),
         Line::from(Span::raw(
-            "  One file at a time. j/k walks across files, ]/[ walks across hunks. Default in `--all-files`.",
+            "  One file at a time. }/{ switch files, ]/[ walk across hunks. Default in `--all-files`.",
+        )),
+        Line::from(Span::raw(
+            "  j/k stop at the file's edges. If the terminal reports key releases, release and press again to walk on.",
         )),
         Line::from(""),
         Line::from(Span::styled(

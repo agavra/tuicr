@@ -1388,8 +1388,8 @@ pub struct App {
     /// flags are true so held-key auto-repeat (Press, Repeat, Repeat...)
     /// never satisfies the gate. Only meaningful on terminals that
     /// support kitty `REPORT_EVENT_TYPES`; on others Release events are
-    /// never emitted and the gate is bypassed via
-    /// `supports_keyboard_enhancement`.
+    /// never emitted, so the walk is off and j/k stop at the file's edges
+    /// (see `supports_keyboard_enhancement` in `cursor_down`).
     pub down_released_since_arm: bool,
     /// Symmetric inverse of [`down_released_since_arm`] for the prev-file
     /// walk gate.

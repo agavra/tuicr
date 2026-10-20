@@ -225,8 +225,8 @@ fn activate_writer<W: Write>(writer: &mut W, features: TerminalFeatures) -> anyh
 
     // REPORT_EVENT_TYPES distinguishes Press from Repeat from Release so the
     // two-press file walk can require an actual key release between presses.
-    // Without it, terminals emit Press for every auto-repeat tick,
-    // and held j/k could walk past file boundaries.
+    // Without it, terminals emit Press for every auto-repeat tick, so the
+    // walk is turned off and j/k stop at the file's edges instead.
     if features.keyboard_enhancements_supported {
         let _ = execute!(
             writer,
