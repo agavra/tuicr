@@ -56,6 +56,13 @@ impl<'de> Deserialize<'de> for IgnoreWhitespaceConfig {
 
 pub const DEFAULT_LEADER_KEY: char = ';';
 
+/// Lines scrolled per vertical mouse wheel tick when `mouse_scroll_lines` is unset.
+pub const DEFAULT_MOUSE_SCROLL_LINES: usize = 3;
+
+/// Largest accepted `mouse_scroll_lines`. Anything above a screenful per tick
+/// is almost certainly a typo, and the commit list steps once per line.
+pub const MAX_MOUSE_SCROLL_LINES: usize = 100;
+
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct CommentTypeConfig {
@@ -199,6 +206,10 @@ pub struct AppConfig {
     pub cursor_line: Option<bool>,
     pub search_highlight: Option<bool>,
     pub mouse: Option<bool>,
+    /// Lines scrolled per vertical mouse wheel tick. Defaults to
+    /// [`DEFAULT_MOUSE_SCROLL_LINES`]; accepted range is
+    /// `1..=MAX_MOUSE_SCROLL_LINES`.
+    pub mouse_scroll_lines: Option<usize>,
     /// Enable vim-style modal editing in the review comment text box. When
     /// unset/false the comment box uses the default emacs/readline bindings.
     pub comment_vim: Option<bool>,
@@ -276,6 +287,7 @@ const KNOWN_KEYS: &[&str] = &[
     "cursor_line",
     "search_highlight",
     "mouse",
+    "mouse_scroll_lines",
     "comment_vim",
     "q_quits",
     "comment_tab_width",
@@ -438,6 +450,20 @@ fn read_usize(table: &toml::Table, key: &str, warnings: &mut Vec<String>) -> Opt
         warnings.push(format!(
             "Warning: Config key '{key}' must be an integer; got '{}', ignoring",
             val
+        ));
+        None
+    }
+}
+
+/// Read `mouse_scroll_lines`, pushing a warning if it is outside
+/// `1..=MAX_MOUSE_SCROLL_LINES`.
+fn read_mouse_scroll_lines(table: &toml::Table, warnings: &mut Vec<String>) -> Option<usize> {
+    let lines = read_usize(table, "mouse_scroll_lines", warnings)?;
+    if (1..=MAX_MOUSE_SCROLL_LINES).contains(&lines) {
+        Some(lines)
+    } else {
+        warnings.push(format!(
+            "Warning: Config key 'mouse_scroll_lines' must be between 1 and {MAX_MOUSE_SCROLL_LINES}; ignoring value"
         ));
         None
     }
@@ -626,6 +652,7 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         cursor_line: read_bool(table, "cursor_line", &mut warnings),
         search_highlight: read_bool(table, "search_highlight", &mut warnings),
         mouse: read_bool(table, "mouse", &mut warnings),
+        mouse_scroll_lines: read_mouse_scroll_lines(table, &mut warnings),
         comment_vim: read_bool(table, "comment_vim", &mut warnings),
         q_quits: read_bool(table, "q_quits", &mut warnings),
         comment_tab_width: read_usize(table, "comment_tab_width", &mut warnings),
@@ -1944,6 +1971,100 @@ mod tests {
         let outcome = parse_config("scroll_offset = \"four\"\n");
         assert_eq!(
             outcome.config.as_ref().and_then(|cfg| cfg.scroll_offset),
+            None
+        );
+        assert_eq!(outcome.warnings.len(), 1);
+    }
+
+    // mouse_scroll_lines
+
+    #[test]
+    fn should_parse_mouse_scroll_lines() {
+        let outcome = parse_config("mouse_scroll_lines = 1\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.mouse_scroll_lines),
+            Some(1)
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_accept_mouse_scroll_lines_at_the_upper_bound() {
+        let outcome = parse_config(&format!("mouse_scroll_lines = {MAX_MOUSE_SCROLL_LINES}\n"));
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.mouse_scroll_lines),
+            Some(MAX_MOUSE_SCROLL_LINES)
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_default_mouse_scroll_lines_to_none_when_absent() {
+        let outcome = parse_config("mouse = true\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.mouse_scroll_lines),
+            None
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_warn_and_ignore_out_of_range_mouse_scroll_lines() {
+        for value in ["0", &(MAX_MOUSE_SCROLL_LINES + 1).to_string()] {
+            let outcome = parse_config(&format!("mouse_scroll_lines = {value}\n"));
+            assert_eq!(
+                outcome
+                    .config
+                    .as_ref()
+                    .and_then(|cfg| cfg.mouse_scroll_lines),
+                None,
+                "mouse_scroll_lines = {value} should be ignored"
+            );
+            assert_eq!(
+                outcome.warnings,
+                vec![format!(
+                    "Warning: Config key 'mouse_scroll_lines' must be between 1 and {MAX_MOUSE_SCROLL_LINES}; ignoring value"
+                )]
+            );
+        }
+    }
+
+    #[test]
+    fn should_warn_and_ignore_negative_mouse_scroll_lines() {
+        let outcome = parse_config("mouse_scroll_lines = -1\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.mouse_scroll_lines),
+            None
+        );
+        assert_eq!(
+            outcome.warnings,
+            vec![
+                "Warning: Config key 'mouse_scroll_lines' must be a non-negative integer; ignoring value"
+                    .to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn should_warn_and_ignore_mouse_scroll_lines_with_invalid_type() {
+        let outcome = parse_config("mouse_scroll_lines = \"one\"\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.mouse_scroll_lines),
             None
         );
         assert_eq!(outcome.warnings.len(), 1);

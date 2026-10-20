@@ -1397,6 +1397,9 @@ pub struct App {
     pub cursor_line_highlight: bool,
     pub leader_key: char,
     pub scroll_offset: usize,
+    /// Lines scrolled per vertical mouse wheel tick (config
+    /// `mouse_scroll_lines`, default 3).
+    pub mouse_scroll_lines: usize,
     pub file_list_area: Option<ratatui::layout::Rect>,
     pub comment_navigator_area: Option<ratatui::layout::Rect>,
     pub diff_area: Option<ratatui::layout::Rect>,

@@ -14,7 +14,6 @@ use crate::text_edit::{
     delete_char_before, delete_word_before, next_char_boundary, prev_char_boundary,
 };
 
-const WHEEL_LINES: usize = 3;
 /// Columns scrolled per horizontal mouse wheel tick. Matches the default
 /// step for keyboard arrow scrolling so the two input methods feel
 /// interchangeable.
@@ -182,9 +181,9 @@ pub fn handle_mouse_event(app: &mut App, event: MouseEvent) {
         MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
             let scroll_up = matches!(event.kind, MouseEventKind::ScrollUp);
             let action = if scroll_up {
-                Action::MouseScrollUp(WHEEL_LINES)
+                Action::MouseScrollUp(app.mouse_scroll_lines)
             } else {
-                Action::MouseScrollDown(WHEEL_LINES)
+                Action::MouseScrollDown(app.mouse_scroll_lines)
             };
             let over_file_list = app.file_list_area.is_some_and(|r| r.contains(pos));
             let over_diff = app.diff_area.is_some_and(|r| r.contains(pos));
@@ -328,7 +327,7 @@ fn wheel_commit_list(app: &mut App, scroll_up: bool) {
     } else {
         scroll_up
     };
-    for _ in 0..WHEEL_LINES {
+    for _ in 0..app.mouse_scroll_lines {
         if scroll_up {
             app.commit_select_up();
         } else {

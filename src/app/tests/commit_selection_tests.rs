@@ -736,3 +736,31 @@ fn should_comment_on_the_commit_message_of_a_commit_chosen_from_the_target_selec
         saved.err()
     );
 }
+
+#[test]
+fn mouse_wheel_moves_commit_picker_cursor_by_configured_lines() {
+    let commits = (0..10).map(|i| normal_commit(&format!("c{i}"))).collect();
+    let mut app = build_app(commits);
+    app.commit_list_inner_area = Some(ratatui::layout::Rect::new(0, 0, 80, 20));
+    app.commit_list_cursor = 0;
+    let wheel = |app: &mut App, kind| {
+        crate::handler::handle_mouse_event(
+            app,
+            crossterm::event::MouseEvent {
+                kind,
+                column: 5,
+                row: 5,
+                modifiers: crossterm::event::KeyModifiers::NONE,
+            },
+        );
+    };
+
+    wheel(&mut app, crossterm::event::MouseEventKind::ScrollDown);
+    assert_eq!(app.commit_list_cursor, 3, "default is 3 per tick");
+
+    app.mouse_scroll_lines = 1;
+    wheel(&mut app, crossterm::event::MouseEventKind::ScrollDown);
+    assert_eq!(app.commit_list_cursor, 4);
+    wheel(&mut app, crossterm::event::MouseEventKind::ScrollUp);
+    assert_eq!(app.commit_list_cursor, 3);
+}

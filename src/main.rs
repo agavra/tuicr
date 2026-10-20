@@ -396,6 +396,9 @@ fn main() -> anyhow::Result<()> {
         if let Some(scroll_offset) = cfg.scroll_offset {
             app.scroll_offset = scroll_offset;
         }
+        if let Some(lines) = cfg.mouse_scroll_lines {
+            app.mouse_scroll_lines = lines;
+        }
         if let Some(interval_ms) = cfg.review_watch_interval_ms {
             app.set_review_watch_interval_ms(interval_ms as u64);
         }
