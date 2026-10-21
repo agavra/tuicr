@@ -801,7 +801,7 @@ pub fn parse_pull_request_target_gitlab(input: &str) -> Result<PullRequestTarget
 
 /// How far host recognition may go to decide a remote is GitLab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum HostLookup {
+pub(crate) enum HostLookup {
     /// Consult `glab`'s configured host and `~/.ssh/config` when the hostname
     /// alone is inconclusive.
     WithConfig,
@@ -832,7 +832,7 @@ pub fn parse_gitlab_remote_url_by_hostname(remote_url: &str) -> Option<ForgeRepo
     parse_gitlab_remote(remote_url, HostLookup::HostnameOnly)
 }
 
-fn parse_gitlab_remote(remote_url: &str, lookup: HostLookup) -> Option<ForgeRepository> {
+pub(crate) fn parse_gitlab_remote(remote_url: &str, lookup: HostLookup) -> Option<ForgeRepository> {
     let trimmed = trim_url_suffix(remote_url.trim());
     if trimmed.is_empty() {
         return None;
@@ -972,7 +972,7 @@ fn parse_gitlab_repo_hash_target(target: &str) -> Option<PullRequestTarget> {
     ))
 }
 
-fn gitlab_repository_from_path(host: &str, path: &str) -> Option<ForgeRepository> {
+pub(crate) fn gitlab_repository_from_path(host: &str, path: &str) -> Option<ForgeRepository> {
     let parts: Vec<&str> = path.split('/').filter(|p| !p.is_empty()).collect();
     if parts.len() < 2 {
         return None;
@@ -986,14 +986,14 @@ fn gitlab_repository_from_path(host: &str, path: &str) -> Option<ForgeRepository
     ))
 }
 
-fn strip_scheme(value: &str) -> Option<&str> {
+pub(crate) fn strip_scheme(value: &str) -> Option<&str> {
     value
         .strip_prefix("https://")
         .or_else(|| value.strip_prefix("http://"))
         .or_else(|| value.strip_prefix("ssh://"))
 }
 
-fn trim_url_suffix(value: &str) -> &str {
+pub(crate) fn trim_url_suffix(value: &str) -> &str {
     value
         .split(['?', '#'])
         .next()
@@ -1006,18 +1006,18 @@ fn trim_url_suffix(value: &str) -> &str {
 /// (self-hosted instances, GitLab's SSH-over-443 setup); that port is
 /// meaningless for the HTTPS API host used to build `--repo` arguments, and
 /// left in place it turns into a broken URL (wrong port, TLS failure).
-fn strip_port(host: &str) -> &str {
+pub(crate) fn strip_port(host: &str) -> &str {
     match host.rsplit_once(':') {
         Some((h, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => h,
         _ => host,
     }
 }
 
-fn strip_git_suffix(value: &str) -> &str {
+pub(crate) fn strip_git_suffix(value: &str) -> &str {
     value.strip_suffix(".git").unwrap_or(value)
 }
 
-fn parse_scp_like_remote(remote_url: &str) -> Option<(&str, &str)> {
+pub(crate) fn parse_scp_like_remote(remote_url: &str) -> Option<(&str, &str)> {
     if remote_url.contains("://") {
         return None;
     }

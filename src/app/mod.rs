@@ -62,6 +62,10 @@ fn create_forge_backend(
             use crate::forge::gitlab::GitLabGlabBackend;
             Box::new(GitLabGlabBackend::new(Some(repo.clone())).with_local_checkout(local_checkout))
         }
+        ForgeKind::Heptapod => {
+            use crate::forge::heptapod::HeptapodBackend;
+            Box::new(HeptapodBackend::new(Some(repo.clone())).with_local_checkout(local_checkout))
+        }
         ForgeKind::Gitea => {
             use crate::forge::gitea::GiteaTeaBackend;
             Box::new(

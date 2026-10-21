@@ -52,9 +52,10 @@ src/
 │       └── mod.rs       # JjBackend: uses jj CLI, parses with diff_parser::GitStyle
 │
 ├── forge/               # Remote forge integration (GitHub PR, GitLab MR, Bitbucket PR,
-│                        # Azure DevOps PR, Gerrit change review)
-│   ├── mod.rs           # Detect and parse GitHub/GitLab/Bitbucket/Azure/Gerrit remotes
-│                        # (parse_any_remote_url: Bitbucket, GitLab, Azure, Gerrit, then GitHub)
+│                        # Azure DevOps PR, Gerrit change review, Heptapod MR)
+│   ├── mod.rs           # Detect and parse GitHub/GitLab/Bitbucket/Azure/Gerrit/Heptapod remotes
+│                        # (parse_any_remote_url: Bitbucket, Heptapod, GitLab, Azure, Gitea,
+│                        #  Gerrit, then GitHub)
 │   ├── traits.rs        # ForgeBackend trait, ForgeRepository, PullRequestTarget,
 │   │                    # PullRequestDetails, PullRequestInfo, PrSessionKey,
 │   │                    # CreateReviewRequest, GhCreateReviewResponse, ForgeFileLinesRequest
@@ -62,6 +63,7 @@ src/
 │   ├── selector.rs      # Review target selector state (Local | Pull Requests tabs)
 │   ├── context.rs       # Remote context expansion via ForgeBackend::fetch_file_lines
 │   ├── local_git.rs     # Shared `git show <sha>:<path>` blob read for all backends
+│   ├── local_hg.rs      # Shared `hg cat -r <sha>` blob + range-diff read for Heptapod
 │   ├── remote_comments.rs # RemoteReviewThread shape + visibility filter
 │   ├── submit.rs        # Submit pipeline: preflight mapping, resolver actions,
 │   │                    # InlineComment payload, build_review_body, SubmitEvent
@@ -81,6 +83,11 @@ src/
 │   │   ├── mod.rs       # GitLabGlabBackend export
 │   │   ├── glab.rs      # ForgeBackend impl and glab command runner
 │   │   └── models.rs    # GitLab API response models
+│   ├── heptapod/        # Heptapod backend — delegates API to GitLab's `glab`,
+│   │                    # routes local-checkout reads through `hg` instead of `git`
+│   │   ├── mod.rs       # HeptapodBackend export
+│   │   ├── glab.rs      # ForgeBackend impl wrapping GitLabGlabBackend
+│   │   └── parse.rs     # parse_heptapod_remote_url, parse_pull_request_target_heptapod
 │   ├── bitbucket/       # Bitbucket Cloud backend via `bkt` CLI (no Data Center)
 │   │   ├── mod.rs       # BitbucketBktBackend export
 │   │   ├── bkt.rs       # ForgeBackend impl and bkt command runner
@@ -249,9 +256,9 @@ Repository-managed agent integrations:
 
 ## Forge integration
 
-Forge review (`tuicr pr <target>`, `tuicr mr <target>`, or their explicit `tuicr tui` forms) is the only feature in `src/forge/`. GitHub operations shell out to `gh`; GitLab operations shell out to `glab`; Gitea operations shell out to `tea`; Bitbucket Cloud operations shell out to `bkt`.
+Forge review (`tuicr pr <target>`, `tuicr mr <target>`, or their explicit `tuicr tui` forms) is the only feature in `src/forge/`. GitHub operations shell out to `gh`; GitLab operations shell out to `glab`; Heptapod also shells out to `glab` (same REST API as GitLab) but routes local-checkout reads through `hg`; Gitea operations shell out to `tea`; Bitbucket Cloud operations shell out to `bkt`.
 
-Forge selection is host-driven: `parse_any_remote_url` tries Bitbucket (`bitbucket.org` only), then GitLab (host contains `gitlab`, or matches `glab config get host`), then Azure, then Gitea (host contains `gitea`, or matches a login in `tea logins list --output json`; forks like Forgejo are deliberately not matched by name), then GitHub. GitHub must stay last — its parser accepts any host, so it would otherwise claim every Bitbucket, self-hosted GitLab, and self-hosted Gitea remote. Bitbucket Data Center is deliberately unsupported: it speaks REST 1.0, so those remotes are not claimed at all.
+Forge selection is host-driven: `parse_any_remote_url` tries Bitbucket (`bitbucket.org` only), then Heptapod (host contains "heptapod", or matches `HEPTAPOD_URL`; must precede GitLab so a host configured in both is claimed by Heptapod), then GitLab (host contains `gitlab`, or matches `glab config get host`), then Azure, then Gitea (host contains `gitea`, or matches a login in `tea logins list --output json`; forks like Forgejo are deliberately not matched by name), then GitHub. GitHub must stay last — its parser accepts any host, so it would otherwise claim every Bitbucket, self-hosted GitLab, Heptapod, Gitea, and self-hosted Gitea remote. Bitbucket Data Center is deliberately unsupported: it speaks REST 1.0, so those remotes are not claimed at all.
 
 ### ForgeBackend trait
 
@@ -354,7 +361,13 @@ These are non-obvious things the implementation chain hit. Worth preserving for 
 
 21. **`e` in PR mode must not resolve against the working tree.** PR review installs `PrNoopVcs`, so there is no local VCS to ask, and `vcs_info.root_path` is the synthetic `forge:host/owner/repo` identity — the checkout can be on any branch, or absent. Editor targets go through `App::pr_editor_target`, which reads the reviewed revision (local blob via `forge::local_git::read_blob`, else `ForgeBackend::fetch_file_content`) and only hands over the worktree file when its content matches. Related: `fetch_file_lines` runs content through `slice_context_lines`, which expands tabs, so it is never byte-faithful — anything that writes content back to disk must use `fetch_file_content`.
 
-22. **`base_sha` means the merge base, not the base branch tip.** The old side of a three-dot PR patch lives at `merge-base(base, head)`. GitHub's `baseRefOid`, Azure's `lastMergeTargetCommit`, and Bitbucket's `destination.commit.hash` can instead report the base branch tip. `ForgeBackend::resolve_diff_base_sha` reconciles this once in `fetch_pr_data`, before fetching the patch, so context expansion, PR editor snapshots, and the commit-range fallback parent use the same revision. GitHub and Bitbucket resolve locally first and fall back to their compare/merge-base APIs; Azure resolves locally. GitLab and Gitea already report the merge base, and Gerrit uses the change's parent. Resolution is best-effort: `None` leaves the reported base unchanged. Same-head reloads must refresh `diff_source.pr.base_sha` too, including when a PR is retargeted.
+22. **`base_sha` means the merge base, not the base branch tip.** The old side of a three-dot PR patch lives at `merge-base(base, head)`. GitHub's `baseRefOid`, Azure's `lastMergeTargetCommit`, and Bitbucket's `destination.commit.hash` can instead report the base branch tip. `ForgeBackend::resolve_diff_base_sha` reconciles this once in `fetch_pr_data`, before fetching the patch, so context expansion, PR editor snapshots, and the commit-range fallback parent use the same revision. GitHub and Bitbucket resolve locally first and fall back to their compare/merge-base APIs; Azure resolves locally. GitLab and Gitea already report the merge base, and Gerrit uses the change's parent. Resolution is best-effort: `None` leaves the reported base unchanged. Same-head reloads must refresh `diff_source.pr.base_sha` too, including when a PR is retargeted. Heptapod inherits GitLab's behavior (`diff_refs.base_sha` already reports the merge base), so its backend keeps the default `None` and does not override `resolve_diff_base_sha`.
+
+23. **Heptapod speaks GitLab's API but stores Mercurial changeset IDs, not Git SHAs.** `HeptapodBackend` delegates every API call to `GitLabGlabBackend` unchanged — the SHA strings flow through as opaque tokens, and `glab`'s endpoints accept Mercurial changeset IDs anywhere a Git SHA was expected. Tuicr never parses or interprets those strings, so the same `head_sha`/`base_sha` plumbing that works for GitLab works for Heptapod. The only place this leaks is the local-checkout path: `git show <sha>:<path>` and `git diff <a>..<b>` fail on an `hg` checkout, so `HeptapodBackend` sniffs `hg root` once at PR-open time (`with_local_checkout`) and routes `fetch_file_content` / `get_pull_request_commit_range_diff` through `hg cat` / `hg diff -r` instead. Without that routing, the inline commit-subset selector returns `UnsupportedOperation` from a Mercurial checkout.
+
+24. **Heptapod must precede GitLab in `parse_any_remote_url`.** A host configured both via `HEPTAPOD_URL` and in `glab config get host` is ambiguous; the first parser in the chain wins. Putting Heptapod before GitLab ensures such a host is tagged `Heptapod` (so the `hg` local-checkout routing activates) rather than `GitLab` (which would silently fall back to the REST API on an hg checkout). Same precedence logic that puts Gerrit ahead of the GitHub catch-all.
+
+25. **Heptapod has no reserved hostname.** Like Gerrit it is always self-hosted — `foss.heptapod.net` hosts the community edition, commercial instances live on their own domains (e.g. `orus.io`). Detection mirrors Gerrit: a hostname containing "heptapod", or an explicit `HEPTAPOD_URL` override naming the host. `glab config get host` is intentionally not consulted from the Heptapod parser — the GitLab parser already falls back to it, and Heptapod's hostname-only variant (used on hot paths such as `slug::resolve_owner_repo`) must not spawn a process.
 
 ### Keeping Docs Updated
 

@@ -13,7 +13,9 @@ pub mod gerrit;
 pub mod gitea;
 pub mod github;
 pub mod gitlab;
+pub mod heptapod;
 pub mod local_git;
+pub mod local_hg;
 pub mod pr_open;
 pub mod remote_comments;
 pub mod selector;
@@ -31,6 +33,9 @@ use crate::forge::gerrit::api::parse_gerrit_remote_url;
 use crate::forge::gitea::tea::parse_gitea_remote_url;
 use crate::forge::github::gh::parse_github_remote_url;
 use crate::forge::gitlab::glab::{parse_gitlab_remote_url, parse_gitlab_remote_url_by_hostname};
+use crate::forge::heptapod::parse::{
+    parse_heptapod_remote_url, parse_heptapod_remote_url_by_hostname,
+};
 use crate::forge::traits::ForgeRepository;
 use crate::vcs::VcsBackend;
 
@@ -140,17 +145,21 @@ pub fn detect_azure_repository(repo_root: &Path) -> Option<ForgeRepository> {
 /// Parse `url` as a forge remote repository.
 ///
 /// Order matters. Bitbucket and GitLab both gate on the hostname, so trying
-/// them first won't claim GitHub Enterprise remotes. Azure next — its parser
-/// filters to `dev.azure.com` / `*.visualstudio.com` hosts. Gitea then, which
-/// recognizes its own public hosts by name and self-hosted ones through the
-/// logins configured in `tea`. Gerrit follows: it is always self-hosted, so it
-/// gates on the canonical SSH port `29418`, a configured `GERRIT_URL`, or a
-/// hostname containing "gerrit". GitHub must stay last because its parser
-/// accepts *any* host (covers github.com and GHE hosts whose hostname does not
-/// literally contain "github") — it would otherwise swallow every Bitbucket,
-/// self-hosted GitLab, Gitea, Azure, and Gerrit remote.
+/// them first won't claim GitHub Enterprise remotes. Heptapod follows: it
+/// speaks GitLab's API and URL grammar, so it must come before GitLab or
+/// every Heptapod remote would be tagged as GitLab and lose the Mercurial
+/// local-checkout routing. Azure next — its parser filters to
+/// `dev.azure.com` / `*.visualstudio.com` hosts. Gitea then, which recognizes
+/// its own public hosts by name and self-hosted ones through the logins
+/// configured in `tea`. Gerrit follows: it is always self-hosted, so it gates
+/// on the canonical SSH port `29418`, a configured `GERRIT_URL`, or a hostname
+/// containing "gerrit". GitHub must stay last because its parser accepts any
+/// host (covers github.com and GHE hosts whose hostname does not literally
+/// contain "github") — it would otherwise swallow every Bitbucket, self-hosted
+/// GitLab, Heptapod, Gitea, Azure, and Gerrit remote.
 pub fn parse_any_remote_url(url: &str) -> Option<ForgeRepository> {
     parse_bitbucket_remote_url(url)
+        .or_else(|| parse_heptapod_remote_url(url))
         .or_else(|| parse_gitlab_remote_url(url))
         .or_else(|| parse_azure_remote_url(url))
         .or_else(|| parse_gitea_remote_url(url))
@@ -174,11 +183,14 @@ pub fn parse_any_remote_url(url: &str) -> Option<ForgeRepository> {
 /// because a workspace is always one segment, so the fallback already agrees
 /// with it. GitLab enters as its hostname-only variant, which forgoes the
 /// `glab` config lookup that would otherwise recognize self-hosted instances on
-/// custom domains. Gerrit is included: its project path can be any depth, so the
+/// custom domains. Heptapod's hostname-only variant is included for the same
+/// reason: an `foss.heptapod.net` remote should be recognized without spawning
+/// a process. Gerrit is included: its project path can be any depth, so the
 /// last-two-segments rule would mis-split `gerrit.example.com/platform/frameworks/base`,
 /// and its parser only reads the URL plus one env var.
 pub fn parse_any_remote_url_by_hostname(url: &str) -> Option<ForgeRepository> {
-    parse_gitlab_remote_url_by_hostname(url)
+    parse_heptapod_remote_url_by_hostname(url)
+        .or_else(|| parse_gitlab_remote_url_by_hostname(url))
         .or_else(|| parse_azure_remote_url(url))
         .or_else(|| parse_gerrit_remote_url(url))
 }

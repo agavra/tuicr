@@ -122,6 +122,7 @@ impl fmt::Display for PrSlug {
             ForgeKind::Bitbucket => "bb",
             ForgeKind::AzureDevOps => "az",
             ForgeKind::Gerrit => "ge",
+            ForgeKind::Heptapod => "hp",
         };
         write!(
             f,
@@ -195,6 +196,7 @@ impl FromStr for Slug {
                 "bb" => ForgeKind::Bitbucket,
                 "az" => ForgeKind::AzureDevOps,
                 "ge" => ForgeKind::Gerrit,
+                "hp" => ForgeKind::Heptapod,
                 other => return Err(SlugParseError::UnknownForge(other.to_string())),
             };
             return parse_pr(forge, rest).map(Slug::Pr);

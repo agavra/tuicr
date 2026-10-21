@@ -24,6 +24,7 @@ pub(crate) mod whitespace;
 pub use file::FileBackend;
 pub use git::{GitBackend, GitBackendPreference};
 pub use hg::HgBackend;
+pub(crate) use hg::run_hg_diff_range;
 pub use jj::JjBackend;
 pub use pr_noop::PrNoopVcs;
 pub use traits::{
