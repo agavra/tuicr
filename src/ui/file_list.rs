@@ -16,24 +16,16 @@ const COLLAPSED_GLYPH: &str = "\u{25b6}"; // ▶
 const REVIEWED_BOX: &str = "\u{25a3}"; // ▣
 const UNREVIEWED_BOX: &str = "\u{25a2}"; // ▢
 
-pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
+pub(super) fn render_file_list(
+    frame: &mut Frame,
+    app: &mut App,
+    area: Rect,
+    visible_items: &[FileTreeItem],
+) {
     let focused = app.focused_panel == FocusedPanel::FileList;
 
-    let mut title = format!(
-        " Files \u{00b7} {}/{} ",
-        app.reviewed_count(),
-        app.file_count()
-    );
-    // A filter changes what the counts above mean, so say how much is hidden.
-    if app.file_filter_active() {
-        title.push_str(&format!(
-            "\u{00b7} {} of {} ",
-            app.file_count(),
-            app.unfiltered_file_count()
-        ));
-    }
     let mut block = Block::default()
-        .title(title)
+        .title(file_list_title(app))
         .borders(Borders::ALL)
         .style(styles::panel_style(&app.theme))
         .border_style(styles::border_style(&app.theme, focused));
@@ -47,22 +39,10 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let inner = block.inner(area);
     app.file_list_inner_area = Some(inner);
-    let visible_items = app.build_visible_items();
 
     let max_content_width = visible_items
         .iter()
-        .map(|item| match item {
-            FileTreeItem::Directory { label, depth, .. } => depth * 2 + 2 + label.width() + 1,
-            FileTreeItem::File { file_idx, depth } => {
-                let file = &app.diff_files[*file_idx];
-                let filename = file
-                    .display_path()
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("?");
-                depth * 2 + 4 + filename.width()
-            }
-        })
+        .map(|item| row_width(app, item))
         .max()
         .unwrap_or(0);
 
@@ -186,6 +166,59 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
             x: (area.x + prefix).min(area.x + area.width.saturating_sub(1)),
             y: area.y + area.height.saturating_sub(1),
         });
+    }
+}
+
+/// Columns the file list needs to show its widest visible row (plus a column
+/// of breathing room), its title and its filter line unclipped, borders
+/// included. The layout caps this, so a prompt asks for as much as it allows.
+pub(super) fn file_list_desired_width(app: &App, visible_items: &[FileTreeItem]) -> u16 {
+    // The prompt is typed into the bottom border; give it all the room the
+    // layout allows rather than resizing the panel on every keystroke.
+    if app.file_tree_draft().is_some() {
+        return u16::MAX;
+    }
+    let rows = visible_items
+        .iter()
+        .map(|item| row_width(app, item) + 1)
+        .max()
+        .unwrap_or(0);
+    let title = file_list_title(app).width();
+    let footer = filter_footer(app).map_or(0, |line| line.width());
+    u16::try_from(rows.max(title).max(footer) + 2).unwrap_or(u16::MAX)
+}
+
+fn file_list_title(app: &App) -> String {
+    let mut title = format!(
+        " Files \u{00b7} {}/{} ",
+        app.reviewed_count(),
+        app.file_count()
+    );
+    // A filter changes what the counts above mean, so say how much is hidden.
+    if app.file_filter_active() {
+        title.push_str(&format!(
+            "\u{00b7} {} of {} ",
+            app.file_count(),
+            app.unfiltered_file_count()
+        ));
+    }
+    title
+}
+
+/// Columns a tree row occupies before horizontal scrolling.
+fn row_width(app: &App, item: &FileTreeItem) -> usize {
+    match item {
+        FileTreeItem::Directory { label, depth, .. } => depth * 2 + 2 + label.width() + 1,
+        FileTreeItem::File { file_idx, depth } => {
+            let filename = app.diff_files[*file_idx]
+                .display_path()
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("?");
+            // Checkbox, plus the M/A/D badge that pristine mode omits.
+            let prefix = if app.is_pristine_mode { 2 } else { 4 };
+            depth * 2 + prefix + filename.width()
+        }
     }
 }
 
@@ -378,7 +411,11 @@ mod tests {
     }
 
     fn draw(app: &mut App) -> Buffer {
-        let backend = TestBackend::new(120, 24);
+        draw_sized(app, 120, 24)
+    }
+
+    fn draw_sized(app: &mut App, width: u16, height: u16) -> Buffer {
+        let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| crate::ui::render(frame, app))
@@ -414,14 +451,20 @@ mod tests {
         app.compact_folders = true;
         let mut terminal = Terminal::new(TestBackend::new(60, 8)).unwrap();
         terminal
-            .draw(|frame| super::render_file_list(frame, &mut app, frame.area()))
+            .draw(|frame| {
+                let items = app.build_visible_items();
+                super::render_file_list(frame, &mut app, frame.area(), &items)
+            })
             .unwrap();
         let text = buffer_text(terminal.backend().buffer());
         assert!(text.contains("▼ app/src/main/kotlin/"), "{text}");
         assert!(text.contains("│  ▢ M Editor.kt"), "{text}");
         app.collapse_all_dirs();
         terminal
-            .draw(|frame| super::render_file_list(frame, &mut app, frame.area()))
+            .draw(|frame| {
+                let items = app.build_visible_items();
+                super::render_file_list(frame, &mut app, frame.area(), &items)
+            })
             .unwrap();
         let text = buffer_text(terminal.backend().buffer());
         assert!(text.contains("▶ app/src/main/kotlin/"), "{text}");
@@ -435,7 +478,10 @@ mod tests {
         app.compact_folders = true;
         let mut terminal = Terminal::new(TestBackend::new(18, 8)).unwrap();
         terminal
-            .draw(|frame| super::render_file_list(frame, &mut app, frame.area()))
+            .draw(|frame| {
+                let items = app.build_visible_items();
+                super::render_file_list(frame, &mut app, frame.area(), &items)
+            })
             .unwrap();
         assert_eq!(
             app.file_list_state.max_content_width,
@@ -443,7 +489,10 @@ mod tests {
         );
         app.file_list_state.scroll_x = usize::MAX;
         terminal
-            .draw(|frame| super::render_file_list(frame, &mut app, frame.area()))
+            .draw(|frame| {
+                let items = app.build_visible_items();
+                super::render_file_list(frame, &mut app, frame.area(), &items)
+            })
             .unwrap();
         assert_eq!(
             app.file_list_state.scroll_x,
@@ -539,6 +588,71 @@ mod tests {
             text.contains("1/2"),
             "expected progress over the whole population, got:\n{text}"
         );
+    }
+
+    #[test]
+    fn should_size_the_file_list_to_its_widest_row_on_a_wide_terminal() {
+        let mut app = app_with(&["src/main.rs", "README.md"]);
+
+        let text = buffer_text(&draw_sized(&mut app, 200, 24));
+
+        let list = app.file_list_area.expect("file list rendered");
+        // Widest rows are `  ▢ M main.rs` and `▢ M README.md` (13 columns),
+        // plus one column of breathing room and both borders.
+        assert_eq!(list.width, 13 + 1 + 2, "{text}");
+        let diff = app.diff_area.expect("diff rendered");
+        assert_eq!(diff.x, list.x + list.width);
+        assert_eq!(list.width + diff.width, 200);
+        assert!(text.contains("Files · 0/2"), "{text}");
+    }
+
+    #[test]
+    fn should_not_reserve_badge_columns_in_pristine_mode() {
+        let mut app = app_with(&["a_long_file_name.rs"]);
+        app.is_pristine_mode = true;
+
+        let text = buffer_text(&draw_sized(&mut app, 200, 24));
+
+        // `▢ a_long_file_name.rs` (21 columns, no M/A/D badge), plus one
+        // column of breathing room and both borders.
+        let list = app.file_list_area.expect("file list rendered");
+        assert_eq!(list.width, 21 + 1 + 2, "{text}");
+    }
+
+    #[test]
+    fn should_cap_the_file_list_at_a_fifth_of_the_width() {
+        let mut app =
+            app_with(&["src/a_file_name_far_too_long_to_fit_in_a_fifth_of_the_screen.rs"]);
+
+        draw_sized(&mut app, 120, 24);
+
+        assert_eq!(app.file_list_area.expect("file list rendered").width, 24);
+    }
+
+    #[test]
+    fn should_give_an_open_tree_prompt_the_whole_cap() {
+        let mut app = app_with(&["src/main.rs"]);
+        app.begin_file_tree_prompt(FileTreePrompt::Include);
+
+        draw_sized(&mut app, 120, 24);
+
+        assert_eq!(app.file_list_area.expect("file list rendered").width, 24);
+    }
+
+    #[test]
+    fn should_widen_the_file_list_to_show_an_applied_filter() {
+        let mut app = app_with(&["src/main.rs", "src/lib.rs"]);
+        let pattern = r"^src/(main|lib|util)\.rs$";
+        app.begin_file_tree_prompt(FileTreePrompt::Include);
+        for ch in pattern.chars() {
+            app.file_tree_prompt_insert_char(ch);
+        }
+        app.commit_file_tree_prompt();
+
+        let text = buffer_text(&draw_sized(&mut app, 200, 24));
+
+        assert!(text.contains(&format!("i:{pattern}")), "{text}");
+        assert!(app.file_list_area.expect("file list rendered").width < 40);
     }
 
     #[test]
