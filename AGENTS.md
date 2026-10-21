@@ -55,7 +55,8 @@ src/
 │                        # Azure DevOps PR, Gerrit change review, Heptapod MR)
 │   ├── mod.rs           # Detect and parse GitHub/GitLab/Bitbucket/Azure/Gerrit/Heptapod remotes
 │                        # (parse_any_remote_url: Bitbucket, Heptapod, GitLab, Azure, Gitea,
-│                        #  Gerrit, then GitHub)
+│                        #  Gerrit, then GitHub). remote_urls reads git remotes and falls back
+│                        # to `hg paths` when the checkout is Mercurial
 │   ├── traits.rs        # ForgeBackend trait, ForgeRepository, PullRequestTarget,
 │   │                    # PullRequestDetails, PullRequestInfo, PrSessionKey,
 │   │                    # CreateReviewRequest, GhCreateReviewResponse, ForgeFileLinesRequest
@@ -368,6 +369,8 @@ These are non-obvious things the implementation chain hit. Worth preserving for 
 24. **Heptapod must precede GitLab in `parse_any_remote_url`.** A host configured both via `HEPTAPOD_URL` and in `glab config get host` is ambiguous; the first parser in the chain wins. Putting Heptapod before GitLab ensures such a host is tagged `Heptapod` (so the `hg` local-checkout routing activates) rather than `GitLab` (which would silently fall back to the REST API on an hg checkout). Same precedence logic that puts Gerrit ahead of the GitHub catch-all.
 
 25. **Heptapod has no reserved hostname.** Like Gerrit it is always self-hosted — `foss.heptapod.net` hosts the community edition, commercial instances live on their own domains (e.g. `orus.io`). Detection mirrors Gerrit: a hostname containing "heptapod", or an explicit `HEPTAPOD_URL` override naming the host. `glab config get host` is intentionally not consulted from the Heptapod parser — the GitLab parser already falls back to it, and Heptapod's hostname-only variant (used on hot paths such as `slug::resolve_owner_repo`) must not spawn a process.
+
+    Remote *discovery* is a separate layer from host *parsing*: `forge::remote_urls` reads Git remotes (libgit2, then the `git` CLI) and, when the checkout is not a Git repository at all, falls back to `hg paths` — `default` first, Mercurial's `origin`. That is what makes a pure `hg clone` of an Heptapod repo work with no flags: `tuicr mr <N>` and the selector's Pull Requests tab resolve the repository from inside the checkout. In a colocated repo (both `.git` and `.hg`) the Git remotes win and `hg paths` is never consulted.
 
 ### Keeping Docs Updated
 

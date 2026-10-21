@@ -121,6 +121,12 @@ optimizations through `hg cat` and `hg diff -r` instead of `git show` and
 falls back to a local `git diff`) returns an unsupported error; everything else
 degrades gracefully to the REST API.
 
+tuicr also reads the checkout's remotes: when the working directory is not a
+Git repository, remote detection falls back to `hg paths` — where `hg clone`
+records the source URL — so `tuicr mr <N>` and the Pull Requests tab resolve
+the repository from inside the checkout, no `--repo-url` needed. In a
+colocated repo (both `.git` and `.hg`) the Git remotes win.
+
 The SHAs Heptapod reports are Mercurial changeset IDs, not Git SHAs. Tuicr
 treats them as opaque tokens, so the same `head_sha`/`base_sha` plumbing
 that works for GitLab works for Heptapod.

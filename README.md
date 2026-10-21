@@ -159,8 +159,9 @@ troubleshooting.
 `:submit` offers the same four events as GitLab — Heptapod speaks GitLab's REST API, so `glab`
 authenticates against an Heptapod instance unchanged. The difference is the underlying VCS is
 Mercurial, not Git: SHAs are changeset IDs. Tuicr never parses those, so the GitLab plumbing
-works as-is. When the MR is opened from a local `hg` checkout, file reads and commit-range diffs
-route through `hg cat` / `hg diff -r` instead of `git show` / `git diff`; otherwise the backend
+works as-is. When the MR is opened from a local `hg` checkout, tuicr reads the checkout's
+remotes via `hg paths` (no `--repo-url` needed) and file reads and commit-range diffs route
+through `hg cat` / `hg diff -r` instead of `git show` / `git diff`; otherwise the backend
 falls back to the REST API. Set `HEPTAPOD_URL` to recognize a commercial instance on a neutral
 hostname (e.g. `orus.io`); `foss.heptapod.net` is detected by name.
 

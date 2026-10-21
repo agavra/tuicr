@@ -90,6 +90,12 @@ pub fn detect_gitlab_repository(repo_root: &Path) -> Option<ForgeRepository> {
 }
 
 /// `repo_root`'s remote URLs, `origin` first, then every other remote.
+///
+/// Reads Git remotes first (libgit2 discovery, then the `git` CLI for
+/// repository formats libgit2 cannot open). When neither finds a Git
+/// repository, a Mercurial checkout still carries remotes — `hg paths` —
+/// and a forge can live behind them (Heptapod), so those are read before
+/// giving up; `default` is Mercurial's `origin` and sorts first.
 fn remote_urls(repo_root: &Path) -> Vec<String> {
     let Ok(repo) = Repository::discover(repo_root) else {
         // Local VCS discovery already falls back to Git for repository formats
@@ -97,7 +103,9 @@ fn remote_urls(repo_root: &Path) -> Vec<String> {
         // needs the same fallback; no object access or network is necessary.
         let Ok(names) = crate::process::run_command_output("git", Some(repo_root), ["remote"])
         else {
-            return Vec::new();
+            // Not a Git repository: the checkout may still be Mercurial, and
+            // `hg paths` is where its remotes live.
+            return hg_remote_urls(repo_root);
         };
         let mut names: Vec<_> = names.lines().collect();
         names.sort_by_key(|name| *name != "origin");
@@ -131,6 +139,34 @@ fn remote_urls(repo_root: &Path) -> Vec<String> {
         }
     }
     all_urls
+}
+
+/// `repo_root`'s hg remote URLs, `default` first, then every other named
+/// path. Returns an empty vec when `repo_root` is not an hg checkout or
+/// `hg` is missing, so a non-hg directory costs one failed spawn.
+///
+/// Mercurial records clone sources as named paths in `.hg/hgrc`; `default`
+/// is what `hg clone` writes and the closest thing to Git's `origin`.
+fn hg_remote_urls(repo_root: &Path) -> Vec<String> {
+    let Ok(output) = crate::process::run_command_output("hg", Some(repo_root), ["paths"]) else {
+        return Vec::new();
+    };
+    let mut entries: Vec<(&str, &str)> = output
+        .lines()
+        .filter_map(|line| {
+            // `hg paths` prints `name = url`. Split on the first `=` and
+            // trim both halves so any spacing survives; path names cannot
+            // contain `=`, and the URL may (query strings).
+            let (name, url) = line.split_once('=')?;
+            let (name, url) = (name.trim(), url.trim());
+            (!name.is_empty() && !url.is_empty()).then_some((name, url))
+        })
+        .collect();
+    entries.sort_by_key(|(name, _)| *name != "default");
+    entries
+        .into_iter()
+        .map(|(_, url)| url.to_string())
+        .collect()
 }
 
 /// Try to detect an Azure DevOps forge repository for the local checkout at
@@ -233,6 +269,98 @@ mod tests {
         let repo = Repository::init(dir.path()).expect("init repo");
         repo.remote("origin", url).expect("add origin");
         dir
+    }
+
+    fn hg_available() -> bool {
+        std::process::Command::new("hg")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    /// Create an hg checkout whose `default` path points at `url` — what
+    /// `hg clone <url>` leaves behind.
+    fn init_hg_repo_with_default_path(url: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        crate::process::run_command_output("hg", Some(dir.path()), ["init"]).expect("hg init");
+        std::fs::write(
+            dir.path().join(".hg/hgrc"),
+            format!("[paths]\ndefault = {url}\n"),
+        )
+        .expect("write hgrc");
+        dir
+    }
+
+    #[test]
+    fn detects_heptapod_repository_from_an_hg_checkout() {
+        // A pure Mercurial checkout has no Git remotes to read; forge
+        // detection must fall back to `hg paths`, where `hg clone` records
+        // the source URL.
+        if !hg_available() {
+            return;
+        }
+        let dir = init_hg_repo_with_default_path("https://foss.heptapod.net/owner/repo");
+        assert_eq!(
+            detect_forge_repository(dir.path()),
+            Some(ForgeRepository::heptapod(
+                "foss.heptapod.net",
+                "owner",
+                "repo"
+            ))
+        );
+    }
+
+    #[test]
+    fn hg_default_path_sorts_first_among_hg_remotes() {
+        if !hg_available() {
+            return;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        crate::process::run_command_output("hg", Some(dir.path()), ["init"]).expect("hg init");
+        // `upstream` first in the hgrc so the sort, not the file order, is
+        // what puts `default` ahead.
+        std::fs::write(
+            dir.path().join(".hg/hgrc"),
+            "[paths]\nupstream = https://foss.heptapod.net/other/repo\ndefault = https://foss.heptapod.net/owner/repo\n",
+        )
+        .expect("write hgrc");
+        assert_eq!(
+            remote_urls(dir.path()),
+            vec![
+                "https://foss.heptapod.net/owner/repo".to_string(),
+                "https://foss.heptapod.net/other/repo".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn git_remotes_win_in_a_colocated_checkout() {
+        // A colocated repo has both `.git` and `.hg`; the Git remotes are
+        // the source of truth and the hg paths must not be consulted.
+        if !hg_available() {
+            return;
+        }
+        let dir = init_repo_with_origin("https://github.com/agavra/tuicr");
+        crate::process::run_command_output("hg", Some(dir.path()), ["init"]).expect("hg init");
+        std::fs::write(
+            dir.path().join(".hg/hgrc"),
+            "[paths]\ndefault = https://foss.heptapod.net/other/repo\n",
+        )
+        .expect("write hgrc");
+        assert_eq!(
+            detect_forge_repository(dir.path()),
+            Some(ForgeRepository::github("github.com", "agavra", "tuicr"))
+        );
+    }
+
+    #[test]
+    fn hg_fallback_yields_nothing_outside_any_repo() {
+        if !hg_available() {
+            return;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert!(remote_urls(dir.path()).is_empty());
     }
 
     #[test]
