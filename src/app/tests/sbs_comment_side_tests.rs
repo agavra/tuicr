@@ -603,3 +603,46 @@ fn visual_suggestion_fence_is_longer_than_backticks_in_code() {
         "\n`````suggestion\n```\ntext\n````\n`````"
     );
 }
+
+#[test]
+fn visual_suggestion_skips_existing_comment_rows() {
+    for view in [DiffViewMode::Unified, DiffViewMode::SideBySide] {
+        for remote in [false, true] {
+            for reverse in [false, true] {
+                let mut app =
+                    suggestion_app_from_patch_in_view("@@ -0,0 +1,2 @@\n+first\n+second\n", view);
+                let selection = app.visual_selection.as_mut().unwrap();
+                let insert_at = selection.head.annotation_idx;
+                selection.head.annotation_idx += 1;
+                if reverse {
+                    std::mem::swap(&mut selection.anchor, &mut selection.head);
+                }
+                app.line_annotations.insert(
+                    insert_at,
+                    if remote {
+                        AnnotatedLine::RemoteThreadLine {
+                            thread_idx: 0,
+                            comment_idx: 0,
+                        }
+                    } else {
+                        AnnotatedLine::LineComment {
+                            file_idx: 0,
+                            line: 1,
+                            side: LineSide::New,
+                            comment_idx: 0,
+                        }
+                    },
+                );
+
+                crate::handler::handle_visual_action(&mut app, Action::AddRangeSuggestion);
+
+                assert_eq!(app.input_mode, InputMode::Comment);
+                assert_eq!(app.comment_buffer, "\n```suggestion\nfirst\nsecond\n```");
+                assert_eq!(
+                    app.comment_line_range,
+                    Some((LineRange::new(1, 2), LineSide::New))
+                );
+            }
+        }
+    }
+}

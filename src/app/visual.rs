@@ -154,12 +154,17 @@ impl App {
         } else {
             "suggestion".to_string()
         };
-        // Require one hunk with a new-side source line on every selected row.
+        // Require one hunk with a new-side source line on every selected code row.
         let mut selected_hunk = None;
         let mut seen_addition = false;
         let mut context_after_addition = false;
         for idx in start.annotation_idx..=end.annotation_idx {
             let hunk = match self.line_annotations.get(idx) {
+                Some(
+                    AnnotatedLine::LineComment { .. } | AnnotatedLine::RemoteThreadLine { .. },
+                ) => {
+                    continue;
+                }
                 Some(AnnotatedLine::DiffLine {
                     file_idx, hunk_idx, ..
                 })
