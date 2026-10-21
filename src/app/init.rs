@@ -611,6 +611,7 @@ impl App {
             file_line_count_cache: HashMap::new(),
             line_annotations: Vec::new(),
             colored_hunks: HashSet::new(),
+            full_file_attempted: HashSet::new(),
             output_to_stdout,
             pending_stdout_output: None,
             comment_cursor_screen_pos: None,
