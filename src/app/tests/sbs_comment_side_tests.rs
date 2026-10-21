@@ -487,7 +487,7 @@ fn suggestion_app_from_patch_in_view(patch: &str, view: DiffViewMode) -> App {
 }
 
 #[test]
-fn visual_suggestion_rejects_context_between_added_blocks() {
+fn visual_suggestion_allows_context_between_added_blocks() {
     for view in [DiffViewMode::Unified, DiffViewMode::SideBySide] {
         for context in ["", "unchanged"] {
             for reverse in [false, true] {
@@ -498,10 +498,15 @@ fn visual_suggestion_rejects_context_between_added_blocks() {
                     std::mem::swap(&mut sel.anchor, &mut sel.head);
                 }
                 crate::handler::handle_visual_action(&mut app, Action::AddRangeSuggestion);
-                assert_eq!(app.input_mode, InputMode::VisualSelect);
-                assert!(app.visual_selection.is_some());
-                assert!(app.comment_buffer.is_empty());
-                assert!(app.comment_line_range.is_none());
+                assert_eq!(app.input_mode, InputMode::Comment);
+                assert_eq!(
+                    app.comment_buffer,
+                    format!("\n```suggestion\nfirst\n{context}\nsecond\n```")
+                );
+                assert_eq!(
+                    app.comment_line_range,
+                    Some((LineRange::new(1, 3), LineSide::New))
+                );
             }
         }
     }
