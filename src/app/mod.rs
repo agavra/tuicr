@@ -1355,6 +1355,15 @@ pub struct App {
     pub pending_confirm: Option<ConfirmAction>,
     pub supports_keyboard_enhancement: bool,
     pub show_file_list: bool,
+    /// Opt-in diff-focused presentation. Hides the brand header, the idle
+    /// status/key-hint footer contents, and the diff panel frame, and opens
+    /// on the first file. File-list visibility stays on `show_file_list`.
+    pub minimal_ui: bool,
+    /// Minimal mode's first-file landing, waiting for a render to measure
+    /// the diff viewport. Row heights (a wrapped PR description, review
+    /// comments) depend on its width, so the landing offset is only right
+    /// once it is known.
+    pub pending_minimal_ui_start: bool,
     pub compact_folders: bool,
     /// `true` when the session was opened via `--all-files`. Drives the
     /// `PRISTINE · N files` chip in the status bar and prevents that chip

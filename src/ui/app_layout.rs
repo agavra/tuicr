@@ -67,19 +67,32 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // Clear cursor position before rendering (will be set if in Comment mode)
     app.comment_cursor_screen_pos = None;
 
+    // Minimal mode gives the diff the brand header's row. The footer row is
+    // always reserved so the diff never shifts by a line when a message or
+    // the dirty flag comes and goes; idle minimal mode just leaves it blank.
+    let show_header = !app.minimal_ui;
+    let mut constraints = Vec::with_capacity(3);
+    if show_header {
+        constraints.push(Constraint::Length(1));
+    }
+    constraints.push(Constraint::Min(0));
+    constraints.push(Constraint::Length(1));
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(vec![
-            Constraint::Length(1), // Header
-            Constraint::Min(0),    // Main content
-            Constraint::Length(1), // Status bar (also shows command input in command mode)
-        ])
+        .constraints(constraints)
         .split(frame.area());
 
-    status_bar::render_header(frame, app, chunks[0]);
-    render_main_content(frame, app, chunks[1]);
-    status_bar::render_status_bar(frame, app, chunks[2]);
-    status_bar::render_command_completion_popup(frame, app, chunks[2]);
+    let (main, footer) = if show_header {
+        status_bar::render_header(frame, app, chunks[0]);
+        (chunks[1], chunks[2])
+    } else {
+        (chunks[0], chunks[1])
+    };
+    render_main_content(frame, app, main);
+    if app.shows_status_bar() {
+        status_bar::render_status_bar(frame, app, footer);
+        status_bar::render_command_completion_popup(frame, app, footer);
+    }
 
     // Keep help visible while its search prompt is active.
     if app.input_mode == InputMode::Help || app.searching_help() {
@@ -117,7 +130,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 (diff_area.x + 1, diff_area.y + 1)
             } else {
                 // Last resort: position at the main content area
-                (chunks[1].x + 1, chunks[1].y + 1)
+                (main.x + 1, main.y + 1)
             }
         });
         frame.set_cursor_position(ratatui::layout::Position { x: col, y: row });

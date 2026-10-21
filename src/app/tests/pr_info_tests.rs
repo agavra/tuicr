@@ -220,3 +220,58 @@ fn should_keep_pr_info_annotations_in_sync_with_rendered_lines_at_wrap_boundary(
         "PrInfoLine annotation count must equal the rendered PR-info line count"
     );
 }
+
+#[test]
+fn minimal_ui_lands_on_the_first_file_after_the_first_render_of_a_pr_with_a_description() {
+    use ratatui::{Terminal, backend::TestBackend};
+
+    let mut app = build_pr_app();
+    let info = app.pr_info.as_mut().expect("pr info");
+    info.details.body = (1..=12)
+        .map(|n| format!("Paragraph {n} of the description, long enough to wrap."))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    app.rebuild_annotations();
+
+    // `tuicr pr <n>` and the PR selector both reach this before any render,
+    // with the viewport unmeasured (the selector path resets `DiffState`).
+    assert_eq!(app.diff_state.viewport_width, 0);
+    app.minimal_ui = true;
+    app.apply_minimal_ui_start();
+
+    // Positioning now would wrap the description at one column and push the
+    // cursor past the end of the document, so the landing waits.
+    assert!(app.pending_minimal_ui_start);
+    assert!(app.diff_state.cursor_line <= app.max_cursor_line());
+
+    let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
+    terminal
+        .draw(|frame| crate::ui::render(frame, &mut app))
+        .expect("draw frame");
+    assert!(app.diff_state.viewport_width > 0);
+    assert!(app.apply_pending_minimal_ui_start());
+    assert!(!app.pending_minimal_ui_start);
+    assert!(!app.apply_pending_minimal_ui_start());
+
+    assert!(app.diff_state.cursor_line <= app.max_cursor_line());
+    assert_eq!(
+        app.diff_state.cursor_line,
+        app.review_comments_render_height()
+    );
+    assert_eq!(app.diff_state.scroll_offset, app.diff_state.cursor_line);
+    assert!(matches!(
+        app.line_annotations.get(app.diff_state.cursor_line),
+        Some(crate::app::AnnotatedLine::FileHeader { file_idx: 0 })
+    ));
+
+    let buffer = terminal
+        .draw(|frame| crate::ui::render(frame, &mut app))
+        .expect("draw frame")
+        .buffer
+        .clone();
+    let text: String = (0..buffer.area.height)
+        .flat_map(|y| (0..buffer.area.width).map(move |x| (x, y)))
+        .map(|(x, y)| buffer[(x, y)].symbol().to_string())
+        .collect();
+    assert!(text.contains("src/lib.rs"), "{text}");
+}

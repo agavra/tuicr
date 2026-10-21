@@ -894,6 +894,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  :set minimal",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  Minimal UI (nominimal turns it off, minimal! toggles)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  :clear    ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),

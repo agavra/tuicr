@@ -354,6 +354,9 @@ fn main() -> anyhow::Result<()> {
             app.show_file_list = false;
             app.focused_panel = FocusedPanel::Diff;
         }
+        if cfg.minimal_ui == Some(true) {
+            app.minimal_ui = true;
+        }
         // Start with the commit selector pane hidden. `(` / `)` still cycle the
         // selected commit while hidden; `<leader>s` / `:set commits!` reveal it.
         if cfg.show_commits == Some(false) {
@@ -385,6 +388,12 @@ fn main() -> anyhow::Result<()> {
         // only toggle if it's still off.
         if cfg.single_file_view == Some(true) && !app.is_single_file_view {
             app.toggle_single_file_view();
+        }
+        // Build ran before this flag existed on the app, so the opening
+        // cursor is still the overview landing. Queue the move onto the
+        // first file; it lands after the first render measures the viewport.
+        if app.minimal_ui {
+            app.apply_minimal_ui_start();
         }
         app.export = cfg.resolved_export();
         if cfg.cursor_line == Some(false) {
@@ -482,10 +491,13 @@ fn main() -> anyhow::Result<()> {
             terminal.draw(|frame| {
                 ui::render(frame, &mut app);
             })?;
-            // `--line` needs the viewport measured by the render above. When
-            // it moves the cursor, repaint inside the same synchronized
-            // update so the unpositioned frame is never presented.
-            if app.apply_pending_start_line() {
+            // Minimal mode's first-file landing and `--line` both need the
+            // viewport measured by the render above. When either moves the
+            // cursor, repaint inside the same synchronized update so the
+            // unpositioned frame is never presented. `--line` runs second so
+            // an explicit target wins.
+            let landed = app.apply_pending_minimal_ui_start();
+            if app.apply_pending_start_line() || landed {
                 terminal.draw(|frame| {
                     ui::render(frame, &mut app);
                 })?;
