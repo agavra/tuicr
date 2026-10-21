@@ -36,6 +36,28 @@ Alternatively, if your tenant allows AAD access, just install the
 [Azure CLI](https://learn.microsoft.com/en-us/cli/azure/install-azure-cli) and run
 `az login` — no PAT needed.
 
+## Azure DevOps Server / TFS (self-hosted)
+
+An on-premises server has no reserved hostname, so tuicr only recognizes it when you name
+it. Set `AZURE_DEVOPS_SERVER_URL` to the server's host (a bare host or any URL form works;
+only the hostname is used) and use a PAT — `az` AAD tokens are not accepted on-prem:
+
+```bash
+export AZURE_DEVOPS_SERVER_URL=https://tfs.example.com
+export AZURE_DEVOPS_EXT_PAT=xxxxxxxx...
+```
+
+Remotes like `https://tfs.example.com/DefaultCollection/Project/_git/repo` and
+`ssh://tfs.example.com/DefaultCollection/Project/_git/repo` are then detected, and PRs
+open by id or full URL as above. The collection stays in the API path
+(`https://host/{collection}/{project}/_apis/...`) and requests use `api-version=7.1`, so
+the server must be Azure DevOps Server 2022.1 or newer. The API is always called over
+HTTPS on the default port.
+
+Under a virtual directory, use an explicit project path, for example
+`https://tfs.example.com/tfs/Collection/Project/_git/repo`. Default-repository
+shorthand (`/tfs/Collection/_git/Project`) is ambiguous and is not supported.
+
 ## Reviewing a PR
 
 Run tuicr from inside a **local clone** of the Azure repo (see the diff note below), then:
@@ -46,6 +68,14 @@ tuicr pr https://dev.azure.com/org/project/_git/repo/pullrequest/125   # by URL
 ```
 
 `*.visualstudio.com` URLs work too and are normalized to `dev.azure.com` internally.
+
+If the PR's base or source commits aren't in your clone yet, tuicr runs `git fetch` for you
+(the missing commits first, then a plain fetch of the matching remote, never prompting for
+credentials). If that fails, it reports the diff error and you can fetch manually.
+Automatic fetches disable credential helpers and askpass programs, and use OpenSSH
+in batch mode with strict host-key checking instead of custom Git SSH commands.
+SSH config identities and host aliases still apply. If authentication requires a
+prompt or a custom SSH wrapper, fetch manually first.
 
 Inside tuicr, review as usual (`j`/`k` to move, `c` to comment, `v` for a range comment),
 then `:submit` to push:
