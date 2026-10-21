@@ -285,19 +285,21 @@ it. `Esc` on the picker reverts the preview to whatever theme was active before 
 
 Not every forge supports every event:
 
-| Event | GitHub | GitLab | Gitea | Bitbucket | Azure DevOps | Gerrit |
-|---|---|---|---|---|---|---|
-| `comment` | yes | yes | yes | yes | yes | yes |
-| `approve` | yes | yes | yes | yes | yes (vote +10) | yes (vote +2) |
-| `request-changes` | yes | yes | yes | no | yes (vote -10) | yes (vote -1) |
-| `draft` | yes | yes | yes | no | yes (plain comment) | yes |
+| Event | GitHub | GitLab | Heptapod | Gitea | Bitbucket | Azure DevOps | Gerrit |
+|---|---|---|---|---|---|---|---|
+| `comment` | yes | yes | yes | yes | yes | yes | yes |
+| `approve` | yes | yes | yes | yes | yes | yes (vote +10) | yes (vote +2) |
+| `request-changes` | yes | yes | yes | yes | no | yes (vote -10) | yes (vote -1) |
+| `draft` | yes | yes | yes | yes | no | yes (plain comment) | yes |
 
 Bitbucket rejects `request-changes` and `draft` up front rather than silently downgrading them.
 Azure DevOps has no pending-review primitive, so `draft` posts as a plain comment with no vote.
 Gitea requires a review summary for `request-changes` and `draft`, and for `comment` when there
 are no inline comments; inline comments alone do not satisfy it. GitLab `draft` creates draft
-notes that the author publishes from GitLab's own "Submit review" UI. Gerrit `draft` stores draft
-comments that the author publishes from Gerrit's Reply UI.
+notes that the author publishes from GitLab's own "Submit review" UI. Heptapod shares GitLab's
+submit semantics exactly — it's the same `glab` calls against the same REST API; only the
+underlying VCS differs. Gerrit `draft` stores draft comments that the author publishes from
+Gerrit's Reply UI.
 
 ## Commit selection / review target selector
 

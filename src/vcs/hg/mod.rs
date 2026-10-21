@@ -6,7 +6,7 @@ use std::process::Command;
 use chrono::{TimeZone, Utc};
 
 use crate::error::{Result, TuicrError};
-use crate::model::{DiffFile, DiffLine, FileStatus};
+use crate::model::{DiffFile, DiffLine, FilePatch, FileStatus};
 use crate::syntax::SyntaxHighlighter;
 use crate::vcs::diff_parser;
 use crate::vcs::git::raw::{
@@ -609,6 +609,64 @@ fn hg_cat_batch(root: &Path, rev: &str, paths: &[PathBuf]) -> Result<HashMap<Pat
     args.extend(patterns.iter().map(String::as_str));
     let output = run_hg_command(root, &args)?;
     Ok(parse_batched_files(&output))
+}
+
+/// Run `hg diff --git -r <start>..<end>` (actually `-r <start>:<end>`) against
+/// a checkout at `root`, returning structured file patches before hunk
+/// parsing. Shared by [`HgBackend::load_diff_with_comparison`] (the local
+/// working-tree / commit-range path) and the Heptapod forge backend's local
+/// commit-range optimization.
+///
+/// Same two-step as the local backend: `hg status -0` for authoritative
+/// metadata, then `hg diff --git` for the patch body, paired positionally.
+/// Returns [`crate::error::TuicrError::NoChanges`] when the range is empty.
+pub(crate) fn run_hg_diff_range(
+    root: &Path,
+    start_rev: &str,
+    end_rev: &str,
+) -> Result<Vec<FilePatch>> {
+    let rev_arg = format!("{start_rev}:{end_rev}");
+    let diff_args: [&str; 2] = ["-r", rev_arg.as_str()];
+    let patch_args: Vec<&str> = vec!["diff", "--git", "-r", rev_arg.as_str()];
+    let patch = run_hg_command(root, &patch_args)?;
+    if patch.trim().is_empty() {
+        return Err(TuicrError::NoChanges);
+    }
+
+    let status_args = hg_status_args(&diff_args);
+    let metadata_output = run_hg_command_bytes(root, &status_args)?;
+    let metadata = parse_hg_diff_metadata(&metadata_output)?;
+
+    let patches = if metadata.len() == split_patch_blocks(patch.as_bytes()).len() {
+        pair_metadata_with_patch(metadata, patch.as_bytes())?
+    } else {
+        // Whitespace-only mismatch: fall back to per-file, matching
+        // HgBackend::load_diff_with_comparison. We don't take a whitespace
+        // mode here (the forge layer never filters whitespace), so this
+        // branch is just defensive.
+        let mut patches = Vec::new();
+        for file in metadata {
+            let path = file
+                .new_path
+                .as_deref()
+                .or(file.old_path.as_deref())
+                .ok_or_else(|| {
+                    TuicrError::VcsCommand(
+                        "Mercurial status entry has neither an old nor a new path".into(),
+                    )
+                })?;
+            let pattern = hg_path_pattern(path);
+            let mut file_args = patch_args.clone();
+            file_args.push(&pattern);
+            let file_patch = run_hg_command(root, &file_args)?;
+            if !file_patch.trim().is_empty() {
+                patches.extend(pair_metadata_with_patch(vec![file], file_patch.as_bytes())?);
+            }
+        }
+        patches
+    };
+
+    Ok(patches)
 }
 
 /// Run an hg command and return its stdout.

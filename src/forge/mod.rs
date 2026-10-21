@@ -13,7 +13,9 @@ pub mod gerrit;
 pub mod gitea;
 pub mod github;
 pub mod gitlab;
+pub mod heptapod;
 pub mod local_git;
+pub mod local_hg;
 pub mod pr_open;
 pub mod remote_comments;
 pub mod selector;
@@ -31,6 +33,9 @@ use crate::forge::gerrit::api::parse_gerrit_remote_url;
 use crate::forge::gitea::tea::parse_gitea_remote_url;
 use crate::forge::github::gh::parse_github_remote_url;
 use crate::forge::gitlab::glab::{parse_gitlab_remote_url, parse_gitlab_remote_url_by_hostname};
+use crate::forge::heptapod::parse::{
+    parse_heptapod_remote_url, parse_heptapod_remote_url_by_hostname,
+};
 use crate::forge::traits::ForgeRepository;
 use crate::vcs::VcsBackend;
 
@@ -109,6 +114,12 @@ pub fn detect_gitlab_repository(repo_root: &Path) -> Option<ForgeRepository> {
 }
 
 /// `repo_root`'s remote URLs, `origin` first, then every other remote.
+///
+/// Reads Git remotes first (libgit2 discovery, then the `git` CLI for
+/// repository formats libgit2 cannot open). When neither finds a Git
+/// repository, a Mercurial checkout still carries remotes — `hg paths` —
+/// and a forge can live behind them (Heptapod), so those are read before
+/// giving up; `default` is Mercurial's `origin` and sorts first.
 fn remote_urls(repo_root: &Path) -> Vec<String> {
     let Ok(repo) = Repository::discover(repo_root) else {
         // Local VCS discovery already falls back to Git for repository formats
@@ -116,7 +127,9 @@ fn remote_urls(repo_root: &Path) -> Vec<String> {
         // needs the same fallback; no object access or network is necessary.
         let Ok(names) = crate::process::run_command_output("git", Some(repo_root), ["remote"])
         else {
-            return Vec::new();
+            // Not a Git repository: the checkout may still be Mercurial, and
+            // `hg paths` is where its remotes live.
+            return hg_remote_urls(repo_root);
         };
         let mut names: Vec<_> = names.lines().collect();
         names.sort_by_key(|name| *name != "origin");
@@ -152,6 +165,34 @@ fn remote_urls(repo_root: &Path) -> Vec<String> {
     all_urls
 }
 
+/// `repo_root`'s hg remote URLs, `default` first, then every other named
+/// path. Returns an empty vec when `repo_root` is not an hg checkout or
+/// `hg` is missing, so a non-hg directory costs one failed spawn.
+///
+/// Mercurial records clone sources as named paths in `.hg/hgrc`; `default`
+/// is what `hg clone` writes and the closest thing to Git's `origin`.
+fn hg_remote_urls(repo_root: &Path) -> Vec<String> {
+    let Ok(output) = crate::process::run_command_output("hg", Some(repo_root), ["paths"]) else {
+        return Vec::new();
+    };
+    let mut entries: Vec<(&str, &str)> = output
+        .lines()
+        .filter_map(|line| {
+            // `hg paths` prints `name = url`. Split on the first `=` and
+            // trim both halves so any spacing survives; path names cannot
+            // contain `=`, and the URL may (query strings).
+            let (name, url) = line.split_once('=')?;
+            let (name, url) = (name.trim(), url.trim());
+            (!name.is_empty() && !url.is_empty()).then_some((name, url))
+        })
+        .collect();
+    entries.sort_by_key(|(name, _)| *name != "default");
+    entries
+        .into_iter()
+        .map(|(_, url)| url.to_string())
+        .collect()
+}
+
 /// Try to detect an Azure DevOps forge repository for the local checkout at
 /// `repo_root`. Looks at `origin` first, then any remote whose URL parses as an
 /// Azure DevOps host. Returns `None` when no Azure remote is configured.
@@ -164,17 +205,21 @@ pub fn detect_azure_repository(repo_root: &Path) -> Option<ForgeRepository> {
 /// Parse `url` as a forge remote repository.
 ///
 /// Order matters. Bitbucket and GitLab both gate on the hostname, so trying
-/// them first won't claim GitHub Enterprise remotes. Azure next — its parser
-/// filters to `dev.azure.com` / `*.visualstudio.com` hosts. Gitea then, which
-/// recognizes its own public hosts by name and self-hosted ones through the
-/// logins configured in `tea`. Gerrit follows: it is always self-hosted, so it
-/// gates on the canonical SSH port `29418`, a configured `GERRIT_URL`, or a
-/// hostname containing "gerrit". GitHub must stay last because its parser
-/// accepts *any* host (covers github.com and GHE hosts whose hostname does not
-/// literally contain "github") — it would otherwise swallow every Bitbucket,
-/// self-hosted GitLab, Gitea, Azure, and Gerrit remote.
+/// them first won't claim GitHub Enterprise remotes. Heptapod follows: it
+/// speaks GitLab's API and URL grammar, so it must come before GitLab or
+/// every Heptapod remote would be tagged as GitLab and lose the Mercurial
+/// local-checkout routing. Azure next — its parser filters to
+/// `dev.azure.com` / `*.visualstudio.com` hosts. Gitea then, which recognizes
+/// its own public hosts by name and self-hosted ones through the logins
+/// configured in `tea`. Gerrit follows: it is always self-hosted, so it gates
+/// on the canonical SSH port `29418`, a configured `GERRIT_URL`, or a hostname
+/// containing "gerrit". GitHub must stay last because its parser accepts any
+/// host (covers github.com and GHE hosts whose hostname does not literally
+/// contain "github") — it would otherwise swallow every Bitbucket, self-hosted
+/// GitLab, Heptapod, Gitea, Azure, and Gerrit remote.
 pub fn parse_any_remote_url(url: &str) -> Option<ForgeRepository> {
     parse_bitbucket_remote_url(url)
+        .or_else(|| parse_heptapod_remote_url(url))
         .or_else(|| parse_gitlab_remote_url(url))
         .or_else(|| parse_azure_remote_url(url))
         .or_else(|| parse_gitea_remote_url(url))
@@ -198,11 +243,14 @@ pub fn parse_any_remote_url(url: &str) -> Option<ForgeRepository> {
 /// because a workspace is always one segment, so the fallback already agrees
 /// with it. GitLab enters as its hostname-only variant, which forgoes the
 /// `glab` config lookup that would otherwise recognize self-hosted instances on
-/// custom domains. Gerrit is included: its project path can be any depth, so the
+/// custom domains. Heptapod's hostname-only variant is included for the same
+/// reason: an `foss.heptapod.net` remote should be recognized without spawning
+/// a process. Gerrit is included: its project path can be any depth, so the
 /// last-two-segments rule would mis-split `gerrit.example.com/platform/frameworks/base`,
 /// and its parser only reads the URL plus one env var.
 pub fn parse_any_remote_url_by_hostname(url: &str) -> Option<ForgeRepository> {
-    parse_gitlab_remote_url_by_hostname(url)
+    parse_heptapod_remote_url_by_hostname(url)
+        .or_else(|| parse_gitlab_remote_url_by_hostname(url))
         .or_else(|| parse_azure_remote_url(url))
         .or_else(|| parse_gerrit_remote_url(url))
 }
@@ -257,6 +305,98 @@ mod tests {
         let repo = Repository::init(dir.path()).expect("init repo");
         repo.remote("origin", url).expect("add origin");
         dir
+    }
+
+    fn hg_available() -> bool {
+        std::process::Command::new("hg")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    /// Create an hg checkout whose `default` path points at `url` — what
+    /// `hg clone <url>` leaves behind.
+    fn init_hg_repo_with_default_path(url: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        crate::process::run_command_output("hg", Some(dir.path()), ["init"]).expect("hg init");
+        std::fs::write(
+            dir.path().join(".hg/hgrc"),
+            format!("[paths]\ndefault = {url}\n"),
+        )
+        .expect("write hgrc");
+        dir
+    }
+
+    #[test]
+    fn detects_heptapod_repository_from_an_hg_checkout() {
+        // A pure Mercurial checkout has no Git remotes to read; forge
+        // detection must fall back to `hg paths`, where `hg clone` records
+        // the source URL.
+        if !hg_available() {
+            return;
+        }
+        let dir = init_hg_repo_with_default_path("https://foss.heptapod.net/owner/repo");
+        assert_eq!(
+            detect_forge_repository(dir.path()),
+            Some(ForgeRepository::heptapod(
+                "foss.heptapod.net",
+                "owner",
+                "repo"
+            ))
+        );
+    }
+
+    #[test]
+    fn hg_default_path_sorts_first_among_hg_remotes() {
+        if !hg_available() {
+            return;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        crate::process::run_command_output("hg", Some(dir.path()), ["init"]).expect("hg init");
+        // `upstream` first in the hgrc so the sort, not the file order, is
+        // what puts `default` ahead.
+        std::fs::write(
+            dir.path().join(".hg/hgrc"),
+            "[paths]\nupstream = https://foss.heptapod.net/other/repo\ndefault = https://foss.heptapod.net/owner/repo\n",
+        )
+        .expect("write hgrc");
+        assert_eq!(
+            remote_urls(dir.path()),
+            vec![
+                "https://foss.heptapod.net/owner/repo".to_string(),
+                "https://foss.heptapod.net/other/repo".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn git_remotes_win_in_a_colocated_checkout() {
+        // A colocated repo has both `.git` and `.hg`; the Git remotes are
+        // the source of truth and the hg paths must not be consulted.
+        if !hg_available() {
+            return;
+        }
+        let dir = init_repo_with_origin("https://github.com/agavra/tuicr");
+        crate::process::run_command_output("hg", Some(dir.path()), ["init"]).expect("hg init");
+        std::fs::write(
+            dir.path().join(".hg/hgrc"),
+            "[paths]\ndefault = https://foss.heptapod.net/other/repo\n",
+        )
+        .expect("write hgrc");
+        assert_eq!(
+            detect_forge_repository(dir.path()),
+            Some(ForgeRepository::github("github.com", "agavra", "tuicr"))
+        );
+    }
+
+    #[test]
+    fn hg_fallback_yields_nothing_outside_any_repo() {
+        if !hg_available() {
+            return;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert!(remote_urls(dir.path()).is_empty());
     }
 
     #[test]
