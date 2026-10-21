@@ -515,7 +515,7 @@ fn main() -> anyhow::Result<()> {
             // events) never satisfies the gate. Terminals without kitty
             // REPORT_EVENT_TYPES support never emit Release, in which case
             // `supports_keyboard_enhancement` is false and `cursor_down` /
-            // `cursor_up` skip the gate entirely.
+            // `cursor_up` never walk: j/k stop at the file's edges.
             if let Event::Key(key) = &event
                 && key.kind == KeyEventKind::Release
             {
