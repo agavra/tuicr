@@ -139,6 +139,7 @@ mod relative_line_number_tests {
             content: String::new(),
             old_lineno: old,
             new_lineno: new,
+            raw_content: None,
             highlighted_spans: None,
         }
     }

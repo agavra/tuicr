@@ -179,7 +179,13 @@ from the checkout, never copied.
 |-----|--------|
 | `j` / `k` | Extend selection down / up |
 | `c` / `Enter` | Create comment for selected range |
+| `s` | Start an editable suggestion prefilled with the selected code lines |
 | `Esc` / `v` / `V` | Cancel selection |
+
+Suggestions replace whole lines on the new side of a single diff hunk. Selections
+across gaps (including deleted-only rows) or expanded context are rejected.
+Unchanged context between added code blocks is included in the suggestion.
+GitLab suggestions can include at most 100 lines above the final selected line.
 
 ## Comment mode
 

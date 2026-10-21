@@ -406,7 +406,7 @@ fn parse_hunks(
                 };
 
                 let raw = String::from_utf8_lossy(line.content());
-                let content = tabify(raw.trim_end_matches(['\n', '\r']));
+                let content = raw.trim_end_matches(['\n', '\r']).to_string();
 
                 line_contents.push(content);
                 line_origins.push(origin);
@@ -420,7 +420,8 @@ fn parse_hunks(
 
                 lines.push(DiffLine {
                     origin,
-                    content,
+                    raw_content: content.contains('\t').then(|| content.clone()),
+                    content: tabify(&content),
                     old_lineno,
                     new_lineno,
                     highlighted_spans: None,
@@ -517,6 +518,11 @@ mod tests {
             "expected tab-expanded content in git diff lines"
         );
         assert!(lines.iter().all(|l| !l.content.contains('\t')));
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.raw_content.as_deref() == Some("\tnew"))
+        );
     }
 
     #[test]

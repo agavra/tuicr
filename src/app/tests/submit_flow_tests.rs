@@ -71,6 +71,7 @@ fn make_pr_app_with_single_modified_file(file_path: &str) -> App {
                     content: "a".to_string(),
                     old_lineno: Some(10),
                     new_lineno: Some(10),
+                    raw_content: None,
                     highlighted_spans: None,
                 },
                 DiffLine {
@@ -78,6 +79,7 @@ fn make_pr_app_with_single_modified_file(file_path: &str) -> App {
                     content: "b".to_string(),
                     old_lineno: None,
                     new_lineno: Some(11),
+                    raw_content: None,
                     highlighted_spans: None,
                 },
             ],

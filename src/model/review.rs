@@ -383,6 +383,7 @@ mod tests {
                 content: content.to_string(),
                 old_lineno: Some(new_start),
                 new_lineno: Some(new_start),
+                raw_content: None,
                 highlighted_spans: None,
             }],
             old_start: new_start,

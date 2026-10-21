@@ -52,6 +52,7 @@ pub enum Action {
     // Visual selection mode
     EnterVisualMode,
     AddRangeComment,
+    AddRangeSuggestion,
 
     // Session
     Quit,
@@ -624,6 +625,7 @@ fn map_visual_mode_with_q_quits(key: KeyEvent, q_quits: bool) -> Action {
         (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => Action::CursorDown(1),
         (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => Action::CursorUp(1),
         (KeyCode::Char('c'), KeyModifiers::NONE) => Action::AddRangeComment,
+        (KeyCode::Char('s'), KeyModifiers::NONE) => Action::AddRangeSuggestion,
         (KeyCode::Enter, KeyModifiers::NONE) => Action::AddRangeComment,
         (KeyCode::Char('y'), KeyModifiers::NONE) => Action::ExportToClipboard,
         (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,

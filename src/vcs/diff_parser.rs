@@ -179,7 +179,7 @@ where
             ));
         };
 
-        line_contents.push(super::tabify(content));
+        line_contents.push(content.to_string());
         line_origins.push(origin);
         line_numbers.push((old_ln, new_ln));
     }
@@ -192,7 +192,8 @@ where
             let (old_lineno, new_lineno) = line_numbers[index];
             DiffLine {
                 origin,
-                content,
+                raw_content: content.contains('\t').then(|| content.clone()),
+                content: super::tabify(&content),
                 old_lineno,
                 new_lineno,
                 highlighted_spans: None,
@@ -286,6 +287,14 @@ pub(crate) fn git_fixture_file_patches(patch: &str) -> Vec<FilePatch> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preserves_raw_tabs_for_suggestions() {
+        let files = parse("@@ -1 +1 @@\n-old\n+\tnew\n").unwrap();
+        let line = &files[0].hunks[0].lines[1];
+        assert_eq!(line.content, "    new");
+        assert_eq!(line.raw_content.as_deref(), Some("\tnew"));
+    }
 
     fn parse(patch: &str) -> Result<Vec<DiffFile>> {
         parse_file_patches(
