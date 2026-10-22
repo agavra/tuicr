@@ -6,14 +6,13 @@
 //! [`FilePatch`]. This module only parses unified-diff hunks, where the `@@`
 //! header's line counts make the grammar unambiguous.
 
-use std::path::Path;
-#[cfg(test)]
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use crate::error::{Result, TuicrError};
 #[cfg(test)]
 use crate::model::FileStatus;
-use crate::model::{DiffFile, DiffHunk, DiffLine, FilePatch, LineOrigin};
+use crate::model::{DiffFile, DiffHunk, DiffLine, FilePatch, LineOrigin, LineSide};
 use crate::syntax::SyntaxHighlighter;
 
 /// Convert backend-structured file patches into renderable diff files.
@@ -25,10 +24,59 @@ pub fn parse_file_patches(
         return Err(TuicrError::NoChanges);
     }
 
-    patches
-        .into_iter()
-        .map(|patch| materialize_file_patch(patch, highlighter))
-        .collect()
+    let mut old_contents: HashMap<PathBuf, String> = HashMap::new();
+    let mut new_contents: HashMap<PathBuf, String> = HashMap::new();
+    let mut files = Vec::with_capacity(patches.len());
+    for mut patch in patches {
+        let old_content = patch.old_content.take();
+        let new_content = patch.new_content.take();
+        let file = materialize_file_patch(patch, highlighter)?;
+        if let (Some(path), Some(content)) = (file.old_path.as_ref(), old_content)
+            && full_content_matches_diff(&file, LineSide::Old, &content)
+        {
+            old_contents.insert(path.clone(), content);
+        }
+        if let (Some(path), Some(content)) = (file.new_path.as_ref(), new_content)
+            && full_content_matches_diff(&file, LineSide::New, &content)
+        {
+            new_contents.insert(path.clone(), content);
+        }
+        files.push(file);
+    }
+
+    // Container grammars (PHP, Vue, ...) skip per-hunk highlighting above;
+    // when the backend supplied whole-file contents, restore their spans with
+    // the full-file pass the local VCS backends run.
+    if !old_contents.is_empty() || !new_contents.is_empty() {
+        super::enhance_with_full_file_highlight(
+            &mut files,
+            highlighter,
+            |p| old_contents.remove(p),
+            |p| new_contents.remove(p),
+        );
+    }
+
+    Ok(files)
+}
+
+/// Whether every diff line on `side` matches `content` at its line number.
+/// Guards the full-file pass against contents fetched at a revision that is
+/// not the one the patch was computed from (e.g. a moved base branch), which
+/// would otherwise paint lines with another line's spans.
+fn full_content_matches_diff(file: &DiffFile, side: LineSide, content: &str) -> bool {
+    let lines: Vec<&str> = content.lines().collect();
+    file.hunks.iter().flat_map(|h| &h.lines).all(|line| {
+        let lineno = match side {
+            LineSide::Old => line.old_lineno,
+            LineSide::New => line.new_lineno,
+        };
+        match lineno {
+            None => true,
+            Some(n) => lines
+                .get((n as usize).wrapping_sub(1))
+                .is_some_and(|l| super::tabify(l) == line.content),
+        }
+    })
 }
 
 fn materialize_file_patch(patch: FilePatch, highlighter: &SyntaxHighlighter) -> Result<DiffFile> {
