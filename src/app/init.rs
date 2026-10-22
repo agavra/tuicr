@@ -168,6 +168,35 @@ impl App {
             )?;
             let commit_ids = revision_range.commit_ids.to_vec();
 
+            if options.working_tree && commit_ids.is_empty() {
+                // An empty range has no commit identity for a combined session;
+                // preserve `-w` behavior and review only staged/unstaged changes.
+                let diff_files = Self::get_working_tree_diff_with_ignore(
+                    vcs.as_ref(),
+                    &vcs_info.root_path,
+                    highlighter,
+                    options.path_filter,
+                )?;
+                let session =
+                    Self::load_or_create_session(&vcs_info, SessionDiffSource::StagedAndUnstaged);
+                let app = Self::build(
+                    vcs,
+                    vcs_info,
+                    theme,
+                    comment_type_configs,
+                    output_to_stdout,
+                    diff_files,
+                    session,
+                    DiffSource::StagedAndUnstaged,
+                    InputMode::Normal,
+                    Vec::new(),
+                    options.path_filter,
+                    options.repo_url_override.clone(),
+                )?
+                .with_vcs_open_options(options.vcs_open_options());
+                return Ok(app);
+            }
+
             if options.working_tree {
                 // Combined: commit range + staged/unstaged changes
                 let diff_files = Self::get_working_tree_with_commits_diff_with_ignore(
