@@ -267,7 +267,8 @@ fn get_working_tree_with_commits_diff_once(
     highlighter: &SyntaxHighlighter,
 ) -> Result<Vec<DiffFile>> {
     if commit_ids.is_empty() {
-        return Err(TuicrError::NoChanges);
+        // An empty revision range still has a meaningful working-tree diff.
+        return get_working_tree_diff_once(repo, comparison, highlighter);
     }
 
     let oldest_id = git2::Oid::from_str(&commit_ids[0])?;
@@ -483,6 +484,38 @@ mod tests {
         let result = parse_diff(&diff, &highlighter);
 
         assert!(matches!(result, Err(TuicrError::NoChanges)));
+    }
+
+    #[test]
+    fn empty_commit_range_still_returns_working_tree_changes() {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let repo = Repository::init(temp_dir.path()).expect("failed to init repo");
+        create_initial_commit(&repo, "fixture.txt", "base\n");
+        fs::write(
+            temp_dir.path().join("fixture.txt"),
+            "synthetic working-tree edit\n",
+        )
+        .expect("failed to update synthetic fixture");
+        let range = crate::vcs::git::repository::resolve_revision_range(&repo, "HEAD..HEAD")
+            .expect("empty synthetic commit range should resolve");
+        assert!(range.commit_ids.is_empty());
+
+        let files = get_working_tree_with_commits_diff(
+            &repo,
+            &range.commit_ids,
+            &DiffWhitespaceMode::Normal,
+            &SyntaxHighlighter::default(),
+        )
+        .expect("an empty commit range must still show working-tree changes");
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].display_path(), Path::new("fixture.txt"));
+        assert!(
+            files[0].hunks[0]
+                .lines
+                .iter()
+                .any(|line| line.content == "synthetic working-tree edit")
+        );
     }
 
     #[test]

@@ -237,10 +237,6 @@ fn revwalk_range(repo: &Repository, base: &str, head: &str) -> Result<Vec<String
         commit_ids.push(oid?.to_string());
     }
 
-    if commit_ids.is_empty() {
-        return Err(TuicrError::NoChanges);
-    }
-
     commit_ids.reverse();
     Ok(commit_ids)
 }

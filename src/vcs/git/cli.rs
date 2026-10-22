@@ -410,7 +410,7 @@ impl VcsBackend for GitCliBackend {
         highlighter: &SyntaxHighlighter,
     ) -> Result<Vec<DiffFile>> {
         if commit_ids.is_empty() {
-            return Err(TuicrError::NoChanges);
+            return self.get_working_tree_diff(highlighter);
         }
 
         let base_rev = parent_rev_or_empty(&self.root_path, &commit_ids[0])?;
@@ -1271,10 +1271,6 @@ fn rev_list_range(workdir: &Path, base: &str, head: &str) -> Result<Vec<String>>
         .filter(|line| !line.is_empty())
         .map(str::to_string)
         .collect();
-
-    if commit_ids.is_empty() {
-        return Err(TuicrError::NoChanges);
-    }
 
     Ok(commit_ids)
 }
