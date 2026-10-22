@@ -578,6 +578,7 @@ impl App {
             show_pr_checks: false,
             show_pr_comments: true,
             should_quit: false,
+            full_redraw_pending: false,
             dirty: false,
             quit_warned: false,
             message: None,

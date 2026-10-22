@@ -27,6 +27,12 @@ Full reference. Press `?` inside tuicr for an in-app version of this list.
 | `zt` | Scroll cursor to top of screen |
 | `zz` | Center cursor on screen |
 | `zb` | Scroll cursor to bottom of screen |
+| `Ctrl-l` | Clear and redraw the whole screen |
+
+`Ctrl-l` works in every mode, including while typing a comment, a `:` command or
+a search. Use it when the terminal leaves stale text on screen, for example after
+a font size change in a window that wasn't visible. tuicr also redraws in full
+whenever the terminal reports a resize.
 
 ## Diff search
 

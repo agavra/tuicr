@@ -325,6 +325,7 @@ A first-session cheatsheet. Press `?` inside tuicr for the full reference.
 | `:submit` | Push review to GitHub, GitLab, Gitea, Bitbucket, Azure DevOps, or Gerrit |
 | `:theme` | Open a live-preview theme picker (`/` to filter); `:theme <name>` applies directly. Session-only; set `theme` in `config.toml` to keep it |
 | `Tab` in `:` prompt | Complete or cycle commands |
+| `Ctrl-l` | Redraw the whole screen |
 | `?` | Toggle full help |
 
 While composing a comment in the default editor, `↑` / `↓` move one displayed row,

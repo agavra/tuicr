@@ -207,6 +207,8 @@ Repository-managed agent integrations:
 
 - All possible user actions (ScrollDown, NextFile, ToggleReviewed, AddLineComment, etc.)
 - `map_key_to_action(key, mode)` returns the appropriate Action
+- `map_global_key(key)` covers keys that mean the same thing in every mode (`Ctrl-l` → `Redraw`). `main.rs` checks it through `handler::handle_global_key` before the pending-prefix, vim-editor and per-mode maps, so these keys never reach a text buffer
+- `Redraw` (and `Event::Resize`) call `App::request_full_redraw`; the main loop takes the flag before the next draw and calls `TerminalSession::repaint_from_scratch` inside the synchronized update. Do not use ratatui's `Terminal::clear` there: it queries the cursor position, which times out under `--stdout`
 
 ### Data Flow
 

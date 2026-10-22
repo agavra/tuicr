@@ -142,6 +142,10 @@ impl<W: Write> TerminalSession<W> {
     /// Clears the screen and drops the back buffer so the next draw repaints
     /// every cell.
     ///
+    /// Used after an editor hands the terminal back, and for `Ctrl-l` and
+    /// resize events, where the terminal may hold cells that ratatui's diff
+    /// against its last frame would otherwise leave alone.
+    ///
     /// `Terminal::clear` cannot be used here: it starts by reading the cursor
     /// position, whose `ESC [ 6 n` query goes to stdout. When stdout is not
     /// the terminal the reply never arrives, and the two-second timeout fails
@@ -150,7 +154,7 @@ impl<W: Write> TerminalSession<W> {
     ///
     /// Resizing to the current size clears and resets the same way, but sizes
     /// itself from `/dev/tty`.
-    fn repaint_from_scratch(&mut self) -> anyhow::Result<()> {
+    pub fn repaint_from_scratch(&mut self) -> anyhow::Result<()> {
         let area = self.terminal.size()?.into();
         self.terminal.resize(area)?;
         Ok(())
