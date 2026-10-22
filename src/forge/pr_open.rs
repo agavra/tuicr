@@ -17,11 +17,11 @@ use std::path::{Path, PathBuf};
 use crate::error::{Result, TuicrError};
 use crate::forge::join;
 use crate::forge::traits::{
-    ForgeBackend, PrSessionKey, PullRequestCommit, PullRequestDetails, PullRequestInfo,
-    PullRequestReviewMetadata, PullRequestTarget,
+    ForgeBackend, ForgeFileLinesRequest, ForgeFileSide, PrSessionKey, PullRequestCommit,
+    PullRequestDetails, PullRequestInfo, PullRequestReviewMetadata, PullRequestTarget,
 };
-use crate::model::{DiffFile, FilePatch, ReviewSession, SessionDiffSource};
-use crate::syntax::SyntaxHighlighter;
+use crate::model::{DiffFile, FilePatch, FileStatus, ReviewSession, SessionDiffSource};
+use crate::syntax::{SyntaxHighlighter, needs_full_file_highlight};
 use crate::tuicrignore;
 use crate::vcs::diff_parser::parse_file_patches;
 
@@ -102,7 +102,11 @@ pub fn fetch_pr_data(
     }
     let details = pr_info.details.clone();
     let (patches, (commits, review_metadata)) = join(
-        || backend.get_pull_request_diff(&details),
+        || -> Result<Vec<FilePatch>> {
+            let mut patches = backend.get_pull_request_diff(&details)?;
+            attach_container_file_contents(backend, &details, &mut patches);
+            Ok(patches)
+        },
         || {
             join(
                 || backend.list_pull_request_commits(&details),
@@ -114,6 +118,57 @@ pub fn fetch_pr_data(
     let commits = commits.unwrap_or_default();
     let review_metadata = review_metadata.unwrap_or_default();
     Ok((details, patches, commits, review_metadata, pr_info))
+}
+
+/// Upper bound on container-grammar files whose contents are fetched when a
+/// PR opens.
+const MAX_CONTAINER_FILE_FETCHES: usize = 50;
+
+/// Fetch whole-file contents for container-grammar files (PHP, Vue, Svelte,
+/// ...) so the parse can run the full-file highlight pass; lazy per-hunk
+/// coloring cannot enter their nested grammars, so without this those files
+/// render unstyled. Best-effort: a side that cannot be read keeps the
+/// unhighlighted fallback.
+///
+/// Without a local checkout each read is a forge API round trip, so at most
+/// [`MAX_CONTAINER_FILE_FETCHES`] files are fetched; the rest stay unstyled
+/// rather than stalling the PR open.
+fn attach_container_file_contents(
+    backend: &dyn ForgeBackend,
+    details: &PullRequestDetails,
+    patches: &mut [FilePatch],
+) {
+    let container_patches = patches.iter_mut().filter(|patch| {
+        !patch.is_binary
+            && !patch.is_too_large
+            && !patch.patch.is_empty()
+            && patch.display_path().is_some_and(needs_full_file_highlight)
+    });
+    for patch in container_patches.take(MAX_CONTAINER_FILE_FETCHES) {
+        let fetch = |path: &Option<PathBuf>, side: ForgeFileSide| {
+            let request = ForgeFileLinesRequest {
+                repository: details.repository.clone(),
+                base_sha: details.base_sha.clone(),
+                head_sha: details.head_sha.clone(),
+                path: path.clone()?,
+                status: patch.status,
+                side,
+                start_line: 0,
+                end_line: 0,
+            };
+            backend.fetch_file_content(request).ok()
+        };
+        let old_content = match patch.status {
+            FileStatus::Added => None,
+            _ => fetch(&patch.old_path, ForgeFileSide::Base),
+        };
+        let new_content = match patch.status {
+            FileStatus::Deleted => None,
+            _ => fetch(&patch.new_path, ForgeFileSide::Head),
+        };
+        patch.old_content = old_content;
+        patch.new_content = new_content;
+    }
 }
 
 /// CPU-only half of the PR open path: apply `.tuicrignore` to the raw
@@ -207,8 +262,7 @@ pub fn pr_session_repo_path(key: &PrSessionKey) -> PathBuf {
 mod tests {
     use super::*;
     use crate::forge::traits::{
-        ForgeFileLinesRequest, ForgeRepository, PagedPullRequests, PullRequestDetails,
-        PullRequestListQuery,
+        ForgeRepository, PagedPullRequests, PullRequestDetails, PullRequestListQuery,
     };
     use crate::model::DiffLine;
     use chrono::Utc;
@@ -247,6 +301,8 @@ mod tests {
         /// rather than the merge base the patch is taken from. `None` models
         /// a backend that already reports the merge base (GitLab).
         diff_base_sha: Option<String>,
+        /// Whole-file contents served by `fetch_file_content`, per side.
+        contents: Vec<(ForgeFileSide, &'static str)>,
     }
 
     impl StaticBackend {
@@ -256,7 +312,13 @@ mod tests {
                 patch: patch.to_string(),
                 calls: Mutex::new(Vec::new()),
                 diff_base_sha: None,
+                contents: Vec::new(),
             }
+        }
+
+        fn with_contents(mut self, contents: Vec<(ForgeFileSide, &'static str)>) -> Self {
+            self.contents = contents;
+            self
         }
 
         fn with_diff_base_sha(mut self, sha: &str) -> Self {
@@ -286,6 +348,14 @@ mod tests {
         }
         fn fetch_file_lines(&self, _req: ForgeFileLinesRequest) -> Result<Vec<DiffLine>> {
             unimplemented!()
+        }
+        fn fetch_file_content(&self, req: ForgeFileLinesRequest) -> Result<String> {
+            self.calls.lock().unwrap().push("fetch_file_content");
+            self.contents
+                .iter()
+                .find(|(side, _)| *side == req.side)
+                .map(|(_, content)| content.to_string())
+                .ok_or_else(|| TuicrError::Forge("no content".to_string()))
         }
         fn list_review_threads(
             &self,
@@ -805,6 +875,94 @@ rename to new_name.rs
         assert_eq!(
             backend.calls.lock().unwrap().as_slice(),
             &["get_pull_request"]
+        );
+    }
+
+    const PHP_OLD: &str = "<?php\n\nfunction answer(): int\n{\n    return 41;\n}\n";
+    const PHP_NEW: &str = "<?php\n\nfunction answer(): int\n{\n    return 42;\n}\n";
+    const PHP_PATCH: &str = r##"diff --git a/src/answer.php b/src/answer.php
+index 1111111..2222222 100644
+--- a/src/answer.php
++++ b/src/answer.php
+@@ -3,4 +3,4 @@
+ function answer(): int
+ {
+-    return 41;
++    return 42;
+ }
+"##;
+
+    fn changed_line_fg_counts(opened: &OpenedPullRequest) -> Vec<Option<usize>> {
+        opened.diff_files[0].hunks[0]
+            .lines
+            .iter()
+            .filter(|l| l.origin != crate::model::LineOrigin::Context)
+            .map(|l| {
+                l.highlighted_spans.as_ref().map(|spans| {
+                    spans
+                        .iter()
+                        .filter_map(|(style, _)| style.fg)
+                        .collect::<std::collections::HashSet<_>>()
+                        .len()
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn should_highlight_container_grammar_files_using_full_file_contents() {
+        // given a PHP hunk that does not include the `<?php` opening tag
+        let backend = StaticBackend::new(details(), PHP_PATCH).with_contents(vec![
+            (ForgeFileSide::Base, PHP_OLD),
+            (ForgeFileSide::Head, PHP_NEW),
+        ]);
+        let target = PullRequestTarget::with_repository(repo(), 125, "125");
+        let highlighter = SyntaxHighlighter::default();
+        // when
+        let opened = open_pull_request(&backend, target, None, &highlighter).unwrap();
+        // then both changed lines carry real PHP highlighting
+        let counts = changed_line_fg_counts(&opened);
+        assert_eq!(counts.len(), 2);
+        for count in counts {
+            assert!(
+                count.is_some_and(|n| n >= 2),
+                "PHP line should have varied fg colors, got {count:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn should_not_apply_full_file_spans_when_fetched_content_does_not_match_diff() {
+        // given a base-side file from a different revision than the diff
+        let stale_old = "<?php\n\nfunction other(): int\n{\n    return 7;\n}\n";
+        let backend = StaticBackend::new(details(), PHP_PATCH).with_contents(vec![
+            (ForgeFileSide::Base, stale_old),
+            (ForgeFileSide::Head, PHP_NEW),
+        ]);
+        let target = PullRequestTarget::with_repository(repo(), 125, "125");
+        let highlighter = SyntaxHighlighter::default();
+        // when
+        let opened = open_pull_request(&backend, target, None, &highlighter).unwrap();
+        // then the deletion stays unstyled and the addition is highlighted
+        let counts = changed_line_fg_counts(&opened);
+        assert_eq!(counts[0], None, "stale base content must not be applied");
+        assert!(counts[1].is_some_and(|n| n >= 2));
+    }
+
+    #[test]
+    fn should_not_fetch_file_contents_for_non_container_files() {
+        // given
+        let backend = StaticBackend::new(details(), SIMPLE_PATCH);
+        let target = PullRequestTarget::with_repository(repo(), 125, "125");
+        // when
+        open_pull_request(&backend, target, None, &SyntaxHighlighter::default()).unwrap();
+        // then
+        assert!(
+            !backend
+                .calls
+                .lock()
+                .unwrap()
+                .contains(&"fetch_file_content")
         );
     }
 }
