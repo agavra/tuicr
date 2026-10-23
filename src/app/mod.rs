@@ -1349,6 +1349,10 @@ pub struct App {
     pub show_pr_comments: bool,
 
     pub should_quit: bool,
+    /// Set by `Ctrl-l` or a terminal resize. The main loop takes it before the
+    /// next draw and clears the screen, so ratatui repaints every cell instead
+    /// of only the ones that changed since the last frame.
+    full_redraw_pending: bool,
     pub dirty: bool,
     pub quit_warned: bool,
     pub message: Option<Message>,

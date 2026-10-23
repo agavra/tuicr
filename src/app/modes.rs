@@ -53,6 +53,19 @@ impl App {
         expired
     }
 
+    /// Ask for the next frame to repaint every cell. ratatui only writes the
+    /// cells that differ from its last frame, so this is what fixes a screen
+    /// the terminal has garbled behind tuicr's back.
+    pub fn request_full_redraw(&mut self) {
+        self.full_redraw_pending = true;
+    }
+
+    /// Returns `true`, once, if a full redraw was requested since the last
+    /// call. The main loop calls this before each draw.
+    pub fn take_full_redraw(&mut self) -> bool {
+        std::mem::take(&mut self.full_redraw_pending)
+    }
+
     pub fn enter_command_mode(&mut self) {
         self.command_return_mode = self.input_mode;
         self.input_mode = InputMode::Command;

@@ -1,4 +1,4 @@
-use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Position;
 
 use crate::app::{
@@ -7,7 +7,7 @@ use crate::app::{
 };
 use crate::forge::remote_comments::PrCommentsVisibility;
 use crate::forge::submit::SubmitEvent;
-use crate::input::Action;
+use crate::input::{Action, map_global_key};
 use crate::model::{ClearScope, LineSide};
 use crate::output::{copy_text_to_clipboard, export_to_clipboard, generate_export_content};
 use crate::text_edit::{
@@ -173,6 +173,19 @@ enum CommandAfterDispatch {
 enum CompletionDirection {
     Forward,
     Reverse,
+}
+
+/// Handle a key that means the same thing in every input mode (see
+/// `map_global_key`). Returns `true` when the key was consumed, so the caller
+/// skips the per-mode maps.
+pub fn handle_global_key(app: &mut App, key: KeyEvent) -> bool {
+    match map_global_key(key) {
+        Action::Redraw => {
+            app.request_full_redraw();
+            true
+        }
+        _ => false,
+    }
 }
 
 pub fn handle_mouse_event(app: &mut App, event: MouseEvent) {

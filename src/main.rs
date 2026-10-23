@@ -479,6 +479,11 @@ fn main() -> anyhow::Result<()> {
             // tears as escape sequences arrive in chunks. Terminals that do
             // not support DEC 2026 ignore it.
             queue!(terminal.backend_mut(), BeginSynchronizedUpdate)?;
+            // `Ctrl-l` or a resize asked for every cell to be rewritten. The
+            // clear lands inside the synchronized update, so it never flashes.
+            if app.take_full_redraw() {
+                terminal.repaint_from_scratch()?;
+            }
             terminal.draw(|frame| {
                 ui::render(frame, &mut app);
             })?;
@@ -565,6 +570,13 @@ fn main() -> anyhow::Result<()> {
                     if pending_ctrl_c.is_some() {
                         pending_ctrl_c = None;
                         app.message = None;
+                    }
+
+                    // Keys that work the same in every mode (`Ctrl-l` redraw).
+                    // Checked before the pending-prefix and vim-editor routing
+                    // so they never reach a text buffer.
+                    if handler::handle_global_key(&mut app, key) {
+                        continue;
                     }
 
                     // Handle pending z command for zz/zt/zb viewport positioning
@@ -868,6 +880,10 @@ fn main() -> anyhow::Result<()> {
                     }
                 }
                 Event::Mouse(mouse_event) => handle_mouse_event(&mut app, mouse_event),
+                // ratatui clears on its own only when the size changed. A
+                // font change, or a resize that lands back on the same size,
+                // can leave stale cells it would never rewrite.
+                Event::Resize(..) => app.request_full_redraw(),
                 Event::Paste(text) => {
                     // Bracketed-paste payload — route to whichever handler is
                     // currently accepting text input. Other modes ignore.

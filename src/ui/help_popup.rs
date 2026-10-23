@@ -146,6 +146,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  Ctrl-l    ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Redraw the whole screen (works in every mode)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  g/G       ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
