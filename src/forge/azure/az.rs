@@ -46,6 +46,9 @@ const API_VERSION: &str = "7.1";
 /// Well-known Azure DevOps AAD application (resource) id. `az rest --resource`
 /// uses it to acquire a token for the Azure DevOps audience.
 const AZ_RESOURCE: &str = "499b84ac-1321-427f-aa17-267ca6975798";
+/// How much of an error body to keep, in characters. Long enough for a real
+/// Azure DevOps message, short enough not to flood the status line.
+const MAX_DETAIL_CHARS: usize = 400;
 /// Canonical Azure DevOps cloud host. `*.visualstudio.com` URLs are normalized
 /// to this so all API URLs share one shape.
 const DEFAULT_AZURE_HOST: &str = "dev.azure.com";
@@ -711,12 +714,15 @@ fn map_http_error(error: AzHttpError, host: &str) -> TuicrError {
 }
 
 /// Keep error detail readable: collapse whitespace and cap the length.
+///
+/// The cap counts characters, not bytes: an error body can quote non-ASCII
+/// names or be an HTML page, and slicing at a byte offset panics when it lands
+/// inside a multi-byte character.
 fn trim_detail(detail: &str) -> String {
     let collapsed = detail.split_whitespace().collect::<Vec<_>>().join(" ");
-    if collapsed.len() > 400 {
-        format!("{}…", &collapsed[..400])
-    } else {
-        collapsed
+    match collapsed.char_indices().nth(MAX_DETAIL_CHARS) {
+        Some((end, _)) => format!("{}…", &collapsed[..end]),
+        None => collapsed,
     }
 }
 
@@ -1020,6 +1026,26 @@ mod tests {
     fn azure_coords_errors_without_project() {
         let repo = ForgeRepository::azure("dev.azure.com", "myorg", "myrepo");
         assert!(azure_coords(&repo).is_err());
+    }
+
+    // ---- Error detail ----
+
+    #[test]
+    fn trim_detail_caps_characters_without_splitting_a_multi_byte_character() {
+        // given — a body whose 400th *byte* falls inside a 3-byte character.
+        // Capping by byte offset panicked here, so a long non-ASCII error
+        // body from Azure DevOps took the whole TUI down instead of reporting.
+        let detail = format!("{}{}", "a".repeat(399), "€".repeat(10));
+        // when
+        let trimmed = trim_detail(&detail);
+        // then — 400 characters kept, plus the ellipsis
+        assert_eq!(trimmed.chars().count(), MAX_DETAIL_CHARS + 1);
+        assert!(trimmed.ends_with("a€…"), "unexpected tail: {trimmed}");
+    }
+
+    #[test]
+    fn trim_detail_leaves_short_detail_untrimmed_and_collapses_whitespace() {
+        assert_eq!(trim_detail("  not\n  found\t "), "not found");
     }
 
     // ---- create_review payload (via a recording transport) ----
