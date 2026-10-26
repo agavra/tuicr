@@ -19,6 +19,8 @@ Related references: [CONFIG.md](CONFIG.md) for the config file and themes,
 | `tuicr review list` | List persisted review sessions |
 | `tuicr review add` | Add a local draft comment to a session |
 | `tuicr review comments` (`tuicr review get`) | Print a session's comments |
+| `tuicr review rm` (`tuicr review remove`) | Remove one inactive saved session; `--empty` protects sessions with comments or reviewed state |
+| `tuicr review prune` | Remove inactive sessions matching `--empty` or `--older-than DURATION`; scope with `--repo` or `--all`, preview with `--dry-run` |
 | `tuicr update [VERSION]` | Update the installed binary |
 
 `mr` is an alias of `pr`, and `get` an alias of `comments`; they behave
@@ -170,7 +172,7 @@ nothing" apart from "quit without looking".
 TUI itself rendered to `/dev/tty`. Combined with the two stderr markers, that
 keeps stdout clean for a pipe.
 
-All three `tuicr review` subcommands print pretty JSON to stdout and nothing
+All `tuicr review` subcommands print pretty JSON to stdout and nothing
 else. There is no `--json` flag because JSON is the only format. See
 [REVIEW_CLI.md](REVIEW_CLI.md) for the schemas.
 
