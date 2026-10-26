@@ -591,14 +591,22 @@ mod tests {
         let buffer = draw_app(&mut app, 120, 30);
         let text = buffer_text(&buffer);
 
-        assert_eq!(app.diff_area, Some(Rect::new(24, 1, 96, 28)));
-        assert_eq!(app.diff_inner_area, Some(Rect::new(25, 2, 94, 26)));
+        let sidebar = app.file_list_area.expect("file sidebar stays open");
+        let diff_width = 120 - sidebar.width;
+        assert_eq!(
+            app.diff_area,
+            Some(Rect::new(sidebar.right(), 1, diff_width, 28))
+        );
+        assert_eq!(
+            app.diff_inner_area,
+            Some(Rect::new(sidebar.right() + 1, 2, diff_width - 2, 26))
+        );
         assert_eq!(app.summary_state.viewport_height, 26);
         let (files_x, files_y) = find_text_cell(&buffer, "Files");
-        assert!(files_x < 24);
+        assert!(files_x < sidebar.right());
         assert_eq!(files_y, 1);
         let (summary_x, summary_y) = find_text_cell(&buffer, "Pending Comments (1)");
-        assert!(summary_x >= 24);
+        assert!(summary_x >= sidebar.right());
         assert_eq!(summary_y, 1);
         assert!(!text.contains("line 1483"));
         // These are normally rewritten by either diff renderer. Keeping them

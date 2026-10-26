@@ -18,9 +18,8 @@ pub(super) fn render_comment_navigator(
     items: &[CommentNavigatorItem],
 ) {
     let focused = app.focused_panel == FocusedPanel::Comments;
-    let title = format!(" Comments · {} ", items.len());
     let block = Block::default()
-        .title(title)
+        .title(comment_navigator_title(items.len()))
         .borders(Borders::ALL)
         .style(styles::panel_style(&app.theme))
         .border_style(styles::border_style(&app.theme, focused));
@@ -55,6 +54,11 @@ pub(super) fn render_comment_navigator(
         .block(block);
 
     frame.render_stateful_widget(list, area, &mut app.comment_navigator_state.list_state);
+}
+
+/// The layout sizes the left column to fit this title.
+pub(super) fn comment_navigator_title(count: usize) -> String {
+    format!(" Comments · {count} ")
 }
 
 fn render_comment_row(app: &App, item: &CommentNavigatorItem) -> Line<'static> {
