@@ -168,6 +168,13 @@ impl App {
             )?;
             let commit_ids = revision_range.commit_ids.to_vec();
 
+            if commit_ids.is_empty() && !options.working_tree {
+                // Commit-range sessions need a selected commit for their identity.
+                // Preserve the ordinary empty-diff result instead of letting the
+                // session constructor unwrap an absent final commit.
+                return Err(TuicrError::NoChanges);
+            }
+
             if options.working_tree && commit_ids.is_empty() {
                 // An empty range has no commit identity for a combined session;
                 // preserve `-w` behavior and review only staged/unstaged changes.
