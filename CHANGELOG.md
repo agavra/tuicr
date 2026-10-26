@@ -2,6 +2,51 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.28.0] - 2026-10-26
+
+### Bug Fixes
+
+- **search:** Use regexes for diff search (#752)
+- **comments:** Support vertical cursor movement (#744)
+- Resolve nested GitLab group owners as the full namespace (#656)
+- Keep the comment input on screen at EOF when lines wrap (#605)
+- **forge:** Resolve PR diff bases to the merge base (#756)
+- **watch:** Keep a -r range in the commit pane on watch ticks (#757)
+- **ignore:** Honor nested .gitignore files like git does (#763)
+- **cli:** Keep an emptied session that a running tuicr has open (#773)
+- **pr:** Carry the review forward when a PR is reopened at a new head (#762)
+- **ignore:** Don't follow a symlinked .gitignore, as git doesn't (#774)
+- **terminal:** Bound the keyboard enhancement probe so startup cannot hang (#779)
+- **gitlab:** Accept null MR description (#789)
+- **theme:** Keep local themes usable with linked or missing syntax themes (#768)
+- **ui:** Map selection and wrapping by display cells, not chars (#776)
+- **file:** Isolate single-file review sessions (#775)
+- **azure:** Cap error details by characters so non-ASCII bodies don't panic (#805)
+- **ui:** Stop j/k at the file's edges when the terminal can't report key releases (#800)
+- **jj:** Diff merge commits with a revset range instead of <id>- (#807)
+
+### Features
+
+- **cli:** Open at a source line with --line (#755)
+- **ui:** Toggle relative line numbers with <leader>n (#747)
+- **selector:** Delete and unhide saved reviews from the Sessions tab (#679)
+- **ui:** Show the cursor line's own number with relative numbering (#780)
+- **config:** Add mouse_scroll_lines to set lines per wheel tick (#798)
+- Add an independent selection marker theme color (#777)
+- **ui:** Add Ctrl-l to clear and redraw the whole screen (#806)
+
+### Performance
+
+- Syntax highlight diff lines as they scroll into view (#712)
+- **github:** Fetch independent PR data concurrently on open (#797)
+
+### Comments
+
+- Ask about the comment the annotation points at (#758)
+
+### Ui
+
+- Align wrapped diff content after the gutter (#760)
 ## [0.27.0] - 2026-09-23
 
 ### Bug Fixes
