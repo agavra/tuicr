@@ -572,6 +572,62 @@ fn push_single_line(buffer: &mut String, text: &str) {
     }
 }
 
+/// Route a bracketed-paste payload. Text inputs take it as typed text. On a
+/// diff line or a visual (or mouse) selection, a paste first opens a comment
+/// there the way `c` does, so dictation tools that paste their transcript
+/// don't need `c` pressed first. Other modes ignore it.
+pub fn handle_paste(app: &mut App, text: String) {
+    if app.input_mode == InputMode::Normal && app.file_tree_prompt_editing() {
+        handle_file_list_action(app, Action::Paste(text));
+        return;
+    }
+    let starts_comment = match app.input_mode {
+        InputMode::Normal => app.focused_panel == FocusedPanel::Diff,
+        InputMode::VisualSelect => true,
+        _ => false,
+    };
+    if starts_comment {
+        // A stray newline or space shouldn't open an empty comment.
+        if text.trim().is_empty() {
+            return;
+        }
+        // Same paths as `c`, including their message when there is no line
+        // to comment on; the paste is then dropped.
+        if app.input_mode == InputMode::VisualSelect {
+            handle_visual_action(app, Action::AddRangeComment);
+        } else {
+            app.pending_count = None;
+            handle_shared_normal_action(app, Action::AddLineComment);
+        }
+        if app.input_mode != InputMode::Comment {
+            return;
+        }
+        // Fill the new comment as a plain buffer paste, which leaves the text
+        // cursor after the text. The vim overlay is then built from the buffer
+        // in Insert mode at that cursor; edtui's own paste would park the cursor
+        // on the last pasted character instead.
+        handle_comment_action(app, Action::Paste(text));
+        app.ensure_comment_vim_editor();
+        return;
+    }
+    // Vim comment box: feed the overlay so the buffer stays synced.
+    if app.input_mode == InputMode::Comment && app.comment_vim_enabled {
+        app.ensure_comment_vim_editor();
+        app.comment_vim_feed_paste(text);
+        return;
+    }
+    let action = Action::Paste(text);
+    match app.input_mode {
+        InputMode::Comment => handle_comment_action(app, action),
+        InputMode::Command => handle_command_action(app, action),
+        InputMode::Search => handle_search_action(app, action),
+        InputMode::CommitSelect if app.pr_filter_editing() => {
+            handle_commit_select_action(app, action)
+        }
+        _ => {}
+    }
+}
+
 /// Handle actions in Help mode (scrolling only)
 pub fn handle_help_action(app: &mut App, action: Action) {
     match action {
