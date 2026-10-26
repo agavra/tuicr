@@ -1432,6 +1432,10 @@ pub struct App {
     /// so that they aren't re-colored.
     /// Cleared by `rebuild_annotations`, which runs whenever the diff is replaced.
     pub colored_hunks: HashSet<(usize, usize)>,
+    /// Files `color_visible_hunks` already tried to color from fetched file
+    /// content, so a failed fetch is not retried for each of the file's hunks.
+    /// Cleared with `colored_hunks`.
+    pub full_file_attempted: HashSet<usize>,
     /// Output to stdout instead of clipboard when exporting
     pub output_to_stdout: bool,
     /// Pending output to print to stdout after TUI exits

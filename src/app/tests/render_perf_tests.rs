@@ -93,6 +93,13 @@ pub(in crate::app) fn file(path: &str, lines_per_file: usize) -> DiffFile {
 }
 
 pub(in crate::app) fn app_with(files: Vec<DiffFile>) -> App {
+    app_with_backend(|info| Box::new(StubVcs(info)), files)
+}
+
+pub(in crate::app) fn app_with_backend(
+    backend: impl FnOnce(VcsInfo) -> Box<dyn VcsBackend>,
+    files: Vec<DiffFile>,
+) -> App {
     let vcs_info = VcsInfo {
         root_path: PathBuf::from("/tmp"),
         head_commit: "head".into(),
@@ -106,7 +113,7 @@ pub(in crate::app) fn app_with(files: Vec<DiffFile>) -> App {
         SessionDiffSource::WorkingTree,
     );
     App::build(
-        Box::new(StubVcs(vcs_info.clone())),
+        backend(vcs_info.clone()),
         vcs_info,
         crate::theme::Theme::dark(),
         None,
