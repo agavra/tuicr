@@ -17,6 +17,12 @@ pub struct FilePatch {
     pub patch: String,
     pub is_binary: bool,
     pub is_too_large: bool,
+    /// Whole file at the old side, when the backend fetched it up front.
+    /// Only forge PR diffs fill this, and only for container-grammar files
+    /// (PHP, Vue, ...) whose highlighting needs full-file context.
+    pub old_content: Option<String>,
+    /// Whole file at the new side; see [`Self::old_content`].
+    pub new_content: Option<String>,
 }
 
 impl FilePatch {
@@ -33,6 +39,8 @@ impl FilePatch {
             patch: patch.into(),
             is_binary: false,
             is_too_large: false,
+            old_content: None,
+            new_content: None,
         }
     }
 

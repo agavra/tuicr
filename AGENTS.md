@@ -361,6 +361,8 @@ These are non-obvious things the implementation chain hit. Worth preserving for 
 
 23. **`fetch_pr_data` fans out once the PR metadata is in.** `get_pull_request_info` and `resolve_diff_base_sha` run first, then `get_pull_request_diff`, `list_pull_request_commits`, and `list_pull_request_review_metadata` run concurrently through `forge::join` (scoped threads), so opening a PR waits for the slowest of them rather than their sum. The backend must therefore be `Sync` (`create_forge_backend` returns `Box<dyn ForgeBackend + Sync>`), and test fakes record calls through `Mutex` or atomics, not `RefCell` or `Cell`. Each call still paginates sequentially, and errors keep the sequential precedence: a diff error fails the open, while commit and review-metadata failures degrade to empty. GitHub's `get_pull_request_diff` fetches `pulls/N/files` and `gh pr diff` the same way, and a file-list error wins over a patch error.
 
+24. **Container grammars need whole-file contents in PR mode too.** Lazy coloring (`app/coloring.rs`) leaves `needs_full_file_highlight` files (PHP, Vue, Svelte, ...) to the whole-file pass, which the local VCS backends run at load. The forge PR path has no working tree, so `fetch_pr_data` attaches their old/new contents to `FilePatch::old_content`/`new_content` via `fetch_file_content` (alongside the diff fetch, capped at 50 files), and `parse_file_patches` runs `enhance_with_full_file_highlight` on them. A side whose contents do not match the diff lines is dropped rather than mis-painted. Regression test: `should_highlight_container_grammar_files_using_full_file_contents`.
+
 ### Keeping Docs Updated
 
 When adding user-facing features, update the relevant documentation:
