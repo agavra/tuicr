@@ -95,3 +95,53 @@ Common errors:
 | `GitLab integration requires glab.` | Install the GitLab CLI, then run `glab auth login`. |
 | `GitLab authentication failed.` | Run `glab auth login` for the host named in the error. |
 | `GitLab token lacks merge request write permission.` | Authenticate with an account or token that has merge request write access. |
+
+## Heptapod
+
+[Heptapod](https://about.heptapod.host/) is a GitLab fork that adds Mercurial
+support. The REST API and merge-request model are identical, so `glab`
+authenticates against an Heptapod instance unchanged:
+
+```bash
+glab auth login --hostname foss.heptapod.net
+```
+
+Once authenticated, open an Heptapod MR the same way as a GitLab MR:
+
+```bash
+tuicr mr https://foss.heptapod.net/owner/repo/-/merge_requests/42
+```
+
+### Local Mercurial checkout
+
+When the MR is opened from a local `hg` checkout of the MR branch, tuicr
+detects the Mercurial working tree once at startup and routes its local-read
+optimizations through `hg cat` and `hg diff -r` instead of `git show` and
+`git diff`. Without that routing, the inline commit-subset selector (which
+falls back to a local `git diff`) returns an unsupported error; everything else
+degrades gracefully to the REST API.
+
+tuicr also reads the checkout's remotes: when the working directory is not a
+Git repository, remote detection falls back to `hg paths` — where `hg clone`
+records the source URL — so `tuicr mr <N>` and the Pull Requests tab resolve
+the repository from inside the checkout, no `--repo-url` needed. In a
+colocated repo (both `.git` and `.hg`) the Git remotes win.
+
+The SHAs Heptapod reports are Mercurial changeset IDs, not Git SHAs. Tuicr
+treats them as opaque tokens, so the same `head_sha`/`base_sha` plumbing
+that works for GitLab works for Heptapod.
+
+### Recognizing a commercial instance
+
+`foss.heptapod.net` and any host whose name contains "heptapod" are detected
+automatically. Commercial Heptapod instances on neutral hostnames (e.g.
+`orus.io`) are not — set `HEPTAPOD_URL` so tuicr claims the host as Heptapod
+rather than letting the GitLab or GitHub catch-all take it:
+
+```bash
+export HEPTAPOD_URL=https://orus.io
+```
+
+The variable is process-global and names a single server. Reviewing on two
+Heptapod instances means scoping it per checkout (direnv, a shell wrapper) or
+leaving it unset where the hostname already carries the signal.

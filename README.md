@@ -1,6 +1,6 @@
 # tuicr
 
-**A code review TUI with vim keybindings. Export to GitHub, GitLab, Gitea, Bitbucket, Azure DevOps, Gerrit, or clipboard.**
+**A code review TUI with vim keybindings. Export to GitHub, GitLab, Heptapod, Gitea, Bitbucket, Azure DevOps, Gerrit, or clipboard.**
 
 [![Crates.io](https://img.shields.io/crates/v/tuicr)](https://crates.io/crates/tuicr)
 [![License](https://img.shields.io/crates/l/tuicr)](./LICENSE)
@@ -16,10 +16,10 @@
 - GitHub-style continuous diff in the terminal. Scroll through every changed file in one stream.
 - PR-style comments at the line, range, file, and review level. 
 - Review tracking at file or hunk granularity, persisted across sessions.
-- Three export targets: push a real review to GitHub, GitLab, Gitea, Bitbucket, Azure DevOps, or Gerrit, copy
+- Three export targets: push a real review to GitHub, GitLab, Heptapod, Gitea, Bitbucket, Azure DevOps, or Gerrit, copy
   structured markdown to your clipboard, or pipe to stdout.
 - Works with git, jj, and mercurial. Reviews uncommitted changes, commit ranges, or any GitHub PR,
-  GitLab MR, Gitea PR, Bitbucket PR, Azure DevOps PR, or Gerrit change.
+  GitLab MR, Heptapod MR, Gitea PR, Bitbucket PR, Azure DevOps PR, or Gerrit change.
 
 ## Install
 
@@ -82,9 +82,9 @@ tuicr -r main..HEAD         # Commit range
 tuicr --file f.md --line 42 # Annotate a file, starting at line 42
 tuicr pr 125                # GitHub, Gitea, Bitbucket, or Azure DevOps PR, or Gerrit change
 tuicr pr 125 --remote up    # Use a named Git remote's fetch URL
-tuicr mr 125                # GitLab MR
+tuicr mr 125                # GitLab or Heptapod MR
 tuicr tui pr 125            # GitHub PR via explicit TUI subcommand
-tuicr tui mr 125            # GitLab MR via explicit TUI subcommand
+tuicr tui mr 125            # GitLab or Heptapod MR via explicit TUI subcommand
 tuicr --stdout              # Pipe the review to stdout
 tuicr review list           # List saved local review sessions
 tuicr update                # Update the active installation
@@ -119,6 +119,7 @@ including when reviewing root commits; ordinary SHA-1 repositories still default
 | Vim keybindings | ✅ | ❌ | partial¹ | ❌ | ❌ |
 | Push inline review to GitHub | ✅ | ❌ | ❌ | partial² | ❌ |
 | Push inline review to GitLab | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Push inline review to Heptapod | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Push inline review to Gitea | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Push inline review to Bitbucket | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Push inline review to Azure DevOps | ✅ | ❌ | ❌ | ❌ | ❌ |
@@ -152,6 +153,17 @@ as discussion notes, or as draft notes for Draft. Review-level comments become t
 Requires `glab` authenticated to the host. Request changes needs your account to be an assigned
 reviewer. See [docs/GITLAB.md](docs/GITLAB.md) for setup, self-hosted instances, and
 troubleshooting.
+
+### To Heptapod
+
+`:submit` offers the same four events as GitLab — Heptapod speaks GitLab's REST API, so `glab`
+authenticates against an Heptapod instance unchanged. The difference is the underlying VCS is
+Mercurial, not Git: SHAs are changeset IDs. Tuicr never parses those, so the GitLab plumbing
+works as-is. When the MR is opened from a local `hg` checkout, tuicr reads the checkout's
+remotes via `hg paths` (no `--repo-url` needed) and file reads and commit-range diffs route
+through `hg cat` / `hg diff -r` instead of `git show` / `git diff`; otherwise the backend
+falls back to the REST API. Set `HEPTAPOD_URL` to recognize a commercial instance on a neutral
+hostname (e.g. `orus.io`); `foss.heptapod.net` is detected by name.
 
 ### To Gitea
 
@@ -322,7 +334,7 @@ A first-session cheatsheet. Press `?` inside tuicr for the full reference.
 | `e` | Open focused file in `$EDITOR` (in PR review: the PR's revision, as a read-only copy when the checkout differs) |
 | `y` | Copy review to clipboard |
 | `:edit` | Open focused file in `$EDITOR` |
-| `:submit` | Push review to GitHub, GitLab, Gitea, Bitbucket, Azure DevOps, or Gerrit |
+| `:submit` | Push review to GitHub, GitLab, Heptapod, Gitea, Bitbucket, Azure DevOps, or Gerrit |
 | `:theme` | Open a live-preview theme picker (`/` to filter); `:theme <name>` applies directly. Session-only; set `theme` in `config.toml` to keep it |
 | `Tab` in `:` prompt | Complete or cycle commands |
 | `Ctrl-l` | Redraw the whole screen |
