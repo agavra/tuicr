@@ -524,7 +524,12 @@ pub(super) fn wrap_spans<'a>(spans: &[Span<'a>], width: usize) -> Vec<Vec<Span<'
             *unit_w = 0;
             return;
         }
-        if *unit_w <= width {
+        // A row holding only whitespace would be pushed out as a blank row: fill it by
+        // breaking the unit across rows instead, as an over-long word is.
+        let current_is_blank = current
+            .iter()
+            .all(|it| it.grapheme == " " || it.grapheme == "\t");
+        if *unit_w <= width && !current_is_blank {
             rows.push(std::mem::take(current));
             *current_w = *unit_w;
             current.append(unit);
@@ -691,6 +696,33 @@ mod tests {
         // then
         assert!(result.ends_with("..."));
         assert!(result.is_char_boundary(result.len()));
+    }
+
+    fn row_texts(rows: &[Vec<Span<'_>>]) -> Vec<String> {
+        rows.iter()
+            .map(|row| row.iter().map(|span| span.content.as_ref()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn should_not_leave_a_blank_row_when_a_word_does_not_fit_after_the_indent() {
+        // given an indented line whose first word fits a fresh row but not what is left
+        let spans = [Span::raw("    abcde")];
+        // when
+        let rows = row_texts(&wrap_spans(&spans, 8));
+        // then the word fills the indent row instead of leaving it blank
+        assert_eq!(rows, vec!["    abcd", "e"]);
+    }
+
+    #[test]
+    fn should_not_emit_a_whitespace_only_row_between_words() {
+        // given a space that lands alone on a row before a word that does not fit beside it
+        let spans = [Span::raw("aaa bbb")];
+        // when
+        let rows = row_texts(&wrap_spans(&spans, 3));
+        // then no row is whitespace-only
+        assert!(rows.iter().all(|row| !row.trim().is_empty()), "{rows:?}");
+        assert_eq!(rows.concat(), "aaa bbb");
     }
 
     #[test]
