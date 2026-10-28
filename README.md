@@ -203,7 +203,7 @@ I reviewed your code and have the following comments. Please address them.
 
 Paste it back to any coding agent (Claude, Codex, Cursor, etc).
 
-For an agent-driven workflow where your agent opens tuicr in a cmux, tmux, Zellij, or
+For an agent-driven workflow where your agent opens tuicr in a cmux, Rex, tmux, Zellij, or
 Herdr split pane, see [skills/tuicr/SKILL.md](skills/tuicr/SKILL.md).
 
 ### To stdout
