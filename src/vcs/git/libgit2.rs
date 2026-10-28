@@ -1,4 +1,4 @@
-use git2::Repository;
+use git2::{Repository, RepositoryOpenFlags};
 use std::path::{Path, PathBuf};
 use std::sync::Once;
 
@@ -30,7 +30,7 @@ fn register_supported_extensions() {
     static REGISTER: Once = Once::new();
     REGISTER.call_once(|| {
         // SAFETY: libgit2 stores extensions in a process-wide static. We call
-        // this exactly once, before any `Repository::discover`, via `Once`.
+        // this exactly once, before any repository is opened, via `Once`.
         unsafe {
             let _ = git2::opts::set_extensions(&["relativeworktrees"]);
         }
@@ -40,7 +40,18 @@ fn register_supported_extensions() {
 impl Libgit2Backend {
     pub(super) fn discover_from(cwd: &Path, whitespace_mode: DiffWhitespaceMode) -> Result<Self> {
         register_supported_extensions();
-        let repo = Repository::discover(cwd).map_err(|_| TuicrError::NotARepository)?;
+        // `Repository::discover` resolves the repository path first and then
+        // reopens that path, which loses the worktree that `discover` found.
+        // For `git init --separate-git-dir`, the Git directory lives outside
+        // the worktree, so the reopen guesses the Git directory's parent as
+        // the worktree. `open_ext` discovers and opens in one step, keeping
+        // the worktree libgit2 resolved from the `.git` gitfile.
+        let repo = Repository::open_ext(
+            cwd,
+            RepositoryOpenFlags::empty(),
+            std::iter::empty::<&std::ffi::OsStr>(),
+        )
+        .map_err(|_| TuicrError::NotARepository)?;
 
         let root_path = repo
             .workdir()
@@ -294,5 +305,60 @@ mod tests {
             backend.repo.workdir().is_some(),
             "worktree must report a workdir"
         );
+    }
+
+    #[test]
+    fn should_resolve_worktree_for_separate_git_dir() {
+        // given: `git init --separate-git-dir` stores the Git directory beside
+        // the worktree and links them with a `.git` gitfile. Reopening the
+        // resolved Git directory loses that link, so libgit2 falls back to the
+        // Git directory's parent as the worktree.
+        let temp = tempfile::tempdir().expect("temp dir");
+        let git_dir = temp.path().join("repo.git");
+        let worktree = temp.path().join("repo");
+
+        git(
+            temp.path(),
+            &[
+                "init",
+                "-q",
+                "-b",
+                "main",
+                "--separate-git-dir",
+                git_dir.to_str().unwrap(),
+                worktree.to_str().unwrap(),
+            ],
+        );
+        git(&worktree, &["config", "user.email", "test@example.com"]);
+        git(&worktree, &["config", "user.name", "Test User"]);
+        fs::write(worktree.join("a.txt"), "a\n").unwrap();
+        git(&worktree, &["add", "a.txt"]);
+        git(&worktree, &["commit", "-q", "-m", "a.txt"]);
+        fs::write(worktree.join("b.txt"), "b\n").unwrap();
+        fs::create_dir_all(worktree.join("nested")).unwrap();
+
+        // when
+        let backend = Libgit2Backend::discover_from(&worktree, DiffWhitespaceMode::Normal)
+            .expect("separate-git-dir worktree should open");
+        let nested =
+            Libgit2Backend::discover_from(&worktree.join("nested"), DiffWhitespaceMode::Normal)
+                .expect("nested path should open");
+
+        // then
+        assert_eq!(
+            backend.info().root_path.canonicalize().unwrap(),
+            worktree.canonicalize().unwrap(),
+            "worktree must not resolve to the Git directory's parent"
+        );
+        assert_eq!(
+            nested.info().root_path.canonicalize().unwrap(),
+            worktree.canonicalize().unwrap(),
+        );
+
+        let files = backend
+            .get_working_tree_diff(&SyntaxHighlighter::plain())
+            .expect("working tree diff");
+        assert_eq!(files.len(), 1, "only the untracked file should change");
+        assert_eq!(files[0].display_path(), Path::new("b.txt"));
     }
 }
