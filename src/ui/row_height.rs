@@ -663,9 +663,8 @@ mod tests {
                 id: "comment-1".to_string(),
                 author: Some("reviewer".to_string()),
                 body: "a long inline review comment ".repeat(12),
-                created_at: None,
-                in_reply_to: None,
                 url: "https://example.com/comment".to_string(),
+                ..Default::default()
             }],
         }];
         // `sort_files_by_directory` reorders diff_files by parent directory,

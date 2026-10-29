@@ -1306,9 +1306,8 @@ fn total_lines_must_match_annotations_with_remote_threads() {
             id: "C1".into(),
             author: Some("alice".into()),
             body: "first\nsecond\nthird\nfourth".into(),
-            created_at: None,
-            in_reply_to: None,
             url: "https://example.com/c1".into(),
+            ..Default::default()
         }],
     }];
     app.rebuild_annotations();
@@ -1421,9 +1420,8 @@ fn comment_navigator_items_follow_rendered_comment_order() {
             id: "C1".into(),
             author: Some("alice".into()),
             body: "remote-thread".into(),
-            created_at: None,
-            in_reply_to: None,
             url: "https://example.com/c1".into(),
+            ..Default::default()
         }],
     }];
     app.rebuild_annotations();
@@ -1547,9 +1545,8 @@ fn should_update_current_file_when_navigating_to_remote_comment() {
             id: "C1".into(),
             author: Some("alice".into()),
             body: "remote-thread".into(),
-            created_at: None,
-            in_reply_to: None,
             url: "https://example.com/c1".into(),
+            ..Default::default()
         }],
     }];
     app.rebuild_annotations();
@@ -1595,9 +1592,8 @@ fn should_rebuild_single_file_annotations_when_navigating_to_outdated_remote_com
             id: "C1".into(),
             author: Some("alice".into()),
             body: "outdated-thread".into(),
-            created_at: None,
-            in_reply_to: None,
             url: "https://example.com/c1".into(),
+            ..Default::default()
         }],
     }];
     app.rebuild_annotations();

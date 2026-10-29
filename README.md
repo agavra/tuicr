@@ -183,7 +183,8 @@ unified-diff API, so the diff is built with `git diff base...head`. See
 `:submit` offers Comment, Approve, Request changes, or Draft on a Gerrit change. Inline comments
 post as Gerrit comments (multi-line ranges included) and the review-level comment becomes the
 change message; Approve votes `Code-Review +2` and Request changes votes `-1`. Draft keeps
-everything as Gerrit draft comments so you can publish from the web UI. Auth is your Gerrit HTTP
+everything as Gerrit draft comments so you can publish from the web UI; tuicr keeps showing them,
+marked `draft`. Auth is your Gerrit HTTP
 password in `GERRIT_USERNAME` / `GERRIT_PASSWORD`. Run tuicr from a local clone — the diff is
 built with `git diff base..head` after fetching the change's patch-set ref. See
 [docs/GERRIT.md](docs/GERRIT.md) for setup, detection of self-hosted hosts, and limitations.

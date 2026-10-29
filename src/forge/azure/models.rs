@@ -313,7 +313,7 @@ impl AzThread {
                 body: c.content,
                 created_at: c.published_date,
                 in_reply_to: (c.parent_comment_id != 0).then(|| c.parent_comment_id.to_string()),
-                url: String::new(),
+                ..Default::default()
             })
             .collect();
         if comments.is_empty() {

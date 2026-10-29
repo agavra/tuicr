@@ -27,7 +27,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use serde_json::{Map, Value, json};
 
 use crate::error::{Result, TuicrError};
-use crate::forge::remote_comments::RemoteReviewThread;
+use crate::forge::remote_comments::{RemoteReviewSummary, RemoteReviewThread};
 use crate::forge::submit::{GhSide, InlineComment, SubmitEvent};
 use crate::forge::traits::{
     CreateReviewRequest, ForgeBackend, ForgeFileLinesRequest, ForgeRepository,
@@ -39,7 +39,10 @@ use crate::process::run_command_output;
 use crate::vcs::git::raw::run_git_diff;
 use crate::vcs::slice_context_lines;
 
-use super::models::{GerritChange, GerritComment, threads_from_comment_map};
+use super::models::{
+    GerritChange, GerritComment, PATCHSET_LEVEL, mark_drafts, summaries_from_drafts,
+    threads_from_comment_map,
+};
 
 /// Gerrit's canonical SSH port. A remote on this port is a Gerrit remote, full
 /// stop — it is the strongest signal available for self-hosted instances.
@@ -61,8 +64,6 @@ const REVIEW_LABEL: &str = "Code-Review";
 /// How much of a server error body to keep, in characters. Long enough for a
 /// real Gerrit message, short enough not to flood the status line.
 const MAX_DETAIL_CHARS: usize = 400;
-/// Gerrit's magic path for patch-set-level (review-level) comments.
-const PATCHSET_LEVEL: &str = "/PATCHSET_LEVEL";
 /// Gerrit prefixes every JSON response with this XSSI guard.
 const MAGIC_PREFIX: &str = ")]}'";
 
@@ -83,19 +84,25 @@ pub type GerritHttpResult<T> = std::result::Result<T, GerritHttpError>;
 /// (file content) pass through untouched.
 pub trait GerritHttp: Send + Sync {
     fn request(&self, method: &str, url: &str, body: Option<&str>) -> GerritHttpResult<String>;
+    /// The signed-in username, which Gerrit leaves off the caller's drafts.
+    fn username(&self) -> Option<&str>;
     /// Whether this transport carries credentials. Drives the `/a/` prefix and
     /// gates the queries that only mean something for a logged-in user.
-    fn is_authenticated(&self) -> bool;
+    fn is_authenticated(&self) -> bool {
+        self.username().is_some()
+    }
 }
 
 /// Direct REST transport, optionally with HTTP Basic credentials.
 pub struct HttpsGerrit {
     auth_header: Option<String>,
+    username: Option<String>,
     agent: ureq::Agent,
 }
 
 impl HttpsGerrit {
     pub fn new(credentials: Option<(String, String)>) -> Self {
+        let username = credentials.as_ref().map(|(user, _)| user.clone());
         let auth_header = credentials.map(|(user, password)| {
             format!("Basic {}", BASE64.encode(format!("{user}:{password}")))
         });
@@ -105,6 +112,7 @@ impl HttpsGerrit {
             .build();
         Self {
             auth_header,
+            username,
             agent: config.into(),
         }
     }
@@ -147,8 +155,8 @@ impl HttpsGerrit {
 }
 
 impl GerritHttp for HttpsGerrit {
-    fn is_authenticated(&self) -> bool {
-        self.auth_header.is_some()
+    fn username(&self) -> Option<&str> {
+        self.username.as_deref()
     }
 
     fn request(&self, method: &str, url: &str, body: Option<&str>) -> GerritHttpResult<String> {
@@ -507,6 +515,22 @@ impl GerritBackend {
         }
         Ok(())
     }
+
+    /// The caller's unpublished drafts, keyed by path like `/comments`, which
+    /// returns published comments only. Anonymous readers have no drafts (the
+    /// endpoint would answer 403), so they skip the request.
+    fn fetch_drafts(
+        &self,
+        pr: &PullRequestDetails,
+    ) -> Result<BTreeMap<String, Vec<GerritComment>>> {
+        let Some(username) = self.http.username() else {
+            return Ok(BTreeMap::new());
+        };
+        let mut drafts: BTreeMap<String, Vec<GerritComment>> =
+            self.get_json(&pr.repository, &format!("/changes/{}/drafts", pr.number))?;
+        mark_drafts(&mut drafts, username);
+        Ok(drafts)
+    }
 }
 
 impl ForgeBackend for GerritBackend {
@@ -603,13 +627,22 @@ impl ForgeBackend for GerritBackend {
         // The change-level endpoint returns every published comment across all
         // patch sets, so threads from earlier patch sets still render (marked
         // outdated) instead of disappearing on the next push.
-        let comments: BTreeMap<String, Vec<GerritComment>> =
+        let mut comments: BTreeMap<String, Vec<GerritComment>> =
             self.get_json(&pr.repository, &format!("/changes/{}/comments", pr.number))?;
+        // Merged in before threading, so a draft reply joins the published
+        // thread it answers rather than opening one of its own.
+        for (path, drafts) in self.fetch_drafts(pr)? {
+            comments.entry(path).or_default().extend(drafts);
+        }
         Ok(threads_from_comment_map(
             comments,
             &pr.url,
             patch_set_from_ref(&pr.head_ref_name),
         ))
+    }
+
+    fn list_review_summaries(&self, pr: &PullRequestDetails) -> Result<Vec<RemoteReviewSummary>> {
+        Ok(summaries_from_drafts(self.fetch_drafts(pr)?, &pr.url))
     }
 
     fn list_pull_request_commits(&self, pr: &PullRequestDetails) -> Result<Vec<PullRequestCommit>> {
@@ -1128,6 +1161,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
+    use crate::forge::remote_comments::RemoteReviewState;
 
     /// `GERRIT_*` env vars are process-global, so the tests that set them run
     /// one at a time.
@@ -1393,8 +1427,8 @@ mod tests {
     // Implemented on the `Arc` so a test can keep a handle on the recorder
     // after handing the transport to the backend.
     impl GerritHttp for Arc<FakeHttp> {
-        fn is_authenticated(&self) -> bool {
-            self.authenticated
+        fn username(&self) -> Option<&str> {
+            self.authenticated.then_some("me")
         }
 
         fn request(&self, method: &str, url: &str, body: Option<&str>) -> GerritHttpResult<String> {
@@ -1773,16 +1807,22 @@ mod tests {
                 r#")]}'
                 {"src/main.rs": [{"id": "c1", "line": 7, "message": "nit", "patch_set": 1,
                                   "updated": "2013-02-21 11:00:00.000000000"}]}"#,
+                ")]}'\n{}",
             ],
         );
         // when
         let threads = backend.list_review_threads(&details()).expect("threads");
-        // then — one request, and the patch set comes from the change ref
+        // then — published comments, then drafts, and no change lookup: the
+        // patch set comes from the change ref
         let calls = http.calls();
-        assert_eq!(calls.len(), 1, "the patch set is read from head_ref_name");
+        let urls: Vec<&str> = calls.iter().map(|call| call.1.as_str()).collect();
         assert_eq!(
-            calls[0].1,
-            "https://gerrit.example.com/a/changes/3965/comments"
+            urls,
+            [
+                "https://gerrit.example.com/a/changes/3965/comments",
+                "https://gerrit.example.com/a/changes/3965/drafts",
+            ],
+            "the patch set is read from head_ref_name"
         );
         assert_eq!(threads.len(), 1);
         assert_eq!(threads[0].path, "src/main.rs");
@@ -1790,6 +1830,101 @@ mod tests {
             threads[0].is_outdated,
             "patch set 1 is behind the change's current 2"
         );
+    }
+
+    #[test]
+    fn should_show_the_callers_drafts_as_threads_after_a_draft_submit() {
+        // given — one published thread and two drafts: a reply to it, and a
+        // fresh comment of the kind `:submit draft` leaves behind
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        unsafe { std::env::remove_var(URL_ENV_VAR) };
+        let (backend, _http) = backend_with(
+            true,
+            vec![
+                r#")]}'
+                {"src/main.rs": [{"id": "pub", "line": 7, "message": "why?", "unresolved": true,
+                                  "patch_set": 2, "author": {"username": "alice"},
+                                  "updated": "2013-02-21 11:00:00.000000000"}]}"#,
+                r#")]}'
+                {"src/main.rs": [
+                    {"id": "reply", "in_reply_to": "pub", "line": 7, "message": "because",
+                     "patch_set": 2, "updated": "2013-02-21 12:00:00.000000000"},
+                    {"id": "fresh", "line": 12, "message": "[ISSUE] looks wrong",
+                     "unresolved": true, "patch_set": 2,
+                     "updated": "2013-02-21 12:30:00.000000000"}
+                ]}"#,
+            ],
+        );
+        // when
+        let threads = backend.list_review_threads(&details()).expect("threads");
+        // then — the reply joins the published thread, the fresh draft opens
+        // its own, and both carry the signed-in user and the draft flag
+        assert_eq!(threads.len(), 2);
+        let published = &threads[0];
+        assert_eq!(published.id, "pub");
+        assert_eq!(published.comments.len(), 2);
+        assert!(!published.comments[0].is_draft);
+        assert!(published.comments[1].is_draft);
+        assert_eq!(published.comments[1].author.as_deref(), Some("me"));
+        let fresh = &threads[1];
+        assert_eq!(fresh.id, "fresh");
+        assert_eq!(fresh.line, Some(12));
+        assert!(fresh.is_active(), "an unresolved draft shows by default");
+        assert!(fresh.comments[0].is_draft);
+        assert_eq!(fresh.comments[0].author.as_deref(), Some("me"));
+    }
+
+    #[test]
+    fn should_not_ask_for_drafts_when_reading_anonymously() {
+        // given
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        unsafe { std::env::remove_var(URL_ENV_VAR) };
+        let (backend, http) = backend_with(false, vec![")]}'\n{}"]);
+        // when
+        let threads = backend.list_review_threads(&details()).expect("threads");
+        let summaries = backend
+            .list_review_summaries(&details())
+            .expect("summaries");
+        // then — an anonymous reader has no drafts, and Gerrit would say 403
+        assert!(threads.is_empty());
+        assert!(summaries.is_empty());
+        let calls = http.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0].1,
+            "https://gerrit.example.com/changes/3965/comments"
+        );
+    }
+
+    #[test]
+    fn should_show_a_patch_set_level_draft_as_a_pending_review_summary() {
+        // given — where `:submit draft` puts the review body
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        unsafe { std::env::remove_var(URL_ENV_VAR) };
+        let (backend, http) = backend_with(
+            true,
+            vec![
+                r#")]}'
+                {"/PATCHSET_LEVEL": [{"id": "body", "message": "Overall fine", "patch_set": 2,
+                                      "updated": "2013-02-21 12:00:00.000000000"}],
+                 "src/main.rs": [{"id": "inline", "line": 3, "message": "nit", "patch_set": 2,
+                                  "updated": "2013-02-21 12:00:00.000000000"}]}"#,
+            ],
+        );
+        // when
+        let summaries = backend
+            .list_review_summaries(&details())
+            .expect("summaries");
+        // then — only the patch-set-level draft; inline ones are threads
+        assert_eq!(
+            http.calls()[0].1,
+            "https://gerrit.example.com/a/changes/3965/drafts"
+        );
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].id, "body");
+        assert_eq!(summaries[0].body, "Overall fine");
+        assert_eq!(summaries[0].author.as_deref(), Some("me"));
+        assert_eq!(summaries[0].state, RemoteReviewState::Pending);
     }
 
     #[test]

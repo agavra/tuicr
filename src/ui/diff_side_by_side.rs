@@ -2339,9 +2339,8 @@ mod remote_comments_side_by_side_snapshot_tests {
                 id: "C".to_string(),
                 author: Some("alice".to_string()),
                 body: "sbs hello".to_string(),
-                created_at: None,
-                in_reply_to: None,
                 url: "https://example.com".to_string(),
+                ..Default::default()
             }],
         }
     }

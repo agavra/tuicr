@@ -1300,8 +1300,8 @@ fn group_comments_into_threads(comments: Vec<GiteaPullReviewComment>) -> Vec<Rem
             author: GiteaUser::login(comment.user),
             body: comment.body,
             created_at: comment.created_at,
-            in_reply_to: None,
             url: comment.html_url,
+            ..Default::default()
         };
 
         let key = (

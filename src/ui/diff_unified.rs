@@ -1654,9 +1654,8 @@ mod remote_comments_snapshot_tests {
                 id: format!("{id}-root"),
                 author: Some(author.to_string()),
                 body: body.to_string(),
-                created_at: None,
-                in_reply_to: None,
                 url: "https://example.com/x".to_string(),
+                ..Default::default()
             }],
         }
     }
@@ -2374,9 +2373,7 @@ mod remote_comments_snapshot_tests {
                 id: "rv1-root".to_string(),
                 author: Some("carol".to_string()),
                 body: "overall this looks fine".to_string(),
-                created_at: None,
-                in_reply_to: None,
-                url: String::new(),
+                ..Default::default()
             }],
         }];
         app.rebuild_annotations();
@@ -2407,9 +2404,7 @@ mod remote_comments_snapshot_tests {
                 id: "rv1-root".to_string(),
                 author: Some("carol".to_string()),
                 body: "should be hidden".to_string(),
-                created_at: None,
-                in_reply_to: None,
-                url: String::new(),
+                ..Default::default()
             }],
         }];
         app.set_remote_comments_visibility(PrCommentsVisibility::Hide);

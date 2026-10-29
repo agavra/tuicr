@@ -125,6 +125,13 @@ left on an earlier patch set still show, marked outdated, matching the Gerrit we
 Gerrit's magic paths (`/COMMIT_MSG`, `/MERGE_LIST`, `/PATCHSET_LEVEL`) have no line in the file
 diff and are not rendered.
 
+With credentials set, your own unpublished drafts are fetched too, so a Draft submit's comments
+stay on screen afterwards. They render like other remote comments, read-only, with a `draft`
+marker in the header (`[gerrit @you draft]`); a draft reply to a published comment joins that
+thread. A draft left on an earlier patch set is outdated, so like other outdated threads it shows
+only under `:comments all`; a status message says when there are any. Your review-level draft on
+`/PATCHSET_LEVEL` shows at the top of the diff as a `pending` review.
+
 ## The local-clone requirement
 
 Gerrit's `/revisions/{id}/patch` endpoint returns a patch ordered by git's rename-aware diff
