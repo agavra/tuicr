@@ -6,6 +6,7 @@
 //! routed `WorkingTree` to the unstaged-only loader, so it guarded nothing.
 
 use crate::app::*;
+use crate::handler::{CommandAfterDispatch, WriteQuitKey, finish_write_quit};
 use crate::input::keybindings::Action;
 use crate::model::FileStatus;
 use crate::review_store::{SessionKind, SessionSummary};
@@ -654,6 +655,88 @@ fn should_keep_quit_prompts_quitting() {
     // then — routing delete through Confirm must not have broken this
     assert!(app.should_quit);
     assert_eq!(app.input_mode, InputMode::Normal);
+}
+
+fn app_with_review_comment() -> App {
+    let (mut app, _calls) = build_app(vec![commit("aaa")]);
+    app.session.review_comments.push(crate::model::Comment::new(
+        "looks off".to_string(),
+        crate::model::CommentType::default(),
+        None,
+    ));
+    app
+}
+
+#[test]
+fn should_prompt_on_write_quit_when_copy_on_quit_is_ask() {
+    // given
+    let mut app = app_with_review_comment();
+    app.copy_on_quit = CopyOnQuit::Ask;
+
+    // when
+    let after = finish_write_quit(&mut app, WriteQuitKey::Command);
+
+    // then
+    assert_eq!(after, CommandAfterDispatch::KeepMode);
+    assert_eq!(app.input_mode, InputMode::Confirm);
+    assert_eq!(app.pending_confirm, Some(ConfirmAction::CopyAndQuit));
+    assert!(!app.should_quit);
+}
+
+#[test]
+fn should_quit_without_prompt_when_copy_on_quit_is_never() {
+    // given
+    let mut app = app_with_review_comment();
+    app.copy_on_quit = CopyOnQuit::Never;
+
+    for key in [WriteQuitKey::Command, WriteQuitKey::ZZ] {
+        app.should_quit = false;
+
+        // when
+        let after = finish_write_quit(&mut app, key);
+
+        // then
+        assert_eq!(after, CommandAfterDispatch::ExitCommandMode);
+        assert!(app.should_quit);
+        assert_ne!(app.input_mode, InputMode::Confirm);
+        assert_eq!(app.pending_confirm, None);
+    }
+}
+
+#[test]
+fn should_quit_without_prompt_when_there_are_no_comments() {
+    // given — an empty review never needs the clipboard, whatever the policy
+    let (mut app, _calls) = build_app(vec![commit("aaa")]);
+    app.copy_on_quit = CopyOnQuit::Ask;
+
+    // when
+    let after = finish_write_quit(&mut app, WriteQuitKey::Command);
+
+    // then
+    assert_eq!(after, CommandAfterDispatch::ExitCommandMode);
+    assert!(app.should_quit);
+    assert_ne!(app.input_mode, InputMode::Confirm);
+}
+
+#[test]
+fn should_export_to_stdout_on_write_quit_whatever_copy_on_quit_says() {
+    for policy in [CopyOnQuit::Ask, CopyOnQuit::Always, CopyOnQuit::Never] {
+        for key in [WriteQuitKey::Command, WriteQuitKey::ZZ] {
+            // given — `--stdout` is an explicit request for the export
+            let mut app = app_with_review_comment();
+            app.output_to_stdout = true;
+            app.copy_on_quit = policy;
+
+            // when
+            let after = finish_write_quit(&mut app, key);
+
+            // then
+            assert_eq!(after, CommandAfterDispatch::ExitCommandMode);
+            assert!(app.pending_stdout_output.is_some(), "{policy:?} {key:?}");
+            assert!(app.should_quit, "{policy:?} {key:?}");
+            assert_eq!(app.pending_confirm, None);
+        }
+    }
 }
 
 #[test]

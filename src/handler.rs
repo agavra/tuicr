@@ -164,7 +164,7 @@ enum CommandKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CommandAfterDispatch {
+pub(crate) enum CommandAfterDispatch {
     ExitCommandMode,
     KeepMode,
 }
@@ -465,6 +465,80 @@ fn handle_copy_comment_at_cursor(app: &mut App) {
         Ok(true) => app.set_message("Comment copied to clipboard (via terminal)"),
         Ok(false) => app.set_message("Comment copied to clipboard"),
         Err(e) => app.set_warning(format!("{e}")),
+    }
+}
+
+/// Which key asked to save and quit. They differ only under
+/// `copy_on_quit = "ask"`: `:wq` prompts, `ZZ` copies without asking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WriteQuitKey {
+    /// `:wq` / `:x`
+    Command,
+    /// `ZZ`
+    ZZ,
+}
+
+/// `ZZ`: save the session, then quit the way `:wq` would.
+///
+/// As before, a failed save does not stop the quit while the review still
+/// reaches the clipboard or stdout. Under `copy_on_quit = "never"`
+/// nothing would carry the comments out, so the app stays open like `:wq`.
+pub fn handle_save_and_quit_key(app: &mut App) {
+    if let Err(e) = app.save_current_session_merging_external()
+        && app.copy_on_quit == app::CopyOnQuit::Never
+        && !app.output_to_stdout
+    {
+        app.set_error(format!("Save failed: {e}"));
+        return;
+    }
+    finish_write_quit(app, WriteQuitKey::ZZ);
+}
+
+/// Tail of `:wq` / `:x` / `ZZ` once the session is saved: decide whether the
+/// review reaches the clipboard (or stdout) before quitting, per config
+/// `copy_on_quit`. Returns `KeepMode` when a confirmation prompt was opened
+/// and the caller must stay in the new mode.
+pub(crate) fn finish_write_quit(app: &mut App, key: WriteQuitKey) -> CommandAfterDispatch {
+    if !app.session.has_comments() {
+        app.should_quit = true;
+        return CommandAfterDispatch::ExitCommandMode;
+    }
+    // `--stdout` is an explicit request for the export, so it wins over config.
+    if app.output_to_stdout {
+        match key {
+            // `:wq` stays open to show an export failure; `ZZ` has always quit.
+            WriteQuitKey::Command => handle_export(app),
+            WriteQuitKey::ZZ => handle_export_and_quit(app),
+        }
+        return CommandAfterDispatch::ExitCommandMode;
+    }
+    match quit_copy_plan(app.copy_on_quit, key) {
+        QuitCopyPlan::Quit => app.should_quit = true,
+        QuitCopyPlan::CopyAndQuit => handle_export_and_quit(app),
+        QuitCopyPlan::Prompt => {
+            app.exit_command_mode();
+            app.enter_confirm_mode(app::ConfirmAction::CopyAndQuit);
+            return CommandAfterDispatch::KeepMode;
+        }
+    }
+    CommandAfterDispatch::ExitCommandMode
+}
+
+/// What a save-and-quit does about the clipboard once comments exist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QuitCopyPlan {
+    Quit,
+    CopyAndQuit,
+    Prompt,
+}
+
+fn quit_copy_plan(policy: app::CopyOnQuit, key: WriteQuitKey) -> QuitCopyPlan {
+    use app::CopyOnQuit;
+
+    match (policy, key) {
+        (CopyOnQuit::Never, _) => QuitCopyPlan::Quit,
+        (CopyOnQuit::Always, _) | (CopyOnQuit::Ask, WriteQuitKey::ZZ) => QuitCopyPlan::CopyAndQuit,
+        (CopyOnQuit::Ask, WriteQuitKey::Command) => QuitCopyPlan::Prompt,
     }
 }
 
@@ -874,20 +948,7 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
         }
         CommandKind::WriteQuit => {
             match app.save_current_session_merging_external() {
-                Ok(_) => {
-                    if app.session.has_comments() {
-                        if app.output_to_stdout {
-                            // Skip confirmation dialog, export directly.
-                            handle_export(app);
-                        } else {
-                            app.exit_command_mode();
-                            app.enter_confirm_mode(app::ConfirmAction::CopyAndQuit);
-                            return CommandAfterDispatch::KeepMode;
-                        }
-                    } else {
-                        app.should_quit = true;
-                    }
-                }
+                Ok(_) => return finish_write_quit(app, WriteQuitKey::Command),
                 Err(e) => app.set_error(format!("Save failed: {e}")),
             }
             CommandAfterDispatch::ExitCommandMode
@@ -1926,7 +1987,28 @@ pub fn handle_submit_confirm_action(app: &mut App, action: Action) {
 
 #[cfg(test)]
 mod command_tests {
-    use super::{CommandKind, command_spec_for};
+    use super::{CommandKind, QuitCopyPlan, WriteQuitKey, command_spec_for, quit_copy_plan};
+    use crate::app::CopyOnQuit;
+
+    #[test]
+    fn plans_the_clipboard_step_for_every_policy_and_quit_key() {
+        // `ask` keeps the legacy split: `:wq` prompts, `ZZ` copies.
+        assert_eq!(
+            quit_copy_plan(CopyOnQuit::Ask, WriteQuitKey::Command),
+            QuitCopyPlan::Prompt
+        );
+        assert_eq!(
+            quit_copy_plan(CopyOnQuit::Ask, WriteQuitKey::ZZ),
+            QuitCopyPlan::CopyAndQuit
+        );
+        for key in [WriteQuitKey::Command, WriteQuitKey::ZZ] {
+            assert_eq!(
+                quit_copy_plan(CopyOnQuit::Always, key),
+                QuitCopyPlan::CopyAndQuit
+            );
+            assert_eq!(quit_copy_plan(CopyOnQuit::Never, key), QuitCopyPlan::Quit);
+        }
+    }
 
     #[test]
     fn parses_relative_line_number_commands() {

@@ -41,6 +41,7 @@ leader = ","
 editor = "nvim"
 comment_vim = false
 q_quits = false
+copy_on_quit = "ask"
 comment_tab_width = 4
 wrap = false
 wrap_style = "flow"
@@ -108,6 +109,7 @@ session_header = true
 | `editor`                   | `$EDITOR`    | Editor command for the `e` / `:edit` handoff, split with shell-like quoting rules (e.g. `"code -w"`). Falls back to `$EDITOR`, then `vi`. |
 | `comment_vim`              | `false`      | Vim modal editing in the comment box; toggle at runtime with `:vim`. When off, default emacs/readline bindings.                                            |
 | `q_quits`                  | `false`      | Restore bare `q` as a quit key in review modes. `:q`, `ZZ`, and `ZQ` work regardless of this setting.                                                     |
+| `copy_on_quit`             | `"ask"`      | Whether `:wq`, `:x`, and `ZZ` copy the review to the clipboard when comments exist. `"ask"` prompts on `:wq`/`:x` and copies on `ZZ`; `"always"` copies without asking; `"never"` saves and quits without copying (for workflows that hand comments off with `tuicr review`). `--stdout` always exports. |
 | `comment_tab_width`        | `4`          | Spaces inserted by Tab while typing in the vim comment box (Insert mode).                                                                                  |
 | `wrap`                     | `false`      | Line wrap in the diff view. Toggle with `:set wrap!`.                                                                                                      |
 | `wrap_style`               | `flow`       | Where wrapped unified diff rows continue: `flow` wraps from the left edge, `gutter` keeps wrapped content after the line-number gutter, leaving continuation rows without a line number or change bar. |

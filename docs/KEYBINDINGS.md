@@ -272,13 +272,18 @@ In command mode,
 | `:update` | Check for updates |
 | `:q` (`:quit`) | Quit (warns on unsaved comments; discards review-only state) |
 | `:q!` (`:quit!`) | Force quit |
-| `:x` / `:wq` | Save and quit (prompts to copy if comments exist) |
-| `ZZ` | Save and quit |
+| `:x` / `:wq` | Save and quit (prompts to copy if comments exist; see `copy_on_quit`) |
+| `ZZ` | Save and quit (copies to the clipboard if comments exist; see `copy_on_quit`) |
 | `ZQ` | Quit without saving |
 | `?` | Toggle help |
 
 Pressing bare `q` no longer quits by default; it prints a reminder to use `:q` instead. Set
 `q_quits = true` to restore `q` as a quit key in review modes.
+
+`:wq`, `:x`, and `ZZ` copy the review to the clipboard when comments exist. By default `:wq`/`:x`
+ask first and `ZZ` copies without asking. Set `copy_on_quit = "always"` to never be asked, or
+`copy_on_quit = "never"` to quit without copying, for example when an agent reads the comments
+through `tuicr review`. `--stdout` always exports to stdout regardless of this setting.
 
 The summary replaces the diff while leaving the file sidebar visible when it is open. The first
 pending comment is selected when the summary opens. Use `j`/`k` to select the next

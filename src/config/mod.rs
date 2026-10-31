@@ -216,6 +216,11 @@ pub struct AppConfig {
     /// Restore the legacy bare `q` quit binding in review modes.
     /// Defaults to false.
     pub q_quits: Option<bool>,
+    /// What `:wq` / `:x` / `ZZ` do about copying the review to the clipboard
+    /// when comments exist: `"ask"` (the default) prompts on `:wq` and copies
+    /// on `ZZ`, `"always"` copies without asking, `"never"` quits without
+    /// copying. Ignored under `--stdout`, which always exports.
+    pub copy_on_quit: Option<String>,
     /// Number of spaces inserted by Tab while typing in the vim comment box.
     /// Defaults to 4 (matching diff tab expansion).
     pub comment_tab_width: Option<usize>,
@@ -290,6 +295,7 @@ const KNOWN_KEYS: &[&str] = &[
     "mouse_scroll_lines",
     "comment_vim",
     "q_quits",
+    "copy_on_quit",
     "comment_tab_width",
     "leader",
     "editor",
@@ -655,6 +661,12 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         mouse_scroll_lines: read_mouse_scroll_lines(table, &mut warnings),
         comment_vim: read_bool(table, "comment_vim", &mut warnings),
         q_quits: read_bool(table, "q_quits", &mut warnings),
+        copy_on_quit: read_enum(
+            table,
+            "copy_on_quit",
+            &["ask", "always", "never"],
+            &mut warnings,
+        ),
         comment_tab_width: read_usize(table, "comment_tab_width", &mut warnings),
         leader: read_leader(table, &mut warnings),
         editor: read_string(table, "editor", &mut warnings),
@@ -1825,6 +1837,65 @@ mod tests {
             outcome.warnings[0],
             "Warning: Config key 'q_quits' must be a boolean; ignoring value"
         );
+    }
+
+    // copy_on_quit
+
+    #[test]
+    fn should_parse_each_copy_on_quit_value() {
+        for value in ["ask", "always", "never"] {
+            let outcome = parse_config(&format!("copy_on_quit = \"{value}\"\n"));
+            assert_eq!(
+                outcome
+                    .config
+                    .as_ref()
+                    .and_then(|cfg| cfg.copy_on_quit.as_deref()),
+                Some(value)
+            );
+            assert!(outcome.warnings.is_empty());
+        }
+    }
+
+    #[test]
+    fn should_default_copy_on_quit_to_none() {
+        let outcome = parse_config("\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.copy_on_quit.as_deref()),
+            None
+        );
+    }
+
+    #[test]
+    fn should_warn_and_ignore_copy_on_quit_with_invalid_value() {
+        let outcome = parse_config("copy_on_quit = \"sometimes\"\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.copy_on_quit.as_deref()),
+            None
+        );
+        assert_eq!(outcome.warnings.len(), 1);
+        assert_eq!(
+            outcome.warnings[0],
+            "Warning: Config key 'copy_on_quit' must be \"ask\" or \"always\" or \"never\"; got \"sometimes\", ignoring"
+        );
+    }
+
+    #[test]
+    fn should_warn_and_ignore_copy_on_quit_with_invalid_type() {
+        let outcome = parse_config("copy_on_quit = false\n");
+        assert_eq!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.copy_on_quit.as_deref()),
+            None
+        );
+        assert_eq!(outcome.warnings.len(), 1);
     }
 
     // leader
