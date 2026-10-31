@@ -107,7 +107,8 @@ Wrapper paths are relative to this skill directory:
 ```
 
 The Herdr wrapper requires `jq` to read pane IDs and completion results from
-Herdr's JSON responses.
+Herdr's JSON responses. The Rex wrapper requires `jq` to read the new block ref
+from `rex split --json`.
 
 Every wrapper accepts pass-through tuicr arguments after `--`, which is how
 you scope the review instead of leaving the scope selector for the user to
@@ -270,27 +271,27 @@ comments are unavailable.
 cmux:
 
 - Switch panes: click the pane, or `cmux focus-pane --pane <ref>`
-- Close tuicr: press `q`; the pane closes itself. Force it with `cmux close-surface --surface <ref>`
+- Close tuicr: type `:q`; the pane closes itself. Force it with `cmux close-surface --surface <ref>`
 - List panes: `cmux list-panes`
 - Read a pane without focusing it: `cmux read-screen --surface <ref>`
 
 Rex:
 
-- Close tuicr: press `q`; the block closes itself. Force it with `rex block close <ref>`
+- Close tuicr: type `:q`; the block closes itself. Force it with `rex block close <ref>`
 - List blocks: `rex block list`
 - Read a block without focusing it: `rex capture --block <ref>`
 
 tmux:
 
 - Switch panes: `Ctrl-b` then arrow keys
-- Close tuicr: press `q`
+- Close tuicr: type `:q`
 - Resize panes: `Ctrl-b` then `Ctrl-arrow`
 - Zoom pane: `Ctrl-b` then `z`
 
 zellij:
 
 - Switch panes: `Alt` + arrow keys
-- Close tuicr: press `q`
+- Close tuicr: type `:q`
 - Resize panes: `Ctrl-n`, then arrow keys
 - Toggle fullscreen: `Alt-f`
 - Cycle stacked panes: `Alt` + `[` / `]`
@@ -298,7 +299,7 @@ zellij:
 Herdr:
 
 - Select a pane: click it in the Herdr UI
-- Close tuicr: press `q`; the wrapper then closes the review pane
+- Close tuicr: type `:q`; the wrapper then closes the review pane
 
 ## Error Handling
 
