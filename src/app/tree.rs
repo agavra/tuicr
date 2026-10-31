@@ -193,8 +193,18 @@ impl App {
             return;
         }
 
+        // Minimal mode lands on the first file after a reload too, not only at
+        // startup, so a commit switch or refresh never opens on the empty overview.
+        if self.minimal_ui && self.diff_files.iter().any(|f| self.file_passes_filter(f)) {
+            self.apply_minimal_ui_start();
+            if !self.pending_minimal_ui_start {
+                return;
+            }
+        }
+
         // Start at the overview position (review comments header)
-        // so the diff title shows total stats on launch.
+        // so the diff title shows total stats on launch. A deferred minimal
+        // landing moves on from here after the first render.
         self.diff_state.cursor_line = 0;
         self.diff_state.scroll_offset = 0;
         self.diff_state.current_file_idx = 0;

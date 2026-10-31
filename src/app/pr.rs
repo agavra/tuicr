@@ -618,8 +618,11 @@ impl App {
         if let Some(line) = request.restore_overview_cursor {
             self.diff_state.cursor_line = line;
             self.ensure_cursor_visible();
+            // The restored cursor wins over a deferred minimal-mode landing.
+            self.pending_minimal_ui_start = false;
         } else if let Some(anchor) = &request.anchor {
             self.restore_pr_cursor_to_anchor(anchor);
+            self.pending_minimal_ui_start = false;
         }
         // A reload can shrink the diff; a stale cursor left past the new end
         // (same-head branch, or a restored overview line captured from the

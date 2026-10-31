@@ -264,6 +264,8 @@ In command mode,
 | `:set reviewed` | Show files already marked reviewed |
 | `:set noreviewed` | Hide files already marked reviewed |
 | `:set reviewed!` / `:reviewed` | Toggle files already marked reviewed |
+| `:set minimal` / `:set nominimal` | Enable / disable minimal UI (no header, idle footer, or diff frame) |
+| `:set minimal!` | Toggle minimal UI |
 | `:clear` | Clear all comments |
 | `:clearc` | Clear comments without clearing reviewed marks |
 | `:help` (`:h`) | Open the help screen |
