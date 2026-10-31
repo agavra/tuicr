@@ -14,7 +14,10 @@ use std::collections::{BTreeMap, HashMap};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use serde::{Deserialize, Deserializer};
 
-use crate::forge::remote_comments::{RemoteCommentSide, RemoteReviewComment, RemoteReviewThread};
+use crate::forge::remote_comments::{
+    RemoteCommentSide, RemoteReviewComment, RemoteReviewState, RemoteReviewSummary,
+    RemoteReviewThread,
+};
 use crate::forge::traits::{
     ForgeRepository, PullRequestCommit, PullRequestDetails, PullRequestSummary,
 };
@@ -269,6 +272,10 @@ pub struct GerritComment {
     /// `PARENT` (base side) or `REVISION` (head side, the default).
     #[serde(default)]
     pub side: Option<String>,
+    /// Read from `/drafts` rather than `/comments`. Gerrit's JSON carries no
+    /// such flag — [`mark_drafts`] sets it.
+    #[serde(skip)]
+    pub draft: bool,
 }
 
 impl GerritComment {
@@ -290,6 +297,7 @@ impl GerritComment {
             created_at: at(&self.updated),
             in_reply_to: self.in_reply_to,
             url,
+            is_draft: self.draft,
         }
     }
 }
@@ -297,7 +305,52 @@ impl GerritComment {
 /// Gerrit's magic pseudo-paths. They carry patch-set and commit-message
 /// comments, which have no line in the file diff, so threads on them are
 /// dropped rather than anchored to a file that does not exist.
-const MAGIC_PATHS: &[&str] = &["/COMMIT_MSG", "/MERGE_LIST", "/PATCHSET_LEVEL"];
+const MAGIC_PATHS: &[&str] = &["/COMMIT_MSG", "/MERGE_LIST", PATCHSET_LEVEL];
+/// The magic path for patch-set-level (review-level) comments.
+pub const PATCHSET_LEVEL: &str = "/PATCHSET_LEVEL";
+
+/// Flag every comment in a `GET /changes/{id}/drafts` response as a draft.
+///
+/// Drafts only ever belong to the caller, so Gerrit sends them without an
+/// `author` (checked against 3.14); `author`, the signed-in username, fills it
+/// in. Without it a draft would render as `@unknown`.
+pub fn mark_drafts(drafts: &mut BTreeMap<String, Vec<GerritComment>>, author: &str) {
+    for comment in drafts.values_mut().flatten() {
+        comment.draft = true;
+        comment.author = Some(GerritAccount {
+            username: Some(author.to_string()),
+            ..GerritAccount::default()
+        });
+    }
+}
+
+/// The caller's `/PATCHSET_LEVEL` drafts as pending review summaries.
+///
+/// That is where a draft submit puts the review body, so it is the one draft
+/// that [`threads_from_comment_map`] — which drops the magic paths — cannot
+/// show.
+pub fn summaries_from_drafts(
+    mut drafts: BTreeMap<String, Vec<GerritComment>>,
+    change_url: &str,
+) -> Vec<RemoteReviewSummary> {
+    let mut patchset_level = drafts.remove(PATCHSET_LEVEL).unwrap_or_default();
+    patchset_level.sort_by_key(|comment| at(&comment.updated));
+    patchset_level
+        .into_iter()
+        .filter(|comment| !comment.message.trim().is_empty())
+        .map(|comment| {
+            let remote = comment.into_remote(change_url);
+            RemoteReviewSummary {
+                id: remote.id,
+                author: remote.author,
+                body: remote.body,
+                state: RemoteReviewState::Pending,
+                created_at: remote.created_at,
+                url: remote.url,
+            }
+        })
+        .collect()
+}
 
 /// Fold Gerrit's `path -> [comment]` map into tuicr's thread shape.
 ///

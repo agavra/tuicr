@@ -363,6 +363,8 @@ These are non-obvious things the implementation chain hit. Worth preserving for 
 
 23. **`fetch_pr_data` fans out once the PR metadata is in.** `get_pull_request_info` and `resolve_diff_base_sha` run first, then `get_pull_request_diff`, `list_pull_request_commits`, and `list_pull_request_review_metadata` run concurrently through `forge::join` (scoped threads), so opening a PR waits for the slowest of them rather than their sum. The backend must therefore be `Sync` (`create_forge_backend` returns `Box<dyn ForgeBackend + Sync>`), and test fakes record calls through `Mutex` or atomics, not `RefCell` or `Cell`. Each call still paginates sequentially, and errors keep the sequential precedence: a diff error fails the open, while commit and review-metadata failures degrade to empty. GitHub's `get_pull_request_diff` fetches `pulls/N/files` and `gh pr diff` the same way, and a file-list error wins over a patch error.
 
+24. **Gerrit's `/changes/{N}/comments` returns published comments only.** The caller's drafts live at `/changes/{N}/drafts`, with `author` unset. `:submit draft` marks the local copies `PushedDraft`, and the refetch that follows runs `prune_locked_comments`, so a backend that cannot read its drafts back deletes the only copy the TUI had. The Gerrit backend therefore reads `/drafts` too.
+
 ### Keeping Docs Updated
 
 When adding user-facing features, update the relevant documentation:

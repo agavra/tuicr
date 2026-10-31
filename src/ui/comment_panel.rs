@@ -391,6 +391,7 @@ pub fn format_remote_thread_lines(
         let author = comment.author.as_deref().unwrap_or("unknown");
         if is_first {
             let mut badge_text = format!("[{} @{author}", forge_badge_label(forge_kind));
+            badge_text.push_str(draft_suffix(comment));
             if thread.is_resolved {
                 badge_text.push_str(" resolved");
             } else if thread.is_outdated {
@@ -406,7 +407,10 @@ pub fn format_remote_thread_lines(
         } else {
             result.push(Line::from(vec![
                 Span::styled("    ├── ".to_string(), border_style),
-                Span::styled(format!("↳ @{author} "), reply_badge_style),
+                Span::styled(
+                    format!("↳ @{author}{} ", draft_suffix(comment)),
+                    reply_badge_style,
+                ),
                 Span::styled("─".repeat(28), border_style),
             ]));
         }
@@ -428,6 +432,11 @@ pub fn format_remote_thread_lines(
     )]));
 
     result
+}
+
+/// ` draft` for a comment that is still the viewer's unpublished draft.
+fn draft_suffix(comment: &crate::forge::remote_comments::RemoteReviewComment) -> &'static str {
+    if comment.is_draft { " draft" } else { "" }
 }
 
 /// Format a remote review summary (the body of a `PullRequestReview`) as a
@@ -1123,9 +1132,7 @@ mod tests {
                 id: "comment".to_string(),
                 author: Some("alice".to_string()),
                 body: "body".to_string(),
-                created_at: None,
-                in_reply_to: None,
-                url: String::new(),
+                ..Default::default()
             }],
         };
 
@@ -1139,6 +1146,42 @@ mod tests {
 
         assert!(header.contains("[gitlab @alice]"));
         assert!(!header.contains("[github @alice]"));
+    }
+
+    #[test]
+    fn remote_thread_marks_unpublished_drafts() {
+        let comment =
+            |id: &str, is_draft: bool| crate::forge::remote_comments::RemoteReviewComment {
+                id: id.to_string(),
+                author: Some("me".to_string()),
+                body: "body".to_string(),
+                is_draft,
+                ..Default::default()
+            };
+        let thread = crate::forge::remote_comments::RemoteReviewThread {
+            id: "thread".to_string(),
+            path: "src/lib.rs".to_string(),
+            line: Some(1),
+            side: crate::forge::remote_comments::RemoteCommentSide::Right,
+            is_resolved: false,
+            is_outdated: false,
+            comments: vec![comment("root", true), comment("reply", true)],
+        };
+
+        let lines =
+            format_remote_thread_lines(&test_theme(), &thread, false, Some(ForgeKind::Gerrit));
+        let text: Vec<String> = lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect()
+            })
+            .collect();
+
+        assert!(text[0].contains("[gerrit @me draft]"), "{}", text[0]);
+        assert!(text[2].contains("↳ @me draft "), "{}", text[2]);
     }
 
     #[test]

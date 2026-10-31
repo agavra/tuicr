@@ -405,6 +405,7 @@ impl BbComment {
             created_at: self.created_on,
             in_reply_to: self.parent.map(|parent| parent.id.to_string()),
             url: self.links.html_href(),
+            ..Default::default()
         }
     }
 

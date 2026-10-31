@@ -1179,7 +1179,34 @@ impl App {
                     let _ = self.save_current_session_merging_external();
                 }
                 self.rebuild_annotations();
+                if threads_loaded {
+                    self.notice_outdated_drafts();
+                }
             }
+        }
+    }
+
+    /// Point at the viewer's drafts left on a superseded patch set. The
+    /// default view hides them like any outdated thread, since their lines
+    /// belong to the older patch set, and once a draft submit has pruned the
+    /// local copies nothing else would say they exist.
+    fn notice_outdated_drafts(&mut self) {
+        use crate::forge::remote_comments::PrCommentsVisibility;
+
+        if self.session.remote_comments_visibility != PrCommentsVisibility::Unresolved {
+            return;
+        }
+        let count = self
+            .forge_review_threads
+            .iter()
+            .filter(|thread| thread.is_outdated)
+            .flat_map(|thread| &thread.comments)
+            .filter(|comment| comment.is_draft)
+            .count();
+        match count {
+            0 => {}
+            1 => self.set_message("1 of your drafts is on an older patch set"),
+            n => self.set_message(format!("{n} of your drafts are on an older patch set")),
         }
     }
 

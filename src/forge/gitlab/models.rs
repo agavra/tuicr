@@ -256,8 +256,7 @@ impl GlabDiscussion {
                     author: Some(note.author.username),
                     body: note.body,
                     created_at: note.created_at,
-                    in_reply_to: None,
-                    url: String::new(),
+                    ..Default::default()
                 })
                 .collect::<Vec<_>>();
             if comments.is_empty() {
@@ -310,8 +309,7 @@ impl GlabDiscussion {
                 author: Some(note.author.username),
                 body: note.body,
                 created_at: note.created_at,
-                in_reply_to: None,
-                url: String::new(),
+                ..Default::default()
             })
             .collect();
 
