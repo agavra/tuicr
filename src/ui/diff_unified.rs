@@ -1179,7 +1179,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
         }
 
         // Inter-file spacing. In single-file view, the row doubles as a
-        // hint pointing at whichever file `j` would walk into next, so
+        // hint naming the next file and the key that moves into it, so
         // the user always knows what's on the other side of the edge.
         // Falls back to a plain blank on the last file (or in multi-file
         // mode) where the indicator is already pulling its weight.
@@ -1195,7 +1195,10 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
             lines.push(Line::from(vec![
                 Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
                 Span::styled(
-                    crate::ui::diff_view::spacing_next_file_hint_text(&next_path),
+                    crate::ui::diff_view::spacing_next_file_hint_text(
+                        &next_path,
+                        app.supports_keyboard_enhancement,
+                    ),
                     Style::default()
                         .fg(app.theme.fg_secondary)
                         .add_modifier(Modifier::DIM),
@@ -2289,6 +2292,47 @@ mod remote_comments_snapshot_tests {
         assert!(
             body.contains("═══ README.md [M] "),
             "expected full README.md file header in:\n{body}"
+        );
+    }
+
+    fn single_file_view_on_first_of(paths: &[&str]) -> App {
+        let mut app =
+            make_revision_app(paths.iter().map(|p| header_only_diff_file_at(p)).collect());
+        app.is_single_file_view = true;
+        app.diff_state.current_file_idx = 0;
+        app.rebuild_annotations();
+        app
+    }
+
+    #[test]
+    fn should_hint_down_into_next_file_when_key_releases_are_reported() {
+        // given single-file view on the first file, where j walks on after a release
+        let mut app = single_file_view_on_first_of(&["a.rs", "b.rs"]);
+        app.supports_keyboard_enhancement = true;
+        // when
+        let body = body_text(&draw_unified_diff(&mut app));
+        // then
+        assert!(
+            body.contains("\u{2193}  b.rs"),
+            "expected the next-file hint to name Down in:\n{body}"
+        );
+    }
+
+    #[test]
+    fn should_hint_next_file_key_when_key_releases_are_not_reported() {
+        // given single-file view on the first file, where j stops at the edge
+        let mut app = single_file_view_on_first_of(&["a.rs", "b.rs"]);
+        app.supports_keyboard_enhancement = false;
+        // when
+        let body = body_text(&draw_unified_diff(&mut app));
+        // then
+        assert!(
+            body.contains("}  b.rs"),
+            "expected the next-file hint to name }} in:\n{body}"
+        );
+        assert!(
+            !body.contains('\u{2193}'),
+            "expected no Down hint in:\n{body}"
         );
     }
 

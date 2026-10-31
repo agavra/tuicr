@@ -390,7 +390,10 @@ fn full_row_text(app: &App, idx: usize, annotation: &AnnotatedLine) -> String {
                 let path = f.display_path().display().to_string();
                 format!(
                     "{indicator}{}",
-                    diff_view::spacing_next_file_hint_text(&path)
+                    diff_view::spacing_next_file_hint_text(
+                        &path,
+                        app.supports_keyboard_enhancement
+                    )
                 )
             } else {
                 indicator.to_string()

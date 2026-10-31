@@ -185,12 +185,22 @@ pub(super) fn unified_line_origin_marker(dl: &DiffLine) -> &'static str {
 }
 
 /// Body text of the `Spacing` inter-file row in unified single-file view —
-/// a hint pointing at the file `j` would walk into next. Callers prepend the
-/// one-cell cursor indicator. Multi-file view and side-by-side always emit a
-/// bare indicator instead, so this builder is only used by the unified
-/// single-file branch (and by `row_height` mirroring it).
-pub(super) fn spacing_next_file_hint_text(next_path: &str) -> String {
-    format!("  \u{2193}  {next_path}")
+/// a hint naming the key that moves into the next file. Where the terminal
+/// reports key releases, `j`/Down walks on after a release, so the hint is
+/// `↓`. Elsewhere `j` stops at the file's last line and only `}` moves on.
+/// Callers prepend the one-cell cursor indicator. Multi-file view and
+/// side-by-side always emit a bare indicator instead, so this builder is only
+/// used by the unified single-file branch (and by `row_height` mirroring it).
+pub(super) fn spacing_next_file_hint_text(
+    next_path: &str,
+    supports_keyboard_enhancement: bool,
+) -> String {
+    let key = if supports_keyboard_enhancement {
+        '\u{2193}'
+    } else {
+        '}'
+    };
+    format!("  {key}  {next_path}")
 }
 
 /// Label text for a `BinaryOrEmpty` row (unified & SBS both render this
