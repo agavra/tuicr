@@ -156,12 +156,21 @@ Shown below the file tree when local comments or visible remote PR threads exist
 | `C` | Add file comment |
 | `<leader>c` | Add review comment |
 | `v` / `V` | Enter visual mode for range comments |
+| Paste | Start a line comment on the cursor line holding the pasted text (diff focused) |
 | `dd` | Delete comment at cursor |
 | `i` | Edit comment at cursor (vim: text cursor at start) |
 | `A` | Edit comment at cursor with text cursor at end (vim mode only) |
 | `e` | Open focused file in `$EDITOR` |
 | `y` | Copy review to clipboard |
 | `Y` | Copy the comment at cursor to clipboard |
+
+Pasting text (bracketed paste) outside a text input opens a comment the way
+`c` does and fills it with the pasted text, so voice-to-text tools that paste
+their transcript don't need `c` first. On a mouse or visual selection it opens a
+range comment instead. Newlines are kept, and the comment stays open to finish
+or save; with `comment_vim` it opens in Insert mode. With no diff line under the
+cursor (a file or hunk header) the paste is dropped, like `c`. While a comment
+or a prompt (`:`, `/`, the file-tree filters) is open, the text goes there.
 
 `e` opens the file at the cursor's line. Terminal editors (`vim`, `nvim`, `nano`, …)
 take over the screen and tuicr reloads the diff once they exit. Windowed editors
@@ -185,6 +194,7 @@ from the checkout, never copied.
 |-----|--------|
 | `j` / `k` | Extend selection down / up |
 | `c` / `Enter` | Create comment for selected range |
+| Paste | Create comment for selected range holding the pasted text |
 | `Esc` / `v` / `V` | Cancel selection |
 
 ## Comment mode
@@ -364,6 +374,6 @@ Mouse support is on by default. Disable with `mouse = false` in config.
 | Click on a directory | Expand or collapse it |
 | Click on a diff line | Position the cursor on that line |
 | Click on a commit | Toggle selection (or expand the row to load more) |
-| Drag in diff | Highlight a range; press `y` to copy the selected source lines |
+| Drag in diff | Highlight a range; press `y` to copy the selected source lines, or paste to comment on them |
 
 For full native terminal selection across the UI, hold your terminal's bypass modifier while dragging (usually **Shift** or **Option/Alt**, depending on the terminal).

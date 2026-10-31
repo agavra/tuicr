@@ -884,26 +884,7 @@ fn main() -> anyhow::Result<()> {
                 // font change, or a resize that lands back on the same size,
                 // can leave stale cells it would never rewrite.
                 Event::Resize(..) => app.request_full_redraw(),
-                Event::Paste(text) => {
-                    // Bracketed-paste payload — route to whichever handler is
-                    // currently accepting text input. Other modes ignore.
-                    // Vim comment box: feed the overlay so the buffer stays synced.
-                    if app.input_mode == InputMode::Comment && app.comment_vim_enabled {
-                        app.ensure_comment_vim_editor();
-                        app.comment_vim_feed_paste(text);
-                        continue;
-                    }
-                    let action = Action::Paste(text);
-                    match app.input_mode {
-                        InputMode::Comment => handle_comment_action(&mut app, action),
-                        InputMode::Command => handle_command_action(&mut app, action),
-                        InputMode::Search => handle_search_action(&mut app, action),
-                        InputMode::CommitSelect if app.pr_filter_editing() => {
-                            handle_commit_select_action(&mut app, action)
-                        }
-                        _ => {}
-                    }
-                }
+                Event::Paste(text) => handler::handle_paste(&mut app, text),
                 _ => {}
             }
         }

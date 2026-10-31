@@ -622,6 +622,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
             ),
             Span::raw("Enter visual mode for range comments"),
         ]),
+        Line::from(vec![
+            Span::styled(
+                "  paste     ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Comment on cursor line/selection with the pasted text"),
+        ]),
         Line::from(""),
         Line::from(Span::styled(
             "Visual Mode",
