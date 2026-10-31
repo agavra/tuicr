@@ -2,6 +2,7 @@ mod cmark;
 
 use ratatui::style::{Color, Modifier, Style};
 use std::path::Path;
+use std::sync::OnceLock;
 use two_face::theme::EmbeddedThemeName;
 
 use crate::model::diff_types::{DiffFile, DiffHunk, LineOrigin};
@@ -65,6 +66,59 @@ fn cap_oniguruma_retry_limit() {
     });
 }
 
+/// The embedded grammars plus any loaded by [`load_user_syntaxes`].
+static USER_SYNTAX_SET: OnceLock<syntect::parsing::SyntaxSet> = OnceLock::new();
+
+/// Add every `*.sublime-syntax` file in `dir` to the grammars highlighters use,
+/// for languages the embedded set lacks. Call once at startup, before the first
+/// highlighter is built. Returns a warning per file that fails to parse.
+pub fn load_user_syntaxes(dir: &Path) -> Vec<String> {
+    let (set, warnings) = build_syntax_set_with(dir);
+    if let Some(set) = set {
+        let _ = USER_SYNTAX_SET.set(set);
+    }
+    warnings
+}
+
+/// The embedded set plus `dir`'s grammars, or `None` when `dir` holds none:
+/// relinking the embedded set costs ~200ms, so an absent or empty `dir` skips it.
+fn build_syntax_set_with(dir: &Path) -> (Option<syntect::parsing::SyntaxSet>, Vec<String>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return (None, Vec::new());
+    };
+    let mut paths: Vec<_> = entries
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| path.extension().is_some_and(|ext| ext == "sublime-syntax"))
+        .collect();
+    if paths.is_empty() {
+        return (None, Vec::new());
+    }
+    paths.sort();
+
+    let mut warnings = Vec::new();
+    let mut builder = two_face::syntax::extra_newlines().into_builder();
+    for path in paths {
+        let parsed = std::fs::read_to_string(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|text| {
+                syntect::parsing::SyntaxDefinition::load_from_str(&text, true, None)
+                    .map_err(|e| e.to_string())
+            });
+        match parsed {
+            Ok(definition) => builder.add(definition),
+            Err(e) => warnings.push(format!("Failed to load syntax {}: {e}", path.display())),
+        }
+    }
+    (Some(builder.build()), warnings)
+}
+
+fn syntax_set() -> syntect::parsing::SyntaxSet {
+    USER_SYNTAX_SET
+        .get()
+        .cloned()
+        .unwrap_or_else(two_face::syntax::extra_newlines)
+}
+
 /// Helper to highlight lines of code from a diff
 pub struct SyntaxHighlighter {
     pub syntax_set: syntect::parsing::SyntaxSet,
@@ -106,7 +160,7 @@ impl SyntaxHighlighter {
     /// Create a new syntax highlighter with a preloaded syntect theme.
     pub fn with_theme(theme: syntect::highlighting::Theme, add_bg: Color, del_bg: Color) -> Self {
         cap_oniguruma_retry_limit();
-        let syntax_set = two_face::syntax::extra_newlines();
+        let syntax_set = syntax_set();
         let markdown_palette = cmark::MarkdownPalette::resolve(&theme);
         Self {
             syntax_set,
@@ -476,6 +530,40 @@ impl SyntaxHighlighter {
 mod tests {
     use super::*;
     use crate::model::diff_types::DiffLine;
+
+    #[test]
+    fn should_add_user_syntaxes_and_warn_about_broken_ones() {
+        // given a syntaxes dir with one valid grammar, one broken one, and a stray file
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("Probe.sublime-syntax"),
+            "%YAML 1.2\n---\nname: Probe\nscope: source.probe\nfile_extensions: [tuicrprobe]\ncontexts:\n  main:\n    - match: probe\n      scope: keyword.probe\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("Broken.sublime-syntax"), "not: [a grammar").unwrap();
+        std::fs::write(dir.path().join("notes.txt"), "ignored").unwrap();
+
+        // when the set is built from it
+        let (set, warnings) = build_syntax_set_with(dir.path());
+
+        // then the valid grammar joins the embedded ones and only the broken file warns
+        let set = set.unwrap();
+        assert!(set.find_syntax_by_extension("tuicrprobe").is_some());
+        assert!(set.find_syntax_by_extension("rs").is_some());
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("Broken.sublime-syntax"));
+    }
+
+    #[test]
+    fn should_skip_rebuilding_when_no_user_syntaxes_exist() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(build_syntax_set_with(dir.path()).0.is_none());
+        assert!(
+            build_syntax_set_with(&dir.path().join("missing"))
+                .0
+                .is_none()
+        );
+    }
 
     #[test]
     fn should_apply_oniguruma_retry_limit_once() {
