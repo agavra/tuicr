@@ -32,6 +32,7 @@ impl VcsBackend for MockVcs {
                 content: format!("line {line_num}"),
                 old_lineno: Some(line_num),
                 new_lineno: Some(line_num),
+                raw_content: None,
                 highlighted_spans: None,
             });
         }
@@ -56,6 +57,7 @@ fn make_hunk(new_start: u32, new_count: u32) -> DiffHunk {
             content: format!("hunk line {}", new_start + i),
             old_lineno: Some(new_start + i),
             new_lineno: Some(new_start + i),
+            raw_content: None,
             highlighted_spans: None,
         });
     }
@@ -188,6 +190,7 @@ fn hunk_navigation_counts_paired_changes_and_wrapped_comments() {
                 content: "before".into(),
                 old_lineno: Some(1),
                 new_lineno: None,
+                raw_content: None,
                 highlighted_spans: None,
             },
             DiffLine {
@@ -195,6 +198,7 @@ fn hunk_navigation_counts_paired_changes_and_wrapped_comments() {
                 content: "after".into(),
                 old_lineno: None,
                 new_lineno: Some(1),
+                raw_content: None,
                 highlighted_spans: None,
             },
             DiffLine {
@@ -202,6 +206,7 @@ fn hunk_navigation_counts_paired_changes_and_wrapped_comments() {
                 content: "unchanged".into(),
                 old_lineno: Some(2),
                 new_lineno: Some(2),
+                raw_content: None,
                 highlighted_spans: None,
             },
         ];
@@ -1684,6 +1689,7 @@ fn make_shifted_hunk(new_start: u32, count: u32, shift: u32) -> DiffHunk {
             content: format!("hunk line {}", new_start + i),
             old_lineno: Some(new_start + i + shift),
             new_lineno: Some(new_start + i),
+            raw_content: None,
             highlighted_spans: None,
         })
         .collect();

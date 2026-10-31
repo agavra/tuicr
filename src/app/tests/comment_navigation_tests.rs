@@ -63,6 +63,7 @@ impl Editor {
                 content: "code".into(),
                 old_lineno: None,
                 new_lineno: Some(1),
+                raw_content: None,
                 highlighted_spans: None,
             }],
         }];

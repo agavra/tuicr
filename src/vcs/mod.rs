@@ -89,6 +89,7 @@ pub(crate) fn slice_context_lines(content: &str, start_line: u32, end_line: u32)
             content: tabify(lines[idx]),
             old_lineno: Some(line_num),
             new_lineno: Some(line_num),
+            raw_content: lines[idx].contains('\t').then(|| lines[idx].to_string()),
             highlighted_spans: None,
         });
     }
@@ -433,6 +434,7 @@ mod tests {
                     content: deleted_line.to_string(),
                     old_lineno: Some(target_line),
                     new_lineno: None,
+                    raw_content: None,
                     highlighted_spans: None,
                 },
                 DiffLine {
@@ -440,6 +442,7 @@ mod tests {
                     content: added_line.to_string(),
                     old_lineno: None,
                     new_lineno: Some(target_line),
+                    raw_content: None,
                     highlighted_spans: None,
                 },
             ],

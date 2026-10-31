@@ -1591,6 +1591,7 @@ mod remote_comments_snapshot_tests {
                 content: "first".to_string(),
                 old_lineno: Some(1),
                 new_lineno: Some(1),
+                raw_content: None,
                 highlighted_spans: None,
             },
             DiffLine {
@@ -1598,6 +1599,7 @@ mod remote_comments_snapshot_tests {
                 content: "second".to_string(),
                 old_lineno: None,
                 new_lineno: Some(2),
+                raw_content: None,
                 highlighted_spans: None,
             },
         ];
@@ -1788,6 +1790,7 @@ mod remote_comments_snapshot_tests {
                 content: line.to_string(),
                 old_lineno: None,
                 new_lineno: Some(i as u32 + 1),
+                raw_content: None,
                 highlighted_spans: None,
             })
             .collect();
@@ -1820,6 +1823,7 @@ mod remote_comments_snapshot_tests {
                 content: format!("line {i} {}", "x".repeat(120)),
                 old_lineno: None,
                 new_lineno: Some(i),
+                raw_content: None,
                 highlighted_spans: None,
             })
             .collect();
@@ -2470,6 +2474,7 @@ mod remote_comments_snapshot_tests {
                 content: long.clone(),
                 old_lineno: None,
                 new_lineno: Some(1),
+                raw_content: None,
                 highlighted_spans: None,
             }],
             old_start: 0,
@@ -2532,6 +2537,7 @@ mod remote_comments_snapshot_tests {
                 content: format!("line {n}"),
                 old_lineno: None,
                 new_lineno: Some(n),
+                raw_content: None,
                 highlighted_spans: None,
             })
             .collect();
@@ -2611,6 +2617,7 @@ mod remote_comments_snapshot_tests {
                 content: long.clone(),
                 old_lineno: None,
                 new_lineno: Some(i + 1),
+                raw_content: None,
                 highlighted_spans: None,
             })
             .collect();
@@ -2619,6 +2626,7 @@ mod remote_comments_snapshot_tests {
             content: "LASTLINEMARKER".to_string(),
             old_lineno: None,
             new_lineno: Some(31),
+            raw_content: None,
             highlighted_spans: None,
         });
         let hunk = DiffHunk {
@@ -2687,6 +2695,7 @@ mod remote_comments_snapshot_tests {
                 content: long.clone(),
                 old_lineno: None,
                 new_lineno: Some(1),
+                raw_content: None,
                 highlighted_spans: None,
             }],
             old_start: 0,
@@ -2798,6 +2807,7 @@ mod remote_comments_snapshot_tests {
             content: "added".to_string(),
             old_lineno: None,
             new_lineno: Some(1),
+            raw_content: None,
             highlighted_spans: Some(vec![(
                 Style::default().fg(Color::White).bg(marker_bg),
                 "added".to_string(),
@@ -2850,6 +2860,7 @@ mod remote_comments_snapshot_tests {
             content: content.to_string(),
             old_lineno,
             new_lineno,
+            raw_content: None,
             highlighted_spans: None,
         };
         let lines = vec![

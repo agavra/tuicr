@@ -598,6 +598,15 @@ impl App {
     /// In SBS, picks Old or New per `side`, falling back to the other pane
     /// if the requested one is empty. Unified diff rows ignore `side`.
     pub fn content_for_side(&self, ann_idx: usize, side: LineSide) -> Option<&str> {
+        self.diff_line_for_side(ann_idx, side)
+            .map(|line| line.content.as_str())
+    }
+
+    pub(in crate::app) fn diff_line_for_side(
+        &self,
+        ann_idx: usize,
+        side: LineSide,
+    ) -> Option<&DiffLine> {
         let ann = self.line_annotations.get(ann_idx)?;
         match ann {
             AnnotatedLine::DiffLine {
@@ -613,7 +622,7 @@ impl App {
                     .get(*hunk_idx)?
                     .lines
                     .get(*line_idx)?;
-                Some(line.content.as_str())
+                Some(line)
             }
             AnnotatedLine::SideBySideLine {
                 file_idx,
@@ -623,20 +632,16 @@ impl App {
                 ..
             } => {
                 let hunk = self.diff_files.get(*file_idx)?.hunks.get(*hunk_idx)?;
-                let add = add_line_idx
-                    .and_then(|i| hunk.lines.get(i))
-                    .map(|l| l.content.as_str());
-                let del = del_line_idx
-                    .and_then(|i| hunk.lines.get(i))
-                    .map(|l| l.content.as_str());
+                let add = add_line_idx.and_then(|i| hunk.lines.get(i));
+                let del = del_line_idx.and_then(|i| hunk.lines.get(i));
                 match side {
                     LineSide::New => add.or(del),
                     LineSide::Old => del.or(add),
                 }
             }
-            AnnotatedLine::ExpandedContext { gap_id, line_idx } => self
-                .get_expanded_line(gap_id, *line_idx)
-                .map(|l| l.content.as_str()),
+            AnnotatedLine::ExpandedContext { gap_id, line_idx } => {
+                self.get_expanded_line(gap_id, *line_idx)
+            }
             _ => None,
         }
     }

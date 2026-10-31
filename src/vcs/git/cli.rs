@@ -827,7 +827,7 @@ fn build_untracked_diff_file(
     let content = String::from_utf8_lossy(&bytes);
     let lines: Vec<String> = content
         .lines()
-        .map(|line| tabify(line.trim_end_matches('\r')))
+        .map(|line| line.trim_end_matches('\r').to_string())
         .collect();
 
     if lines.is_empty() {
@@ -839,7 +839,8 @@ fn build_untracked_diff_file(
         .enumerate()
         .map(|(idx, content)| DiffLine {
             origin: LineOrigin::Addition,
-            content,
+            raw_content: content.contains('\t').then(|| content.clone()),
+            content: tabify(&content),
             old_lineno: None,
             new_lineno: Some((idx + 1) as u32),
             highlighted_spans: None,
