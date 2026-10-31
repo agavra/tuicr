@@ -744,7 +744,30 @@ impl App {
         let Some(location) = self.find_comment_at_cursor() else {
             return false;
         };
-        if !self.session.remove_comment(&location) {
+        self.delete_comment(&location)
+    }
+
+    /// Delete the selected draft by identity, even when its diff location is gone.
+    pub fn delete_selected_summary_comment(&mut self) -> bool {
+        let Some(comment_id) = self
+            .summary_state
+            .comment_ids
+            .get(self.summary_state.selected_comment)
+        else {
+            return false;
+        };
+        let Some(location) = self.session.find_comment_by_id(comment_id) else {
+            return false;
+        };
+        if !self.delete_comment(&location) {
+            return false;
+        }
+        self.summary_state.selection_needs_scroll = true;
+        true
+    }
+
+    fn delete_comment(&mut self, location: &CommentLocation) -> bool {
+        if !self.session.remove_comment(location) {
             return false;
         }
         let message = match location {

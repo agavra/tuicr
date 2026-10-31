@@ -1845,6 +1845,8 @@ pub struct SummaryState {
     pub total_lines: usize, // Set during render
     /// Exclusive rendered-line ranges for each pending comment.
     pub comment_ranges: Vec<(usize, usize)>,
+    /// Stable deletion identities, including comments without a jump target.
+    pub comment_ids: Vec<String>,
     /// Stable jump targets in the same order as `comment_ranges`.
     /// A target is absent when the comment is hidden by the current diff,
     /// commit selection, or file-tree filters.

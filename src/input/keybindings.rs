@@ -458,6 +458,7 @@ fn map_summary_mode(key: KeyEvent) -> Action {
         (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => Action::CursorDown(1),
         (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => Action::CursorUp(1),
         (KeyCode::Enter, KeyModifiers::NONE) => Action::SubmitInput,
+        (KeyCode::Char('d'), KeyModifiers::NONE) => Action::PendingDCommand,
         (KeyCode::Char('d'), KeyModifiers::CONTROL) => Action::HalfPageDown,
         (KeyCode::Char('u'), KeyModifiers::CONTROL) => Action::HalfPageUp,
         (KeyCode::Char('f'), KeyModifiers::CONTROL) => Action::PageDown,
@@ -972,6 +973,23 @@ mod tests {
         );
     }
 
+    #[test]
+    fn summary_delete_prefix_preserves_scroll_and_navigation() {
+        assert_eq!(
+            map_summary_mode(key(KeyCode::Char('d'))),
+            Action::PendingDCommand
+        );
+        assert_eq!(
+            map_summary_mode(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL)),
+            Action::HalfPageDown
+        );
+        assert_eq!(map_summary_mode(key(KeyCode::Esc)), Action::ExitMode);
+        assert_eq!(
+            map_summary_mode(key(KeyCode::Char('j'))),
+            Action::CursorDown(1)
+        );
+        assert_eq!(map_summary_mode(key(KeyCode::Enter)), Action::SubmitInput);
+    }
     #[test]
     fn should_not_bind_ctrl_l_in_any_mode_map() {
         // `map_global_key` runs first, so a per-mode Ctrl-l binding would be

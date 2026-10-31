@@ -625,7 +625,9 @@ fn main() -> anyhow::Result<()> {
                     // Handle pending d command for dd delete comment
                     if pending_d {
                         pending_d = false;
-                        if key.code == crossterm::event::KeyCode::Char('d') {
+                        if key.code == crossterm::event::KeyCode::Char('d')
+                            && key.modifiers == crossterm::event::KeyModifiers::NONE
+                        {
                             // In the target selector `dd` deletes the saved
                             // review under the cursor, not a comment.
                             if app.input_mode == InputMode::CommitSelect {
@@ -634,6 +636,15 @@ fn main() -> anyhow::Result<()> {
                                     Action::SessionsTabDelete,
                                 );
                                 continue;
+                            }
+                            if app.input_mode == InputMode::Summary {
+                                if !app.delete_selected_summary_comment() {
+                                    app.set_warning(
+                                        "Selected comment is no longer editable or available",
+                                    );
+                                }
+                                // Refresh IDs and clamp selection before another queued dd.
+                                break;
                             }
                             if app.cursor_on_locked_comment() {
                                 let forge = app.forge_display_name();
@@ -831,7 +842,12 @@ fn main() -> anyhow::Result<()> {
                         }
                     }
 
+                    let previous_mode = app.input_mode;
                     dispatch_action(&mut app, action);
+                    if previous_mode != InputMode::Summary && app.input_mode == InputMode::Summary {
+                        // Summary identities are populated by rendering before queued input.
+                        break;
+                    }
                     if let Some(target) = app.take_pending_editor_target() {
                         match run_editor_from_tui(
                             &mut terminal,

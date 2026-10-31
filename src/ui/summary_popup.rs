@@ -45,6 +45,7 @@ struct SummaryContent {
     lines: Vec<SummaryRenderedLine>,
     comment_ranges: Vec<(usize, usize)>,
     targets: Vec<Option<SummaryCommentTarget>>,
+    comment_ids: Vec<String>,
 }
 
 /// Render every pending local draft in the active review session. Unlike the
@@ -53,8 +54,9 @@ struct SummaryContent {
 pub fn render_summary(frame: &mut Frame, app: &mut App, area: Rect) {
     let pending = collect_pending_comments(app);
     let pending_count = pending.len();
-    let title =
-        format!(" Pending Comments ({pending_count}) — j/k select, Enter to jump, Esc to return ");
+    let title = format!(
+        " Pending Comments ({pending_count}) — j/k select, dd delete, Enter to jump, Esc to return "
+    );
     let block = Block::default()
         .title(title)
         .title_alignment(Alignment::Center)
@@ -68,6 +70,7 @@ pub fn render_summary(frame: &mut Frame, app: &mut App, area: Rect) {
         lines,
         comment_ranges,
         targets,
+        comment_ids,
     } = summary_lines(app, &pending, inner.width as usize);
     drop(pending);
 
@@ -77,7 +80,13 @@ pub fn render_summary(frame: &mut Frame, app: &mut App, area: Rect) {
     app.diff_inner_area = Some(inner);
     app.sync_viewport_width(inner.width as usize);
 
-    app.update_summary_layout(comment_ranges, targets, lines.len(), inner.height as usize);
+    app.update_summary_layout(
+        comment_ranges,
+        targets,
+        comment_ids,
+        lines.len(),
+        inner.height as usize,
+    );
 
     let can_scroll_up = app.summary_state.scroll_offset > 0;
     let can_scroll_down = app.summary_state.scroll_offset + app.summary_state.viewport_height
@@ -237,12 +246,14 @@ fn summary_lines(app: &App, pending: &[PendingComment<'_>], width: usize) -> Sum
             )))],
             comment_ranges: Vec::new(),
             targets: Vec::new(),
+            comment_ids: Vec::new(),
         };
     }
 
     let mut lines = Vec::new();
     let mut comment_ranges = Vec::with_capacity(pending.len());
     let mut targets = Vec::with_capacity(pending.len());
+    let mut comment_ids = Vec::with_capacity(pending.len());
     for (idx, item) in pending.iter().enumerate() {
         let start_line = lines.len();
         let mut header = vec![Span::styled(
@@ -287,12 +298,14 @@ fn summary_lines(app: &App, pending: &[PendingComment<'_>], width: usize) -> Sum
         push_comment_body(&mut lines, &item.comment.content, width, idx);
         comment_ranges.push((start_line, lines.len()));
         targets.push(item.target.clone());
+        comment_ids.push(item.comment.id.clone());
         lines.push(SummaryRenderedLine::plain(Line::default()));
     }
     SummaryContent {
         lines,
         comment_ranges,
         targets,
+        comment_ids,
     }
 }
 
@@ -560,6 +573,157 @@ mod tests {
         let viewport_start = app.summary_state.scroll_offset;
         let viewport_end = viewport_start + app.summary_state.viewport_height;
         assert!(end > viewport_start && start < viewport_end);
+    }
+
+    #[test]
+    fn deletes_only_selected_orphan_and_preserves_saved_review_state() {
+        for missing_file in [false, true] {
+            for side in [LineSide::Old, LineSide::New] {
+                let path = PathBuf::from("src/main.rs");
+                let mut app = make_app_with_files(if missing_file {
+                    vec![]
+                } else {
+                    vec![make_file("src/main.rs", vec![make_hunk(1, 20)])]
+                });
+                let mut review = FileReview::new(path.clone(), FileStatus::Modified, 0);
+                review.reviewed = true;
+                let comments: Vec<_> = (0..3)
+                    .map(|_| {
+                        Comment::new_with_range(
+                            "same body".into(),
+                            CommentType::from_id("note"),
+                            Some(side),
+                            LineRange::new(29, 31),
+                        )
+                    })
+                    .collect();
+                let ids: Vec<_> = comments.iter().map(|c| c.id.clone()).collect();
+                review.line_comments.insert(29, comments);
+                app.session.files.insert(path.clone(), review);
+                let saved = app.save_current_session_merging_external().unwrap();
+                draw_summary(&mut app, 80, 12);
+                assert_eq!(app.summary_state.comment_ids, ids);
+                assert!(app.summary_state.targets.iter().all(Option::is_none));
+                app.summary_select_down(1);
+                assert!(app.delete_selected_summary_comment());
+                assert!(app.dirty);
+                assert_eq!(app.input_mode, InputMode::Summary);
+                assert!(app.session.find_comment_by_id(&ids[1]).is_none());
+                for id in [&ids[0], &ids[2]] {
+                    assert!(app.session.find_comment_by_id(id).is_some());
+                }
+                assert!(app.session.is_file_reviewed(&path));
+                draw_summary(&mut app, 80, 12);
+                assert_eq!(app.summary_state.selected_comment, 1);
+                assert_eq!(
+                    app.summary_state.comment_ids,
+                    vec![ids[0].clone(), ids[2].clone()]
+                );
+                assert_selected_comment_visible(&app);
+                // Deletion affects memory immediately, not the saved session until :w.
+                let on_disk = crate::persistence::storage::load_session(&saved).unwrap();
+                assert!(on_disk.find_comment_by_id(&ids[1]).is_some());
+                app.save_current_session_merging_external().unwrap();
+                let loaded = crate::persistence::storage::load_session(&saved).unwrap();
+                assert!(loaded.find_comment_by_id(&ids[1]).is_none());
+                assert!(loaded.find_comment_by_id(&ids[0]).is_some());
+                assert!(loaded.find_comment_by_id(&ids[2]).is_some());
+                assert!(loaded.is_file_reviewed(&path));
+                // Delete the last item, then the final remaining item, with a render between inputs.
+                assert!(app.delete_selected_summary_comment());
+                draw_summary(&mut app, 80, 12);
+                assert_eq!(app.summary_state.selected_comment, 0);
+                assert!(app.delete_selected_summary_comment());
+                let text = buffer_text(&draw_summary(&mut app, 80, 12));
+                assert!(text.contains("No pending comments."));
+                assert_eq!(app.summary_state.scroll_offset, 0);
+                assert!(!app.delete_selected_summary_comment());
+                app.save_current_session_merging_external().unwrap();
+                let loaded = crate::persistence::storage::load_session(&saved).unwrap();
+                assert!(!loaded.has_comments());
+                assert!(loaded.is_file_reviewed(&path));
+            }
+        }
+    }
+
+    #[test]
+    fn summary_deletion_rechecks_stale_and_locked_ids_without_cursor_fallback() {
+        for lifecycle in [
+            None,
+            Some(CommentLifecycleState::PushedDraft),
+            Some(CommentLifecycleState::Submitted),
+        ] {
+            let (mut app, path, ids) = app_with_line_comments(&["selected", "keep"]);
+            draw_summary(&mut app, 80, 12);
+            let comments = app
+                .session
+                .files
+                .get_mut(&path)
+                .unwrap()
+                .line_comments
+                .get_mut(&1482)
+                .unwrap();
+            if let Some(lifecycle) = lifecycle {
+                comments[0].lifecycle_state = lifecycle;
+            } else {
+                comments.remove(0);
+            }
+            let before = serde_json::to_value(&app.session).unwrap();
+            app.dirty = false;
+            assert!(!app.delete_selected_summary_comment());
+            assert!(!app.dirty);
+            assert_eq!(serde_json::to_value(&app.session).unwrap(), before);
+            assert!(app.session.find_comment_by_id(&ids[1]).is_some());
+            app.summary_state.selected_comment = usize::MAX;
+            assert!(!app.delete_selected_summary_comment());
+        }
+    }
+
+    #[test]
+    fn summary_deletes_review_and_unmapped_file_comments_and_updates_export() {
+        let mut app = make_app();
+        let review_comment = Comment::new(
+            "REVIEW_DELETE_MARKER".into(),
+            CommentType::from_id("note"),
+            None,
+        );
+        let review_id = review_comment.id.clone();
+        app.session.review_comments.push(review_comment);
+        let path = PathBuf::from("missing.rs");
+        let mut file = FileReview::new(path.clone(), FileStatus::Modified, 0);
+        let file_comment = Comment::new(
+            "FILE_KEEP_MARKER".into(),
+            CommentType::from_id("note"),
+            None,
+        );
+        let file_id = file_comment.id.clone();
+        file.file_comments.push(file_comment);
+        app.session.files.insert(path, file);
+        draw_summary(&mut app, 80, 12);
+        assert_eq!(
+            app.summary_state.comment_ids,
+            vec![review_id.clone(), file_id.clone()]
+        );
+        assert!(app.delete_selected_summary_comment());
+        let exported = crate::output::markdown::generate_export_content(
+            &app.session,
+            &app.diff_source,
+            &app.comment_types,
+            &app.export,
+            &app.forge_review_threads,
+            None,
+        )
+        .unwrap();
+        assert!(!exported.contains("REVIEW_DELETE_MARKER"));
+        assert!(exported.contains("FILE_KEEP_MARKER"));
+        draw_summary(&mut app, 80, 12);
+        assert_eq!(app.summary_state.targets, vec![None]);
+        assert!(app.delete_selected_summary_comment());
+        assert!(!app.session.has_comments());
+        app.exit_summary_mode();
+        assert!(app.summary_state.comment_ids.is_empty());
+        app.enter_summary_mode();
+        assert!(!app.delete_selected_summary_comment());
     }
 
     #[test]
@@ -975,6 +1139,10 @@ mod tests {
         assert!(matches!(app.summary_state.targets.first(), Some(None)));
         handle_summary_action(&mut app, Action::SubmitInput);
         assert_eq!(app.input_mode, InputMode::Summary);
+        assert!(app.delete_selected_summary_comment());
+        assert!(app.session.find_comment_by_id(&ids[0]).is_none());
+        assert!(app.session.is_file_reviewed(&path));
+        assert!(app.session.is_hunk_reviewed(&path, &hunk_key));
     }
 
     #[test]

@@ -230,7 +230,7 @@ In command mode,
 | `:edit` | Open focused file in `$EDITOR` |
 | `:clip` (`:export`) | Copy review to clipboard |
 | `:copy-url` | Copy the open PR URL to clipboard (PR mode) |
-| `:summary` | Show all pending local-draft comments; `j`/`k` select and `Enter` jumps |
+| `:summary` | Show all pending local-draft comments; `j`/`k` select, `dd` deletes, and `Enter` jumps |
 | `:diff` | Toggle diff view (unified / side-by-side) |
 | `:theme` | Open the runtime theme picker (live preview; `/` filters, `Enter` applies and saves, `Esc` reverts) |
 | `:theme <name>` | Apply and save `<name>` directly, without opening the picker |
@@ -280,6 +280,9 @@ or previous comment; the view scrolls automatically to keep the selection visibl
 to the continuous diff and jumps to the selected comment, leaving single-file view if necessary,
 while `Esc` returns without jumping. Reviewed files and hunks are revealed for the jump without
 losing their reviewed state.
+Press `dd` to delete the selected local draft, including comments whose original file or line
+is absent from the current diff. Other comments are kept. Return with `Esc` and use `:w` to
+save the deletion, following the existing diff-view deletion workflow.
 
 The theme picker lists every bundled theme plus any local `*.toml` themes in the theme directory.
 `j`/`k` move the selection and immediately repaint the UI with that theme (live preview) without

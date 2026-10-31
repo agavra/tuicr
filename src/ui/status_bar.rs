@@ -374,7 +374,7 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                 InputMode::Help => Cow::Borrowed("   / search · n/N match · q/?/esc close"),
                 InputMode::MessageDetails => Cow::Borrowed("   j/k scroll · q/esc close"),
                 InputMode::Summary => {
-                    Cow::Borrowed("   j/k select \u{00b7} \u{21b5} jump \u{00b7} q/esc close")
+                    Cow::Borrowed("   j/k select · dd delete · ↵ jump · q/esc close")
                 }
                 InputMode::Confirm => Cow::Borrowed("   y yes \u{00b7} n no"),
                 InputMode::CommitSelect => Cow::Borrowed(
