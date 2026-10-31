@@ -731,7 +731,7 @@ pub enum CopyOnQuit {
 }
 
 impl CopyOnQuit {
-    /// Parse a value already validated by the config loader.
+    /// Parse a config value; `None` for anything but `ask`, `always`, `never`.
     pub fn from_config(value: &str) -> Option<Self> {
         match value {
             "ask" => Some(Self::Ask),

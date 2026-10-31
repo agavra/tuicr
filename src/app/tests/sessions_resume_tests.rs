@@ -6,6 +6,7 @@
 //! routed `WorkingTree` to the unstaged-only loader, so it guarded nothing.
 
 use crate::app::*;
+use crate::handler::{CommandAfterDispatch, WriteQuitKey, finish_write_quit};
 use crate::input::keybindings::Action;
 use crate::model::FileStatus;
 use crate::review_store::{SessionKind, SessionSummary};
@@ -673,10 +674,10 @@ fn should_prompt_on_write_quit_when_copy_on_quit_is_ask() {
     app.copy_on_quit = CopyOnQuit::Ask;
 
     // when
-    let kept_mode = crate::handler::finish_write_quit(&mut app, false);
+    let after = finish_write_quit(&mut app, WriteQuitKey::Command);
 
     // then
-    assert!(kept_mode);
+    assert_eq!(after, CommandAfterDispatch::KeepMode);
     assert_eq!(app.input_mode, InputMode::Confirm);
     assert_eq!(app.pending_confirm, Some(ConfirmAction::CopyAndQuit));
     assert!(!app.should_quit);
@@ -688,14 +689,14 @@ fn should_quit_without_prompt_when_copy_on_quit_is_never() {
     let mut app = app_with_review_comment();
     app.copy_on_quit = CopyOnQuit::Never;
 
-    for zz in [false, true] {
+    for key in [WriteQuitKey::Command, WriteQuitKey::ZZ] {
         app.should_quit = false;
 
         // when
-        let kept_mode = crate::handler::finish_write_quit(&mut app, zz);
+        let after = finish_write_quit(&mut app, key);
 
         // then
-        assert!(!kept_mode);
+        assert_eq!(after, CommandAfterDispatch::ExitCommandMode);
         assert!(app.should_quit);
         assert_ne!(app.input_mode, InputMode::Confirm);
         assert_eq!(app.pending_confirm, None);
@@ -709,12 +710,33 @@ fn should_quit_without_prompt_when_there_are_no_comments() {
     app.copy_on_quit = CopyOnQuit::Ask;
 
     // when
-    let kept_mode = crate::handler::finish_write_quit(&mut app, false);
+    let after = finish_write_quit(&mut app, WriteQuitKey::Command);
 
     // then
-    assert!(!kept_mode);
+    assert_eq!(after, CommandAfterDispatch::ExitCommandMode);
     assert!(app.should_quit);
     assert_ne!(app.input_mode, InputMode::Confirm);
+}
+
+#[test]
+fn should_export_to_stdout_on_write_quit_whatever_copy_on_quit_says() {
+    for policy in [CopyOnQuit::Ask, CopyOnQuit::Always, CopyOnQuit::Never] {
+        for key in [WriteQuitKey::Command, WriteQuitKey::ZZ] {
+            // given — `--stdout` is an explicit request for the export
+            let mut app = app_with_review_comment();
+            app.output_to_stdout = true;
+            app.copy_on_quit = policy;
+
+            // when
+            let after = finish_write_quit(&mut app, key);
+
+            // then
+            assert_eq!(after, CommandAfterDispatch::ExitCommandMode);
+            assert!(app.pending_stdout_output.is_some(), "{policy:?} {key:?}");
+            assert!(app.should_quit, "{policy:?} {key:?}");
+            assert_eq!(app.pending_confirm, None);
+        }
+    }
 }
 
 #[test]

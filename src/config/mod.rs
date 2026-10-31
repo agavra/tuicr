@@ -1822,6 +1822,23 @@ mod tests {
         assert!(outcome.warnings.is_empty());
     }
 
+    #[test]
+    fn should_default_q_quits_to_none() {
+        let outcome = parse_config("\n");
+        assert_eq!(outcome.config.as_ref().and_then(|cfg| cfg.q_quits), None);
+    }
+
+    #[test]
+    fn should_warn_and_ignore_q_quits_with_invalid_type() {
+        let outcome = parse_config("q_quits = \"yes\"\n");
+        assert_eq!(outcome.config.as_ref().and_then(|cfg| cfg.q_quits), None);
+        assert_eq!(outcome.warnings.len(), 1);
+        assert_eq!(
+            outcome.warnings[0],
+            "Warning: Config key 'q_quits' must be a boolean; ignoring value"
+        );
+    }
+
     // copy_on_quit
 
     #[test]
@@ -1879,23 +1896,6 @@ mod tests {
             None
         );
         assert_eq!(outcome.warnings.len(), 1);
-    }
-
-    #[test]
-    fn should_default_q_quits_to_none() {
-        let outcome = parse_config("\n");
-        assert_eq!(outcome.config.as_ref().and_then(|cfg| cfg.q_quits), None);
-    }
-
-    #[test]
-    fn should_warn_and_ignore_q_quits_with_invalid_type() {
-        let outcome = parse_config("q_quits = \"yes\"\n");
-        assert_eq!(outcome.config.as_ref().and_then(|cfg| cfg.q_quits), None);
-        assert_eq!(outcome.warnings.len(), 1);
-        assert_eq!(
-            outcome.warnings[0],
-            "Warning: Config key 'q_quits' must be a boolean; ignoring value"
-        );
     }
 
     // leader
