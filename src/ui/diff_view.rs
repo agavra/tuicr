@@ -370,6 +370,38 @@ pub(super) fn cursor_indicator(line_idx: usize, current_line_idx: usize) -> &'st
     }
 }
 
+/// Render the remote threads of `file` that have no row in any hunk (see
+/// `App::remote_threads_outside_hunks`). Both renderers call this right
+/// after the file-level comments, matching where `rebuild_annotations`
+/// emits their rows. No comment bar is drawn: there is no diff row above
+/// the box to connect to; the box header carries the `L<n>` label instead.
+pub(super) fn render_remote_threads_outside_hunks(
+    lines: &mut Vec<Line<'_>>,
+    line_idx: &mut usize,
+    current_line_idx: usize,
+    app: &App,
+    file: &DiffFile,
+) {
+    let visibility = app.session.remote_comments_visibility;
+    for thread_idx in app.remote_threads_outside_hunks(file) {
+        let thread = &app.forge_review_threads[thread_idx];
+        let Some(muted) = visibility.render_decision(thread) else {
+            continue;
+        };
+        for mut comment_line in
+            comment_panel::format_remote_thread_lines(&app.theme, thread, muted, app.forge_kind())
+        {
+            let indicator = cursor_indicator(*line_idx, current_line_idx);
+            comment_line.spans.insert(
+                0,
+                Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
+            );
+            lines.push(comment_line);
+            *line_idx += 1;
+        }
+    }
+}
+
 /// Get cursor indicator with spacing (two characters for line prefixes)
 pub(super) fn cursor_indicator_spaced(line_idx: usize, current_line_idx: usize) -> &'static str {
     if line_idx == current_line_idx {
