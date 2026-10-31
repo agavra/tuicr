@@ -24,15 +24,38 @@ use crate::ui::diff_view::{
     scroll_comment_input_into_view, skip_comment_box, unified_line_bg_style,
 };
 use crate::ui::styles;
-use crate::ui::text_utils::wrap_spans_hanging;
+use crate::ui::text_utils::{wrap_spans_hanging, wrap_spans_lead};
 use crate::vcs::git::calculate_gap;
 
 const GUTTER_SPANS: usize = 3;
+
+/// Wraps one unified row. In gutter mode the gutter hangs beside the code
+/// (`content_start`); in flow mode (`flow_start`) the whole row wraps from the left
+/// edge, but the gutter spans still must not count as content.
+fn wrap_unified_row<'a>(
+    spans: &[Span<'a>],
+    content_start: Option<usize>,
+    flow_start: Option<usize>,
+    width: usize,
+) -> Vec<Vec<Span<'a>>> {
+    match flow_start {
+        Some(n) => {
+            let lead = spans
+                .iter()
+                .take(n)
+                .map(|span| span.content.chars().count())
+                .sum();
+            wrap_spans_lead(spans, lead, width)
+        }
+        None => wrap_spans_hanging(spans, content_start, width),
+    }
+}
 
 fn unified_row_height(
     lines: &[Line],
     idx: usize,
     content_start: Option<usize>,
+    flow_start: Option<usize>,
     wrap: bool,
     viewport_width: usize,
 ) -> usize {
@@ -40,7 +63,7 @@ fn unified_row_height(
         return 1;
     }
     lines.get(idx).map_or(1, |line| {
-        wrap_spans_hanging(&line.spans, content_start, viewport_width).len()
+        wrap_unified_row(&line.spans, content_start, flow_start, viewport_width).len()
     })
 }
 
@@ -1221,13 +1244,24 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
     let gutter_wrap = app.wrap_style == WrapStyle::Gutter;
     let content_start =
         |idx: usize| (gutter_wrap && content_rows.contains(&idx)).then_some(GUTTER_SPANS);
+    let flow_start =
+        |idx: usize| (!gutter_wrap && content_rows.contains(&idx)).then_some(GUTTER_SPANS);
     scroll_comment_input_into_view(
         &mut app.diff_state.scroll_offset,
         comment_input_box_range,
         comment_cursor_logical_line,
         inner.height as usize,
         lines.len(),
-        |idx| unified_row_height(&lines, idx, content_start(idx), wrap, viewport_width),
+        |idx| {
+            unified_row_height(
+                &lines,
+                idx,
+                content_start(idx),
+                flow_start(idx),
+                wrap,
+                viewport_width,
+            )
+        },
     );
 
     let visible_lines_unscrolled: Vec<Line> = lines
@@ -1262,9 +1296,10 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
             let mut heights = Vec::with_capacity(visible_lines_unscrolled_for_bg.len());
             let mut out: Vec<Line> = Vec::new();
             for (i, line) in visible_lines_unscrolled_for_bg.iter().enumerate() {
-                let rows = wrap_spans_hanging(
+                let rows = wrap_unified_row(
                     &line.spans,
                     content_start(scroll_offset + i),
+                    flow_start(scroll_offset + i),
                     viewport_width,
                 );
                 heights.push(rows.len());
@@ -1907,6 +1942,49 @@ mod remote_comments_snapshot_tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn should_not_leave_a_gutter_only_row_when_flow_wrapped_word_does_not_fit_beside_the_gutter() {
+        for relative in [false, true] {
+            let mut app = make_revision_app(vec![wrapping_diff_file(1)]);
+            app.relative_line_numbers = relative;
+            app.wrap_style = WrapStyle::Flow;
+            app.set_diff_wrap(true);
+            let _ = draw_unified_diff(&mut app);
+            let inner = app.diff_inner_area.unwrap();
+            let gutter = crate::app::unified_gutter(app.lineno_width());
+            // A single word that fits a fresh row but not what is left beside the gutter.
+            let word = "x".repeat(inner.width as usize - 2);
+            app.diff_files[0].hunks[0].lines[0].content = word.clone();
+            app.rebuild_annotations();
+            let buffer = draw_unified_diff(&mut app);
+            let annotation_idx = app
+                .line_annotations
+                .iter()
+                .position(|annotation| {
+                    matches!(annotation, crate::app::AnnotatedLine::DiffLine { .. })
+                })
+                .unwrap();
+            let rows: Vec<usize> = app
+                .diff_row_to_annotation
+                .iter()
+                .enumerate()
+                .filter_map(|(row, &idx)| (idx == annotation_idx).then_some(row))
+                .collect();
+            // The word fills the first row after the gutter and continues below it.
+            assert_eq!(rows.len(), 2);
+            let first = inner.y + rows[0] as u16;
+            assert_eq!(buffer[(inner.x + gutter, first)].symbol(), "x");
+            let drawn = (inner.x..inner.right())
+                .map(|x| buffer[(x, first)].symbol().to_string())
+                .collect::<String>();
+            assert_eq!(drawn.matches('x').count() as u16, inner.width - gutter);
+            assert_eq!(
+                crate::ui::row_height::annotation_row_height(&app, annotation_idx),
+                2
+            );
         }
     }
 
