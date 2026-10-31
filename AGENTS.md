@@ -128,7 +128,7 @@ src/
 
 Repository-managed agent integrations:
 
-- `skills/tuicr/` - Shared agent skill bundle for coding agents, for example Claude Code, Codex, and similar tools; launches tuicr in a cmux, tmux, Zellij, or Herdr split pane
+- `skills/tuicr/` - Shared agent skill bundle for coding agents, for example Claude Code, Codex, and similar tools; launches tuicr in a cmux, Rex, tmux, Zellij, or Herdr split pane
 
 ### Key Types
 
