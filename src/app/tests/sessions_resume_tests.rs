@@ -656,6 +656,67 @@ fn should_keep_quit_prompts_quitting() {
     assert_eq!(app.input_mode, InputMode::Normal);
 }
 
+fn app_with_review_comment() -> App {
+    let (mut app, _calls) = build_app(vec![commit("aaa")]);
+    app.session.review_comments.push(crate::model::Comment::new(
+        "looks off".to_string(),
+        crate::model::CommentType::default(),
+        None,
+    ));
+    app
+}
+
+#[test]
+fn should_prompt_on_write_quit_when_copy_on_quit_is_ask() {
+    // given
+    let mut app = app_with_review_comment();
+    app.copy_on_quit = CopyOnQuit::Ask;
+
+    // when
+    let kept_mode = crate::handler::finish_write_quit(&mut app, false);
+
+    // then
+    assert!(kept_mode);
+    assert_eq!(app.input_mode, InputMode::Confirm);
+    assert_eq!(app.pending_confirm, Some(ConfirmAction::CopyAndQuit));
+    assert!(!app.should_quit);
+}
+
+#[test]
+fn should_quit_without_prompt_when_copy_on_quit_is_never() {
+    // given
+    let mut app = app_with_review_comment();
+    app.copy_on_quit = CopyOnQuit::Never;
+
+    for zz in [false, true] {
+        app.should_quit = false;
+
+        // when
+        let kept_mode = crate::handler::finish_write_quit(&mut app, zz);
+
+        // then
+        assert!(!kept_mode);
+        assert!(app.should_quit);
+        assert_ne!(app.input_mode, InputMode::Confirm);
+        assert_eq!(app.pending_confirm, None);
+    }
+}
+
+#[test]
+fn should_quit_without_prompt_when_there_are_no_comments() {
+    // given — an empty review never needs the clipboard, whatever the policy
+    let (mut app, _calls) = build_app(vec![commit("aaa")]);
+    app.copy_on_quit = CopyOnQuit::Ask;
+
+    // when
+    let kept_mode = crate::handler::finish_write_quit(&mut app, false);
+
+    // then
+    assert!(!kept_mode);
+    assert!(app.should_quit);
+    assert_ne!(app.input_mode, InputMode::Confirm);
+}
+
 #[test]
 fn should_reveal_empty_sessions_only_when_toggled_on() {
     // given — one session with no comments and no reviewed files

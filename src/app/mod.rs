@@ -717,6 +717,31 @@ impl PullRequestDiffSource {
     }
 }
 
+/// Config `copy_on_quit`: whether `:wq` / `:x` / `ZZ` copy the review to the
+/// clipboard on the way out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CopyOnQuit {
+    /// `:wq` / `:x` prompt; `ZZ` copies without prompting.
+    #[default]
+    Ask,
+    /// Copy without prompting.
+    Always,
+    /// Quit without copying.
+    Never,
+}
+
+impl CopyOnQuit {
+    /// Parse a value already validated by the config loader.
+    pub fn from_config(value: &str) -> Option<Self> {
+        match value {
+            "ask" => Some(Self::Ask),
+            "always" => Some(Self::Always),
+            "never" => Some(Self::Never),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfirmAction {
     CopyAndQuit,
@@ -1211,6 +1236,8 @@ pub struct App {
     pub comment_vim_enabled: bool,
     /// Config `q_quits`: restore bare `q` as a quit key in review modes.
     pub q_quits: bool,
+    /// Config `copy_on_quit`: clipboard behavior of `:wq` / `:x` / `ZZ`.
+    pub copy_on_quit: CopyOnQuit,
     /// Spaces inserted by Tab while typing in the vim comment box (config
     /// `comment_tab_width`, default 4).
     pub comment_tab_width: usize,

@@ -273,6 +273,11 @@ fn main() -> anyhow::Result<()> {
                 }
                 app.comment_vim_enabled = cfg.comment_vim.unwrap_or(false);
                 app.q_quits = cfg.q_quits.unwrap_or(false);
+                app.copy_on_quit = cfg
+                    .copy_on_quit
+                    .as_deref()
+                    .and_then(app::CopyOnQuit::from_config)
+                    .unwrap_or_default();
                 app.editor_override = cfg.editor.clone();
                 if let Some(w) = cfg.comment_tab_width {
                     app.comment_tab_width = w;
@@ -606,11 +611,7 @@ fn main() -> anyhow::Result<()> {
                             crossterm::event::KeyCode::Char('Z') => {
                                 // ZZ: save session, export, and quit (same as :wq)
                                 let _ = app.save_current_session_merging_external();
-                                if app.session.has_comments() {
-                                    handler::handle_export_and_quit(&mut app);
-                                } else {
-                                    app.should_quit = true;
-                                }
+                                handler::finish_write_quit(&mut app, true);
                                 continue;
                             }
                             crossterm::event::KeyCode::Char('Q') => {
