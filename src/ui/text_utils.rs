@@ -489,6 +489,17 @@ pub(super) fn wrap_spans_hanging<'a>(
 }
 
 pub(super) fn wrap_spans<'a>(spans: &[Span<'a>], width: usize) -> Vec<Vec<Span<'a>>> {
+    wrap_spans_lead(spans, 0, width)
+}
+
+/// Like `wrap_spans`, but the first `lead` graphemes (a gutter that flow-wrapping
+/// keeps on the first row) do not count as content: a word that fits a fresh row but
+/// not beside the gutter is broken across rows instead of leaving a gutter-only row.
+pub(super) fn wrap_spans_lead<'a>(
+    spans: &[Span<'a>],
+    lead: usize,
+    width: usize,
+) -> Vec<Vec<Span<'a>>> {
     if width == 0 {
         return vec![spans.to_vec()];
     }
@@ -514,6 +525,7 @@ pub(super) fn wrap_spans<'a>(spans: &[Span<'a>], width: usize) -> Vec<Vec<Span<'
         current_w: &mut usize,
         rows: &mut Vec<Vec<Item<'s>>>,
         width: usize,
+        lead: usize,
     ) {
         if unit.is_empty() {
             return;
@@ -528,6 +540,7 @@ pub(super) fn wrap_spans<'a>(spans: &[Span<'a>], width: usize) -> Vec<Vec<Span<'
         // breaking the unit across rows instead, as an over-long word is.
         let current_is_blank = current
             .iter()
+            .skip(if rows.is_empty() { lead } else { 0 })
             .all(|it| it.grapheme == " " || it.grapheme == "\t");
         if *unit_w <= width && !current_is_blank {
             rows.push(std::mem::take(current));
@@ -591,6 +604,7 @@ pub(super) fn wrap_spans<'a>(spans: &[Span<'a>], width: usize) -> Vec<Vec<Span<'
                     &mut current_w,
                     &mut rows,
                     width,
+                    lead,
                 );
                 let mut ws = vec![item];
                 let mut ws_w = w;
@@ -601,6 +615,7 @@ pub(super) fn wrap_spans<'a>(spans: &[Span<'a>], width: usize) -> Vec<Vec<Span<'
                     &mut current_w,
                     &mut rows,
                     width,
+                    lead,
                 );
             } else {
                 word.push(item);
@@ -615,6 +630,7 @@ pub(super) fn wrap_spans<'a>(spans: &[Span<'a>], width: usize) -> Vec<Vec<Span<'
         &mut current_w,
         &mut rows,
         width,
+        lead,
     );
     if !current.is_empty() || rows.is_empty() {
         rows.push(current);
@@ -723,6 +739,21 @@ mod tests {
         // then no row is whitespace-only
         assert!(rows.iter().all(|row| !row.trim().is_empty()), "{rows:?}");
         assert_eq!(rows.concat(), "aaa bbb");
+    }
+
+    #[test]
+    fn should_not_leave_a_gutter_only_row_when_the_word_does_not_fit_beside_it() {
+        // given a gutter kept on the first row and a word that fits a fresh row only
+        let spans = [Span::raw("  12 "), Span::raw("abcdefgh")];
+        // when the gutter is declared as lead
+        let rows = row_texts(&wrap_spans_lead(&spans, 5, 10));
+        // then the word fills the rest of the first row
+        assert_eq!(rows, vec!["  12 abcde", "fgh"]);
+        // and without it the first row would hold the gutter alone
+        assert_eq!(
+            row_texts(&wrap_spans(&spans, 10)),
+            vec!["  12 ", "abcdefgh"]
+        );
     }
 
     #[test]

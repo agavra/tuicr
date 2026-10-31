@@ -18,7 +18,7 @@ use ratatui::text::{Line, Span};
 
 use crate::app::{AnnotatedLine, App, DiffViewMode, WrapStyle, sbs_overhead};
 use crate::model::LineSide;
-use crate::ui::text_utils::wrap_spans;
+use crate::ui::text_utils::{wrap_spans, wrap_spans_lead};
 use crate::ui::{comment_panel, diff_view};
 
 pub(crate) fn annotation_row_height(app: &App, idx: usize) -> usize {
@@ -116,6 +116,15 @@ pub(crate) fn annotation_row_height(app: &App, idx: usize) -> usize {
                 app.content_for_side(idx, LineSide::New).unwrap_or_default(),
                 content_width,
             )
+        }
+
+        AnnotatedLine::DiffLine { .. } | AnnotatedLine::ExpandedContext { .. }
+            if app.diff_view_mode == DiffViewMode::Unified =>
+        {
+            // Flow: the row wraps from the left edge, but the gutter is not content.
+            let text = full_row_text(app, idx, annotation);
+            let lead = crate::app::unified_gutter(app.lineno_width()) as usize;
+            wrap_spans_lead(&[Span::raw(text)], lead, viewport_width).len()
         }
 
         _ => {
