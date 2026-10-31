@@ -450,6 +450,14 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
             }
         }
 
+        crate::ui::diff_view::render_remote_threads_outside_hunks(
+            &mut lines,
+            &mut line_idx,
+            current_line_idx,
+            app,
+            file,
+        );
+
         if file.is_too_large || file.is_binary || file.hunks.is_empty() {
             let indicator = cursor_indicator_spaced(line_idx, current_line_idx);
             lines.push(Line::from(vec![
@@ -2279,6 +2287,22 @@ mod remote_comments_snapshot_tests {
             body.contains("looks good?"),
             "expected remote comment body in:\n{body}"
         );
+    }
+
+    #[test]
+    fn should_render_remote_comment_outside_hunks_under_file_header_in_unified_diff() {
+        // given a thread on line 40 while the only hunk covers lines 1-2 (#823)
+        let mut app = make_pr_app();
+        app.forge_review_threads = vec![thread("t1", "alice", "far away", 40, false, false)];
+        app.rebuild_annotations();
+        // then the thread renders, labelled with its line, below the header
+        let body = body_text(&draw(&mut app));
+        assert_eq!(body.matches("far away").count(), 1, "in:\n{body}");
+        assert!(body.contains("L40"), "expected L40 label in:\n{body}");
+        let header = body.find("src/lib.rs").expect("file header");
+        let hunk = body.find("@@ -1,1 +1,2 @@").expect("hunk header");
+        let comment = body.find("far away").unwrap();
+        assert!(header < comment && comment < hunk, "in:\n{body}");
     }
 
     // Revision diffs with `wrap = true` render the file-header rule without a

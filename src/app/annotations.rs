@@ -199,6 +199,17 @@ impl App {
                 }
             }
 
+            // Remote threads anchored on a line that has no row in any hunk
+            // (e.g. a Gerrit comment on an unchanged line far from a change)
+            // would otherwise never render. Show them under the file header.
+            for thread_idx in self.remote_threads_outside_hunks(file) {
+                Self::push_remote_thread_annotations(
+                    &mut self.line_annotations,
+                    thread_idx,
+                    &self.forge_review_threads[thread_idx],
+                );
+            }
+
             if file.is_binary || file.hunks.is_empty() {
                 self.line_annotations
                     .push(AnnotatedLine::BinaryOrEmpty { file_idx });
@@ -465,6 +476,50 @@ impl App {
         }
 
         RemoteThreadIndex { by_file }
+    }
+
+    /// Indices into `forge_review_threads` of the visible line-anchored threads
+    /// on `file` whose anchor has no row in any hunk under the current view
+    /// mode. Forges such as Gerrit accept comments on any line of the file, so
+    /// a thread can land on an unchanged line outside every hunk; with no row
+    /// to attach to it would never render. These threads render under the
+    /// file header instead (their box is labelled with the line), mirroring
+    /// how review-level threads render away from any diff row.
+    ///
+    /// The anchor rules must match the per-row lookups in
+    /// `build_unified_diff_annotations` / `build_side_by_side_annotations` and
+    /// both renderers, so a thread renders exactly once: unified view anchors
+    /// old-side threads on every row with an old line number, while
+    /// side-by-side only anchors them on deleted lines.
+    pub(crate) fn remote_threads_outside_hunks(&self, file: &DiffFile) -> Vec<usize> {
+        use crate::forge::remote_comments::{PrCommentsVisibility, RemoteCommentSide};
+        let visibility = self.session.remote_comments_visibility;
+        if matches!(visibility, PrCommentsVisibility::Hide) || self.forge_review_threads.is_empty()
+        {
+            return Vec::new();
+        }
+        let path = file.display_path().to_string_lossy();
+        let side_by_side = self.diff_view_mode == DiffViewMode::SideBySide;
+        let has_row = |line: u32, side: RemoteCommentSide| {
+            file.hunks
+                .iter()
+                .flat_map(|hunk| hunk.lines.iter())
+                .any(|diff_line| match side {
+                    RemoteCommentSide::Right => diff_line.new_lineno == Some(line),
+                    RemoteCommentSide::Left => {
+                        diff_line.old_lineno == Some(line)
+                            && (!side_by_side || diff_line.origin == LineOrigin::Deletion)
+                    }
+                })
+        };
+        self.forge_review_threads
+            .iter()
+            .enumerate()
+            .filter(|(_, thread)| thread.path == *path)
+            .filter(|(_, thread)| visibility.render_decision(thread).is_some())
+            .filter(|(_, thread)| thread.line.is_some_and(|line| !has_row(line, thread.side)))
+            .map(|(thread_idx, _)| thread_idx)
+            .collect()
     }
 
     /// Push one annotation for every rendered row in a remote thread, retaining
