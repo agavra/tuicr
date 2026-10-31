@@ -54,6 +54,8 @@ const MAX_DETAIL_CHARS: usize = 400;
 const DEFAULT_AZURE_HOST: &str = "dev.azure.com";
 /// Env vars checked (in order) for a Personal Access Token.
 const PAT_ENV_VARS: &[&str] = &["AZURE_DEVOPS_EXT_PAT", "AZURE_DEVOPS_PAT"];
+/// Env var naming a self-hosted Azure DevOps Server / TFS instance.
+const SERVER_URL_ENV_VAR: &str = "AZURE_DEVOPS_SERVER_URL";
 
 // ---------- Transport ----------
 
@@ -263,9 +265,11 @@ fn local_diff(repo_root: &Path, a: &str, b: &str, sep: &str) -> Option<Vec<FileP
 // ---------- Coordinate helpers ----------
 
 /// Split an Azure `ForgeRepository`'s packed `owner` into `(organization,
-/// project)`. Errors when `owner` isn't `org/project`.
+/// project)`. Errors when `owner` isn't `org/project`. The project is the last
+/// segment, so a self-hosted collection path like `tfs/DefaultCollection` stays
+/// whole in the organization half.
 pub fn azure_coords(repo: &ForgeRepository) -> Result<(String, String)> {
-    match repo.owner.split_once('/') {
+    match repo.owner.rsplit_once('/') {
         Some((org, project)) if !org.is_empty() && !project.is_empty() => {
             Ok((org.to_string(), project.to_string()))
         }
@@ -728,13 +732,25 @@ fn trim_detail(detail: &str) -> String {
 
 // ---------- URL & target parsing ----------
 
-/// True when `host` names an Azure DevOps instance.
-fn is_azure_host(host: &str) -> bool {
+/// True when `host` is an Azure DevOps cloud host.
+fn is_cloud_host(host: &str) -> bool {
     let host = host.to_ascii_lowercase();
     host == "dev.azure.com"
         || host == "ssh.dev.azure.com"
         || host.ends_with(".visualstudio.com")
         || host == "vs-ssh.visualstudio.com"
+}
+
+/// Hostname of the self-hosted Azure DevOps Server / TFS named by
+/// `AZURE_DEVOPS_SERVER_URL`, lowercased. Accepts a bare host or any URL form
+/// (`https://tfs.example.com/DefaultCollection`, `ssh://tfs.example.com:22/...`).
+fn configured_server_host() -> Option<String> {
+    let raw = std::env::var(SERVER_URL_ENV_VAR).ok()?;
+    let rest = strip_scheme(raw.trim()).unwrap_or(raw.trim());
+    let authority = rest.split('/').next()?;
+    let authority = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    let host = strip_port(authority).to_ascii_lowercase();
+    (!host.is_empty()).then_some(host)
 }
 
 /// Parse an Azure DevOps remote (git) URL into a `ForgeRepository`.
@@ -743,17 +759,34 @@ fn is_azure_host(host: &str) -> bool {
 /// and `https://{org}.visualstudio.com/[DefaultCollection/]{project}/_git/{repo}`
 /// (optionally with an `{org}@` userinfo prefix), and the SSH forms
 /// `git@ssh.dev.azure.com:v3/{org}/{project}/{repo}` /
-/// `{org}@vs-ssh.visualstudio.com:v3/{org}/{project}/{repo}`. Returns `None`
-/// for non-Azure hosts. Always normalizes the stored host to `dev.azure.com`.
+/// `{org}@vs-ssh.visualstudio.com:v3/{org}/{project}/{repo}`. Cloud hosts are
+/// normalized to `dev.azure.com`.
+///
+/// A self-hosted Azure DevOps Server / TFS is recognized only when its hostname
+/// matches `AZURE_DEVOPS_SERVER_URL`: it has no reserved hostname, so it cannot
+/// be told apart from any other git host. Its `{collection}/{project}` path is
+/// packed into `owner` like the cloud `org/project`, and the host is kept.
+/// Returns `None` for any other host.
 pub fn parse_azure_remote_url(remote_url: &str) -> Option<ForgeRepository> {
+    parse_azure_remote_url_with(remote_url, configured_server_host().as_deref())
+}
+
+fn parse_azure_remote_url_with(
+    remote_url: &str,
+    server_host: Option<&str>,
+) -> Option<ForgeRepository> {
     let trimmed = trim_url_suffix(remote_url.trim());
     if trimmed.is_empty() {
         return None;
     }
+    let is_server = |host: &str| server_host.is_some_and(|s| s.eq_ignore_ascii_case(host));
 
     // SCP-like SSH: `user@host:path`.
     if let Some((host, path)) = parse_scp_like_remote(trimmed) {
-        if !is_azure_host(host) {
+        if is_server(host) {
+            return azure_from_https_path(host, path);
+        }
+        if !is_cloud_host(host) {
             return None;
         }
         return azure_from_ssh_path(path);
@@ -766,7 +799,7 @@ pub fn parse_azure_remote_url(remote_url: &str) -> Option<ForgeRepository> {
         .unwrap_or(without_scheme);
     let (host, path) = without_user.split_once('/')?;
     let host = strip_port(host);
-    if !is_azure_host(host) {
+    if !is_cloud_host(host) && !is_server(host) {
         return None;
     }
     azure_from_https_path(host, path)
@@ -782,6 +815,27 @@ fn azure_from_https_path(host: &str, path: &str) -> Option<ForgeRepository> {
     if repo.is_empty() {
         return None;
     }
+
+    if !is_cloud_host(host) {
+        // Self-hosted: every segment before the project is the collection path
+        // (`DefaultCollection`, or `tfs/DefaultCollection` under a virtual
+        // directory), so none of them may be dropped. `/{collection}/_git/{repo}`
+        // is the project's default repo, whose name is the project's. Under a
+        // virtual directory that shorthand is ambiguous: callers must provide
+        // the explicit collection/project path instead.
+        let before = &segments[..git_idx];
+        let owner = match before.len() {
+            0 => return None,
+            1 => format!("{}/{repo}", before[0]),
+            _ => before.join("/"),
+        };
+        return Some(ForgeRepository::azure(
+            host.to_ascii_lowercase(),
+            owner,
+            repo,
+        ));
+    }
+
     // Segments before `_git`, minus the `DefaultCollection` legacy token.
     let before: Vec<&str> = segments[..git_idx]
         .iter()
@@ -950,6 +1004,64 @@ mod tests {
         let repo =
             parse_azure_remote_url("https://dev.azure.com/myorg/myproject/_git/myrepo").unwrap();
         assert_eq!(repo, azure_repo());
+    }
+
+    fn tfs_repo(owner: &str, name: &str) -> ForgeRepository {
+        ForgeRepository::azure("tfs.example.com", owner, name)
+    }
+
+    #[test]
+    fn parses_self_hosted_remotes_keeping_host_and_collection() {
+        let host = Some("tfs.example.com");
+        for url in [
+            "https://tfs.example.com/DefaultCollection/Backup/_git/vbr.git",
+            "https://user@TFS.example.com:8443/DefaultCollection/Backup/_git/vbr",
+            "ssh://tfs.example.com/DefaultCollection/Backup/_git/vbr",
+            "ssh://tfs.example.com:22/DefaultCollection/Backup/_git/vbr",
+            "https://tfs.example.com/DefaultCollection/Backup/_git/vbr/pullrequest/7",
+        ] {
+            assert_eq!(
+                parse_azure_remote_url_with(url, host),
+                Some(tfs_repo("DefaultCollection/Backup", "vbr")),
+                "{url}"
+            );
+        }
+    }
+
+    #[test]
+    fn parses_self_hosted_virtual_directory_and_default_repo() {
+        let host = Some("tfs.example.com");
+        assert_eq!(
+            parse_azure_remote_url_with("https://tfs.example.com/tfs/Coll/Proj/_git/r", host),
+            Some(tfs_repo("tfs/Coll/Proj", "r"))
+        );
+        assert_eq!(
+            parse_azure_remote_url_with("https://tfs.example.com/Coll/_git/Proj", host),
+            Some(tfs_repo("Coll/Proj", "Proj"))
+        );
+    }
+
+    #[test]
+    fn ignores_self_hosted_remotes_unless_host_is_configured() {
+        let url = "https://tfs.example.com/DefaultCollection/Backup/_git/vbr";
+        assert_eq!(parse_azure_remote_url_with(url, None), None);
+        assert_eq!(
+            parse_azure_remote_url_with(url, Some("other.example.com")),
+            None
+        );
+    }
+
+    #[test]
+    fn splits_self_hosted_owner_at_the_project() {
+        let repo = tfs_repo("tfs/Coll/Proj", "r");
+        assert_eq!(
+            azure_coords(&repo).unwrap(),
+            ("tfs/Coll".to_string(), "Proj".to_string())
+        );
+        assert_eq!(
+            git_api_base(&repo),
+            "https://tfs.example.com/tfs/Coll/Proj/_apis/git/repositories/r"
+        );
     }
 
     #[test]

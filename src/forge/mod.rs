@@ -165,7 +165,8 @@ pub fn detect_azure_repository(repo_root: &Path) -> Option<ForgeRepository> {
 ///
 /// Order matters. Bitbucket and GitLab both gate on the hostname, so trying
 /// them first won't claim GitHub Enterprise remotes. Azure next — its parser
-/// filters to `dev.azure.com` / `*.visualstudio.com` hosts. Gitea then, which
+/// accepts cloud hosts and the self-hosted hostname explicitly configured via
+/// `AZURE_DEVOPS_SERVER_URL`. Gitea then, which
 /// recognizes its own public hosts by name and self-hosted ones through the
 /// logins configured in `tea`. Gerrit follows: it is always self-hosted, so it
 /// gates on the canonical SSH port `29418`, a configured `GERRIT_URL`, or a
