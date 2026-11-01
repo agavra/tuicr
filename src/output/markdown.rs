@@ -221,6 +221,7 @@ fn review_scope_label(diff_source: &DiffSource) -> String {
             pr.key.repository.display_name(),
             pr.key.number
         ),
+        DiffSource::Piped => "piped diff".to_string(),
     };
 
     format!("Review Comment (scope: {scope})")
@@ -239,7 +240,7 @@ fn scope_banner(diff_source: &DiffSource) -> Option<String> {
     }
 
     match diff_source {
-        DiffSource::WorkingTree | DiffSource::PullRequest(_) => None,
+        DiffSource::WorkingTree | DiffSource::PullRequest(_) | DiffSource::Piped => None,
         DiffSource::Staged => Some("Reviewing staged changes".to_string()),
         DiffSource::Unstaged => Some("Reviewing unstaged changes".to_string()),
         DiffSource::StagedAndUnstaged => Some("Reviewing staged + unstaged changes".to_string()),

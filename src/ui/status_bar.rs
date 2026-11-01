@@ -268,6 +268,7 @@ fn header_source_chunk(app: &App) -> Option<String> {
                 Some(format!("staged + unstaged + {} commits", commits.len()))
             }
         }
+        DiffSource::Piped => Some("piped diff".to_string()),
         DiffSource::PullRequest(pr) => {
             let slug = pr.key.repository.display_name();
             let trimmed_title = if pr.title.chars().count() > 60 {

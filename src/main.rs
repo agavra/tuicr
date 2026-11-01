@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, IsTerminal, Read, Write};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -105,6 +105,22 @@ fn main() -> anyhow::Result<()> {
     if cli_args.path_filter.is_some() && !cli_args.working_tree && cli_args.revisions.is_none() {
         cli_args.working_tree = true;
     }
+
+    // Use only piped diff when no other diff source was requested.
+    let stdin_diff = if !io::stdin().is_terminal()
+        && cli_args.revisions.is_none()
+        && !cli_args.working_tree
+        && cli_args.file_path.is_none()
+        && !cli_args.all_files
+        && cli_args.pr_target.is_none()
+    {
+        let mut buf = Vec::new();
+        io::stdin().read_to_end(&mut buf)?;
+        Some(String::from_utf8_lossy(&buf).into_owned())
+    } else {
+        None
+    };
+
     let mut startup_warnings = Vec::new();
     let config_outcome = profile::time("startup.load_config", || match config::load_config() {
         Ok(outcome) => outcome,
@@ -258,6 +274,7 @@ fn main() -> anyhow::Result<()> {
                 commit_selection,
                 pr_target: cli_args.pr_target.as_deref(),
                 repo_url_override,
+                stdin_diff: stdin_diff.as_deref(),
             },
         )
     }) {
