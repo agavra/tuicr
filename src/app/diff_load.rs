@@ -1050,6 +1050,9 @@ impl App {
             DiffSource::PullRequest(_) => Err(TuicrError::UnsupportedOperation(
                 "Use :reload from the command line in PR mode".to_string(),
             )),
+            DiffSource::Piped => Err(TuicrError::UnsupportedOperation(
+                "Piped diffs are a snapshot; re-run the git command to refresh".to_string(),
+            )),
         }
     }
 
@@ -2386,6 +2389,7 @@ mod tests {
             pr_target: None,
             pr_current_branch: false,
             repo_url_override: None,
+            stdin_diff: None,
         };
         let captured = options.vcs_open_options();
         assert!(!captured.include_untracked);

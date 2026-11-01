@@ -19,6 +19,7 @@ mod jj;
 pub mod pr_noop;
 pub mod pristine;
 pub(crate) mod stage_marks;
+pub mod stdin;
 pub(crate) mod traits;
 pub(crate) mod whitespace;
 
