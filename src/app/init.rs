@@ -538,7 +538,7 @@ impl App {
             relative_line_numbers: false,
             wrap_style: WrapStyle::default(),
             cursor_side: LineSide::New,
-            file_list_width_pct: crate::app::FILE_LIST_WIDTH_DEFAULT,
+            file_list_width: None,
             file_list_state: FileListState::default(),
             comment_navigator_state: CommentNavigatorState::default(),
             diff_state: DiffState::default(),

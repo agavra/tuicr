@@ -30,7 +30,7 @@ commit_order = "descending"
 initial_commit_selection = "all"
 show_file_list = true
 compact_folders = false
-file_list_width = 20
+file_list_width = 30 # terminal columns; omit for 20% of the terminal width
 show_pr_checks = false
 show_pr_comments = true
 pr_comments_visibility = "unresolved"
@@ -98,7 +98,7 @@ session_header = true
 | `ignore_whitespace_overrides` | (none)    | Table of extension-to-boolean overrides, used only with `ignore_whitespace = "auto"`. `true` ignores whitespace; `false` compares normally. |
 | `show_file_list`           | `true`       | Whether the file list panel is visible on startup. Toggle with `<leader>e`.                                                                                |
 | `compact_folders` | `false` | Join single-child directory chains into one file-tree row. Restart tuicr after changing this setting. |
-| `file_list_width`          | `20`         | Starting width of the file list, as a percentage of the content area. Clamped to 10-60. Adjust at runtime with `<leader>L` / `<leader>H`, which repeat on a bare `L` / `H`.                                   |
+| `file_list_width` | (none: 20%) | Startup sidebar width in terminal columns, including borders. Clamped to leave each pane one content column plus borders when space permits. `[count]Ctrl-w >` / `<` resizes the active pane at runtime without rewriting config. |
 | `show_pr_checks`           | `false`      | Whether PR CI checks are fetched and shown. Set to `true` to include GitHub check rollups.                                                           |
 | `show_pr_comments`         | `true`       | Whether PR conversation comments are fetched and shown. Set to `false` to skip PR comments.                                                         |
 | `pr_comments_visibility`   | `unresolved` | Default visibility for PR review comment threads: `unresolved` (default), `all` (resolved/outdated threads shown muted), or `hide`. Seeds each review that starts at the default; `:comments` still switches mid-session and a restored session keeps its saved visibility. |

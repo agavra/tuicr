@@ -1,26 +1,67 @@
 use super::*;
 
 impl App {
-    /// Move the file list / diff boundary one step. `wider` grows the file
-    /// list at the diff's expense. Clamped so neither pane can be squeezed
-    /// to nothing — hiding the file list is `<leader>e`'s job, not this.
-    pub fn resize_file_list(&mut self, wider: bool) {
-        if !self.show_file_list {
-            self.set_message("File list is hidden — <leader>e shows it");
+    pub fn sidebar_width(&self, available: u16) -> u16 {
+        // Each pane needs two borders and one content column. Below that,
+        // share the tiny terminal rather than asking clamp for invalid bounds.
+        if available < 6 {
+            return available / 2;
+        }
+        self.file_list_width
+            .unwrap_or(available / 5)
+            .clamp(3, available - 3)
+    }
+
+    pub fn resize_active_pane(&mut self, wider: bool, columns: usize) {
+        if !self.show_file_list || self.focused_panel == FocusedPanel::CommitSelector {
             return;
         }
-        let next = if wider {
-            self.file_list_width_pct + FILE_LIST_WIDTH_STEP
+        let (Some(sidebar), Some(diff)) = (self.file_list_area, self.diff_area) else {
+            return;
+        };
+        let available = sidebar.width.saturating_add(diff.width);
+        let columns = u16::try_from(columns.max(1)).unwrap_or(u16::MAX);
+        let grow_sidebar = wider != (self.focused_panel == FocusedPanel::Diff);
+        self.file_list_width = Some(if grow_sidebar {
+            self.sidebar_width(available).saturating_add(columns)
         } else {
-            self.file_list_width_pct
-                .saturating_sub(FILE_LIST_WIDTH_STEP)
+            self.sidebar_width(available).saturating_sub(columns)
+        });
+        self.file_list_width = Some(self.sidebar_width(available));
+    }
+
+    /// Consume the Normal-mode `[count]Ctrl-w >/<` sequence without stealing
+    /// Ctrl-w from text inputs. An unsupported second key cancels the chord.
+    pub fn handle_pane_resize_key(
+        &mut self,
+        key: crossterm::event::KeyEvent,
+        pending: &mut bool,
+    ) -> bool {
+        use crossterm::event::{KeyCode, KeyModifiers};
+
+        if self.input_mode != InputMode::Normal || self.file_tree_prompt_editing() {
+            *pending = false;
+            return false;
         }
-        .clamp(FILE_LIST_WIDTH_MIN, FILE_LIST_WIDTH_MAX);
-        if next == self.file_list_width_pct {
-            return;
+        if std::mem::take(pending) {
+            let count = self.pending_count.take().unwrap_or(1);
+            if !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+            {
+                match key.code {
+                    KeyCode::Char('>') => self.resize_active_pane(true, count),
+                    KeyCode::Char('<') => self.resize_active_pane(false, count),
+                    _ => {}
+                }
+            }
+            return true;
         }
-        self.file_list_width_pct = next;
-        self.set_message(format!("File list width {next}%"));
+        if key.code == KeyCode::Char('w') && key.modifiers == KeyModifiers::CONTROL {
+            *pending = true;
+            return true;
+        }
+        false
     }
 
     pub fn set_message(&mut self, msg: impl Into<String>) {

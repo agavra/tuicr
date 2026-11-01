@@ -380,12 +380,9 @@ fn main() -> anyhow::Result<()> {
             app.wrap_style = app::WrapStyle::Gutter;
         }
         app.relative_line_numbers = cfg.relative_line_numbers.unwrap_or(false);
-        if let Some(width) = cfg.file_list_width {
-            // Clamp rather than reject: a width outside the usable range is
-            // a preference expressed badly, not a config error.
-            app.file_list_width_pct =
-                (width as u16).clamp(app::FILE_LIST_WIDTH_MIN, app::FILE_LIST_WIDTH_MAX);
-        }
+        app.file_list_width = cfg
+            .file_list_width
+            .map(|width| u16::try_from(width).unwrap_or(u16::MAX));
         // Open in single-file view when the user opts in. Pristine
         // `--all-files` already turned it on inside `App::new`, so we
         // only toggle if it's still off.
@@ -433,10 +430,8 @@ fn main() -> anyhow::Result<()> {
     let mut pending_d = false;
     // Track pending leader command for leader-prefixed actions.
     let mut pending_leader = false;
-    // Set by `<leader>L` / `<leader>H` so a bare `L` / `H` keeps moving the
-    // boundary. Any other key drops it, so `H` and `L` stay unbound in
-    // Normal mode and remain free for vim motions.
-    let mut resizing_panes = false;
+    // Ctrl-w awaits >/< while preserving the optional preceding count.
+    let mut pending_pane_resize = false;
     // Track pending Ctrl+C for "press twice to exit" (with timestamp for 2s timeout)
     let mut pending_ctrl_c: Option<Instant> = None;
     // Only re-render when state actually changed; the diff renderer rebuilds
@@ -571,6 +566,8 @@ fn main() -> anyhow::Result<()> {
                             continue;
                         }
                         // First Ctrl+C (or timeout expired) - show warning and start timer
+                        pending_pane_resize = false;
+                        app.pending_count = None;
                         pending_ctrl_c = Some(Instant::now());
                         app.set_message("Press Ctrl+C again to exit");
                         continue;
@@ -586,6 +583,14 @@ fn main() -> anyhow::Result<()> {
                     // Checked before the pending-prefix and vim-editor routing
                     // so they never reach a text buffer.
                     if handler::handle_global_key(&mut app, key) {
+                        continue;
+                    }
+
+                    if app.handle_pane_resize_key(key, &mut pending_pane_resize) {
+                        pending_z = false;
+                        pending_shift_z = false;
+                        pending_d = false;
+                        pending_leader = false;
                         continue;
                     }
 
@@ -676,21 +681,6 @@ fn main() -> anyhow::Result<()> {
                         // Otherwise fall through to normal handling
                     }
 
-                    // Repeat a resize without re-pressing the leader.
-                    if resizing_panes && !pending_leader {
-                        match key.code {
-                            crossterm::event::KeyCode::Char('L') => {
-                                app.resize_file_list(true);
-                                continue;
-                            }
-                            crossterm::event::KeyCode::Char('H') => {
-                                app.resize_file_list(false);
-                                continue;
-                            }
-                            _ => resizing_panes = false,
-                        }
-                    }
-
                     // Handle pending leader command for panel focus, file list toggle, and review comments.
                     if pending_leader {
                         pending_leader = false;
@@ -705,19 +695,6 @@ fn main() -> anyhow::Result<()> {
                             }
                             crossterm::event::KeyCode::Char('l') => {
                                 app.focus_pane_right();
-                                continue;
-                            }
-                            // `;H` / `;L` move the file list boundary the same
-                            // direction `;h` / `;l` move focus, so one mental
-                            // model covers both.
-                            crossterm::event::KeyCode::Char('L') => {
-                                app.resize_file_list(true);
-                                resizing_panes = true;
-                                continue;
-                            }
-                            crossterm::event::KeyCode::Char('H') => {
-                                app.resize_file_list(false);
-                                resizing_panes = true;
                                 continue;
                             }
                             crossterm::event::KeyCode::Char('k') => {

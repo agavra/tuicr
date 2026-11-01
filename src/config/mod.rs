@@ -167,9 +167,8 @@ pub struct AppConfig {
     pub show_file_list: Option<bool>,
     /// Join single-child directory chains in the file tree. Defaults to false.
     pub compact_folders: Option<bool>,
-    /// Starting width of the file list, as a percentage of the content
-    /// area. Clamped to 10-60. Defaults to 20; `<leader>L` / `<leader>H`
-    /// adjust at runtime.
+    /// Starting sidebar width in terminal columns. Omitted keeps the default 20%.
+    /// Clamped to the available space; runtime resizing does not rewrite config.
     pub file_list_width: Option<usize>,
     /// Whether pull-request CI checks are fetched and shown.
     /// Defaults to false.

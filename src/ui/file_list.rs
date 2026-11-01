@@ -292,10 +292,7 @@ fn filter_footer(app: &App) -> Option<Line<'static>> {
 mod tests {
     //! Render checks for the filter status/prompt line in the file tree's
     //! bottom border, driven through the real `ui::render`.
-    use crate::app::{
-        App, DiffSource, FILE_LIST_WIDTH_MAX, FILE_LIST_WIDTH_MIN, FILE_LIST_WIDTH_STEP,
-        FileTreePrompt, FocusedPanel, InputMode,
-    };
+    use crate::app::{App, DiffSource, FileTreePrompt, FocusedPanel, InputMode};
     use crate::model::{DiffFile, DiffLine, FileStatus, ReviewSession, SessionDiffSource};
     use crate::vcs::traits::{VcsBackend, VcsInfo, VcsType};
     use ratatui::Terminal;
@@ -557,36 +554,103 @@ mod tests {
     }
 
     #[test]
-    fn should_widen_and_narrow_the_file_list_within_bounds() {
+    fn should_resize_the_active_side_in_columns_within_bounds() {
         let mut app = app_with(&["src/main.rs"]);
-        let start = app.file_list_width_pct;
+        draw(&mut app);
+        assert_eq!(app.file_list_area.unwrap().width, 24);
 
-        app.resize_file_list(true);
-        assert_eq!(app.file_list_width_pct, start + FILE_LIST_WIDTH_STEP);
-
-        app.resize_file_list(false);
-        assert_eq!(app.file_list_width_pct, start);
-
-        for _ in 0..50 {
-            app.resize_file_list(true);
+        for panel in [FocusedPanel::FileList, FocusedPanel::Comments] {
+            app.focused_panel = panel;
+            app.resize_active_pane(true, 5);
+            draw(&mut app);
+            assert_eq!(app.file_list_area.unwrap().width, 29);
+            app.resize_active_pane(false, 5);
         }
-        assert_eq!(app.file_list_width_pct, FILE_LIST_WIDTH_MAX);
-
-        for _ in 0..50 {
-            app.resize_file_list(false);
-        }
-        assert_eq!(app.file_list_width_pct, FILE_LIST_WIDTH_MIN);
+        app.focused_panel = FocusedPanel::Diff;
+        app.resize_active_pane(true, 5);
+        draw(&mut app);
+        assert_eq!(app.file_list_area.unwrap().width, 19);
+        assert_eq!(app.diff_area.unwrap().width, 101);
+        app.resize_active_pane(false, usize::MAX);
+        draw(&mut app);
+        assert_eq!(app.file_list_area.unwrap().width, 117);
+        assert_eq!(app.diff_area.unwrap().width, 3);
+        app.resize_active_pane(true, usize::MAX);
+        draw(&mut app);
+        assert_eq!(app.file_list_area.unwrap().width, 3);
     }
 
     #[test]
     fn should_refuse_to_resize_a_hidden_file_list() {
         let mut app = app_with(&["src/main.rs"]);
         app.show_file_list = false;
-        let start = app.file_list_width_pct;
+        let start = app.file_list_width;
 
-        app.resize_file_list(true);
+        app.resize_active_pane(true, 5);
 
-        assert_eq!(app.file_list_width_pct, start);
+        assert_eq!(app.file_list_width, start);
+    }
+
+    #[test]
+    fn should_consume_counted_ctrl_w_resize_but_not_text_editing() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = app_with(&["src/main.rs"]);
+        draw(&mut app);
+        let mut pending = false;
+        let ctrl_w = KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL);
+        let grow = KeyEvent::new(KeyCode::Char('>'), KeyModifiers::SHIFT);
+        app.pending_count = Some(12);
+        assert!(app.handle_pane_resize_key(ctrl_w, &mut pending));
+        assert_eq!(app.pending_count, Some(12));
+        assert!(app.handle_pane_resize_key(grow, &mut pending));
+        assert!(!pending);
+        assert_eq!(app.pending_count, None);
+        draw(&mut app);
+        assert_eq!(app.file_list_area.unwrap().width, 36);
+        assert!(!app.handle_pane_resize_key(grow, &mut pending));
+
+        // Escape consumes the prefix and count without becoming a resize.
+        app.pending_count = Some(99);
+        assert!(app.handle_pane_resize_key(ctrl_w, &mut pending));
+        assert!(app.handle_pane_resize_key(
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            &mut pending
+        ));
+        assert_eq!(app.pending_count, None);
+        assert_eq!(app.file_list_width, Some(36));
+
+        app.focused_panel = FocusedPanel::CommitSelector;
+        app.handle_pane_resize_key(ctrl_w, &mut pending);
+        app.handle_pane_resize_key(grow, &mut pending);
+        assert_eq!(app.file_list_width, Some(36));
+        for mode in [InputMode::Comment, InputMode::Command, InputMode::Search] {
+            app.input_mode = mode;
+            assert!(!app.handle_pane_resize_key(ctrl_w, &mut pending));
+        }
+        app.input_mode = InputMode::Normal;
+        app.begin_file_tree_prompt(FileTreePrompt::Include);
+        assert!(!app.handle_pane_resize_key(ctrl_w, &mut pending));
+    }
+
+    #[test]
+    fn should_clamp_configured_width_on_small_terminals_without_losing_it() {
+        let mut app = app_with(&["src/main.rs"]);
+        app.file_list_width = Some(40);
+        for width in [0, 1, 5, 6, 20, 120] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
+            terminal
+                .draw(|frame| crate::ui::render(frame, &mut app))
+                .unwrap();
+            if width >= 6 {
+                assert_eq!(app.file_list_area.unwrap().width, 40.min(width - 3));
+            }
+        }
+        assert_eq!(app.file_list_width, Some(40));
+        assert_eq!(app.file_list_area.unwrap().width, 40);
+        app.file_list_width = Some(0);
+        assert_eq!(app.sidebar_width(120), 3);
+        app.file_list_width = Some(u16::MAX);
+        assert_eq!(app.sidebar_width(120), 117);
     }
 
     #[test]
@@ -598,9 +662,7 @@ mod tests {
             .find_map(|l| l.find("┐"))
             .expect("tree border");
 
-        for _ in 0..4 {
-            app.resize_file_list(true);
-        }
+        app.resize_active_pane(true, 20);
         let wide = draw(&mut app);
         let wide_border = buffer_text(&wide)
             .lines()
