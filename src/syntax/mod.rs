@@ -868,6 +868,7 @@ mod tests {
             Color::Blue,
         );
         let mut file = DiffFile {
+            is_unavailable: false,
             old_path: None,
             new_path: Some(std::path::PathBuf::from("test.rs")),
             status: crate::model::diff_types::FileStatus::Modified,

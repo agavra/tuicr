@@ -187,6 +187,7 @@ impl FileBackend {
             let hunks: Vec<DiffHunk> = Vec::new();
             let content_hash = DiffFile::compute_content_hash(&hunks);
             return Some(DiffFile {
+                is_unavailable: false,
                 old_path: None,
                 new_path: Some(rel_path),
                 status: FileStatus::Added,
@@ -263,6 +264,7 @@ impl FileBackend {
         let hunks = vec![hunk];
         let content_hash = DiffFile::compute_content_hash(&hunks);
         Some(DiffFile {
+            is_unavailable: false,
             old_path: None,
             new_path: Some(rel_path),
             status: file_status,

@@ -425,6 +425,8 @@ impl App {
                     Some(Cow::Borrowed("(file too large to display)"))
                 } else if file.is_binary {
                     Some(Cow::Borrowed("(binary file)"))
+                } else if file.is_unavailable {
+                    Some(Cow::Borrowed("(diff unavailable)"))
                 } else {
                     Some(Cow::Borrowed("(no changes)"))
                 }

@@ -195,6 +195,7 @@ impl Drop for TestReviewsDir {
 /// Hunks are left empty: these tests never render content.
 fn make_diff_file(path: &str, status: FileStatus, content_hash: u64) -> DiffFile {
     DiffFile {
+        is_unavailable: false,
         old_path: None,
         new_path: Some(PathBuf::from(path)),
         status,

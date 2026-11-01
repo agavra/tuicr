@@ -648,6 +648,7 @@ mod tests {
 
     fn file_with_hunks(hunks: Vec<DiffHunk>) -> DiffFile {
         DiffFile {
+            is_unavailable: false,
             old_path: Some(PathBuf::from("src/lib.rs")),
             new_path: Some(PathBuf::from("src/lib.rs")),
             status: FileStatus::Modified,

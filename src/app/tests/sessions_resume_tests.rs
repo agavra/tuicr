@@ -125,6 +125,7 @@ impl VcsBackend for RecordingVcs {
 
 fn diff_file(path: &str) -> DiffFile {
     DiffFile {
+        is_unavailable: false,
         old_path: Some(PathBuf::from(path)),
         new_path: Some(PathBuf::from(path)),
         status: FileStatus::Modified,

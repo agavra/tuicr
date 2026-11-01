@@ -6,16 +6,20 @@ use crate::error::{Result, TuicrError};
 use crate::forge::traits::{
     ForgeRepository, PullRequestCommit, PullRequestDetails, PullRequestSummary,
 };
-use crate::model::FileStatus;
+use crate::model::{FilePatch, FileStatus};
 use crate::vcs::git::raw::FileMetadata;
 
 /// Machine-readable entry from the pull-request files REST endpoint.
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct GhPullRequestFile {
     pub filename: String,
     pub status: String,
     #[serde(default)]
     pub previous_filename: Option<String>,
+    /// Hunks for this file. GitHub omits it for binary files and for files
+    /// whose own diff is too large, so absent does not mean unchanged.
+    #[serde(default)]
+    pub patch: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -36,6 +40,15 @@ pub struct GhComparisonCommit {
 }
 
 impl GhPullRequestFile {
+    pub(crate) fn into_file_patch(mut self) -> Result<FilePatch> {
+        let patch = self.patch.take().unwrap_or_default();
+        let metadata = self.into_metadata()?;
+        let mut file = FilePatch::new(metadata.old_path, metadata.new_path, metadata.status, patch);
+        // GitHub does not say whether an omitted patch is binary or too large.
+        file.is_unavailable = file.patch.is_empty();
+        Ok(file)
+    }
+
     pub(crate) fn into_metadata(self) -> Result<FileMetadata> {
         let new_path = PathBuf::from(&self.filename);
         let metadata = match self.status.as_str() {
@@ -248,6 +261,75 @@ fn require_field(value: &str, field: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn fallback_preserves_metadata_and_hunks() {
+        for (status, previous, old, new) in [
+            ("added", None, None, Some("新 b/file.txt")),
+            ("removed", None, Some("新 b/file.txt"), None),
+            (
+                "modified",
+                None,
+                Some("新 b/file.txt"),
+                Some("新 b/file.txt"),
+            ),
+            (
+                "renamed",
+                Some("旧 a/file.txt"),
+                Some("旧 a/file.txt"),
+                Some("新 b/file.txt"),
+            ),
+            (
+                "copied",
+                Some("旧 a/file.txt"),
+                Some("旧 a/file.txt"),
+                Some("新 b/file.txt"),
+            ),
+        ] {
+            let file = GhPullRequestFile {
+                filename: "新 b/file.txt".into(),
+                status: status.into(),
+                previous_filename: previous.map(str::to_owned),
+                patch: Some("@@ -1 +1 @@\n-a\n+b".into()),
+            }
+            .into_file_patch()
+            .unwrap();
+            assert_eq!(file.old_path.as_deref(), old.map(Path::new));
+            assert_eq!(file.new_path.as_deref(), new.map(Path::new));
+            assert_eq!(file.patch, "@@ -1 +1 @@\n-a\n+b");
+            assert!(!file.is_unavailable);
+        }
+    }
+
+    #[test]
+    fn fallback_marks_missing_and_empty_patches_without_guessing_the_cause() {
+        for patch in [None, Some(String::new())] {
+            let file = GhPullRequestFile {
+                filename: "logo.png".into(),
+                status: "modified".into(),
+                previous_filename: None,
+                patch,
+            }
+            .into_file_patch()
+            .unwrap();
+            assert!(file.is_unavailable);
+            assert!(!file.is_binary);
+            assert!(!file.is_too_large);
+        }
+    }
+
+    #[test]
+    fn fallback_validates_metadata() {
+        for status in ["renamed", "copied", "unknown"] {
+            let file = GhPullRequestFile {
+                filename: "after.rs".into(),
+                status: status.into(),
+                previous_filename: None,
+                patch: None,
+            };
+            assert!(file.into_file_patch().is_err());
+        }
+    }
     use super::*;
     use std::path::Path;
 

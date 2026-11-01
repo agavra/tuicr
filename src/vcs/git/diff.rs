@@ -354,6 +354,7 @@ fn parse_diff(diff: &Diff, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFi
 
         let content_hash = DiffFile::compute_content_hash(&hunks);
         files.push(DiffFile {
+            is_unavailable: false,
             old_path,
             new_path,
             status,

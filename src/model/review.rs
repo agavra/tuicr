@@ -396,6 +396,7 @@ mod tests {
     fn test_diff_file(path: &str, hunks: Vec<DiffHunk>) -> DiffFile {
         let content_hash = DiffFile::compute_content_hash(&hunks);
         DiffFile {
+            is_unavailable: false,
             old_path: None,
             new_path: Some(PathBuf::from(path)),
             status: FileStatus::Modified,

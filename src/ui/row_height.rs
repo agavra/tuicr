@@ -571,6 +571,7 @@ mod tests {
         let hunks = vec![hunk1, hunk2];
         let content_hash = DiffFile::compute_content_hash(&hunks);
         DiffFile {
+            is_unavailable: false,
             old_path: Some(PathBuf::from("src/lib.rs")),
             new_path: Some(PathBuf::from("src/lib.rs")),
             status: FileStatus::Modified,
@@ -584,6 +585,7 @@ mod tests {
 
     fn binary_file() -> DiffFile {
         DiffFile {
+            is_unavailable: false,
             old_path: Some(PathBuf::from("assets/logo.png")),
             new_path: Some(PathBuf::from("assets/logo.png")),
             status: FileStatus::Modified,

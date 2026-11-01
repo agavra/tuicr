@@ -206,12 +206,14 @@ pub(super) fn spacing_next_file_hint_text(
 
 /// Label text for a `BinaryOrEmpty` row (unified & SBS both render this
 /// verbatim after the two-cell cursor indicator). Empty string means the
-/// file doesn't fall into any of the three known non-diff cases.
+/// file has displayable hunks.
 pub(super) fn binary_or_empty_label(file: &DiffFile) -> &'static str {
     if file.is_too_large {
         "(file too large to display)"
     } else if file.is_binary {
         "(binary file)"
+    } else if file.is_unavailable {
+        "(diff unavailable)"
     } else if file.hunks.is_empty() {
         "(no changes)"
     } else {
@@ -1256,6 +1258,20 @@ pub(super) fn apply_horizontal_scroll(line: Line, scroll_x: usize) -> Line {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn patchless_github_fallback_is_not_labelled_unchanged() {
+        let row: crate::forge::github::models::GhPullRequestFile =
+            serde_json::from_str(r#"{"filename":"logo.png","status":"modified"}"#).unwrap();
+        let patches = vec![row.into_file_patch().unwrap()];
+        let files = crate::vcs::diff_parser::parse_file_patches(
+            patches,
+            &crate::syntax::SyntaxHighlighter::default(),
+        )
+        .unwrap();
+
+        assert_eq!(binary_or_empty_label(&files[0]), "(diff unavailable)");
+    }
 
     fn unwrapped(_line: usize) -> usize {
         1

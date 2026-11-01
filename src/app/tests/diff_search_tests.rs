@@ -61,6 +61,7 @@ fn file(path: &str, contents: &[&str]) -> DiffFile {
     }];
     let content_hash = DiffFile::compute_content_hash(&hunks);
     DiffFile {
+        is_unavailable: false,
         old_path: None,
         new_path: Some(PathBuf::from(path)),
         status: FileStatus::Modified,
@@ -116,6 +117,20 @@ fn search(app: &mut App, pattern: &str) -> bool {
 
 fn message(app: &App) -> Option<String> {
     app.message.as_ref().map(|m| m.content.clone())
+}
+
+#[test]
+fn should_search_the_unavailable_label_not_no_changes() {
+    let mut unavailable = file("logo.png", &[]);
+    unavailable.hunks.clear();
+    unavailable.is_unavailable = true;
+    for view in [DiffViewMode::Unified, DiffViewMode::SideBySide] {
+        let mut app = app_with(vec![unavailable.clone()]);
+        app.diff_view_mode = view;
+        app.rebuild_annotations();
+        assert!(search(&mut app, "diff unavailable"));
+        assert!(!search(&mut app, "no changes"));
+    }
 }
 
 #[test]

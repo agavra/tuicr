@@ -63,6 +63,7 @@ fn build_scroll_app(n: usize, viewport: usize, scroll_offset_config: usize) -> A
     };
 
     let file = DiffFile {
+        is_unavailable: false,
         old_path: None,
         new_path: Some(PathBuf::from("test.rs")),
         status: FileStatus::Modified,

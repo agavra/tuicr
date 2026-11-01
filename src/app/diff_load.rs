@@ -81,6 +81,7 @@ impl App {
         }];
         let content_hash = DiffFile::compute_content_hash(&hunks);
         let commit_msg_file = DiffFile {
+            is_unavailable: false,
             old_path: None,
             new_path: Some(PathBuf::from(format!(
                 "Commit Message ({})",
@@ -1632,6 +1633,7 @@ fn file_fingerprint(file: &DiffFile) -> u64 {
         file.status.as_char() as u8,
         file.is_binary as u8,
         file.is_too_large as u8,
+        file.is_unavailable as u8,
     ]);
     hasher.write(&file.content_hash.to_le_bytes());
     hasher.finish()
@@ -1668,6 +1670,7 @@ mod tests {
         is_too_large: bool,
     ) -> DiffFile {
         DiffFile {
+            is_unavailable: false,
             old_path: None,
             new_path: Some(PathBuf::from(path)),
             status,
@@ -1764,6 +1767,14 @@ mod tests {
             diff_files_fingerprint(&before),
             diff_files_fingerprint(&after)
         );
+    }
+
+    #[test]
+    fn should_differ_when_unavailable_flag_flips_despite_equal_content_hash() {
+        let before = file("a.rs");
+        let mut after = before.clone();
+        after.is_unavailable = true;
+        assert_ne!(file_fingerprint(&before), file_fingerprint(&after));
     }
 
     #[test]

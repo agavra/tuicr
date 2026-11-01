@@ -284,6 +284,7 @@ fn visual_suggestion_prefills_selected_side_in_both_views() {
                     }],
                     is_binary: false,
                     is_too_large: false,
+                    is_unavailable: false,
                     is_commit_message: false,
                     content_hash: 0,
                 }];
