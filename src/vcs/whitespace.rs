@@ -175,6 +175,7 @@ mod tests {
         hunks: Vec<DiffHunk>,
     ) -> DiffFile {
         DiffFile {
+            is_unavailable: false,
             old_path: old.map(PathBuf::from),
             new_path: new.map(PathBuf::from),
             status,

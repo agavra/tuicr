@@ -450,7 +450,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
             }
         }
 
-        if file.is_too_large || file.is_binary || file.hunks.is_empty() {
+        if file.is_too_large || file.is_binary || file.is_unavailable || file.hunks.is_empty() {
             let indicator = cursor_indicator_spaced(line_idx, current_line_idx);
             lines.push(Line::from(vec![
                 Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
@@ -1614,6 +1614,7 @@ mod remote_comments_snapshot_tests {
         let hunks = vec![hunk];
         let content_hash = DiffFile::compute_content_hash(&hunks);
         DiffFile {
+            is_unavailable: false,
             old_path: Some(PathBuf::from("src/lib.rs")),
             new_path: Some(PathBuf::from("src/lib.rs")),
             status: FileStatus::Modified,
@@ -1629,6 +1630,7 @@ mod remote_comments_snapshot_tests {
         let hunks = Vec::new();
         let content_hash = DiffFile::compute_content_hash(&hunks);
         DiffFile {
+            is_unavailable: false,
             old_path: Some(PathBuf::from(path)),
             new_path: Some(PathBuf::from(path)),
             status: FileStatus::Modified,
@@ -1805,6 +1807,7 @@ mod remote_comments_snapshot_tests {
         }];
         let content_hash = DiffFile::compute_content_hash(&hunks);
         DiffFile {
+            is_unavailable: false,
             old_path: None,
             new_path: Some(PathBuf::from("Commit Message (abc1234)")),
             status: FileStatus::Added,
@@ -1837,6 +1840,7 @@ mod remote_comments_snapshot_tests {
         }];
         let content_hash = DiffFile::compute_content_hash(&hunks);
         DiffFile {
+            is_unavailable: false,
             old_path: None,
             new_path: Some(PathBuf::from("src/lib.rs")),
             status: FileStatus::Added,
@@ -2485,6 +2489,7 @@ mod remote_comments_snapshot_tests {
         let hunks = vec![hunk];
         let content_hash = DiffFile::compute_content_hash(&hunks);
         let file = DiffFile {
+            is_unavailable: false,
             old_path: Some(PathBuf::from("src/lib.rs")),
             new_path: Some(PathBuf::from("src/lib.rs")),
             status: FileStatus::Modified,
@@ -2552,6 +2557,7 @@ mod remote_comments_snapshot_tests {
         let content_hash = DiffFile::compute_content_hash(&hunks);
         let path = PathBuf::from("src/lib.rs");
         let file = DiffFile {
+            is_unavailable: false,
             old_path: Some(path.clone()),
             new_path: Some(path.clone()),
             status: FileStatus::Modified,
@@ -2640,6 +2646,7 @@ mod remote_comments_snapshot_tests {
         let hunks = vec![hunk];
         let content_hash = DiffFile::compute_content_hash(&hunks);
         let file = DiffFile {
+            is_unavailable: false,
             old_path: Some(PathBuf::from("src/lib.rs")),
             new_path: Some(PathBuf::from("src/lib.rs")),
             status: FileStatus::Modified,
@@ -2707,6 +2714,7 @@ mod remote_comments_snapshot_tests {
         let content_hash = DiffFile::compute_content_hash(&hunks);
         let path = PathBuf::from("src/lib.rs");
         let file = DiffFile {
+            is_unavailable: false,
             old_path: Some(path.clone()),
             new_path: Some(path.clone()),
             status: FileStatus::Modified,
@@ -2824,6 +2832,7 @@ mod remote_comments_snapshot_tests {
         let hunks = vec![hunk];
         let content_hash = DiffFile::compute_content_hash(&hunks);
         let diff_file = DiffFile {
+            is_unavailable: false,
             old_path: None,
             new_path: Some(PathBuf::from("src/lib.rs")),
             status: FileStatus::Added,
@@ -2880,6 +2889,7 @@ mod remote_comments_snapshot_tests {
         }];
         let content_hash = DiffFile::compute_content_hash(&hunks);
         DiffFile {
+            is_unavailable: false,
             old_path: Some(PathBuf::from("src/lib.rs")),
             new_path: Some(PathBuf::from("src/lib.rs")),
             status: FileStatus::Modified,

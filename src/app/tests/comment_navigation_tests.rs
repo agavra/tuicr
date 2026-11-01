@@ -68,6 +68,7 @@ impl Editor {
             }],
         }];
         let file = DiffFile {
+            is_unavailable: false,
             old_path: None,
             new_path: Some(PathBuf::from("example.rs")),
             status: FileStatus::Added,

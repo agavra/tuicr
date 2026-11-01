@@ -35,7 +35,7 @@ fn materialize_file_patch(patch: FilePatch, highlighter: &SyntaxHighlighter) -> 
     let file_path = patch.display_path().ok_or_else(|| {
         TuicrError::VcsCommand("structured diff entry has neither an old nor a new path".into())
     })?;
-    let hunks = if patch.is_binary || patch.is_too_large {
+    let hunks = if patch.is_binary || patch.is_too_large || patch.is_unavailable {
         Vec::new()
     } else {
         parse_hunks(&patch.patch, file_path, highlighter)?
@@ -43,6 +43,7 @@ fn materialize_file_patch(patch: FilePatch, highlighter: &SyntaxHighlighter) -> 
     let content_hash = DiffFile::compute_content_hash(&hunks);
 
     Ok(DiffFile {
+        is_unavailable: patch.is_unavailable,
         old_path: patch.old_path,
         new_path: patch.new_path,
         status: patch.status,

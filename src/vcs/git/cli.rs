@@ -859,6 +859,7 @@ fn build_untracked_diff_file(
     let content_hash = DiffFile::compute_content_hash(&hunks);
 
     Some(DiffFile {
+        is_unavailable: false,
         old_path: None,
         new_path: Some(path.to_path_buf()),
         status: FileStatus::Added,
@@ -872,6 +873,7 @@ fn build_untracked_diff_file(
 
 fn diff_file_without_hunks(path: &Path, is_binary: bool, is_too_large: bool) -> DiffFile {
     DiffFile {
+        is_unavailable: false,
         old_path: None,
         new_path: Some(path.to_path_buf()),
         status: FileStatus::Added,

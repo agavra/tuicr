@@ -309,6 +309,8 @@ These are non-obvious things the implementation chain hit. Worth preserving for 
 
 1. **`gh pr diff` must NOT use `--patch`.** That flag returns per-commit mbox patches and produces duplicate file entries. Plain `gh pr diff` returns the cumulative diff. Regression test: `should_not_pass_patch_flag_to_gh_pr_diff`.
 
+   When GitHub refuses a diff over 300 files, build `FilePatch` entries directly from the paginated REST file rows. A missing or empty `patch` sets `is_unavailable`, not `is_binary` or `is_too_large`: this API does not identify the cause. Preserve that flag through parsing, rendering, search, and diff fingerprints. Reaching the 3000-file API limit is an error, since completeness cannot be guaranteed.
+
 2. **Patch display headers are never authoritative metadata.** Paths and statuses come from unambiguous sources: Git `--raw -z`, jj templates, Mercurial `status -0`, or forge JSON. `diff_parser` only consumes `@@` hunks and uses their declared old/new counts as the grammar. Do not add quoting or path-header heuristics there.
 
 3. **GraphQL thread anchors live on `PullRequestReviewThread`, not the comment.** `path`, `line`, `originalLine`, `diffSide` are thread fields. Putting them on `PullRequestReviewComment` returns a schema error.

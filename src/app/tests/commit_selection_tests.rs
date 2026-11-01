@@ -287,6 +287,7 @@ fn commit_selection_summary_shows_position_for_single_and_count_for_range() {
 /// A file that lives only inside a commit, never in the working tree.
 fn commit_only_file(path: &Path, hunks: Vec<DiffHunk>) -> DiffFile {
     DiffFile {
+        is_unavailable: false,
         old_path: None,
         new_path: Some(path.to_path_buf()),
         status: FileStatus::Modified,

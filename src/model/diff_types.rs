@@ -17,6 +17,8 @@ pub struct FilePatch {
     pub patch: String,
     pub is_binary: bool,
     pub is_too_large: bool,
+    /// The backend omitted the patch without identifying why.
+    pub is_unavailable: bool,
 }
 
 impl FilePatch {
@@ -33,6 +35,7 @@ impl FilePatch {
             patch: patch.into(),
             is_binary: false,
             is_too_large: false,
+            is_unavailable: false,
         }
     }
 
@@ -107,6 +110,8 @@ pub struct DiffFile {
     pub hunks: Vec<DiffHunk>,
     pub is_binary: bool,
     pub is_too_large: bool,
+    /// The backend omitted the patch without identifying why.
+    pub is_unavailable: bool,
     pub is_commit_message: bool,
     pub content_hash: u64,
 }
@@ -201,7 +206,7 @@ impl DiffFile {
     /// the requested side when the file has no lines on that side (e.g. a
     /// pure addition has no Old-side anchor).
     pub fn first_valid_line(&self, side: LineSide) -> Option<u32> {
-        if self.is_binary || self.is_too_large {
+        if self.is_binary || self.is_too_large || self.is_unavailable {
             return None;
         }
         for hunk in &self.hunks {

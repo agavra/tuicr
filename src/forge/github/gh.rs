@@ -212,13 +212,6 @@ where
             .map_err(|err| map_gh_error(err, host))
     }
 
-    fn pull_request_file_metadata(&self, pr: &PullRequestDetails) -> Result<Vec<FileMetadata>> {
-        self.pull_request_files(pr)?
-            .into_iter()
-            .map(GhPullRequestFile::into_metadata)
-            .collect()
-    }
-
     fn pull_request_files(&self, pr: &PullRequestDetails) -> Result<Vec<GhPullRequestFile>> {
         let mut rows_all: Vec<GhPullRequestFile> = Vec::new();
         for page in 1..=30 {
@@ -240,7 +233,7 @@ where
             }
         }
         Err(TuicrError::Forge(
-            "GitHub pull request exceeds the 3000-file REST API limit".into(),
+            "GitHub pull request reached the 3000-file REST API limit; cannot guarantee a complete diff".into(),
         ))
     }
 }
@@ -351,21 +344,27 @@ where
                 )
             },
         );
-        let rows = rows?;
-        let metadata = rows
-            .iter()
-            .cloned()
-            .map(GhPullRequestFile::into_metadata)
+        let files = rows?
+            .into_iter()
+            .map(GhPullRequestFile::into_file_patch)
             .collect::<Result<Vec<_>>>()?;
-        let patch = match patch {
-            Ok(patch) => patch,
+        match patch {
+            Ok(patch) => {
+                let metadata = files
+                    .into_iter()
+                    .map(|file| FileMetadata {
+                        old_path: file.old_path,
+                        new_path: file.new_path,
+                        status: file.status,
+                    })
+                    .collect();
+                pair_metadata_with_patch(metadata, patch.as_bytes())
+            }
             // `gh pr diff` asks for the diff media type, which GitHub refuses
-            // above 300 files. The files endpoint has no such cap and carries
-            // the same hunks, so rebuild the diff from the rows already read.
-            Err(e) if is_diff_too_large(&e) => super::models::synthesize_patch(&rows),
-            Err(e) => return Err(e),
-        };
-        pair_metadata_with_patch(metadata, patch.as_bytes())
+            // above 300 files. The files endpoint supplies up to 3000 rows.
+            Err(e) if is_diff_too_large(&e) => Ok(files),
+            Err(e) => Err(e),
+        }
     }
 
     fn local_checkout_path(&self) -> Option<PathBuf> {
@@ -1156,6 +1155,8 @@ index 1111111..2222222 100644
     #[derive(Default)]
     struct FakeGhRunner {
         calls: Mutex<Vec<Vec<String>>>,
+        files_pages: Option<Vec<String>>,
+        diff_error: Option<String>,
         /// Captured stdin payloads, paired in order with `calls` entries that
         /// went through `run_with_stdin`. Empty for plain `run` invocations.
         stdin_calls: Mutex<Vec<(Vec<String>, String)>>,
@@ -1175,7 +1176,13 @@ index 1111111..2222222 100644
                 Some("pr") => match args.get(1).map(String::as_str) {
                     Some("list") => Ok(PR_LIST_JSON.to_string()),
                     Some("view") => Ok(PR_VIEW_JSON.to_string()),
-                    Some("diff") => Ok(PR_PATCH.to_string()),
+                    Some("diff") => match &self.diff_error {
+                        Some(stderr) => Err(GhCommandError::Failed {
+                            status: Some(1),
+                            stderr: stderr.clone(),
+                        }),
+                        None => Ok(PR_PATCH.to_string()),
+                    },
                     _ => Err(GhCommandError::Failed {
                         status: Some(1),
                         stderr: "unexpected pr command".to_string(),
@@ -1210,7 +1217,14 @@ index 1111111..2222222 100644
                         .iter()
                         .any(|a| a.contains("/pulls/") && a.contains("/files")) =>
                 {
-                    Ok(PR_FILES_JSON.to_string())
+                    if let Some(pages) = &self.files_pages {
+                        let endpoint = args.iter().find(|a| a.contains("/files")).unwrap();
+                        let page: usize =
+                            endpoint.rsplit("&page=").next().unwrap().parse().unwrap();
+                        Ok(pages.get(page - 1).cloned().unwrap_or_else(|| "[]".into()))
+                    } else {
+                        Ok(PR_FILES_JSON.to_string())
+                    }
                 }
                 Some("api")
                     if args
@@ -1868,6 +1882,91 @@ Match host github-work
             Some(Path::new("src/lib.rs"))
         );
         assert_eq!(patches[0].patch, PR_PATCH.trim_start());
+    }
+
+    #[test]
+    fn large_pr_fallback_keeps_every_file_and_marks_missing_patches() {
+        let rows: Vec<_> = (0..301)
+            .map(|i| {
+                serde_json::json!({
+                    "filename": format!("file-{i}.txt"),
+                    "status": "modified",
+                    "patch": if i == 150 { None } else { Some("@@ -1 +1 @@\n-a\n+b") },
+                })
+            })
+            .collect();
+        let runner = FakeGhRunner {
+            files_pages: Some(
+                rows.chunks(100)
+                    .map(|page| serde_json::to_string(page).unwrap())
+                    .collect(),
+            ),
+            diff_error: Some("HTTP 406: diff exceeded the maximum number of files".into()),
+            ..Default::default()
+        };
+        let backend = GitHubGhBackend::with_runner(Some(repo()), runner);
+        let details = backend
+            .get_pull_request(parse_pull_request_target("125").unwrap())
+            .unwrap();
+        let patches = backend.get_pull_request_diff(&details).unwrap();
+        assert_eq!(patches.len(), 301);
+        assert_eq!(
+            patches[150].new_path.as_deref(),
+            Some(Path::new("file-150.txt"))
+        );
+        assert!(patches[150].is_unavailable);
+        assert!(!patches[151].is_unavailable);
+        let files = crate::vcs::diff_parser::parse_file_patches(
+            patches,
+            &crate::syntax::SyntaxHighlighter::plain(),
+        )
+        .unwrap();
+        assert!(files[150].is_unavailable);
+        assert!(files[150].hunks.is_empty());
+        assert_eq!(files[151].hunks.len(), 1);
+        let calls = backend.runner.calls.lock().unwrap();
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|args| args.iter().any(|a| a.contains("/files?")))
+                .count(),
+            4
+        );
+    }
+
+    #[test]
+    fn file_list_limit_is_an_error_not_a_partial_diff() {
+        let page = serde_json::to_string(&vec![
+            serde_json::json!({
+                "filename": "file.txt", "status": "modified",
+            });
+            100
+        ])
+        .unwrap();
+        let runner = FakeGhRunner {
+            files_pages: Some(vec![page; 30]),
+            ..Default::default()
+        };
+        let backend = GitHubGhBackend::with_runner(Some(repo()), runner);
+        let details = backend
+            .get_pull_request(parse_pull_request_target("125").unwrap())
+            .unwrap();
+        let error = backend.get_pull_request_diff(&details).unwrap_err();
+        assert!(error.to_string().contains("3000-file REST API limit"));
+    }
+
+    #[test]
+    fn unrelated_diff_failure_does_not_trigger_fallback() {
+        let runner = FakeGhRunner {
+            diff_error: Some("HTTP 403: forbidden".into()),
+            ..Default::default()
+        };
+        let backend = GitHubGhBackend::with_runner(Some(repo()), runner);
+        let details = backend
+            .get_pull_request(parse_pull_request_target("125").unwrap())
+            .unwrap();
+        let error = backend.get_pull_request_diff(&details).unwrap_err();
+        assert!(error.to_string().contains("forbidden"));
     }
 
     #[test]

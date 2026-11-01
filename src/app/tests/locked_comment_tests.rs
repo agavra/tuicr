@@ -46,6 +46,7 @@ impl VcsBackend for DummyVcs {
 
 fn diff_file(path: &str) -> DiffFile {
     DiffFile {
+        is_unavailable: false,
         old_path: None,
         new_path: Some(PathBuf::from(path)),
         status: FileStatus::Modified,

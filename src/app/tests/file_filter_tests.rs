@@ -67,6 +67,7 @@ fn file(path: &str) -> DiffFile {
     let hunks = vec![hunk()];
     let content_hash = DiffFile::compute_content_hash(&hunks);
     DiffFile {
+        is_unavailable: false,
         old_path: None,
         new_path: Some(PathBuf::from(path)),
         status: FileStatus::Modified,

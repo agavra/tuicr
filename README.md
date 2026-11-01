@@ -147,6 +147,11 @@ When you're done reviewing, send your comments wherever the work continues.
 on the right lines as a real PR review. Review-level comments become the review summary.
 Requires `gh` authenticated to the repo.
 
+When GitHub refuses the full diff for a PR over 300 files, tuicr uses the paginated files API.
+Files without a patch remain in the tree and show `(diff unavailable)`, not `(no changes)`.
+GitHub does not identify why those patches are missing. If the file list reaches the API's
+3000-file limit, tuicr reports an error rather than opening a potentially incomplete review.
+
 ### To GitLab
 
 `:submit` offers Comment, Approve, Request changes, or Draft on a GitLab MR. Inline comments post

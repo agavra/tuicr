@@ -82,6 +82,7 @@ pub(in crate::app) fn file(path: &str, lines_per_file: usize) -> DiffFile {
     }];
     let content_hash = DiffFile::compute_content_hash(&hunks);
     DiffFile {
+        is_unavailable: false,
         old_path: Some(PathBuf::from(path)),
         new_path: Some(PathBuf::from(path)),
         status: FileStatus::Modified,

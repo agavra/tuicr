@@ -139,6 +139,7 @@ mod tests {
 
     fn make_diff_file(path: &str) -> DiffFile {
         DiffFile {
+            is_unavailable: false,
             old_path: None,
             new_path: Some(PathBuf::from(path)),
             status: FileStatus::Modified,
@@ -396,6 +397,7 @@ mod tests {
         fs::write(&ignore_path, "generated/\n").expect("failed to write .tuicrignore");
 
         let deleted = DiffFile {
+            is_unavailable: false,
             old_path: Some(PathBuf::from("generated/old.txt")),
             new_path: None,
             status: FileStatus::Deleted,

@@ -67,6 +67,7 @@ fn diff_file_with_marker_bg(path: &str, marker_bg: Color) -> DiffFile {
     };
     let content_hash = DiffFile::compute_content_hash(std::slice::from_ref(&hunk));
     DiffFile {
+        is_unavailable: false,
         old_path: None,
         new_path: Some(PathBuf::from(path)),
         status: FileStatus::Modified,

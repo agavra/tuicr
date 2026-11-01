@@ -108,6 +108,7 @@ fn build_app_with_files(files: Vec<DiffFile>, total_lines: u32) -> App {
 fn make_file_with_hunks(path: &str, hunks: Vec<DiffHunk>) -> DiffFile {
     let content_hash = DiffFile::compute_content_hash(&hunks);
     DiffFile {
+        is_unavailable: false,
         old_path: None,
         new_path: Some(PathBuf::from(path)),
         status: FileStatus::Modified,
@@ -1650,6 +1651,7 @@ fn should_not_show_eof_gap_for_deleted_files() {
     let hunks = vec![make_hunk(1, 5)];
     let content_hash = DiffFile::compute_content_hash(&hunks);
     let file = DiffFile {
+        is_unavailable: false,
         old_path: Some(PathBuf::from("deleted.rs")),
         new_path: None,
         status: FileStatus::Deleted,

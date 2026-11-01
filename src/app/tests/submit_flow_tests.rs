@@ -56,6 +56,7 @@ fn make_pr_app_with_single_modified_file(file_path: &str) -> App {
         SessionDiffSource::PullRequest,
     );
     let diff_file = DiffFile {
+        is_unavailable: false,
         old_path: Some(PathBuf::from(file_path)),
         new_path: Some(PathBuf::from(file_path)),
         status: FileStatus::Modified,

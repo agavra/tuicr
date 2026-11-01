@@ -452,6 +452,7 @@ mod tests {
             new_count: 1,
         };
         DiffFile {
+            is_unavailable: false,
             old_path: Some(path.clone()),
             new_path: Some(path),
             status: FileStatus::Modified,
