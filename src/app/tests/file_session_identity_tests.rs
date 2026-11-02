@@ -36,6 +36,7 @@ fn file_options(path: &str) -> AppStartupOptions<'_> {
         commit_selection: CommitSelectionStart::All,
         pr_target: None,
         repo_url_override: None,
+        local_storage: false,
     }
 }
 

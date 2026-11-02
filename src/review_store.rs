@@ -1,3 +1,4 @@
+use std::cmp::Reverse;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
@@ -76,7 +77,7 @@ impl ReviewStore {
         session_ref: &SessionRef,
         request: AddCommentRequest,
     ) -> Result<Comment> {
-        let reviews_dir = self.reviews_dir()?;
+        let reviews_dir = self.reviews_dir_for_session(session_ref)?;
         let (_session, comment) =
             storage::update_session_in_dir(session_ref.path(), &reviews_dir, |session| {
                 add_comment_to_session(session, request)
@@ -86,7 +87,7 @@ impl ReviewStore {
 
     /// Delete one comment by id from a persisted session.
     pub fn delete_comment(&self, session_ref: &SessionRef, comment_id: &str) -> Result<bool> {
-        let reviews_dir = self.reviews_dir()?;
+        let reviews_dir = self.reviews_dir_for_session(session_ref)?;
         let (_session, removed) =
             storage::update_session_in_dir(session_ref.path(), &reviews_dir, |session| {
                 let Some(location) = session.find_comment_by_id(comment_id) else {
@@ -114,7 +115,7 @@ impl ReviewStore {
         session_ref: &SessionRef,
         scope: ClearScope,
     ) -> Result<(usize, usize)> {
-        let reviews_dir = self.reviews_dir()?;
+        let reviews_dir = self.reviews_dir_for_session(session_ref)?;
         let (_session, counts) =
             storage::update_session_in_dir(session_ref.path(), &reviews_dir, |session| {
                 Ok(session.clear_comments(scope))
@@ -130,7 +131,7 @@ impl ReviewStore {
     /// Unlike quit-time cleanup this also discards sessions that carry
     /// comments, so callers are expected to confirm first.
     pub fn delete_review(&self, session_ref: &SessionRef) -> Result<DeleteOutcome> {
-        let reviews_dir = self.reviews_dir()?;
+        let reviews_dir = self.reviews_dir_for_session(session_ref)?;
         storage::delete_inactive_session_in_dir(session_ref.path(), &reviews_dir)
     }
 
@@ -145,6 +146,18 @@ impl ReviewStore {
             Some(path) => Ok(path.clone()),
             None => storage::get_reviews_dir(),
         }
+    }
+
+    /// The storage root a resolved session lives under, for operations that
+    /// mutate a session the caller holds by path. Sessions may live in the
+    /// platform data dir or (opt-in `local_storage`) in a checkout's
+    /// `<repo>/.tuicr/reviews`; the path's layout says which, so a session
+    /// resolved from one root is never re-saved or pruned against the other.
+    /// Falls back to this store's configured root when the layout doesn't
+    /// match, which is where such sessions came from anyway.
+    fn reviews_dir_for_session(&self, session_ref: &SessionRef) -> Result<PathBuf> {
+        storage::reviews_dir_from_session_path(session_ref.path())
+            .map_or_else(|| self.reviews_dir(), Ok)
     }
 }
 
@@ -173,6 +186,40 @@ fn summary_from_entry(
         anchor: entry.display.anchor,
         active,
     }
+}
+
+/// Extend a session listing with a checkout's repo-local storage root.
+///
+/// `local_storage` gives a checkout its own `<repo>/.tuicr/reviews` root;
+/// listings surface both roots so sessions stay visible whether or not the
+/// flag is on now. The caller has already listed the platform-dir store and
+/// decides whether a repo-local root applies at all (the review CLI checks
+/// that the `--repo` selector is a directory; the Sessions tab checks a real
+/// VCS). Rows whose session path is already listed are skipped — the roots
+/// are distinct, so the check only guards the same file surfacing twice
+/// through both stores — `admit` filters what joins, and the result is
+/// re-sorted newest-first to match each root's own ordering. A no-op when
+/// the repo-local root does not exist.
+pub fn merge_repo_local_sessions(
+    sessions: &mut Vec<SessionSummary>,
+    repo_selector: &Path,
+    repo_local_root: &Path,
+    admit: impl Fn(&SessionSummary) -> bool,
+) -> Result<()> {
+    if !repo_local_root.exists() {
+        return Ok(());
+    }
+    let repo_local_store = ReviewStore::with_reviews_dir(repo_local_root);
+    for session in repo_local_store.list_sessions_for_repo(repo_selector)? {
+        let listed = sessions
+            .iter()
+            .any(|existing| existing.session_ref.path() == session.session_ref.path());
+        if !listed && admit(&session) {
+            sessions.push(session);
+        }
+    }
+    sessions.sort_by_key(|s| Reverse(s.updated_at));
+    Ok(())
 }
 
 /// Opaque reference to a persisted review session.

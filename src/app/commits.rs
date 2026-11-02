@@ -365,6 +365,24 @@ impl App {
             })
             .map_err(|e| e.to_string());
 
+        // `local_storage` sessions live in `<repo>/.tuicr/reviews`; surface
+        // them regardless of whether the flag is on right now, since they may
+        // have been created with it on. Gating on a real VCS (and the merge
+        // skipping a checkout without the directory) keeps the listing
+        // unchanged for everyone else. A repo-local listing error is
+        // swallowed: the platform-dir rows are still shown, as before.
+        if let (Ok(sessions), Some(repo_local)) = (
+            &mut result,
+            Self::repo_local_root(&root, Self::is_real_vcs(self.vcs_info.vcs_type)),
+        ) {
+            let _ = crate::review_store::merge_repo_local_sessions(
+                sessions,
+                &root,
+                &repo_local,
+                |summary| show_empty || Self::is_resumable(summary),
+            );
+        }
+
         // A fork's `origin` coordinate does not match PR sessions saved against
         // the upstream repo, so listing by checkout alone hides them. Add the
         // sessions for the forge repository this checkout reviews against: the
@@ -1014,7 +1032,9 @@ impl App {
 
         // Update session with the newest commit as base
         let newest_commit_id = selected_ids.last().unwrap().clone();
-        let loaded_session = load_latest_session_for_context(
+        let reviews_root = self.reviews_root()?;
+        let loaded_session = load_latest_session_for_context_in_dir(
+            &reviews_root,
             &self.vcs_info.root_path,
             self.vcs_info.branch_name.as_deref(),
             &newest_commit_id,

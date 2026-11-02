@@ -1,0 +1,125 @@
+//! End-to-end startup wiring for repo-local session storage.
+//!
+//! Runs `App::new` in a real git repository with `local_storage` enabled —
+//! the same path `main.rs` takes — and verifies the session lands in
+//! `<repo>/.tuicr/reviews`, resumes from there on the next start, and is
+//! cleaned up on exit. Lives in its own integration-test process because it
+//! changes the process cwd, like `empty_revision_startup`.
+
+use std::{fs, path::Path};
+
+use git2::{Repository, Signature};
+use tuicr::{
+    app::{App, AppStartupOptions, CommitSelectionStart},
+    theme::Theme,
+    vcs::{DiffWhitespaceMode, git::GitBackendPreference},
+};
+
+fn commit_file(repo: &Repository, content: &str, message: &str) {
+    fs::write(repo.workdir().unwrap().join("fixture.txt"), content).unwrap();
+
+    let mut index = repo.index().unwrap();
+    index.add_path(Path::new("fixture.txt")).unwrap();
+    index.write().unwrap();
+    let tree_id = index.write_tree().unwrap();
+    let tree = repo.find_tree(tree_id).unwrap();
+    let signature = Signature::now("tuicr test", "tuicr-test@example.invalid").unwrap();
+    let parent = repo.head().ok().and_then(|head| head.peel_to_commit().ok());
+    let parents = parent.iter().collect::<Vec<_>>();
+
+    repo.commit(
+        Some("HEAD"),
+        &signature,
+        &signature,
+        message,
+        &tree,
+        &parents,
+    )
+    .unwrap();
+}
+
+fn startup_options() -> AppStartupOptions<'static> {
+    AppStartupOptions {
+        revisions: None,
+        working_tree: true,
+        path_filter: None,
+        file_path: None,
+        all_files: false,
+        show_pr_checks: false,
+        show_pr_comments: false,
+        pr_comments_visibility: None,
+        git_backend_preference: GitBackendPreference::Libgit2,
+        diff_whitespace_mode: DiffWhitespaceMode::default(),
+        commit_selection: CommitSelectionStart::All,
+        pr_target: None,
+        repo_url_override: None,
+        local_storage: true,
+    }
+}
+
+#[test]
+fn local_storage_sessions_persist_resume_and_clean_up_in_the_repo_local_root() {
+    let temp = tempfile::tempdir().unwrap();
+    let repo = Repository::init(temp.path()).unwrap();
+    commit_file(&repo, "first\n", "first commit");
+    commit_file(&repo, "second\n", "second commit");
+    fs::write(temp.path().join("fixture.txt"), "working tree change\n").unwrap();
+    drop(repo);
+
+    let original_dir = std::env::current_dir().unwrap();
+    std::env::set_current_dir(temp.path()).unwrap();
+
+    // First run: the ephemeral session file is created under
+    // <repo>/.tuicr/reviews, exactly where main.rs's startup call puts it.
+    let mut first = App::new(Theme::dark(), None, false, startup_options())
+        .expect("working-tree review should open");
+    let created = first
+        .ensure_ephemeral_session_file()
+        .expect("ephemeral session file");
+    let repo_local = temp.path().join(".tuicr").join("reviews");
+    let saved = created.expect("a fresh session creates its file");
+    assert!(
+        saved.starts_with(&repo_local),
+        "session must save under <repo>/.tuicr/reviews, got {}",
+        saved.display()
+    );
+
+    // Second run with the same identity resumes it rather than starting over.
+    let mut second =
+        App::new(Theme::dark(), None, false, startup_options()).expect("reopen should succeed");
+    second
+        .ensure_ephemeral_session_file()
+        .expect("ephemeral session file");
+    assert_eq!(
+        second.session.id, first.session.id,
+        "resume must reattach to the repo-local session"
+    );
+    let sessions_dir = repo_local.join("sessions");
+    assert_eq!(
+        fs::read_dir(&sessions_dir).unwrap().count(),
+        1,
+        "resume must not fork a second session file"
+    );
+
+    // Exit cleanup drops the empty session and the active marker from the
+    // repo-local root's sidecars. The ephemeral set is per-process: the app
+    // that created the file (`first`) is the one whose exit removes it.
+    let deleted = first
+        .cleanup_empty_ephemeral_sessions()
+        .expect("cleanup empty sessions");
+    assert_eq!(deleted, 1, "the empty ephemeral session is removed");
+    assert!(!saved.exists(), "the session file is gone");
+    second
+        .clear_active_session_marker()
+        .expect("clear active marker");
+    let active: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(repo_local.join("active_sessions.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        active["sessions"].as_array().map(Vec::len),
+        Some(0),
+        "our pid's entry must be cleared"
+    );
+
+    std::env::set_current_dir(original_dir).unwrap();
+}

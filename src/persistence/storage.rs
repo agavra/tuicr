@@ -9,6 +9,11 @@
 //!     <16-hex>.json           # one file per session, deterministic name
 //! ```
 //!
+//! The same layout can live inside a checkout at `<repo>/.tuicr/reviews`
+//! (opt-in via `local_storage`; see [`repo_local_reviews_dir`]). Every
+//! `*_in_dir` function works against either root unchanged; each root keeps
+//! its own sidecars (`index.json`, `active_sessions.json`, `.tuicr.lock`).
+//!
 //! The session filename is a hash of the slug plus the canonical repo path
 //! (for local) or head SHA (for PR), so the same logical session always
 //! lands at the same path without consulting the manifest. The manifest is
@@ -66,10 +71,9 @@ pub(crate) fn save_session_in_dir(session: &ReviewSession, reviews_dir: &Path) -
     })
 }
 
-pub(crate) fn reindex_session(session: &ReviewSession) -> Result<()> {
-    let reviews_dir = get_reviews_dir()?;
-    maybe_migrate(&reviews_dir)?;
-    with_reviews_dir_lock(&reviews_dir, || {
+pub(crate) fn reindex_session_in_dir(session: &ReviewSession, reviews_dir: &Path) -> Result<()> {
+    maybe_migrate(reviews_dir)?;
+    with_reviews_dir_lock(reviews_dir, || {
         let slug = slug_for_session(session)?;
         let relative = relative_path_for_slug(&slug, session)?;
         let full_path = reviews_dir.join(&relative);
@@ -79,7 +83,7 @@ pub(crate) fn reindex_session(session: &ReviewSession) -> Result<()> {
                 format!("session file not found: {}", full_path.display()),
             )));
         }
-        upsert_session_manifest(session, &reviews_dir, &slug, relative)
+        upsert_session_manifest(session, reviews_dir, &slug, relative)
     })
 }
 
@@ -95,14 +99,6 @@ pub(crate) fn update_session_in_dir<T>(
         save_session_in_dir_unlocked(&session, reviews_dir)?;
         Ok((session, output))
     })
-}
-
-pub(crate) fn save_session_by_identity<T>(
-    identity: &ReviewSession,
-    update: impl FnOnce(Option<ReviewSession>) -> Result<(ReviewSession, T)>,
-) -> Result<(PathBuf, ReviewSession, T)> {
-    let reviews_dir = get_reviews_dir()?;
-    save_session_by_identity_in_dir(identity, &reviews_dir, update)
 }
 
 pub(crate) fn save_session_by_identity_in_dir<T>(
@@ -135,8 +131,24 @@ pub(crate) fn session_path_in_dir(session: &ReviewSession, reviews_dir: &Path) -
     Ok(reviews_dir.join(relative))
 }
 
+/// Derive the storage root a session file lives under from its path:
+/// `<root>/sessions/<file>.json` → `<root>`.
+///
+/// Sessions may be persisted in the platform data dir or (opt-in) in a
+/// checkout's `<repo>/.tuicr/reviews`. Callers that hold only a resolved
+/// session path — the review CLI, quit-time cleanup — cannot know which
+/// root produced the file, but the layout does. Returns `None` when the
+/// path doesn't match, leaving the caller on its default root.
+pub(crate) fn reviews_dir_from_session_path(path: &Path) -> Option<PathBuf> {
+    let sessions_dir = path.parent()?;
+    if sessions_dir.file_name()?.to_str() != Some(SESSIONS_DIRNAME) {
+        return None;
+    }
+    sessions_dir.parent().map(Path::to_path_buf)
+}
+
 pub(crate) fn delete_session_if_empty(path: &Path) -> Result<bool> {
-    let reviews_dir = get_reviews_dir()?;
+    let reviews_dir = reviews_dir_or_global(path)?;
     delete_session_if_empty_in_dir(path, &reviews_dir)
 }
 
@@ -145,7 +157,7 @@ pub(crate) fn delete_session_if_empty(path: &Path) -> Result<bool> {
 /// delete`: the owning TUI polls the file to merge external edits, and
 /// cleans up an empty session itself on exit.
 pub(crate) fn delete_session_if_empty_and_inactive(path: &Path) -> Result<bool> {
-    let reviews_dir = get_reviews_dir()?;
+    let reviews_dir = reviews_dir_or_global(path)?;
     delete_session_if_empty_and_inactive_in_dir(path, &reviews_dir)
 }
 
@@ -192,6 +204,10 @@ fn is_session_active_unlocked(reviews_dir: &Path, path: &Path) -> bool {
         .any(|entry| entry.is_fresh() && normalize_active_path(&entry.path) == target)
 }
 
+fn reviews_dir_or_global(path: &Path) -> Result<PathBuf> {
+    reviews_dir_from_session_path(path).map_or_else(get_reviews_dir, Ok)
+}
+
 /// Delete a session file and its manifest entry unconditionally. Returns
 /// `false` when there was no file to remove.
 ///
@@ -199,7 +215,7 @@ fn is_session_active_unlocked(reviews_dir: &Path, path: &Path) -> bool {
 /// has reviewed-file markers. It backs the "discard reviewed-only state on
 /// quit" path, where the session carries no comments worth keeping.
 pub(crate) fn delete_session(path: &Path) -> Result<bool> {
-    let reviews_dir = get_reviews_dir()?;
+    let reviews_dir = reviews_dir_or_global(path)?;
     delete_session_in_dir(path, &reviews_dir)
 }
 
@@ -299,11 +315,6 @@ fn remove_session_at(path: &Path, reviews_dir: &Path, session: &ReviewSession) -
     fs::remove_file(path)?;
 
     Ok(())
-}
-
-pub(crate) fn mark_session_active(session: &ReviewSession, path: &Path) -> Result<()> {
-    let reviews_dir = get_reviews_dir()?;
-    mark_session_active_in_dir(session, path, &reviews_dir)
 }
 
 pub(crate) fn mark_session_active_in_dir(
@@ -602,14 +613,37 @@ pub fn load_latest_session_for_context(
     diff_source: SessionDiffSource,
     commit_range: Option<&[String]>,
 ) -> Result<Option<(PathBuf, ReviewSession)>> {
+    let reviews_dir = get_reviews_dir()?;
+    load_latest_session_for_context_in_dir(
+        &reviews_dir,
+        repo_path,
+        branch_name,
+        head_commit,
+        diff_source,
+        commit_range,
+    )
+}
+
+/// [`load_latest_session_for_context`], against an explicit storage root —
+/// the platform data dir or a checkout's `.tuicr/reviews` (see
+/// [`repo_local_reviews_dir`]). There is deliberately no fallback between
+/// roots: with repo-local storage enabled, resume looks only there, and
+/// disabling it resurfaces the old global sessions untouched.
+pub fn load_latest_session_for_context_in_dir(
+    reviews_dir: &Path,
+    repo_path: &Path,
+    branch_name: Option<&str>,
+    head_commit: &str,
+    diff_source: SessionDiffSource,
+    commit_range: Option<&[String]>,
+) -> Result<Option<(PathBuf, ReviewSession)>> {
     // PR sessions are resolved via `load_pr_session`. Mirror the old behavior
     // so callers that pass `PullRequest` here get `None` rather than an error.
     if matches!(diff_source, SessionDiffSource::PullRequest) {
         return Ok(None);
     }
 
-    let reviews_dir = get_reviews_dir()?;
-    maybe_migrate(&reviews_dir)?;
+    maybe_migrate(reviews_dir)?;
 
     let owner_repo = slug::resolve_owner_repo(repo_path)
         .map_err(|e| TuicrError::CorruptedSession(format!("slug derive: {e}")))?;
@@ -623,7 +657,7 @@ pub fn load_latest_session_for_context(
     .map_err(|e| TuicrError::CorruptedSession(format!("slug build: {e}")))?;
     let slug = Slug::Local(local);
 
-    let manifest = manifest::load_manifest(&reviews_dir).unwrap_or_default();
+    let manifest = manifest::load_manifest(reviews_dir).unwrap_or_default();
     let canonical = fs::canonicalize(repo_path).unwrap_or_else(|_| repo_path.to_path_buf());
     let Some(entry) = manifest.get_local(&slug.to_string(), &canonical) else {
         return Ok(None);
@@ -815,6 +849,19 @@ thread_local! {
 #[cfg(test)]
 pub(crate) fn set_test_reviews_dir(path: Option<PathBuf>) {
     TEST_REVIEWS_DIR.with(|cell| *cell.borrow_mut() = path);
+}
+
+/// The repo-local storage root: `<repo>/.tuicr/reviews`.
+///
+/// Opt-in via config `local_storage = true` / `--local-storage`; local
+/// review sessions then persist here instead of the platform data dir,
+/// keeping per-checkout review state beside the checkout. The root holds
+/// the same layout and sidecars as the platform dir (`index.json`,
+/// `active_sessions.json`, `.tuicr.lock`, `sessions/`) and is created on
+/// first write. PR sessions and `--file` / `--all-files` reviews always
+/// stay in the platform data dir. Pure join: no I/O, no directory created.
+pub fn repo_local_reviews_dir(repo_root: &Path) -> PathBuf {
+    repo_root.join(".tuicr").join("reviews")
 }
 
 pub(crate) fn get_reviews_dir() -> Result<PathBuf> {
@@ -1067,6 +1114,167 @@ mod tests {
         let loaded = load_session(&path).unwrap();
         assert_eq!(session.id, loaded.id);
         assert_eq!(session.base_commit, loaded.base_commit);
+    }
+
+    // ---- Repo-local storage root ----
+
+    #[test]
+    fn should_join_repo_local_reviews_dir_under_the_repo_root() {
+        assert_eq!(
+            repo_local_reviews_dir(Path::new("/repo")),
+            PathBuf::from("/repo/.tuicr/reviews")
+        );
+    }
+
+    #[test]
+    fn should_roundtrip_a_local_session_in_a_repo_local_root() {
+        let repo = make_repo();
+        let root = repo_local_reviews_dir(&repo);
+        let session = make_local_session(
+            repo.clone(),
+            "abc1234",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
+            None,
+        );
+
+        let path = save_session_in_dir(&session, &root).unwrap();
+        assert!(
+            path.starts_with(&root),
+            "session file must land inside the repo-local root, got {}",
+            path.display()
+        );
+
+        let (_, resumed) = load_latest_session_for_context_in_dir(
+            &root,
+            &repo,
+            Some("main"),
+            "abc1234",
+            SessionDiffSource::WorkingTree,
+            None,
+        )
+        .unwrap()
+        .expect("session should resume from the repo-local root");
+        assert_eq!(resumed.id, session.id);
+    }
+
+    #[test]
+    fn should_keep_the_global_root_untouched_by_repo_local_writes() {
+        let _g = with_test_reviews_dir();
+        let global = get_reviews_dir().unwrap();
+        let repo = make_repo();
+        let root = repo_local_reviews_dir(&repo);
+        let session = make_local_session(
+            repo.clone(),
+            "abc1234",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
+            None,
+        );
+
+        let path = save_session_in_dir(&session, &root).unwrap();
+        mark_session_active_in_dir(&session, &path, &root).unwrap();
+
+        assert!(
+            list_all_sessions_in_dir(&global).unwrap().is_empty(),
+            "repo-local writes must not leak into the platform data dir"
+        );
+        assert!(
+            load_latest_session_for_context(
+                &repo,
+                Some("main"),
+                "abc1234",
+                SessionDiffSource::WorkingTree,
+                None,
+            )
+            .unwrap()
+            .is_none(),
+            "a global-root resume must not surface repo-local sessions"
+        );
+    }
+
+    #[test]
+    fn should_keep_sidecars_inside_the_repo_local_root() {
+        let repo = make_repo();
+        let root = repo_local_reviews_dir(&repo);
+        let session = make_local_session(
+            repo.clone(),
+            "abc1234",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
+            None,
+        );
+
+        let path = save_session_in_dir(&session, &root).unwrap();
+        mark_session_active_in_dir(&session, &path, &root).unwrap();
+
+        assert!(root.join(MANIFEST_FILENAME).is_file());
+        assert!(root.join(ACTIVE_SESSIONS_FILENAME).is_file());
+        let sessions_dir = root.join(SESSIONS_DIRNAME);
+        assert_eq!(
+            fs::read_dir(&sessions_dir).unwrap().count(),
+            1,
+            "exactly the one session file"
+        );
+    }
+
+    #[test]
+    fn should_refuse_to_delete_an_empty_repo_local_session_a_live_tuicr_has_open() {
+        // The no-dir wrapper must derive the storage root from the session
+        // path: checking liveness against the global root's sidecar would
+        // miss the repo-local active marker and delete an open session.
+        let _g = with_test_reviews_dir();
+        let repo = make_repo();
+        let root = repo_local_reviews_dir(&repo);
+        let session = make_local_session(
+            repo.clone(),
+            "abc1234",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
+            None,
+        );
+        let path = save_session_in_dir(&session, &root).unwrap();
+        mark_session_active_in_dir(&session, &path, &root).unwrap();
+
+        assert!(!delete_session_if_empty_and_inactive(&path).unwrap());
+        assert!(path.exists(), "the open repo-local session must survive");
+
+        clear_active_session_for_pid_in_dir(&root).unwrap();
+        assert!(delete_session_if_empty_and_inactive(&path).unwrap());
+        assert!(!path.exists());
+        assert!(
+            list_all_sessions_in_dir(&root).unwrap().is_empty(),
+            "the manifest entry must be pruned from the repo-local root"
+        );
+    }
+
+    #[test]
+    fn should_not_migrate_a_fresh_repo_local_root() {
+        // maybe_migrate renames a non-empty reviews dir lacking sessions/
+        // aside. A repo-local root is created fresh by the first write (or
+        // pre-created empty by the user) and must never be mistaken for the
+        // pre-migration flat layout.
+        let repo = make_repo();
+        let root = repo_local_reviews_dir(&repo);
+        assert!(!root.exists(), "the root is created on first write");
+        let session = make_local_session(
+            repo.clone(),
+            "abc1234",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
+            None,
+        );
+        save_session_in_dir(&session, &root).unwrap();
+        assert!(root.join(SESSIONS_DIRNAME).exists());
+        assert!(!repo.join(".tuicr/reviews.bak1").exists());
+
+        // Same for a pre-created, still-empty root.
+        let repo = make_repo();
+        let root = repo_local_reviews_dir(&repo);
+        fs::create_dir_all(&root).unwrap();
+        save_session_in_dir(&session, &root).unwrap();
+        assert!(root.join(SESSIONS_DIRNAME).exists());
+        assert!(!repo.join(".tuicr/reviews.bak1").exists());
     }
 
     #[test]

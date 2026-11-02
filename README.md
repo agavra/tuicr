@@ -16,6 +16,7 @@
 - GitHub-style continuous diff in the terminal. Scroll through every changed file in one stream.
 - PR-style comments at the line, range, file, and review level. 
 - Review tracking at file or hunk granularity, persisted across sessions.
+- Opt-in repo-local session storage (`local_storage = true` or `--local-storage`): keep review state in `<repo>/.tuicr/reviews` beside the checkout instead of the platform data directory.
 - Three export targets: push a real review to GitHub, GitLab, Gitea, Bitbucket, Azure DevOps, or Gerrit, copy
   structured markdown to your clipboard, or pipe to stdout.
 - Works with git, jj, and mercurial. Reviews uncommitted changes, commit ranges, or any GitHub PR,
@@ -229,6 +230,15 @@ The TUI creates a persisted session file when a review target becomes active,
 so collaborative tools can add comments immediately. Empty auto-created session
 files are removed when the TUI exits. `tuicr review list` marks currently open
 TUI sessions with `"active": true`.
+
+Sessions live in the platform data directory (`~/.local/share/tuicr/reviews/`
+on Linux, equivalents elsewhere). With `local_storage = true` in the config or
+`--local-storage` on the CLI, *local* review sessions instead persist under
+`<repo>/.tuicr/reviews/`, keeping per-checkout state beside the checkout —
+gitignore `.tuicr/`; tuicr never writes a `.gitignore` for you. PR sessions and
+`--file` / `--all-files` reviews always use the platform data directory.
+`tuicr review list` merges both roots for the selected checkout either way.
+See [docs/CONFIG.md](docs/CONFIG.md).
 
 Inside the TUI, the review target selector's **Sessions** tab lists the saved
 reviews for the current checkout, so you can resume one by picking it instead of

@@ -425,8 +425,12 @@ impl App {
             Err(e) => return Err(e),
         };
 
-        self.session =
-            Self::load_or_create_session(&self.vcs_info, SessionDiffSource::StagedAndUnstaged);
+        let reviews_dir = self.reviews_root()?;
+        self.session = Self::load_or_create_session(
+            &self.vcs_info,
+            SessionDiffSource::StagedAndUnstaged,
+            &reviews_dir,
+        );
         for file in &diff_files {
             self.session.add_diff_file(file);
         }
@@ -466,7 +470,12 @@ impl App {
             Err(e) => return Err(e),
         };
 
-        self.session = Self::load_or_create_session(&self.vcs_info, SessionDiffSource::WorkingTree);
+        let reviews_dir = self.reviews_root()?;
+        self.session = Self::load_or_create_session(
+            &self.vcs_info,
+            SessionDiffSource::WorkingTree,
+            &reviews_dir,
+        );
         for file in &diff_files {
             self.session.add_diff_file(file);
         }
@@ -501,7 +510,9 @@ impl App {
             Err(e) => return Err(e),
         };
 
-        self.session = Self::load_or_create_session(&self.vcs_info, SessionDiffSource::Staged);
+        let reviews_dir = self.reviews_root()?;
+        self.session =
+            Self::load_or_create_session(&self.vcs_info, SessionDiffSource::Staged, &reviews_dir);
         for file in &diff_files {
             self.session.add_diff_file(file);
         }
@@ -536,7 +547,9 @@ impl App {
             Err(e) => return Err(e),
         };
 
-        self.session = Self::load_or_create_session(&self.vcs_info, SessionDiffSource::Unstaged);
+        let reviews_dir = self.reviews_root()?;
+        self.session =
+            Self::load_or_create_session(&self.vcs_info, SessionDiffSource::Unstaged, &reviews_dir);
         for file in &diff_files {
             self.session.add_diff_file(file);
         }
@@ -949,8 +962,12 @@ impl App {
             Err(e) => return Err(e),
         };
 
-        self.session =
-            Self::load_or_create_staged_unstaged_and_commits_session(&self.vcs_info, &selected_ids);
+        let reviews_dir = self.reviews_root()?;
+        self.session = Self::load_or_create_staged_unstaged_and_commits_session(
+            &self.vcs_info,
+            &selected_ids,
+            &reviews_dir,
+        );
 
         for file in &diff_files {
             self.session.add_diff_file(file);
@@ -1902,6 +1919,7 @@ mod tests {
             commit_selection: CommitSelectionStart::All,
             pr_target: None,
             repo_url_override: None,
+            local_storage: false,
         };
         let captured = options.vcs_open_options();
         assert_eq!(captured.git_backend_preference, GitBackendPreference::Cli);

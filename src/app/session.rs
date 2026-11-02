@@ -1,6 +1,79 @@
 use super::*;
 
 impl App {
+    /// Storage root this app's session persists under.
+    ///
+    /// With `local_storage` enabled, local review sessions (a real Git /
+    /// Jujutsu / Mercurial checkout) persist under
+    /// `<repo>/.tuicr/reviews`. PR sessions and `--file` / `--all-files`
+    /// reviews always use the platform data dir: a PR has no checkout to
+    /// anchor a dotdir to (its repo path is the synthetic `forge:` identity),
+    /// and file mode must not scatter `.tuicr/` directories next to
+    /// arbitrary files.
+    pub(crate) fn reviews_root(&self) -> Result<PathBuf> {
+        Self::session_reviews_root(
+            self.local_storage,
+            &self.session,
+            &self.vcs_info,
+            &self.diff_source,
+        )
+    }
+
+    /// The [`App::reviews_root`] decision as a free function, so startup
+    /// paths that have not built an `App` yet (and unit tests) share the
+    /// exact same routing.
+    pub(in crate::app) fn session_reviews_root(
+        local_storage: bool,
+        session: &ReviewSession,
+        vcs_info: &VcsInfo,
+        diff_source: &DiffSource,
+    ) -> Result<PathBuf> {
+        // A repo-local root applies only to opted-in local reviews of a real
+        // checkout: a PR session is keyed by forge identity with no checkout
+        // to anchor a dotdir to, and file mode must not scatter `.tuicr/`
+        // directories next to arbitrary files.
+        let applies = local_storage
+            && session.pr_session_key.is_none()
+            && !matches!(diff_source, DiffSource::PullRequest(_))
+            && Self::is_real_vcs(vcs_info.vcs_type);
+        match Self::repo_local_root(&session.repo_path, applies) {
+            Some(root) => Ok(root),
+            None => crate::persistence::storage::get_reviews_dir(),
+        }
+    }
+
+    /// Whether `vcs_type` belongs to a real VCS checkout (Git, Jujutsu,
+    /// Mercurial) — the only backends whose local review sessions may opt
+    /// into repo-local storage. `VcsType::File` covers `--file`,
+    /// `--all-files`, and PR mode's `PrNoopVcs`, none of which anchor a
+    /// `.tuicr/` directory.
+    pub(in crate::app) fn is_real_vcs(vcs_type: VcsType) -> bool {
+        matches!(
+            vcs_type,
+            VcsType::Git | VcsType::Jujutsu | VcsType::Mercurial
+        )
+    }
+
+    /// Derive the repo-local storage root for a checkout, or `None` when the
+    /// caller's gating context says one does not apply.
+    ///
+    /// The single place that joins `<checkout>/.tuicr/reviews` with the
+    /// "is repo-local storage applicable here?" decision, so the two cannot
+    /// drift apart. Callers deliberately differ in *which* checkout root and
+    /// guards fit their situation:
+    ///
+    /// - session persistence ([`App::reviews_root`]): the session's own
+    ///   repo path, gated on the `local_storage` opt-in and the session
+    ///   identity (PR and file-mode sessions always persist globally);
+    /// - exit cleanup ([`App::clear_active_session_marker`]): the startup
+    ///   checkout root, which survives a local→PR switch mid-run;
+    /// - the Sessions tab ([`App::load_sessions_tab`]): the current
+    ///   checkout's root, gated on a real VCS but not on the flag, since the
+    ///   repo-local sessions may have been created with it on.
+    pub(in crate::app) fn repo_local_root(checkout_root: &Path, applies: bool) -> Option<PathBuf> {
+        applies.then(|| crate::persistence::storage::repo_local_reviews_dir(checkout_root))
+    }
+
     /// Slug for the currently active session, derived from the session's
     /// embedded fields. Returns `None` if derivation fails (e.g., a local
     /// session pointing at a non-existent path). The slug is cheap to derive
@@ -22,7 +95,7 @@ impl App {
     }
 
     pub(in crate::app) fn reset_persisted_session_tracking(&mut self) -> Result<()> {
-        let path = crate::persistence::storage::session_path(&self.session).ok();
+        let path = self.resolve_session_path().ok();
         let state = path
             .as_deref()
             .filter(|path| path.exists())
@@ -65,11 +138,19 @@ impl App {
         match self.session_path.clone() {
             Some(path) => Ok(path),
             None => {
-                let path = crate::persistence::storage::session_path(&self.session)?;
+                let path = self.resolve_session_path()?;
                 self.session_path = Some(path.clone());
                 Ok(path)
             }
         }
+    }
+
+    /// The session's on-disk path under the storage root [`App::reviews_root`]
+    /// selected. Deterministic per session identity, so an uncached resolve
+    /// and a cached path can never disagree within a run.
+    pub(in crate::app) fn resolve_session_path(&self) -> Result<PathBuf> {
+        let root = self.reviews_root()?;
+        crate::persistence::storage::session_path_in_dir(&self.session, &root)
     }
 
     pub fn ensure_ephemeral_session_file(&mut self) -> Result<Option<PathBuf>> {
@@ -77,7 +158,8 @@ impl App {
 
         if path.exists() {
             if self.session.pr_session_key.is_some() {
-                crate::persistence::storage::reindex_session(&self.session)?;
+                let root = self.reviews_root()?;
+                crate::persistence::storage::reindex_session_in_dir(&self.session, &root)?;
             }
             if self.ephemeral_session_paths.contains(&path) {
                 let saved_path = self.save_current_session_merging_external()?;
@@ -108,7 +190,26 @@ impl App {
     }
 
     pub fn clear_active_session_marker(&mut self) -> Result<()> {
-        crate::persistence::storage::clear_active_session_for_pid()
+        crate::persistence::storage::clear_active_session_for_pid()?;
+        // With local storage the active marker lives in the repo-local
+        // root's sidecar, which the global clear above does not reach.
+        // Derive it from the *startup* checkout root (`local_repo_root`),
+        // deliberately not the current session's root: the field is set once
+        // at startup and never swapped, so a repo-local marker written
+        // before the app switched to a PR mid-run (whose session persists
+        // globally, and whose root would therefore be the platform dir) is
+        // still found on exit. Clearing a root this process never wrote to
+        // is a no-op (the registry is filtered by pid), and the exists()
+        // gate keeps a quitting run that never wrote repo-local sessions
+        // from scattering an empty `.tuicr/` directory.
+        if self.local_storage
+            && let Some(checkout_root) = self.local_repo_root.clone()
+            && let Some(root) = Self::repo_local_root(&checkout_root, true)
+            && root.exists()
+        {
+            crate::persistence::storage::clear_active_session_for_pid_in_dir(&root)?;
+        }
+        Ok(())
     }
 
     /// Discard this session's persisted state and quit.
@@ -121,7 +222,7 @@ impl App {
         let path = self
             .session_path
             .clone()
-            .or_else(|| crate::persistence::storage::session_path(&self.session).ok());
+            .or_else(|| self.resolve_session_path().ok());
         if let Some(path) = path {
             let _ = crate::persistence::storage::delete_session(&path);
             self.ephemeral_session_paths.remove(&path);
@@ -137,15 +238,19 @@ impl App {
         let identity = self.session.clone();
         let current = self.session.clone();
         let base = self.persisted_session_snapshot.clone();
-        let (path, saved, _changed) =
-            crate::persistence::storage::save_session_by_identity(&identity, |persisted| {
+        let root = self.reviews_root()?;
+        let (path, saved, _changed) = crate::persistence::storage::save_session_by_identity_in_dir(
+            &identity,
+            &root,
+            |persisted| {
                 let mut merged = current.clone();
                 if let Some(latest) = persisted.as_ref() {
                     Self::merge_external_session_changes(&mut merged, &base, latest);
                 }
                 merged.updated_at = Utc::now();
                 Ok((merged, ()))
-            })?;
+            },
+        )?;
         self.mark_session_saved(path.clone(), saved)?;
         self.mark_current_session_active_at(&path);
         self.rebuild_annotations();
@@ -158,13 +263,17 @@ impl App {
     ) -> Result<()> {
         let identity = self.session.clone();
         let base = self.persisted_session_snapshot.clone();
-        let (path, saved, ()) =
-            crate::persistence::storage::save_session_by_identity(&identity, |persisted| {
+        let root = self.reviews_root()?;
+        let (path, saved, ()) = crate::persistence::storage::save_session_by_identity_in_dir(
+            &identity,
+            &root,
+            |persisted| {
                 let mut saved = persisted.unwrap_or_else(|| base.clone());
                 saved.reconcile_diff_files(diff_files);
                 saved.updated_at = Utc::now();
                 Ok((saved, ()))
-            })?;
+            },
+        )?;
         Self::merge_external_session_changes(&mut self.session, &base, &saved);
         let state = SessionFileState::from_path(&path).ok();
         self.observe_persisted_session(Some(path.clone()), state, || Ok(saved))?;
@@ -173,7 +282,16 @@ impl App {
     }
 
     fn mark_current_session_active_at(&mut self, path: &Path) {
-        if let Err(e) = crate::persistence::storage::mark_session_active(&self.session, path) {
+        let root = match self.reviews_root() {
+            Ok(root) => root,
+            Err(e) => {
+                self.set_warning(format!("Failed to mark active review session: {e}"));
+                return;
+            }
+        };
+        if let Err(e) =
+            crate::persistence::storage::mark_session_active_in_dir(&self.session, path, &root)
+        {
             self.set_warning(format!("Failed to mark active review session: {e}"));
         }
     }
@@ -443,9 +561,11 @@ impl App {
     pub(in crate::app) fn load_or_create_commit_range_session(
         vcs_info: &VcsInfo,
         commit_ids: &[String],
+        reviews_dir: &Path,
     ) -> ReviewSession {
         let newest_commit_id = commit_ids.last().unwrap().clone();
-        let loaded = load_latest_session_for_context(
+        let loaded = load_latest_session_for_context_in_dir(
+            reviews_dir,
             &vcs_info.root_path,
             vcs_info.branch_name.as_deref(),
             &newest_commit_id,
@@ -476,9 +596,11 @@ impl App {
     pub(in crate::app) fn load_or_create_staged_unstaged_and_commits_session(
         vcs_info: &VcsInfo,
         commit_ids: &[String],
+        reviews_dir: &Path,
     ) -> ReviewSession {
         let newest_commit_id = commit_ids.last().unwrap().clone();
-        let loaded = load_latest_session_for_context(
+        let loaded = load_latest_session_for_context_in_dir(
+            reviews_dir,
             &vcs_info.root_path,
             vcs_info.branch_name.as_deref(),
             &newest_commit_id,
@@ -509,6 +631,7 @@ impl App {
     pub(in crate::app) fn load_or_create_session(
         vcs_info: &VcsInfo,
         diff_source: SessionDiffSource,
+        reviews_dir: &Path,
     ) -> ReviewSession {
         let new_session = || {
             ReviewSession::new(
@@ -519,7 +642,8 @@ impl App {
             )
         };
 
-        let Ok(found) = load_latest_session_for_context(
+        let Ok(found) = load_latest_session_for_context_in_dir(
+            reviews_dir,
             &vcs_info.root_path,
             vcs_info.branch_name.as_deref(),
             &vcs_info.head_commit,
