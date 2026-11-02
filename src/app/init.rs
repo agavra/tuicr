@@ -157,12 +157,9 @@ impl App {
             )
         })?;
         let vcs_info = vcs.info().clone();
-        // Storage root for the session about to load. `--file`/`--all-files`
-        // and PR mode returned above; only real checkouts reach here, so the
-        // `local_storage` opt-in decides between the repo-local root and the
-        // platform data dir. There is deliberately no fallback read from the
-        // other root: enabling starts fresh, disabling resurfaces the old
-        // global sessions untouched.
+        // Only real checkouts reach here (file/PR modes returned above), so
+        // the `local_storage` opt-in alone decides the root. No fallback
+        // read from the other root: enabling starts fresh.
         let reviews_dir = if options.local_storage {
             crate::persistence::storage::repo_local_reviews_dir(&vcs_info.root_path)
         } else {
@@ -493,14 +490,10 @@ impl App {
         self
     }
 
-    /// Records the `local_storage` opt-in and re-bases persisted-session
-    /// tracking on it. [`App::build`] resolves the session path before the
-    /// flag is known, and with the flag on the file lives under
-    /// `<repo>/.tuicr/reviews`. `reset_persisted_session_tracking` is the
-    /// single implementation of that re-resolution (path, file state,
-    /// snapshot, ephemeral ensure); for every mode that ignores the flag
-    /// (PR, `--file`, `--all-files`) the root stays the platform data dir,
-    /// so this is a no-op there.
+    /// Records the opt-in and re-bases persisted-session tracking:
+    /// [`App::build`] resolved the session path before the flag was known,
+    /// and with the flag on the file lives under `<repo>/.tuicr/reviews`.
+    /// No-op for modes that ignore the flag (PR, `--file`, `--all-files`).
     pub(crate) fn with_local_storage(mut self, local_storage: bool) -> Self {
         self.local_storage = local_storage;
         // Tracking re-resolution must not fail startup: the warning surfaces

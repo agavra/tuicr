@@ -229,8 +229,7 @@ fn main() -> anyhow::Result<()> {
     };
 
     // CLI beats config: `--local-storage` enables repo-local sessions for
-    // the run; without it, the config `local_storage` key decides, and the
-    // default stays off (platform data directory).
+    // the run; otherwise the config `local_storage` key decides (default off).
     let local_storage = cli_args.local_storage
         || config_outcome
             .config

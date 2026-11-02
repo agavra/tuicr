@@ -1,15 +1,11 @@
 use super::*;
 
 impl App {
-    /// Storage root this app's session persists under.
-    ///
-    /// With `local_storage` enabled, local review sessions (a real Git /
-    /// Jujutsu / Mercurial checkout) persist under
-    /// `<repo>/.tuicr/reviews`. PR sessions and `--file` / `--all-files`
-    /// reviews always use the platform data dir: a PR has no checkout to
-    /// anchor a dotdir to (its repo path is the synthetic `forge:` identity),
-    /// and file mode must not scatter `.tuicr/` directories next to
-    /// arbitrary files.
+    /// Storage root this app's session persists under. With `local_storage`
+    /// enabled, local reviews of a real checkout persist under
+    /// `<repo>/.tuicr/reviews`; PR and `--file` / `--all-files` sessions
+    /// always use the platform data dir — neither anchors a dotdir to a
+    /// checkout.
     pub(crate) fn reviews_root(&self) -> Result<PathBuf> {
         Self::session_reviews_root(
             self.local_storage,
@@ -28,10 +24,6 @@ impl App {
         vcs_info: &VcsInfo,
         diff_source: &DiffSource,
     ) -> Result<PathBuf> {
-        // A repo-local root applies only to opted-in local reviews of a real
-        // checkout: a PR session is keyed by forge identity with no checkout
-        // to anchor a dotdir to, and file mode must not scatter `.tuicr/`
-        // directories next to arbitrary files.
         let applies = local_storage
             && session.pr_session_key.is_none()
             && !matches!(diff_source, DiffSource::PullRequest(_))
@@ -42,11 +34,9 @@ impl App {
         }
     }
 
-    /// Whether `vcs_type` belongs to a real VCS checkout (Git, Jujutsu,
-    /// Mercurial) — the only backends whose local review sessions may opt
-    /// into repo-local storage. `VcsType::File` covers `--file`,
-    /// `--all-files`, and PR mode's `PrNoopVcs`, none of which anchor a
-    /// `.tuicr/` directory.
+    /// Whether `vcs_type` is a real VCS checkout — the only backends that
+    /// may opt into repo-local storage (`VcsType::File` covers `--file`,
+    /// `--all-files`, and PR mode's `PrNoopVcs`).
     pub(in crate::app) fn is_real_vcs(vcs_type: VcsType) -> bool {
         matches!(
             vcs_type,
@@ -54,22 +44,10 @@ impl App {
         )
     }
 
-    /// Derive the repo-local storage root for a checkout, or `None` when the
-    /// caller's gating context says one does not apply.
-    ///
-    /// The single place that joins `<checkout>/.tuicr/reviews` with the
-    /// "is repo-local storage applicable here?" decision, so the two cannot
-    /// drift apart. Callers deliberately differ in *which* checkout root and
-    /// guards fit their situation:
-    ///
-    /// - session persistence ([`App::reviews_root`]): the session's own
-    ///   repo path, gated on the `local_storage` opt-in and the session
-    ///   identity (PR and file-mode sessions always persist globally);
-    /// - exit cleanup ([`App::clear_active_session_marker`]): the startup
-    ///   checkout root, which survives a local→PR switch mid-run;
-    /// - the Sessions tab ([`App::load_sessions_tab`]): the current
-    ///   checkout's root, gated on a real VCS but not on the flag, since the
-    ///   repo-local sessions may have been created with it on.
+    /// Derive the repo-local storage root for a checkout, or `None` when it
+    /// does not apply. The single join of `<checkout>/.tuicr/reviews` with
+    /// the applicability decision, so the two cannot drift apart; callers
+    /// choose the checkout root and guards that fit their context.
     pub(in crate::app) fn repo_local_root(checkout_root: &Path, applies: bool) -> Option<PathBuf> {
         applies.then(|| crate::persistence::storage::repo_local_reviews_dir(checkout_root))
     }
@@ -145,9 +123,9 @@ impl App {
         }
     }
 
-    /// The session's on-disk path under the storage root [`App::reviews_root`]
-    /// selected. Deterministic per session identity, so an uncached resolve
-    /// and a cached path can never disagree within a run.
+    /// The session's on-disk path under the [`App::reviews_root`] root;
+    /// deterministic per session identity, so a cached path and a fresh
+    /// resolve cannot disagree within a run.
     pub(in crate::app) fn resolve_session_path(&self) -> Result<PathBuf> {
         let root = self.reviews_root()?;
         crate::persistence::storage::session_path_in_dir(&self.session, &root)
@@ -191,17 +169,12 @@ impl App {
 
     pub fn clear_active_session_marker(&mut self) -> Result<()> {
         crate::persistence::storage::clear_active_session_for_pid()?;
-        // With local storage the active marker lives in the repo-local
-        // root's sidecar, which the global clear above does not reach.
-        // Derive it from the *startup* checkout root (`local_repo_root`),
-        // deliberately not the current session's root: the field is set once
-        // at startup and never swapped, so a repo-local marker written
-        // before the app switched to a PR mid-run (whose session persists
-        // globally, and whose root would therefore be the platform dir) is
-        // still found on exit. Clearing a root this process never wrote to
-        // is a no-op (the registry is filtered by pid), and the exists()
-        // gate keeps a quitting run that never wrote repo-local sessions
-        // from scattering an empty `.tuicr/` directory.
+        // The repo-local active marker lives in its own sidecar, which the
+        // global clear does not reach. Use the *startup* checkout root, not
+        // the current session's: it survives a mid-run local→PR switch, so
+        // a repo-local marker written earlier is still cleared. Clearing an
+        // unused root is a no-op (pid-filtered); the exists() gate keeps
+        // quit from creating an empty `.tuicr/` directory.
         if self.local_storage
             && let Some(checkout_root) = self.local_repo_root.clone()
             && let Some(root) = Self::repo_local_root(&checkout_root, true)

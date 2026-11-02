@@ -1,10 +1,6 @@
 //! Repo-local review session storage (config `local_storage` /
-//! `--local-storage`).
-//!
-//! Covers the [`App::reviews_root`] routing (which sessions may move into
-//! `<repo>/.tuicr/reviews`) and the Sessions-tab listing merge, so the
-//! plumbing cannot silently regress to the platform data dir. The full
-//! save/resume/cleanup cycle through the repo-local root lives in
+//! `--local-storage`): the [`App::reviews_root`] routing and the
+//! Sessions-tab listing merge. The full save/resume/cleanup cycle lives in
 //! `tests/local_storage_startup.rs`.
 
 use crate::app::*;

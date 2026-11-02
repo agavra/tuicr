@@ -121,12 +121,11 @@ fn list_sessions(repo: &Path, all: bool, out: &mut impl Write) -> Result<()> {
     Ok(())
 }
 
-/// Sessions for a repo selector across both storage roots. When the selector
-/// is a checkout that carries its own `.tuicr/reviews` (created by
-/// `local_storage = true`), those sessions join the platform-dir listing so
-/// `review list` and slug resolution keep seeing them whether or not the
-/// flag is on now. A forge coordinate (`owner/repo`, URLs) is never a
-/// directory, so it keeps the platform-dir listing alone.
+/// Sessions for a repo selector across both storage roots: a checkout
+/// carrying `.tuicr/reviews` contributes its sessions alongside the
+/// platform dir, so `review list` and slug resolution keep seeing them.
+/// A forge coordinate is never a directory, so it lists the platform
+/// dir alone.
 fn list_sessions_across_roots(store: &ReviewStore, repo: &Path) -> Result<Vec<SessionSummary>> {
     let mut sessions = store.list_sessions_for_repo(repo)?;
     if repo.is_dir() {

@@ -1141,9 +1141,7 @@ pub struct App {
     pub(crate) session_path: Option<PathBuf>,
     pub(crate) session_file_state: Option<SessionFileState>,
     /// Config `local_storage` / `--local-storage` opt-in: persist local
-    /// review sessions under `<repo>/.tuicr/reviews` instead of the platform
-    /// data dir. PR and `--file`/`--all-files` sessions ignore it and stay
-    /// global; see [`App::reviews_root`].
+    /// review sessions under `<repo>/.tuicr/reviews`; see [`App::reviews_root`].
     pub(crate) local_storage: bool,
     pub review_watch_interval: Option<Duration>,
     pub next_review_watch_at: Instant,
@@ -1904,10 +1902,9 @@ pub struct AppStartupOptions<'a> {
     /// `ForgeRepository`. When `Some`, the canonical resolver short-circuits
     /// the `gh api` parent lookup and uses this value directly.
     pub repo_url_override: Option<ForgeRepository>,
-    /// Config `local_storage` / `--local-storage` (flag beats config, default
-    /// off): persist local review sessions under `<repo>/.tuicr/reviews`.
-    /// PR and `--file`/`--all-files` sessions always use the platform data
-    /// directory regardless.
+    /// Config `local_storage` / `--local-storage` (flag beats config,
+    /// default off): persist local review sessions under
+    /// `<repo>/.tuicr/reviews`.
     pub local_storage: bool,
 }
 

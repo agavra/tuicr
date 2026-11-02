@@ -365,12 +365,10 @@ impl App {
             })
             .map_err(|e| e.to_string());
 
-        // `local_storage` sessions live in `<repo>/.tuicr/reviews`; surface
-        // them regardless of whether the flag is on right now, since they may
-        // have been created with it on. Gating on a real VCS (and the merge
-        // skipping a checkout without the directory) keeps the listing
-        // unchanged for everyone else. A repo-local listing error is
-        // swallowed: the platform-dir rows are still shown, as before.
+        // Repo-local sessions surface even with the flag off — they may have
+        // been created with it on. The real-VCS gate and the exists() skip
+        // inside the merge keep everyone else's listing unchanged; a
+        // repo-local listing error is swallowed so platform rows still show.
         if let (Ok(sessions), Some(repo_local)) = (
             &mut result,
             Self::repo_local_root(&root, Self::is_real_vcs(self.vcs_info.vcs_type)),

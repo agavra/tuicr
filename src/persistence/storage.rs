@@ -132,13 +132,9 @@ pub(crate) fn session_path_in_dir(session: &ReviewSession, reviews_dir: &Path) -
 }
 
 /// Derive the storage root a session file lives under from its path:
-/// `<root>/sessions/<file>.json` → `<root>`.
-///
-/// Sessions may be persisted in the platform data dir or (opt-in) in a
-/// checkout's `<repo>/.tuicr/reviews`. Callers that hold only a resolved
-/// session path — the review CLI, quit-time cleanup — cannot know which
-/// root produced the file, but the layout does. Returns `None` when the
-/// path doesn't match, leaving the caller on its default root.
+/// `<root>/sessions/<file>.json` → `<root>`. Callers holding only a
+/// resolved path — the review CLI, quit-time cleanup — cannot know which
+/// root produced the file; `None` leaves them on their default root.
 pub(crate) fn reviews_dir_from_session_path(path: &Path) -> Option<PathBuf> {
     let sessions_dir = path.parent()?;
     if sessions_dir.file_name()?.to_str() != Some(SESSIONS_DIRNAME) {
@@ -624,11 +620,10 @@ pub fn load_latest_session_for_context(
     )
 }
 
-/// [`load_latest_session_for_context`], against an explicit storage root —
-/// the platform data dir or a checkout's `.tuicr/reviews` (see
-/// [`repo_local_reviews_dir`]). There is deliberately no fallback between
-/// roots: with repo-local storage enabled, resume looks only there, and
-/// disabling it resurfaces the old global sessions untouched.
+/// [`load_latest_session_for_context`], against an explicit storage root.
+/// Deliberately no fallback between roots: resume looks only in the given
+/// root, so disabling repo-local storage resurfaces the old platform-dir
+/// sessions.
 pub fn load_latest_session_for_context_in_dir(
     reviews_dir: &Path,
     repo_path: &Path,
@@ -851,15 +846,9 @@ pub(crate) fn set_test_reviews_dir(path: Option<PathBuf>) {
     TEST_REVIEWS_DIR.with(|cell| *cell.borrow_mut() = path);
 }
 
-/// The repo-local storage root: `<repo>/.tuicr/reviews`.
-///
-/// Opt-in via config `local_storage = true` / `--local-storage`; local
-/// review sessions then persist here instead of the platform data dir,
-/// keeping per-checkout review state beside the checkout. The root holds
-/// the same layout and sidecars as the platform dir (`index.json`,
-/// `active_sessions.json`, `.tuicr.lock`, `sessions/`) and is created on
-/// first write. PR sessions and `--file` / `--all-files` reviews always
-/// stay in the platform data dir. Pure join: no I/O, no directory created.
+/// The repo-local storage root: `<repo>/.tuicr/reviews`. Holds the same
+/// layout and sidecars as the platform data dir; created on first write.
+/// Pure join: no I/O.
 pub fn repo_local_reviews_dir(repo_root: &Path) -> PathBuf {
     repo_root.join(".tuicr").join("reviews")
 }

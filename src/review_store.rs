@@ -148,13 +148,10 @@ impl ReviewStore {
         }
     }
 
-    /// The storage root a resolved session lives under, for operations that
-    /// mutate a session the caller holds by path. Sessions may live in the
-    /// platform data dir or (opt-in `local_storage`) in a checkout's
-    /// `<repo>/.tuicr/reviews`; the path's layout says which, so a session
-    /// resolved from one root is never re-saved or pruned against the other.
-    /// Falls back to this store's configured root when the layout doesn't
-    /// match, which is where such sessions came from anyway.
+    /// The storage root a resolved session lives under, derived from its
+    /// path so a session resolved from one root is never re-saved or pruned
+    /// against the other. Falls back to this store's configured root when
+    /// the layout doesn't match.
     fn reviews_dir_for_session(&self, session_ref: &SessionRef) -> Result<PathBuf> {
         storage::reviews_dir_from_session_path(session_ref.path())
             .map_or_else(|| self.reviews_dir(), Ok)
@@ -188,18 +185,11 @@ fn summary_from_entry(
     }
 }
 
-/// Extend a session listing with a checkout's repo-local storage root.
-///
-/// `local_storage` gives a checkout its own `<repo>/.tuicr/reviews` root;
-/// listings surface both roots so sessions stay visible whether or not the
-/// flag is on now. The caller has already listed the platform-dir store and
-/// decides whether a repo-local root applies at all (the review CLI checks
-/// that the `--repo` selector is a directory; the Sessions tab checks a real
-/// VCS). Rows whose session path is already listed are skipped — the roots
-/// are distinct, so the check only guards the same file surfacing twice
-/// through both stores — `admit` filters what joins, and the result is
-/// re-sorted newest-first to match each root's own ordering. A no-op when
-/// the repo-local root does not exist.
+/// Extend a session listing with a checkout's repo-local storage root, so
+/// sessions stay visible whether or not `local_storage` is on now. Rows
+/// already listed (by session path) are skipped, `admit` filters what
+/// joins, and the result is re-sorted newest-first. No-op when the root
+/// does not exist; the caller decides whether one applies.
 pub fn merge_repo_local_sessions(
     sessions: &mut Vec<SessionSummary>,
     repo_selector: &Path,
