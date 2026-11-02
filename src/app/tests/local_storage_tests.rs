@@ -2,8 +2,10 @@
 //! `--local-storage`).
 //!
 //! Covers the [`App::reviews_root`] routing (which sessions may move into
-//! `<repo>/.tuicr/reviews`) and an App-level save/resume cycle through that
-//! root, so the plumbing cannot silently regress to the platform data dir.
+//! `<repo>/.tuicr/reviews`) and the Sessions-tab listing merge, so the
+//! plumbing cannot silently regress to the platform data dir. The full
+//! save/resume/cleanup cycle through the repo-local root lives in
+//! `tests/local_storage_startup.rs`.
 
 use crate::app::*;
 use crate::model::SessionDiffSource;
@@ -184,74 +186,6 @@ fn should_keep_file_mode_in_the_platform_dir_even_with_local_storage() {
         root,
         crate::persistence::storage::get_reviews_dir().unwrap(),
         "--file / --all-files must not scatter .tuicr/ next to arbitrary files"
-    );
-}
-
-#[test]
-fn should_persist_and_resume_a_local_session_in_the_repo_local_root() {
-    let _reviews = TestReviewsDir::new();
-    let repo = tempfile::tempdir().unwrap();
-    let vcs_info = git_vcs_info(repo.path().to_path_buf());
-    let session = working_tree_session(&vcs_info);
-
-    let mut app = App::build(
-        Box::new(NullVcs {
-            info: vcs_info.clone(),
-        }),
-        vcs_info.clone(),
-        Theme::dark(),
-        None,
-        false,
-        Vec::new(),
-        session.clone(),
-        DiffSource::WorkingTree,
-        InputMode::Normal,
-        Vec::new(),
-        None,
-        None,
-    )
-    .expect("build app")
-    .with_local_storage(true);
-
-    let saved = app.save_current_session_merging_external().expect("save");
-    let repo_local = crate::persistence::storage::repo_local_reviews_dir(repo.path());
-    assert!(
-        saved.starts_with(&repo_local),
-        "the session must save under <repo>/.tuicr/reviews, got {}",
-        saved.display()
-    );
-    assert_eq!(app.session_path.as_deref(), Some(saved.as_path()));
-    assert!(
-        crate::review_store::ReviewStore::new()
-            .list_all_sessions()
-            .unwrap()
-            .is_empty(),
-        "the platform data dir must stay untouched"
-    );
-
-    // The same context resumes from the repo-local root, and nothing
-    // resumes from the platform dir.
-    let resumed =
-        App::load_or_create_session(&vcs_info, SessionDiffSource::WorkingTree, &repo_local);
-    assert_eq!(resumed.id, app.session.id, "resume must find the session");
-    let global_reviews = crate::persistence::storage::get_reviews_dir().unwrap();
-    let fresh =
-        App::load_or_create_session(&vcs_info, SessionDiffSource::WorkingTree, &global_reviews);
-    assert_ne!(
-        fresh.id, app.session.id,
-        "a fresh session is created when the repo-local root is not consulted"
-    );
-
-    // Exit cleanup drops our active marker from the repo-local sidecar.
-    app.clear_active_session_marker().expect("clear marker");
-    let active: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(repo_local.join("active_sessions.json")).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(
-        active["sessions"].as_array().map(Vec::len),
-        Some(0),
-        "our pid's entry must be cleared from the repo-local root"
     );
 }
 

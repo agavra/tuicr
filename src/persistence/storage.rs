@@ -1119,14 +1119,6 @@ mod tests {
     // ---- Repo-local storage root ----
 
     #[test]
-    fn should_join_repo_local_reviews_dir_under_the_repo_root() {
-        assert_eq!(
-            repo_local_reviews_dir(Path::new("/repo")),
-            PathBuf::from("/repo/.tuicr/reviews")
-        );
-    }
-
-    #[test]
     fn should_roundtrip_a_local_session_in_a_repo_local_root() {
         let repo = make_repo();
         let root = repo_local_reviews_dir(&repo);
