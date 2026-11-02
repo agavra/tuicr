@@ -32,6 +32,7 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     CommandSpec::new(&["edit"], CommandKind::Edit),
     CommandSpec::new(&["clip", "export"], CommandKind::Export),
     CommandSpec::new(&["copy-url"], CommandKind::CopyUrl),
+    CommandSpec::new(&["open-url"], CommandKind::OpenUrl),
     CommandSpec::new(
         &["clear"],
         CommandKind::Clear(ClearScope::CommentsAndReviewed),
@@ -137,6 +138,7 @@ enum CommandKind {
     Edit,
     Export,
     CopyUrl,
+    OpenUrl,
     Clear(ClearScope),
     Help,
     MessageDetails,
@@ -906,6 +908,12 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
         }
         CommandKind::CopyUrl => {
             handle_copy_pr_url(app);
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::OpenUrl => {
+            if !app.queue_open_pr_url() {
+                app.set_warning(":open-url only applies in PR mode");
+            }
             CommandAfterDispatch::ExitCommandMode
         }
         CommandKind::Clear(scope) => {

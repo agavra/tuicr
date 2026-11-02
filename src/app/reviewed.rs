@@ -18,6 +18,19 @@ struct ReviewedFile {
 }
 
 impl App {
+    /// Queue the reviewed PR URL; return false so local leader keys can fall through.
+    pub fn queue_open_pr_url(&mut self) -> bool {
+        let DiffSource::PullRequest(pr) = &self.diff_source else {
+            return false;
+        };
+        self.pending_open_url = Some(pr.url.clone());
+        true
+    }
+
+    pub fn take_pending_open_url(&mut self) -> Option<String> {
+        self.pending_open_url.take()
+    }
+
     pub fn can_stage(&self) -> bool {
         matches!(
             self.diff_source,
