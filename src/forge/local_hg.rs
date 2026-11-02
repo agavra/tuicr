@@ -15,20 +15,34 @@ use std::ffi::OsStr;
 use std::path::Path;
 
 use crate::process::run_command_output;
+use crate::vcs::is_full_changeset_id;
 
 pub(crate) use crate::vcs::run_hg_diff_range;
 
 /// Read a Mercurial file revision from the checkout at `repo_root` using
 /// `hg cat -r <rev> <path>`.
 ///
-/// Returns `None` on any failure — the revision is missing, `repo_root` is
-/// not an `hg` checkout, or `hg` is not on PATH — so callers fall back to the
-/// forge API. The content is lossy UTF-8, so binary blobs come back mangled;
-/// callers that can see a file's binary flag should check it first.
+/// Returns `None` on any failure — `rev` is not a full 40-hex changeset ID
+/// (server-supplied revs are gated to that form because hg honors
+/// `--config=` tokens anywhere in argv, so a crafted rev could run a shell
+/// command; see [`crate::vcs::is_full_changeset_id`]), the revision is
+/// missing, `repo_root` is not an `hg` checkout, or `hg` is not on PATH —
+/// so callers fall back to the forge API. The content is lossy UTF-8, so
+/// binary blobs come back mangled; callers that can see a file's binary
+/// flag should check it first.
 ///
 /// The path is wrapped in a `path:` pattern prefix so a name starting with
 /// `re:` / `glob:` / … is treated verbatim rather than as a Mercurial pattern.
 pub(crate) fn read_blob_hg(repo_root: &Path, rev: &str, path: &Path) -> Option<String> {
+    // `rev` arrives from a forge API response and is about to reach an hg
+    // command line, so it must be a full changeset ID: hg honors `--config=`
+    // tokens anywhere in argv — including option-value slots — and a rev
+    // like `--config=alias.cat=!cmd` would run a shell command. Anything
+    // else falls back to the forge, like any other read failure.
+    if !is_full_changeset_id(rev) {
+        return None;
+    }
+
     // Cheap existence check first, so a missing revision doesn't print a
     // noisy `abort:` to the user's stderr.
     let exists = run_command_output(
@@ -117,9 +131,39 @@ mod tests {
             read_blob_hg(root, sha.trim(), &PathBuf::from("missing.txt")),
             None
         );
+        // A short id is not a full changeset ID: rejected the same way as a
+        // missing revision (None → REST fallback).
         assert_eq!(
             read_blob_hg(root, "deadbeef", &PathBuf::from("file.txt")),
             None
+        );
+    }
+
+    #[test]
+    fn rejects_injected_revisions_before_running_hg() {
+        // hg's early option processing honors `--config=` tokens anywhere in
+        // argv, including the `-r` value slot, so a rev like the one below
+        // defines a shell-escaping alias that shadows `hg log`/`hg cat` and
+        // runs. The 40-hex gate must refuse it before any hg process is
+        // spawned. Gated on hg: without it the alias could not run and the
+        // marker assertion would pass for the wrong reason.
+        if !hg_available() {
+            return;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let marker = root.join("injected");
+        // `true >marker` creates the file via shell redirection no matter
+        // which trailing args hg appends to the alias command.
+        let inject = format!("--config=alias.log=!true >{}", marker.display());
+
+        assert_eq!(
+            read_blob_hg(root, &inject, &PathBuf::from("file.txt")),
+            None
+        );
+        assert!(
+            !marker.exists(),
+            "an injected rev must never reach hg: the alias ran"
         );
     }
 }

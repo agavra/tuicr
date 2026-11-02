@@ -611,20 +611,46 @@ fn hg_cat_batch(root: &Path, rev: &str, paths: &[PathBuf]) -> Result<HashMap<Pat
     Ok(parse_batched_files(&output))
 }
 
+/// Whether `rev` is a full Mercurial changeset ID: exactly 40 hex chars.
+///
+/// This is the only revision form server data may take before it reaches an
+/// hg command line. Shorter forms are ambiguous, and anything else could be
+/// an option injection: hg's early option processing honors `--config=`
+/// tokens wherever they appear in argv — including option-value slots — so
+/// a rev like `--config=alias.log=!cmd` defines a shell-escaping alias that
+/// shadows the command being run and executes it. The local backend's own
+/// revs (short ids, revsets, `.`) come from the user's checkout, not the
+/// network, and are deliberately not routed through this check.
+pub(crate) fn is_full_changeset_id(rev: &str) -> bool {
+    rev.len() == 40 && rev.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 /// Run `hg diff --git -r <start>..<end>` (actually `-r <start>:<end>`) against
 /// a checkout at `root`, returning structured file patches before hunk
-/// parsing. Shared by [`HgBackend::load_diff_with_comparison`] (the local
-/// working-tree / commit-range path) and the Heptapod forge backend's local
-/// commit-range optimization.
+/// parsing. Used by the Heptapod forge backend's local commit-range
+/// optimization; the local backend keeps its own copy of this two-step in
+/// [`HgBackend::load_diff_with_comparison`], which additionally takes a
+/// whitespace mode and passes locally-trusted revs.
 ///
 /// Same two-step as the local backend: `hg status -0` for authoritative
 /// metadata, then `hg diff --git` for the patch body, paired positionally.
 /// Returns [`crate::error::TuicrError::NoChanges`] when the range is empty.
+///
+/// `start_rev` and `end_rev` arrive from forge API responses (the parent of
+/// the first selected commit and the last selected one), so both must be
+/// full 40-hex changeset IDs — see [`is_full_changeset_id`].
 pub(crate) fn run_hg_diff_range(
     root: &Path,
     start_rev: &str,
     end_rev: &str,
 ) -> Result<Vec<FilePatch>> {
+    for rev in [start_rev, end_rev] {
+        if !is_full_changeset_id(rev) {
+            return Err(TuicrError::VcsCommand(format!(
+                "Refusing to pass a non-changeset-id revision to hg: {rev:?}"
+            )));
+        }
+    }
     let rev_arg = format!("{start_rev}:{end_rev}");
     let diff_args: [&str; 2] = ["-r", rev_arg.as_str()];
     let patch_args: Vec<&str> = vec!["diff", "--git", "-r", rev_arg.as_str()];
@@ -1585,5 +1611,54 @@ mod tests {
         // Verify we can get display_path without panic (the bug we fixed)
         // Don't assert exact path/status as hg implementations differ (Sapling vs standard hg)
         let _path = file.display_path();
+    }
+
+    #[test]
+    fn test_is_full_changeset_id_shape() {
+        assert!(is_full_changeset_id(
+            "0123456789012345678901234567890123456789"
+        ));
+        // Uppercase hex is still a valid changeset id.
+        assert!(is_full_changeset_id(
+            "0123456789ABCDEF0123456789ABCDEF01234567"
+        ));
+        // Short ids, revsets, empty, 41 chars, and option injections are
+        // all rejected.
+        assert!(!is_full_changeset_id("b6dd890d9162"));
+        assert!(!is_full_changeset_id("."));
+        assert!(!is_full_changeset_id(""));
+        assert!(!is_full_changeset_id(
+            "01234567890123456789012345678901234567890"
+        ));
+        assert!(!is_full_changeset_id("--config=alias.log=!cmd"));
+    }
+
+    #[test]
+    fn test_run_hg_diff_range_rejects_injected_revs() {
+        // hg's early option processing honors `--config=` tokens anywhere in
+        // argv, including the `-r` value slot, so a rev like the one below
+        // defines a shell-escaping alias that shadows `hg diff` and runs.
+        // The 40-hex gate must refuse it before any hg process is spawned.
+        // Gated on hg: without it the alias could not run and the marker
+        // assertion would pass for the wrong reason.
+        if !hg_available() {
+            eprintln!("Skipping test: hg command not available");
+            return;
+        }
+        let temp = tempfile::tempdir().expect("tempdir");
+        let marker = temp.path().join("injected");
+        // `true >marker` creates the file via shell redirection no matter
+        // which trailing args hg appends to the alias command.
+        let inject = format!("--config=alias.diff=!true >{}", marker.display());
+        let commit = "0123456789012345678901234567890123456789";
+
+        let err = run_hg_diff_range(temp.path(), &inject, commit).unwrap_err();
+        assert!(err.to_string().contains("Refusing"), "got: {err}");
+        let err = run_hg_diff_range(temp.path(), commit, &inject).unwrap_err();
+        assert!(err.to_string().contains("Refusing"), "got: {err}");
+        assert!(
+            !marker.exists(),
+            "an injected rev must never reach hg: the alias ran"
+        );
     }
 }
