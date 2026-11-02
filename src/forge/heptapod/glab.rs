@@ -273,4 +273,144 @@ mod tests {
         let backend = HeptapodBackend::new(None).with_local_is_hg(true);
         assert!(backend.local_is_hg);
     }
+
+    fn hg_available() -> bool {
+        std::process::Command::new("hg")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    /// Run hg in `dir`, panicking with stderr on failure, and return stdout.
+    fn hg(dir: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("hg")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .expect("spawn hg");
+        assert!(
+            out.status.success(),
+            "hg {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).to_string()
+    }
+
+    /// A real three-commit hg checkout: a base commit adds `base.txt`, then
+    /// two "PR" commits add `first.txt` and `second.txt`. Returns the
+    /// checkout and the three node ids, oldest first. `None` when hg is
+    /// not installed.
+    fn setup_hg_pr_checkout() -> Option<(tempfile::TempDir, [String; 3])> {
+        if !hg_available() {
+            return None;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        hg(root, &["init", "--quiet"]);
+        let mut nodes = [const { String::new() }; 3];
+        for (i, (name, content)) in [
+            ("base.txt", "zero\n"),
+            ("first.txt", "one\n"),
+            ("second.txt", "two\n"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            std::fs::write(root.join(name), content).expect("write");
+            hg(root, &["add", name]);
+            hg(root, &["commit", "--quiet", "-m", name]);
+            nodes[i] = hg(root, &["log", "-r", ".", "-T", "{node}"])
+                .trim()
+                .to_string();
+        }
+        Some((dir, nodes))
+    }
+
+    fn hg_routed_backend(checkout: &Path) -> HeptapodBackend {
+        // The production constructor: `with_local_checkout` sniffs the VCS
+        // via `hg root`, so a real hg checkout turns the hg routing on.
+        HeptapodBackend::new(None).with_local_checkout(Some(checkout.to_path_buf()))
+    }
+
+    fn range_details() -> PullRequestDetails {
+        PullRequestDetails {
+            repository: ForgeRepository::heptapod("foss.heptapod.net", "owner", "repo"),
+            number: 42,
+            title: String::new(),
+            url: String::new(),
+            state: "OPEN".to_string(),
+            is_draft: false,
+            author: None,
+            head_ref_name: String::new(),
+            base_ref_name: String::new(),
+            head_sha: String::new(),
+            base_sha: String::new(),
+            body: String::new(),
+            updated_at: None,
+            closed: false,
+            merged_at: None,
+            diff_start_sha: None,
+        }
+    }
+
+    #[test]
+    fn hg_routing_returns_the_commit_subset_diff() {
+        // `get_pull_request_commit_range_diff` must route through the real
+        // `hg diff` + `hg status` pair on an hg checkout. This is the test
+        // that would have caught the revision flag never reaching
+        // `hg status`: the patch step ran fine, the revision-less status of
+        // the clean checkout came back empty, and the range silently
+        // returned `Ok(vec![])`.
+        //
+        // Mirrors `pr_range_sha_pair`: selecting only the newest commit
+        // makes `start_sha` its parent (the middle node here).
+        let Some((dir, [_, first, second])) = setup_hg_pr_checkout() else {
+            return;
+        };
+        let backend = hg_routed_backend(dir.path());
+
+        let patches = backend
+            .get_pull_request_commit_range_diff(&range_details(), &first, &second)
+            .expect("range diff");
+
+        assert_eq!(patches.len(), 1);
+        assert_eq!(
+            patches[0].new_path.as_deref(),
+            Some(Path::new("second.txt"))
+        );
+        assert_eq!(patches[0].status, crate::model::FileStatus::Added);
+        assert!(
+            patches[0].patch.contains("two"),
+            "patch body should carry the newest commit's content: {}",
+            patches[0].patch
+        );
+    }
+
+    #[test]
+    fn hg_routing_returns_the_full_range_when_start_is_the_base() {
+        // Selecting every PR commit makes `start_sha` the parent of the
+        // oldest one — the base node here — so both PR files appear.
+        let Some((dir, [base, _, second])) = setup_hg_pr_checkout() else {
+            return;
+        };
+        let backend = hg_routed_backend(dir.path());
+
+        let patches = backend
+            .get_pull_request_commit_range_diff(&range_details(), &base, &second)
+            .expect("range diff");
+
+        let paths: Vec<String> = patches
+            .iter()
+            .map(|p| {
+                p.new_path
+                    .as_deref()
+                    .map(|path| path.to_string_lossy().to_string())
+                    .unwrap_or_default()
+            })
+            .collect();
+        assert!(paths.contains(&"first.txt".to_string()), "got: {paths:?}");
+        assert!(paths.contains(&"second.txt".to_string()), "got: {paths:?}");
+        assert_eq!(paths.len(), 2);
+    }
 }

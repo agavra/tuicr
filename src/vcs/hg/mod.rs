@@ -652,7 +652,11 @@ pub(crate) fn run_hg_diff_range(
         }
     }
     let rev_arg = format!("{start_rev}:{end_rev}");
-    let diff_args: [&str; 2] = ["-r", rev_arg.as_str()];
+    // `hg_status_args` skips index 0 (every local caller passes the "diff"
+    // subcommand there), so the revision flag must sit *after* it — passed
+    // bare as `["-r", rev]`, the range never reached `hg status --rev` and
+    // the revision-less status of a clean PR checkout came back empty.
+    let diff_args: [&str; 3] = ["diff", "-r", rev_arg.as_str()];
     let patch_args: Vec<&str> = vec!["diff", "--git", "-r", rev_arg.as_str()];
     let patch = run_hg_command(root, &patch_args)?;
     if patch.trim().is_empty() {
