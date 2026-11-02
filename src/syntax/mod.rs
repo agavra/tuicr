@@ -101,8 +101,21 @@ fn build_syntax_set_with(dir: &Path) -> (Option<syntect::parsing::SyntaxSet>, Ve
         let parsed = std::fs::read_to_string(&path)
             .map_err(|e| e.to_string())
             .and_then(|text| {
-                syntect::parsing::SyntaxDefinition::load_from_str(&text, true, None)
+                let stem = path.file_stem().and_then(|stem| stem.to_str());
+                syntect::parsing::SyntaxDefinition::load_from_str(&text, true, stem)
                     .map_err(|e| e.to_string())
+            })
+            .and_then(|definition| {
+                // syntect validates `match` regexes on load but compiles
+                // `first_line_match` lazily, panicking on every unknown-extension file.
+                match definition
+                    .first_line_match
+                    .as_deref()
+                    .and_then(syntect::parsing::Regex::try_compile)
+                {
+                    Some(e) => Err(format!("invalid first_line_match: {e}")),
+                    None => Ok(definition),
+                }
             });
         match parsed {
             Ok(definition) => builder.add(definition),
@@ -541,17 +554,41 @@ mod tests {
         )
         .unwrap();
         std::fs::write(dir.path().join("Broken.sublime-syntax"), "not: [a grammar").unwrap();
+        std::fs::write(
+            dir.path().join("BadFirstLine.sublime-syntax"),
+            "%YAML 1.2\n---\nname: BadFirstLine\nscope: source.bad\nfirst_line_match: '['\ncontexts:\n  main:\n    - match: bad\n      scope: keyword.bad\n",
+        )
+        .unwrap();
         std::fs::write(dir.path().join("notes.txt"), "ignored").unwrap();
 
         // when the set is built from it
         let (set, warnings) = build_syntax_set_with(dir.path());
 
-        // then the valid grammar joins the embedded ones and only the broken file warns
+        // then the valid grammar joins the embedded ones and only the broken files warn
         let set = set.unwrap();
         assert!(set.find_syntax_by_extension("tuicrprobe").is_some());
         assert!(set.find_syntax_by_extension("rs").is_some());
-        assert_eq!(warnings.len(), 1);
-        assert!(warnings[0].contains("Broken.sublime-syntax"));
+        assert!(set.find_syntax_by_name("BadFirstLine").is_none());
+        assert_eq!(warnings.len(), 2);
+        assert!(warnings[0].contains("BadFirstLine.sublime-syntax"));
+        assert!(warnings[1].contains("Broken.sublime-syntax"));
+        // and an unknown-extension file no longer hits the bad regex
+        assert!(set.find_syntax_by_first_line("anything").is_none());
+    }
+
+    #[test]
+    fn should_name_a_nameless_user_syntax_after_its_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("Nameless.sublime-syntax"),
+            "%YAML 1.2\n---\nscope: source.nameless\nfile_extensions: [tuicrnameless]\ncontexts:\n  main:\n    - match: x\n      scope: keyword.x\n",
+        )
+        .unwrap();
+        let set = build_syntax_set_with(dir.path()).0.unwrap();
+        assert_eq!(
+            set.find_syntax_by_extension("tuicrnameless").unwrap().name,
+            "Nameless"
+        );
     }
 
     #[test]
