@@ -7,7 +7,11 @@
 //! `glab config get host` is intentionally not consulted here — the GitLab
 //! parser already falls back to it, and Heptapod must stay ahead of GitLab in
 //! [`crate::forge::parse_any_remote_url`] so an Heptapod host that also
-//! appears in `glab`'s config is claimed by Heptapod, not GitLab.
+//! appears in `glab`'s config is claimed by Heptapod, not GitLab. The same
+//! applies to target parsing in [`crate::forge::parse_pull_request_target_any`],
+//! with one more constraint: there Heptapod must also run ahead of GitHub's
+//! parser, which claims any-host `/-/merge_requests/<n>` URLs (as GitLab) and
+//! any host-qualified `host/owner/repo#N` (as GitHub).
 
 use crate::error::{Result, TuicrError};
 use crate::forge::gitlab::glab::{
@@ -140,6 +144,11 @@ fn configured_host() -> Option<String> {
 /// is recognized. Numeric targets pass through unchanged (no repository to
 /// re-tag); an explicit GitLab URL on a non-Heptapod host returns an error
 /// so the caller can fall through to the GitLab parser.
+///
+/// Callers must try this parser before GitHub's: GitHub's target parser
+/// claims any-host `/-/merge_requests/<n>` URLs and host-qualified
+/// `host/owner/repo#N` targets, which would mis-tag an Heptapod host.
+/// [`crate::forge::parse_pull_request_target_any`] owns that ordering.
 pub fn parse_pull_request_target_heptapod(input: &str) -> Result<PullRequestTarget> {
     let target = parse_pull_request_target_gitlab(input)?;
     if let Some(repo) = target.repository.as_ref()

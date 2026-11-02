@@ -842,35 +842,12 @@ impl App {
         commit_selection: CommitSelectionStart,
         display_options: PrDisplayOptions,
     ) -> Result<Self> {
-        use crate::forge::azure::az::parse_pull_request_target_azure;
-        use crate::forge::bitbucket::bkt::parse_pull_request_target_bitbucket;
-        use crate::forge::gerrit::api::parse_pull_request_target_gerrit;
-        use crate::forge::gitea::tea::parse_pull_request_target_gitea;
-        use crate::forge::github::gh::parse_pull_request_target;
-        use crate::forge::gitlab::glab::parse_pull_request_target_gitlab;
-        use crate::forge::heptapod::parse::parse_pull_request_target_heptapod;
         use crate::forge::pr_open::open_pull_request;
         use crate::forge::traits::ForgeKind;
 
-        // Bitbucket first: its URL shape (`/pull-requests/<n>`) is distinct,
-        // and the GitHub parser would otherwise claim the host. Gitea next:
-        // its `/pulls/<n>` URL differs from GitHub's singular `/pull/<n>`, but
-        // only the Gitea parser knows which self-hosted hosts are Gitea, and
-        // it must see a host-qualified `host/owner/repo#N` before GitHub's
-        // parser claims it. GitHub then handles numeric / `owner/repo#N` /
-        // GitHub URLs, GitLab handles `/-/merge_requests/<n>`, and the Azure
-        // (`/pullrequest/<n>`) and Gerrit (`/c/<project>/+/<n>`) URL shapes
-        // fall through last. Heptapod accepts the same URL shapes as GitLab;
-        // its parser validates the host as Heptapod and rewrites the kind, so
-        // it must be tried before GitLab or a URL pointing at an Heptapod
-        // instance would be tagged GitLab.
-        let parsed = parse_pull_request_target_bitbucket(target)
-            .or_else(|_| parse_pull_request_target_gitea(target))
-            .or_else(|_| parse_pull_request_target(target))
-            .or_else(|_| parse_pull_request_target_heptapod(target))
-            .or_else(|_| parse_pull_request_target_gitlab(target))
-            .or_else(|_| parse_pull_request_target_azure(target))
-            .or_else(|_| parse_pull_request_target_gerrit(target))?;
+        // Parser order (Heptapod first, ahead of GitHub's catch-all) lives
+        // and is regression-tested in `forge::parse_pull_request_target_any`.
+        let parsed = crate::forge::parse_pull_request_target_any(target)?;
 
         // Resolution order when the target lacks an explicit repo
         // (`tuicr pr 125`):

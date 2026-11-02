@@ -36,7 +36,7 @@ use crate::forge::gitlab::glab::{parse_gitlab_remote_url, parse_gitlab_remote_ur
 use crate::forge::heptapod::parse::{
     parse_heptapod_remote_url, parse_heptapod_remote_url_by_hostname,
 };
-use crate::forge::traits::ForgeRepository;
+use crate::forge::traits::{ForgeRepository, PullRequestTarget};
 use crate::vcs::VcsBackend;
 
 /// Return `Some(sha)` for `git merge-base <base> <head>` when both commits
@@ -231,6 +231,43 @@ pub fn parse_any_remote_url_by_hostname(url: &str) -> Option<ForgeRepository> {
         .or_else(|| parse_gerrit_remote_url(url))
 }
 
+/// Parse a `tuicr pr`/`mr` target string by trying every forge's target
+/// parser in order.
+///
+/// Order matters, and differs from [`parse_any_remote_url`] because the
+/// GitHub *target* parser is more than a catch-all: it also claims
+/// GitLab-shaped `/-/merge_requests/<n>` URLs on any host (tagging them
+/// GitLab) and any host-qualified `host/owner/repo#N` (tagging unknown hosts
+/// GitHub). Heptapod accepts exactly GitLab's target grammar but only on
+/// Heptapod-recognized hosts, so it must run *first* — after GitHub, an
+/// Heptapod MR URL would open as GitLab and `foss.heptapod.net/owner/repo#42`
+/// as GitHub, losing the Mercurial local-checkout routing. Numeric targets
+/// pass through every parser identically, so Heptapod-first does not change
+/// them. Bitbucket and Gitea follow: their URL shapes are distinct, but only
+/// their parsers know which self-hosted hosts are theirs, so they must see a
+/// host-qualified `host/owner/repo#N` before GitHub claims it. GitHub then
+/// handles numeric / `owner/repo#N` / GitHub URLs, GitLab handles
+/// `/-/merge_requests/<n>` on GitLab hosts, and the Azure
+/// (`/pullrequest/<n>`) and Gerrit (`/c/<project>/+/<n>`) URL shapes fall
+/// through last.
+pub fn parse_pull_request_target_any(target: &str) -> Result<PullRequestTarget> {
+    use crate::forge::azure::az::parse_pull_request_target_azure;
+    use crate::forge::bitbucket::bkt::parse_pull_request_target_bitbucket;
+    use crate::forge::gerrit::api::parse_pull_request_target_gerrit;
+    use crate::forge::gitea::tea::parse_pull_request_target_gitea;
+    use crate::forge::github::gh::parse_pull_request_target;
+    use crate::forge::gitlab::glab::parse_pull_request_target_gitlab;
+    use crate::forge::heptapod::parse::parse_pull_request_target_heptapod;
+
+    parse_pull_request_target_heptapod(target)
+        .or_else(|_| parse_pull_request_target_bitbucket(target))
+        .or_else(|_| parse_pull_request_target_gitea(target))
+        .or_else(|_| parse_pull_request_target(target))
+        .or_else(|_| parse_pull_request_target_gitlab(target))
+        .or_else(|_| parse_pull_request_target_azure(target))
+        .or_else(|_| parse_pull_request_target_gerrit(target))
+}
+
 /// Detect the forge repository for the local checkout at `repo_root`.
 /// Returns `None` when no remote can be parsed.
 pub fn detect_forge_repository(repo_root: &Path) -> Option<ForgeRepository> {
@@ -263,6 +300,7 @@ pub fn local_checkout_for_repo(root: &Path, target_repo: &ForgeRepository) -> Op
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::forge::traits::ForgeKind;
 
     fn init_repo_with_origin(url: &str) -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -423,6 +461,79 @@ mod tests {
             detect_forge_repository(dir.path()),
             Some(ForgeRepository::github("code.example.com", "owner", "repo"))
         );
+    }
+
+    #[test]
+    fn heptapod_mr_url_targets_parse_before_github_claims_them() {
+        // GitHub's target parser claims any-host `/-/merge_requests/<n>` URLs
+        // and tags them GitLab; Heptapod must see them first or an Heptapod
+        // MR loses its Mercurial local-checkout routing.
+        let target = parse_pull_request_target_any(
+            "https://foss.heptapod.net/owner/repo/-/merge_requests/42",
+        )
+        .unwrap();
+        assert_eq!(target.number, 42);
+        assert_eq!(target.repository.unwrap().kind, ForgeKind::Heptapod);
+    }
+
+    #[test]
+    fn heptapod_repo_hash_targets_parse_before_github_claims_them() {
+        // GitHub's target parser claims any host-qualified
+        // `host/owner/repo#N` and tags unknown hosts GitHub; Heptapod must
+        // see them first.
+        let target = parse_pull_request_target_any("foss.heptapod.net/owner/repo#42").unwrap();
+        assert_eq!(target.number, 42);
+        let repo = target.repository.unwrap();
+        assert_eq!(repo.kind, ForgeKind::Heptapod);
+        assert_eq!(repo.host, "foss.heptapod.net");
+        assert_eq!(repo.owner, "owner");
+        assert_eq!(repo.name, "repo");
+    }
+
+    #[test]
+    fn gitlab_mr_url_targets_still_parse_as_gitlab() {
+        let target =
+            parse_pull_request_target_any("https://gitlab.com/owner/repo/-/merge_requests/7")
+                .unwrap();
+        assert_eq!(target.number, 7);
+        assert_eq!(target.repository.unwrap().kind, ForgeKind::GitLab);
+    }
+
+    #[test]
+    fn github_pr_targets_still_parse_as_github() {
+        let target = parse_pull_request_target_any("https://github.com/owner/repo/pull/1").unwrap();
+        assert_eq!(target.number, 1);
+        assert_eq!(target.repository.unwrap().kind, ForgeKind::GitHub);
+    }
+
+    #[test]
+    fn hostless_repo_hash_targets_stay_github() {
+        // `owner/repo#N` carries no host to recognize Heptapod by: the
+        // GitLab grammar defaults to gitlab.com inside the Heptapod parser,
+        // which rejects it and lets GitHub claim the target.
+        let target = parse_pull_request_target_any("owner/repo#42").unwrap();
+        assert_eq!(target.number, 42);
+        assert_eq!(target.repository.unwrap().kind, ForgeKind::GitHub);
+    }
+
+    #[test]
+    fn bitbucket_url_targets_still_parse_as_bitbucket() {
+        // Heptapod runs first but only accepts GitLab's grammar on Heptapod
+        // hosts, so a Bitbucket URL falls through to Bitbucket's parser.
+        let target =
+            parse_pull_request_target_any("https://bitbucket.org/owner/repo/pull-requests/5")
+                .unwrap();
+        assert_eq!(target.number, 5);
+        assert_eq!(target.repository.unwrap().kind, ForgeKind::Bitbucket);
+    }
+
+    #[test]
+    fn numeric_targets_carry_no_repository_whichever_parser_runs_first() {
+        // Bare numbers are identical in every parser; Heptapod-first must
+        // not change the resolved shape.
+        let target = parse_pull_request_target_any("125").unwrap();
+        assert_eq!(target.number, 125);
+        assert!(target.repository.is_none());
     }
 
     #[test]
