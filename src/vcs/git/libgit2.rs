@@ -45,10 +45,12 @@ impl Libgit2Backend {
         // For `git init --separate-git-dir`, the Git directory lives outside
         // the worktree, so the reopen guesses the Git directory's parent as
         // the worktree. `open_ext` discovers and opens in one step, keeping
-        // the worktree libgit2 resolved from the `.git` gitfile.
+        // the worktree libgit2 resolved from the `.git` gitfile. `CROSS_FS`
+        // keeps `discover`'s behavior of walking up past mount boundaries, so
+        // a subdirectory on another filesystem still finds its repository.
         let repo = Repository::open_ext(
             cwd,
-            RepositoryOpenFlags::empty(),
+            RepositoryOpenFlags::CROSS_FS,
             std::iter::empty::<&std::ffi::OsStr>(),
         )
         .map_err(|_| TuicrError::NotARepository)?;
