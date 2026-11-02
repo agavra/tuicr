@@ -13,6 +13,7 @@ use crate::app::{App, DiffSource, FocusedPanel, InputMode, Message, MessageType}
 use crate::theme::Theme;
 use crate::ui::commit_row::CURSOR_GLYPH;
 use crate::ui::styles;
+use crate::vcs::traits::VcsType;
 
 /// Maximum visible completion candidates in the command prompt popup.
 const COMMAND_COMPLETION_MAX_ROWS: usize = 7;
@@ -217,11 +218,10 @@ pub fn render_header(frame: &mut Frame, app: &App, area: Rect) {
 
 /// Short form of the HEAD sha, or `None` when there is no real commit to name.
 ///
-/// Pristine sessions store a synthetic `pristine:<head>:<hash>` key rather than
-/// a sha, and that mode already renders its own chip further down the header.
+/// File backends and pristine sessions store synthetic keys rather than SHAs.
 /// An empty repository has no HEAD at all.
 fn head_commit_label(app: &App) -> Option<String> {
-    if app.is_pristine_mode {
+    if app.is_pristine_mode || app.vcs_info.vcs_type == VcsType::File {
         return None;
     }
     let head = app.vcs_info.head_commit.as_str();
@@ -374,14 +374,14 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                 InputMode::Help => Cow::Borrowed("   / search · n/N match · q/?/esc close"),
                 InputMode::MessageDetails => Cow::Borrowed("   j/k scroll · q/esc close"),
                 InputMode::Summary => {
-                    Cow::Borrowed("   j/k select \u{00b7} \u{21b5} jump \u{00b7} q/esc close")
+                    Cow::Borrowed("   j/k select · dd delete · ↵ jump · q/esc close")
                 }
                 InputMode::Confirm => Cow::Borrowed("   y yes \u{00b7} n no"),
                 InputMode::CommitSelect => Cow::Borrowed(
                     "   j/k navigate \u{00b7} space select \u{00b7} \u{21b5} confirm \u{00b7} esc back",
                 ),
                 InputMode::VisualSelect => Cow::Borrowed(
-                    "   j/k extend \u{00b7} c/\u{21b5} comment \u{00b7} y yank \u{00b7} esc/V cancel",
+                    "   j/k extend \u{00b7} c/\u{21b5} comment \u{00b7} s suggest \u{00b7} y yank \u{00b7} esc/V cancel",
                 ),
                 InputMode::SubmitResolver => Cow::Borrowed(
                     "   j/k move \u{00b7} \u{21b5} toggle \u{00b7} s submit \u{00b7} esc cancel",
@@ -551,7 +551,10 @@ pub fn render_command_completion_popup(frame: &mut Frame, app: &App, status_area
             } else {
                 Style::default().fg(app.theme.fg_secondary)
             };
-            Line::from(Span::styled(format!("{marker} {command}"), style))
+            Line::from(vec![
+                Span::styled(marker, styles::selection_marker_style(&app.theme, style)),
+                Span::styled(format!(" {command}"), style),
+            ])
         })
         .collect();
 
@@ -1142,6 +1145,21 @@ mod header_snapshot_tests {
             super::header_source_chunk(&app),
             Some("commit abcdef0".to_string())
         );
+    }
+
+    #[test]
+    fn should_omit_synthetic_file_commits_from_the_header() {
+        for head_commit in ["abcdef0123456789", "file"] {
+            let mut app = build_local_app(DiffSource::WorkingTree, head_commit);
+            app.vcs_info.vcs_type = VcsType::File;
+            assert_eq!(app.vcs_info.head_commit, head_commit);
+
+            let buffer = draw_header(&app);
+            let line = row_text(&buffer, 0);
+
+            assert!(line.contains("file:main"), "got: {line:?}");
+            assert!(!line.contains("commit "), "got: {line:?}");
+        }
     }
 
     #[test]

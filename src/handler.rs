@@ -1,4 +1,4 @@
-use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Position;
 
 use crate::app::{
@@ -7,14 +7,13 @@ use crate::app::{
 };
 use crate::forge::remote_comments::PrCommentsVisibility;
 use crate::forge::submit::SubmitEvent;
-use crate::input::Action;
+use crate::input::{Action, map_global_key};
 use crate::model::{ClearScope, LineSide};
 use crate::output::{copy_text_to_clipboard, export_to_clipboard, generate_export_content};
 use crate::text_edit::{
     delete_char_before, delete_word_before, next_char_boundary, prev_char_boundary,
 };
 
-const WHEEL_LINES: usize = 3;
 /// Columns scrolled per horizontal mouse wheel tick. Matches the default
 /// step for keyboard arrow scrolling so the two input methods feel
 /// interchangeable.
@@ -176,15 +175,28 @@ enum CompletionDirection {
     Reverse,
 }
 
+/// Handle a key that means the same thing in every input mode (see
+/// `map_global_key`). Returns `true` when the key was consumed, so the caller
+/// skips the per-mode maps.
+pub fn handle_global_key(app: &mut App, key: KeyEvent) -> bool {
+    match map_global_key(key) {
+        Action::Redraw => {
+            app.request_full_redraw();
+            true
+        }
+        _ => false,
+    }
+}
+
 pub fn handle_mouse_event(app: &mut App, event: MouseEvent) {
     let pos = Position::new(event.column, event.row);
     match event.kind {
         MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
             let scroll_up = matches!(event.kind, MouseEventKind::ScrollUp);
             let action = if scroll_up {
-                Action::MouseScrollUp(WHEEL_LINES)
+                Action::MouseScrollUp(app.mouse_scroll_lines)
             } else {
-                Action::MouseScrollDown(WHEEL_LINES)
+                Action::MouseScrollDown(app.mouse_scroll_lines)
             };
             let over_file_list = app.file_list_area.is_some_and(|r| r.contains(pos));
             let over_diff = app.diff_area.is_some_and(|r| r.contains(pos));
@@ -328,7 +340,7 @@ fn wheel_commit_list(app: &mut App, scroll_up: bool) {
     } else {
         scroll_up
     };
-    for _ in 0..WHEEL_LINES {
+    for _ in 0..app.mouse_scroll_lines {
         if scroll_up {
             app.commit_select_up();
         } else {
@@ -1481,9 +1493,13 @@ pub fn handle_visual_action(app: &mut App, action: Action) {
             app.cursor_up(n);
             app.extend_visual_to_cursor();
         }
-        Action::AddRangeComment => {
+        Action::AddRangeComment | Action::AddRangeSuggestion => {
             if app.visual_selection_line_range().is_some() {
-                app.enter_comment_from_visual();
+                if action == Action::AddRangeSuggestion {
+                    app.enter_suggestion_from_visual();
+                } else {
+                    app.enter_comment_from_visual();
+                }
             } else {
                 app.set_warning("Invalid selection - move cursor to a diff line");
                 app.exit_visual_mode();

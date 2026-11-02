@@ -410,7 +410,7 @@ impl VcsBackend for GitCliBackend {
         highlighter: &SyntaxHighlighter,
     ) -> Result<Vec<DiffFile>> {
         if commit_ids.is_empty() {
-            return Err(TuicrError::NoChanges);
+            return self.get_working_tree_diff(highlighter);
         }
 
         let base_rev = parent_rev_or_empty(&self.root_path, &commit_ids[0])?;
@@ -827,7 +827,7 @@ fn build_untracked_diff_file(
     let content = String::from_utf8_lossy(&bytes);
     let lines: Vec<String> = content
         .lines()
-        .map(|line| tabify(line.trim_end_matches('\r')))
+        .map(|line| line.trim_end_matches('\r').to_string())
         .collect();
 
     if lines.is_empty() {
@@ -839,7 +839,8 @@ fn build_untracked_diff_file(
         .enumerate()
         .map(|(idx, content)| DiffLine {
             origin: LineOrigin::Addition,
-            content,
+            raw_content: content.contains('\t').then(|| content.clone()),
+            content: tabify(&content),
             old_lineno: None,
             new_lineno: Some((idx + 1) as u32),
             highlighted_spans: None,
@@ -1271,10 +1272,6 @@ fn rev_list_range(workdir: &Path, base: &str, head: &str) -> Result<Vec<String>>
         .filter(|line| !line.is_empty())
         .map(str::to_string)
         .collect();
-
-    if commit_ids.is_empty() {
-        return Err(TuicrError::NoChanges);
-    }
 
     Ok(commit_ids)
 }

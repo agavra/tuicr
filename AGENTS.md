@@ -136,7 +136,7 @@ src/
 
 Repository-managed agent integrations:
 
-- `skills/tuicr/` - Shared agent skill bundle for coding agents, for example Claude Code, Codex, and similar tools; launches tuicr in a cmux, tmux, Zellij, or Herdr split pane
+- `skills/tuicr/` - Shared agent skill bundle for coding agents, for example Claude Code, Codex, and similar tools; launches tuicr in a cmux, Rex, tmux, Zellij, or Herdr split pane
 
 ### Key Types
 
@@ -215,6 +215,8 @@ Repository-managed agent integrations:
 
 - All possible user actions (ScrollDown, NextFile, ToggleReviewed, AddLineComment, etc.)
 - `map_key_to_action(key, mode)` returns the appropriate Action
+- `map_global_key(key)` covers keys that mean the same thing in every mode (`Ctrl-l` → `Redraw`). `main.rs` checks it through `handler::handle_global_key` before the pending-prefix, vim-editor and per-mode maps, so these keys never reach a text buffer
+- `Redraw` (and `Event::Resize`) call `App::request_full_redraw`; the main loop takes the flag before the next draw and calls `TerminalSession::repaint_from_scratch` inside the synchronized update. Do not use ratatui's `Terminal::clear` there: it queries the cursor position, which times out under `--stdout`
 
 ### Data Flow
 
@@ -229,6 +231,7 @@ Repository-managed agent integrations:
 
 ### Important Implementation Details
 
+- **Selection colors**: Optional local-theme `selection_marker` controls cursor indicators and commit-range bars independently of `border_focused`. Missing values preserve each indicator's legacy foreground; row backgrounds still use `bg_highlight`/`cursor_line_bg`, and PR numbers/hashes still use `cursor_color`. The marker belongs to the theme and follows normal theme switching and picker snapshots.
 - **Infinite scroll**: All files rendered into one `Vec<Line>`, then sliced by `scroll_offset`
 - **Inline comments**: Comments are rendered in `app_layout.rs` after file headers and after relevant diff lines
 - **Comment navigator**: Built from `line_annotations` in rendered order. Local review/file/line comments and visible remote threads appear as compact rows; selecting one calls `move_cursor_to_annotation()` so the diff viewport scrolls to the comment.
@@ -350,7 +353,9 @@ These are non-obvious things the implementation chain hit. Worth preserving for 
 
 19. **Gerrit's review-requested toggle uses the attention set, not `reviewer:self`.** `reviewer:self` matches every open change the user reviews, including the ones they already voted on and handed back — the opposite of "needs my review", which makes the toggle useless. `attention:self` is Gerrit's own "it's your turn" signal (the dashboard's *Your Turn* section); `-owner:self` drops the user's own changes, which the attention set also holds when a reviewer replies. This is the one place a forge deliberately diverges from the shared "review-requested" semantics. Costs a Gerrit 3.3+ floor on that toggle alone.
 
-20. **GNU Linux release binaries must stay dynamically linked.** Static glibc binaries can crash when hostname lookup loads a host NSS module (for example Fedora's `libnss_myhostname`). The musl artifacts are the supported static Linux builds. Direct updates must preserve the running binary's GNU/musl target environment when selecting an asset.
+20. **Self-hosted Azure DevOps Server / TFS is opt-in by hostname.** It has no reserved host, so `parse_azure_remote_url` only claims it when the host equals `AZURE_DEVOPS_SERVER_URL`'s (it must stay ahead of the GitHub catch-all). Its `collection/project` is packed into `owner` and the real host is kept, unlike cloud hosts, which normalize to `dev.azure.com` and drop `DefaultCollection`. Because a virtual directory can make the collection path multi-segment, `azure_coords` splits `owner` at the *last* `/`.
+
+21. **GNU Linux release binaries must stay dynamically linked.** Static glibc binaries can crash when hostname lookup loads a host NSS module (for example Fedora's `libnss_myhostname`). The musl artifacts are the supported static Linux builds. Direct updates must preserve the running binary's GNU/musl target environment when selecting an asset.
 
 17. **The `[TYPE]` prefix uses the config-resolved `label`, not the `CommentType` id.** `CommentType` carries no label — it lives on `CommentTypeDefinition` (`App::comment_types`), so `as_str()` only ever yields the uppercased id. Four resolvers render this tag and must agree: `App::comment_type_label` (TUI), `export_comment_type_label` (`src/output/markdown.rs`), `SubmitContext::type_label` (`src/forge/submit.rs`), and `describe_row` (`src/ui/submit_modals.rs`). The last is easy to miss and previews the tag the user is deciding about, so disagreement means choosing Move-to-summary vs Omit against a tag that never gets posted. This is why the submit path takes a `SubmitContext` rather than a bare `&ForgeConfig`.
 
@@ -373,6 +378,10 @@ These are non-obvious things the implementation chain hit. Worth preserving for 
     Remote *discovery* is a separate layer from host *parsing*: `forge::remote_urls` reads Git remotes (libgit2, then the `git` CLI) and, when the checkout is not a Git repository at all, falls back to `hg paths` — `default` first, Mercurial's `origin`. That is what makes a pure `hg clone` of an Heptapod repo work with no flags: `tuicr mr <N>` and the selector's Pull Requests tab resolve the repository from inside the checkout. In a colocated repo (both `.git` and `.hg`) the Git remotes win and `hg paths` is never consulted.
 
 26. **Server-supplied revisions must be 40-hex changeset IDs before they reach an hg command line.** hg's early option processing honors `--config=` tokens anywhere in argv — including option-value slots — so a rev like `--config=alias.diff=!cmd` defines a shell-escaping alias that shadows the running command and executes: a malicious forge response becomes arbitrary command execution on the reviewer's machine (verified against hg 7.2.3). The gate lives in the two forge-facing primitives, `vcs::hg::is_full_changeset_id` behind `run_hg_diff_range` and `read_blob_hg`, and nowhere else: the local `HgBackend` legitimately passes short revs, revsets, and `.` from the user's own checkout. `read_blob_hg` degrades to `None` (REST fallback); `run_hg_diff_range` fails hard. Note the `hg status --rev` arm inside `run_hg_diff_range` only starts receiving the rev once the range's status args are built correctly, so the 40-hex gate must stay with any change touching that plumbing.
+
+23. **`fetch_pr_data` fans out once the PR metadata is in.** `get_pull_request_info` and `resolve_diff_base_sha` run first, then `get_pull_request_diff`, `list_pull_request_commits`, and `list_pull_request_review_metadata` run concurrently through `forge::join` (scoped threads), so opening a PR waits for the slowest of them rather than their sum. The backend must therefore be `Sync` (`create_forge_backend` returns `Box<dyn ForgeBackend + Sync>`), and test fakes record calls through `Mutex` or atomics, not `RefCell` or `Cell`. Each call still paginates sequentially, and errors keep the sequential precedence: a diff error fails the open, while commit and review-metadata failures degrade to empty. GitHub's `get_pull_request_diff` fetches `pulls/N/files` and `gh pr diff` the same way, and a file-list error wins over a patch error.
+
+24. **Gerrit's `/changes/{N}/comments` returns published comments only.** The caller's drafts live at `/changes/{N}/drafts`, with `author` unset. `:submit draft` marks the local copies `PushedDraft`, and the refetch that follows runs `prune_locked_comments`, so a backend that cannot read its drafts back deletes the only copy the TUI had. The Gerrit backend therefore reads `/drafts` too.
 
 ### Keeping Docs Updated
 

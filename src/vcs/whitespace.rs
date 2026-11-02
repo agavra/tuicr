@@ -157,6 +157,7 @@ mod tests {
                 content: content.to_string(),
                 old_lineno: None,
                 new_lineno: Some(new_start),
+                raw_content: None,
                 highlighted_spans: None,
             }],
             old_start,

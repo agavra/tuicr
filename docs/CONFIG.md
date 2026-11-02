@@ -36,6 +36,7 @@ pr_comments_visibility = "unresolved"
 show_commits = true
 show_reviewed = true
 mouse = true
+mouse_scroll_lines = 3
 leader = ","
 editor = "nvim"
 comment_vim = false
@@ -102,6 +103,7 @@ session_header = true
 | `show_commits`             | `true`       | Whether the inline commit selector pane is visible on startup for multi-commit reviews. Toggle with `<leader>s` or `:set commits!`.                        |
 | `show_reviewed`            | `true`       | Whether files already marked reviewed appear in the file tree and the diff. Set `false` to start a session showing only what is left. Toggle with `:set reviewed!`. |
 | `mouse`                    | `true`       | Wheel scrolling, clicks, and drag-to-select.                                                                                                               |
+| `mouse_scroll_lines`       | `3`          | Lines scrolled per mouse wheel tick in the diff, file list, comment list, help, and summary views; the commit list moves its cursor this many rows. Must be between 1 and 100; other values are ignored with a startup warning. |
 | `leader`                   | `;`          | Single-character prefix for panel focus, sidebar toggles, and review-comment shortcuts. Invalid multi-character values are ignored with a startup warning. |
 | `editor`                   | `$EDITOR`    | Editor command for the `e` / `:edit` handoff, split with shell-like quoting rules (e.g. `"code -w"`). Falls back to `$EDITOR`, then `vi`. |
 | `comment_vim`              | `false`      | Vim modal editing in the comment box; toggle at runtime with `:vim`. When off, default emacs/readline bindings.                                            |
@@ -166,6 +168,8 @@ panel_bg = "#011627"
 bg_highlight = "#1d3b53"
 fg_primary = "#c3ccdc"
 fg_secondary = "#a1aab8"
+# Optional: color selection markers independently of focused pane borders.
+selection_marker = "#242d38"
 # `syntax_theme` points to a local `.tmTheme` file, relative to this file.
 syntax_theme = "my-theme.tmTheme"
 
@@ -178,7 +182,7 @@ mode_bg = "#82aaff"
 
 Notes:
 
-- Every listed color key is required.
+- Palette color keys are required, except for the optional `selection_marker`.
 - Color values accept named terminal colors or `#RRGGBB`.
 - `syntax_theme` is optional. When present it must point to a local `.tmTheme` file.
 - Relative `syntax_theme` paths resolve relative to the local theme TOML file. If the local theme TOML file is a symlink and the syntax theme is not beside the symlink, tuicr also looks beside the symlink target.
@@ -194,6 +198,28 @@ mkdir -p ~/.config/tuicr/themes
 cp examples/tuicr-teal.toml examples/tuicr-teal-syntax.tmTheme ~/.config/tuicr/themes/
 tuicr --theme tuicr-teal
 ```
+
+### Selection markers
+
+Local themes can set the optional `selection_marker` color independently of
+`border_focused`, which otherwise colors both diff cursor markers/range bars and
+focused pane borders. Selector arrows also use `selection_marker` when set;
+omitting it preserves each indicator's existing appearance.
+
+For matching marker and highlight colors, set these in your **local theme file**:
+
+```toml
+selection_marker = "#242d38" # optional marker foreground
+cursor_line_bg = "#242d38"   # existing diff cursor-row background
+bg_highlight = "#242d38"     # existing list/visual-selection background
+```
+
+The marker setting does not change row backgrounds, focused pane borders, or
+informational text. PR numbers and commit hashes continue to use `cursor_color`.
+It does not add backgrounds to selected commit-range rows that previously had none.
+Values accept the same named colors or `#RRGGBB` syntax as other theme colors;
+an invalid value rejects the theme. Switching themes uses the new theme's marker
+setting; cancelling a theme preview restores the original setting.
 
 ### Resolution precedence
 

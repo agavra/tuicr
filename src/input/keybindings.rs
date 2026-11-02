@@ -52,6 +52,7 @@ pub enum Action {
     // Visual selection mode
     EnterVisualMode,
     AddRangeComment,
+    AddRangeSuggestion,
 
     // Session
     Quit,
@@ -68,6 +69,10 @@ pub enum Action {
     EnterSearchMode,
     ExitMode,
     ToggleHelp,
+
+    // Screen
+    /// Clear the terminal and repaint every cell on the next frame (`Ctrl-l`).
+    Redraw,
 
     // Text input
     InsertChar(char),
@@ -166,6 +171,19 @@ pub enum Action {
 
     // No-op
     None,
+}
+
+/// Keys that mean the same thing in every input mode.
+///
+/// `main.rs` checks this before any per-mode map, so a binding here also
+/// works while typing a comment, a `:` command, a search, or a filter, and in
+/// the vim comment editor. Anything else maps to `Action::None`.
+pub fn map_global_key(key: KeyEvent) -> Action {
+    match (key.code, key.modifiers) {
+        // Like vim and less. Raw 0x0C reaches crossterm as Char('l') + CONTROL.
+        (KeyCode::Char('l'), KeyModifiers::CONTROL) => Action::Redraw,
+        _ => Action::None,
+    }
 }
 
 pub fn map_key_to_action(key: KeyEvent, mode: InputMode, leader_key: char) -> Action {
@@ -441,6 +459,7 @@ fn map_summary_mode(key: KeyEvent) -> Action {
         (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => Action::CursorDown(1),
         (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => Action::CursorUp(1),
         (KeyCode::Enter, KeyModifiers::NONE) => Action::SubmitInput,
+        (KeyCode::Char('d'), KeyModifiers::NONE) => Action::PendingDCommand,
         (KeyCode::Char('d'), KeyModifiers::CONTROL) => Action::HalfPageDown,
         (KeyCode::Char('u'), KeyModifiers::CONTROL) => Action::HalfPageUp,
         (KeyCode::Char('f'), KeyModifiers::CONTROL) => Action::PageDown,
@@ -624,6 +643,7 @@ fn map_visual_mode_with_q_quits(key: KeyEvent, q_quits: bool) -> Action {
         (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => Action::CursorDown(1),
         (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => Action::CursorUp(1),
         (KeyCode::Char('c'), KeyModifiers::NONE) => Action::AddRangeComment,
+        (KeyCode::Char('s'), KeyModifiers::NONE) => Action::AddRangeSuggestion,
         (KeyCode::Enter, KeyModifiers::NONE) => Action::AddRangeComment,
         (KeyCode::Char('y'), KeyModifiers::NONE) => Action::ExportToClipboard,
         (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
@@ -928,6 +948,68 @@ mod tests {
                 "PR filter {c}"
             );
         }
+    }
+
+    #[test]
+    fn should_map_ctrl_l_to_redraw() {
+        let ctrl_l = KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL);
+        assert_eq!(map_global_key(ctrl_l), Action::Redraw);
+    }
+
+    #[test]
+    fn should_leave_other_l_chords_to_the_mode_maps() {
+        // Plain `l` scrolls right, and AltGr text (CONTROL | ALT) must still
+        // reach the text inputs.
+        assert_eq!(map_global_key(key(KeyCode::Char('l'))), Action::None);
+        assert_eq!(map_global_key(key_shift('L')), Action::None);
+        assert_eq!(
+            map_global_key(KeyEvent::new(
+                KeyCode::Char('l'),
+                KeyModifiers::CONTROL | KeyModifiers::ALT
+            )),
+            Action::None
+        );
+        assert_eq!(
+            map_global_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL)),
+            Action::None
+        );
+    }
+
+    #[test]
+    fn summary_delete_prefix_preserves_scroll_and_navigation() {
+        assert_eq!(
+            map_summary_mode(key(KeyCode::Char('d'))),
+            Action::PendingDCommand
+        );
+        assert_eq!(
+            map_summary_mode(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL)),
+            Action::HalfPageDown
+        );
+        assert_eq!(map_summary_mode(key(KeyCode::Esc)), Action::ExitMode);
+        assert_eq!(
+            map_summary_mode(key(KeyCode::Char('j'))),
+            Action::CursorDown(1)
+        );
+        assert_eq!(map_summary_mode(key(KeyCode::Enter)), Action::SubmitInput);
+    }
+    #[test]
+    fn should_not_bind_ctrl_l_in_any_mode_map() {
+        // `map_global_key` runs first, so a per-mode Ctrl-l binding would be
+        // dead code. Comment mode is left out: its catch-all arm inserts any
+        // modified char, which the global check preempts.
+        let ctrl_l = KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL);
+        assert_eq!(map_normal_mode(ctrl_l, DEFAULT_LEADER_KEY), Action::None);
+        assert_eq!(map_file_tree_mode(ctrl_l, DEFAULT_LEADER_KEY), Action::None);
+        assert_eq!(map_command_mode(ctrl_l), Action::None);
+        assert_eq!(map_search_mode(ctrl_l), Action::None);
+        assert_eq!(map_help_mode(ctrl_l), Action::None);
+        assert_eq!(map_summary_mode(ctrl_l), Action::None);
+        assert_eq!(map_visual_mode(ctrl_l), Action::None);
+        assert_eq!(map_commit_select_mode(ctrl_l), Action::None);
+        assert_eq!(map_file_tree_prompt_mode(ctrl_l), Action::None);
+        assert_eq!(map_target_filter_mode(ctrl_l), Action::None);
+        assert_eq!(map_theme_picker_mode(ctrl_l), Action::None);
+        assert_eq!(map_theme_picker_filter_mode(ctrl_l), Action::None);
     }
 
     #[test]

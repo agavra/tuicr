@@ -74,6 +74,8 @@ pub enum LineOrigin {
 pub struct DiffLine {
     pub origin: LineOrigin,
     pub content: String,
+    /// Original source when display text differs (for example, expanded tabs).
+    pub raw_content: Option<String>,
     pub old_lineno: Option<u32>,
     pub new_lineno: Option<u32>,
     /// Optional syntax-highlighted spans for this line

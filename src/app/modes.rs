@@ -53,6 +53,19 @@ impl App {
         expired
     }
 
+    /// Ask for the next frame to repaint every cell. ratatui only writes the
+    /// cells that differ from its last frame, so this is what fixes a screen
+    /// the terminal has garbled behind tuicr's back.
+    pub fn request_full_redraw(&mut self) {
+        self.full_redraw_pending = true;
+    }
+
+    /// Returns `true`, once, if a full redraw was requested since the last
+    /// call. The main loop calls this before each draw.
+    pub fn take_full_redraw(&mut self) -> bool {
+        std::mem::take(&mut self.full_redraw_pending)
+    }
+
     pub fn enter_command_mode(&mut self) {
         self.command_return_mode = self.input_mode;
         self.input_mode = InputMode::Command;
@@ -147,6 +160,7 @@ impl App {
         self.summary_state.scroll_offset = 0;
         self.summary_state.comment_ranges.clear();
         self.summary_state.targets.clear();
+        self.summary_state.comment_ids.clear();
         self.summary_state.selection_needs_scroll = true;
     }
 
@@ -154,6 +168,7 @@ impl App {
         self.input_mode = InputMode::Normal;
         self.summary_state.comment_ranges.clear();
         self.summary_state.targets.clear();
+        self.summary_state.comment_ids.clear();
         self.summary_state.selection_needs_scroll = false;
     }
 
@@ -161,14 +176,17 @@ impl App {
         &mut self,
         comment_ranges: Vec<(usize, usize)>,
         targets: Vec<Option<SummaryCommentTarget>>,
+        comment_ids: Vec<String>,
         total_lines: usize,
         viewport_height: usize,
     ) {
         debug_assert_eq!(comment_ranges.len(), targets.len());
+        debug_assert_eq!(comment_ranges.len(), comment_ids.len());
         let layout_changed = self.summary_state.comment_ranges != comment_ranges
             || self.summary_state.viewport_height != viewport_height;
         self.summary_state.comment_ranges = comment_ranges;
         self.summary_state.targets = targets;
+        self.summary_state.comment_ids = comment_ids;
         self.summary_state.total_lines = total_lines;
         self.summary_state.viewport_height = viewport_height;
 

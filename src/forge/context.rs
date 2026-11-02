@@ -242,6 +242,7 @@ mod tests {
             content: text.to_string(),
             old_lineno: Some(1),
             new_lineno: Some(1),
+            raw_content: None,
             highlighted_spans: None,
         }
     }

@@ -54,6 +54,7 @@ fn diff_file_with_marker_bg(path: &str, marker_bg: Color) -> DiffFile {
             content: "let x = 1;".to_string(),
             old_lineno: None,
             new_lineno: Some(1),
+            raw_content: None,
             highlighted_spans: Some(vec![(
                 Style::default().bg(marker_bg),
                 "let x = 1;".to_string(),
@@ -462,4 +463,24 @@ fn confirm_rehighlights_every_loaded_file_not_just_the_visible_one() {
 
     assert_eq!(addition_bg(&app.diff_files[0]), Some(chosen_syntax_add_bg));
     assert_eq!(addition_bg(&app.diff_files[1]), Some(chosen_syntax_add_bg));
+}
+
+#[test]
+fn selection_marker_follows_the_theme_and_cancel_restores_it() {
+    let mut app = app();
+    let marker = Color::Rgb(36, 45, 56);
+    app.theme.selection_marker = Some(marker);
+    app.enter_theme_picker_mode();
+    app.move_theme_picker_selection(1); // light has no marker override
+    assert_eq!(app.theme.selection_marker, None);
+    app.cancel_theme_picker();
+    assert_eq!(app.theme.selection_marker, Some(marker));
+
+    app.enter_theme_picker_mode();
+    app.move_theme_picker_selection(1);
+    app.confirm_theme_picker();
+    assert_eq!(app.theme.selection_marker, None);
+    app.theme.selection_marker = Some(marker);
+    app.apply_theme("github-dark");
+    assert_eq!(app.theme.selection_marker, None);
 }

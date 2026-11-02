@@ -27,6 +27,12 @@ Full reference. Press `?` inside tuicr for an in-app version of this list.
 | `zt` | Scroll cursor to top of screen |
 | `zz` | Center cursor on screen |
 | `zb` | Scroll cursor to bottom of screen |
+| `Ctrl-l` | Clear and redraw the whole screen |
+
+`Ctrl-l` works in every mode, including while typing a comment, a `:` command or
+a search. Use it when the terminal leaves stale text on screen, for example after
+a font size change in a window that wasn't visible. tuicr also redraws in full
+whenever the terminal reports a resize.
 
 ## Diff search
 
@@ -179,7 +185,13 @@ from the checkout, never copied.
 |-----|--------|
 | `j` / `k` | Extend selection down / up |
 | `c` / `Enter` | Create comment for selected range |
+| `s` | Start an editable suggestion prefilled with the selected code lines |
 | `Esc` / `v` / `V` | Cancel selection |
+
+Suggestions replace whole lines on the new side of a single diff hunk. Selections
+across gaps (including deleted-only rows) or expanded context are rejected.
+Unchanged context between added code blocks is included in the suggestion.
+GitLab suggestions can include at most 100 lines above the final selected line.
 
 ## Comment mode
 
@@ -224,7 +236,7 @@ In command mode,
 | `:edit` | Open focused file in `$EDITOR` |
 | `:clip` (`:export`) | Copy review to clipboard |
 | `:copy-url` | Copy the open PR URL to clipboard (PR mode) |
-| `:summary` | Show all pending local-draft comments; `j`/`k` select and `Enter` jumps |
+| `:summary` | Show all pending local-draft comments; `j`/`k` select, `dd` deletes, and `Enter` jumps |
 | `:diff` | Toggle diff view (unified / side-by-side) |
 | `:theme` | Open the runtime theme picker (live preview; `/` filters, `Enter` applies and saves, `Esc` reverts) |
 | `:theme <name>` | Apply and save `<name>` directly, without opening the picker |
@@ -274,6 +286,9 @@ or previous comment; the view scrolls automatically to keep the selection visibl
 to the continuous diff and jumps to the selected comment, leaving single-file view if necessary,
 while `Esc` returns without jumping. Reviewed files and hunks are revealed for the jump without
 losing their reviewed state.
+Press `dd` to delete the selected local draft, including comments whose original file or line
+is absent from the current diff. Other comments are kept. Return with `Esc` and use `:w` to
+save the deletion, following the existing diff-view deletion workflow.
 
 The theme picker lists every bundled theme plus any local `*.toml` themes in the theme directory.
 `j`/`k` move the selection and immediately repaint the UI with that theme (live preview) without

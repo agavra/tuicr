@@ -2295,6 +2295,7 @@ mod remote_comments_side_by_side_snapshot_tests {
                 content: "first".to_string(),
                 old_lineno: Some(1),
                 new_lineno: Some(1),
+                raw_content: None,
                 highlighted_spans: None,
             },
             DiffLine {
@@ -2302,6 +2303,7 @@ mod remote_comments_side_by_side_snapshot_tests {
                 content: "second".to_string(),
                 old_lineno: None,
                 new_lineno: Some(2),
+                raw_content: None,
                 highlighted_spans: None,
             },
         ];
@@ -2339,9 +2341,8 @@ mod remote_comments_side_by_side_snapshot_tests {
                 id: "C".to_string(),
                 author: Some("alice".to_string()),
                 body: "sbs hello".to_string(),
-                created_at: None,
-                in_reply_to: None,
                 url: "https://example.com".to_string(),
+                ..Default::default()
             }],
         }
     }
@@ -2432,6 +2433,7 @@ mod remote_comments_side_by_side_snapshot_tests {
                 content: format!("line {n}"),
                 old_lineno: None,
                 new_lineno: Some(n),
+                raw_content: None,
                 highlighted_spans: None,
             })
             .collect();
@@ -2524,6 +2526,7 @@ mod remote_comments_side_by_side_snapshot_tests {
                 content: left.to_string(),
                 old_lineno: Some(1),
                 new_lineno: None,
+                raw_content: None,
                 highlighted_spans: None,
             },
             DiffLine {
@@ -2531,6 +2534,7 @@ mod remote_comments_side_by_side_snapshot_tests {
                 content: right.to_string(),
                 old_lineno: None,
                 new_lineno: Some(1),
+                raw_content: None,
                 highlighted_spans: None,
             },
         ];
@@ -2561,6 +2565,7 @@ mod remote_comments_side_by_side_snapshot_tests {
             content: left.to_string(),
             old_lineno: Some(1),
             new_lineno: None,
+            raw_content: None,
             highlighted_spans: None,
         }];
         let hunks = vec![DiffHunk {
@@ -2782,6 +2787,7 @@ mod remote_comments_side_by_side_snapshot_tests {
                 content: line.to_string(),
                 old_lineno: None,
                 new_lineno: Some(i as u32 + 1),
+                raw_content: None,
                 highlighted_spans: None,
             })
             .collect();
@@ -2846,6 +2852,7 @@ mod remote_comments_side_by_side_snapshot_tests {
                 content: format!("line {i} {}", "x".repeat(200)),
                 old_lineno: None,
                 new_lineno: Some(i),
+                raw_content: None,
                 highlighted_spans: None,
             })
             .collect();
@@ -2895,6 +2902,7 @@ mod remote_comments_side_by_side_snapshot_tests {
             content: content.to_string(),
             old_lineno,
             new_lineno,
+            raw_content: None,
             highlighted_spans: None,
         };
         let lines = vec![

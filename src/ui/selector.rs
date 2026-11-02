@@ -257,7 +257,7 @@ fn overflow_row<'a>(theme: &crate::theme::Theme, is_cursor: bool, label: &'a str
         "  ".to_string()
     };
     Line::from(vec![
-        Span::styled(pointer, style),
+        Span::styled(pointer, styles::selection_marker_style(theme, style)),
         Span::styled(format!("    \u{2026} {label}"), style),
     ])
 }
@@ -348,7 +348,10 @@ fn render_sessions_tab(frame: &mut Frame, app: &mut App, area: Rect) {
         let active = if row.active { " \u{00b7} open" } else { "" };
 
         lines.push(Line::from(vec![
-            Span::styled(pointer_str, pointer_style),
+            Span::styled(
+                pointer_str,
+                styles::selection_marker_style(theme, pointer_style),
+            ),
             Span::styled("  ", Style::default()),
             Span::styled(kind, styles::hash_style(theme)),
             Span::styled(" ", Style::default()),
@@ -448,7 +451,10 @@ fn render_pr_list(frame: &mut Frame, app: &App, area: Rect, view: &PrTabView<'_>
         let draft = if row.summary.is_draft { " [draft]" } else { "" };
 
         lines.push(Line::from(vec![
-            Span::styled(pointer_str, pointer_style),
+            Span::styled(
+                pointer_str,
+                styles::selection_marker_style(theme, pointer_style),
+            ),
             Span::styled("  ", Style::default()),
             Span::styled(number, styles::hash_style(theme)),
             Span::styled(" ", Style::default()),
@@ -882,6 +888,62 @@ mod selector_render_snapshot_tests {
         assert!(any_bold_in_range(&buffer, TAB_STRIP_ROW, lo, hi));
         let (lo, hi) = locate(&buffer, TAB_STRIP_ROW, "Local");
         assert!(!any_bold_in_range(&buffer, TAB_STRIP_ROW, lo, hi));
+    }
+
+    #[test]
+    fn selection_marker_leaves_commit_hashes_and_pr_numbers_on_theme_accent() {
+        use ratatui::style::Color;
+        let matching = Color::Rgb(36, 45, 56);
+        let mut app = make_app(vec![commit(0), commit(1)]);
+        app.theme = Theme::github_dark();
+        app.theme.selection_marker = Some(matching);
+        app.theme.bg_highlight = matching;
+        app.commit_selection_range = Some((0, 1));
+        app.review_commits = app.commit_list.clone();
+        for buffer in [draw(&mut app), draw_inline_at(&mut app, 120)] {
+            for hash in ["abc0", "abc1"] {
+                let y = (0..buffer.area.height)
+                    .find(|&y| row_text(&buffer, y).contains(hash))
+                    .unwrap();
+                let x = (0..buffer.area.width)
+                    .find(|&x| buffer[(x, y)].symbol() == "a")
+                    .unwrap();
+                assert_eq!(buffer[(x, y)].fg, app.theme.cursor_color);
+                let bar = (0..buffer.area.width)
+                    .find(|&x| buffer[(x, y)].symbol() == "▌")
+                    .unwrap();
+                assert_eq!(buffer[(bar, y)].fg, matching);
+            }
+            let pointer = buffer
+                .content
+                .iter()
+                .find(|cell| cell.symbol() == "▸")
+                .unwrap();
+            assert_eq!(pointer.fg, matching);
+            assert_eq!(pointer.bg, matching);
+        }
+
+        app.forge_repository = Some(repo());
+        let mut tab = PullRequestsTab::new(Some(repo()));
+        tab.start_initial_load();
+        tab.apply_initial_load(Ok((vec![pr(148, "Review selection", "alice")], false)));
+        app.pr_tab = tab;
+        app.target_tab = crate::app::TargetTab::PullRequests;
+        let buffer = draw(&mut app);
+        let number = buffer
+            .content
+            .iter()
+            .find(|cell| cell.symbol() == "#")
+            .unwrap();
+        assert_eq!(number.fg, app.theme.cursor_color);
+        assert_ne!(number.fg, matching);
+        let pointer = buffer
+            .content
+            .iter()
+            .find(|cell| cell.symbol() == "▸")
+            .unwrap();
+        assert_eq!(pointer.fg, matching);
+        assert_eq!(pointer.bg, matching);
     }
 
     #[test]

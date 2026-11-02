@@ -460,6 +460,44 @@ fn should_point_pristine_sessions_at_the_flag_that_opens_them() {
 }
 
 #[test]
+fn should_point_file_sessions_at_the_flag_without_replacing_the_current_review() {
+    let _reviews = TestReviewsDir::new();
+    let (mut app, calls) = build_app(vec![commit("ccc")]);
+    let current_session = serde_json::to_value(&app.session).unwrap();
+    stage_session(
+        &mut app,
+        ReviewSession::new(
+            PathBuf::from("/tmp"),
+            "abcdef0123456789".to_string(),
+            None,
+            SessionDiffSource::File,
+        ),
+    );
+    assert!(app.message.is_none());
+    assert_eq!(app.session.diff_source, SessionDiffSource::WorkingTree);
+    assert!(app.diff_files.is_empty());
+
+    app.sessions_tab_select().expect("select should not error");
+
+    assert!(
+        app.message
+            .as_ref()
+            .is_some_and(|m| m.content.contains("--file <path>")),
+        "expected file reopening guidance, got {:?}",
+        app.message
+    );
+    assert_eq!(serde_json::to_value(&app.session).unwrap(), current_session);
+    assert!(app.diff_files.is_empty());
+    assert!(matches!(app.diff_source, DiffSource::WorkingTree));
+    let calls = calls.lock().unwrap();
+    assert_eq!(
+        (calls.working_tree, calls.staged, calls.unstaged),
+        (0, 0, 0)
+    );
+    assert!(calls.range_ids.is_none());
+}
+
+#[test]
 fn should_hide_sessions_with_no_review_progress() {
     // an empty session, as a crashed TUI leaves behind, beside one
     // holding comments and one holding reviewed state

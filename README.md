@@ -107,6 +107,8 @@ the view scrolls automatically to keep it visible. Press `Enter` to jump to the 
 in the continuous diff, leaving single-file view if necessary, or `Esc` to return to the diff. If
 its file or hunk is already marked reviewed, tuicr reveals the target without clearing that
 reviewed state.
+Press `dd` to delete the selected local draft, even if its original line or file is absent from
+this diff. Return with `Esc` and use `:w` to save the deletion, as with diff-view deletion.
 Auto-detects git, jj, or mercurial. SHA-256 Git repositories automatically use the Git CLI backend,
 including when reviewing root commits; ordinary SHA-1 repositories still default to libgit2.
 
@@ -195,7 +197,8 @@ unified-diff API, so the diff is built with `git diff base...head`. See
 `:submit` offers Comment, Approve, Request changes, or Draft on a Gerrit change. Inline comments
 post as Gerrit comments (multi-line ranges included) and the review-level comment becomes the
 change message; Approve votes `Code-Review +2` and Request changes votes `-1`. Draft keeps
-everything as Gerrit draft comments so you can publish from the web UI. Auth is your Gerrit HTTP
+everything as Gerrit draft comments so you can publish from the web UI; tuicr keeps showing them,
+marked `draft`. Auth is your Gerrit HTTP
 password in `GERRIT_USERNAME` / `GERRIT_PASSWORD`. Run tuicr from a local clone — the diff is
 built with `git diff base..head` after fetching the change's patch-set ref. See
 [docs/GERRIT.md](docs/GERRIT.md) for setup, detection of self-hosted hosts, and limitations.
@@ -215,7 +218,7 @@ I reviewed your code and have the following comments. Please address them.
 
 Paste it back to any coding agent (Claude, Codex, Cursor, etc).
 
-For an agent-driven workflow where your agent opens tuicr in a cmux, tmux, Zellij, or
+For an agent-driven workflow where your agent opens tuicr in a cmux, Rex, tmux, Zellij, or
 Herdr split pane, see [skills/tuicr/SKILL.md](skills/tuicr/SKILL.md).
 
 ### To stdout
@@ -329,6 +332,7 @@ A first-session cheatsheet. Press `?` inside tuicr for the full reference.
 | `I` / `E` (file tree) | Clear the include / exclude filter |
 | `c` / `C` | Add line / file comment |
 | `v` / `V` | Visual mode (range comment) |
+| `s` (visual mode) | Suggest changes to the selected code lines |
 | `r` | Toggle file reviewed |
 | `R` | Toggle hunk reviewed |
 | `e` | Open focused file in `$EDITOR` (in PR review: the PR's revision, as a read-only copy when the checkout differs) |
@@ -337,6 +341,7 @@ A first-session cheatsheet. Press `?` inside tuicr for the full reference.
 | `:submit` | Push review to GitHub, GitLab, Heptapod, Gitea, Bitbucket, Azure DevOps, or Gerrit |
 | `:theme` | Open a live-preview theme picker (`/` to filter); `:theme <name>` applies directly. Session-only; set `theme` in `config.toml` to keep it |
 | `Tab` in `:` prompt | Complete or cycle commands |
+| `Ctrl-l` | Redraw the whole screen |
 | `?` | Toggle full help |
 
 While composing a comment in the default editor, `↑` / `↓` move one displayed row,

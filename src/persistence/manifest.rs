@@ -263,6 +263,7 @@ pub fn diff_source_label(diff_source: SessionDiffSource) -> &'static str {
         SessionDiffSource::Staged => "staged",
         SessionDiffSource::Unstaged => "unstaged",
         SessionDiffSource::StagedAndUnstaged => "staged-and-unstaged",
+        SessionDiffSource::File => "file",
         SessionDiffSource::CommitRange => "commits",
         SessionDiffSource::WorkingTreeAndCommits => "worktree-and-commits",
         SessionDiffSource::StagedUnstagedAndCommits => "staged-and-unstaged-and-commits",

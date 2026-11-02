@@ -113,8 +113,16 @@ pub fn file_status_style(theme: &Theme, status: char) -> Style {
     Style::default().fg(color)
 }
 
+/// Override only the marker foreground, preserving the caller's legacy style.
+pub fn selection_marker_style(theme: &Theme, fallback: Style) -> Style {
+    match theme.selection_marker {
+        Some(color) => fallback.fg(color),
+        None => fallback,
+    }
+}
+
 pub fn current_line_indicator_style(theme: &Theme) -> Style {
-    Style::default().fg(theme.border_focused)
+    selection_marker_style(theme, Style::default().fg(theme.border_focused))
 }
 
 pub fn hash_style(theme: &Theme) -> Style {
@@ -199,7 +207,7 @@ pub fn help_indicator_style(theme: &Theme) -> Style {
 }
 
 pub fn range_bar_style(theme: &Theme) -> Style {
-    Style::default().fg(theme.border_focused)
+    current_line_indicator_style(theme)
 }
 
 pub fn error_inline_style(theme: &Theme) -> Style {
@@ -210,4 +218,50 @@ pub fn error_inline_style(theme: &Theme) -> Style {
 
 pub fn pseudo_commit_tag_style(theme: &Theme) -> Style {
     Style::default().fg(theme.file_modified)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn selection_marker_changes_only_marker_foregrounds() {
+        let mut theme = Theme::github_dark();
+        let legacy_pointer = selected_style(&theme);
+        assert_eq!(
+            selection_marker_style(&theme, legacy_pointer),
+            legacy_pointer
+        );
+        assert_eq!(
+            current_line_indicator_style(&theme).fg,
+            Some(theme.border_focused)
+        );
+        assert_eq!(range_bar_style(&theme).fg, Some(theme.border_focused));
+        let unchanged = (
+            border_style(&theme, true),
+            hash_style(&theme),
+            selected_style(&theme),
+            visual_selection_style(&theme),
+        );
+
+        theme.selection_marker = Some(Color::Rgb(36, 45, 56));
+        assert_eq!(
+            current_line_indicator_style(&theme).fg,
+            theme.selection_marker
+        );
+        assert_eq!(range_bar_style(&theme).fg, theme.selection_marker);
+        assert_eq!(
+            selection_marker_style(&theme, legacy_pointer).bg,
+            legacy_pointer.bg
+        );
+        assert_eq!(
+            unchanged,
+            (
+                border_style(&theme, true),
+                hash_style(&theme),
+                selected_style(&theme),
+                visual_selection_style(&theme)
+            )
+        );
+    }
 }

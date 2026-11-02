@@ -46,7 +46,7 @@ fn create_forge_backend(
     local_checkout: Option<PathBuf>,
     show_pr_checks: bool,
     show_pr_comments: bool,
-) -> Box<dyn ForgeBackend> {
+) -> Box<dyn ForgeBackend + Sync> {
     use crate::forge::traits::ForgeKind;
     match repo.kind {
         ForgeKind::GitHub => {
@@ -1353,6 +1353,10 @@ pub struct App {
     pub show_pr_comments: bool,
 
     pub should_quit: bool,
+    /// Set by `Ctrl-l` or a terminal resize. The main loop takes it before the
+    /// next draw and clears the screen, so ratatui repaints every cell instead
+    /// of only the ones that changed since the last frame.
+    full_redraw_pending: bool,
     pub dirty: bool,
     pub quit_warned: bool,
     pub message: Option<Message>,
@@ -1392,8 +1396,8 @@ pub struct App {
     /// flags are true so held-key auto-repeat (Press, Repeat, Repeat...)
     /// never satisfies the gate. Only meaningful on terminals that
     /// support kitty `REPORT_EVENT_TYPES`; on others Release events are
-    /// never emitted and the gate is bypassed via
-    /// `supports_keyboard_enhancement`.
+    /// never emitted, so the walk is off and j/k stop at the file's edges
+    /// (see `supports_keyboard_enhancement` in `cursor_down`).
     pub down_released_since_arm: bool,
     /// Symmetric inverse of [`down_released_since_arm`] for the prev-file
     /// walk gate.
@@ -1401,6 +1405,9 @@ pub struct App {
     pub cursor_line_highlight: bool,
     pub leader_key: char,
     pub scroll_offset: usize,
+    /// Lines scrolled per vertical mouse wheel tick (config
+    /// `mouse_scroll_lines`, default 3).
+    pub mouse_scroll_lines: usize,
     pub file_list_area: Option<ratatui::layout::Rect>,
     pub comment_navigator_area: Option<ratatui::layout::Rect>,
     pub diff_area: Option<ratatui::layout::Rect>,
@@ -1842,6 +1849,8 @@ pub struct SummaryState {
     pub total_lines: usize, // Set during render
     /// Exclusive rendered-line ranges for each pending comment.
     pub comment_ranges: Vec<(usize, usize)>,
+    /// Stable deletion identities, including comments without a jump target.
+    pub comment_ids: Vec<String>,
     /// Stable jump targets in the same order as `comment_ranges`.
     /// A target is absent when the comment is hidden by the current diff,
     /// commit selection, or file-tree filters.

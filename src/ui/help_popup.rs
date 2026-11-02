@@ -76,6 +76,17 @@ fn leader_display(leader: char) -> char {
     }
 }
 
+/// Single-file view help for `j`/`k` at a file's edge. The release-gated walk
+/// to the next file only runs where the terminal reports key releases, so the
+/// help mentions it only there.
+fn single_file_edge_help(supports_keyboard_enhancement: bool) -> &'static str {
+    if supports_keyboard_enhancement {
+        "  j/k stop at the file's edges. Release and press again to walk on."
+    } else {
+        "  j/k stop at the file's edges."
+    }
+}
+
 const COMMENT_MODE_KEY_WIDTH: usize = "Shift-Enter/Alt-Enter/Ctrl-J".len();
 
 fn comment_mode_row(key: &str, description: &str) -> Line<'static> {
@@ -143,6 +154,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("Full page down/up"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  Ctrl-l    ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Redraw the whole screen (works in every mode)"),
         ]),
         Line::from(vec![
             Span::styled(
@@ -288,8 +306,11 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         )),
         Line::from(""),
         Line::from(Span::raw(
-            "  One file at a time. j/k walks across files, ]/[ walks across hunks. Default in `--all-files`.",
+            "  One file at a time. }/{ switch files, ]/[ walk across hunks. Default in `--all-files`.",
         )),
+        Line::from(Span::raw(single_file_edge_help(
+            app.supports_keyboard_enhancement,
+        ))),
         Line::from(""),
         Line::from(Span::styled(
             "Commit Selector (multi-commit reviews)",
@@ -623,6 +644,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  s         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Suggest changes to selected code"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  Esc/v/V   ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
@@ -741,7 +769,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  :summary  ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Pending comments; j/k select, Enter jumps"),
+            Span::raw("Pending comments; j/k select, dd delete, Enter jumps"),
         ]),
         Line::from(vec![
             Span::styled(
@@ -1071,6 +1099,29 @@ mod tests {
         let displayed = leader_display(leader);
         // then
         assert_eq!(displayed.width(), Some(1));
+    }
+
+    #[test]
+    fn should_mention_the_walk_to_the_next_file_when_key_releases_are_reported() {
+        // given
+        let supports_keyboard_enhancement = true;
+        // when
+        let help = single_file_edge_help(supports_keyboard_enhancement);
+        // then
+        assert_eq!(
+            help,
+            "  j/k stop at the file's edges. Release and press again to walk on."
+        );
+    }
+
+    #[test]
+    fn should_not_mention_the_walk_when_key_releases_are_not_reported() {
+        // given
+        let supports_keyboard_enhancement = false;
+        // when
+        let help = single_file_edge_help(supports_keyboard_enhancement);
+        // then
+        assert_eq!(help, "  j/k stop at the file's edges.");
     }
 
     #[test]

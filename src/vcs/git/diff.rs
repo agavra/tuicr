@@ -267,7 +267,8 @@ fn get_working_tree_with_commits_diff_once(
     highlighter: &SyntaxHighlighter,
 ) -> Result<Vec<DiffFile>> {
     if commit_ids.is_empty() {
-        return Err(TuicrError::NoChanges);
+        // An empty revision range still has a meaningful working-tree diff.
+        return get_working_tree_diff_once(repo, comparison, highlighter);
     }
 
     let oldest_id = git2::Oid::from_str(&commit_ids[0])?;
@@ -406,7 +407,7 @@ fn parse_hunks(
                 };
 
                 let raw = String::from_utf8_lossy(line.content());
-                let content = tabify(raw.trim_end_matches(['\n', '\r']));
+                let content = raw.trim_end_matches(['\n', '\r']).to_string();
 
                 line_contents.push(content);
                 line_origins.push(origin);
@@ -420,7 +421,8 @@ fn parse_hunks(
 
                 lines.push(DiffLine {
                     origin,
-                    content,
+                    raw_content: content.contains('\t').then(|| content.clone()),
+                    content: tabify(&content),
                     old_lineno,
                     new_lineno,
                     highlighted_spans: None,
@@ -486,6 +488,38 @@ mod tests {
     }
 
     #[test]
+    fn empty_commit_range_still_returns_working_tree_changes() {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let repo = Repository::init(temp_dir.path()).expect("failed to init repo");
+        create_initial_commit(&repo, "fixture.txt", "base\n");
+        fs::write(
+            temp_dir.path().join("fixture.txt"),
+            "synthetic working-tree edit\n",
+        )
+        .expect("failed to update synthetic fixture");
+        let range = crate::vcs::git::repository::resolve_revision_range(&repo, "HEAD..HEAD")
+            .expect("empty synthetic commit range should resolve");
+        assert!(range.commit_ids.is_empty());
+
+        let files = get_working_tree_with_commits_diff(
+            &repo,
+            &range.commit_ids,
+            &DiffWhitespaceMode::Normal,
+            &SyntaxHighlighter::default(),
+        )
+        .expect("an empty commit range must still show working-tree changes");
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].display_path(), Path::new("fixture.txt"));
+        assert!(
+            files[0].hunks[0]
+                .lines
+                .iter()
+                .any(|line| line.content == "synthetic working-tree edit")
+        );
+    }
+
+    #[test]
     fn should_expand_tabs_to_spaces_in_git_hunks() {
         let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
         let repo = Repository::init(temp_dir.path()).expect("failed to init repo");
@@ -517,6 +551,11 @@ mod tests {
             "expected tab-expanded content in git diff lines"
         );
         assert!(lines.iter().all(|l| !l.content.contains('\t')));
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.raw_content.as_deref() == Some("\tnew"))
+        );
     }
 
     #[test]

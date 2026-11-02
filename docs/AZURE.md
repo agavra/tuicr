@@ -36,6 +36,28 @@ Alternatively, if your tenant allows AAD access, just install the
 [Azure CLI](https://learn.microsoft.com/en-us/cli/azure/install-azure-cli) and run
 `az login` — no PAT needed.
 
+## Azure DevOps Server / TFS (self-hosted)
+
+An on-premises server has no reserved hostname, so tuicr only recognizes it when you name
+it. Set `AZURE_DEVOPS_SERVER_URL` to the server's host (a bare host or any URL form works;
+only the hostname is used) and use a PAT — `az` AAD tokens are not accepted on-prem:
+
+```bash
+export AZURE_DEVOPS_SERVER_URL=https://tfs.example.com
+export AZURE_DEVOPS_EXT_PAT=xxxxxxxx...
+```
+
+Remotes like `https://tfs.example.com/DefaultCollection/Project/_git/repo` and
+`ssh://tfs.example.com/DefaultCollection/Project/_git/repo` are then detected, and PRs
+open by id or full URL as shown below. The collection stays in the API path
+(`https://host/{collection}/{project}/_apis/...`) and requests use `api-version=7.1`, so
+the server must be Azure DevOps Server 2022.1 or newer. The API is always called over
+HTTPS on the default port.
+
+Under a virtual directory, use an explicit project path, for example
+`https://tfs.example.com/tfs/Collection/Project/_git/repo`. Default-repository
+shorthand (`/tfs/Collection/_git/Project`) is ambiguous and is not supported.
+
 ## Reviewing a PR
 
 Run tuicr from inside a **local clone** of the Azure repo (see the diff note below), then:
@@ -65,7 +87,9 @@ threads. `az`/system threads (pushes, policy, votes) are filtered out.
 Azure DevOps exposes no single "unified diff" endpoint, so tuicr builds the PR diff from a
 local clone with `git diff <base>...<head>`. Run tuicr from a checkout of the repo, and make
 sure the PR's base and source commits are fetched (`git fetch origin`). If they aren't
-present locally, tuicr will tell you to fetch and retry.
+present locally, tuicr will tell you to fetch and retry. Neither cloud nor self-hosted
+Azure adds an explicit fetch step when opening or refreshing a PR. Git's existing
+partial-clone lazy-fetch behavior is unchanged.
 
 File content for context expansion is read from the local clone first, falling back to the
 REST API when a revision isn't present locally.
@@ -77,8 +101,9 @@ This is the first Azure DevOps slice. Not yet supported:
 - **Commit-subrange selection** requires both commits to be present in the local clone.
 - **Draft reviews** — Azure DevOps has no draft-review primitive, so `:submit draft` behaves
   like Comment and posts immediately.
-- **Azure DevOps Server (on-prem)** — only the cloud (`dev.azure.com` / `*.visualstudio.com`)
-  is targeted.
+- **Older on-premises servers** — REST API 7.1 requires Azure DevOps Server 2022.1
+  or newer. API requests use HTTPS on the default port; custom API ports and
+  HTTP-only servers are not supported.
 
 ## Troubleshooting
 

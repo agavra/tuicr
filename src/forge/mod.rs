@@ -39,6 +39,30 @@ use crate::forge::heptapod::parse::{
 use crate::forge::traits::{ForgeRepository, PullRequestTarget};
 use crate::vcs::VcsBackend;
 
+/// Run two independent forge requests at the same time and return both
+/// results in argument order.
+///
+/// `first` runs on the calling thread and `second` on a scoped thread, so a
+/// call costs the slower of the two round trips instead of their sum. Both
+/// always run to completion; callers decide which error wins, which keeps
+/// error reporting as deterministic as the sequential code it replaces. A
+/// panic in `second` is re-raised on the calling thread once `first` returns.
+pub(crate) fn join<A, B, RA, RB>(first: A, second: B) -> (RA, RB)
+where
+    A: FnOnce() -> RA,
+    B: FnOnce() -> RB + Send,
+    RB: Send,
+{
+    std::thread::scope(|scope| {
+        let second = scope.spawn(second);
+        let first = first();
+        let second = second
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+        (first, second)
+    })
+}
+
 /// Return `Some(sha)` for `git merge-base <base> <head>` when both commits
 /// are present in the checkout at `repo_root`.
 ///
@@ -181,18 +205,20 @@ pub fn detect_azure_repository(repo_root: &Path) -> Option<ForgeRepository> {
 /// Parse `url` as a forge remote repository.
 ///
 /// Order matters. Bitbucket and GitLab both gate on the hostname, so trying
+/// Order matters. Bitbucket and GitLab both gate on the hostname, so trying
 /// them first won't claim GitHub Enterprise remotes. Heptapod follows: it
 /// speaks GitLab's API and URL grammar, so it must come before GitLab or
 /// every Heptapod remote would be tagged as GitLab and lose the Mercurial
-/// local-checkout routing. Azure next — its parser filters to
-/// `dev.azure.com` / `*.visualstudio.com` hosts. Gitea then, which recognizes
-/// its own public hosts by name and self-hosted ones through the logins
-/// configured in `tea`. Gerrit follows: it is always self-hosted, so it gates
-/// on the canonical SSH port `29418`, a configured `GERRIT_URL`, or a hostname
-/// containing "gerrit". GitHub must stay last because its parser accepts any
-/// host (covers github.com and GHE hosts whose hostname does not literally
-/// contain "github") — it would otherwise swallow every Bitbucket, self-hosted
-/// GitLab, Heptapod, Gitea, Azure, and Gerrit remote.
+/// local-checkout routing. Azure next — its parser accepts cloud hosts and
+/// the self-hosted hostname explicitly configured via
+/// `AZURE_DEVOPS_SERVER_URL`. Gitea then, which recognizes its own public
+/// hosts by name and self-hosted ones through the logins configured in
+/// `tea`. Gerrit follows: it is always self-hosted, so it gates on the
+/// canonical SSH port `29418`, a configured `GERRIT_URL`, or a hostname
+/// containing "gerrit". GitHub must stay last because its parser accepts
+/// *any* host (covers github.com and GHE hosts whose hostname does not
+/// literally contain "github") — it would otherwise swallow every Bitbucket,
+/// self-hosted GitLab, Heptapod, Gitea, Azure, and Gerrit remote.
 pub fn parse_any_remote_url(url: &str) -> Option<ForgeRepository> {
     parse_bitbucket_remote_url(url)
         .or_else(|| parse_heptapod_remote_url(url))
@@ -301,6 +327,18 @@ pub fn local_checkout_for_repo(root: &Path, target_repo: &ForgeRepository) -> Op
 mod tests {
     use super::*;
     use crate::forge::traits::ForgeKind;
+
+    #[test]
+    fn join_returns_both_results_in_argument_order() {
+        let (first, second) = join(|| "first", || 2);
+        assert_eq!((first, second), ("first", 2));
+    }
+
+    #[test]
+    #[should_panic(expected = "second failed")]
+    fn join_re_raises_a_panic_from_the_spawned_side() {
+        join(|| (), || -> () { panic!("second failed") });
+    }
 
     fn init_repo_with_origin(url: &str) -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("tempdir");

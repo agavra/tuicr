@@ -35,11 +35,19 @@ impl App {
 
         // --file mode: open a single file for annotation without VCS
         if let Some(file_path) = options.file_path {
-            let vcs = Box::new(FileBackend::new(file_path)?);
+            let file_backend = FileBackend::new(file_path)?;
+            let session_source = match file_backend.mode() {
+                crate::vcs::file::FileMode::Single => SessionDiffSource::File,
+                crate::vcs::file::FileMode::Directory => SessionDiffSource::WorkingTree,
+                crate::vcs::file::FileMode::Pristine => {
+                    unreachable!("--file does not construct pristine mode")
+                }
+            };
+            let vcs = Box::new(file_backend);
             let vcs_info = vcs.info().clone();
             let highlighter = theme.syntax_highlighter();
             let diff_files = vcs.get_working_tree_diff(highlighter)?;
-            let session = Self::load_or_create_session(&vcs_info, SessionDiffSource::WorkingTree);
+            let session = Self::load_or_create_session(&vcs_info, session_source);
 
             let mut app = Self::build(
                 vcs,
@@ -159,6 +167,42 @@ impl App {
                 },
             )?;
             let commit_ids = revision_range.commit_ids.to_vec();
+
+            if commit_ids.is_empty() && !options.working_tree {
+                // Commit-range sessions need a selected commit for their identity.
+                // Preserve the ordinary empty-diff result instead of letting the
+                // session constructor unwrap an absent final commit.
+                return Err(TuicrError::NoChanges);
+            }
+
+            if options.working_tree && commit_ids.is_empty() {
+                // An empty range has no commit identity for a combined session;
+                // preserve `-w` behavior and review only staged/unstaged changes.
+                let diff_files = Self::get_working_tree_diff_with_ignore(
+                    vcs.as_ref(),
+                    &vcs_info.root_path,
+                    highlighter,
+                    options.path_filter,
+                )?;
+                let session =
+                    Self::load_or_create_session(&vcs_info, SessionDiffSource::StagedAndUnstaged);
+                let app = Self::build(
+                    vcs,
+                    vcs_info,
+                    theme,
+                    comment_type_configs,
+                    output_to_stdout,
+                    diff_files,
+                    session,
+                    DiffSource::StagedAndUnstaged,
+                    InputMode::Normal,
+                    Vec::new(),
+                    options.path_filter,
+                    options.repo_url_override.clone(),
+                )?
+                .with_vcs_open_options(options.vcs_open_options());
+                return Ok(app);
+            }
 
             if options.working_tree {
                 // Combined: commit range + staged/unstaged changes
@@ -570,6 +614,7 @@ impl App {
             show_pr_checks: false,
             show_pr_comments: true,
             should_quit: false,
+            full_redraw_pending: false,
             dirty: false,
             quit_warned: false,
             message: None,
@@ -588,6 +633,7 @@ impl App {
             cursor_line_highlight: true,
             leader_key: crate::config::DEFAULT_LEADER_KEY,
             scroll_offset: 0,
+            mouse_scroll_lines: crate::config::DEFAULT_MOUSE_SCROLL_LINES,
             file_list_area: None,
             comment_navigator_area: None,
             diff_area: None,

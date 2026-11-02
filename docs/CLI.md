@@ -136,6 +136,7 @@ out to.
 | `XDG_CONFIG_HOME`, `HOME`, `APPDATA` | Locate the config directory. See [CONFIG.md](CONFIG.md) |
 | `TUICR_PROFILE` | Write a startup/render profile log. See below |
 | `TUICR_PROFILE_FILE` | Path for that log, overriding the default location |
+| `AZURE_DEVOPS_SERVER_URL` | Hostname of a self-hosted Azure DevOps Server / TFS so its remotes are recognized as Azure DevOps. Requires a PAT. See [AZURE.md](AZURE.md) |
 | `AZURE_DEVOPS_EXT_PAT`, `AZURE_DEVOPS_PAT` | Azure DevOps PAT. Checked in that order; without one tuicr falls back to `az rest`. See [AZURE.md](AZURE.md) |
 | `GERRIT_URL` | Gerrit server root; also identifies Gerrit remotes on otherwise neutral hostnames. See [GERRIT.md](GERRIT.md) |
 | `GERRIT_USERNAME`, `GERRIT_PASSWORD` | Gerrit REST API credentials. `GERRIT_PASSWORD` must be an HTTP password, not the account password |

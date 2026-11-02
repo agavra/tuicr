@@ -390,7 +390,10 @@ fn full_row_text(app: &App, idx: usize, annotation: &AnnotatedLine) -> String {
                 let path = f.display_path().display().to_string();
                 format!(
                     "{indicator}{}",
-                    diff_view::spacing_next_file_hint_text(&path)
+                    diff_view::spacing_next_file_hint_text(
+                        &path,
+                        app.supports_keyboard_enhancement
+                    )
                 )
             } else {
                 indicator.to_string()
@@ -480,6 +483,7 @@ mod tests {
                     content: format!("ctx line {n} {}", "c".repeat(70)),
                     old_lineno: Some(n),
                     new_lineno: Some(n),
+                    raw_content: None,
                     highlighted_spans: None,
                 })
                 .collect())
@@ -516,6 +520,7 @@ mod tests {
                     content: "context short".to_string(),
                     old_lineno: Some(30),
                     new_lineno: Some(30),
+                    raw_content: None,
                     highlighted_spans: None,
                 },
                 DiffLine {
@@ -523,6 +528,7 @@ mod tests {
                     content: long_left,
                     old_lineno: Some(31),
                     new_lineno: None,
+                    raw_content: None,
                     highlighted_spans: None,
                 },
                 DiffLine {
@@ -530,6 +536,7 @@ mod tests {
                     content: long_right,
                     old_lineno: None,
                     new_lineno: Some(31),
+                    raw_content: None,
                     highlighted_spans: None,
                 },
                 DiffLine {
@@ -537,6 +544,7 @@ mod tests {
                     content: "y".to_string(),
                     old_lineno: None,
                     new_lineno: Some(32),
+                    raw_content: None,
                     highlighted_spans: None,
                 },
             ],
@@ -552,6 +560,7 @@ mod tests {
                 content: "tail".to_string(),
                 old_lineno: Some(100),
                 new_lineno: Some(100),
+                raw_content: None,
                 highlighted_spans: None,
             }],
             old_start: 100,
@@ -663,9 +672,8 @@ mod tests {
                 id: "comment-1".to_string(),
                 author: Some("reviewer".to_string()),
                 body: "a long inline review comment ".repeat(12),
-                created_at: None,
-                in_reply_to: None,
                 url: "https://example.com/comment".to_string(),
+                ..Default::default()
             }],
         }];
         // `sort_files_by_directory` reorders diff_files by parent directory,

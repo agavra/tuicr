@@ -9,7 +9,8 @@ use crate::app::{CommentTypeDefinition, DiffSource};
 use crate::config::ExportConfig;
 use crate::error::{Result, TuicrError};
 use crate::forge::remote_comments::{
-    PrCommentsVisibility, RemoteReviewThread, filter_threads, group_threads_by_path,
+    PrCommentsVisibility, RemoteReviewComment, RemoteReviewThread, filter_threads,
+    group_threads_by_path,
 };
 use crate::model::{CommentType, LineRange, LineSide, ReviewSession};
 use crate::slug::short_sha;
@@ -489,10 +490,11 @@ fn generate_markdown(
                 for thread in threads {
                     if let Some(root) = thread.root() {
                         let author = root.author.as_deref().unwrap_or("unknown");
+                        let draft = draft_marker(root);
                         let line_marker = thread.line.map(|l| format!(":{l}")).unwrap_or_default();
                         let _ = writeln!(
                             md,
-                            "{thread_n}. `{path}{line_marker}` @{author} - {body}",
+                            "{thread_n}. `{path}{line_marker}` @{author}{draft} - {body}",
                             body = root.body
                         );
                         if !root.url.is_empty() {
@@ -500,8 +502,12 @@ fn generate_markdown(
                         }
                         for reply in thread.replies() {
                             let reply_author = reply.author.as_deref().unwrap_or("unknown");
-                            let _ =
-                                writeln!(md, "   - @{reply_author} - {body}", body = reply.body);
+                            let _ = writeln!(
+                                md,
+                                "   - @{reply_author}{draft} - {body}",
+                                draft = draft_marker(reply),
+                                body = reply.body
+                            );
                         }
                         thread_n += 1;
                     }
@@ -512,6 +518,12 @@ fn generate_markdown(
     }
 
     md
+}
+
+/// ` (draft)` for a comment only its author can see yet, so a reader of the
+/// export does not take it for something already posted.
+fn draft_marker(comment: &RemoteReviewComment) -> &'static str {
+    if comment.is_draft { " (draft)" } else { "" }
 }
 
 fn collect_used_comment_type_ids(session: &ReviewSession) -> HashSet<String> {
@@ -1759,7 +1771,7 @@ mod tests {
         line: u32,
         resolved: bool,
     ) -> RemoteReviewThread {
-        use crate::forge::remote_comments::{RemoteCommentSide, RemoteReviewComment};
+        use crate::forge::remote_comments::RemoteCommentSide;
         RemoteReviewThread {
             id: id.to_string(),
             path: "src/lib.rs".to_string(),
@@ -1771,9 +1783,8 @@ mod tests {
                 id: format!("{id}-root"),
                 author: Some(author.to_string()),
                 body: body.to_string(),
-                created_at: None,
-                in_reply_to: None,
                 url: format!("https://github.com/agavra/tuicr/pull/125#discussion_{id}"),
+                ..Default::default()
             }],
         }
     }
@@ -1825,6 +1836,35 @@ mod tests {
         assert!(
             !markdown.contains("Old resolved"),
             "resolved thread leaked into export:\n{markdown}"
+        );
+    }
+
+    #[test]
+    fn should_mark_unpublished_remote_drafts_in_pr_export() {
+        // given a thread whose root is the viewer's own unpublished draft
+        let session = ReviewSession::new(
+            PathBuf::from("forge:github.com/agavra/tuicr"),
+            "abc1234deadbeef".to_string(),
+            Some("reviews".to_string()),
+            SessionDiffSource::PullRequest,
+        );
+        let mut thread = sample_remote_thread("a", "me", "not posted yet", 5, false);
+        thread.comments[0].is_draft = true;
+
+        // when
+        let markdown = generate_markdown(
+            &session,
+            &sample_pr_diff_source(),
+            &comment_types(),
+            &ExportConfig::default(),
+            &[thread],
+            None,
+        );
+
+        // then — a reader must not take it for a posted comment
+        assert!(
+            markdown.contains("@me (draft) - not posted yet"),
+            "{markdown}"
         );
     }
 

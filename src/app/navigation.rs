@@ -7,18 +7,17 @@ impl App {
         let prev_cursor = self.diff_state.cursor_line;
         let target = self.diff_state.cursor_line + lines;
         // Single-file view: first overflow press arms `primed_walk_next`
-        // and parks the cursor on max. On kitty terminals the walk
-        // consumes only when the Down key was released between the two
-        // presses (`down_released_since_arm`) -- a held-j sequence emits
-        // Press, Repeat, Repeat, ..., Release and never satisfies the
-        // gate. Non-kitty terminals don't emit Release, so the gate
-        // bypasses on `!supports_keyboard_enhancement` to keep the
-        // two-press walk usable without modern keyboard reporting.
+        // and parks the cursor on max. The walk consumes only when the
+        // Down key was released between the two presses
+        // (`down_released_since_arm`) -- a held-j sequence emits Press,
+        // Repeat, Repeat, ..., Release and never satisfies the gate.
+        // Terminals without kitty keyboard reporting never emit Release
+        // and send every auto-repeat as a Press, so a held j can't be told
+        // from a second press. There the walk is off and the cursor
+        // clamps to the file's last line below; `}` still switches files.
         self.primed_walk_prev = false;
-        if self.is_single_file_view && target > max_line {
-            let release_gate_ok =
-                !self.supports_keyboard_enhancement || self.down_released_since_arm;
-            if self.primed_walk_next && release_gate_ok {
+        if self.is_single_file_view && self.supports_keyboard_enhancement && target > max_line {
+            if self.primed_walk_next && self.down_released_since_arm {
                 let next_idx = self.diff_state.current_file_idx + 1;
                 if next_idx < self.diff_files.len() {
                     let overflow = target - max_line;
@@ -58,16 +57,16 @@ impl App {
     pub fn cursor_up(&mut self, lines: usize) {
         // Symmetric to cursor_down: first underflow arms `primed_walk_prev`,
         // second underflow consumes only after a Up/k release event has set
-        // `up_released_since_arm`. See cursor_down for the gate rationale.
+        // `up_released_since_arm`. Without kitty keyboard reporting the walk
+        // is off and the cursor clamps at the top of the frame below. See
+        // cursor_down for the gate rationale.
         self.primed_walk_next = false;
-        if self.is_single_file_view {
+        if self.is_single_file_view && self.supports_keyboard_enhancement {
             let file_top = self.calculate_file_scroll_offset(self.diff_state.current_file_idx);
             if self.diff_state.cursor_line < file_top + lines
                 && self.diff_state.current_file_idx > 0
             {
-                let release_gate_ok =
-                    !self.supports_keyboard_enhancement || self.up_released_since_arm;
-                if self.primed_walk_prev && release_gate_ok {
+                if self.primed_walk_prev && self.up_released_since_arm {
                     let underflow = (file_top + lines) - self.diff_state.cursor_line;
                     let prev_idx = self.diff_state.current_file_idx - 1;
                     self.primed_walk_prev = false;
@@ -599,6 +598,15 @@ impl App {
     /// In SBS, picks Old or New per `side`, falling back to the other pane
     /// if the requested one is empty. Unified diff rows ignore `side`.
     pub fn content_for_side(&self, ann_idx: usize, side: LineSide) -> Option<&str> {
+        self.diff_line_for_side(ann_idx, side)
+            .map(|line| line.content.as_str())
+    }
+
+    pub(in crate::app) fn diff_line_for_side(
+        &self,
+        ann_idx: usize,
+        side: LineSide,
+    ) -> Option<&DiffLine> {
         let ann = self.line_annotations.get(ann_idx)?;
         match ann {
             AnnotatedLine::DiffLine {
@@ -614,7 +622,7 @@ impl App {
                     .get(*hunk_idx)?
                     .lines
                     .get(*line_idx)?;
-                Some(line.content.as_str())
+                Some(line)
             }
             AnnotatedLine::SideBySideLine {
                 file_idx,
@@ -624,20 +632,16 @@ impl App {
                 ..
             } => {
                 let hunk = self.diff_files.get(*file_idx)?.hunks.get(*hunk_idx)?;
-                let add = add_line_idx
-                    .and_then(|i| hunk.lines.get(i))
-                    .map(|l| l.content.as_str());
-                let del = del_line_idx
-                    .and_then(|i| hunk.lines.get(i))
-                    .map(|l| l.content.as_str());
+                let add = add_line_idx.and_then(|i| hunk.lines.get(i));
+                let del = del_line_idx.and_then(|i| hunk.lines.get(i));
                 match side {
                     LineSide::New => add.or(del),
                     LineSide::Old => del.or(add),
                 }
             }
-            AnnotatedLine::ExpandedContext { gap_id, line_idx } => self
-                .get_expanded_line(gap_id, *line_idx)
-                .map(|l| l.content.as_str()),
+            AnnotatedLine::ExpandedContext { gap_id, line_idx } => {
+                self.get_expanded_line(gap_id, *line_idx)
+            }
             _ => None,
         }
     }

@@ -237,7 +237,7 @@ impl VcsBackend for JjBackend {
             None,
             &mut files,
             highlighter,
-            jj_show_batch,
+            jj_show_batch_unless_merge(is_merge(&self.info.root_path, "@")?),
         )?;
         Ok(files)
     }
@@ -399,7 +399,16 @@ impl VcsBackend for JjBackend {
         // Get the parent of the oldest commit to include its changes
         // In jj, we use {commit}- to get the parent(s)
         let from_rev = format!("{}-", oldest);
-        let diff_args = ["diff", "--from", &from_rev, "--to", newest];
+        // `--from` takes exactly one revision, so a merge's parents can't be
+        // named there. `jj diff -r` diffs against the merged parents instead,
+        // as `jj show` does.
+        let merge = is_merge(&self.info.root_path, oldest)?;
+        let range = format!("{}::{}", oldest, newest);
+        let diff_args: Vec<&str> = if merge {
+            vec!["diff", "-r", &range]
+        } else {
+            vec!["diff", "--from", &from_rev, "--to", newest]
+        };
         let mut files = self.load_diff(&diff_args, highlighter)?;
         apply_container_full_file_highlight(
             &self.info.root_path,
@@ -407,7 +416,7 @@ impl VcsBackend for JjBackend {
             Some(newest),
             &mut files,
             highlighter,
-            jj_show_batch,
+            jj_show_batch_unless_merge(merge),
         )?;
         Ok(files)
     }
@@ -477,7 +486,13 @@ impl VcsBackend for JjBackend {
 
         // Diff from the parent of the oldest commit to the working copy (@)
         let from_rev = format!("{}-", oldest);
-        let diff_args = ["diff", "--from", &from_rev, "--to", "@"];
+        let merge = is_merge(&self.info.root_path, oldest)?;
+        let range = format!("{}::@", oldest);
+        let diff_args: Vec<&str> = if merge {
+            vec!["diff", "-r", &range]
+        } else {
+            vec!["diff", "--from", &from_rev, "--to", "@"]
+        };
         let mut files = self.load_diff(&diff_args, highlighter)?;
         apply_container_full_file_highlight(
             &self.info.root_path,
@@ -485,7 +500,7 @@ impl VcsBackend for JjBackend {
             None,
             &mut files,
             highlighter,
-            jj_show_batch,
+            jj_show_batch_unless_merge(merge),
         )?;
         Ok(files)
     }
@@ -521,6 +536,38 @@ fn jj_show_batch(root: &Path, rev: &str, paths: &[PathBuf]) -> Result<HashMap<Pa
     args.extend(filesets.iter().map(String::as_str));
     let output = run_jj_command(root, &args)?;
     Ok(parse_batched_files(&output))
+}
+
+/// Whether `rev` has more than one parent, so that `{rev}-` names several
+/// revisions and can't be passed where jj expects exactly one.
+fn is_merge(root: &Path, rev: &str) -> Result<bool> {
+    let revset = format!("parents({})", rev);
+    let output = run_jj_command(
+        root,
+        [
+            "log",
+            "-r",
+            &revset,
+            "--no-graph",
+            "-T",
+            "commit_id ++ \"\\n\"",
+        ],
+    )?;
+    Ok(output.lines().filter(|l| !l.trim().is_empty()).count() > 1)
+}
+
+/// `jj_show_batch`, except that a merge's base has no single revision to
+/// show, so the old side keeps its per-hunk highlighting instead.
+fn jj_show_batch_unless_merge(
+    merge: bool,
+) -> impl Fn(&Path, &str, &[PathBuf]) -> Result<HashMap<PathBuf, String>> {
+    move |root, rev, paths| {
+        if merge && rev.ends_with('-') {
+            Ok(HashMap::new())
+        } else {
+            jj_show_batch(root, rev, paths)
+        }
+    }
 }
 
 /// Run a jj command and return its stdout.
@@ -1095,6 +1142,99 @@ mod tests {
             // Should have changes
             assert!(!diff.is_empty(), "Expected non-empty diff");
         }
+    }
+
+    /// Repo from issue #786: `@` is a merge of `left` and `right` that edits
+    /// an MDX file (full-file highlighted) and adds `merge.txt`.
+    fn setup_test_repo_with_merge() -> Option<tempfile::TempDir> {
+        if !jj_available() {
+            return None;
+        }
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let root = temp_dir.path();
+        let jj = |args: &[&str]| {
+            let out = jj_cmd()
+                .args(args)
+                .current_dir(root)
+                .output()
+                .expect("Failed to run jj");
+            assert!(
+                out.status.success(),
+                "jj {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        jj(&["git", "init"]);
+        fs::write(root.join("doc.mdx"), "# Notes\n\n<Callout>hi</Callout>\n").unwrap();
+        jj(&["commit", "-m", "base"]);
+        fs::write(root.join("left.txt"), "left\n").unwrap();
+        jj(&["commit", "-m", "left"]);
+        jj(&["bookmark", "create", "left", "-r", "@-"]);
+        jj(&["new", "@--"]);
+        fs::write(root.join("right.txt"), "right\n").unwrap();
+        jj(&["commit", "-m", "right"]);
+        jj(&["bookmark", "create", "right", "-r", "@-"]);
+        jj(&["new", "left", "right", "-m", "merge"]);
+        fs::write(root.join("merge.txt"), "merge\n").unwrap();
+        fs::write(
+            root.join("doc.mdx"),
+            "# Notes\n\n<Callout>hello</Callout>\n",
+        )
+        .unwrap();
+        Some(temp_dir)
+    }
+
+    fn sorted_paths(files: &[DiffFile]) -> Vec<String> {
+        let mut paths: Vec<String> = files
+            .iter()
+            .map(|f| f.display_path().to_string_lossy().into_owned())
+            .collect();
+        paths.sort();
+        paths
+    }
+
+    #[test]
+    fn test_jj_merge_commit_diffs_against_merged_parents() {
+        let Some(temp) = setup_test_repo_with_merge() else {
+            eprintln!("Skipping test: jj command not available");
+            return;
+        };
+        let backend = JjBackend::from_path(temp.path().to_path_buf(), DiffWhitespaceMode::Normal)
+            .expect("Failed to create jj backend");
+        let expected = vec!["doc.mdx".to_string(), "merge.txt".to_string()];
+
+        // `tuicr -w`
+        let files = backend
+            .get_working_tree_diff(&SyntaxHighlighter::default())
+            .expect("working-copy merge diff");
+        assert_eq!(sorted_paths(&files), expected);
+
+        // Selecting the merge commit in the commit list
+        let merge = backend
+            .get_recent_commits(0, 10)
+            .expect("Failed to get commits")
+            .into_iter()
+            .find(|c| c.summary == "merge")
+            .expect("Expected merge commit");
+        let files = backend
+            .get_commit_range_diff(
+                &ResolvedRevisionRange::from_owned_commit_ids(
+                    vec![merge.id.clone()],
+                    RevisionDiffTarget::CommitList,
+                ),
+                &SyntaxHighlighter::default(),
+            )
+            .expect("merge commit diff");
+        assert_eq!(sorted_paths(&files), expected);
+
+        let files = backend
+            .get_working_tree_with_commits_diff(
+                std::slice::from_ref(&merge.id),
+                &SyntaxHighlighter::default(),
+            )
+            .expect("merge commit plus working copy diff");
+        assert_eq!(sorted_paths(&files), expected);
     }
 
     /// Create a test repo with a renamed file (no content changes).

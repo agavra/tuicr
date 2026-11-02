@@ -32,7 +32,7 @@ impl RemoteCommentSide {
 /// Anchor fields (`path`, `line`, `side`) live on the parent
 /// `RemoteReviewThread`, not on each comment, mirroring GitHub's GraphQL
 /// schema where `PullRequestReviewComment` does not carry these directly.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteReviewComment {
     /// Forge-assigned comment node ID (opaque string).
     pub id: String,
@@ -45,6 +45,10 @@ pub struct RemoteReviewComment {
     pub in_reply_to: Option<String>,
     /// Permalink to the comment on the forge.
     pub url: String,
+    /// An unpublished draft only its author can see — what `:submit draft`
+    /// leaves behind on forges that store drafts per comment (Gerrit).
+    #[serde(default)]
+    pub is_draft: bool,
 }
 
 /// State of a remote review at submit time. GitHub exposes one of
@@ -289,9 +293,8 @@ mod tests {
                 id: format!("{id}-root"),
                 author: Some("alice".to_string()),
                 body: "Root body".to_string(),
-                created_at: None,
-                in_reply_to: None,
                 url: format!("https://example.com/{id}"),
+                ..Default::default()
             }],
         }
     }

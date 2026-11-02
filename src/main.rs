@@ -396,6 +396,9 @@ fn main() -> anyhow::Result<()> {
         if let Some(scroll_offset) = cfg.scroll_offset {
             app.scroll_offset = scroll_offset;
         }
+        if let Some(lines) = cfg.mouse_scroll_lines {
+            app.mouse_scroll_lines = lines;
+        }
         if let Some(interval_ms) = cfg.review_watch_interval_ms {
             app.set_review_watch_interval_ms(interval_ms as u64);
         }
@@ -476,6 +479,11 @@ fn main() -> anyhow::Result<()> {
             // tears as escape sequences arrive in chunks. Terminals that do
             // not support DEC 2026 ignore it.
             queue!(terminal.backend_mut(), BeginSynchronizedUpdate)?;
+            // `Ctrl-l` or a resize asked for every cell to be rewritten. The
+            // clear lands inside the synchronized update, so it never flashes.
+            if app.take_full_redraw() {
+                terminal.repaint_from_scratch()?;
+            }
             terminal.draw(|frame| {
                 ui::render(frame, &mut app);
             })?;
@@ -512,7 +520,7 @@ fn main() -> anyhow::Result<()> {
             // events) never satisfies the gate. Terminals without kitty
             // REPORT_EVENT_TYPES support never emit Release, in which case
             // `supports_keyboard_enhancement` is false and `cursor_down` /
-            // `cursor_up` skip the gate entirely.
+            // `cursor_up` never walk: j/k stop at the file's edges.
             if let Event::Key(key) = &event
                 && key.kind == KeyEventKind::Release
             {
@@ -564,6 +572,13 @@ fn main() -> anyhow::Result<()> {
                         app.message = None;
                     }
 
+                    // Keys that work the same in every mode (`Ctrl-l` redraw).
+                    // Checked before the pending-prefix and vim-editor routing
+                    // so they never reach a text buffer.
+                    if handler::handle_global_key(&mut app, key) {
+                        continue;
+                    }
+
                     // Handle pending z command for zz/zt/zb viewport positioning
                     if pending_z {
                         pending_z = false;
@@ -610,7 +625,9 @@ fn main() -> anyhow::Result<()> {
                     // Handle pending d command for dd delete comment
                     if pending_d {
                         pending_d = false;
-                        if key.code == crossterm::event::KeyCode::Char('d') {
+                        if key.code == crossterm::event::KeyCode::Char('d')
+                            && key.modifiers == crossterm::event::KeyModifiers::NONE
+                        {
                             // In the target selector `dd` deletes the saved
                             // review under the cursor, not a comment.
                             if app.input_mode == InputMode::CommitSelect {
@@ -619,6 +636,15 @@ fn main() -> anyhow::Result<()> {
                                     Action::SessionsTabDelete,
                                 );
                                 continue;
+                            }
+                            if app.input_mode == InputMode::Summary {
+                                if !app.delete_selected_summary_comment() {
+                                    app.set_warning(
+                                        "Selected comment is no longer editable or available",
+                                    );
+                                }
+                                // Refresh IDs and clamp selection before another queued dd.
+                                break;
                             }
                             if app.cursor_on_locked_comment() {
                                 let forge = app.forge_display_name();
@@ -816,7 +842,12 @@ fn main() -> anyhow::Result<()> {
                         }
                     }
 
+                    let previous_mode = app.input_mode;
                     dispatch_action(&mut app, action);
+                    if previous_mode != InputMode::Summary && app.input_mode == InputMode::Summary {
+                        // Summary identities are populated by rendering before queued input.
+                        break;
+                    }
                     if let Some(target) = app.take_pending_editor_target() {
                         match run_editor_from_tui(
                             &mut terminal,
@@ -865,6 +896,10 @@ fn main() -> anyhow::Result<()> {
                     }
                 }
                 Event::Mouse(mouse_event) => handle_mouse_event(&mut app, mouse_event),
+                // ratatui clears on its own only when the size changed. A
+                // font change, or a resize that lands back on the same size,
+                // can leave stale cells it would never rewrite.
+                Event::Resize(..) => app.request_full_redraw(),
                 Event::Paste(text) => {
                     // Bracketed-paste payload — route to whichever handler is
                     // currently accepting text input. Other modes ignore.

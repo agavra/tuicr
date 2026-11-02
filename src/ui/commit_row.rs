@@ -58,7 +58,7 @@ pub fn render_commit_row<'a>(spec: &CommitRowSpec<'a>) -> Line<'a> {
         } else {
             "  ".to_string()
         },
-        row_text_style,
+        styles::selection_marker_style(theme, row_text_style),
     ));
     spans.push(Span::styled(
         if spec.is_selected {

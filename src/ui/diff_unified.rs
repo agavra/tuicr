@@ -1179,7 +1179,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
         }
 
         // Inter-file spacing. In single-file view, the row doubles as a
-        // hint pointing at whichever file `j` would walk into next, so
+        // hint naming the next file and the key that moves into it, so
         // the user always knows what's on the other side of the edge.
         // Falls back to a plain blank on the last file (or in multi-file
         // mode) where the indicator is already pulling its weight.
@@ -1195,7 +1195,10 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
             lines.push(Line::from(vec![
                 Span::styled(indicator, styles::current_line_indicator_style(&app.theme)),
                 Span::styled(
-                    crate::ui::diff_view::spacing_next_file_hint_text(&next_path),
+                    crate::ui::diff_view::spacing_next_file_hint_text(
+                        &next_path,
+                        app.supports_keyboard_enhancement,
+                    ),
                     Style::default()
                         .fg(app.theme.fg_secondary)
                         .add_modifier(Modifier::DIM),
@@ -1588,6 +1591,7 @@ mod remote_comments_snapshot_tests {
                 content: "first".to_string(),
                 old_lineno: Some(1),
                 new_lineno: Some(1),
+                raw_content: None,
                 highlighted_spans: None,
             },
             DiffLine {
@@ -1595,6 +1599,7 @@ mod remote_comments_snapshot_tests {
                 content: "second".to_string(),
                 old_lineno: None,
                 new_lineno: Some(2),
+                raw_content: None,
                 highlighted_spans: None,
             },
         ];
@@ -1654,9 +1659,8 @@ mod remote_comments_snapshot_tests {
                 id: format!("{id}-root"),
                 author: Some(author.to_string()),
                 body: body.to_string(),
-                created_at: None,
-                in_reply_to: None,
                 url: "https://example.com/x".to_string(),
+                ..Default::default()
             }],
         }
     }
@@ -1786,6 +1790,7 @@ mod remote_comments_snapshot_tests {
                 content: line.to_string(),
                 old_lineno: None,
                 new_lineno: Some(i as u32 + 1),
+                raw_content: None,
                 highlighted_spans: None,
             })
             .collect();
@@ -1818,6 +1823,7 @@ mod remote_comments_snapshot_tests {
                 content: format!("line {i} {}", "x".repeat(120)),
                 old_lineno: None,
                 new_lineno: Some(i),
+                raw_content: None,
                 highlighted_spans: None,
             })
             .collect();
@@ -1957,6 +1963,97 @@ mod remote_comments_snapshot_tests {
             buffer[(inner.x, inner.y + continuation as u16)].symbol(),
             "x"
         );
+    }
+
+    #[test]
+    fn selection_marker_matches_existing_row_colors_in_both_views() {
+        use ratatui::style::Color;
+        let matching = Color::Rgb(36, 45, 56);
+        for mode in [DiffViewMode::Unified, DiffViewMode::SideBySide] {
+            for wrap in [false, true] {
+                for marker in [None, Some(matching)] {
+                    let mut file = wrapping_diff_file(2);
+                    for line in &mut file.hunks[0].lines {
+                        line.content = "x".repeat(110);
+                    }
+                    let mut app = make_revision_app(vec![file]);
+                    app.diff_view_mode = mode;
+                    app.wrap_style = WrapStyle::Gutter;
+                    app.theme.selection_marker = marker;
+                    app.theme.cursor_line_bg = matching;
+                    app.theme.bg_highlight = matching;
+                    app.set_diff_wrap(wrap);
+                    draw_diff(&mut app);
+                    let indices: Vec<_> = app
+                        .line_annotations
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(idx, ann)| {
+                            matches!(
+                                ann,
+                                AnnotatedLine::DiffLine { .. }
+                                    | AnnotatedLine::SideBySideLine { .. }
+                            )
+                            .then_some(idx)
+                        })
+                        .collect();
+                    assert_eq!(indices.len(), 2);
+                    app.diff_state.cursor_line = indices[0];
+                    app.diff_state.scroll_offset = indices[0];
+                    let buffer = draw_diff(&mut app);
+                    let inner = app.diff_inner_area.unwrap();
+                    let cursor_bg = app.theme.cursor_line_bg;
+                    let mut cursor_rows = 0;
+                    for (row, &idx) in app.diff_row_to_annotation.iter().enumerate() {
+                        if idx == indices[0] {
+                            cursor_rows += 1;
+                            let y = inner.y + row as u16;
+                            for x in inner.x..inner.right() {
+                                assert_eq!(
+                                    buffer[(x, y)].bg,
+                                    cursor_bg,
+                                    "{mode:?}, wrap={wrap}, x={x}, y={y}"
+                                );
+                            }
+                        }
+                    }
+                    assert!(cursor_rows > 0);
+                    if wrap {
+                        assert!(cursor_rows > 1);
+                    }
+                    let caret = buffer
+                        .content
+                        .iter()
+                        .find(|cell| cell.symbol() == "▶")
+                        .expect("cursor marker");
+                    assert_eq!(caret.fg, marker.unwrap_or(app.theme.border_focused));
+
+                    app.enter_visual_mode_at_cursor();
+                    app.diff_state.cursor_line = indices[1];
+                    app.extend_visual_to_cursor();
+                    let buffer = draw_diff(&mut app);
+                    let geom = app.pane_geometry(inner, LineSide::New);
+                    let selection_bg = app.theme.bg_highlight;
+                    for idx in indices {
+                        let rows: Vec<_> = app
+                            .diff_row_to_annotation
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, annotation)| **annotation == idx)
+                            .collect();
+                        assert!(!rows.is_empty(), "both selected lines must be visible");
+                        for (row, _) in rows {
+                            let y = inner.y + row as u16;
+                            assert_eq!(
+                                buffer[(geom.content_x_start, y)].bg,
+                                selection_bg,
+                                "{mode:?}, wrap={wrap}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -2201,6 +2298,47 @@ mod remote_comments_snapshot_tests {
         );
     }
 
+    fn single_file_view_on_first_of(paths: &[&str]) -> App {
+        let mut app =
+            make_revision_app(paths.iter().map(|p| header_only_diff_file_at(p)).collect());
+        app.is_single_file_view = true;
+        app.diff_state.current_file_idx = 0;
+        app.rebuild_annotations();
+        app
+    }
+
+    #[test]
+    fn should_hint_down_into_next_file_when_key_releases_are_reported() {
+        // given single-file view on the first file, where j walks on after a release
+        let mut app = single_file_view_on_first_of(&["a.rs", "b.rs"]);
+        app.supports_keyboard_enhancement = true;
+        // when
+        let body = body_text(&draw_unified_diff(&mut app));
+        // then
+        assert!(
+            body.contains("\u{2193}  b.rs"),
+            "expected the next-file hint to name Down in:\n{body}"
+        );
+    }
+
+    #[test]
+    fn should_hint_next_file_key_when_key_releases_are_not_reported() {
+        // given single-file view on the first file, where j stops at the edge
+        let mut app = single_file_view_on_first_of(&["a.rs", "b.rs"]);
+        app.supports_keyboard_enhancement = false;
+        // when
+        let body = body_text(&draw_unified_diff(&mut app));
+        // then
+        assert!(
+            body.contains("}  b.rs"),
+            "expected the next-file hint to name }} in:\n{body}"
+        );
+        assert!(
+            !body.contains('\u{2193}'),
+            "expected no Down hint in:\n{body}"
+        );
+    }
+
     #[test]
     fn should_render_resolved_remote_comment_only_under_comments_all() {
         // given a PR app with one resolved remote thread
@@ -2283,9 +2421,7 @@ mod remote_comments_snapshot_tests {
                 id: "rv1-root".to_string(),
                 author: Some("carol".to_string()),
                 body: "overall this looks fine".to_string(),
-                created_at: None,
-                in_reply_to: None,
-                url: String::new(),
+                ..Default::default()
             }],
         }];
         app.rebuild_annotations();
@@ -2316,9 +2452,7 @@ mod remote_comments_snapshot_tests {
                 id: "rv1-root".to_string(),
                 author: Some("carol".to_string()),
                 body: "should be hidden".to_string(),
-                created_at: None,
-                in_reply_to: None,
-                url: String::new(),
+                ..Default::default()
             }],
         }];
         app.set_remote_comments_visibility(PrCommentsVisibility::Hide);
@@ -2340,6 +2474,7 @@ mod remote_comments_snapshot_tests {
                 content: long.clone(),
                 old_lineno: None,
                 new_lineno: Some(1),
+                raw_content: None,
                 highlighted_spans: None,
             }],
             old_start: 0,
@@ -2402,6 +2537,7 @@ mod remote_comments_snapshot_tests {
                 content: format!("line {n}"),
                 old_lineno: None,
                 new_lineno: Some(n),
+                raw_content: None,
                 highlighted_spans: None,
             })
             .collect();
@@ -2481,6 +2617,7 @@ mod remote_comments_snapshot_tests {
                 content: long.clone(),
                 old_lineno: None,
                 new_lineno: Some(i + 1),
+                raw_content: None,
                 highlighted_spans: None,
             })
             .collect();
@@ -2489,6 +2626,7 @@ mod remote_comments_snapshot_tests {
             content: "LASTLINEMARKER".to_string(),
             old_lineno: None,
             new_lineno: Some(31),
+            raw_content: None,
             highlighted_spans: None,
         });
         let hunk = DiffHunk {
@@ -2557,6 +2695,7 @@ mod remote_comments_snapshot_tests {
                 content: long.clone(),
                 old_lineno: None,
                 new_lineno: Some(1),
+                raw_content: None,
                 highlighted_spans: None,
             }],
             old_start: 0,
@@ -2668,6 +2807,7 @@ mod remote_comments_snapshot_tests {
             content: "added".to_string(),
             old_lineno: None,
             new_lineno: Some(1),
+            raw_content: None,
             highlighted_spans: Some(vec![(
                 Style::default().fg(Color::White).bg(marker_bg),
                 "added".to_string(),
@@ -2720,6 +2860,7 @@ mod remote_comments_snapshot_tests {
             content: content.to_string(),
             old_lineno,
             new_lineno,
+            raw_content: None,
             highlighted_spans: None,
         };
         let lines = vec![
