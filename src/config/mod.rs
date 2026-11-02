@@ -239,8 +239,7 @@ pub struct AppConfig {
     /// Persist local review sessions in `<repo>/.tuicr/reviews` instead of
     /// the platform data directory. Defaults to false. Pull-request and
     /// `--file` / `--all-files` sessions always use the platform data
-    /// directory. Overridable at runtime with `--local-storage` /
-    /// `--no-local-storage`.
+    /// directory. Overridable at runtime with `--local-storage`.
     pub local_storage: Option<bool>,
     /// `[forge]` section settings. Always present; `None` means "no override"
     /// and downstream code should treat it as `ForgeConfig::default()`.

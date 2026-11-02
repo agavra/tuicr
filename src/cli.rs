@@ -42,11 +42,10 @@ pub struct CliArgs {
     pub update_command: bool,
     /// Exact version requested by `tuicr update`, if any.
     pub update_version: Option<semver::Version>,
-    /// Session storage location for this run: `Some(true)` =
-    /// `<repo>/.tuicr/reviews` (`--local-storage`), `Some(false)` = platform
-    /// data directory (`--no-local-storage`), `None` = defer to the config
-    /// `local_storage` key (default off).
-    pub local_storage: Option<bool>,
+    /// Store local review sessions in `<repo>/.tuicr/reviews` for this run
+    /// (`--local-storage`); `false` defers to the config `local_storage`
+    /// key (default off, platform data directory).
+    pub local_storage: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -159,21 +158,8 @@ struct TuiOptions {
     /// platform data directory (same as `local_storage` in the config).
     /// Pull-request and `--file` / `--all-files` sessions stay in the
     /// platform data directory.
-    #[arg(
-        long = "local-storage",
-        action = ArgAction::SetTrue,
-        overrides_with = "no_local_storage"
-    )]
+    #[arg(long = "local-storage", action = ArgAction::SetTrue)]
     local_storage: bool,
-
-    /// Keep review sessions in the platform data directory. Undoes a config
-    /// `local_storage = true` for this run.
-    #[arg(
-        long = "no-local-storage",
-        action = ArgAction::SetTrue,
-        overrides_with = "local_storage"
-    )]
-    no_local_storage: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -394,8 +380,7 @@ impl From<Cli> for CliArgs {
             Some(Subcmd::Update { version }) => (TuiOptions::default(), None, None, version, true),
             None => (cli.tui_options, None, None, None, false),
         };
-        // Computed before the struct literal below partially moves `options`.
-        let local_storage = options.local_storage();
+        let local_storage = options.local_storage;
         Self {
             theme: options.theme,
             appearance: options.appearance,
@@ -433,26 +418,9 @@ impl TuiOptions {
             || self.repo_url.is_some()
             || self.remote.is_some()
             || self.local_storage
-            || self.no_local_storage
-    }
-
-    /// Resolve the storage-location pair into one tri-state. The flags
-    /// override each other, so at most one is ever set after parsing.
-    fn local_storage(&self) -> Option<bool> {
-        if self.local_storage {
-            Some(true)
-        } else if self.no_local_storage {
-            Some(false)
-        } else {
-            None
-        }
     }
 
     fn merge(self, later: TuiOptions) -> Self {
-        // The storage-location pair is one tri-state option, so it follows
-        // "last one given wins" like string values, not the sticky-bool
-        // rule the plain flags use.
-        let local_storage = later.local_storage().or(self.local_storage());
         Self {
             theme: later.theme.or(self.theme),
             appearance: later.appearance.or(self.appearance),
@@ -466,8 +434,7 @@ impl TuiOptions {
             all_files: self.all_files || later.all_files,
             repo_url: later.repo_url.or(self.repo_url),
             remote: later.remote.or(self.remote),
-            local_storage: local_storage == Some(true),
-            no_local_storage: local_storage == Some(false),
+            local_storage: self.local_storage || later.local_storage,
         }
     }
 }
@@ -677,42 +644,28 @@ mod tests {
     // local-storage flags
 
     #[test]
-    fn should_default_local_storage_to_none() {
+    fn should_default_local_storage_to_false() {
         let parsed = parse_for_test(&["tuicr"]).expect("parse should succeed");
-        assert_eq!(parsed.local_storage, None);
+        assert!(!parsed.local_storage);
     }
 
     #[test]
     fn should_parse_local_storage_flag() {
         let parsed = parse_for_test(&["tuicr", "--local-storage"]).expect("parse should succeed");
-        assert_eq!(parsed.local_storage, Some(true));
+        assert!(parsed.local_storage);
     }
 
     #[test]
-    fn should_parse_no_local_storage_flag() {
+    fn should_stick_local_storage_across_levels() {
+        // A sticky bool like the other plain flags: given at any level, the
+        // run enables repo-local storage.
         let parsed =
-            parse_for_test(&["tuicr", "--no-local-storage"]).expect("parse should succeed");
-        assert_eq!(parsed.local_storage, Some(false));
-    }
+            parse_for_test(&["tuicr", "--local-storage", "tui"]).expect("parse should succeed");
+        assert!(parsed.local_storage);
 
-    #[test]
-    fn should_let_the_last_local_storage_flag_win() {
-        // Within one level the flags override each other, so the last one
-        // given decides.
-        let parsed = parse_for_test(&["tuicr", "--local-storage", "--no-local-storage"])
-            .expect("parse should succeed");
-        assert_eq!(parsed.local_storage, Some(false));
-
-        let parsed = parse_for_test(&["tuicr", "--no-local-storage", "--local-storage"])
-            .expect("parse should succeed");
-        assert_eq!(parsed.local_storage, Some(true));
-    }
-
-    #[test]
-    fn should_let_a_later_level_override_local_storage() {
-        let parsed = parse_for_test(&["tuicr", "--local-storage", "tui", "--no-local-storage"])
-            .expect("parse should succeed");
-        assert_eq!(parsed.local_storage, Some(false));
+        let parsed =
+            parse_for_test(&["tuicr", "tui", "--local-storage"]).expect("parse should succeed");
+        assert!(parsed.local_storage);
     }
 
     #[test]

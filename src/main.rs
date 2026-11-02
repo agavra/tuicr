@@ -228,18 +228,15 @@ fn main() -> anyhow::Result<()> {
         _ => None,
     };
 
-    // CLI beats config: --local-storage / --no-local-storage resolve to
-    // Some(bool), an unset pair falls back to `local_storage` from config,
-    // and the default stays off (platform data directory).
-    let local_storage = cli_args
-        .local_storage
-        .or_else(|| {
-            config_outcome
-                .config
-                .as_ref()
-                .and_then(|cfg| cfg.local_storage)
-        })
-        .unwrap_or(false);
+    // CLI beats config: `--local-storage` enables repo-local sessions for
+    // the run; without it, the config `local_storage` key decides, and the
+    // default stays off (platform data directory).
+    let local_storage = cli_args.local_storage
+        || config_outcome
+            .config
+            .as_ref()
+            .and_then(|cfg| cfg.local_storage)
+            .unwrap_or(false);
 
     let mut app = match profile::time("startup.app_init", || {
         App::new(
