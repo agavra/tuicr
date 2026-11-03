@@ -43,9 +43,17 @@ impl App {
         }
         let mut staged = 0;
         for path in &reviewed_paths {
-            if let Err(e) = self.vcs.stage_file(path) {
-                self.set_error(format!("Failed to stage {}: {e}", path.display()));
-                return;
+            let old_path = self
+                .diff_files
+                .iter()
+                .find(|file| file.display_path() == path && file.status == FileStatus::Renamed)
+                .and_then(|file| file.old_path.clone())
+                .filter(|old_path| old_path != path);
+            for stage_path in std::iter::once(path).chain(old_path.as_ref()) {
+                if let Err(e) = self.vcs.stage_file(stage_path) {
+                    self.set_error(format!("Failed to stage {}: {e}", stage_path.display()));
+                    return;
+                }
             }
             staged += 1;
         }

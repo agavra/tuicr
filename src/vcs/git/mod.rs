@@ -3,6 +3,8 @@ pub mod context;
 pub mod diff;
 mod libgit2;
 pub(crate) mod raw;
+#[cfg(test)]
+mod rename_tests;
 pub mod repository;
 pub mod staging;
 
