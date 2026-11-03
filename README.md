@@ -237,7 +237,9 @@ on Linux, equivalents elsewhere). With `local_storage = true` in the config or
 `<repo>/.tuicr/reviews/`, keeping per-checkout state beside the checkout —
 gitignore `.tuicr/`; tuicr never writes a `.gitignore` for you. PR sessions and
 `--file` / `--all-files` reviews always use the platform data directory.
-`tuicr review list` merges both roots for the selected checkout either way.
+`tuicr review list` follows the same setting: it lists the checkout's
+`.tuicr/reviews` when `local_storage` is on and `--repo` names a checkout, and
+the platform data directory otherwise.
 See [docs/CONFIG.md](docs/CONFIG.md).
 
 Inside the TUI, the review target selector's **Sessions** tab lists the saved

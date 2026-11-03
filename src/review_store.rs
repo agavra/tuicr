@@ -1,5 +1,3 @@
-use std::cmp::Reverse;
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
@@ -184,36 +182,6 @@ fn summary_from_entry(
         anchor: entry.display.anchor,
         active,
     }
-}
-
-/// Extend a session listing with a checkout's repo-local storage root, so
-/// sessions stay visible whether or not `local_storage` is on now. Rows
-/// already listed (by session path) are skipped, `admit` filters what
-/// joins, and the result is re-sorted newest-first. No-op when the root
-/// does not exist; the caller decides whether one applies.
-pub fn merge_repo_local_sessions(
-    sessions: &mut Vec<SessionSummary>,
-    repo_selector: &Path,
-    repo_local_root: &Path,
-    admit: impl Fn(&SessionSummary) -> bool,
-) -> Result<()> {
-    if !repo_local_root.exists() {
-        return Ok(());
-    }
-    let repo_local_store = ReviewStore::with_reviews_dir(repo_local_root);
-    let mut listed: HashSet<PathBuf> = sessions
-        .iter()
-        .map(|s| s.session_ref.path().to_path_buf())
-        .collect();
-    for session in repo_local_store.list_sessions_for_repo(repo_selector)? {
-        let path = session.session_ref.path().to_path_buf();
-        if !listed.contains(&path) && admit(&session) {
-            listed.insert(path);
-            sessions.push(session);
-        }
-    }
-    sessions.sort_by_key(|s| Reverse(s.updated_at));
-    Ok(())
 }
 
 /// Opaque reference to a persisted review session.

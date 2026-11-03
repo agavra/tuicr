@@ -29,21 +29,15 @@ directory. That root is per-checkout state, not something to commit — gitignor
 - There is no migration and no fallback read: while repo-local storage is on,
   the TUI resumes only from the repo-local root, and turning it off resurfaces
   the old platform-dir sessions untouched.
-- `tuicr review list --repo <checkout>` (the default `--repo .` included)
-  merges both roots when the checkout has a `.tuicr/reviews/`, so sessions are
-  visible whether or not the flag is on now. `review list --all` stays
-  platform-directory-only: repo-local roots are per-checkout and there is no
-  registry of them to walk.
-- Every command that takes `--session` works on either root: direct paths
-  resolve as-is, and local-slug resolution consults the merged listing.
-  Delete/clear cleanup checks session liveness against the root the session
-  file actually lives in.
-- When the same review exists in both roots — for example `local_storage`
-  was toggled between runs, leaving a copy under `<repo>/.tuicr/reviews` and
-  one in the platform data directory — resolving by exact slug errors as
-  ambiguous, because both listings carry the same slug. Disambiguate by
-  passing the session file path instead (`--session <path>`): paths are
-  unique per root.
+- `tuicr review list` follows the same setting: with `local_storage` on and
+  `--repo` naming a checkout (the default `--repo .` included), it lists that
+  checkout's `.tuicr/reviews`; otherwise it lists the platform data directory.
+  `review list --all` stays platform-directory-only: repo-local roots are
+  per-checkout and there is no registry of them to walk.
+- Every command that takes `--session` works on files from either root:
+  direct paths resolve as-is, and local-slug resolution uses the same
+  single-root listing as `review list`. Delete/clear cleanup checks session
+  liveness against the root the session file actually lives in.
 
 Session arguments accept any of:
 

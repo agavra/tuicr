@@ -353,41 +353,38 @@ impl App {
     /// tab unhides them so they can be cleaned up with `dd`.
     pub fn load_sessions_tab(&mut self) {
         let root = self.vcs_info.root_path.clone();
-        let store = crate::review_store::ReviewStore::new();
+        // The tab lists from this run's storage root (`App::reviews_root`)
+        // only: with `local_storage` on that is the checkout's
+        // `.tuicr/reviews`, and rows from the other root never mix in.
+        let store = self
+            .reviews_root()
+            .map(crate::review_store::ReviewStore::with_reviews_dir);
         let show_empty = self.sessions_tab.show_empty();
-        let mut result = store
-            .list_sessions_for_repo(&root)
-            .map(|sessions| {
-                sessions
-                    .into_iter()
-                    .filter(|s| show_empty || Self::is_resumable(s))
-                    .collect::<Vec<_>>()
-            })
-            .map_err(|e| e.to_string());
-
-        // Repo-local sessions surface even with the flag off — they may have
-        // been created with it on. The real-VCS gate and the exists() skip
-        // inside the merge keep everyone else's listing unchanged; a
-        // repo-local listing error is swallowed so platform rows still show.
-        if let (Ok(sessions), Some(repo_local)) = (
-            &mut result,
-            Self::repo_local_root(&root, Self::is_real_vcs(self.vcs_info.vcs_type)),
-        ) {
-            let _ = crate::review_store::merge_repo_local_sessions(
-                sessions,
-                &root,
-                &repo_local,
-                |summary| show_empty || Self::is_resumable(summary),
-            );
-        }
+        let mut result = match &store {
+            Ok(store) => store
+                .list_sessions_for_repo(&root)
+                .map(|sessions| {
+                    sessions
+                        .into_iter()
+                        .filter(|s| show_empty || Self::is_resumable(s))
+                        .collect::<Vec<_>>()
+                })
+                .map_err(|e| e.to_string()),
+            Err(e) => Err(e.to_string()),
+        };
 
         // A fork's `origin` coordinate does not match PR sessions saved against
         // the upstream repo, so listing by checkout alone hides them. Add the
         // sessions for the forge repository this checkout reviews against: the
-        // canonical parent, or whatever `--repo-url` named.
+        // canonical parent, or whatever `--repo-url` named. PR sessions
+        // always live in the platform dir — never in a checkout's
+        // `.tuicr/reviews` — so this listing does not follow the setting.
         if let (Ok(sessions), Some(forge)) = (&mut result, self.forge_repository.clone()) {
             let coordinate = format!("{}/{}", forge.owner, forge.name);
-            if let Ok(forge_sessions) = store.list_sessions_for_repo(Path::new(&coordinate)) {
+            let platform_store = crate::review_store::ReviewStore::new();
+            if let Ok(forge_sessions) =
+                platform_store.list_sessions_for_repo(Path::new(&coordinate))
+            {
                 for session in forge_sessions {
                     let listed = sessions
                         .iter()
@@ -497,23 +494,6 @@ impl App {
                 return Ok(());
             }
         };
-
-        // The tab merges both storage roots, but opening stays single-root
-        // (no migration): adopting a row from the other root would re-home
-        // the session, and its next autosave would fork it into this run's
-        // root while the original file goes stale. Point at the restart
-        // that opens it instead, like the `--file`/`--all-files` rows do.
-        if let Some(file_root) =
-            crate::persistence::storage::reviews_dir_from_session_path(summary.session_ref.path())
-            && file_root != self.reviews_root()?
-        {
-            self.set_message(if self.local_storage {
-                "Restart tuicr without local_storage to open this review."
-            } else {
-                "Restart tuicr with --local-storage to open this review."
-            });
-            return Ok(());
-        }
 
         let loaded = match session.diff_source {
             SessionDiffSource::CommitRange => {
