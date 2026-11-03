@@ -12,6 +12,7 @@ use crate::forge::traits::ForgeKind;
 use crate::model::LineRange;
 use crate::theme::Theme;
 use crate::ui::styles;
+use crate::vcs::{TAB_WIDTH, tabify};
 
 /// Content prefix used on every comment-body line. 4 pad chars + `│` + 2 spaces.
 /// The 4-char left pad lets the bar painter draw `│` up through diff lines
@@ -19,11 +20,26 @@ use crate::ui::styles;
 const BORDER_PREFIX: &str = "    │  ";
 const BORDER_PREFIX_WIDTH: usize = 7;
 
+fn char_width(c: char) -> usize {
+    if c == '\t' {
+        TAB_WIDTH
+    } else {
+        UnicodeWidthChar::width(c).unwrap_or(0)
+    }
+}
+
+fn text_width(text: &str) -> usize {
+    // Measure the runs between tabs as strings: summing per-char widths would
+    // miscount sequences such as presentation selectors.
+    text.split('\t').map(UnicodeWidthStr::width).sum::<usize>()
+        + text.matches('\t').count() * TAB_WIDTH
+}
+
 /// Split `text` into segments whose display width each fits within `content_area`.
 /// Returns a single-element vec when the text already fits. The returned slices
 /// borrow from `text`, so the caller must keep `text` alive while iterating.
 pub(crate) fn wrap_segments(text: &str, content_area: usize) -> Vec<&str> {
-    if content_area == 0 || text.width() <= content_area {
+    if content_area == 0 || text_width(text) <= content_area {
         return vec![text];
     }
     let mut segments = Vec::new();
@@ -32,7 +48,7 @@ pub(crate) fn wrap_segments(text: &str, content_area: usize) -> Vec<&str> {
         let mut take_bytes = 0usize;
         let mut taken_width = 0usize;
         for c in remaining.chars() {
-            let cw = UnicodeWidthChar::width(c).unwrap_or(0);
+            let cw = char_width(c);
             if taken_width + cw > content_area {
                 break;
             }
@@ -89,7 +105,7 @@ pub(crate) fn move_comment_cursor(
     };
     let row = &rows[target];
     let column =
-        *preferred_column.get_or_insert_with(|| buffer[rows[current].start..cursor].width());
+        *preferred_column.get_or_insert_with(|| text_width(&buffer[rows[current].start..cursor]));
     let text = &buffer[row.clone()];
     // At a soft-wrap boundary, the cursor belongs to the following row.
     // A cursor can sit after a row's text only at a newline or the buffer's end.
@@ -102,7 +118,7 @@ pub(crate) fn move_comment_cursor(
         .char_indices()
         .map(|(byte, _)| byte)
         .chain(end_stop)
-        .rfind(|&byte| text[..byte].width() <= column)
+        .rfind(|&byte| text_width(&text[..byte]) <= column)
         .unwrap_or(0);
     row.start + byte
 }
@@ -121,7 +137,7 @@ fn highlighted_window_spans(
         return Vec::new();
     }
     let Some(runs) = runs else {
-        return vec![Span::raw(line_text[start..end].to_string())];
+        return vec![Span::raw(tabify(&line_text[start..end]))];
     };
     let mut out = Vec::new();
     let mut run_start = 0usize;
@@ -131,7 +147,7 @@ fn highlighted_window_spans(
         let hi = end.min(run_end);
         if lo < hi {
             out.push(Span::styled(
-                text[lo - run_start..hi - run_start].to_string(),
+                tabify(&text[lo - run_start..hi - run_start]),
                 *style,
             ));
         }
@@ -293,7 +309,7 @@ pub fn format_comment_input_lines(
 
                     // Track cursor position for IME
                     cursor_line_offset = 1 + total_visual_lines;
-                    cursor_column = BORDER_PREFIX_WIDTH as u16 + before.width() as u16;
+                    cursor_column = BORDER_PREFIX_WIDTH as u16 + text_width(before) as u16;
 
                     // before-cursor text, highlighted
                     line_spans.extend(highlighted_window_spans(
@@ -306,7 +322,8 @@ pub fn format_comment_input_lines(
                     // No trailing cell at end-of-segment — the terminal cursor
                     // (set_cursor_position) handles that position.
                     if let Some(cursor_char) = after.chars().next() {
-                        line_spans.push(Span::styled(cursor_char.to_string(), cursor_style));
+                        line_spans
+                            .push(Span::styled(tabify(&cursor_char.to_string()), cursor_style));
                         line_spans.extend(highlighted_window_spans(
                             line_runs,
                             text,
@@ -418,7 +435,7 @@ pub fn format_remote_thread_lines(
         for line in comment.body.split('\n') {
             result.push(Line::from(vec![
                 Span::styled("    │  ".to_string(), border_style),
-                Span::styled(line.to_string(), body_style),
+                Span::styled(tabify(line), body_style),
             ]));
         }
 
@@ -473,7 +490,7 @@ pub fn format_remote_review_summary_lines(
     for line in summary.body.split('\n') {
         result.push(Line::from(vec![
             Span::styled("    │  ".to_string(), border_style),
-            Span::styled(line.to_string(), body_style),
+            Span::styled(tabify(line), body_style),
         ]));
     }
 
@@ -799,7 +816,74 @@ mod tests {
         assert_eq!(segments, vec!["12345"]);
     }
 
+    #[test]
+    fn should_count_tabs_as_tab_width_when_wrapping() {
+        // given
+        let text = "\tab";
+
+        // when
+        let segments = wrap_segments(text, 5);
+
+        // then
+        assert_eq!(segments, vec!["\ta", "b"]);
+    }
+
+    fn line_text(line: &Line) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
     // -- format_comment_input_lines tests --
+
+    #[test]
+    fn should_render_tabs_in_comment_input() {
+        // given
+        let theme = test_theme();
+        let buffer = "```suggestion\n\tfoo()\n```";
+        let cursor_pos = buffer.find("foo").unwrap();
+
+        // when
+        let (lines, cursor_info) = format_comment_input_lines(
+            &theme,
+            CommentTypePresentation {
+                label: "NOTE".to_string(),
+                color: Color::Blue,
+            },
+            buffer,
+            cursor_pos,
+            None,
+            false,
+            80,
+            None,
+            true,
+        );
+
+        // then
+        assert_eq!(line_text(&lines[2]), "    │      foo()");
+        assert_eq!(cursor_info.line_offset, 2);
+        assert_eq!(cursor_info.column, 7 + 4);
+    }
+
+    #[test]
+    fn should_render_tabs_in_saved_comment() {
+        // given
+        let theme = test_theme();
+
+        // when
+        let lines = format_comment_lines(
+            &theme,
+            CommentTypePresentation {
+                label: "NOTE".to_string(),
+                color: Color::Blue,
+            },
+            "```suggestion\n\tfoo()\n```",
+            None,
+            80,
+            None,
+        );
+
+        // then
+        assert_eq!(line_text(&lines[2]), "    │      foo()");
+    }
 
     #[test]
     fn should_return_cursor_at_start_for_empty_buffer() {

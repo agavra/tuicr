@@ -65,10 +65,14 @@ pub(crate) fn container_file_paths(files: &[DiffFile], side: LineSide) -> Vec<Pa
         .collect()
 }
 
+/// Columns a tab occupies in diffs and comments. Terminals draw nothing for
+/// a raw `\t`, so every displayed tab is expanded to this many spaces.
+pub(crate) const TAB_WIDTH: usize = 4;
+
 /// Expand tabs to spaces in diff line content so highlighted spans line up
 /// with the displayed text in side-by-side and unified rendering.
 pub(crate) fn tabify(s: &str) -> String {
-    s.replace('\t', "    ")
+    s.replace('\t', &" ".repeat(TAB_WIDTH))
 }
 
 /// Slice `[start_line, end_line]` (1-indexed, inclusive) into `DiffLine`s.
