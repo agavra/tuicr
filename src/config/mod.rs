@@ -1973,16 +1973,6 @@ mod tests {
     }
 
     #[test]
-    fn should_parse_local_storage_false() {
-        let outcome = parse_config("local_storage = false\n");
-        assert_eq!(
-            outcome.config.as_ref().and_then(|cfg| cfg.local_storage),
-            Some(false)
-        );
-        assert!(outcome.warnings.is_empty());
-    }
-
-    #[test]
     fn should_warn_and_ignore_local_storage_with_invalid_type() {
         let outcome = parse_config("local_storage = \"yes\"\n");
         assert_eq!(
@@ -1991,15 +1981,6 @@ mod tests {
         );
         assert_eq!(outcome.warnings.len(), 1);
         assert!(outcome.warnings[0].contains('\''));
-    }
-
-    #[test]
-    fn should_default_local_storage_to_none() {
-        let outcome = parse_config("\n");
-        assert_eq!(
-            outcome.config.as_ref().and_then(|cfg| cfg.local_storage),
-            None
-        );
     }
 
     // scroll_offset

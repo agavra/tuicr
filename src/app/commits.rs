@@ -498,6 +498,23 @@ impl App {
             }
         };
 
+        // The tab merges both storage roots, but opening stays single-root
+        // (no migration): adopting a row from the other root would re-home
+        // the session, and its next autosave would fork it into this run's
+        // root while the original file goes stale. Point at the restart
+        // that opens it instead, like the `--file`/`--all-files` rows do.
+        if let Some(file_root) =
+            crate::persistence::storage::reviews_dir_from_session_path(summary.session_ref.path())
+            && file_root != self.reviews_root()?
+        {
+            self.set_message(if self.local_storage {
+                "Restart tuicr without local_storage to open this review."
+            } else {
+                "Restart tuicr with --local-storage to open this review."
+            });
+            return Ok(());
+        }
+
         let loaded = match session.diff_source {
             SessionDiffSource::CommitRange => {
                 let Some(commits) = self.session_range_commits(&session)? else {

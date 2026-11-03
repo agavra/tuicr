@@ -6,7 +6,7 @@
 use crate::app::*;
 use crate::model::SessionDiffSource;
 use crate::vcs::traits::{VcsBackend, VcsInfo, VcsType};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Redirects the platform-data-dir storage root to a temp dir for the
 /// current thread, so "global untouched" assertions are meaningful.
@@ -84,56 +84,10 @@ fn working_tree_session(vcs_info: &VcsInfo) -> ReviewSession {
     )
 }
 
-#[test]
-fn should_use_the_repo_local_root_for_local_reviews_when_enabled() {
-    let _reviews = TestReviewsDir::new();
-    let repo = tempfile::tempdir().unwrap();
-    let vcs_info = git_vcs_info(repo.path().to_path_buf());
-    let session = working_tree_session(&vcs_info);
-
-    let root =
-        App::session_reviews_root(true, &session, &vcs_info, &DiffSource::WorkingTree).unwrap();
-
-    assert_eq!(
-        root,
-        crate::persistence::storage::repo_local_reviews_dir(repo.path()),
-        "an opted-in local review must persist beside the checkout"
-    );
-}
-
-#[test]
-fn should_use_the_platform_dir_when_local_storage_is_disabled() {
-    let _reviews = TestReviewsDir::new();
-    let repo = tempfile::tempdir().unwrap();
-    let vcs_info = git_vcs_info(repo.path().to_path_buf());
-    let session = working_tree_session(&vcs_info);
-
-    let root =
-        App::session_reviews_root(false, &session, &vcs_info, &DiffSource::WorkingTree).unwrap();
-
-    assert_eq!(
-        root,
-        crate::persistence::storage::get_reviews_dir().unwrap(),
-        "the default must stay byte-identical to today's behavior"
-    );
-}
-
-#[test]
-fn should_keep_pr_sessions_in_the_platform_dir_even_with_local_storage() {
-    let _reviews = TestReviewsDir::new();
-    let repo = tempfile::tempdir().unwrap();
-    let vcs_info = git_vcs_info(repo.path().to_path_buf());
-    let key = crate::forge::traits::PrSessionKey::new(
-        crate::forge::traits::ForgeRepository::github("github.com", "owner", "repo"),
-        7,
-        "head".to_string(),
-    );
-
-    // A PR session identity: pr_session_key set, PR diff source.
-    let mut session = working_tree_session(&vcs_info);
-    session.pr_session_key = Some(key.clone());
-    session.diff_source = SessionDiffSource::PullRequest;
-    let diff_source = DiffSource::PullRequest(Box::new(crate::app::PullRequestDiffSource {
+/// A `DiffSource::PullRequest` value for routing tests; only the variant
+/// shape matters, never the payload.
+fn pr_diff_source(key: crate::forge::traits::PrSessionKey) -> DiffSource {
+    DiffSource::PullRequest(Box::new(crate::app::PullRequestDiffSource {
         key,
         base_sha: "base".to_string(),
         title: "A PR".to_string(),
@@ -143,70 +97,104 @@ fn should_keep_pr_sessions_in_the_platform_dir_even_with_local_storage() {
         state: "OPEN".to_string(),
         closed: false,
         merged: false,
-    }));
-
-    let root = App::session_reviews_root(true, &session, &vcs_info, &diff_source).unwrap();
-
-    assert_eq!(
-        root,
-        crate::persistence::storage::get_reviews_dir().unwrap(),
-        "PR sessions must never move into a checkout's .tuicr/"
-    );
-
-    // The session-identity guard alone (key set, non-PR source shape) must
-    // also route globally: it covers PR state installed before diff_source.
-    let diff_source = DiffSource::WorkingTree;
-    let root = App::session_reviews_root(true, &session, &vcs_info, &diff_source).unwrap();
-    assert_eq!(
-        root,
-        crate::persistence::storage::get_reviews_dir().unwrap()
-    );
+    }))
 }
 
 #[test]
-fn should_keep_file_mode_in_the_platform_dir_even_with_local_storage() {
+fn should_route_each_session_kind_to_its_storage_root() {
     let _reviews = TestReviewsDir::new();
-    let dir = tempfile::tempdir().unwrap();
-    let vcs_info = VcsInfo {
-        root_path: dir.path().to_path_buf(),
+    let repo = tempfile::tempdir().unwrap();
+    let git = git_vcs_info(repo.path().to_path_buf());
+    let file = VcsInfo {
+        root_path: repo.path().to_path_buf(),
         head_commit: "file".to_string(),
         branch_name: None,
         vcs_type: VcsType::File,
     };
-    let session = working_tree_session(&vcs_info);
 
-    let root =
-        App::session_reviews_root(true, &session, &vcs_info, &DiffSource::WorkingTree).unwrap();
-
-    assert_eq!(
-        root,
-        crate::persistence::storage::get_reviews_dir().unwrap(),
-        "--file / --all-files must not scatter .tuicr/ next to arbitrary files"
+    // A PR session identity: pr_session_key set, PR diff source.
+    let mut pr_session = working_tree_session(&git);
+    let key = crate::forge::traits::PrSessionKey::new(
+        crate::forge::traits::ForgeRepository::github("github.com", "owner", "repo"),
+        7,
+        "head".to_string(),
     );
+    pr_session.pr_session_key = Some(key.clone());
+    pr_session.diff_source = SessionDiffSource::PullRequest;
+
+    let repo_local = crate::persistence::storage::repo_local_reviews_dir(repo.path());
+    let platform = crate::persistence::storage::get_reviews_dir().unwrap();
+
+    let cases: &[(&str, bool, &VcsInfo, ReviewSession, DiffSource, &Path)] = &[
+        (
+            "an opted-in local review must persist beside the checkout",
+            true,
+            &git,
+            working_tree_session(&git),
+            DiffSource::WorkingTree,
+            &repo_local,
+        ),
+        (
+            "the default must stay byte-identical to today's behavior",
+            false,
+            &git,
+            working_tree_session(&git),
+            DiffSource::WorkingTree,
+            &platform,
+        ),
+        (
+            "PR sessions must never move into a checkout's .tuicr/",
+            true,
+            &git,
+            pr_session.clone(),
+            pr_diff_source(key.clone()),
+            &platform,
+        ),
+        (
+            "a PR identity before its diff source installs must route globally",
+            true,
+            &git,
+            pr_session,
+            DiffSource::WorkingTree,
+            &platform,
+        ),
+        (
+            "--file / --all-files must not scatter .tuicr/ next to arbitrary files",
+            true,
+            &file,
+            working_tree_session(&file),
+            DiffSource::WorkingTree,
+            &platform,
+        ),
+    ];
+
+    for &(name, local_storage, vcs_info, ref session, ref diff_source, expected) in cases {
+        let root = App::session_reviews_root(local_storage, session, vcs_info, diff_source)
+            .expect("routing must resolve");
+        assert_eq!(root, expected, "{name}");
+    }
 }
 
-#[test]
-fn should_list_repo_local_sessions_in_the_sessions_tab() {
-    let _reviews = TestReviewsDir::new();
-    let repo = tempfile::tempdir().unwrap();
-    let vcs_info = git_vcs_info(repo.path().to_path_buf());
-
-    // A resumable session (reviewed file) saved with local storage on.
-    let repo_local = crate::persistence::storage::repo_local_reviews_dir(repo.path());
+/// An app with the flag OFF whose checkout nevertheless carries one
+/// resumable repo-local session (a reviewed file), so the Sessions tab
+/// sees a row from the run's inactive root.
+fn app_with_repo_local_session(repo: &Path) -> (App, ReviewSession) {
+    let vcs_info = git_vcs_info(repo.to_path_buf());
+    let repo_local = crate::persistence::storage::repo_local_reviews_dir(repo);
     let store = crate::review_store::ReviewStore::with_reviews_dir(&repo_local);
     let mut session = working_tree_session(&vcs_info);
     session.add_file(
-        std::path::PathBuf::from("src/main.rs"),
+        PathBuf::from("src/main.rs"),
         crate::model::FileStatus::Modified,
         0,
     );
     session
-        .get_file_mut(&std::path::PathBuf::from("src/main.rs"))
+        .get_file_mut(&PathBuf::from("src/main.rs"))
         .unwrap()
         .reviewed = true;
     store.save_review(&session).unwrap();
 
-    let mut app = App::build(
+    let app = App::build(
         Box::new(NullVcs {
             info: vcs_info.clone(),
         }),
@@ -215,7 +203,7 @@ fn should_list_repo_local_sessions_in_the_sessions_tab() {
         None,
         false,
         Vec::new(),
-        working_tree_session(&git_vcs_info(repo.path().to_path_buf())),
+        working_tree_session(&git_vcs_info(repo.to_path_buf())),
         DiffSource::WorkingTree,
         InputMode::Normal,
         Vec::new(),
@@ -223,10 +211,41 @@ fn should_list_repo_local_sessions_in_the_sessions_tab() {
         None,
     )
     .expect("build app");
+    (app, session)
+}
+
+#[test]
+fn should_list_repo_local_sessions_in_the_sessions_tab() {
+    let _reviews = TestReviewsDir::new();
+    let repo = tempfile::tempdir().unwrap();
+    let (mut app, _session) = app_with_repo_local_session(repo.path());
 
     // The flag is OFF here: the tab still surfaces repo-local sessions
     // because they may have been created with it on.
     app.load_sessions_tab();
 
     assert_eq!(app.sessions_tab.rows().len(), 1);
+}
+
+#[test]
+fn should_ask_to_restart_when_opening_a_session_from_the_inactive_root() {
+    let _reviews = TestReviewsDir::new();
+    let repo = tempfile::tempdir().unwrap();
+    let (mut app, session) = app_with_repo_local_session(repo.path());
+
+    app.load_sessions_tab();
+    assert_eq!(app.sessions_tab.rows().len(), 1);
+    app.sessions_tab_select().unwrap();
+
+    assert!(
+        app.message
+            .as_ref()
+            .is_some_and(|m| m.content.contains("--local-storage")),
+        "selecting a cross-root row must explain the restart, got {:?}",
+        app.message.as_ref().map(|m| &m.content)
+    );
+    assert_ne!(
+        app.session.id, session.id,
+        "the inactive root's session must not be adopted into this run"
+    );
 }

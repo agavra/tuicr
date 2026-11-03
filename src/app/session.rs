@@ -52,6 +52,21 @@ impl App {
         applies.then(|| crate::persistence::storage::repo_local_reviews_dir(checkout_root))
     }
 
+    /// [`load_or_create_session`](Self::load_or_create_session) against this
+    /// app's storage root — the shared prelude of every reload path, so no
+    /// call site re-derives the root inline.
+    pub(in crate::app) fn load_or_create_session_here(
+        &self,
+        diff_source: SessionDiffSource,
+    ) -> Result<ReviewSession> {
+        let reviews_dir = self.reviews_root()?;
+        Ok(Self::load_or_create_session(
+            &self.vcs_info,
+            diff_source,
+            &reviews_dir,
+        ))
+    }
+
     /// Slug for the currently active session, derived from the session's
     /// embedded fields. Returns `None` if derivation fails (e.g., a local
     /// session pointing at a non-existent path). The slug is cheap to derive

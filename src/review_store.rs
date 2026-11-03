@@ -1,4 +1,5 @@
 use std::cmp::Reverse;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
@@ -200,11 +201,14 @@ pub fn merge_repo_local_sessions(
         return Ok(());
     }
     let repo_local_store = ReviewStore::with_reviews_dir(repo_local_root);
+    let mut listed: HashSet<PathBuf> = sessions
+        .iter()
+        .map(|s| s.session_ref.path().to_path_buf())
+        .collect();
     for session in repo_local_store.list_sessions_for_repo(repo_selector)? {
-        let listed = sessions
-            .iter()
-            .any(|existing| existing.session_ref.path() == session.session_ref.path());
-        if !listed && admit(&session) {
+        let path = session.session_ref.path().to_path_buf();
+        if !listed.contains(&path) && admit(&session) {
+            listed.insert(path);
             sessions.push(session);
         }
     }

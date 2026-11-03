@@ -2,9 +2,10 @@
 //!
 //! Runs `App::new` in a real git repository with `local_storage` enabled —
 //! the same path `main.rs` takes — and verifies the session lands in
-//! `<repo>/.tuicr/reviews`, resumes from there on the next start, and is
-//! cleaned up on exit. Lives in its own integration-test process because it
-//! changes the process cwd, like `empty_revision_startup`.
+//! `<repo>/.tuicr/reviews`, carries a comment added through the shared
+//! `ReviewStore`, resumes from there on the next start, and is cleaned up
+//! on exit. Lives in its own integration-test process because it changes
+//! the process cwd, like `empty_revision_startup`.
 
 use std::{fs, path::Path};
 
@@ -84,7 +85,30 @@ fn local_storage_sessions_persist_resume_and_clean_up_in_the_repo_local_root() {
         saved.display()
     );
 
-    // Second run with the same identity resumes it rather than starting over.
+    // The motivating workflow: the agent adds a comment from outside the
+    // TUI (`tuicr review add`'s ReviewStore path) into the same repo-local
+    // file the TUI owns.
+    let store = tuicr::review_store::ReviewStore::with_reviews_dir(&repo_local);
+    let session_ref = store
+        .list_sessions_for_repo(temp.path())
+        .expect("list repo-local sessions")
+        .pop()
+        .expect("the repo-local session is listed");
+    store
+        .add_comment(
+            &session_ref.session_ref,
+            tuicr::review_store::AddCommentRequest {
+                target: tuicr::review_store::CommentTarget::Review,
+                content: "persisted across restarts".to_string(),
+                comment_type: tuicr::model::CommentType::Custom("note".to_string()),
+                author: "agent".to_string(),
+                commit_id: None,
+            },
+        )
+        .expect("add comment via the store");
+
+    // Second run with the same identity resumes it rather than starting
+    // over, carrying the comment.
     let mut second =
         App::new(Theme::dark(), None, false, startup_options()).expect("reopen should succeed");
     second
@@ -94,6 +118,11 @@ fn local_storage_sessions_persist_resume_and_clean_up_in_the_repo_local_root() {
         second.session.id, first.session.id,
         "resume must reattach to the repo-local session"
     );
+    assert_eq!(
+        second.session.review_comments.len(),
+        1,
+        "resume must carry the repo-local session's comment"
+    );
     let sessions_dir = repo_local.join("sessions");
     assert_eq!(
         fs::read_dir(&sessions_dir).unwrap().count(),
@@ -101,13 +130,26 @@ fn local_storage_sessions_persist_resume_and_clean_up_in_the_repo_local_root() {
         "resume must not fork a second session file"
     );
 
-    // Exit cleanup drops the empty session and the active marker from the
-    // repo-local root's sidecars. The ephemeral set is per-process: the app
-    // that created the file (`first`) is the one whose exit removes it.
-    let deleted = first
-        .cleanup_empty_ephemeral_sessions()
-        .expect("cleanup empty sessions");
-    assert_eq!(deleted, 1, "the empty ephemeral session is removed");
+    // Exit cleanup: a commented session is pinned — the app that created
+    // the file (`first`) is the one whose exit removes it, and only once
+    // the comments are gone. The ephemeral set is per-process.
+    assert_eq!(
+        first.cleanup_empty_ephemeral_sessions().expect("cleanup"),
+        0,
+        "a commented session must not be cleaned up"
+    );
+    assert!(saved.exists(), "the commented session survives cleanup");
+    store
+        .clear_comments(
+            &session_ref.session_ref,
+            tuicr::model::ClearScope::CommentsOnly,
+        )
+        .expect("clear comments");
+    assert_eq!(
+        first.cleanup_empty_ephemeral_sessions().expect("cleanup"),
+        1,
+        "the now-empty ephemeral session is removed"
+    );
     assert!(!saved.exists(), "the session file is gone");
     second
         .clear_active_session_marker()

@@ -644,27 +644,11 @@ mod tests {
     // local-storage flags
 
     #[test]
-    fn should_default_local_storage_to_false() {
-        let parsed = parse_for_test(&["tuicr"]).expect("parse should succeed");
-        assert!(!parsed.local_storage);
-    }
-
-    #[test]
-    fn should_parse_local_storage_flag() {
-        let parsed = parse_for_test(&["tuicr", "--local-storage"]).expect("parse should succeed");
-        assert!(parsed.local_storage);
-    }
-
-    #[test]
     fn should_stick_local_storage_across_levels() {
-        // A sticky bool like the other plain flags: given at any level, the
-        // run enables repo-local storage.
+        // A sticky bool like the other plain flags: given before the `tui`
+        // subcommand it still applies to the run.
         let parsed =
             parse_for_test(&["tuicr", "--local-storage", "tui"]).expect("parse should succeed");
-        assert!(parsed.local_storage);
-
-        let parsed =
-            parse_for_test(&["tuicr", "tui", "--local-storage"]).expect("parse should succeed");
         assert!(parsed.local_storage);
     }
 

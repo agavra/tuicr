@@ -425,12 +425,7 @@ impl App {
             Err(e) => return Err(e),
         };
 
-        let reviews_dir = self.reviews_root()?;
-        self.session = Self::load_or_create_session(
-            &self.vcs_info,
-            SessionDiffSource::StagedAndUnstaged,
-            &reviews_dir,
-        );
+        self.session = self.load_or_create_session_here(SessionDiffSource::StagedAndUnstaged)?;
         for file in &diff_files {
             self.session.add_diff_file(file);
         }
@@ -470,12 +465,7 @@ impl App {
             Err(e) => return Err(e),
         };
 
-        let reviews_dir = self.reviews_root()?;
-        self.session = Self::load_or_create_session(
-            &self.vcs_info,
-            SessionDiffSource::WorkingTree,
-            &reviews_dir,
-        );
+        self.session = self.load_or_create_session_here(SessionDiffSource::WorkingTree)?;
         for file in &diff_files {
             self.session.add_diff_file(file);
         }
@@ -510,9 +500,7 @@ impl App {
             Err(e) => return Err(e),
         };
 
-        let reviews_dir = self.reviews_root()?;
-        self.session =
-            Self::load_or_create_session(&self.vcs_info, SessionDiffSource::Staged, &reviews_dir);
+        self.session = self.load_or_create_session_here(SessionDiffSource::Staged)?;
         for file in &diff_files {
             self.session.add_diff_file(file);
         }
@@ -547,9 +535,7 @@ impl App {
             Err(e) => return Err(e),
         };
 
-        let reviews_dir = self.reviews_root()?;
-        self.session =
-            Self::load_or_create_session(&self.vcs_info, SessionDiffSource::Unstaged, &reviews_dir);
+        self.session = self.load_or_create_session_here(SessionDiffSource::Unstaged)?;
         for file in &diff_files {
             self.session.add_diff_file(file);
         }
