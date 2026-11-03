@@ -142,12 +142,14 @@ fn try_clipboard_cmd(program: &str, args: &[&str], text: &str) -> bool {
 
 /// Returns true if we should prefer OSC 52 over the system clipboard.
 ///
-/// In tmux or SSH sessions, arboard may "succeed" but copy to an inaccessible
-/// X11 clipboard, so we use OSC 52 which works reliably in these environments.
+/// In tmux, SSH, Zellij, or Rex sessions, native clipboard tools may "succeed"
+/// but copy to the server's clipboard instead of the terminal client's.
 fn should_prefer_osc52() -> bool {
     std::env::var("TMUX").is_ok()
         || std::env::var("SSH_TTY").is_ok()
         || std::env::var("ZELLIJ").is_ok()
+        || std::env::var("REX_SESSION").is_ok()
+        || std::env::var("TERM_PROGRAM").is_ok_and(|program| program == "rex")
 }
 
 /// Copy text to clipboard using OSC 52 escape sequence.

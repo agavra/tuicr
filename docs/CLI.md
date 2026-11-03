@@ -142,6 +142,8 @@ out to.
 | `GERRIT_USERNAME`, `GERRIT_PASSWORD` | Gerrit REST API credentials. `GERRIT_PASSWORD` must be an HTTP password, not the account password |
 | `TUICR_GLAB_DEBUG` | Log `glab` invocations for debugging. See [GITLAB.md](GITLAB.md) |
 | `TMUX`, `ZELLIJ`, `SSH_TTY` | Detected to choose a clipboard path — OSC 52 over SSH, `tmux load-buffer` inside tmux |
+| `REX_SESSION` | Prefer OSC 52 clipboard writes to reach the Rex client's clipboard |
+| `TERM_PROGRAM` | When set to `rex`, prefer OSC 52 clipboard writes |
 | `XDG_SESSION_TYPE` | Picks `wl-copy` on Wayland or `xclip` on X11 |
 
 Set `TUICR_PROFILE` to `1`, `true`, `on`, or `yes` to log to
