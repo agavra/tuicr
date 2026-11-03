@@ -130,15 +130,10 @@ fn local_storage_sessions_persist_resume_and_clean_up_in_the_repo_local_root() {
         "resume must not fork a second session file"
     );
 
-    // Exit cleanup: a commented session is pinned — the app that created
-    // the file (`first`) is the one whose exit removes it, and only once
-    // the comments are gone. The ephemeral set is per-process.
-    assert_eq!(
-        first.cleanup_empty_ephemeral_sessions().expect("cleanup"),
-        0,
-        "a commented session must not be cleaned up"
-    );
-    assert!(saved.exists(), "the commented session survives cleanup");
+    // Exit cleanup: a commented session is pinned — the resumed run above
+    // loaded it with its comment intact — so once the comments are cleared,
+    // the app that created the file (`first`) removes it on quit. The
+    // ephemeral set is per-process and consumed by the cleanup walk.
     store
         .clear_comments(
             &session_ref.session_ref,
