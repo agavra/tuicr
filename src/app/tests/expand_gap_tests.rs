@@ -1,3 +1,4 @@
+use super::{LineCountRefs, StubVcs};
 use crate::app::*;
 use crate::model::{DiffHunk, DiffLine, FileStatus, LineOrigin};
 use crate::vcs::traits::VcsType;
@@ -1926,4 +1927,96 @@ fn should_render_old_side_thread_on_context_line_once_in_each_view() {
         assert_eq!(rows[0] < hunk_header, under_header, "{mode:?}");
         assert_eq!(app.total_lines(), app.line_annotations.len(), "{mode:?}");
     }
+}
+
+fn build_counting_app(commits: &[&str], files: Vec<DiffFile>) -> (App, LineCountRefs) {
+    let line_count_refs = LineCountRefs::default();
+    let vcs_info = VcsInfo {
+        root_path: PathBuf::from("/tmp"),
+        head_commit: "abc123".to_string(),
+        branch_name: Some("main".to_string()),
+        vcs_type: VcsType::Git,
+    };
+    let session = ReviewSession::new(
+        vcs_info.root_path.clone(),
+        vcs_info.head_commit.clone(),
+        vcs_info.branch_name.clone(),
+        SessionDiffSource::WorkingTree,
+    );
+    let app = App::build(
+        Box::new(StubVcs {
+            info: vcs_info.clone(),
+            line_count: 100,
+            line_count_refs: LineCountRefs::clone(&line_count_refs),
+        }),
+        vcs_info,
+        Theme::dark(),
+        None,
+        false,
+        files,
+        session,
+        DiffSource::CommitRange(commits.iter().map(|c| c.to_string()).collect()),
+        InputMode::Normal,
+        Vec::new(),
+        None,
+        None,
+    )
+    .expect("failed to build test app");
+    (app, line_count_refs)
+}
+
+fn two_files() -> Vec<DiffFile> {
+    vec![
+        make_file_with_hunks("b.rs", vec![make_hunk(1, 2)]),
+        make_file_with_hunks("a.rs", vec![make_hunk(1, 2)]),
+    ]
+}
+
+fn make_commit(id: &str) -> CommitInfo {
+    CommitInfo {
+        id: id.to_string(),
+        short_id: id.to_string(),
+        branch_name: None,
+        summary: "summary".to_string(),
+        body: None,
+        author: "author".to_string(),
+        time: chrono::Utc::now(),
+    }
+}
+
+/// Counting lines loads each file's contents, so a launch counts each file once.
+#[test]
+fn should_count_each_file_once_at_the_newest_commit_when_finishing_a_multi_commit_range_load() {
+    let (mut app, refs) = build_counting_app(&["one", "two"], two_files());
+    app.review_commits = vec![make_commit("two"), make_commit("one")];
+
+    app.finish_range_load();
+
+    assert_eq!(
+        *refs.lock().unwrap(),
+        vec![Some("two".to_string()), Some("two".to_string())]
+    );
+}
+
+/// The inserted message changes every file index, and the cache uses indices as keys.
+#[test]
+fn should_recount_and_list_the_message_first_when_finishing_a_single_commit_range_load() {
+    let (mut app, refs) = build_counting_app(&["one"], two_files());
+    app.review_commits = vec![make_commit("one")];
+
+    app.finish_range_load();
+
+    assert!(app.diff_files[0].is_commit_message);
+    assert_eq!(refs.lock().unwrap().len(), 5);
+}
+
+#[test]
+fn should_keep_the_cursor_at_the_overview_after_finishing_a_range_load() {
+    let (mut app, _refs) = build_counting_app(&["one", "two"], two_files());
+    app.review_commits = vec![make_commit("two"), make_commit("one")];
+
+    app.finish_range_load();
+
+    assert_eq!(app.diff_state.cursor_line, 0);
+    assert_eq!(app.diff_state.scroll_offset, 0);
 }

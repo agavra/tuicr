@@ -1112,6 +1112,12 @@ impl App {
             return Ok(());
         };
 
+        // Save the files of the full commit range, because the first reload replaces
+        // `diff_files`.
+        if self.range_diff_files.is_none() {
+            self.range_diff_files = Some(self.diff_files.clone());
+        }
+
         // Each branch decides only where the files come from. The install runs
         // once, below, so no branch can forget a step of it. Session
         // registration went missing that way.

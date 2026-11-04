@@ -107,6 +107,7 @@ fn read_view(repo: &Repository, view: View, base: &str) -> Vec<DiffFile> {
                 ),
                 &mode,
                 &highlighter,
+                &Default::default(),
             )
         }
         View::CommitsAndWorkingTree => {

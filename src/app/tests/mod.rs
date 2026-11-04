@@ -26,3 +26,50 @@ mod target_selector_tests;
 mod theme_picker_tests;
 mod tree_tests;
 mod visual_selection_tests;
+
+/// Holds the commit each `file_line_count` call received.
+pub(in crate::app) type LineCountRefs = std::sync::Arc<std::sync::Mutex<Vec<Option<String>>>>;
+
+/// Return a fixed line count and record the commit each call received.
+pub(in crate::app) struct StubVcs {
+    pub(in crate::app) info: crate::vcs::VcsInfo,
+    pub(in crate::app) line_count: u32,
+    pub(in crate::app) line_count_refs: LineCountRefs,
+}
+
+impl crate::vcs::VcsBackend for StubVcs {
+    fn info(&self) -> &crate::vcs::VcsInfo {
+        &self.info
+    }
+
+    fn get_working_tree_diff(
+        &self,
+        _highlighter: &crate::syntax::SyntaxHighlighter,
+    ) -> crate::error::Result<Vec<crate::model::DiffFile>> {
+        Err(crate::error::TuicrError::NoChanges)
+    }
+
+    fn fetch_context_lines(
+        &self,
+        _file_path: &std::path::Path,
+        _file_status: crate::model::FileStatus,
+        _ref_commit: Option<&str>,
+        _start_line: u32,
+        _end_line: u32,
+    ) -> crate::error::Result<Vec<crate::model::DiffLine>> {
+        Ok(Vec::new())
+    }
+
+    fn file_line_count(
+        &self,
+        _file_path: &std::path::Path,
+        _file_status: crate::model::FileStatus,
+        ref_commit: Option<&str>,
+    ) -> crate::error::Result<u32> {
+        self.line_count_refs
+            .lock()
+            .unwrap()
+            .push(ref_commit.map(str::to_string));
+        Ok(self.line_count)
+    }
+}
