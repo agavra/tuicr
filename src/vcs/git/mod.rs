@@ -1,3 +1,4 @@
+mod attrs;
 mod cli;
 pub mod context;
 pub mod diff;
