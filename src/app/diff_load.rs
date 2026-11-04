@@ -25,8 +25,8 @@ impl App {
         }
     }
 
-    /// Add the commit message, build the file tree and build the display rows
-    /// after a range load. `build` has already sorted the files and counted their lines.
+    /// Add the commit message, build the file tree and build the display rows after a
+    /// range load. Call this after `build`, which sorts the files and counts their lines.
     pub(in crate::app) fn finish_range_load(&mut self) {
         // The sort clears the line-count cache. Run it only when the inserted
         // message file has changed the file indices that the cache uses as keys.
@@ -44,7 +44,7 @@ impl App {
     /// (the session indexes comments by path) and the exported review records
     /// which commit each commit-message comment belongs to.
     ///
-    /// Returns whether it inserted a commit-message file.
+    /// Return whether this function inserted a commit-message file.
     pub(in crate::app) fn insert_commit_message_if_single(&mut self) -> bool {
         self.diff_files.retain(|f| !f.is_commit_message);
 
@@ -1158,7 +1158,7 @@ impl App {
             review_commits,
             request.commit_selection_range,
         );
-        let files = Self::changed_diff_files_for_source(
+        let mut files = Self::changed_diff_files_for_source(
             vcs.as_ref(),
             root_path,
             &fetch_source,
@@ -1166,6 +1166,9 @@ impl App {
             path_filter,
             current,
         )?;
+        if let Some(files) = &mut files {
+            Self::color_uncolored_files(vcs.as_ref(), files, highlighter);
+        }
         // Runs on the worker, alongside the diff fetch, so the event loop never
         // pays for it.
         //

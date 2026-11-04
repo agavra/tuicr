@@ -1,4 +1,6 @@
 use super::*;
+use crate::syntax::needs_full_file_highlight;
+use crate::vcs::color_full_file;
 
 impl App {
     /// Color uncolored visible hunks. Call this before building a line.
@@ -9,32 +11,31 @@ impl App {
     /// `diff_state.viewport_height` is written during render.
     pub(crate) fn color_visible_hunks(&mut self, max_rows: usize) -> usize {
         let highlighter = self.theme.syntax_highlighter();
-        let unvisited: Vec<(usize, usize)> = self
+        let new_keys: Vec<_> = self
             .visible_hunk_indices(max_rows)
             .into_iter()
-            .filter(|key| self.colored_hunks.insert(*key))
+            .filter(|key| !self.colored_hunks.contains(key))
             .collect();
-
-        unvisited
+        self.colored_hunks.extend(new_keys.iter().copied());
+        new_keys
             .into_iter()
-            .filter_map(|(file_idx, hunk_idx)| {
-                let DiffFile {
-                    old_path,
-                    new_path,
-                    hunks,
-                    ..
-                } = self.diff_files.get_mut(file_idx)?;
-                let path = new_path.as_deref().or(old_path.as_deref())?;
-                let hunk = hunks.get_mut(hunk_idx)?;
-
-                // only color uncolored lines
-                if hunk.lines.iter().any(|l| l.highlighted_spans.is_some()) {
-                    return Some(());
-                }
-                highlighter.rehighlight_hunk_in_place(hunk, path);
-                Some(())
-            })
+            .filter_map(|key| color_hunk(self.vcs.as_ref(), &mut self.diff_files, key, highlighter))
             .count()
+    }
+
+    /// Color every file with blob IDs in `vcs`. Call this from the diff watcher.
+    /// The watcher loads files through a separate backend and then drops that backend,
+    /// so `App::vcs` has no blob IDs for those files.
+    pub(in crate::app) fn color_uncolored_files(
+        vcs: &dyn VcsBackend,
+        files: &mut [DiffFile],
+        highlighter: &SyntaxHighlighter,
+    ) {
+        for file in files {
+            if let Some((old, new)) = vcs.uncolored_file_contents(file) {
+                color_full_file(file, highlighter, old.as_deref(), new.as_deref());
+            }
+        }
     }
 
     /// Visible hunks are those in the viewport plus and minus one screen
@@ -56,6 +57,49 @@ impl App {
         hunks.dedup();
         hunks
     }
+}
+
+/// Lists the ways to color a hunk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HunkColoring {
+    AlreadyColored,
+    WholeFile,
+    OneHunk,
+}
+
+/// Choose how to color `hunk` from its lines and its file's path.
+fn hunk_coloring(hunk: &DiffHunk, path: &Path) -> HunkColoring {
+    if hunk.lines.iter().any(|l| l.highlighted_spans.is_some()) {
+        HunkColoring::AlreadyColored
+    } else if needs_full_file_highlight(path) {
+        HunkColoring::WholeFile
+    } else {
+        HunkColoring::OneHunk
+    }
+}
+
+/// Color one hunk, or its whole file when coloring needs file context. Return
+/// `None` when `file_idx` or `hunk_idx` no longer exists.
+fn color_hunk(
+    vcs: &dyn VcsBackend,
+    files: &mut [DiffFile],
+    (file_idx, hunk_idx): (usize, usize),
+    highlighter: &SyntaxHighlighter,
+) -> Option<()> {
+    let file = files.get_mut(file_idx)?;
+    let path = file.display_path().clone();
+    match hunk_coloring(file.hunks.get(hunk_idx)?, &path) {
+        HunkColoring::AlreadyColored => {}
+        HunkColoring::WholeFile => {
+            if let Some((old, new)) = vcs.uncolored_file_contents(file) {
+                color_full_file(file, highlighter, old.as_deref(), new.as_deref());
+            }
+        }
+        HunkColoring::OneHunk => {
+            highlighter.rehighlight_hunk_in_place(file.hunks.get_mut(hunk_idx)?, &path);
+        }
+    }
+    Some(())
 }
 
 impl AnnotatedLine {
@@ -92,6 +136,7 @@ impl AnnotatedLine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::tests::StubVcs;
     use crate::app::tests::render_perf_tests::{app_with, file};
     use crate::model::{FilePatch, FileStatus};
     use crate::syntax::SyntaxHighlighter;
@@ -157,6 +202,104 @@ mod tests {
         app.rebuild_annotations();
 
         assert_eq!(app.color_visible_hunks(24), 1);
+    }
+
+    const OLD_SVELTE: &str = "<script>\n  let a = 1;\n</script>\n";
+    const NEW_SVELTE: &str = "<script>\n  let a = 2;\n</script>\n";
+
+    fn svelte_file(path: &str) -> DiffFile {
+        let patch = "@@ -1,3 +1,3 @@\n <script>\n-  let a = 1;\n+  let a = 2;\n </script>\n";
+        crate::vcs::diff_parser::parse_file_patches(
+            vec![FilePatch::new(
+                Some(PathBuf::from(path)),
+                Some(PathBuf::from(path)),
+                FileStatus::Modified,
+                patch,
+            )],
+            &SyntaxHighlighter::default(),
+        )
+        .expect("parse")
+        .remove(0)
+    }
+
+    fn app_with_deferred_vcs(
+        files: Vec<DiffFile>,
+    ) -> (App, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        let mut app = app_with(files);
+        let calls = std::sync::Arc::default();
+        app.vcs = Box::new(StubVcs {
+            info: app.vcs_info.clone(),
+            line_count: 0,
+            line_count_refs: Default::default(),
+            uncolored_contents: Some((Some(OLD_SVELTE.into()), Some(NEW_SVELTE.into()))),
+            uncolored_calls: std::sync::Arc::clone(&calls),
+        });
+        (app, calls)
+    }
+
+    #[test]
+    fn should_color_a_container_file_only_when_it_nears_the_viewport() {
+        let mut files: Vec<DiffFile> = (0..40)
+            .map(|i| uncolored_file(&format!("src/f{i}.rs"), 20))
+            .collect();
+        files.insert(0, svelte_file("near.svelte"));
+        files.push(svelte_file("far.svelte"));
+        let last = files.len() - 1;
+        let (mut app, _calls) = app_with_deferred_vcs(files);
+
+        app.color_visible_hunks(24);
+
+        assert!(is_colored(&app, 0));
+        assert!(!is_colored(&app, last));
+    }
+
+    #[test]
+    fn should_match_load_time_colors_after_first_view_coloring() {
+        let (mut app, _calls) = app_with_deferred_vcs(vec![svelte_file("a.svelte")]);
+
+        app.color_visible_hunks(24);
+
+        let mut themed = vec![svelte_file("a.svelte")];
+        crate::vcs::enhance_with_full_file_highlight(
+            &mut themed,
+            app.theme.syntax_highlighter(),
+            |_| Some(OLD_SVELTE.to_string()),
+            |_| Some(NEW_SVELTE.to_string()),
+        );
+        assert!(
+            !span_signatures(&themed[0].hunks[0])
+                .iter()
+                .any(|l| l == "<uncolored>")
+        );
+        assert_eq!(
+            span_signatures(&app.diff_files[0].hunks[0]),
+            span_signatures(&themed[0].hunks[0])
+        );
+    }
+
+    #[test]
+    fn should_color_every_uncolored_file_for_a_backend_about_to_be_discarded() {
+        let (app, _calls) = app_with_deferred_vcs(Vec::new());
+        let mut files = vec![svelte_file("a.svelte"), svelte_file("b.svelte")];
+
+        App::color_uncolored_files(app.vcs.as_ref(), &mut files, &SyntaxHighlighter::default());
+
+        assert!(
+            files
+                .iter()
+                .all(|file| file.hunks[0].lines[0].highlighted_spans.is_some())
+        );
+    }
+
+    #[test]
+    fn should_request_a_file_once() {
+        let (mut app, calls) = app_with_deferred_vcs(vec![svelte_file("a.svelte")]);
+
+        app.color_visible_hunks(24);
+        app.rebuild_annotations();
+        app.color_visible_hunks(24);
+
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     /// One `HunkHeader` per index, so the expected result for any window `[start, end)`

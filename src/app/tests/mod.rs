@@ -30,11 +30,13 @@ mod visual_selection_tests;
 /// Holds the commit each `file_line_count` call received.
 pub(in crate::app) type LineCountRefs = std::sync::Arc<std::sync::Mutex<Vec<Option<String>>>>;
 
-/// Return a fixed line count and record the commit each call received.
+/// Return a fixed line count and optional fixed file contents, and record calls.
 pub(in crate::app) struct StubVcs {
     pub(in crate::app) info: crate::vcs::VcsInfo,
     pub(in crate::app) line_count: u32,
     pub(in crate::app) line_count_refs: LineCountRefs,
+    pub(in crate::app) uncolored_contents: Option<crate::vcs::traits::OldAndNewContents>,
+    pub(in crate::app) uncolored_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl crate::vcs::VcsBackend for StubVcs {
@@ -71,5 +73,14 @@ impl crate::vcs::VcsBackend for StubVcs {
             .unwrap()
             .push(ref_commit.map(str::to_string));
         Ok(self.line_count)
+    }
+
+    fn uncolored_file_contents(
+        &self,
+        _file: &crate::model::DiffFile,
+    ) -> Option<crate::vcs::traits::OldAndNewContents> {
+        self.uncolored_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.uncolored_contents.clone()
     }
 }

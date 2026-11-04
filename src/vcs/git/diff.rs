@@ -1,16 +1,21 @@
 use git2::{Delta, Diff, DiffFindOptions, DiffOptions, Repository};
-use std::cell::RefCell;
-use std::collections::HashMap;
+use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::error::{Result, TuicrError};
 use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin};
 use crate::syntax::{SyntaxHighlighter, needs_full_file_highlight};
 use crate::vcs::traits::{
-    ChangeKind, DiffWhitespaceMode, ResolvedRevisionRange, RevisionDiffTarget,
+    ChangeKind, DiffWhitespaceMode, OldAndNewContents, ResolvedRevisionRange, RevisionDiffTarget,
 };
 use crate::vcs::whitespace::{WhitespaceComparison, materialize_diff};
 use crate::vcs::{MAX_HIGHLIGHT_FILE_BYTES, enhance_with_full_file_highlight, tabify};
+
+/// Color a file that needs whole-file coloring on first view when each version fits this
+/// size. Coloring takes about 0.8 ms per KB, so a modified file at this limit takes about
+/// 100 ms.
+const MAX_FIRST_VIEW_COLOR_FILE_BYTES: usize = 64 * 1024;
 
 pub fn get_working_tree_diff(
     repo: &Repository,
@@ -166,10 +171,21 @@ pub fn get_commit_range_diff(
     revision_range: &ResolvedRevisionRange<'_>,
     whitespace_mode: &DiffWhitespaceMode,
     highlighter: &SyntaxHighlighter,
-    line_counts: &RefCell<LineCounts>,
-) -> Result<Vec<DiffFile>> {
-    materialize_diff(whitespace_mode, |comparison| {
-        get_commit_range_diff_once(repo, revision_range, comparison, highlighter, line_counts)
+) -> Result<CommitRangeDiff> {
+    let mut line_counts = LineCounts::new();
+    let mut uncolored_file_blobs = UncoloredFileBlobs::new();
+    // Keep both loads' values, because automatic whitespace mode loads twice and can
+    // select either load's files.
+    let files = materialize_diff(whitespace_mode, |comparison| {
+        let load = get_commit_range_diff_once(repo, revision_range, comparison, highlighter)?;
+        line_counts.extend(load.line_counts);
+        uncolored_file_blobs.extend(load.uncolored_file_blobs);
+        Ok(load.files)
+    })?;
+    Ok(CommitRangeDiff {
+        files,
+        line_counts,
+        uncolored_file_blobs,
     })
 }
 
@@ -178,8 +194,7 @@ fn get_commit_range_diff_once(
     revision_range: &ResolvedRevisionRange<'_>,
     comparison: WhitespaceComparison,
     highlighter: &SyntaxHighlighter,
-    line_counts: &RefCell<LineCounts>,
-) -> Result<Vec<DiffFile>> {
+) -> Result<CommitRangeDiff> {
     let (old_tree, new_tree) = match &revision_range.diff_target {
         RevisionDiffTarget::CommitList => {
             commit_list_range_trees(repo, &revision_range.commit_ids)?
@@ -194,14 +209,7 @@ fn get_commit_range_diff_once(
         }
     };
 
-    diff_commit_trees(
-        repo,
-        old_tree,
-        new_tree,
-        comparison,
-        highlighter,
-        line_counts,
-    )
+    diff_commit_trees(repo, old_tree, new_tree, comparison, highlighter)
 }
 
 fn commit_list_range_trees<'repo>(
@@ -240,8 +248,7 @@ fn diff_commit_trees(
     new_tree: git2::Tree<'_>,
     comparison: WhitespaceComparison,
     highlighter: &SyntaxHighlighter,
-    line_counts: &RefCell<LineCounts>,
-) -> Result<Vec<DiffFile>> {
+) -> Result<CommitRangeDiff> {
     let mut opts = diff_options(comparison);
 
     let mut diff = repo.diff_tree_to_tree(old_tree.as_ref(), Some(&new_tree), Some(&mut opts))?;
@@ -251,14 +258,28 @@ fn diff_commit_trees(
         mut old_contents,
         mut new_contents,
         counts,
+        first_view,
     } = parse_tree_diff(repo, &diff, comparison)?;
-    line_counts
-        .borrow_mut()
-        .extend(counts.into_iter().map(|(p, n)| ((new_tree.id(), p), n)));
+    let line_counts = counts
+        .into_iter()
+        .map(|(path, count)| ((new_tree.id(), path), count))
+        .collect();
+    let first_view_old: HashSet<&Path> = first_view
+        .iter()
+        .filter_map(|(k, _)| k.old_path.as_deref())
+        .collect();
+    let first_view_new: HashSet<&Path> = first_view
+        .iter()
+        .filter_map(|(k, _)| k.new_path.as_deref())
+        .collect();
+    // If both closures return `None`, the file gets no load-time coloring.
     enhance_with_full_file_highlight(
         &mut files,
         highlighter,
         |path| {
+            if first_view_old.contains(path) {
+                return None;
+            }
             old_contents.remove(path).or_else(|| {
                 old_tree
                     .as_ref()
@@ -266,12 +287,19 @@ fn diff_commit_trees(
             })
         },
         |path| {
+            if first_view_new.contains(path) {
+                return None;
+            }
             new_contents
                 .remove(path)
                 .or_else(|| read_path_from_tree(repo, &new_tree, path))
         },
     );
-    Ok(files)
+    Ok(CommitRangeDiff {
+        files,
+        line_counts,
+        uncolored_file_blobs: first_view.into_iter().collect(),
+    })
 }
 
 /// Get a combined diff from the parent of the oldest commit through to the working tree.
@@ -399,9 +427,57 @@ fn parse_diff(repo: &Repository, mut diff: Diff<'_>) -> Result<Vec<DiffFile>> {
     Ok(files)
 }
 
-/// New-version line counts, keyed by the tree that holds the file. A tree's
-/// content never changes, so an entry stays correct.
-pub(crate) type LineCounts = HashMap<(git2::Oid, PathBuf), u32>;
+/// Holds line counts by tree and path. A tree never changes, so an entry stays correct.
+pub type LineCounts = HashMap<(git2::Oid, PathBuf), u32>;
+
+/// Identifies one displayed file version. The commit selector uses it to find the blobs
+/// of files it restores.
+///
+/// Use SHA-256, because coloring replaces displayed text with blob text. A crafted
+/// collision in a shorter hash could show the wrong version's code.
+#[derive(Debug, PartialEq, Eq, Hash)]
+pub struct UncoloredFileKey {
+    old_path: Option<PathBuf>,
+    new_path: Option<PathBuf>,
+    hunks_digest: [u8; 32],
+}
+
+impl From<&DiffFile> for UncoloredFileKey {
+    fn from(file: &DiffFile) -> Self {
+        let mut digest = Sha256::new();
+        for line in file.hunks.iter().flat_map(|hunk| &hunk.lines) {
+            digest.update(format!(
+                "{:?}{:?}{:?}",
+                line.origin, line.old_lineno, line.new_lineno
+            ));
+            digest.update(line.content.len().to_le_bytes());
+            digest.update(line.content.as_bytes());
+        }
+        Self {
+            old_path: file.old_path.clone(),
+            new_path: file.new_path.clone(),
+            hunks_digest: digest.finalize().into(),
+        }
+    }
+}
+
+/// Holds a file's old and new blob IDs. A side the file lacks is `None`.
+pub type OldAndNewBlobIds = (Option<git2::Oid>, Option<git2::Oid>);
+
+/// Holds the blob IDs of files that color on first view instead of during the load.
+pub type UncoloredFileBlobs = HashMap<UncoloredFileKey, OldAndNewBlobIds>;
+
+/// Read a file's old and new contents from its blobs.
+pub(crate) fn read_blob_contents(
+    repo: &Repository,
+    (old, new): OldAndNewBlobIds,
+) -> OldAndNewContents {
+    let read = |id: git2::Oid| {
+        let blob = repo.find_blob(id).ok()?;
+        Some(String::from_utf8_lossy(blob.content()).into_owned())
+    };
+    (old.and_then(read), new.and_then(read))
+}
 
 /// Build the `DiffFile` for a delta, with `is_binary` and `is_too_large` false.
 fn diff_file_from_delta(delta: &git2::DiffDelta<'_>, hunks: Vec<DiffHunk>) -> DiffFile {
@@ -426,6 +502,13 @@ fn diff_file_from_delta(delta: &git2::DiffDelta<'_>, hunks: Vec<DiffHunk>) -> Di
     }
 }
 
+/// Holds a commit-range load's files and the values the backend keeps for later.
+pub struct CommitRangeDiff {
+    pub files: Vec<DiffFile>,
+    pub line_counts: LineCounts,
+    pub uncolored_file_blobs: UncoloredFileBlobs,
+}
+
 /// Holds the parsed files, plus the contents and line counts that coloring and
 /// `file_line_count` would otherwise read from git again.
 struct TreeDiff {
@@ -433,6 +516,139 @@ struct TreeDiff {
     old_contents: HashMap<PathBuf, String>,
     new_contents: HashMap<PathBuf, String>,
     counts: Vec<(PathBuf, u32)>,
+    first_view: Vec<(UncoloredFileKey, OldAndNewBlobIds)>,
+}
+
+/// Lists when tuicr colors a file's whole contents.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ColoringPlan {
+    NotNeeded,
+    OnFirstView,
+    AtLoad,
+}
+
+/// Choose when to color a file. `largest_blob` is `None` when a blob read failed,
+/// because first-view coloring needs both blob IDs.
+fn coloring_plan(
+    needs_file_context: bool,
+    has_hunks: bool,
+    largest_blob: Option<usize>,
+) -> ColoringPlan {
+    if !needs_file_context || !has_hunks {
+        return ColoringPlan::NotNeeded;
+    }
+    match largest_blob {
+        Some(size) if size <= MAX_FIRST_VIEW_COLOR_FILE_BYTES => ColoringPlan::OnFirstView,
+        _ => ColoringPlan::AtLoad,
+    }
+}
+
+/// Holds the values one delta adds to `TreeDiff`.
+struct ParsedDelta {
+    file: DiffFile,
+    old_content: Option<(PathBuf, String)>,
+    new_content: Option<(PathBuf, String)>,
+    count: Option<(PathBuf, u32)>,
+    first_view: Option<OldAndNewBlobIds>,
+}
+
+/// Copy a blob's text for load-time coloring when the blob fits under its size cap.
+fn load_time_content(
+    plan: ColoringPlan,
+    path: Option<&PathBuf>,
+    blob: Option<&git2::Blob<'_>>,
+) -> Option<(PathBuf, String)> {
+    if plan != ColoringPlan::AtLoad {
+        return None;
+    }
+    let blob = blob.filter(|blob| blob.size() <= MAX_HIGHLIGHT_FILE_BYTES)?;
+    Some((
+        path?.clone(),
+        String::from_utf8_lossy(blob.content()).into_owned(),
+    ))
+}
+
+/// Parse one delta, reading its blobs once.
+fn parse_delta(
+    repo: &Repository,
+    diff: &Diff,
+    delta_idx: usize,
+    delta: &git2::DiffDelta<'_>,
+    comparison: WhitespaceComparison,
+) -> Result<ParsedDelta> {
+    let old_path = delta.old_file().path().map(PathBuf::from);
+    let new_path = delta.new_file().path().map(PathBuf::from);
+    if delta.old_file().is_binary() || delta.new_file().is_binary() {
+        let mut file = diff_file_from_delta(delta, Vec::new());
+        file.is_binary = true;
+        return Ok(ParsedDelta {
+            file,
+            old_content: None,
+            new_content: None,
+            count: None,
+            first_view: None,
+        });
+    }
+
+    let path = new_path.as_ref().or(old_path.as_ref());
+    let old_blob = read_delta_blob(repo, delta.old_file().id(), MAX_DELTA_BLOB_BYTES);
+    let new_blob = read_delta_blob(repo, delta.new_file().id(), MAX_DELTA_BLOB_BYTES);
+    let patch = match (&old_blob, &new_blob, path) {
+        (Ok(old), Ok(new), Some(path)) => {
+            patch_from_blobs(repo, delta, path, old.as_ref(), new.as_ref(), comparison)?
+        }
+        _ => None,
+    };
+    let hunks = match patch {
+        Some(patch) => hunks_from_patch(&patch)?,
+        None => parse_hunks(diff, delta_idx)?,
+    };
+
+    let largest_blob = match (&old_blob, &new_blob) {
+        (Ok(old), Ok(new)) => Some(
+            [old, new]
+                .into_iter()
+                .flatten()
+                .map(git2::Blob::size)
+                .max()
+                .unwrap_or(0),
+        ),
+        _ => None,
+    };
+    let plan = coloring_plan(
+        path.is_some_and(|p| needs_full_file_highlight(p)),
+        !hunks.is_empty(),
+        largest_blob,
+    );
+    let first_view = match (plan, &old_blob, &new_blob) {
+        (ColoringPlan::OnFirstView, Ok(old), Ok(new)) => Some((
+            old.as_ref().map(git2::Blob::id),
+            new.as_ref().map(git2::Blob::id),
+        )),
+        _ => None,
+    };
+    let old_blob = old_blob.as_ref().ok().and_then(Option::as_ref);
+    let new_blob = new_blob.as_ref().ok().and_then(Option::as_ref);
+    let count = new_path
+        .as_ref()
+        .zip(new_blob)
+        .filter(|_| delta.status() != Delta::Deleted && !hunks.is_empty())
+        .and_then(|(path, blob)| Some((path.clone(), utf8_line_count(blob.content())?)));
+
+    Ok(ParsedDelta {
+        old_content: load_time_content(plan, old_path.as_ref(), old_blob),
+        new_content: load_time_content(plan, new_path.as_ref(), new_blob),
+        count,
+        first_view,
+        file: diff_file_from_delta(delta, hunks),
+    })
+}
+
+/// Count the lines in `bytes`. Return `None` for invalid UTF-8, because
+/// `file_line_count` returns an error for it.
+fn utf8_line_count(bytes: &[u8]) -> Option<u32> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    Some(text.lines().count() as u32)
 }
 
 /// Parse a diff between two trees, reading each file version once.
@@ -450,65 +666,19 @@ fn parse_tree_diff(
         old_contents: HashMap::new(),
         new_contents: HashMap::new(),
         counts: Vec::new(),
+        first_view: Vec::new(),
     };
 
     for (delta_idx, delta) in diff.deltas().enumerate() {
-        let old_path = delta.old_file().path().map(PathBuf::from);
-        let new_path = delta.new_file().path().map(PathBuf::from);
-        let is_binary = delta.old_file().is_binary() || delta.new_file().is_binary();
-        let path = new_path.as_ref().or(old_path.as_ref());
-
-        let hunks = if is_binary {
-            Vec::new()
-        } else {
-            let old_blob = read_delta_blob(repo, delta.old_file().id(), MAX_DELTA_BLOB_BYTES);
-            let new_blob = read_delta_blob(repo, delta.new_file().id(), MAX_DELTA_BLOB_BYTES);
-            let patch = match (&old_blob, &new_blob, path) {
-                (Ok(old), Ok(new), Some(path)) => {
-                    patch_from_blobs(repo, &delta, path, old.as_ref(), new.as_ref(), comparison)?
-                }
-                _ => None,
-            };
-            let hunks = match patch {
-                Some(patch) => hunks_from_patch(&patch)?,
-                None => parse_hunks(diff, delta_idx)?,
-            };
-
-            // Coloring skips files without hunks and files over its size cap, so
-            // this function does not store those contents.
-            let wants_contents =
-                !hunks.is_empty() && path.is_some_and(|p| needs_full_file_highlight(p));
-            let fits = |blob: &git2::Blob<'_>| blob.size() <= MAX_HIGHLIGHT_FILE_BYTES;
-            if let (Some(p), Ok(Some(blob))) = (&old_path, &old_blob)
-                && wants_contents
-                && fits(blob)
-            {
-                parsed.old_contents.insert(
-                    p.clone(),
-                    String::from_utf8_lossy(blob.content()).into_owned(),
-                );
-            }
-            if let (Some(p), Ok(Some(blob))) = (&new_path, &new_blob) {
-                if wants_contents && fits(blob) {
-                    parsed.new_contents.insert(
-                        p.clone(),
-                        String::from_utf8_lossy(blob.content()).into_owned(),
-                    );
-                }
-                // Skip invalid UTF-8, because `file_line_count` returns an error for it.
-                if delta.status() != Delta::Deleted
-                    && !hunks.is_empty()
-                    && let Ok(text) = std::str::from_utf8(blob.content())
-                {
-                    parsed.counts.push((p.clone(), text.lines().count() as u32));
-                }
-            }
-            hunks
-        };
-
-        let mut file = diff_file_from_delta(&delta, hunks);
-        file.is_binary = is_binary;
-        parsed.files.push(file);
+        let one = parse_delta(repo, diff, delta_idx, &delta, comparison)?;
+        parsed.old_contents.extend(one.old_content);
+        parsed.new_contents.extend(one.new_content);
+        parsed.counts.extend(one.count);
+        parsed.first_view.extend(
+            one.first_view
+                .map(|blobs| (UncoloredFileKey::from(&one.file), blobs)),
+        );
+        parsed.files.push(one.file);
     }
 
     if parsed.files.is_empty() {
@@ -517,8 +687,8 @@ fn parse_tree_diff(
     Ok(parsed)
 }
 
-/// libgit2's default diff size limit. `Patch::from_diff` treats a larger file
-/// as binary without decompressing it, and `Patch::from_buffers` has no limit.
+/// Match libgit2's default diff size limit. `Patch::from_diff` treats a larger file as
+/// binary without decompressing it, and `Patch::from_buffers` has no limit.
 const MAX_DELTA_BLOB_BYTES: usize = 512 * 1024 * 1024;
 
 /// Read one side of a delta. Return `Ok(None)` for a zero ID, because that side
@@ -648,6 +818,32 @@ fn hunks_from_patch(patch: &git2::Patch<'_>) -> Result<Vec<DiffHunk>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn should_not_plan_coloring_without_file_context_or_hunks() {
+        assert_eq!(coloring_plan(false, true, Some(1)), ColoringPlan::NotNeeded);
+        assert_eq!(coloring_plan(true, false, Some(1)), ColoringPlan::NotNeeded);
+    }
+
+    #[test]
+    fn should_color_on_first_view_up_to_the_size_limit() {
+        let limit = MAX_FIRST_VIEW_COLOR_FILE_BYTES;
+        assert_eq!(
+            coloring_plan(true, true, Some(limit)),
+            ColoringPlan::OnFirstView
+        );
+        assert_eq!(
+            coloring_plan(true, true, Some(limit + 1)),
+            ColoringPlan::AtLoad
+        );
+    }
+
+    // First-view coloring needs both blob IDs, so a failed read colors at load.
+    #[test]
+    fn should_color_at_load_when_a_blob_read_failed() {
+        assert_eq!(coloring_plan(true, true, None), ColoringPlan::AtLoad);
+    }
+
     use std::fs;
     use std::path::Path;
 
@@ -1432,12 +1628,132 @@ mod tests {
         assert_eq!(parsed.counts, vec![(PathBuf::from("a.txt"), 3)]);
     }
 
+    fn over_first_view_limit() -> Vec<u8> {
+        b"<p>b</p>\n".repeat(MAX_FIRST_VIEW_COLOR_FILE_BYTES / 9 + 1)
+    }
+
+    fn load_range(backend: &Libgit2Backend, revisions: &str) -> Vec<DiffFile> {
+        let range = backend.resolve_revision_range(revisions).unwrap();
+        backend
+            .get_commit_range_diff(&range, &SyntaxHighlighter::default())
+            .unwrap()
+    }
+
+    fn has_spans(file: &DiffFile) -> bool {
+        file.hunks
+            .iter()
+            .flat_map(|hunk| &hunk.lines)
+            .any(|line| line.highlighted_spans.is_some())
+    }
+
+    fn owned(text: &str) -> Option<String> {
+        Some(text.to_string())
+    }
+
     #[test]
-    fn should_keep_whole_file_contents_only_for_container_grammars() {
+    fn should_key_an_uncolored_file_on_line_positions_as_well_as_text() {
+        let (_dir, repo) = attribute_repo(&[("a.svelte", b"<p>a</p>\n", b"<p>b</p>\n")], "");
+        let diff = head_diff(&repo);
+        let parsed = parse_tree_diff(&repo, &diff, WhitespaceComparison::Normal).unwrap();
+        let mut moved = parsed
+            .files
+            .iter()
+            .find(|file| file.display_path() == Path::new("a.svelte"))
+            .unwrap()
+            .clone();
+        let original = UncoloredFileKey::from(&moved);
+
+        moved.hunks[0].lines[0].old_lineno = Some(99);
+
+        assert_ne!(UncoloredFileKey::from(&moved), original);
+    }
+
+    #[test]
+    fn should_leave_container_files_uncolored_after_a_range_load() {
+        let (dir, _repo) = attribute_repo(&[("a.svelte", b"<p>a</p>\n", b"<p>b</p>\n")], "");
+        let backend =
+            Libgit2Backend::discover_from(dir.path(), DiffWhitespaceMode::Normal).unwrap();
+
+        let files = load_range(&backend, "HEAD~1..HEAD");
+
+        assert!(!has_spans(file_named(&files, "a.svelte").unwrap()));
+    }
+
+    /// A modified file colors two versions at about 0.8 ms per KB, so coloring a large
+    /// file during a frame would block input for too long.
+    #[test]
+    fn should_color_a_whole_file_coloring_file_over_the_first_view_limit_during_the_load() {
+        let big = over_first_view_limit();
+        let (dir, _repo) = attribute_repo(&[("a.svelte", b"<p>a</p>\n", &big)], "");
+        let backend =
+            Libgit2Backend::discover_from(dir.path(), DiffWhitespaceMode::Normal).unwrap();
+
+        let files = load_range(&backend, "HEAD~1..HEAD");
+        let file = file_named(&files, "a.svelte").unwrap();
+
+        assert!(has_spans(file));
+        assert_eq!(backend.uncolored_file_contents(file), None);
+    }
+
+    /// The commit selector keeps the whole-range files and restores them without a
+    /// reload, so the backend must return contents for both loads.
+    #[test]
+    fn should_return_both_versions_for_the_selected_commit_subset() {
+        let dir = tempfile::tempdir().unwrap();
+        run_git(dir.path(), &["init"]);
+        run_git(dir.path(), &["config", "user.name", "Test"]);
+        run_git(dir.path(), &["config", "user.email", "test@example.com"]);
+        for (text, message) in [
+            ("<p>1</p>\n", "one"),
+            ("<p>2</p>\n", "two"),
+            ("<p>3</p>\n", "three"),
+        ] {
+            fs::write(dir.path().join("a.svelte"), text).unwrap();
+            run_git(dir.path(), &["add", "-A"]);
+            run_git(dir.path(), &["commit", "-m", message]);
+        }
+        let backend =
+            Libgit2Backend::discover_from(dir.path(), DiffWhitespaceMode::Normal).unwrap();
+
+        let whole = load_range(&backend, "HEAD~2..HEAD");
+        let subset = load_range(&backend, "HEAD~1..HEAD");
+
+        assert_eq!(
+            backend.uncolored_file_contents(&subset[0]),
+            Some((owned("<p>2</p>\n"), owned("<p>3</p>\n")))
+        );
+        assert_eq!(
+            backend.uncolored_file_contents(&whole[0]),
+            Some((owned("<p>1</p>\n"), owned("<p>3</p>\n")))
+        );
+    }
+
+    #[test]
+    fn should_return_contents_for_a_file_using_a_named_diff_driver() {
+        let (dir, _repo) = attribute_repo(
+            &[("a.svelte", b"<p>a</p>\n", b"<p>b</p>\n")],
+            "*.svelte diff=python\n",
+        );
+        let backend =
+            Libgit2Backend::discover_from(dir.path(), DiffWhitespaceMode::Normal).unwrap();
+
+        let files = load_range(&backend, "HEAD~1..HEAD");
+        let file = file_named(&files, "a.svelte").unwrap();
+
+        assert_eq!(
+            backend.uncolored_file_contents(file),
+            Some((owned("<p>a</p>\n"), owned("<p>b</p>\n")))
+        );
+    }
+
+    #[test]
+    fn should_keep_whole_file_contents_only_for_large_container_files() {
+        let big = over_first_view_limit();
         let (_dir, repo) = attribute_repo(
             &[
-                ("a.svelte", b"<p>a</p>\n", b"<p>b</p>\n"),
+                ("a.svelte", b"<p>a</p>\n", &big),
                 ("b.rs", b"a\n", b"b\n"),
+                ("c.svelte", b"<p>a</p>\n", b"<p>b</p>\n"),
             ],
             "",
         );

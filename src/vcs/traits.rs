@@ -224,6 +224,9 @@ pub enum ChangeKind {
     Unstaged,
 }
 
+/// Holds a file's whole old and new contents. A side the file lacks is `None`.
+pub type OldAndNewContents = (Option<String>, Option<String>);
+
 /// Trait for VCS backend implementations
 pub trait VcsBackend: Send {
     /// Get repository information
@@ -304,6 +307,13 @@ pub trait VcsBackend: Send {
         file_status: FileStatus,
         ref_commit: Option<&str>,
     ) -> Result<u32>;
+
+    /// Return the whole old and new contents of a file whose load left its
+    /// whole-file coloring for first view. `None` means the load already colored
+    /// the file, or could not.
+    fn uncolored_file_contents(&self, _file: &DiffFile) -> Option<OldAndNewContents> {
+        None
+    }
 
     /// Get recent commits for commit selection UI.
     /// Returns empty vec if not supported (default).
