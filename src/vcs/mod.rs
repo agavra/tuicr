@@ -170,7 +170,7 @@ where
 /// Files larger than this skip the full-file highlight pass and fall back to
 /// per-hunk highlighting. Keeps a runaway-cost ceiling on diffs that include
 /// huge generated artefacts (lockfiles, vendored bundles, fixtures).
-const MAX_HIGHLIGHT_FILE_BYTES: usize = 1024 * 1024;
+pub(crate) const MAX_HIGHLIGHT_FILE_BYTES: usize = 1024 * 1024;
 
 /// Re-highlight each diff line using full-file context, for files whose
 /// grammar needs it (Vue, Svelte, Astro, MDX). Other files keep their existing

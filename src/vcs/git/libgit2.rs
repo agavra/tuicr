@@ -1,4 +1,5 @@
 use git2::{Repository, RepositoryOpenFlags};
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::sync::Once;
 
@@ -16,6 +17,10 @@ pub struct Libgit2Backend {
     repo: Repository,
     info: VcsInfo,
     whitespace_mode: DiffWhitespaceMode,
+    line_counts: RefCell<diff::LineCounts>,
+    /// The tree of the last full commit ID, because `file_line_count` asks
+    /// about the same commit once per file.
+    last_commit_tree: RefCell<Option<(String, git2::Oid)>>,
 }
 
 /// Declare libgit2 extensions tuicr understands so discovery doesn't refuse
@@ -38,6 +43,22 @@ fn register_supported_extensions() {
 }
 
 impl Libgit2Backend {
+    /// Resolve a revision to its tree ID. Only a full commit ID is remembered,
+    /// because a name such as `HEAD` can point at another commit later.
+    fn commit_tree_id(&self, revision: &str) -> Option<git2::Oid> {
+        if let Some((commit, tree)) = &*self.last_commit_tree.borrow()
+            && commit == revision
+        {
+            return Some(*tree);
+        }
+        let object = self.repo.revparse_single(revision).ok()?;
+        let tree = object.peel_to_tree().ok()?.id();
+        if object.id().to_string() == revision {
+            *self.last_commit_tree.borrow_mut() = Some((revision.to_string(), tree));
+        }
+        Some(tree)
+    }
+
     pub(super) fn discover_from(cwd: &Path, whitespace_mode: DiffWhitespaceMode) -> Result<Self> {
         register_supported_extensions();
         // `Repository::discover` resolves the repository path first and then
@@ -99,6 +120,8 @@ impl Libgit2Backend {
             repo,
             info,
             whitespace_mode,
+            line_counts: RefCell::default(),
+            last_commit_tree: RefCell::default(),
         })
     }
 }
@@ -152,6 +175,12 @@ impl VcsBackend for Libgit2Backend {
         file_status: FileStatus,
         ref_commit: Option<&str>,
     ) -> Result<u32> {
+        if let Some(count) = ref_commit.and_then(|commit| {
+            let key = (self.commit_tree_id(commit)?, file_path.to_path_buf());
+            self.line_counts.borrow().get(&key).copied()
+        }) {
+            return Ok(count);
+        }
         context::file_line_count(&self.repo, file_path, file_status, ref_commit)
     }
 
@@ -185,6 +214,7 @@ impl VcsBackend for Libgit2Backend {
             revision_range,
             &self.whitespace_mode,
             highlighter,
+            &self.line_counts,
         )
     }
 
@@ -362,5 +392,32 @@ mod tests {
             .expect("working tree diff");
         assert_eq!(files.len(), 1, "only the untracked file should change");
         assert_eq!(files[0].display_path(), Path::new("b.txt"));
+    }
+
+    #[test]
+    fn should_remember_a_commit_tree_only_for_a_full_commit_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        git(root, &["init"]);
+        git(root, &["config", "user.email", "test@example.com"]);
+        git(root, &["config", "user.name", "Test"]);
+        fs::write(root.join("a.txt"), "one\n").unwrap();
+        git(root, &["add", "."]);
+        git(root, &["commit", "-m", "first"]);
+        let backend = Libgit2Backend::discover_from(root, DiffWhitespaceMode::Normal).unwrap();
+        let first_tree = backend.commit_tree_id("HEAD").unwrap();
+        let first_commit = backend.repo.head().unwrap().target().unwrap().to_string();
+        assert!(backend.last_commit_tree.borrow().is_none());
+
+        fs::write(root.join("a.txt"), "two\n").unwrap();
+        git(root, &["add", "."]);
+        git(root, &["commit", "-m", "second"]);
+
+        assert_ne!(backend.commit_tree_id("HEAD").unwrap(), first_tree);
+        assert_eq!(backend.commit_tree_id(&first_commit), Some(first_tree));
+        assert_eq!(
+            backend.last_commit_tree.borrow().as_ref().map(|(c, _)| c),
+            Some(&first_commit)
+        );
     }
 }

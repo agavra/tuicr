@@ -1,14 +1,16 @@
 use git2::{Delta, Diff, DiffFindOptions, DiffOptions, Repository};
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Result, TuicrError};
 use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin};
-use crate::syntax::SyntaxHighlighter;
+use crate::syntax::{SyntaxHighlighter, needs_full_file_highlight};
 use crate::vcs::traits::{
     ChangeKind, DiffWhitespaceMode, ResolvedRevisionRange, RevisionDiffTarget,
 };
 use crate::vcs::whitespace::{WhitespaceComparison, materialize_diff};
-use crate::vcs::{enhance_with_full_file_highlight, tabify};
+use crate::vcs::{MAX_HIGHLIGHT_FILE_BYTES, enhance_with_full_file_highlight, tabify};
 
 pub fn get_working_tree_diff(
     repo: &Repository,
@@ -36,7 +38,7 @@ fn get_working_tree_diff_once(
     opts.recurse_untracked_dirs(true);
 
     let diff = repo.diff_tree_to_workdir_with_index(head.as_ref(), Some(&mut opts))?;
-    let mut files = parse_diff(repo, diff, highlighter)?;
+    let mut files = parse_diff(repo, diff)?;
     enhance_with_full_file_highlight(
         &mut files,
         highlighter,
@@ -71,7 +73,7 @@ fn get_staged_diff_once(
     let mut opts = diff_options(comparison);
 
     let diff = repo.diff_tree_to_index(head.as_ref(), Some(&index), Some(&mut opts))?;
-    let mut files = parse_diff(repo, diff, highlighter)?;
+    let mut files = parse_diff(repo, diff)?;
     enhance_with_full_file_highlight(
         &mut files,
         highlighter,
@@ -146,7 +148,7 @@ fn get_unstaged_diff_once(
     opts.recurse_untracked_dirs(true);
 
     let diff = repo.diff_index_to_workdir(Some(&index), Some(&mut opts))?;
-    let mut files = parse_diff(repo, diff, highlighter)?;
+    let mut files = parse_diff(repo, diff)?;
     enhance_with_full_file_highlight(
         &mut files,
         highlighter,
@@ -164,9 +166,10 @@ pub fn get_commit_range_diff(
     revision_range: &ResolvedRevisionRange<'_>,
     whitespace_mode: &DiffWhitespaceMode,
     highlighter: &SyntaxHighlighter,
+    line_counts: &RefCell<LineCounts>,
 ) -> Result<Vec<DiffFile>> {
     materialize_diff(whitespace_mode, |comparison| {
-        get_commit_range_diff_once(repo, revision_range, comparison, highlighter)
+        get_commit_range_diff_once(repo, revision_range, comparison, highlighter, line_counts)
     })
 }
 
@@ -175,6 +178,7 @@ fn get_commit_range_diff_once(
     revision_range: &ResolvedRevisionRange<'_>,
     comparison: WhitespaceComparison,
     highlighter: &SyntaxHighlighter,
+    line_counts: &RefCell<LineCounts>,
 ) -> Result<Vec<DiffFile>> {
     let (old_tree, new_tree) = match &revision_range.diff_target {
         RevisionDiffTarget::CommitList => {
@@ -190,7 +194,14 @@ fn get_commit_range_diff_once(
         }
     };
 
-    diff_commit_trees(repo, old_tree, new_tree, comparison, highlighter)
+    diff_commit_trees(
+        repo,
+        old_tree,
+        new_tree,
+        comparison,
+        highlighter,
+        line_counts,
+    )
 }
 
 fn commit_list_range_trees<'repo>(
@@ -229,20 +240,36 @@ fn diff_commit_trees(
     new_tree: git2::Tree<'_>,
     comparison: WhitespaceComparison,
     highlighter: &SyntaxHighlighter,
+    line_counts: &RefCell<LineCounts>,
 ) -> Result<Vec<DiffFile>> {
     let mut opts = diff_options(comparison);
 
-    let diff = repo.diff_tree_to_tree(old_tree.as_ref(), Some(&new_tree), Some(&mut opts))?;
-    let mut files = parse_diff(repo, diff, highlighter)?;
+    let mut diff = repo.diff_tree_to_tree(old_tree.as_ref(), Some(&new_tree), Some(&mut opts))?;
+    detect_renames(repo, &mut diff)?;
+    let TreeDiff {
+        mut files,
+        mut old_contents,
+        mut new_contents,
+        counts,
+    } = parse_tree_diff(repo, &diff, comparison)?;
+    line_counts
+        .borrow_mut()
+        .extend(counts.into_iter().map(|(p, n)| ((new_tree.id(), p), n)));
     enhance_with_full_file_highlight(
         &mut files,
         highlighter,
         |path| {
-            old_tree
-                .as_ref()
-                .and_then(|tree| read_path_from_tree(repo, tree, path))
+            old_contents.remove(path).or_else(|| {
+                old_tree
+                    .as_ref()
+                    .and_then(|tree| read_path_from_tree(repo, tree, path))
+            })
         },
-        |path| read_path_from_tree(repo, &new_tree, path),
+        |path| {
+            new_contents
+                .remove(path)
+                .or_else(|| read_path_from_tree(repo, &new_tree, path))
+        },
     );
     Ok(files)
 }
@@ -286,7 +313,7 @@ fn get_working_tree_with_commits_diff_once(
     opts.recurse_untracked_dirs(true);
 
     let diff = repo.diff_tree_to_workdir_with_index(old_tree.as_ref(), Some(&mut opts))?;
-    let mut files = parse_diff(repo, diff, highlighter)?;
+    let mut files = parse_diff(repo, diff)?;
     enhance_with_full_file_highlight(
         &mut files,
         highlighter,
@@ -322,11 +349,8 @@ fn read_path_from_index(repo: &Repository, index: &git2::Index, path: &Path) -> 
     Some(String::from_utf8_lossy(blob.content()).into_owned())
 }
 
-fn parse_diff(
-    repo: &Repository,
-    mut diff: Diff<'_>,
-    highlighter: &SyntaxHighlighter,
-) -> Result<Vec<DiffFile>> {
+/// Pair deleted and added files as renames, following `diff.renames`.
+fn detect_renames(repo: &Repository, diff: &mut Diff<'_>) -> Result<()> {
     let config = repo.config()?;
     let copies = config.get_string("diff.renames").is_ok_and(|value| {
         value.eq_ignore_ascii_case("copies") || value.eq_ignore_ascii_case("copy")
@@ -339,6 +363,11 @@ fn parse_diff(
         find.renames(true).copies(copies).for_untracked(true);
         diff.find_similar(Some(&mut find))?;
     }
+    Ok(())
+}
+
+fn parse_diff(repo: &Repository, mut diff: Diff<'_>) -> Result<Vec<DiffFile>> {
+    detect_renames(repo, &mut diff)?;
 
     let mut files: Vec<DiffFile> = Vec::new();
 
@@ -347,39 +376,20 @@ fn parse_diff(
     const MAX_UNTRACKED_FILE_SIZE: u64 = 10 * 1_024 * 1_024;
 
     for (delta_idx, delta) in diff.deltas().enumerate() {
-        let status = match delta.status() {
-            Delta::Added | Delta::Untracked => FileStatus::Added,
-            Delta::Deleted => FileStatus::Deleted,
-            Delta::Modified => FileStatus::Modified,
-            Delta::Renamed => FileStatus::Renamed,
-            Delta::Copied => FileStatus::Copied,
-            _ => FileStatus::Modified,
-        };
-
-        let old_path = delta.old_file().path().map(PathBuf::from);
-        let new_path = delta.new_file().path().map(PathBuf::from);
         let is_binary = delta.old_file().is_binary() || delta.new_file().is_binary();
         let is_too_large =
             delta.status() == Delta::Untracked && delta.new_file().size() > MAX_UNTRACKED_FILE_SIZE;
 
-        let syntax_path = new_path.as_ref().or(old_path.as_ref()).map(|p| p.as_path());
         let hunks = if is_binary || is_too_large {
             Vec::new()
         } else {
-            parse_hunks(&diff, delta_idx, highlighter, syntax_path)?
+            parse_hunks(&diff, delta_idx)?
         };
 
-        let content_hash = DiffFile::compute_content_hash(&hunks);
-        files.push(DiffFile {
-            old_path,
-            new_path,
-            status,
-            hunks,
-            is_binary,
-            is_too_large,
-            is_commit_message: false,
-            content_hash,
-        });
+        let mut file = diff_file_from_delta(&delta, hunks);
+        file.is_binary = is_binary;
+        file.is_too_large = is_too_large;
+        files.push(file);
     }
 
     if files.is_empty() {
@@ -389,72 +399,247 @@ fn parse_diff(
     Ok(files)
 }
 
-fn parse_hunks(
+/// New-version line counts, keyed by the tree that holds the file. A tree's
+/// content never changes, so an entry stays correct.
+pub(crate) type LineCounts = HashMap<(git2::Oid, PathBuf), u32>;
+
+/// Build the `DiffFile` for a delta, with `is_binary` and `is_too_large` false.
+fn diff_file_from_delta(delta: &git2::DiffDelta<'_>, hunks: Vec<DiffHunk>) -> DiffFile {
+    let status = match delta.status() {
+        Delta::Added | Delta::Untracked => FileStatus::Added,
+        Delta::Deleted => FileStatus::Deleted,
+        Delta::Modified => FileStatus::Modified,
+        Delta::Renamed => FileStatus::Renamed,
+        Delta::Copied => FileStatus::Copied,
+        _ => FileStatus::Modified,
+    };
+    let content_hash = DiffFile::compute_content_hash(&hunks);
+    DiffFile {
+        old_path: delta.old_file().path().map(PathBuf::from),
+        new_path: delta.new_file().path().map(PathBuf::from),
+        status,
+        hunks,
+        is_binary: false,
+        is_too_large: false,
+        is_commit_message: false,
+        content_hash,
+    }
+}
+
+/// Holds the parsed files, plus the contents and line counts that coloring and
+/// `file_line_count` would otherwise read from git again.
+struct TreeDiff {
+    files: Vec<DiffFile>,
+    old_contents: HashMap<PathBuf, String>,
+    new_contents: HashMap<PathBuf, String>,
+    counts: Vec<(PathBuf, u32)>,
+}
+
+/// Parse a diff between two trees, reading each file version once.
+///
+/// `Patch::from_diff` does not return the blobs it loads, so line counting and
+/// whole-file coloring have to read them again. This function reads the blobs,
+/// builds the patch from them, and reuses the bytes for those two steps.
+fn parse_tree_diff(
+    repo: &Repository,
     diff: &Diff,
-    delta_idx: usize,
-    _highlighter: &SyntaxHighlighter,
-    _file_path: Option<&Path>,
-) -> Result<Vec<DiffHunk>> {
+    comparison: WhitespaceComparison,
+) -> Result<TreeDiff> {
+    let mut parsed = TreeDiff {
+        files: Vec::new(),
+        old_contents: HashMap::new(),
+        new_contents: HashMap::new(),
+        counts: Vec::new(),
+    };
+
+    for (delta_idx, delta) in diff.deltas().enumerate() {
+        let old_path = delta.old_file().path().map(PathBuf::from);
+        let new_path = delta.new_file().path().map(PathBuf::from);
+        let is_binary = delta.old_file().is_binary() || delta.new_file().is_binary();
+        let path = new_path.as_ref().or(old_path.as_ref());
+
+        let hunks = if is_binary {
+            Vec::new()
+        } else {
+            let old_blob = read_delta_blob(repo, delta.old_file().id(), MAX_DELTA_BLOB_BYTES);
+            let new_blob = read_delta_blob(repo, delta.new_file().id(), MAX_DELTA_BLOB_BYTES);
+            let patch = match (&old_blob, &new_blob, path) {
+                (Ok(old), Ok(new), Some(path)) => {
+                    patch_from_blobs(repo, &delta, path, old.as_ref(), new.as_ref(), comparison)?
+                }
+                _ => None,
+            };
+            let hunks = match patch {
+                Some(patch) => hunks_from_patch(&patch)?,
+                None => parse_hunks(diff, delta_idx)?,
+            };
+
+            // Coloring skips files without hunks and files over its size cap, so
+            // this function does not store those contents.
+            let wants_contents =
+                !hunks.is_empty() && path.is_some_and(|p| needs_full_file_highlight(p));
+            let fits = |blob: &git2::Blob<'_>| blob.size() <= MAX_HIGHLIGHT_FILE_BYTES;
+            if let (Some(p), Ok(Some(blob))) = (&old_path, &old_blob)
+                && wants_contents
+                && fits(blob)
+            {
+                parsed.old_contents.insert(
+                    p.clone(),
+                    String::from_utf8_lossy(blob.content()).into_owned(),
+                );
+            }
+            if let (Some(p), Ok(Some(blob))) = (&new_path, &new_blob) {
+                if wants_contents && fits(blob) {
+                    parsed.new_contents.insert(
+                        p.clone(),
+                        String::from_utf8_lossy(blob.content()).into_owned(),
+                    );
+                }
+                // Skip invalid UTF-8, because `file_line_count` returns an error for it.
+                if delta.status() != Delta::Deleted
+                    && !hunks.is_empty()
+                    && let Ok(text) = std::str::from_utf8(blob.content())
+                {
+                    parsed.counts.push((p.clone(), text.lines().count() as u32));
+                }
+            }
+            hunks
+        };
+
+        let mut file = diff_file_from_delta(&delta, hunks);
+        file.is_binary = is_binary;
+        parsed.files.push(file);
+    }
+
+    if parsed.files.is_empty() {
+        return Err(TuicrError::NoChanges);
+    }
+    Ok(parsed)
+}
+
+/// libgit2's default diff size limit. `Patch::from_diff` treats a larger file
+/// as binary without decompressing it, and `Patch::from_buffers` has no limit.
+const MAX_DELTA_BLOB_BYTES: usize = 512 * 1024 * 1024;
+
+/// Read one side of a delta. Return `Ok(None)` for a zero ID, because that side
+/// does not exist. Return an error for an ID that is not a blob, such as a
+/// submodule's commit, and for a blob over `max_bytes`, without decompressing it.
+fn read_delta_blob(
+    repo: &Repository,
+    id: git2::Oid,
+    max_bytes: usize,
+) -> std::result::Result<Option<git2::Blob<'_>>, git2::Error> {
+    if id.is_zero() {
+        return Ok(None);
+    }
+    let (size, _) = repo.odb()?.read_header(id)?;
+    if size > max_bytes {
+        return Err(git2::Error::from_str("blob exceeds the diff size limit"));
+    }
+    repo.find_blob(id).map(Some)
+}
+
+/// Build a patch from blobs already in memory. `Patch::from_buffers` does not
+/// look up the `diff` attribute, so this function looks it up and applies it.
+/// Return `None` for a named diff driver, because a driver can change hunk
+/// headers. The caller then uses `from_diff`.
+fn patch_from_blobs<'a>(
+    repo: &Repository,
+    delta: &git2::DiffDelta<'_>,
+    path: &Path,
+    old: Option<&'a git2::Blob<'_>>,
+    new: Option<&'a git2::Blob<'_>>,
+    comparison: WhitespaceComparison,
+) -> Result<Option<git2::Patch<'a>>> {
+    let mut opts = diff_options(comparison);
+    match git2::AttrValue::from_bytes(repo.get_attr_bytes(
+        path,
+        "diff",
+        git2::AttrCheckFlags::default(),
+    )?) {
+        git2::AttrValue::True => {
+            opts.force_text(true);
+        }
+        git2::AttrValue::False => {
+            opts.force_binary(true);
+        }
+        git2::AttrValue::Unspecified => {}
+        git2::AttrValue::String(_) | git2::AttrValue::Bytes(_) => return Ok(None),
+    }
+    let patch = git2::Patch::from_buffers(
+        old.map_or(&[][..], |blob| blob.content()),
+        delta.old_file().path(),
+        new.map_or(&[][..], |blob| blob.content()),
+        delta.new_file().path(),
+        Some(&mut opts),
+    )?;
+    Ok(Some(patch))
+}
+
+fn parse_hunks(diff: &Diff, delta_idx: usize) -> Result<Vec<DiffHunk>> {
+    match git2::Patch::from_diff(diff, delta_idx)? {
+        Some(patch) => hunks_from_patch(&patch),
+        None => Ok(Vec::new()),
+    }
+}
+
+fn hunks_from_patch(patch: &git2::Patch<'_>) -> Result<Vec<DiffHunk>> {
     let mut hunks: Vec<DiffHunk> = Vec::new();
 
-    let patch = git2::Patch::from_diff(diff, delta_idx)?;
+    for hunk_idx in 0..patch.num_hunks() {
+        let (hunk, _) = patch.hunk(hunk_idx)?;
 
-    if let Some(patch) = patch {
-        for hunk_idx in 0..patch.num_hunks() {
-            let (hunk, _) = patch.hunk(hunk_idx)?;
+        let header = String::from_utf8_lossy(hunk.header()).trim().to_string();
+        let old_start = hunk.old_start();
+        let old_count = hunk.old_lines();
+        let new_start = hunk.new_start();
+        let new_count = hunk.new_lines();
 
-            let header = String::from_utf8_lossy(hunk.header()).trim().to_string();
-            let old_start = hunk.old_start();
-            let old_count = hunk.old_lines();
-            let new_start = hunk.new_start();
-            let new_count = hunk.new_lines();
+        let mut line_contents: Vec<String> = Vec::new();
+        let mut line_origins: Vec<LineOrigin> = Vec::new();
+        let mut line_numbers: Vec<(Option<u32>, Option<u32>)> = Vec::new();
 
-            let mut line_contents: Vec<String> = Vec::new();
-            let mut line_origins: Vec<LineOrigin> = Vec::new();
-            let mut line_numbers: Vec<(Option<u32>, Option<u32>)> = Vec::new();
+        for line_idx in 0..patch.num_lines_in_hunk(hunk_idx)? {
+            let line = patch.line_in_hunk(hunk_idx, line_idx)?;
 
-            for line_idx in 0..patch.num_lines_in_hunk(hunk_idx)? {
-                let line = patch.line_in_hunk(hunk_idx, line_idx)?;
+            let origin = match line.origin() {
+                '+' => LineOrigin::Addition,
+                '-' => LineOrigin::Deletion,
+                ' ' => LineOrigin::Context,
+                _ => LineOrigin::Context,
+            };
 
-                let origin = match line.origin() {
-                    '+' => LineOrigin::Addition,
-                    '-' => LineOrigin::Deletion,
-                    ' ' => LineOrigin::Context,
-                    _ => LineOrigin::Context,
-                };
+            let raw = String::from_utf8_lossy(line.content());
+            let content = raw.trim_end_matches(['\n', '\r']).to_string();
 
-                let raw = String::from_utf8_lossy(line.content());
-                let content = raw.trim_end_matches(['\n', '\r']).to_string();
+            line_contents.push(content);
+            line_origins.push(origin);
+            line_numbers.push((line.old_lineno(), line.new_lineno()));
+        }
 
-                line_contents.push(content);
-                line_origins.push(origin);
-                line_numbers.push((line.old_lineno(), line.new_lineno()));
-            }
+        let mut lines: Vec<DiffLine> = Vec::with_capacity(line_contents.len());
+        for (idx, content) in line_contents.into_iter().enumerate() {
+            let origin = line_origins[idx];
+            let (old_lineno, new_lineno) = line_numbers[idx];
 
-            let mut lines: Vec<DiffLine> = Vec::with_capacity(line_contents.len());
-            for (idx, content) in line_contents.into_iter().enumerate() {
-                let origin = line_origins[idx];
-                let (old_lineno, new_lineno) = line_numbers[idx];
-
-                lines.push(DiffLine {
-                    origin,
-                    raw_content: content.contains('\t').then(|| content.clone()),
-                    content: tabify(&content),
-                    old_lineno,
-                    new_lineno,
-                    highlighted_spans: None,
-                });
-            }
-
-            hunks.push(DiffHunk {
-                header,
-                lines,
-                old_start,
-                old_count,
-                new_start,
-                new_count,
+            lines.push(DiffLine {
+                origin,
+                raw_content: content.contains('\t').then(|| content.clone()),
+                content: tabify(&content),
+                old_lineno,
+                new_lineno,
+                highlighted_spans: None,
             });
         }
+
+        hunks.push(DiffHunk {
+            header,
+            lines,
+            old_start,
+            old_count,
+            new_start,
+            new_count,
+        });
     }
 
     Ok(hunks)
@@ -497,9 +682,8 @@ mod tests {
         let diff = repo
             .diff_tree_to_tree(Some(&head), Some(&head), None)
             .unwrap();
-        let highlighter = SyntaxHighlighter::default();
 
-        let result = parse_diff(&repo, diff, &highlighter);
+        let result = parse_diff(&repo, diff);
 
         assert!(matches!(result, Err(TuicrError::NoChanges)));
     }
@@ -1144,5 +1328,152 @@ mod tests {
             );
             assert_has_hunks(&files, "keep.txt", &format!("{label} subset"));
         }
+    }
+
+    /// Create a repo with two commits, where each file changes from its old
+    /// bytes to its new bytes.
+    fn attribute_repo(
+        files: &[(&str, &[u8], &[u8])],
+        attributes: &str,
+    ) -> (tempfile::TempDir, Repository) {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = Repository::init(dir.path()).unwrap();
+        let commit = |repo: &Repository, side: usize, parents: &[&git2::Commit<'_>]| {
+            for (name, old, new) in files {
+                fs::write(dir.path().join(name), if side == 0 { *old } else { *new }).unwrap();
+            }
+            fs::write(dir.path().join(".gitattributes"), attributes).unwrap();
+            let mut index = repo.index().unwrap();
+            index
+                .add_all(["*"], git2::IndexAddOption::FORCE, None)
+                .unwrap();
+            index.write().unwrap();
+            let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+            let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, "c", &tree, parents)
+                .unwrap()
+        };
+        let first = commit(&repo, 0, &[]);
+        let first = repo.find_commit(first).unwrap();
+        commit(&repo, 1, &[&first]);
+        drop(first);
+        (dir, repo)
+    }
+
+    fn head_diff(repo: &Repository) -> Diff<'_> {
+        let new = repo.head().unwrap().peel_to_commit().unwrap();
+        let old = new.parent(0).unwrap();
+        repo.diff_tree_to_tree(
+            Some(&old.tree().unwrap()),
+            Some(&new.tree().unwrap()),
+            Some(&mut DiffOptions::new()),
+        )
+        .unwrap()
+    }
+
+    fn hunk_text(files: &[DiffFile]) -> Vec<(Option<PathBuf>, Vec<String>)> {
+        files
+            .iter()
+            .map(|file| {
+                let lines = file
+                    .hunks
+                    .iter()
+                    .flat_map(|hunk| {
+                        std::iter::once(hunk.header.clone()).chain(hunk.lines.iter().map(|line| {
+                            format!(
+                                "{:?} {:?} {:?} {}",
+                                line.origin, line.old_lineno, line.new_lineno, line.content
+                            )
+                        }))
+                    })
+                    .collect();
+                (file.new_path.clone(), lines)
+            })
+            .collect()
+    }
+
+    /// `parse_tree_diff` must produce the same hunks as `from_diff`. Each file
+    /// here uses a `.gitattributes` rule that can change a diff.
+    #[test]
+    fn should_match_from_diff_when_gitattributes_change_how_files_diff() {
+        let (_dir, repo) = attribute_repo(
+            &[
+                ("plain.txt", b"one\n", b"two\n"),
+                ("marked.dat", b"one\n", b"two\n"),
+                ("hidden.txt2", b"one\n", b"two\n"),
+                ("real.bin", b"a\0b\n", b"a\0c\n"),
+                ("forced.bin2", b"one\n", b"x\0two\n"),
+                (
+                    "named.py",
+                    b"def f():\n    a\n    b\n    c\n    d\n    e\n    g\n",
+                    b"def f():\n    a\n    b\n    c\n    d\n    e\n    h\n",
+                ),
+            ],
+            "*.dat binary\n*.txt2 -diff\n*.bin2 diff\n*.py diff=python\n",
+        );
+        let diff = head_diff(&repo);
+
+        let expected = parse_diff(&repo, diff).unwrap();
+        // Use a second diff. `from_diff` writes the binary flag into the delta it
+        // reads, so `parse_tree_diff` would skip these files on a shared diff.
+        let fresh = head_diff(&repo);
+        let actual = parse_tree_diff(&repo, &fresh, WhitespaceComparison::Normal).unwrap();
+
+        assert_eq!(hunk_text(&actual.files), hunk_text(&expected));
+    }
+
+    #[test]
+    fn should_count_new_version_lines_while_reading_for_the_patch() {
+        let (_dir, repo) = attribute_repo(&[("a.txt", b"one\n", b"one\ntwo\nthree\n")], "");
+        let diff = head_diff(&repo);
+
+        let parsed = parse_tree_diff(&repo, &diff, WhitespaceComparison::Normal).unwrap();
+
+        assert_eq!(parsed.counts, vec![(PathBuf::from("a.txt"), 3)]);
+    }
+
+    #[test]
+    fn should_keep_whole_file_contents_only_for_container_grammars() {
+        let (_dir, repo) = attribute_repo(
+            &[
+                ("a.svelte", b"<p>a</p>\n", b"<p>b</p>\n"),
+                ("b.rs", b"a\n", b"b\n"),
+            ],
+            "",
+        );
+        let diff = head_diff(&repo);
+
+        let parsed = parse_tree_diff(&repo, &diff, WhitespaceComparison::Normal).unwrap();
+
+        assert_eq!(
+            parsed.new_contents.keys().collect::<Vec<_>>(),
+            vec![&PathBuf::from("a.svelte")]
+        );
+        assert_eq!(
+            parsed.old_contents[&PathBuf::from("a.svelte")],
+            "<p>a</p>\n"
+        );
+    }
+
+    #[test]
+    fn should_refuse_to_read_a_blob_over_the_size_limit() {
+        let (_dir, repo) = attribute_repo(&[("a.txt", b"one\n", b"twelve bytes")], "");
+        let diff = head_diff(&repo);
+        let id = diff.get_delta(0).unwrap().new_file().id();
+
+        assert!(read_delta_blob(&repo, id, 11).is_err());
+        assert!(read_delta_blob(&repo, id, 12).unwrap().is_some());
+    }
+
+    #[test]
+    fn should_not_keep_contents_of_a_container_file_over_the_highlight_cap() {
+        let big = vec![b'a'; MAX_HIGHLIGHT_FILE_BYTES + 1];
+        let (_dir, repo) = attribute_repo(&[("a.svelte", b"<p>a</p>\n", &big)], "");
+        let diff = head_diff(&repo);
+
+        let parsed = parse_tree_diff(&repo, &diff, WhitespaceComparison::Normal).unwrap();
+
+        assert!(parsed.new_contents.is_empty());
+        assert!(parsed.old_contents.contains_key(&PathBuf::from("a.svelte")));
     }
 }
