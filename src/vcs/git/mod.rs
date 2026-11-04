@@ -17,8 +17,8 @@ use crate::process::{CommandOutputError, CommandOutputErrorKind, run_command_out
 use crate::syntax::SyntaxHighlighter;
 
 use super::traits::{
-    ChangeKind, CommitInfo, DiffWhitespaceMode, ResolvedRevisionRange, VcsBackend, VcsChangeStatus,
-    VcsInfo,
+    ChangeKind, CommitInfo, DiffWhitespaceMode, OldAndNewContents, ResolvedRevisionRange,
+    VcsBackend, VcsChangeStatus, VcsInfo,
 };
 use cli::GitCliBackend;
 pub use libgit2::Libgit2Backend;
@@ -171,8 +171,8 @@ impl GitBackend {
         Self::discover_with(cwd, preference, whitespace_mode, env_changes_config)
     }
 
-    /// `discover_from` with the environment check passed in, so tests can force
-    /// either answer without changing process-wide variables.
+    /// Run `discover_from` with the environment check as a parameter, so tests can set
+    /// either result without changing process-wide variables.
     fn discover_with(
         cwd: &Path,
         preference: GitBackendPreference,
@@ -195,8 +195,8 @@ impl GitBackend {
             )?));
         }
 
-        // Ask `git` here, because libgit2 could not open the repository or read
-        // its config, or the environment changes config that libgit2 ignores.
+        // Call `git` here, because libgit2 could not open the repository or read its
+        // config, or the environment changes config that libgit2 ignores.
         // SHA-256 and reftable repositories fail to open in libgit2.
         // TODO: remove reftable fallback logic when libgit2 supports it as part of https://github.com/libgit2/libgit2/issues/5352
         // TODO: remove split index fallback logic when libgit2 supports it as part of https://github.com/libgit2/libgit2/issues/6132
@@ -283,7 +283,7 @@ fn config_requires_cli(config: &git2::Config) -> bool {
 
 /// Return whether the environment changes where `git` reads config (`GIT_CONFIG*`)
 /// or finds the repository (`GIT_DIR`, `GIT_COMMON_DIR`). libgit2 ignores these
-/// variables, so only `git` can answer correctly when one is set.
+/// variables, so tuicr must call `git` when one is set.
 fn env_changes_git_config(mut names: impl Iterator<Item = std::ffi::OsString>) -> bool {
     names.any(|name| {
         let name = name.to_string_lossy();
@@ -441,6 +441,13 @@ impl VcsBackend for GitBackend {
         match self {
             Self::Libgit2(backend) => backend.get_commit_range_diff(revision_range, highlighter),
             Self::Cli(backend) => backend.get_commit_range_diff(revision_range, highlighter),
+        }
+    }
+
+    fn uncolored_file_contents(&self, file: &DiffFile) -> Option<OldAndNewContents> {
+        match self {
+            Self::Libgit2(backend) => backend.uncolored_file_contents(file),
+            Self::Cli(backend) => backend.uncolored_file_contents(file),
         }
     }
 
@@ -665,7 +672,7 @@ mod tests {
         assert_eq!(git_launches(), 0);
     }
 
-    /// libgit2 ignores config from environment variables, so `git` must answer.
+    /// libgit2 ignores config from environment variables, so tuicr must call `git`.
     #[test]
     fn should_ask_git_when_the_environment_changes_config() {
         let temp_dir = tempdir().expect("failed to create temp dir");

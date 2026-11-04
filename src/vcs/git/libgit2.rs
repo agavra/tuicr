@@ -9,7 +9,8 @@ use crate::syntax::SyntaxHighlighter;
 
 use super::{context, diff, repository, staging};
 use crate::vcs::traits::{
-    ChangeKind, CommitInfo, DiffWhitespaceMode, ResolvedRevisionRange, VcsBackend, VcsInfo, VcsType,
+    ChangeKind, CommitInfo, DiffWhitespaceMode, OldAndNewContents, ResolvedRevisionRange,
+    VcsBackend, VcsInfo, VcsType,
 };
 
 /// Git backend implementation using the git2/libgit2 library.
@@ -18,9 +19,9 @@ pub struct Libgit2Backend {
     info: VcsInfo,
     whitespace_mode: DiffWhitespaceMode,
     line_counts: RefCell<diff::LineCounts>,
-    /// The tree of the last full commit ID, because `file_line_count` asks
-    /// about the same commit once per file.
+    /// Avoid looking up the same commit's tree for each file.
     last_commit_tree: RefCell<Option<(String, git2::Oid)>>,
+    uncolored_file_blobs: RefCell<diff::UncoloredFileBlobs>,
 }
 
 /// Declare libgit2 extensions tuicr understands so discovery doesn't refuse
@@ -43,8 +44,8 @@ fn register_supported_extensions() {
 }
 
 impl Libgit2Backend {
-    /// Resolve a revision to its tree ID. Only a full commit ID is remembered,
-    /// because a name such as `HEAD` can point at another commit later.
+    /// Resolve a revision to its tree ID. Remember only a full commit ID, because a name
+    /// such as `HEAD` can point at another commit later.
     fn commit_tree_id(&self, revision: &str) -> Option<git2::Oid> {
         if let Some((commit, tree)) = &*self.last_commit_tree.borrow()
             && commit == revision
@@ -113,6 +114,7 @@ impl Libgit2Backend {
             whitespace_mode,
             line_counts: RefCell::default(),
             last_commit_tree: RefCell::default(),
+            uncolored_file_blobs: RefCell::default(),
         })
     }
 }
@@ -200,13 +202,25 @@ impl VcsBackend for Libgit2Backend {
         revision_range: &ResolvedRevisionRange<'_>,
         highlighter: &SyntaxHighlighter,
     ) -> Result<Vec<DiffFile>> {
-        diff::get_commit_range_diff(
+        let load = diff::get_commit_range_diff(
             &self.repo,
             revision_range,
             &self.whitespace_mode,
             highlighter,
-            &self.line_counts,
-        )
+        )?;
+        self.line_counts.borrow_mut().extend(load.line_counts);
+        self.uncolored_file_blobs
+            .borrow_mut()
+            .extend(load.uncolored_file_blobs);
+        Ok(load.files)
+    }
+
+    fn uncolored_file_contents(&self, file: &DiffFile) -> Option<OldAndNewContents> {
+        let blobs = *self
+            .uncolored_file_blobs
+            .borrow()
+            .get(&diff::UncoloredFileKey::from(file))?;
+        Some(diff::read_blob_contents(&self.repo, blobs))
     }
 
     fn get_commits_info(&self, ids: &[String]) -> Result<Vec<CommitInfo>> {

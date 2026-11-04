@@ -1948,6 +1948,8 @@ fn build_counting_app(commits: &[&str], files: Vec<DiffFile>) -> (App, LineCount
             info: vcs_info.clone(),
             line_count: 100,
             line_count_refs: LineCountRefs::clone(&line_count_refs),
+            uncolored_contents: None,
+            uncolored_calls: Default::default(),
         }),
         vcs_info,
         Theme::dark(),
