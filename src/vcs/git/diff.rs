@@ -3,6 +3,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use super::attrs::{DiffAttrs, diff_attrs_for};
 use crate::error::{Result, TuicrError};
 use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin};
 use crate::syntax::{SyntaxHighlighter, needs_full_file_highlight};
@@ -575,6 +576,7 @@ fn parse_delta(
     delta_idx: usize,
     delta: &git2::DiffDelta<'_>,
     comparison: WhitespaceComparison,
+    attrs: DiffAttrs,
 ) -> Result<ParsedDelta> {
     let old_path = delta.old_file().path().map(PathBuf::from);
     let new_path = delta.new_file().path().map(PathBuf::from);
@@ -594,9 +596,15 @@ fn parse_delta(
     let old_blob = read_delta_blob(repo, delta.old_file().id(), MAX_DELTA_BLOB_BYTES);
     let new_blob = read_delta_blob(repo, delta.new_file().id(), MAX_DELTA_BLOB_BYTES);
     let patch = match (&old_blob, &new_blob, path) {
-        (Ok(old), Ok(new), Some(path)) => {
-            patch_from_blobs(repo, delta, path, old.as_ref(), new.as_ref(), comparison)?
-        }
+        (Ok(old), Ok(new), Some(path)) => patch_from_blobs(
+            repo,
+            delta,
+            path,
+            old.as_ref(),
+            new.as_ref(),
+            comparison,
+            attrs,
+        )?,
         _ => None,
     };
     let hunks = match patch {
@@ -661,6 +669,12 @@ fn parse_tree_diff(
     diff: &Diff,
     comparison: WhitespaceComparison,
 ) -> Result<TreeDiff> {
+    let changed: Vec<&Path> = diff
+        .deltas()
+        .flat_map(|delta| [delta.old_file().path(), delta.new_file().path()])
+        .flatten()
+        .collect();
+    let attrs = diff_attrs_for(repo, &changed);
     let mut parsed = TreeDiff {
         files: Vec::new(),
         old_contents: HashMap::new(),
@@ -670,7 +684,7 @@ fn parse_tree_diff(
     };
 
     for (delta_idx, delta) in diff.deltas().enumerate() {
-        let one = parse_delta(repo, diff, delta_idx, &delta, comparison)?;
+        let one = parse_delta(repo, diff, delta_idx, &delta, comparison, attrs)?;
         parsed.old_contents.extend(one.old_content);
         parsed.new_contents.extend(one.new_content);
         parsed.counts.extend(one.count);
@@ -720,21 +734,24 @@ fn patch_from_blobs<'a>(
     old: Option<&'a git2::Blob<'_>>,
     new: Option<&'a git2::Blob<'_>>,
     comparison: WhitespaceComparison,
+    attrs: DiffAttrs,
 ) -> Result<Option<git2::Patch<'a>>> {
     let mut opts = diff_options(comparison);
-    match git2::AttrValue::from_bytes(repo.get_attr_bytes(
-        path,
-        "diff",
-        git2::AttrCheckFlags::default(),
-    )?) {
-        git2::AttrValue::True => {
-            opts.force_text(true);
+    if attrs == DiffAttrs::LookUpEachFile {
+        match git2::AttrValue::from_bytes(repo.get_attr_bytes(
+            path,
+            "diff",
+            git2::AttrCheckFlags::default(),
+        )?) {
+            git2::AttrValue::True => {
+                opts.force_text(true);
+            }
+            git2::AttrValue::False => {
+                opts.force_binary(true);
+            }
+            git2::AttrValue::Unspecified => {}
+            git2::AttrValue::String(_) | git2::AttrValue::Bytes(_) => return Ok(None),
         }
-        git2::AttrValue::False => {
-            opts.force_binary(true);
-        }
-        git2::AttrValue::Unspecified => {}
-        git2::AttrValue::String(_) | git2::AttrValue::Bytes(_) => return Ok(None),
     }
     let patch = git2::Patch::from_buffers(
         old.map_or(&[][..], |blob| blob.content()),
@@ -816,7 +833,7 @@ fn hunks_from_patch(patch: &git2::Patch<'_>) -> Result<Vec<DiffHunk>> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
     #[test]
@@ -1528,7 +1545,7 @@ mod tests {
 
     /// Create a repo with two commits, where each file changes from its old
     /// bytes to its new bytes.
-    fn attribute_repo(
+    pub(in crate::vcs::git) fn attribute_repo(
         files: &[(&str, &[u8], &[u8])],
         attributes: &str,
     ) -> (tempfile::TempDir, Repository) {
