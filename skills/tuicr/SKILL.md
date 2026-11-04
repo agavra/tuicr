@@ -118,6 +118,12 @@ launching a review pane.
 If your tool supports command timeouts, use a long timeout, such as 10 minutes,
 because the tmux, Zellij, and Herdr wrappers wait for the TUI to exit. The cmux
 and Rex wrappers are the exception: they return as soon as the pane is running.
+When another tuicr is already open where the new pane would go (the caller's
+tmux window; the same repository under Zellij), the tmux and Zellij wrappers
+wait for it to close before opening a new pane, for up to `TUICR_WAIT_TIMEOUT` seconds (default 300). If it is still open
+after that, they exit 75 without opening anything: rerun the command, and don't
+treat it as an empty review. A tuicr in another tmux window, such as another
+agent session's, doesn't make the tmux wrapper wait.
 The cmux wrapper prints the new surface ref between `=== TUICR SURFACE ===`
 markers; capture it to close the pane later with
 `cmux close-surface --surface <ref>`. The Rex wrapper prints the new block ref
