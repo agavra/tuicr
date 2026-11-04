@@ -1537,6 +1537,10 @@ pub struct App {
     pub commit_diff_cache: HashMap<(usize, usize), Vec<DiffFile>>,
     /// Full-range (every commit) diff cache, used to restore the widened view
     pub range_diff_files: Option<Vec<DiffFile>>,
+    /// Holds the number of display-row builds, so a test can assert how often a load
+    /// builds them.
+    #[cfg(test)]
+    pub rows_built: usize,
     /// Saved inline selection range when entering full commit select mode via :commits
     pub saved_inline_selection: Option<(usize, usize)>,
     /// Path filter for scoping diff to a specific file or directory

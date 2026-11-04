@@ -1864,6 +1864,7 @@ mod tests {
                     ),
                     &DiffWhitespaceMode::Normal,
                     &highlighter,
+                    &Default::default(),
                 )
                 .unwrap()
             )
@@ -1956,6 +1957,7 @@ mod tests {
             &libgit2_range,
             &DiffWhitespaceMode::Normal,
             &highlighter,
+            &Default::default(),
         )
         .expect("failed to get libgit2 range diff");
 
