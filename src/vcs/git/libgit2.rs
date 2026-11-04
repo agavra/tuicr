@@ -59,6 +59,10 @@ impl Libgit2Backend {
         Some(tree)
     }
 
+    pub(super) fn config(&self) -> std::result::Result<git2::Config, git2::Error> {
+        self.repo.config()
+    }
+
     pub(super) fn discover_from(cwd: &Path, whitespace_mode: DiffWhitespaceMode) -> Result<Self> {
         register_supported_extensions();
         let repo = Repository::discover(cwd).map_err(|_| TuicrError::NotARepository)?;
