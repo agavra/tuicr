@@ -76,11 +76,14 @@ check_repo() {
 }
 
 check_tuicr_running() {
-  # Check if tuicr is already running in any tmux pane
-  if tmux list-panes -a -F '#{pane_current_command}' 2>/dev/null | grep -q '^tuicr$'; then
-    return 0  # tuicr is running
+  # Only the caller's window counts: the new pane would open there, while a
+  # tuicr in another window belongs to another agent session and can stay
+  # open alongside this one.
+  local caller_pane="${TMUX_PANE:-}"
+  if [[ -z "$caller_pane" ]]; then
+    caller_pane=$(tmux display-message -p '#{pane_id}')
   fi
-  return 1
+  tmux list-panes -t "$caller_pane" -F '#{pane_current_command}' 2>/dev/null | grep -q '^tuicr$'
 }
 
 launch_tuicr_pane() {
@@ -200,12 +203,9 @@ main() {
     exit 1
   fi
 
-  # Check if tuicr is already running
-  if check_tuicr_running; then
-    log_warn "tuicr is already running in another pane"
-    log_info "Switch to it with Ctrl-b + arrow keys"
-    exit 0
-  fi
+  # Wait for a tuicr that is already open in this window, or this launch
+  # would end with exit 0 and no review
+  tuicr_wait_for_running check_tuicr_running
 
   # Launch tuicr in a split pane
   launch_tuicr_pane "$target_dir" "${TUICR_PASSTHROUGH_ARGS[@]+"${TUICR_PASSTHROUGH_ARGS[@]}"}"
