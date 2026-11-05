@@ -206,6 +206,97 @@ fn commit_data_index_mirrors_and_round_trips_when_ascending() {
     }
 }
 
+fn inline_selector_app(order: CommitOrder) -> App {
+    let mut app = build_app(
+        (0..12)
+            .map(|i| normal_commit(&format!("c{i:06}")))
+            .collect(),
+    );
+    app.review_commits = app.commit_list.clone();
+    app.diff_source =
+        DiffSource::CommitRange(app.review_commits.iter().map(|c| c.id.clone()).collect());
+    app.input_mode = InputMode::Normal;
+    app.commit_order = order;
+    app.show_commit_selector = true;
+    app.commit_selection_range = Some((0, 11));
+    app
+}
+
+fn draw_inline_selector(app: &mut App, height: u16) -> ratatui::buffer::Buffer {
+    use ratatui::{Terminal, backend::TestBackend};
+    let mut terminal = Terminal::new(TestBackend::new(120, height)).unwrap();
+    terminal
+        .draw(|frame| crate::ui::render(frame, app))
+        .expect("draw review");
+    terminal.backend().buffer().clone()
+}
+
+fn assert_inline_cursor_visible(app: &App, buffer: &ratatui::buffer::Buffer) {
+    let inner = app.commit_list_inner_area.expect("inline selector visible");
+    let cursor_id = &app.review_commits[app.commit_list_cursor].short_id;
+    let visible = (inner.y..inner.bottom()).any(|y| {
+        let row: String = (inner.x..inner.right())
+            .map(|x| buffer[(x, y)].symbol())
+            .collect();
+        row.contains('▸') && row.contains(cursor_id)
+    });
+    assert!(
+        visible,
+        "cursor {cursor_id} is missing from the rendered selector (offset={}, height={})",
+        app.commit_list_scroll_offset, inner.height,
+    );
+}
+
+#[test]
+fn inline_selector_keeps_cycled_commits_visible_in_both_orders() {
+    for order in [CommitOrder::Descending, CommitOrder::Ascending] {
+        for next in [true, false] {
+            let mut app = inline_selector_app(order);
+            // Start at the opposite end so both directions cross a viewport edge.
+            app.commit_list_cursor = if next { 0 } else { 11 };
+            app.commit_selection_range = Some((app.commit_list_cursor, app.commit_list_cursor));
+            draw_inline_selector(&mut app, 24);
+            for _ in 0..14 {
+                if next {
+                    app.cycle_commit_next();
+                } else {
+                    app.cycle_commit_prev();
+                }
+                let buffer = draw_inline_selector(&mut app, 24);
+                assert_inline_cursor_visible(&app, &buffer);
+            }
+        }
+    }
+}
+
+#[test]
+fn inline_selector_reveals_commit_cycled_while_hidden() {
+    for order in [CommitOrder::Descending, CommitOrder::Ascending] {
+        let mut app = inline_selector_app(order);
+        draw_inline_selector(&mut app, 24);
+        app.toggle_commit_selector();
+        app.cycle_commit_next();
+        draw_inline_selector(&mut app, 24);
+        assert!(app.commit_list_inner_area.is_none());
+        app.toggle_commit_selector();
+        let buffer = draw_inline_selector(&mut app, 24);
+        assert_inline_cursor_visible(&app, &buffer);
+    }
+}
+
+#[test]
+fn inline_selector_keeps_cursor_visible_after_resize() {
+    for order in [CommitOrder::Descending, CommitOrder::Ascending] {
+        let mut app = inline_selector_app(order);
+        app.commit_list_cursor = 5;
+        draw_inline_selector(&mut app, 24);
+        let previous_height = app.commit_list_viewport_height;
+        let buffer = draw_inline_selector(&mut app, 7);
+        assert!(app.commit_list_viewport_height < previous_height);
+        assert_inline_cursor_visible(&app, &buffer);
+    }
+}
+
 #[test]
 fn toggle_commit_selector_flips_visibility_and_drops_focus() {
     let mut app = build_app(vec![normal_commit("a"), normal_commit("b")]);
