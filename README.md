@@ -283,6 +283,7 @@ leader = ";"                  # configurable prefix for leader shortcuts
 editor = "nvim"               # editor for `e` / `:edit`; overrides $EDITOR
 comment_vim = false           # vim modal editing in the review comment box
 relative_line_numbers = false # show rendered-row distances in the diff gutter
+file_list_width = 30          # startup sidebar width in columns; omit for 20%
 
 [[comment_types]]
 id = "issue"
@@ -315,6 +316,7 @@ A first-session cheatsheet. Press `?` inside tuicr for the full reference.
 | `j` / `k` | Down / up |
 | `Ctrl-d` / `Ctrl-u` | Half-page down / up |
 | `g` / `G` | Top / bottom |
+| `[count]Ctrl-w >` / `[count]Ctrl-w <` | Grow / shrink the active pane by columns (default: one) |
 | `{` / `}` | Previous / next file |
 | `[` / `]` | Previous / next hunk |
 | `m` / `M` | Next / previous comment |

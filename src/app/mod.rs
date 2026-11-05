@@ -1181,6 +1181,8 @@ pub struct App {
     /// new/right). Drives the `▶` caret placement and the side a new line
     /// comment attaches to. Ignored in unified view. Defaults to `New`.
     pub cursor_side: LineSide,
+    /// Requested sidebar width in terminal columns. None keeps the default 20%.
+    pub file_list_width: Option<u16>,
 
     pub file_list_state: FileListState,
     pub comment_navigator_state: CommentNavigatorState,

@@ -380,6 +380,9 @@ fn main() -> anyhow::Result<()> {
             app.wrap_style = app::WrapStyle::Gutter;
         }
         app.relative_line_numbers = cfg.relative_line_numbers.unwrap_or(false);
+        app.file_list_width = cfg
+            .file_list_width
+            .map(|width| u16::try_from(width).unwrap_or(u16::MAX));
         // Open in single-file view when the user opts in. Pristine
         // `--all-files` already turned it on inside `App::new`, so we
         // only toggle if it's still off.
@@ -427,6 +430,8 @@ fn main() -> anyhow::Result<()> {
     let mut pending_d = false;
     // Track pending leader command for leader-prefixed actions.
     let mut pending_leader = false;
+    // Ctrl-w awaits >/< while preserving the optional preceding count.
+    let mut pending_pane_resize = false;
     // Track pending Ctrl+C for "press twice to exit" (with timestamp for 2s timeout)
     let mut pending_ctrl_c: Option<Instant> = None;
     // Only re-render when state actually changed; the diff renderer rebuilds
@@ -561,6 +566,8 @@ fn main() -> anyhow::Result<()> {
                             continue;
                         }
                         // First Ctrl+C (or timeout expired) - show warning and start timer
+                        pending_pane_resize = false;
+                        app.pending_count = None;
                         pending_ctrl_c = Some(Instant::now());
                         app.set_message("Press Ctrl+C again to exit");
                         continue;
@@ -576,6 +583,14 @@ fn main() -> anyhow::Result<()> {
                     // Checked before the pending-prefix and vim-editor routing
                     // so they never reach a text buffer.
                     if handler::handle_global_key(&mut app, key) {
+                        continue;
+                    }
+
+                    if app.handle_pane_resize_key(key, &mut pending_pane_resize) {
+                        pending_z = false;
+                        pending_shift_z = false;
+                        pending_d = false;
+                        pending_leader = false;
                         continue;
                     }
 
