@@ -25,13 +25,27 @@ impl App {
         }
     }
 
+    /// Add the commit message, build the file tree and build the display rows after a
+    /// range load. Call this after `build`, which sorts the files and counts their lines.
+    pub(in crate::app) fn finish_range_load(&mut self) {
+        // The sort clears the line-count cache. Run it only when the inserted
+        // message file has changed the file indices that the cache uses as keys.
+        if self.insert_commit_message_if_single() {
+            self.sort_files_by_directory(true);
+        }
+        self.expand_all_dirs();
+        self.rebuild_annotations();
+    }
+
     /// If we are viewing a single commit, insert a "Commit Message" DiffFile at index 0.
     ///
     /// The synthetic path embeds the commit's short id (`Commit Message (<sha>)`)
     /// so that comments on different commits' messages get distinct session keys
     /// (the session indexes comments by path) and the exported review records
     /// which commit each commit-message comment belongs to.
-    pub(in crate::app) fn insert_commit_message_if_single(&mut self) {
+    ///
+    /// Return whether this function inserted a commit-message file.
+    pub(in crate::app) fn insert_commit_message_if_single(&mut self) -> bool {
         self.diff_files.retain(|f| !f.is_commit_message);
 
         let commit = if let Some((start, end)) = self.commit_selection_range {
@@ -46,9 +60,9 @@ impl App {
             None
         };
 
-        let Some(commit) = commit else { return };
+        let Some(commit) = commit else { return false };
         if Self::is_special_commit(commit) {
-            return;
+            return false;
         }
 
         let mut full_message = commit.summary.clone();
@@ -95,6 +109,7 @@ impl App {
         };
         self.diff_files.insert(0, commit_msg_file);
         self.session.add_diff_file(&self.diff_files[0]);
+        true
     }
 
     pub(in crate::app) fn is_staged_commit(commit: &CommitInfo) -> bool {
@@ -1143,7 +1158,7 @@ impl App {
             review_commits,
             request.commit_selection_range,
         );
-        let files = Self::changed_diff_files_for_source(
+        let mut files = Self::changed_diff_files_for_source(
             vcs.as_ref(),
             root_path,
             &fetch_source,
@@ -1151,6 +1166,9 @@ impl App {
             path_filter,
             current,
         )?;
+        if let Some(files) = &mut files {
+            Self::color_uncolored_files(vcs.as_ref(), files, highlighter);
+        }
         // Runs on the worker, alongside the diff fetch, so the event loop never
         // pays for it.
         //

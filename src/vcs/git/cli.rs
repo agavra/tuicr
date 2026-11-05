@@ -1777,6 +1777,7 @@ mod tests {
                     &highlighter,
                 )
                 .unwrap()
+                .files
             )
         );
         assert_eq!(
@@ -1867,7 +1868,8 @@ mod tests {
             &DiffWhitespaceMode::Normal,
             &highlighter,
         )
-        .expect("failed to get libgit2 range diff");
+        .expect("failed to get libgit2 range diff")
+        .files;
 
         assert_eq!(
             summarize_files(cli_files),

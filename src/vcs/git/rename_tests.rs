@@ -108,6 +108,7 @@ fn read_view(repo: &Repository, view: View, base: &str) -> Vec<DiffFile> {
                 &mode,
                 &highlighter,
             )
+            .map(|diff| diff.files)
         }
         View::CommitsAndWorkingTree => {
             diff::get_working_tree_with_commits_diff(repo, &[base.into()], &mode, &highlighter)

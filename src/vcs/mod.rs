@@ -170,7 +170,7 @@ where
 /// Files larger than this skip the full-file highlight pass and fall back to
 /// per-hunk highlighting. Keeps a runaway-cost ceiling on diffs that include
 /// huge generated artefacts (lockfiles, vendored bundles, fixtures).
-const MAX_HIGHLIGHT_FILE_BYTES: usize = 1024 * 1024;
+pub(crate) const MAX_HIGHLIGHT_FILE_BYTES: usize = 1024 * 1024;
 
 /// Re-highlight each diff line using full-file context, for files whose
 /// grammar needs it (Vue, Svelte, Astro, MDX). Other files keep their existing
@@ -301,6 +301,22 @@ fn highlight_content(
     }
     let lines: Vec<String> = content.lines().map(tabify).collect();
     highlighter.highlight_file_lines(path, &lines)
+}
+
+/// Color every hunk of a file from its whole old and new contents.
+pub(crate) fn color_full_file(
+    file: &mut DiffFile,
+    highlighter: &SyntaxHighlighter,
+    old: Option<&str>,
+    new: Option<&str>,
+) {
+    let path = file.display_path().clone();
+    let old = old.and_then(|content| highlight_content(highlighter, &path, content));
+    let new = new.and_then(|content| highlight_content(highlighter, &path, content));
+    if old.is_none() && new.is_none() {
+        return;
+    }
+    apply_full_file_spans(file, highlighter, old.as_deref(), new.as_deref());
 }
 
 fn apply_full_file_spans(
