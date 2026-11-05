@@ -1130,6 +1130,13 @@ impl App {
             }
         }
 
+        // Remote threads with no hunk row render under the file header.
+        for thread_idx in self.remote_threads_outside_hunks(file) {
+            comment_lines += crate::forge::remote_comments::thread_display_lines(
+                &self.forge_review_threads[thread_idx],
+            );
+        }
+
         if file.is_binary || file.hunks.is_empty() {
             content_lines = 1;
         } else {

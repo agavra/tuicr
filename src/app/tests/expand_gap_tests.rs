@@ -1789,3 +1789,141 @@ fn should_defer_start_line_while_there_are_no_annotations() {
     assert!(!app.apply_pending_start_line());
     assert_eq!(app.pending_start_line, Some(5));
 }
+
+fn remote_thread_at(
+    path: &str,
+    line: u32,
+    side: crate::forge::remote_comments::RemoteCommentSide,
+) -> crate::forge::remote_comments::RemoteReviewThread {
+    use crate::forge::remote_comments::{RemoteReviewComment, RemoteReviewThread};
+    RemoteReviewThread {
+        id: format!("T{line}"),
+        path: path.into(),
+        line: Some(line),
+        side,
+        is_resolved: false,
+        is_outdated: false,
+        comments: vec![RemoteReviewComment {
+            id: format!("C{line}"),
+            author: Some("alice".into()),
+            body: "first\nsecond".into(),
+            url: "https://example.com/c".into(),
+            ..Default::default()
+        }],
+    }
+}
+
+/// Indices of the annotations that belong to remote thread `thread_idx`.
+fn remote_thread_rows(app: &App, thread_idx: usize) -> Vec<usize> {
+    app.line_annotations
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| {
+            matches!(a, AnnotatedLine::RemoteThreadLine { thread_idx: t, .. } if *t == thread_idx)
+        })
+        .map(|(i, _)| i)
+        .collect()
+}
+
+#[test]
+fn should_render_remote_thread_outside_hunks_under_file_header() {
+    // Regression for #823: a forge comment on line 40, outside the only hunk
+    // (42..=46), had no row to attach to and never rendered.
+    use crate::forge::remote_comments::{PrCommentsVisibility, RemoteCommentSide};
+
+    for mode in [DiffViewMode::Unified, DiffViewMode::SideBySide] {
+        let file = make_file_with_hunks("a.rs", vec![make_hunk(42, 5)]);
+        let mut app = build_app_with_files(vec![file], 60);
+        app.sync_viewport_width(80);
+        app.diff_view_mode = mode;
+        app.session.remote_comments_visibility = PrCommentsVisibility::All;
+        app.forge_review_threads = vec![remote_thread_at("a.rs", 40, RemoteCommentSide::Right)];
+        app.rebuild_annotations();
+
+        // header + 2 body lines + footer
+        let rows = remote_thread_rows(&app, 0);
+        assert_eq!(rows.len(), 4, "{mode:?}: thread should render once");
+        let header = app
+            .line_annotations
+            .iter()
+            .position(|a| matches!(a, AnnotatedLine::FileHeader { file_idx: 0 }))
+            .unwrap();
+        assert_eq!(
+            rows,
+            (header + 1..header + 5).collect::<Vec<_>>(),
+            "{mode:?}: thread sits under the header"
+        );
+        assert_eq!(app.total_lines(), app.line_annotations.len(), "{mode:?}");
+
+        // Expanding the gap must not render the thread a second time.
+        app.expand_gap(
+            GapId {
+                file_idx: 0,
+                hunk_idx: 0,
+            },
+            ExpandDirection::Up,
+            None,
+        )
+        .unwrap();
+        assert_eq!(remote_thread_rows(&app, 0).len(), 4, "{mode:?}");
+        assert_eq!(app.total_lines(), app.line_annotations.len(), "{mode:?}");
+
+        // `:comments hide` still hides it.
+        app.set_remote_comments_visibility(PrCommentsVisibility::Hide);
+        assert!(remote_thread_rows(&app, 0).is_empty(), "{mode:?}");
+        assert_eq!(app.total_lines(), app.line_annotations.len(), "{mode:?}");
+    }
+}
+
+#[test]
+fn should_render_remote_thread_inside_hunk_only_at_its_row() {
+    use crate::forge::remote_comments::RemoteCommentSide;
+
+    for mode in [DiffViewMode::Unified, DiffViewMode::SideBySide] {
+        let file = make_file_with_hunks("a.rs", vec![make_hunk(42, 5)]);
+        let mut app = build_app_with_files(vec![file], 60);
+        app.sync_viewport_width(80);
+        app.diff_view_mode = mode;
+        app.forge_review_threads = vec![remote_thread_at("a.rs", 44, RemoteCommentSide::Right)];
+        app.rebuild_annotations();
+
+        let rows = remote_thread_rows(&app, 0);
+        assert_eq!(rows.len(), 4, "{mode:?}: thread should render once");
+        let hunk_header = app
+            .line_annotations
+            .iter()
+            .position(|a| matches!(a, AnnotatedLine::HunkHeader { .. }))
+            .unwrap();
+        assert!(rows[0] > hunk_header, "{mode:?}: thread stays in the hunk");
+        assert_eq!(app.total_lines(), app.line_annotations.len(), "{mode:?}");
+    }
+}
+
+#[test]
+fn should_render_old_side_thread_on_context_line_once_in_each_view() {
+    // Unified view anchors old-side threads on context rows; side-by-side
+    // only anchors them on deletions, so there it falls back to the header.
+    use crate::forge::remote_comments::RemoteCommentSide;
+
+    for (mode, under_header) in [
+        (DiffViewMode::Unified, false),
+        (DiffViewMode::SideBySide, true),
+    ] {
+        let file = make_file_with_hunks("a.rs", vec![make_hunk(42, 5)]);
+        let mut app = build_app_with_files(vec![file], 60);
+        app.sync_viewport_width(80);
+        app.diff_view_mode = mode;
+        app.forge_review_threads = vec![remote_thread_at("a.rs", 44, RemoteCommentSide::Left)];
+        app.rebuild_annotations();
+
+        let rows = remote_thread_rows(&app, 0);
+        assert_eq!(rows.len(), 4, "{mode:?}: thread should render once");
+        let hunk_header = app
+            .line_annotations
+            .iter()
+            .position(|a| matches!(a, AnnotatedLine::HunkHeader { .. }))
+            .unwrap();
+        assert_eq!(rows[0] < hunk_header, under_header, "{mode:?}");
+        assert_eq!(app.total_lines(), app.line_annotations.len(), "{mode:?}");
+    }
+}

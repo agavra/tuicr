@@ -785,6 +785,14 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
             }
         }
 
+        crate::ui::diff_view::render_remote_threads_outside_hunks(
+            &mut lines,
+            &mut line_idx,
+            ctx.current_line_idx,
+            app,
+            file,
+        );
+
         if file.is_too_large || file.is_binary || file.hunks.is_empty() {
             let indicator = cursor_indicator_spaced(line_idx, ctx.current_line_idx);
             lines.push(Line::from(vec![
@@ -2502,6 +2510,21 @@ mod remote_comments_side_by_side_snapshot_tests {
             body.contains("[github @alice]"),
             "expected badge in side-by-side render:\n{body}"
         );
+    }
+
+    #[test]
+    fn should_render_remote_comment_outside_hunks_under_file_header_in_side_by_side() {
+        // given a thread on line 40 while the only hunk covers lines 1-2 (#823)
+        let mut app = make_pr_app();
+        app.forge_review_threads = vec![RemoteReviewThread {
+            line: Some(40),
+            ..thread()
+        }];
+        app.rebuild_annotations();
+        // then the thread renders, labelled with its line
+        let body = body_text(&draw(&mut app));
+        assert_eq!(body.matches("sbs hello").count(), 1, "in:\n{body}");
+        assert!(body.contains("L40"), "expected L40 label in:\n{body}");
     }
 
     #[test]
