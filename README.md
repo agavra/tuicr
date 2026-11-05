@@ -93,6 +93,10 @@ tuicr update 0.18.0         # Install a known-good version
 
 Every flag, environment variable, and exit code in [docs/CLI.md](docs/CLI.md).
 
+The default Git backend detects renames using a 50% similarity threshold and honors
+Git's `diff.renames` and `diff.renameLimit` settings. Working-tree reviews include
+untracked destinations in rename detection, so a move can appear as `R` before staging.
+
 Inside tuicr, navigate with `j`/`k`, press `c` to comment, then `y` to copy the review or
 `:submit` to push it to GitHub, GitLab, Gitea, Bitbucket, Azure DevOps, or Gerrit. When reopening a
 pull request you've reviewed before, tuicr preselects commits newer than your latest submitted

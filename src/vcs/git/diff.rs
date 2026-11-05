@@ -1,4 +1,4 @@
-use git2::{Delta, Diff, DiffOptions, Repository};
+use git2::{Delta, Diff, DiffFindOptions, DiffOptions, Repository};
 use std::path::{Path, PathBuf};
 
 use crate::error::{Result, TuicrError};
@@ -36,7 +36,7 @@ fn get_working_tree_diff_once(
     opts.recurse_untracked_dirs(true);
 
     let diff = repo.diff_tree_to_workdir_with_index(head.as_ref(), Some(&mut opts))?;
-    let mut files = parse_diff(&diff, highlighter)?;
+    let mut files = parse_diff(repo, diff, highlighter)?;
     enhance_with_full_file_highlight(
         &mut files,
         highlighter,
@@ -71,7 +71,7 @@ fn get_staged_diff_once(
     let mut opts = diff_options(comparison);
 
     let diff = repo.diff_tree_to_index(head.as_ref(), Some(&index), Some(&mut opts))?;
-    let mut files = parse_diff(&diff, highlighter)?;
+    let mut files = parse_diff(repo, diff, highlighter)?;
     enhance_with_full_file_highlight(
         &mut files,
         highlighter,
@@ -146,7 +146,7 @@ fn get_unstaged_diff_once(
     opts.recurse_untracked_dirs(true);
 
     let diff = repo.diff_index_to_workdir(Some(&index), Some(&mut opts))?;
-    let mut files = parse_diff(&diff, highlighter)?;
+    let mut files = parse_diff(repo, diff, highlighter)?;
     enhance_with_full_file_highlight(
         &mut files,
         highlighter,
@@ -233,7 +233,7 @@ fn diff_commit_trees(
     let mut opts = diff_options(comparison);
 
     let diff = repo.diff_tree_to_tree(old_tree.as_ref(), Some(&new_tree), Some(&mut opts))?;
-    let mut files = parse_diff(&diff, highlighter)?;
+    let mut files = parse_diff(repo, diff, highlighter)?;
     enhance_with_full_file_highlight(
         &mut files,
         highlighter,
@@ -286,7 +286,7 @@ fn get_working_tree_with_commits_diff_once(
     opts.recurse_untracked_dirs(true);
 
     let diff = repo.diff_tree_to_workdir_with_index(old_tree.as_ref(), Some(&mut opts))?;
-    let mut files = parse_diff(&diff, highlighter)?;
+    let mut files = parse_diff(repo, diff, highlighter)?;
     enhance_with_full_file_highlight(
         &mut files,
         highlighter,
@@ -322,7 +322,24 @@ fn read_path_from_index(repo: &Repository, index: &git2::Index, path: &Path) -> 
     Some(String::from_utf8_lossy(blob.content()).into_owned())
 }
 
-fn parse_diff(diff: &Diff, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+fn parse_diff(
+    repo: &Repository,
+    mut diff: Diff<'_>,
+    highlighter: &SyntaxHighlighter,
+) -> Result<Vec<DiffFile>> {
+    let config = repo.config()?;
+    let copies = config.get_string("diff.renames").is_ok_and(|value| {
+        value.eq_ignore_ascii_case("copies") || value.eq_ignore_ascii_case("copy")
+    });
+    let renames = copies || config.get_bool("diff.renames").unwrap_or(true);
+    if renames {
+        let mut find = DiffFindOptions::new();
+        // Explicit flags bypass libgit2's diff.renames lookup. Preserve that policy
+        // while including the untracked files already shown in working-tree reviews.
+        find.renames(true).copies(copies).for_untracked(true);
+        diff.find_similar(Some(&mut find))?;
+    }
+
     let mut files: Vec<DiffFile> = Vec::new();
 
     // Untracked files larger than this are shown in the file list but their
@@ -349,7 +366,7 @@ fn parse_diff(diff: &Diff, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFi
         let hunks = if is_binary || is_too_large {
             Vec::new()
         } else {
-            parse_hunks(diff, delta_idx, highlighter, syntax_path)?
+            parse_hunks(&diff, delta_idx, highlighter, syntax_path)?
         };
 
         let content_hash = DiffFile::compute_content_hash(&hunks);
@@ -482,7 +499,7 @@ mod tests {
             .unwrap();
         let highlighter = SyntaxHighlighter::default();
 
-        let result = parse_diff(&diff, &highlighter);
+        let result = parse_diff(&repo, diff, &highlighter);
 
         assert!(matches!(result, Err(TuicrError::NoChanges)));
     }

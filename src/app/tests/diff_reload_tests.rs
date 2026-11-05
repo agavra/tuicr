@@ -224,6 +224,174 @@ fn make_hunk(new_start: u32, content: &str) -> DiffHunk {
     }
 }
 
+fn renamed_file_app(status: FileStatus) -> (tempfile::TempDir, git2::Repository, App) {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(dir.path()).unwrap();
+    let content: String = (1..=20).map(|n| format!("line {n}\n")).collect();
+    std::fs::write(dir.path().join("old.txt"), &content).unwrap();
+    let mut index = repo.index().unwrap();
+    index.add_path(Path::new("old.txt")).unwrap();
+    index.write().unwrap();
+    let tree_id = index.write_tree().unwrap();
+    let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+    {
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+    }
+    if status == FileStatus::Renamed {
+        std::fs::rename(dir.path().join("old.txt"), dir.path().join("new.txt")).unwrap();
+    } else {
+        std::fs::copy(dir.path().join("old.txt"), dir.path().join("new.txt")).unwrap();
+        // A copy must not stage unrelated edits to its source, either.
+        std::fs::write(dir.path().join("old.txt"), "unreviewed source edit\n").unwrap();
+    }
+    let vcs = crate::vcs::GitBackend::discover_from(
+        dir.path(),
+        crate::vcs::GitBackendPreference::Libgit2,
+        crate::vcs::traits::DiffWhitespaceMode::Normal,
+    )
+    .unwrap();
+    let info = vcs.info().clone();
+    let session = ReviewSession::new(
+        info.root_path.clone(),
+        info.head_commit.clone(),
+        info.branch_name.clone(),
+        SessionDiffSource::Unstaged,
+    );
+    // Supply the rename/copy record consumed by the app independently of
+    // the backend's similarity threshold and copy-detection configuration.
+    let mut file = make_diff_file("new.txt", status, 1);
+    file.old_path = Some("old.txt".into());
+    file.hunks = vec![make_hunk(10, "line 10")];
+    let app = App::build(
+        Box::new(vcs),
+        info,
+        Theme::dark(),
+        None,
+        false,
+        vec![file],
+        session,
+        DiffSource::Unstaged,
+        InputMode::Normal,
+        Vec::new(),
+        None,
+        None,
+    )
+    .unwrap();
+    (dir, repo, app)
+}
+
+#[test]
+fn should_stage_both_paths_of_reviewed_rename() {
+    let _reviews = TestReviewsDir::new();
+    let (_dir, repo, mut app) = renamed_file_app(FileStatus::Renamed);
+    assert!(
+        repo.index()
+            .unwrap()
+            .get_path(Path::new("old.txt"), 0)
+            .is_some()
+    );
+    assert!(
+        repo.index()
+            .unwrap()
+            .get_path(Path::new("new.txt"), 0)
+            .is_none()
+    );
+    app.session
+        .get_file_mut(&PathBuf::from("new.txt"))
+        .unwrap()
+        .reviewed = true;
+
+    app.stage_reviewed_files();
+
+    let mut index = repo.index().unwrap();
+    index.read(true).unwrap();
+    assert!(index.get_path(Path::new("new.txt"), 0).is_some());
+    assert!(index.get_path(Path::new("old.txt"), 0).is_none());
+}
+
+#[test]
+fn should_stage_only_destination_of_reviewed_copy() {
+    let _reviews = TestReviewsDir::new();
+    let (_dir, repo, mut app) = renamed_file_app(FileStatus::Copied);
+    let source_id = repo
+        .index()
+        .unwrap()
+        .get_path(Path::new("old.txt"), 0)
+        .unwrap()
+        .id;
+    assert!(
+        repo.index()
+            .unwrap()
+            .get_path(Path::new("new.txt"), 0)
+            .is_none()
+    );
+    app.session
+        .get_file_mut(&PathBuf::from("new.txt"))
+        .unwrap()
+        .reviewed = true;
+
+    app.stage_reviewed_files();
+
+    let mut index = repo.index().unwrap();
+    index.read(true).unwrap();
+    assert!(index.get_path(Path::new("new.txt"), 0).is_some());
+    assert_eq!(
+        index.get_path(Path::new("old.txt"), 0).unwrap().id,
+        source_id
+    );
+}
+
+#[test]
+fn should_expand_destination_context_for_rename_and_copy() {
+    for status in [FileStatus::Renamed, FileStatus::Copied] {
+        let _reviews = TestReviewsDir::new();
+        let (dir, repo, mut app) = renamed_file_app(status);
+        for committed in [false, true] {
+            if committed {
+                let mut index = repo.index().unwrap();
+                index.add_path(Path::new("new.txt")).unwrap();
+                if status == FileStatus::Renamed {
+                    index.remove_path(Path::new("old.txt")).unwrap();
+                }
+                index.write().unwrap();
+                let tree_id = index.write_tree().unwrap();
+                let tree = repo.find_tree(tree_id).unwrap();
+                let parent = repo.head().unwrap().peel_to_commit().unwrap();
+                let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+                let oid = repo
+                    .commit(Some("HEAD"), &sig, &sig, "move or copy", &tree, &[&parent])
+                    .unwrap();
+                app.diff_source = DiffSource::CommitRange(vec![oid.to_string()]);
+                std::fs::write(dir.path().join("new.txt"), "wrong worktree context\n").unwrap();
+                app.clear_expanded_gaps();
+            }
+            let gap = GapId {
+                file_idx: 0,
+                hunk_idx: 0,
+            };
+            assert!(app.get_expanded_line(&gap, 0).is_none());
+
+            app.expand_gap(gap.clone(), ExpandDirection::Down, Some(2))
+                .unwrap();
+
+            assert_eq!(app.get_expanded_line(&gap, 0).unwrap().content, "line 1");
+            assert_eq!(app.get_expanded_line(&gap, 1).unwrap().content, "line 2");
+            assert_eq!(
+                app.context_provider()
+                    .file_line_count(
+                        Some(&PathBuf::from("old.txt")),
+                        Some(&PathBuf::from("new.txt")),
+                        status,
+                    )
+                    .unwrap(),
+                20
+            );
+        }
+    }
+}
+
 fn make_commit_info(id: &str) -> CommitInfo {
     CommitInfo {
         id: id.to_string(),
