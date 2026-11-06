@@ -46,6 +46,7 @@ fn startup_options(working_tree: bool) -> AppStartupOptions<'static> {
         commit_selection: CommitSelectionStart::All,
         pr_target: None,
         repo_url_override: None,
+        local_storage: false,
     }
 }
 

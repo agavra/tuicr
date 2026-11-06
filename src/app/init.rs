@@ -47,7 +47,10 @@ impl App {
             let vcs_info = vcs.info().clone();
             let highlighter = theme.syntax_highlighter();
             let diff_files = vcs.get_working_tree_diff(highlighter)?;
-            let session = Self::load_or_create_session(&vcs_info, session_source);
+            // File mode always persists globally: no `.tuicr/` directories
+            // next to arbitrary files.
+            let reviews_dir = crate::persistence::storage::get_reviews_dir()?;
+            let session = Self::load_or_create_session(&vcs_info, session_source, &reviews_dir);
 
             let mut app = Self::build(
                 vcs,
@@ -62,7 +65,8 @@ impl App {
                 Vec::new(),
                 None, // no path_filter
                 options.repo_url_override.clone(),
-            )?;
+            )?
+            .with_local_storage(options.local_storage);
 
             // Hide the file list only when reviewing a single file; in
             // directory mode the user needs the list to navigate.
@@ -106,7 +110,10 @@ impl App {
             if diff_files.is_empty() {
                 return Err(TuicrError::NoChanges);
             }
-            let session = Self::load_or_create_session(&vcs_info, SessionDiffSource::Pristine);
+            // Pristine mode always persists globally, like `--file`.
+            let reviews_dir = crate::persistence::storage::get_reviews_dir()?;
+            let session =
+                Self::load_or_create_session(&vcs_info, SessionDiffSource::Pristine, &reviews_dir);
 
             let mut app = Self::build(
                 vcs,
@@ -121,7 +128,8 @@ impl App {
                 Vec::new(),
                 None, // no path_filter
                 options.repo_url_override.clone(),
-            )?;
+            )?
+            .with_local_storage(options.local_storage);
 
             app.is_pristine_mode = true;
             app.focused_panel = FocusedPanel::Diff;
@@ -149,6 +157,14 @@ impl App {
             )
         })?;
         let vcs_info = vcs.info().clone();
+        // Only real checkouts reach here (file/PR modes returned above), so
+        // the `local_storage` opt-in alone decides the root. No fallback
+        // read from the other root: enabling starts fresh.
+        let reviews_dir = if options.local_storage {
+            crate::persistence::storage::repo_local_reviews_dir(&vcs_info.root_path)
+        } else {
+            crate::persistence::storage::get_reviews_dir()?
+        };
         let highlighter =
             crate::profile::time("startup.syntax_highlighter", || theme.syntax_highlighter());
         // Determine the diff source, files, and session based on input.
@@ -184,8 +200,11 @@ impl App {
                     highlighter,
                     options.path_filter,
                 )?;
-                let session =
-                    Self::load_or_create_session(&vcs_info, SessionDiffSource::StagedAndUnstaged);
+                let session = Self::load_or_create_session(
+                    &vcs_info,
+                    SessionDiffSource::StagedAndUnstaged,
+                    &reviews_dir,
+                );
                 let app = Self::build(
                     vcs,
                     vcs_info,
@@ -200,7 +219,8 @@ impl App {
                     options.path_filter,
                     options.repo_url_override.clone(),
                 )?
-                .with_vcs_open_options(options.vcs_open_options());
+                .with_vcs_open_options(options.vcs_open_options())
+                .with_local_storage(options.local_storage);
                 return Ok(app);
             }
 
@@ -216,6 +236,7 @@ impl App {
                 let session = Self::load_or_create_staged_unstaged_and_commits_session(
                     &vcs_info,
                     &commit_ids,
+                    &reviews_dir,
                 );
                 let review_commits: Vec<CommitInfo> = crate::profile::time_with(
                     "startup.selected_commit_info",
@@ -255,7 +276,8 @@ impl App {
                     options.path_filter,
                     options.repo_url_override.clone(),
                 )?
-                .with_vcs_open_options(options.vcs_open_options());
+                .with_vcs_open_options(options.vcs_open_options())
+                .with_local_storage(options.local_storage);
 
                 app.range_diff_files = Some(app.diff_files.clone());
                 app.commit_list = all_commits.clone();
@@ -293,7 +315,8 @@ impl App {
                 highlighter,
                 options.path_filter,
             )?;
-            let session = Self::load_or_create_commit_range_session(&vcs_info, &commit_ids);
+            let session =
+                Self::load_or_create_commit_range_session(&vcs_info, &commit_ids, &reviews_dir);
             // Get commit info for the inline commit selector
             let review_commits = crate::profile::time_with(
                 "startup.selected_commit_info",
@@ -317,7 +340,8 @@ impl App {
                 options.path_filter,
                 options.repo_url_override.clone(),
             )?
-            .with_vcs_open_options(options.vcs_open_options());
+            .with_vcs_open_options(options.vcs_open_options())
+            .with_local_storage(options.local_storage);
 
             // Set up inline commit selector for multi-commit reviews
             if review_commits.len() > 1 {
@@ -358,8 +382,11 @@ impl App {
                 highlighter,
                 options.path_filter,
             )?;
-            let session =
-                Self::load_or_create_session(&vcs_info, SessionDiffSource::StagedAndUnstaged);
+            let session = Self::load_or_create_session(
+                &vcs_info,
+                SessionDiffSource::StagedAndUnstaged,
+                &reviews_dir,
+            );
 
             let app = Self::build(
                 vcs,
@@ -375,7 +402,8 @@ impl App {
                 options.path_filter,
                 options.repo_url_override.clone(),
             )?
-            .with_vcs_open_options(options.vcs_open_options());
+            .with_vcs_open_options(options.vcs_open_options())
+            .with_local_storage(options.local_storage);
 
             Ok(app)
         } else {
@@ -430,7 +458,7 @@ impl App {
                 SessionDiffSource::WorkingTree
             };
 
-            let session = Self::load_or_create_session(&vcs_info, session_source);
+            let session = Self::load_or_create_session(&vcs_info, session_source, &reviews_dir);
 
             let mut app = Self::build(
                 vcs,
@@ -446,7 +474,8 @@ impl App {
                 options.path_filter,
                 options.repo_url_override.clone(),
             )?
-            .with_vcs_open_options(options.vcs_open_options());
+            .with_vcs_open_options(options.vcs_open_options())
+            .with_local_storage(options.local_storage);
 
             app.has_more_commit = commits.len() >= VISIBLE_COMMIT_COUNT;
             app.visible_commit_count = app.commit_list.len();
@@ -458,6 +487,20 @@ impl App {
     /// can open its own the same way.
     fn with_vcs_open_options(mut self, vcs_open_options: VcsOpenOptions) -> Self {
         self.vcs_open_options = vcs_open_options;
+        self
+    }
+
+    /// Records the opt-in and re-bases persisted-session tracking:
+    /// [`App::build`] resolved the session path before the flag was known,
+    /// and with the flag on the file lives under `<repo>/.tuicr/reviews`.
+    /// No-op for modes that ignore the flag (PR, `--file`, `--all-files`).
+    pub(crate) fn with_local_storage(mut self, local_storage: bool) -> Self {
+        self.local_storage = local_storage;
+        // Tracking re-resolution must not fail startup: the warning surfaces
+        // in the message bar and the next save/poll re-attempts the resolve.
+        if let Err(e) = self.reset_persisted_session_tracking() {
+            self.set_warning(format!("Failed to initialize review session tracking: {e}"));
+        }
         self
     }
 
@@ -518,6 +561,7 @@ impl App {
             persisted_session_snapshot,
             session_path,
             session_file_state,
+            local_storage: false,
             review_watch_interval: Some(Duration::from_millis(DEFAULT_REVIEW_WATCH_INTERVAL_MS)),
             next_review_watch_at: Instant::now()
                 + Duration::from_millis(DEFAULT_REVIEW_WATCH_INTERVAL_MS),

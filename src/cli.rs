@@ -42,6 +42,10 @@ pub struct CliArgs {
     pub update_command: bool,
     /// Exact version requested by `tuicr update`, if any.
     pub update_version: Option<semver::Version>,
+    /// Store local review sessions in `<repo>/.tuicr/reviews` for this run
+    /// (`--local-storage`); `false` defers to the config `local_storage`
+    /// key (default off, platform data directory).
+    pub local_storage: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -149,6 +153,13 @@ struct TuiOptions {
         conflicts_with = "repo_url"
     )]
     remote: Option<String>,
+
+    /// Store local review sessions in <repo>/.tuicr/reviews instead of the
+    /// platform data directory (same as `local_storage` in the config).
+    /// Pull-request and `--file` / `--all-files` sessions stay in the
+    /// platform data directory.
+    #[arg(long = "local-storage", action = ArgAction::SetTrue)]
+    local_storage: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -369,6 +380,7 @@ impl From<Cli> for CliArgs {
             Some(Subcmd::Update { version }) => (TuiOptions::default(), None, None, version, true),
             None => (cli.tui_options, None, None, None, false),
         };
+        let local_storage = options.local_storage;
         Self {
             theme: options.theme,
             appearance: options.appearance,
@@ -386,6 +398,7 @@ impl From<Cli> for CliArgs {
             review_command,
             update_command,
             update_version,
+            local_storage,
         }
     }
 }
@@ -404,6 +417,7 @@ impl TuiOptions {
             || self.all_files
             || self.repo_url.is_some()
             || self.remote.is_some()
+            || self.local_storage
     }
 
     fn merge(self, later: TuiOptions) -> Self {
@@ -420,6 +434,7 @@ impl TuiOptions {
             all_files: self.all_files || later.all_files,
             repo_url: later.repo_url.or(self.repo_url),
             remote: later.remote.or(self.remote),
+            local_storage: self.local_storage || later.local_storage,
         }
     }
 }
@@ -622,6 +637,26 @@ mod tests {
     #[test]
     fn should_reject_line_with_review_command() {
         let err = parse_for_test(&["tuicr", "--line", "3", "review", "list"])
+            .expect_err("parse should fail");
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
+    }
+
+    // local-storage flags
+
+    #[test]
+    fn should_stick_local_storage_across_levels() {
+        // A sticky bool like the other plain flags: given before the `tui`
+        // subcommand it still applies to the run.
+        let parsed =
+            parse_for_test(&["tuicr", "--local-storage", "tui"]).expect("parse should succeed");
+        assert!(parsed.local_storage);
+    }
+
+    #[test]
+    fn should_reject_local_storage_with_review_command() {
+        // The gate that keeps TUI options out of `review`/`update` covers
+        // the storage flags too.
+        let err = parse_for_test(&["tuicr", "--local-storage", "review", "list"])
             .expect_err("parse should fail");
         assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
     }

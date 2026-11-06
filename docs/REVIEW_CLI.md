@@ -15,6 +15,30 @@ session path, and last-seen timestamp. `tuicr review list` also includes an
 `active` boolean so agents can select the live session without guessing from
 timestamps.
 
+## Storage locations
+
+Sessions live in the platform data directory (`~/.local/share/tuicr/reviews/`
+on Linux, equivalents elsewhere). With `local_storage = true` in the config or
+`--local-storage` on the CLI, *local* review sessions instead persist under
+`<repo>/.tuicr/reviews/`, with the same layout and sidecars as the platform
+directory. That root is per-checkout state, not something to commit — gitignore
+`.tuicr/`; tuicr never writes a `.gitignore` for you.
+
+- PR sessions and `--file` / `--all-files` sessions always use the platform
+  data directory, regardless of the setting.
+- There is no migration and no fallback read: while repo-local storage is on,
+  the TUI resumes only from the repo-local root, and turning it off resurfaces
+  the old platform-dir sessions untouched.
+- `tuicr review list` follows the same setting: with `local_storage` on and
+  `--repo` naming a checkout (the default `--repo .` included), it lists that
+  checkout's `.tuicr/reviews`; otherwise it lists the platform data directory.
+  `review list --all` stays platform-directory-only: repo-local roots are
+  per-checkout and there is no registry of them to walk.
+- Every command that takes `--session` works on files from either root:
+  direct paths resolve as-is, and local-slug resolution uses the same
+  single-root listing as `review list`. Delete/clear cleanup checks session
+  liveness against the root the session file actually lives in.
+
 Session arguments accept any of:
 
 - a local slug from `tuicr review list`

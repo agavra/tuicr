@@ -353,25 +353,38 @@ impl App {
     /// tab unhides them so they can be cleaned up with `dd`.
     pub fn load_sessions_tab(&mut self) {
         let root = self.vcs_info.root_path.clone();
-        let store = crate::review_store::ReviewStore::new();
+        // The tab lists from this run's storage root (`App::reviews_root`)
+        // only: with `local_storage` on that is the checkout's
+        // `.tuicr/reviews`, and rows from the other root never mix in.
+        let store = self
+            .reviews_root()
+            .map(crate::review_store::ReviewStore::with_reviews_dir);
         let show_empty = self.sessions_tab.show_empty();
-        let mut result = store
-            .list_sessions_for_repo(&root)
-            .map(|sessions| {
-                sessions
-                    .into_iter()
-                    .filter(|s| show_empty || Self::is_resumable(s))
-                    .collect::<Vec<_>>()
-            })
-            .map_err(|e| e.to_string());
+        let mut result = match &store {
+            Ok(store) => store
+                .list_sessions_for_repo(&root)
+                .map(|sessions| {
+                    sessions
+                        .into_iter()
+                        .filter(|s| show_empty || Self::is_resumable(s))
+                        .collect::<Vec<_>>()
+                })
+                .map_err(|e| e.to_string()),
+            Err(e) => Err(e.to_string()),
+        };
 
         // A fork's `origin` coordinate does not match PR sessions saved against
         // the upstream repo, so listing by checkout alone hides them. Add the
         // sessions for the forge repository this checkout reviews against: the
-        // canonical parent, or whatever `--repo-url` named.
+        // canonical parent, or whatever `--repo-url` named. PR sessions
+        // always live in the platform dir — never in a checkout's
+        // `.tuicr/reviews` — so this listing does not follow the setting.
         if let (Ok(sessions), Some(forge)) = (&mut result, self.forge_repository.clone()) {
             let coordinate = format!("{}/{}", forge.owner, forge.name);
-            if let Ok(forge_sessions) = store.list_sessions_for_repo(Path::new(&coordinate)) {
+            let platform_store = crate::review_store::ReviewStore::new();
+            if let Ok(forge_sessions) =
+                platform_store.list_sessions_for_repo(Path::new(&coordinate))
+            {
                 for session in forge_sessions {
                     let listed = sessions
                         .iter()
@@ -1014,7 +1027,9 @@ impl App {
 
         // Update session with the newest commit as base
         let newest_commit_id = selected_ids.last().unwrap().clone();
-        let loaded_session = load_latest_session_for_context(
+        let reviews_root = self.reviews_root()?;
+        let loaded_session = load_latest_session_for_context_in_dir(
+            &reviews_root,
             &self.vcs_info.root_path,
             self.vcs_info.branch_name.as_deref(),
             &newest_commit_id,

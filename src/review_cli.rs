@@ -19,12 +19,21 @@ use crate::slug::Slug;
 
 pub fn run(command: ReviewCommand) -> Result<()> {
     let mut stdout = io::stdout();
-    run_with_writer(command, &mut stdout)
+    // One config read serves the whole command: `list`'s storage-root
+    // choice and `add`'s type check / author fallback.
+    let config = config::load_config()
+        .ok()
+        .and_then(|outcome| outcome.config);
+    run_with_writer(command, config.as_ref(), &mut stdout)
 }
 
-fn run_with_writer(command: ReviewCommand, out: &mut impl Write) -> Result<()> {
+fn run_with_writer(
+    command: ReviewCommand,
+    config: Option<&config::AppConfig>,
+    out: &mut impl Write,
+) -> Result<()> {
     match command {
-        ReviewCommand::List { repo, all } => list_sessions(&repo, all, out),
+        ReviewCommand::List { repo, all } => list_sessions(&repo, all, config, out),
         ReviewCommand::Add {
             session,
             input,
@@ -39,6 +48,7 @@ fn run_with_writer(command: ReviewCommand, out: &mut impl Write) -> Result<()> {
         } => add_comment(
             &session,
             &repo,
+            config,
             AddCommentOptions {
                 input,
                 comment_type,
@@ -51,18 +61,22 @@ fn run_with_writer(command: ReviewCommand, out: &mut impl Write) -> Result<()> {
             },
             out,
         ),
-        ReviewCommand::Comments { session, repo } => show_comments(&session, &repo, out),
+        ReviewCommand::Comments { session, repo } => show_comments(&session, &repo, config, out),
         ReviewCommand::Delete {
             session,
             comment_id,
             repo,
-        } => delete_comment(&session, &repo, &comment_id, out),
+        } => delete_comment(&session, &repo, &comment_id, config, out),
         ReviewCommand::Clearc { session, repo } => {
-            clear_comments(&session, &repo, ClearScope::CommentsOnly, out)
+            clear_comments(&session, &repo, ClearScope::CommentsOnly, config, out)
         }
-        ReviewCommand::Clear { session, repo } => {
-            clear_comments(&session, &repo, ClearScope::CommentsAndReviewed, out)
-        }
+        ReviewCommand::Clear { session, repo } => clear_comments(
+            &session,
+            &repo,
+            ClearScope::CommentsAndReviewed,
+            config,
+            out,
+        ),
     }
 }
 
@@ -70,10 +84,11 @@ fn clear_comments(
     session: &str,
     repo: &Path,
     scope: ClearScope,
+    config: Option<&config::AppConfig>,
     out: &mut impl Write,
 ) -> Result<()> {
     let store = ReviewStore::new();
-    let session_ref = resolve_session_ref(&store, repo, session)?;
+    let session_ref = resolve_session_ref(&store, repo, session, local_storage_enabled(config))?;
     let (cleared, unreviewed) = store.clear_comments(&session_ref, scope)?;
     storage::delete_session_if_empty_and_inactive(session_ref.path())?;
     serde_json::to_writer_pretty(
@@ -88,10 +103,11 @@ fn delete_comment(
     session: &str,
     repo: &Path,
     comment_id: &str,
+    config: Option<&config::AppConfig>,
     out: &mut impl Write,
 ) -> Result<()> {
     let store = ReviewStore::new();
-    let session_ref = resolve_session_ref(&store, repo, session)?;
+    let session_ref = resolve_session_ref(&store, repo, session, local_storage_enabled(config))?;
     if !store.delete_comment(&session_ref, comment_id)? {
         return Err(TuicrError::InvalidInput(format!(
             "no comment with id '{comment_id}' in session '{session}'"
@@ -103,12 +119,18 @@ fn delete_comment(
     Ok(())
 }
 
-fn list_sessions(repo: &Path, all: bool, out: &mut impl Write) -> Result<()> {
-    let store = ReviewStore::new();
+fn list_sessions(
+    repo: &Path,
+    all: bool,
+    config: Option<&config::AppConfig>,
+    out: &mut impl Write,
+) -> Result<()> {
     let summaries = if all {
-        store.list_all_sessions()?
+        // `--all` dumps the platform data dir only: repo-local roots are
+        // per-checkout and there is no registry of them to walk.
+        ReviewStore::new().list_all_sessions()?
     } else {
-        store.list_sessions_for_repo(repo)?
+        list_sessions_for_selector(&ReviewStore::new(), repo, local_storage_enabled(config))?
     };
     let output: Vec<_> = summaries
         .into_iter()
@@ -117,6 +139,31 @@ fn list_sessions(repo: &Path, all: bool, out: &mut impl Write) -> Result<()> {
     serde_json::to_writer_pretty(&mut *out, &output)?;
     writeln!(out)?;
     Ok(())
+}
+
+/// Sessions for a repo selector from the one storage root the
+/// `local_storage` setting routes local sessions to: with the setting on
+/// and a checkout path selector, the checkout's `.tuicr/reviews`;
+/// otherwise `default_store` (the platform dir for the CLI). `review
+/// list` and local-slug resolution share this so the two cannot drift —
+/// turning the setting off points both back at the platform dir, which
+/// resurfaces the old platform sessions.
+fn list_sessions_for_selector(
+    default_store: &ReviewStore,
+    repo: &Path,
+    local_storage: bool,
+) -> Result<Vec<SessionSummary>> {
+    if local_storage && repo.is_dir() {
+        let store = ReviewStore::with_reviews_dir(storage::repo_local_reviews_dir(repo));
+        store.list_sessions_for_repo(repo)
+    } else {
+        default_store.list_sessions_for_repo(repo)
+    }
+}
+
+/// Whether the command's config opts into repo-local session storage.
+fn local_storage_enabled(config: Option<&config::AppConfig>) -> bool {
+    config.is_some_and(|cfg| cfg.local_storage == Some(true))
 }
 
 struct AddCommentOptions {
@@ -133,22 +180,19 @@ struct AddCommentOptions {
 fn add_comment(
     session: &str,
     repo: &Path,
+    config: Option<&config::AppConfig>,
     options: AddCommentOptions,
     out: &mut impl Write,
 ) -> Result<()> {
     let store = ReviewStore::new();
-    let session_ref = resolve_session_ref(&store, repo, session)?;
+    let session_ref = resolve_session_ref(&store, repo, session, local_storage_enabled(config))?;
     let request_parts = build_add_request_parts(options)?;
     let target = request_parts.target;
     let comment_type = CommentType::from_id(&request_parts.comment_type);
-    // One config read serves both the type check and the author fallback.
-    let config = config::load_config()
-        .ok()
-        .and_then(|outcome| outcome.config);
-    if let Some(warning) = unknown_comment_type_warning(&comment_type, config.as_ref()) {
+    if let Some(warning) = unknown_comment_type_warning(&comment_type, config) {
         eprintln!("{warning}");
     }
-    let author = resolve_cli_author(request_parts.username, config.as_ref());
+    let author = resolve_cli_author(request_parts.username, config);
     let comment = store.add_comment(
         &session_ref,
         AddCommentRequest {
@@ -411,9 +455,14 @@ fn line_side_arg_to_model(side: LineSideArg) -> LineSide {
     }
 }
 
-fn show_comments(session: &str, repo: &Path, out: &mut impl Write) -> Result<()> {
+fn show_comments(
+    session: &str,
+    repo: &Path,
+    config: Option<&config::AppConfig>,
+    out: &mut impl Write,
+) -> Result<()> {
     let store = ReviewStore::new();
-    let session_ref = resolve_session_ref(&store, repo, session)?;
+    let session_ref = resolve_session_ref(&store, repo, session, local_storage_enabled(config))?;
     let session = store.get_review(&session_ref)?;
     let comments = collect_comments(&session);
     serde_json::to_writer_pretty(&mut *out, &comments)?;
@@ -421,7 +470,12 @@ fn show_comments(session: &str, repo: &Path, out: &mut impl Write) -> Result<()>
     Ok(())
 }
 
-fn resolve_session_ref(store: &ReviewStore, repo: &Path, session: &str) -> Result<SessionRef> {
+fn resolve_session_ref(
+    store: &ReviewStore,
+    repo: &Path,
+    session: &str,
+    local_storage: bool,
+) -> Result<SessionRef> {
     let direct_path = PathBuf::from(session);
     if direct_path.exists() || direct_path.is_absolute() || session.ends_with(".json") {
         return Ok(SessionRef::from_path(direct_path));
@@ -438,8 +492,10 @@ fn resolve_session_ref(store: &ReviewStore, repo: &Path, session: &str) -> Resul
         };
     }
 
-    let matches: Vec<_> = store
-        .list_sessions_for_repo(repo)?
+    // Exact local-slug fallback through the same single-root listing
+    // `review list` emits, so a slug resolves from exactly the root the
+    // `local_storage` setting routes to.
+    let matches: Vec<_> = list_sessions_for_selector(store, repo, local_storage)?
         .into_iter()
         .filter(|summary| summary.slug == session)
         .collect();
@@ -841,7 +897,8 @@ mod tests {
 
         // The emitted slug resolves the same way regardless of --repo.
         let resolved =
-            resolve_session_ref(&store, Path::new("slatedb/slatedb"), &listed[0].slug).unwrap();
+            resolve_session_ref(&store, Path::new("slatedb/slatedb"), &listed[0].slug, false)
+                .unwrap();
         assert_eq!(resolved, session_ref);
     }
 
@@ -892,7 +949,8 @@ mod tests {
 
         // PR slugs are self-contained: `--repo` is irrelevant.
         let resolved =
-            resolve_session_ref(&store, Path::new("."), "gh:slatedb/slatedb/pr/1745").unwrap();
+            resolve_session_ref(&store, Path::new("."), "gh:slatedb/slatedb/pr/1745", false)
+                .unwrap();
         assert_eq!(resolved, session_ref);
     }
 
@@ -901,7 +959,8 @@ mod tests {
         let temp = tempdir().unwrap();
         let reviews = temp.path().join("reviews");
         let store = ReviewStore::with_reviews_dir(&reviews);
-        let err = resolve_session_ref(&store, Path::new("."), "gh:nope/nope/pr/9999").unwrap_err();
+        let err =
+            resolve_session_ref(&store, Path::new("."), "gh:nope/nope/pr/9999", false).unwrap_err();
         assert!(matches!(err, TuicrError::InvalidInput(_)));
     }
 
@@ -920,7 +979,7 @@ mod tests {
         assert_eq!(sessions.len(), 1);
         let slug = sessions[0].slug.clone();
 
-        let resolved = resolve_session_ref(&store, &repo, &slug).unwrap();
+        let resolved = resolve_session_ref(&store, &repo, &slug, false).unwrap();
         assert_eq!(resolved, session_ref);
 
         let comment = store
@@ -948,7 +1007,13 @@ mod tests {
         assert_eq!(comments[0].comment_type, "issue");
         assert_eq!(comments[0].author, "review-agent");
 
-        show_comments(&session_ref.path().display().to_string(), &repo, &mut out).unwrap();
+        show_comments(
+            &session_ref.path().display().to_string(),
+            &repo,
+            None,
+            &mut out,
+        )
+        .unwrap();
         let text = String::from_utf8(out).unwrap();
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(value[0]["comment_type"], "issue");
@@ -1007,6 +1072,7 @@ mod tests {
             // when — an agent removes the last comment through the CLI
             let result = run_with_writer(
                 make_command(session_arg, comment.id, repo.clone()),
+                None,
                 &mut Vec::new(),
             );
 
@@ -1024,6 +1090,155 @@ mod tests {
                 "review {name} must still remove the comment"
             );
         }
+    }
+
+    /// Redirects the global reviews dir (what `ReviewStore::new()` sees) to a
+    /// temp dir for the current thread.
+    struct TestGlobalReviewsDir {
+        path: PathBuf,
+    }
+
+    impl TestGlobalReviewsDir {
+        fn new() -> Self {
+            let path = std::env::temp_dir()
+                .join(format!("tuicr-review-cli-global-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&path).unwrap();
+            storage::set_test_reviews_dir(Some(path.clone()));
+            Self { path }
+        }
+    }
+
+    impl Drop for TestGlobalReviewsDir {
+        fn drop(&mut self) {
+            storage::set_test_reviews_dir(None);
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    #[test]
+    fn should_list_sessions_from_the_configured_storage_root() {
+        let _global = TestGlobalReviewsDir::new();
+        let temp = tempdir().unwrap();
+        let repo = temp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+
+        // one session in the platform dir, one in the checkout's .tuicr/reviews
+        ReviewStore::new()
+            .save_review(&test_session(repo.clone()))
+            .unwrap();
+        let repo_local = storage::repo_local_reviews_dir(&repo);
+        ReviewStore::with_reviews_dir(&repo_local)
+            .save_review(&test_session(repo.clone()))
+            .unwrap();
+
+        // with local_storage on, the listing shows the repo-local root only
+        let local_storage_on = config::AppConfig {
+            local_storage: Some(true),
+            ..Default::default()
+        };
+        let mut out = Vec::new();
+        list_sessions(&repo, false, Some(&local_storage_on), &mut out).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        let paths: Vec<&str> = value
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["path"].as_str().unwrap())
+            .collect();
+        assert_eq!(paths.len(), 1, "got {paths:?}");
+        assert!(
+            paths[0].starts_with(repo_local.to_str().unwrap()),
+            "the repo-local session must be the one listed: {paths:?}"
+        );
+
+        // with the setting off, the platform dir alone is listed
+        let mut out = Vec::new();
+        list_sessions(&repo, false, None, &mut out).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(
+            value.as_array().map(Vec::len),
+            Some(1),
+            "only the platform session may be listed, got {value}"
+        );
+        let platform_path = value[0]["path"].as_str().unwrap();
+        assert!(
+            platform_path.starts_with(_global.path.to_str().unwrap()),
+            "the platform session must be the one listed: {platform_path}"
+        );
+    }
+
+    #[test]
+    fn should_add_a_comment_to_a_repo_local_session_by_path() {
+        let _global = TestGlobalReviewsDir::new();
+        let temp = tempdir().unwrap();
+        let repo = temp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let repo_local = storage::repo_local_reviews_dir(&repo);
+        let repo_local_store = ReviewStore::with_reviews_dir(&repo_local);
+        let session_ref = repo_local_store
+            .save_review(&test_session(repo.clone()))
+            .unwrap();
+
+        let mut out = Vec::new();
+        add_comment(
+            &session_ref.path().display().to_string(),
+            &repo,
+            None,
+            AddCommentOptions {
+                input: None,
+                comment_type: "note".to_string(),
+                file: None,
+                line: None,
+                end_line: None,
+                side: LineSideArg::New,
+                username: None,
+                content: Some("via the cli".to_string()),
+            },
+            &mut out,
+        )
+        .unwrap();
+
+        // The comment landed in the repo-local file, and no duplicate
+        // materialized in the platform data dir.
+        let loaded = repo_local_store.get_review(&session_ref).unwrap();
+        assert_eq!(loaded.review_comments.len(), 1);
+        assert_eq!(
+            ReviewStore::new().list_all_sessions().unwrap().len(),
+            0,
+            "the mutation must not re-save the session into the global root"
+        );
+    }
+
+    #[test]
+    fn should_keep_an_open_repo_local_session_when_the_cli_empties_it() {
+        // The delete/clear cleanup must derive the storage root from the
+        // session path: checking liveness against the platform dir would miss
+        // the repo-local active marker and delete an open session (#769, now
+        // with two roots).
+        let _global = TestGlobalReviewsDir::new();
+        let temp = tempdir().unwrap();
+        let repo = temp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let repo_local = storage::repo_local_reviews_dir(&repo);
+        let store = ReviewStore::with_reviews_dir(&repo_local);
+        let session = test_session(repo.clone());
+        let session_ref = store.save_review(&session).unwrap();
+        storage::mark_session_active_in_dir(&session, session_ref.path(), &repo_local).unwrap();
+
+        run_with_writer(
+            ReviewCommand::Clearc {
+                session: session_ref.path().display().to_string(),
+                repo: repo.clone(),
+            },
+            None,
+            &mut Vec::new(),
+        )
+        .unwrap();
+
+        assert!(
+            session_ref.path().exists(),
+            "a session a live tuicr has open must survive repo-local too"
+        );
     }
 
     fn config_with_types(ids: &[&str]) -> config::AppConfig {

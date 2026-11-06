@@ -228,6 +228,15 @@ fn main() -> anyhow::Result<()> {
         _ => None,
     };
 
+    // CLI beats config: `--local-storage` enables repo-local sessions for
+    // the run; otherwise the config `local_storage` key decides (default off).
+    let local_storage = cli_args.local_storage
+        || config_outcome
+            .config
+            .as_ref()
+            .and_then(|cfg| cfg.local_storage)
+            .unwrap_or(false);
+
     let mut app = match profile::time("startup.app_init", || {
         App::new(
             theme,
@@ -242,6 +251,7 @@ fn main() -> anyhow::Result<()> {
                 path_filter: cli_args.path_filter.as_deref(),
                 file_path: cli_args.file_path.as_deref(),
                 all_files: cli_args.all_files,
+                local_storage,
                 show_pr_checks: config_outcome
                     .config
                     .as_ref()
