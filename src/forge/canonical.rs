@@ -12,7 +12,7 @@
 use serde::Deserialize;
 
 use crate::forge::github::gh::GhCommandRunner;
-use crate::forge::traits::ForgeRepository;
+use crate::forge::traits::{ForgeKind, ForgeRepository};
 
 /// Resolve `origin` to its canonical (parent) repository. Order:
 ///   1. `override_repo` (resolved from `--repo-url` or `--remote`) wins, no I/O.
@@ -30,6 +30,25 @@ pub fn resolve_canonical_repository(
         Some(parent) => parent,
         None => origin.clone(),
     }
+}
+
+/// Pick the repository `tuicr pr` opens the PR on: the target's own
+/// repository (`owner/repo#N`, a URL), then `override_repo`, then the
+/// canonical repository of the local `origin`. The parent lookup is a network
+/// round trip, so it only runs when the first two leave the choice to `origin`.
+pub fn pr_target_repository(
+    target_repo: Option<&ForgeRepository>,
+    override_repo: Option<&ForgeRepository>,
+    origin: Option<&ForgeRepository>,
+    runner: &dyn GhCommandRunner,
+) -> Option<ForgeRepository> {
+    target_repo.or(override_repo).cloned().or_else(|| {
+        origin.map(|origin| match origin.kind {
+            // Canonical resolution (fork parent lookup) only works for GitHub.
+            ForgeKind::GitHub => resolve_canonical_repository(origin, None, runner),
+            _ => origin.clone(),
+        })
+    })
 }
 
 #[derive(Deserialize)]
@@ -132,6 +151,53 @@ mod tests {
             runner.calls.borrow().is_empty(),
             "override must short-circuit the gh api call"
         );
+    }
+
+    #[test]
+    fn should_not_look_up_parent_when_target_names_its_repository() {
+        // given — `tuicr pr slatedb/slatedb#1` from a fork checkout
+        let runner = FakeRunner::default();
+        // when
+        let resolved = pr_target_repository(Some(&upstream()), None, Some(&fork()), &runner);
+        // then
+        assert_eq!(resolved, Some(upstream()));
+        assert!(runner.calls.borrow().is_empty(), "no gh api call expected");
+    }
+
+    #[test]
+    fn should_not_look_up_parent_when_an_override_names_the_repository() {
+        // given — `tuicr pr 1 --repo-url …` from a fork checkout
+        let runner = FakeRunner::default();
+        // when
+        let resolved = pr_target_repository(None, Some(&upstream()), Some(&fork()), &runner);
+        // then
+        assert_eq!(resolved, Some(upstream()));
+        assert!(runner.calls.borrow().is_empty(), "no gh api call expected");
+    }
+
+    #[test]
+    fn should_open_on_a_non_github_origin_without_a_lookup() {
+        // given — a GitLab checkout; fork parents are only resolved on GitHub
+        let runner = FakeRunner::default();
+        let origin = ForgeRepository {
+            kind: ForgeKind::GitLab,
+            ..fork()
+        };
+        // when
+        let resolved = pr_target_repository(None, None, Some(&origin), &runner);
+        // then
+        assert_eq!(resolved, Some(origin));
+        assert!(runner.calls.borrow().is_empty(), "no gh api call expected");
+    }
+
+    #[test]
+    fn should_open_on_origin_parent_when_target_has_no_repository() {
+        // given — `tuicr pr 1` from a fork checkout
+        let runner = FakeRunner::with_ok(r#"{"parent":{"full_name":"slatedb/slatedb"}}"#);
+        // when
+        let resolved = pr_target_repository(None, None, Some(&fork()), &runner);
+        // then
+        assert_eq!(resolved, Some(upstream()));
     }
 
     #[test]
