@@ -4,10 +4,12 @@ use ratatui::{
     widgets::Block,
 };
 
-use crate::app::{App, ConfirmAction, InputMode};
-use crate::ui::comment_navigator::render_comment_navigator;
+use unicode_width::UnicodeWidthStr;
+
+use crate::app::{App, CommentNavigatorItem, ConfirmAction, FileTreeItem, InputMode};
+use crate::ui::comment_navigator::{comment_navigator_title, render_comment_navigator};
 use crate::ui::diff_view::render_diff_view;
-use crate::ui::file_list::render_file_list;
+use crate::ui::file_list::{file_list_desired_width, render_file_list};
 use crate::ui::inline_commit_selector::render_inline_commit_selector;
 use crate::ui::selector::render_commit_select;
 use crate::ui::{
@@ -15,6 +17,7 @@ use crate::ui::{
 };
 
 const FILE_LIST_MIN_HEIGHT: u16 = 4;
+const FILE_LIST_MAX_PERCENT: u16 = 20;
 const COMMENT_NAVIGATOR_MIN_HEIGHT: u16 = 4;
 const COMMENT_NAVIGATOR_MAX_HEIGHT: u16 = 12;
 
@@ -139,15 +142,17 @@ fn render_main_content(frame: &mut Frame, app: &mut App, area: Rect) {
     };
 
     if app.show_file_list {
+        let visible_items = app.build_visible_items();
+        let comment_items = app.build_comment_navigator_items();
+        let list_width = file_list_width(app, &visible_items, &comment_items, content_area.width);
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
-                Constraint::Percentage(20), // File list
-                Constraint::Percentage(80), // Diff view
+                Constraint::Length(list_width), // File list
+                Constraint::Min(0),             // Diff view
             ])
             .split(content_area);
 
-        let comment_items = app.build_comment_navigator_items();
         if !comment_items.is_empty()
             && chunks[0].height >= FILE_LIST_MIN_HEIGHT + COMMENT_NAVIGATOR_MIN_HEIGHT
         {
@@ -167,13 +172,13 @@ fn render_main_content(frame: &mut Frame, app: &mut App, area: Rect) {
 
             app.file_list_area = Some(left_chunks[0]);
             app.comment_navigator_area = Some(left_chunks[1]);
-            render_file_list(frame, app, left_chunks[0]);
+            render_file_list(frame, app, left_chunks[0], &visible_items);
             render_comment_navigator(frame, app, left_chunks[1], &comment_items);
         } else {
             app.file_list_area = Some(chunks[0]);
             app.comment_navigator_area = None;
             app.comment_navigator_inner_area = None;
-            render_file_list(frame, app, chunks[0]);
+            render_file_list(frame, app, chunks[0], &visible_items);
         }
         render_content_view(frame, app, chunks[1]);
     } else {
@@ -182,6 +187,24 @@ fn render_main_content(frame: &mut Frame, app: &mut App, area: Rect) {
         app.comment_navigator_inner_area = None;
         render_content_view(frame, app, content_area);
     }
+}
+
+/// Width of the left column: what the file list (and the comment navigator's
+/// title) needs, capped at `FILE_LIST_MAX_PERCENT` of the content width. A
+/// fixed share left most of the column empty on wide terminals.
+fn file_list_width(
+    app: &App,
+    visible_items: &[FileTreeItem],
+    comment_items: &[CommentNavigatorItem],
+    content_width: u16,
+) -> u16 {
+    let mut desired = file_list_desired_width(app, visible_items);
+    if !comment_items.is_empty() {
+        let title = comment_navigator_title(comment_items.len()).width() + 2;
+        desired = desired.max(u16::try_from(title).unwrap_or(u16::MAX));
+    }
+    let cap = u32::from(content_width) * u32::from(FILE_LIST_MAX_PERCENT) / 100;
+    desired.min(cap as u16)
 }
 
 fn render_content_view(frame: &mut Frame, app: &mut App, area: Rect) {
