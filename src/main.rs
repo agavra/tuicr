@@ -1,3 +1,5 @@
+mod browser;
+
 use std::fs::File;
 use std::io::{self, IsTerminal, Write};
 use std::sync::mpsc;
@@ -435,6 +437,17 @@ fn main() -> anyhow::Result<()> {
 
     // Main loop
     loop {
+        if let Some(url) = app.take_pending_open_url() {
+            let suspension = terminal.suspend()?;
+            let result = browser::open_url(&url, app.output_to_stdout);
+            suspension.resume()?;
+            match result {
+                Ok(()) => app.set_message("PR URL handed to system opener"),
+                Err(error) => app.set_error(format!("Failed to open PR URL: {error}")),
+            }
+            needs_redraw = true;
+        }
+
         // Check for update result (non-blocking)
         if let Some(ref rx) = update_rx
             && let Ok(
@@ -715,6 +728,9 @@ fn main() -> anyhow::Result<()> {
                             }
                             crossterm::event::KeyCode::Char('n') => {
                                 app.relative_line_numbers = !app.relative_line_numbers;
+                                continue;
+                            }
+                            crossterm::event::KeyCode::Char('o') if app.queue_open_pr_url() => {
                                 continue;
                             }
                             _ => {}

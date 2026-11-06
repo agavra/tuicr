@@ -134,6 +134,7 @@ considers files that pass the active filters.
 | `<leader>e` | Toggle file list visibility |
 | `<leader>s` | Toggle commit selector visibility (also `:set commits!`) |
 | `<leader>n` | Toggle relative line numbers (also `:set relativenumber!`) |
+| `<leader>o` | Open the reviewed PR/MR in the system browser (PR mode) |
 | `Enter` | Select file (when file list is focused) |
 
 ## Comment navigator
@@ -236,6 +237,7 @@ In command mode,
 | `:edit` | Open focused file in `$EDITOR` |
 | `:clip` (`:export`) | Copy review to clipboard |
 | `:copy-url` | Copy the open PR URL to clipboard (PR mode) |
+| `:open-url` | Open the reviewed PR/MR in the system browser (PR mode) |
 | `:summary` | Show all pending local-draft comments; `j`/`k` select, `dd` deletes, and `Enter` jumps |
 | `:diff` | Toggle diff view (unified / side-by-side) |
 | `:theme` | Open the runtime theme picker (live preview; `/` filters, `Enter` applies and saves, `Esc` reverts) |
@@ -276,6 +278,12 @@ In command mode,
 | `ZZ` | Save and quit |
 | `ZQ` | Quit without saving |
 | `?` | Toggle help |
+
+`:open-url` and `<leader>o` (default `;o`) open the reviewed URL with `xdg-open`
+on Linux, `open` on macOS, or the Windows URL handler. Only absolute HTTP(S) URLs
+are accepted. On remote/headless systems, the opener runs on the machine hosting
+tuicr; a successful handoff does not confirm that a browser window appeared.
+Outside PR mode, `:open-url` warns, and `<leader>o` keeps the normal `o` behavior.
 
 Pressing bare `q` no longer quits by default; it prints a reminder to use `:q` instead. Set
 `q_quits = true` to restore `q` as a quit key in review modes.

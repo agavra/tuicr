@@ -23,6 +23,7 @@ src/
 │   └── file_filter.rs   # File-tree include/exclude regex filters + `/` path search
 ├── error.rs             # Error types (TuicrError enum)
 ├── editor.rs            # External $EDITOR command construction and launch helpers
+├── browser.rs           # System HTTP(S) URL opener used by :open-url and <leader>o
 ├── review_store.rs      # Library API for session listing/loading and shared comment insertion
 ├── review_cli.rs        # Non-interactive `tuicr review` subcommands over ReviewStore
 ├── update.rs            # Public update facade

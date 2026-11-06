@@ -1167,6 +1167,7 @@ pub struct App {
     pub diff_files: Vec<DiffFile>,
     pub diff_source: DiffSource,
     pub pending_editor_target: Option<EditorTarget>,
+    pub(crate) pending_open_url: Option<String>,
     pub editor_override: Option<String>,
     /// Windowed editors that have not exited yet; polled by
     /// `poll_editor_launches`.
