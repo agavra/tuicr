@@ -22,6 +22,11 @@ pub enum ForgeKind {
     /// Self-hosted Gerrit Code Review. A Gerrit *change* takes the place of a
     /// pull request and its numeric change number is the PR number.
     Gerrit,
+    /// Heptapod — a GitLab fork that speaks Mercurial. Same REST API as GitLab
+    /// (so `glab` works), but a distinct identity because the local checkout
+    /// is Mercurial and SHA values are changeset IDs, not Git SHAs. See
+    /// [`crate::forge::heptapod`].
+    Heptapod,
 }
 
 impl ForgeKind {
@@ -34,6 +39,7 @@ impl ForgeKind {
             ForgeKind::Bitbucket => "Bitbucket",
             ForgeKind::AzureDevOps => "Azure DevOps",
             ForgeKind::Gerrit => "Gerrit",
+            ForgeKind::Heptapod => "Heptapod",
         }
     }
 }
@@ -67,6 +73,24 @@ impl ForgeRepository {
     ) -> Self {
         Self {
             kind: ForgeKind::GitLab,
+            host: host.into(),
+            owner: owner.into(),
+            name: name.into(),
+        }
+    }
+
+    /// Build a Heptapod repository coordinate. Heptapod uses GitLab's
+    /// `<owner>/<repo>` (with nested groups, the same as GitLab) but is a
+    /// distinct forge kind so the backend can route local-checkout
+    /// optimizations through Mercurial rather than Git. See
+    /// [`crate::forge::heptapod`].
+    pub fn heptapod(
+        host: impl Into<String>,
+        owner: impl Into<String>,
+        name: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind: ForgeKind::Heptapod,
             host: host.into(),
             owner: owner.into(),
             name: name.into(),

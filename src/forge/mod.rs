@@ -13,7 +13,9 @@ pub mod gerrit;
 pub mod gitea;
 pub mod github;
 pub mod gitlab;
+pub mod heptapod;
 pub mod local_git;
+pub mod local_hg;
 pub mod pr_open;
 pub mod remote_comments;
 pub mod selector;
@@ -31,7 +33,10 @@ use crate::forge::gerrit::api::parse_gerrit_remote_url;
 use crate::forge::gitea::tea::parse_gitea_remote_url;
 use crate::forge::github::gh::parse_github_remote_url;
 use crate::forge::gitlab::glab::{parse_gitlab_remote_url, parse_gitlab_remote_url_by_hostname};
-use crate::forge::traits::ForgeRepository;
+use crate::forge::heptapod::parse::{
+    parse_heptapod_remote_url, parse_heptapod_remote_url_by_hostname,
+};
+use crate::forge::traits::{ForgeRepository, PullRequestTarget};
 use crate::vcs::VcsBackend;
 
 /// Run two independent forge requests at the same time and return both
@@ -109,6 +114,12 @@ pub fn detect_gitlab_repository(repo_root: &Path) -> Option<ForgeRepository> {
 }
 
 /// `repo_root`'s remote URLs, `origin` first, then every other remote.
+///
+/// Reads Git remotes first (libgit2 discovery, then the `git` CLI for
+/// repository formats libgit2 cannot open). When neither finds a Git
+/// repository, a Mercurial checkout still carries remotes — `hg paths` —
+/// and a forge can live behind them (Heptapod), so those are read before
+/// giving up; `default` is Mercurial's `origin` and sorts first.
 fn remote_urls(repo_root: &Path) -> Vec<String> {
     let Ok(repo) = Repository::discover(repo_root) else {
         // Local VCS discovery already falls back to Git for repository formats
@@ -116,7 +127,9 @@ fn remote_urls(repo_root: &Path) -> Vec<String> {
         // needs the same fallback; no object access or network is necessary.
         let Ok(names) = crate::process::run_command_output("git", Some(repo_root), ["remote"])
         else {
-            return Vec::new();
+            // Not a Git repository: the checkout may still be Mercurial, and
+            // `hg paths` is where its remotes live.
+            return hg_remote_urls(repo_root);
         };
         let mut names: Vec<_> = names.lines().collect();
         names.sort_by_key(|name| *name != "origin");
@@ -152,6 +165,34 @@ fn remote_urls(repo_root: &Path) -> Vec<String> {
     all_urls
 }
 
+/// `repo_root`'s hg remote URLs, `default` first, then every other named
+/// path. Returns an empty vec when `repo_root` is not an hg checkout or
+/// `hg` is missing, so a non-hg directory costs one failed spawn.
+///
+/// Mercurial records clone sources as named paths in `.hg/hgrc`; `default`
+/// is what `hg clone` writes and the closest thing to Git's `origin`.
+fn hg_remote_urls(repo_root: &Path) -> Vec<String> {
+    let Ok(output) = crate::process::run_command_output("hg", Some(repo_root), ["paths"]) else {
+        return Vec::new();
+    };
+    let mut entries: Vec<(&str, &str)> = output
+        .lines()
+        .filter_map(|line| {
+            // `hg paths` prints `name = url`. Split on the first `=` and
+            // trim both halves so any spacing survives; path names cannot
+            // contain `=`, and the URL may (query strings).
+            let (name, url) = line.split_once('=')?;
+            let (name, url) = (name.trim(), url.trim());
+            (!name.is_empty() && !url.is_empty()).then_some((name, url))
+        })
+        .collect();
+    entries.sort_by_key(|(name, _)| *name != "default");
+    entries
+        .into_iter()
+        .map(|(_, url)| url.to_string())
+        .collect()
+}
+
 /// Try to detect an Azure DevOps forge repository for the local checkout at
 /// `repo_root`. Looks at `origin` first, then any remote whose URL parses as an
 /// Azure DevOps host. Returns `None` when no Azure remote is configured.
@@ -164,18 +205,23 @@ pub fn detect_azure_repository(repo_root: &Path) -> Option<ForgeRepository> {
 /// Parse `url` as a forge remote repository.
 ///
 /// Order matters. Bitbucket and GitLab both gate on the hostname, so trying
-/// them first won't claim GitHub Enterprise remotes. Azure next — its parser
-/// accepts cloud hosts and the self-hosted hostname explicitly configured via
-/// `AZURE_DEVOPS_SERVER_URL`. Gitea then, which
-/// recognizes its own public hosts by name and self-hosted ones through the
-/// logins configured in `tea`. Gerrit follows: it is always self-hosted, so it
-/// gates on the canonical SSH port `29418`, a configured `GERRIT_URL`, or a
-/// hostname containing "gerrit". GitHub must stay last because its parser
-/// accepts *any* host (covers github.com and GHE hosts whose hostname does not
+/// Order matters. Bitbucket and GitLab both gate on the hostname, so trying
+/// them first won't claim GitHub Enterprise remotes. Heptapod follows: it
+/// speaks GitLab's API and URL grammar, so it must come before GitLab or
+/// every Heptapod remote would be tagged as GitLab and lose the Mercurial
+/// local-checkout routing. Azure next — its parser accepts cloud hosts and
+/// the self-hosted hostname explicitly configured via
+/// `AZURE_DEVOPS_SERVER_URL`. Gitea then, which recognizes its own public
+/// hosts by name and self-hosted ones through the logins configured in
+/// `tea`. Gerrit follows: it is always self-hosted, so it gates on the
+/// canonical SSH port `29418`, a configured `GERRIT_URL`, or a hostname
+/// containing "gerrit". GitHub must stay last because its parser accepts
+/// *any* host (covers github.com and GHE hosts whose hostname does not
 /// literally contain "github") — it would otherwise swallow every Bitbucket,
-/// self-hosted GitLab, Gitea, Azure, and Gerrit remote.
+/// self-hosted GitLab, Heptapod, Gitea, Azure, and Gerrit remote.
 pub fn parse_any_remote_url(url: &str) -> Option<ForgeRepository> {
     parse_bitbucket_remote_url(url)
+        .or_else(|| parse_heptapod_remote_url(url))
         .or_else(|| parse_gitlab_remote_url(url))
         .or_else(|| parse_azure_remote_url(url))
         .or_else(|| parse_gitea_remote_url(url))
@@ -199,13 +245,53 @@ pub fn parse_any_remote_url(url: &str) -> Option<ForgeRepository> {
 /// because a workspace is always one segment, so the fallback already agrees
 /// with it. GitLab enters as its hostname-only variant, which forgoes the
 /// `glab` config lookup that would otherwise recognize self-hosted instances on
-/// custom domains. Gerrit is included: its project path can be any depth, so the
+/// custom domains. Heptapod's hostname-only variant is included for the same
+/// reason: an `foss.heptapod.net` remote should be recognized without spawning
+/// a process. Gerrit is included: its project path can be any depth, so the
 /// last-two-segments rule would mis-split `gerrit.example.com/platform/frameworks/base`,
 /// and its parser only reads the URL plus one env var.
 pub fn parse_any_remote_url_by_hostname(url: &str) -> Option<ForgeRepository> {
-    parse_gitlab_remote_url_by_hostname(url)
+    parse_heptapod_remote_url_by_hostname(url)
+        .or_else(|| parse_gitlab_remote_url_by_hostname(url))
         .or_else(|| parse_azure_remote_url(url))
         .or_else(|| parse_gerrit_remote_url(url))
+}
+
+/// Parse a `tuicr pr`/`mr` target string by trying every forge's target
+/// parser in order.
+///
+/// Order matters, and differs from [`parse_any_remote_url`] because the
+/// GitHub *target* parser is more than a catch-all: it also claims
+/// GitLab-shaped `/-/merge_requests/<n>` URLs on any host (tagging them
+/// GitLab) and any host-qualified `host/owner/repo#N` (tagging unknown hosts
+/// GitHub). Heptapod accepts exactly GitLab's target grammar but only on
+/// Heptapod-recognized hosts, so it must run *first* — after GitHub, an
+/// Heptapod MR URL would open as GitLab and `foss.heptapod.net/owner/repo#42`
+/// as GitHub, losing the Mercurial local-checkout routing. Numeric targets
+/// pass through every parser identically, so Heptapod-first does not change
+/// them. Bitbucket and Gitea follow: their URL shapes are distinct, but only
+/// their parsers know which self-hosted hosts are theirs, so they must see a
+/// host-qualified `host/owner/repo#N` before GitHub claims it. GitHub then
+/// handles numeric / `owner/repo#N` / GitHub URLs, GitLab handles
+/// `/-/merge_requests/<n>` on GitLab hosts, and the Azure
+/// (`/pullrequest/<n>`) and Gerrit (`/c/<project>/+/<n>`) URL shapes fall
+/// through last.
+pub fn parse_pull_request_target_any(target: &str) -> Result<PullRequestTarget> {
+    use crate::forge::azure::az::parse_pull_request_target_azure;
+    use crate::forge::bitbucket::bkt::parse_pull_request_target_bitbucket;
+    use crate::forge::gerrit::api::parse_pull_request_target_gerrit;
+    use crate::forge::gitea::tea::parse_pull_request_target_gitea;
+    use crate::forge::github::gh::parse_pull_request_target;
+    use crate::forge::gitlab::glab::parse_pull_request_target_gitlab;
+    use crate::forge::heptapod::parse::parse_pull_request_target_heptapod;
+
+    parse_pull_request_target_heptapod(target)
+        .or_else(|_| parse_pull_request_target_bitbucket(target))
+        .or_else(|_| parse_pull_request_target_gitea(target))
+        .or_else(|_| parse_pull_request_target(target))
+        .or_else(|_| parse_pull_request_target_gitlab(target))
+        .or_else(|_| parse_pull_request_target_azure(target))
+        .or_else(|_| parse_pull_request_target_gerrit(target))
 }
 
 /// Detect the forge repository for the local checkout at `repo_root`.
@@ -240,6 +326,7 @@ pub fn local_checkout_for_repo(root: &Path, target_repo: &ForgeRepository) -> Op
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::forge::traits::ForgeKind;
 
     #[test]
     fn join_returns_both_results_in_argument_order() {
@@ -258,6 +345,98 @@ mod tests {
         let repo = Repository::init(dir.path()).expect("init repo");
         repo.remote("origin", url).expect("add origin");
         dir
+    }
+
+    fn hg_available() -> bool {
+        std::process::Command::new("hg")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    /// Create an hg checkout whose `default` path points at `url` — what
+    /// `hg clone <url>` leaves behind.
+    fn init_hg_repo_with_default_path(url: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        crate::process::run_command_output("hg", Some(dir.path()), ["init"]).expect("hg init");
+        std::fs::write(
+            dir.path().join(".hg/hgrc"),
+            format!("[paths]\ndefault = {url}\n"),
+        )
+        .expect("write hgrc");
+        dir
+    }
+
+    #[test]
+    fn detects_heptapod_repository_from_an_hg_checkout() {
+        // A pure Mercurial checkout has no Git remotes to read; forge
+        // detection must fall back to `hg paths`, where `hg clone` records
+        // the source URL.
+        if !hg_available() {
+            return;
+        }
+        let dir = init_hg_repo_with_default_path("https://foss.heptapod.net/owner/repo");
+        assert_eq!(
+            detect_forge_repository(dir.path()),
+            Some(ForgeRepository::heptapod(
+                "foss.heptapod.net",
+                "owner",
+                "repo"
+            ))
+        );
+    }
+
+    #[test]
+    fn hg_default_path_sorts_first_among_hg_remotes() {
+        if !hg_available() {
+            return;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        crate::process::run_command_output("hg", Some(dir.path()), ["init"]).expect("hg init");
+        // `upstream` first in the hgrc so the sort, not the file order, is
+        // what puts `default` ahead.
+        std::fs::write(
+            dir.path().join(".hg/hgrc"),
+            "[paths]\nupstream = https://foss.heptapod.net/other/repo\ndefault = https://foss.heptapod.net/owner/repo\n",
+        )
+        .expect("write hgrc");
+        assert_eq!(
+            remote_urls(dir.path()),
+            vec![
+                "https://foss.heptapod.net/owner/repo".to_string(),
+                "https://foss.heptapod.net/other/repo".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn git_remotes_win_in_a_colocated_checkout() {
+        // A colocated repo has both `.git` and `.hg`; the Git remotes are
+        // the source of truth and the hg paths must not be consulted.
+        if !hg_available() {
+            return;
+        }
+        let dir = init_repo_with_origin("https://github.com/agavra/tuicr");
+        crate::process::run_command_output("hg", Some(dir.path()), ["init"]).expect("hg init");
+        std::fs::write(
+            dir.path().join(".hg/hgrc"),
+            "[paths]\ndefault = https://foss.heptapod.net/other/repo\n",
+        )
+        .expect("write hgrc");
+        assert_eq!(
+            detect_forge_repository(dir.path()),
+            Some(ForgeRepository::github("github.com", "agavra", "tuicr"))
+        );
+    }
+
+    #[test]
+    fn hg_fallback_yields_nothing_outside_any_repo() {
+        if !hg_available() {
+            return;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert!(remote_urls(dir.path()).is_empty());
     }
 
     #[test]
@@ -320,6 +499,79 @@ mod tests {
             detect_forge_repository(dir.path()),
             Some(ForgeRepository::github("code.example.com", "owner", "repo"))
         );
+    }
+
+    #[test]
+    fn heptapod_mr_url_targets_parse_before_github_claims_them() {
+        // GitHub's target parser claims any-host `/-/merge_requests/<n>` URLs
+        // and tags them GitLab; Heptapod must see them first or an Heptapod
+        // MR loses its Mercurial local-checkout routing.
+        let target = parse_pull_request_target_any(
+            "https://foss.heptapod.net/owner/repo/-/merge_requests/42",
+        )
+        .unwrap();
+        assert_eq!(target.number, 42);
+        assert_eq!(target.repository.unwrap().kind, ForgeKind::Heptapod);
+    }
+
+    #[test]
+    fn heptapod_repo_hash_targets_parse_before_github_claims_them() {
+        // GitHub's target parser claims any host-qualified
+        // `host/owner/repo#N` and tags unknown hosts GitHub; Heptapod must
+        // see them first.
+        let target = parse_pull_request_target_any("foss.heptapod.net/owner/repo#42").unwrap();
+        assert_eq!(target.number, 42);
+        let repo = target.repository.unwrap();
+        assert_eq!(repo.kind, ForgeKind::Heptapod);
+        assert_eq!(repo.host, "foss.heptapod.net");
+        assert_eq!(repo.owner, "owner");
+        assert_eq!(repo.name, "repo");
+    }
+
+    #[test]
+    fn gitlab_mr_url_targets_still_parse_as_gitlab() {
+        let target =
+            parse_pull_request_target_any("https://gitlab.com/owner/repo/-/merge_requests/7")
+                .unwrap();
+        assert_eq!(target.number, 7);
+        assert_eq!(target.repository.unwrap().kind, ForgeKind::GitLab);
+    }
+
+    #[test]
+    fn github_pr_targets_still_parse_as_github() {
+        let target = parse_pull_request_target_any("https://github.com/owner/repo/pull/1").unwrap();
+        assert_eq!(target.number, 1);
+        assert_eq!(target.repository.unwrap().kind, ForgeKind::GitHub);
+    }
+
+    #[test]
+    fn hostless_repo_hash_targets_stay_github() {
+        // `owner/repo#N` carries no host to recognize Heptapod by: the
+        // GitLab grammar defaults to gitlab.com inside the Heptapod parser,
+        // which rejects it and lets GitHub claim the target.
+        let target = parse_pull_request_target_any("owner/repo#42").unwrap();
+        assert_eq!(target.number, 42);
+        assert_eq!(target.repository.unwrap().kind, ForgeKind::GitHub);
+    }
+
+    #[test]
+    fn bitbucket_url_targets_still_parse_as_bitbucket() {
+        // Heptapod runs first but only accepts GitLab's grammar on Heptapod
+        // hosts, so a Bitbucket URL falls through to Bitbucket's parser.
+        let target =
+            parse_pull_request_target_any("https://bitbucket.org/owner/repo/pull-requests/5")
+                .unwrap();
+        assert_eq!(target.number, 5);
+        assert_eq!(target.repository.unwrap().kind, ForgeKind::Bitbucket);
+    }
+
+    #[test]
+    fn numeric_targets_carry_no_repository_whichever_parser_runs_first() {
+        // Bare numbers are identical in every parser; Heptapod-first must
+        // not change the resolved shape.
+        let target = parse_pull_request_target_any("125").unwrap();
+        assert_eq!(target.number, 125);
+        assert!(target.repository.is_none());
     }
 
     #[test]

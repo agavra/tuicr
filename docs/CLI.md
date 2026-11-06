@@ -56,7 +56,7 @@ take the last one given and boolean flags stay on once set, so
 | `--version` | `-V` | | Print the version and exit |
 | `--help` | `-h` | | Print help and exit |
 
-`--repo-url` accepts GitHub, GitLab, Gitea, Bitbucket, Azure DevOps, and Gerrit repos in HTTPS,
+`--repo-url` accepts GitHub, GitLab, Heptapod, Gitea, Bitbucket, Azure DevOps, and Gerrit repos in HTTPS,
 SCP-style SSH, or `ssh://` form — for example
 `https://github.com/owner/repo`, `git@gitlab.com:owner/repo`, or
 `https://dev.azure.com/org/project/_git/repo`. It is what to reach for when the
@@ -140,6 +140,7 @@ out to.
 | `AZURE_DEVOPS_EXT_PAT`, `AZURE_DEVOPS_PAT` | Azure DevOps PAT. Checked in that order; without one tuicr falls back to `az rest`. See [AZURE.md](AZURE.md) |
 | `GERRIT_URL` | Gerrit server root; also identifies Gerrit remotes on otherwise neutral hostnames. See [GERRIT.md](GERRIT.md) |
 | `GERRIT_USERNAME`, `GERRIT_PASSWORD` | Gerrit REST API credentials. `GERRIT_PASSWORD` must be an HTTP password, not the account password |
+| `HEPTAPOD_URL` | Heptapod server root; also identifies Heptapod remotes on otherwise neutral hostnames (commercial instances like `orus.io`). See the Heptapod section in [GITLAB.md](GITLAB.md) |
 | `TUICR_GLAB_DEBUG` | Log `glab` invocations for debugging. See [GITLAB.md](GITLAB.md) |
 | `TMUX`, `ZELLIJ`, `SSH_TTY` | Detected to choose a clipboard path — OSC 52 over SSH, `tmux load-buffer` inside tmux |
 | `REX_SESSION` | Prefer OSC 52 clipboard writes to reach the Rex client's clipboard |
