@@ -580,6 +580,16 @@ pub trait ForgeBackend {
     fn file_line_count(&self, _request: ForgeFileLinesRequest) -> Result<u32> {
         Ok(0)
     }
+    /// [`Self::file_line_count`] for many files of one repository at once, in
+    /// request order, with `None` where a file could not be read. PR open needs
+    /// every changed file's count, so backends that can batch the reads should
+    /// override the default, which asks one file at a time.
+    fn file_line_counts(&self, requests: Vec<ForgeFileLinesRequest>) -> Vec<Option<u32>> {
+        requests
+            .into_iter()
+            .map(|request| self.file_line_count(request).ok())
+            .collect()
+    }
     /// Fetch existing review discussions for a PR, including their resolved
     /// and outdated state. Implementations should return all threads in
     /// posted order; filtering by visibility happens in the App.
