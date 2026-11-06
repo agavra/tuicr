@@ -16,6 +16,7 @@ use crate::process::{
     CommandOutputError, CommandOutputErrorKind, run_command_output, run_command_output_with_stdin,
 };
 use crate::vcs::git::raw::{FileMetadata, pair_metadata_with_patch, run_git_diff};
+use crate::vcs::git::read_git_objects;
 use crate::vcs::slice_context_lines;
 
 use super::models::{GhCompare, GhPrCommit, GhPullRequestFile, GhPullRequestSummary};
@@ -27,6 +28,9 @@ use super::submit::build_review_payload;
 use crate::forge::traits::CreateReviewRequest;
 
 const DEFAULT_GITHUB_HOST: &str = "github.com";
+/// Files per GraphQL query in `file_line_counts`. Each is one aliased
+/// `object(expression:)` field, so this bounds the query and response size.
+const BLOB_TEXTS_PER_QUERY: usize = 50;
 const PR_LIST_JSON_FIELDS: &str =
     "number,title,author,headRefName,baseRefName,updatedAt,url,state,isDraft";
 const PR_VIEW_JSON_FIELDS: &str = concat!(
@@ -558,6 +562,47 @@ where
         Ok(content.lines().count() as u32)
     }
 
+    /// One `git cat-file --batch` for the blobs the checkout has, then one
+    /// GraphQL query per [`BLOB_TEXTS_PER_QUERY`] files for the rest (the PR
+    /// head is often not fetched yet). Blobs GraphQL can't return as text, and
+    /// every blob of a query that fails, fall back to a REST call each.
+    fn file_line_counts(&self, requests: Vec<ForgeFileLinesRequest>) -> Vec<Option<u32>> {
+        let specs: Vec<String> = requests
+            .iter()
+            .map(|r| {
+                let path = r.path.to_string_lossy().replace('\\', "/");
+                format!("{}:{path}", r.sha())
+            })
+            .collect();
+        let mut counts = vec![None; requests.len()];
+        if let Some(root) = self.local_checkout.as_deref()
+            && let Ok(blobs) = read_git_objects(root, specs.iter().cloned().enumerate().collect())
+        {
+            for (i, content) in blobs {
+                counts[i] = Some(content.lines().count() as u32);
+            }
+        }
+
+        let missing: Vec<usize> = (0..requests.len())
+            .filter(|&i| counts[i].is_none())
+            .collect();
+        for chunk in missing.chunks(BLOB_TEXTS_PER_QUERY) {
+            let chunk_specs: Vec<&str> = chunk.iter().map(|&i| specs[i].as_str()).collect();
+            if let Ok(texts) = self.fetch_blob_texts(&requests[0].repository, &chunk_specs) {
+                for (&i, text) in chunk.iter().zip(texts) {
+                    counts[i] = text.map(|text| text.lines().count() as u32);
+                }
+            }
+        }
+
+        for (i, request) in requests.into_iter().enumerate() {
+            if counts[i].is_none() {
+                counts[i] = self.file_line_count(request).ok();
+            }
+        }
+        counts
+    }
+
     fn create_review(
         &self,
         pr: &PullRequestDetails,
@@ -654,6 +699,61 @@ where
             args.push(pr.repository.host.clone());
         }
         args
+    }
+
+    /// Read `<sha>:<path>` blobs as text with one GraphQL query, in order.
+    /// `None` for a blob GitHub won't return whole as text: missing, binary or
+    /// truncated.
+    fn fetch_blob_texts(
+        &self,
+        repository: &ForgeRepository,
+        specs: &[&str],
+    ) -> Result<Vec<Option<String>>> {
+        let variables: Vec<String> = (0..specs.len())
+            .map(|i| format!("$e{i}: String!"))
+            .collect();
+        let fields: Vec<String> = (0..specs.len())
+            .map(|i| {
+                format!("f{i}: object(expression: $e{i}) {{ ... on Blob {{ text isTruncated }} }}")
+            })
+            .collect();
+        let query = format!(
+            "query($owner: String!, $name: String!, {}) {{ repository(owner: $owner, name: $name) {{ {} }} }}",
+            variables.join(", "),
+            fields.join(" ")
+        );
+        // `-f`, not `-F`: values stay strings, so a path that looks like a
+        // number or starts with `@` is never coerced or read as a file.
+        let mut args = vec![
+            "api".to_string(),
+            "graphql".to_string(),
+            "-f".to_string(),
+            format!("query={query}"),
+            "-f".to_string(),
+            format!("owner={}", repository.owner),
+            "-f".to_string(),
+            format!("name={}", repository.name),
+        ];
+        for (i, spec) in specs.iter().enumerate() {
+            args.push("-f".to_string());
+            args.push(format!("e{i}={spec}"));
+        }
+        if repository.host != DEFAULT_GITHUB_HOST {
+            args.push("--hostname".to_string());
+            args.push(repository.host.clone());
+        }
+        let output = self.run_gh(args, &repository.host)?;
+        let value: serde_json::Value = serde_json::from_str(&output)?;
+        let blobs = &value["data"]["repository"];
+        Ok((0..specs.len())
+            .map(|i| {
+                let blob = &blobs[format!("f{i}")];
+                match blob["isTruncated"].as_bool() {
+                    Some(false) => blob["text"].as_str().map(str::to_owned),
+                    _ => None,
+                }
+            })
+            .collect())
     }
 
     fn fetch_file_via_api(&self, request: &ForgeFileLinesRequest) -> Result<String> {
@@ -2610,5 +2710,138 @@ Match host github-work
             "expected unknown-commit hint, got: {msg:?}"
         );
         assert!(msg.contains(":e"), "got: {msg:?}");
+    }
+}
+
+#[cfg(test)]
+mod line_count_tests {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    use super::*;
+    use crate::forge::traits::ForgeFileSide;
+    use crate::model::FileStatus;
+
+    const HEAD: &str = "1111111111111111111111111111111111111111";
+
+    /// Answers the blob-text GraphQL query from `texts` (keyed by
+    /// `<sha>:<path>`) and records every call.
+    #[derive(Default)]
+    struct BlobRunner {
+        texts: HashMap<String, String>,
+        /// Body of every REST `contents` call.
+        rest_text: String,
+        calls: Mutex<Vec<Vec<String>>>,
+    }
+
+    impl GhCommandRunner for BlobRunner {
+        fn run(&self, args: &[String]) -> GhCommandResult<String> {
+            self.calls.lock().unwrap().push(args.to_vec());
+            if args.iter().any(|arg| arg.contains("/contents/")) {
+                return Ok(self.rest_text.clone());
+            }
+            let mut blobs = serde_json::Map::new();
+            for arg in args {
+                let Some((name, spec)) = arg.split_once('=') else {
+                    continue;
+                };
+                let Some(i) = name.strip_prefix('e') else {
+                    continue;
+                };
+                let blob = match self.texts.get(spec) {
+                    Some(text) => serde_json::json!({ "text": text, "isTruncated": false }),
+                    None => serde_json::Value::Null,
+                };
+                blobs.insert(format!("f{i}"), blob);
+            }
+            Ok(serde_json::json!({ "data": { "repository": blobs } }).to_string())
+        }
+    }
+
+    fn request(path: &str) -> ForgeFileLinesRequest {
+        ForgeFileLinesRequest {
+            repository: ForgeRepository::github("github.com", "agavra", "tuicr"),
+            base_sha: "0000000000000000000000000000000000000000".to_string(),
+            head_sha: HEAD.to_string(),
+            path: PathBuf::from(path),
+            status: FileStatus::Modified,
+            side: ForgeFileSide::Head,
+            start_line: 0,
+            end_line: 0,
+        }
+    }
+
+    #[test]
+    fn should_count_lines_of_unfetched_files_with_one_graphql_query() {
+        // given — no local checkout, as when the PR head isn't fetched yet
+        let runner = BlobRunner {
+            texts: HashMap::from([
+                (format!("{HEAD}:a.rs"), "1\n2\n".to_string()),
+                (format!("{HEAD}:b.rs"), "1\n2\n3\n".to_string()),
+                (format!("{HEAD}:c.rs"), "1\n".to_string()),
+            ]),
+            ..Default::default()
+        };
+        let backend = GitHubGhBackend::with_runner(None, runner);
+        // when
+        let counts =
+            backend.file_line_counts(vec![request("a.rs"), request("b.rs"), request("c.rs")]);
+        // then — one round trip instead of one per file
+        assert_eq!(counts, vec![Some(2), Some(3), Some(1)]);
+        assert_eq!(backend.runner.calls.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn should_ask_github_only_for_files_missing_from_the_checkout() {
+        // given — the checkout has a.rs at HEAD but not b.rs
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let git = |args: &[&str]| {
+            run_command_output("git", Some(root), args.iter().map(OsStr::new)).unwrap()
+        };
+        git(&["init", "--quiet"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "user.name", "test"]);
+        git(&["config", "commit.gpgsign", "false"]);
+        fs::write(root.join("a.rs"), "1\n2\n3\n4\n").unwrap();
+        git(&["add", "a.rs"]);
+        git(&["commit", "--quiet", "-m", "add a"]);
+        let head = git(&["rev-parse", "HEAD"]).trim().to_string();
+        let runner = BlobRunner {
+            texts: HashMap::from([(format!("{head}:b.rs"), "1\n".to_string())]),
+            ..Default::default()
+        };
+        let mut backend = GitHubGhBackend::with_runner(None, runner);
+        backend.set_local_checkout(Some(root.to_path_buf()));
+        let requests = ["a.rs", "b.rs"].map(|path| ForgeFileLinesRequest {
+            head_sha: head.clone(),
+            ..request(path)
+        });
+        // when
+        let counts = backend.file_line_counts(requests.to_vec());
+        // then
+        assert_eq!(counts, vec![Some(4), Some(1)]);
+        let calls = backend.runner.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].contains(&format!("e0={head}:b.rs")));
+        assert!(!calls[0].iter().any(|arg| arg.ends_with(":a.rs")));
+    }
+
+    #[test]
+    fn should_fall_back_to_rest_for_a_blob_graphql_does_not_return() {
+        // given — GraphQL returns a.rs but not b.rs (binary or truncated)
+        let runner = BlobRunner {
+            texts: HashMap::from([(format!("{HEAD}:a.rs"), "1\n2\n".to_string())]),
+            rest_text: "1\n2\n3\n".to_string(),
+            ..Default::default()
+        };
+        let backend = GitHubGhBackend::with_runner(None, runner);
+        // when
+        let counts = backend.file_line_counts(vec![request("a.rs"), request("b.rs")]);
+        // then — one GraphQL query, then one REST call for b.rs only
+        assert_eq!(counts, vec![Some(2), Some(3)]);
+        let calls = backend.runner.calls.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert!(calls[1].iter().any(|arg| arg.contains("/contents/b.rs")));
     }
 }

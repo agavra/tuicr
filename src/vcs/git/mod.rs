@@ -24,6 +24,7 @@ use cli::GitCliBackend;
 pub use libgit2::Libgit2Backend;
 
 // Re-exported for UI/app gap calculations.
+pub(crate) use cli::read_git_objects;
 pub use context::calculate_gap;
 
 /// RevisionExpression is Git's parsed view of a user-supplied revision string.

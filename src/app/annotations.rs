@@ -14,12 +14,8 @@ impl App {
             let count = if let (DiffSource::PullRequest(pr), Some(backend)) =
                 (&self.diff_source, self.forge_backend.as_ref())
             {
-                let provider = ForgeContextProvider {
-                    forge: backend.as_ref(),
-                    repository: pr.key.repository.clone(),
-                    base_sha: pr.base_sha.clone(),
-                    head_sha: pr.key.head_sha.clone(),
-                };
+                let provider =
+                    ForgeContextProvider::for_pr(backend.as_ref(), &pr.key, pr.base_sha.clone());
                 provider
                     .file_line_count(old_path.as_ref(), new_path.as_ref(), status)
                     .ok()
@@ -41,12 +37,38 @@ impl App {
     /// Only enabled for diff sources where the worktree/index is the correct snapshot.
     pub(in crate::app) fn populate_file_line_count_cache(&mut self) {
         self.file_line_count_cache.clear();
-        if self.eof_gap_enabled() {
-            for file_idx in 0..self.diff_files.len() {
+        if !self.eof_gap_enabled() {
+            return;
+        }
+        let eligible: Vec<usize> = (0..self.diff_files.len())
+            .filter(|&file_idx| {
                 let file = &self.diff_files[file_idx];
-                if !file.hunks.is_empty() && file.status != FileStatus::Deleted {
-                    self.ensure_file_line_count_cached(file_idx);
+                !file.hunks.is_empty() && file.status != FileStatus::Deleted
+            })
+            .collect();
+        if let (DiffSource::PullRequest(pr), Some(backend)) =
+            (&self.diff_source, self.forge_backend.as_ref())
+        {
+            // One batched read: a PR can touch hundreds of files, and reading
+            // them one at a time held up the first frame.
+            let provider =
+                ForgeContextProvider::for_pr(backend.as_ref(), &pr.key, pr.base_sha.clone());
+            let files: Vec<_> = eligible
+                .iter()
+                .map(|&file_idx| {
+                    let file = &self.diff_files[file_idx];
+                    (file.old_path.as_ref(), file.new_path.as_ref(), file.status)
+                })
+                .collect();
+            let counts = provider.file_line_counts(&files);
+            for (file_idx, count) in eligible.into_iter().zip(counts) {
+                if let Some(count) = count {
+                    self.file_line_count_cache.insert(file_idx, count);
                 }
+            }
+        } else {
+            for file_idx in eligible {
+                self.ensure_file_line_count_cached(file_idx);
             }
         }
     }

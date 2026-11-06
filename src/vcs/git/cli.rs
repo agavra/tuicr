@@ -1016,10 +1016,13 @@ fn git_source_content_cache(
     }
 }
 
-fn read_git_objects(
+/// Read many `<rev>:<path>` object specs with one `git cat-file --batch`
+/// process, keyed by the caller's key. Missing objects and non-blobs are left
+/// out of the map.
+pub(crate) fn read_git_objects<K: Eq + std::hash::Hash>(
     workdir: &Path,
-    requests: Vec<(PathBuf, String)>,
-) -> Result<HashMap<PathBuf, String>> {
+    requests: Vec<(K, String)>,
+) -> Result<HashMap<K, String>> {
     if requests.is_empty() {
         return Ok(HashMap::new());
     }
@@ -1033,15 +1036,18 @@ fn read_git_objects(
         .spawn()
         .map_err(|e| TuicrError::VcsCommand(format!("Failed to run git: {e}")))?;
 
-    {
-        let mut stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| TuicrError::VcsCommand("git cat-file stdin unavailable".into()))?;
-        for (_, spec) in &requests {
-            writeln!(stdin, "{spec}")?;
-        }
-    }
+    // Feed stdin from its own thread: git answers each spec as it reads it, so
+    // once its output fills the pipe it stops reading, and writing every spec
+    // before reading any output would deadlock on a large batch.
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| TuicrError::VcsCommand("git cat-file stdin unavailable".into()))?;
+    let specs: String = requests
+        .iter()
+        .map(|(_, spec)| format!("{spec}\n"))
+        .collect();
+    let writer = std::thread::spawn(move || stdin.write_all(specs.as_bytes()));
 
     let stdout = child
         .stdout
@@ -1050,7 +1056,7 @@ fn read_git_objects(
     let mut reader = BufReader::new(stdout);
     let mut contents = HashMap::new();
 
-    for (path, _) in requests {
+    for (key, _) in requests {
         let mut header = String::new();
         if reader.read_line(&mut header)? == 0 {
             break;
@@ -1075,10 +1081,13 @@ fn read_git_objects(
         reader.read_exact(&mut trailing_newline)?;
 
         if kind == Some("blob") {
-            contents.insert(path, String::from_utf8_lossy(&bytes).into_owned());
+            contents.insert(key, String::from_utf8_lossy(&bytes).into_owned());
         }
     }
 
+    writer
+        .join()
+        .map_err(|_| TuicrError::VcsCommand("git cat-file stdin writer panicked".into()))??;
     let status = child.wait()?;
     if !status.success() {
         return Err(TuicrError::VcsCommand(format!(
@@ -1314,6 +1323,37 @@ mod tests {
             args.join(" "),
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    #[test]
+    fn should_read_more_objects_than_a_pipe_buffer_holds() {
+        // given — enough specs that neither stdin nor stdout fits in a pipe
+        // buffer, so writing them all before reading would deadlock
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let root = temp_dir.path();
+        git(root, &["init", "--quiet"]);
+        let name = format!("{}.rs", "a".repeat(100));
+        fs::write(root.join(&name), "line\n".repeat(500)).expect("write file");
+        git(root, &["add", name.as_str()]);
+        git(
+            root,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "--quiet",
+                "-m",
+                "a",
+            ],
+        );
+        let requests: Vec<(usize, String)> =
+            (0..3000).map(|i| (i, format!("HEAD:{name}"))).collect();
+        // when
+        let objects = read_git_objects(root, requests).expect("read objects");
+        // then
+        assert_eq!(objects.len(), 3000);
     }
 
     #[test]
