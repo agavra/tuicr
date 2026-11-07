@@ -18,6 +18,7 @@ mod hg;
 mod jj;
 pub mod pr_noop;
 pub mod pristine;
+pub mod stdin;
 pub(crate) mod traits;
 pub(crate) mod whitespace;
 

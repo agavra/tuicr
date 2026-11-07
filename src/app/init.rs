@@ -33,6 +33,36 @@ impl App {
             );
         }
 
+        // Piped diff (e.g. `git diff | tuicr` or `pager.diff = tuicr`)
+        if let Some(diff_text) = options.stdin_diff {
+            let vcs = Box::new(crate::vcs::stdin::StdinBackend::new(diff_text.to_string())?);
+            let vcs_info = vcs.info().clone();
+            let highlighter = theme.syntax_highlighter();
+            let diff_files = vcs.get_working_tree_diff(highlighter)?;
+            let diff_files = Self::filter_ignored_diff_files(&vcs_info.root_path, diff_files);
+            if diff_files.is_empty() {
+                return Err(TuicrError::NoChanges);
+            }
+            let session = Self::load_or_create_session(&vcs_info, SessionDiffSource::WorkingTree);
+
+            let mut app = Self::build(
+                vcs,
+                vcs_info,
+                theme,
+                comment_type_configs,
+                output_to_stdout,
+                diff_files,
+                session,
+                DiffSource::Piped,
+                InputMode::Normal,
+                Vec::new(),
+                None, // no path_filter
+                options.repo_url_override.clone(),
+            )?;
+            app.focused_panel = FocusedPanel::Diff;
+            return Ok(app);
+        }
+
         // --file mode: open a single file for annotation without VCS
         if let Some(file_path) = options.file_path {
             let file_backend = FileBackend::new(file_path)?;
