@@ -49,24 +49,23 @@ Examples:
 EOF
 }
 
+# Only answers "are we inside a rex block?". Missing tools are reported by
+# check_commands, so they never surface as "not running inside rex".
 check_rex() {
+  [[ -n "${REX_SESSION:-}" && -n "${REX_BLOCK:-}" ]]
+}
+
+check_commands() {
+  if ! command -v tuicr &> /dev/null; then
+    log_error "tuicr not found. Install it first."
+    return 1
+  fi
   if ! command -v "$REX_BIN" &> /dev/null; then
     log_error "rex command not found on PATH"
     return 1
   fi
   if ! command -v "$JQ_BIN" &> /dev/null; then
     log_error "jq not found on PATH; the rex wrapper needs it to read rex's JSON output"
-    return 1
-  fi
-  if [[ -z "${REX_SESSION:-}" || -z "${REX_BLOCK:-}" ]]; then
-    return 1
-  fi
-  return 0
-}
-
-check_tuicr() {
-  if ! command -v tuicr &> /dev/null; then
-    log_error "tuicr not found. Install it first."
     return 1
   fi
   return 0
@@ -149,8 +148,8 @@ main() {
     exit 0
   fi
 
-  # Check for tuicr
-  if ! check_tuicr; then
+  # Check for tuicr, rex and jq
+  if ! check_commands; then
     exit 1
   fi
 
