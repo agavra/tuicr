@@ -164,6 +164,55 @@ fn should_keep_pasting_into_an_open_comment() {
 }
 
 #[test]
+fn should_cancel_a_pending_prefix_when_a_paste_opens_a_comment() {
+    // The main loop's half of this (`Z`, paste, `Z` types into the comment)
+    // is covered against the real binary in `tests/paste_comment.rs`.
+    for prefix in [
+        PendingPrefix::Z,
+        PendingPrefix::ShiftZ,
+        PendingPrefix::D,
+        PendingPrefix::Leader,
+    ] {
+        let mut app = app_on_line_3();
+        app.pending_prefix = Some(prefix);
+
+        handle_paste(&mut app, "dictated".to_string());
+
+        assert_eq!(app.input_mode, InputMode::Comment);
+        assert_eq!(app.pending_prefix, None, "{prefix:?} survived the paste");
+    }
+}
+
+#[test]
+fn should_drop_a_pending_count_when_a_paste_is_ignored() {
+    let mut app = app_on_line_3();
+    app.focused_panel = FocusedPanel::FileList;
+    app.pending_count = Some(5);
+
+    handle_paste(&mut app, "not here".to_string());
+
+    assert_eq!(app.pending_count, None);
+}
+
+#[test]
+fn should_not_cancel_the_vim_comment_when_a_paste_splits_esc_esc() {
+    let mut app = app_on_line_3();
+    app.comment_vim_enabled = true;
+    handle_paste(&mut app, "dictated".to_string());
+    app.comment_vim_feed_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(app.comment_vim_in_normal_mode());
+    // In vim Normal mode a first Esc arms the cancel and a second confirms it.
+    app.comment_vim_esc_normal();
+
+    handle_paste(&mut app, " more".to_string());
+    assert!(app.comment_vim_in_normal_mode());
+    app.comment_vim_esc_normal();
+
+    assert_eq!(app.input_mode, InputMode::Comment);
+    assert_eq!(app.comment_buffer, "dictated more");
+}
+
+#[test]
 fn should_leave_command_and_search_pastes_in_their_prompts() {
     let mut app = app_on_line_3();
     app.enter_command_mode();

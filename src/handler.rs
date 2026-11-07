@@ -577,6 +577,12 @@ fn push_single_line(buffer: &mut String, text: &str) {
 /// there the way `c` does, so dictation tools that paste their transcript
 /// don't need `c` pressed first. Other modes ignore it.
 pub fn handle_paste(app: &mut App, text: String) {
+    // Like a key, a paste ends any half-typed sequence: a `z`/`Z`/`d`/leader
+    // prefix, a count, or the vim comment box's Enter/Esc confirm. Left
+    // armed, `Z`, paste, `Z` would quit with the pasted comment still open.
+    app.pending_prefix = None;
+    app.pending_count = None;
+    app.comment_vim_reset_pending();
     if app.input_mode == InputMode::Normal && app.file_tree_prompt_editing() {
         handle_file_list_action(app, Action::Paste(text));
         return;
@@ -596,7 +602,6 @@ pub fn handle_paste(app: &mut App, text: String) {
         if app.input_mode == InputMode::VisualSelect {
             handle_visual_action(app, Action::AddRangeComment);
         } else {
-            app.pending_count = None;
             handle_shared_normal_action(app, Action::AddLineComment);
         }
         if app.input_mode != InputMode::Comment {

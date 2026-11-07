@@ -171,6 +171,8 @@ range comment instead. Newlines are kept, and the comment stays open to finish
 or save; with `comment_vim` it opens in Insert mode. With no diff line under the
 cursor (a file or hunk header) the paste is dropped, like `c`. While a comment
 or a prompt (`:`, `/`, the file-tree filters) is open, the text goes there.
+A paste also cancels a half-typed key sequence (`z`, `Z`, `d`, the leader, a
+count, or a first `Ctrl+C`), so the key after it can't finish one.
 
 `e` opens the file at the cursor's line. Terminal editors (`vim`, `nvim`, `nano`, …)
 take over the screen and tuicr reloads the diff once they exit. Windowed editors

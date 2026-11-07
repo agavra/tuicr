@@ -1123,6 +1123,17 @@ pub enum CommentVimPending {
     Cancel,
 }
 
+/// The first key of a two-key command (`zz`, `ZZ`, `dd`, `<leader>e`, …).
+/// The main loop takes it on the next key, which completes or cancels it,
+/// and a paste clears it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PendingPrefix {
+    Z,
+    ShiftZ,
+    D,
+    Leader,
+}
+
 pub struct App {
     pub theme: Theme,
     pub vcs: Box<dyn VcsBackend>,
@@ -1450,6 +1461,8 @@ pub struct App {
     pub update_info: Option<UpdateInfo>,
     /// Accumulated digit count for {N}G jump-to-line
     pub pending_count: Option<usize>,
+    /// A typed `z`/`Z`/`d`/leader waiting for its second key.
+    pub pending_prefix: Option<PendingPrefix>,
     /// Source line from `--line`, applied once after the first render
     /// (when the viewport height is known) so the target can be centered.
     pub pending_start_line: Option<u32>,
