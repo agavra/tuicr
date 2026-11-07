@@ -81,6 +81,7 @@ local-review flags `-r`, `-w`, `-p`, `--file` and `-A`.
 | `--file` | | `PATH` | Annotate a file or directory with no VCS required. With a Git revision range, add an untracked file. Repeat to include more files |
 | `--line` | | `N` | Start with the cursor on line `N` (new side). Requires `--file` or `--path`; not with `pr` |
 | `--all-files` | `-A` | | Review every tracked file in the current repo |
+| `--stdin` | | | Read a unified diff from stdin (use as `pager.diff`) |
 | `--stdout` | | | Print the export to stdout instead of copying to the clipboard |
 | `--no-update-check` | | | Skip the startup update check (same as `no_update_check` in the config) |
 | `--repo-url` | | `URL` | Override the forge repo for PR operations |
@@ -118,9 +119,19 @@ succeed before a full PR URL or `owner/repo#N` target takes precedence. Omit
 
 ### Scope selection
 
-`--all-files` selects a review scope on its own. `--file` can be used on its
-own or with `--revisions`. `--path` combines with `--working-tree` and/or
-`--revisions`.
+`--stdin` selects a standalone review scope and cannot be combined with other
+scope flags. `--all-files` selects a review scope on its own. `--file` can be
+used on its own or with `--revisions`. `--path` combines with
+`--working-tree` and/or `--revisions`.
+
+`--stdin` reviews a unified diff piped in on stdin, which makes tuicr usable as
+a git pager. The diff is a static snapshot: there is no file watching, and
+`:reload` asks you to re-run the command.
+
+```sh
+git diff origin/main | tuicr --stdin
+git config pager.diff 'tuicr --stdin'
+```
 
 `--path` on its own implies `--working-tree`. Pair it with `-r` to filter a
 commit range instead:

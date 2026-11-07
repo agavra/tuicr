@@ -106,14 +106,14 @@ fn main() -> anyhow::Result<()> {
         cli_args.working_tree = true;
     }
 
-    // Use only piped diff when no other diff source was requested.
-    let stdin_diff = if !io::stdin().is_terminal()
-        && cli_args.revisions.is_none()
-        && !cli_args.working_tree
-        && cli_args.file_path.is_none()
-        && !cli_args.all_files
-        && cli_args.pr_target.is_none()
-    {
+    // Piped diff: only on explicit --stdin.
+    let stdin_diff = if cli_args.stdin {
+        if io::stdin().is_terminal() {
+            eprintln!(
+                "Error: --stdin expects a diff piped on stdin, e.g. `git diff | tuicr --stdin`"
+            );
+            std::process::exit(2);
+        }
         let mut buf = Vec::new();
         io::stdin().read_to_end(&mut buf)?;
         Some(String::from_utf8_lossy(&buf).into_owned())

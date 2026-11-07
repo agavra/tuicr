@@ -60,6 +60,7 @@ fn options(revisions: Option<&str>, working_tree: bool) -> AppStartupOptions<'_>
         pr_target: None,
         pr_current_branch: false,
         repo_url_override: None,
+        stdin_diff: None,
     }
 }
 
