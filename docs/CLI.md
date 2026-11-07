@@ -49,6 +49,7 @@ take the last one given and boolean flags stay on once set, so
 | `--file` | | `PATH` | Open a file or directory for annotation with no VCS required |
 | `--line` | | `N` | Start with the cursor on line `N` (new side). Requires `--file` or `--path`; not with `pr` |
 | `--all-files` | `-A` | | Review every tracked file in the current repo |
+| `--stdin` | | | Read a unified diff from stdin (use as `pager.diff`) |
 | `--stdout` | | | Print the export to stdout instead of copying to the clipboard |
 | `--no-update-check` | | | Skip the startup update check (same as `no_update_check` in the config) |
 | `--repo-url` | | `URL` | Override the forge repo for PR operations |
@@ -86,10 +87,19 @@ succeed before a full PR URL or `owner/repo#N` target takes precedence. Omit
 
 ### Scope selection
 
-`--path`, `--working-tree`, `--file`, and `--all-files` pick what gets reviewed,
-so they cannot be combined — passing two is a usage error. `--file` also
-conflicts with `--revisions`, since annotating an arbitrary file has no commit
-range.
+`--path`, `--working-tree`, `--file`, `--all-files`, and `--stdin` pick what
+gets reviewed, so they cannot be combined — passing two is a usage error.
+`--file` and `--stdin` also conflict with `--revisions`, since neither has a
+commit range.
+
+`--stdin` reviews a unified diff piped in on stdin, which makes tuicr usable as
+a git pager. The diff is a static snapshot: there is no file watching, and
+`:reload` asks you to re-run the command.
+
+```sh
+git diff origin/main | tuicr --stdin
+git config pager.diff 'tuicr --stdin'
+```
 
 `--path` on its own implies `--working-tree`. Pair it with `-r` to filter a
 commit range instead:

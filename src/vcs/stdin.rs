@@ -18,14 +18,34 @@ impl StdinBackend {
         if split_git_diff(&diff_text).is_empty() {
             return Err(TuicrError::NoChanges);
         }
-        let hash = crate::hash::fnv1a_64(diff_text.as_bytes());
+        let hash = crate::hash::fnv1a_64(strip_ansi(&diff_text).as_bytes());
         let info = VcsInfo {
-            root_path: std::env::current_dir()?,
+            root_path: repo_root()?,
             head_commit: format!("{hash:016x}"),
             branch_name: None,
             vcs_type: VcsType::File,
         };
         Ok(Self { info, diff_text })
+    }
+}
+
+/// Repo root, so `git diff | tuicr --stdin` works from a subdirectory.
+fn repo_root() -> Result<PathBuf> {
+    let cwd = std::env::current_dir()?;
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(&cwd)
+        .output();
+    match output {
+        Ok(o) if o.status.success() => {
+            let root = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            Ok(if root.is_empty() {
+                cwd
+            } else {
+                PathBuf::from(root)
+            })
+        }
+        _ => Ok(cwd),
     }
 }
 
@@ -205,5 +225,12 @@ rename to new.rs
         assert!(matches!(patches[1].status, FileStatus::Renamed));
         assert_eq!(patches[1].old_path.as_deref(), Some(Path::new("old.rs")));
         assert_eq!(patches[1].new_path.as_deref(), Some(Path::new("new.rs")));
+    }
+
+    #[test]
+    fn colour_codes_do_not_change_session_identity() {
+        let plain = StdinBackend::new(SAMPLE.to_string()).unwrap();
+        let coloured = StdinBackend::new(format!("\x1b[1m{SAMPLE}\x1b[m")).unwrap();
+        assert_eq!(plain.info().head_commit, coloured.info().head_commit);
     }
 }

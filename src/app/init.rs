@@ -39,6 +39,10 @@ impl App {
             let vcs_info = vcs.info().clone();
             let highlighter = theme.syntax_highlighter();
             let diff_files = vcs.get_working_tree_diff(highlighter)?;
+            let diff_files = Self::filter_ignored_diff_files(&vcs_info.root_path, diff_files);
+            if diff_files.is_empty() {
+                return Err(TuicrError::NoChanges);
+            }
             let session = Self::load_or_create_session(&vcs_info, SessionDiffSource::WorkingTree);
 
             let mut app = Self::build(

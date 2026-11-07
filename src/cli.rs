@@ -28,6 +28,7 @@ pub struct CliArgs {
     pub file_path: Option<String>,
     /// Whole-repo annotation mode.
     pub all_files: bool,
+    pub stdin: bool,
     /// Source line (new side) to put the cursor on at startup.
     pub start_line: Option<u32>,
     /// Direct PR target from `tuicr pr <target>`.
@@ -123,6 +124,14 @@ struct TuiOptions {
         conflicts_with_all = ["path_filter", "revisions", "working_tree", "file_path"],
     )]
     all_files: bool,
+
+    /// Read a unified diff from stdin (for use as `pager.diff`).
+    #[arg(
+        long = "stdin",
+        action = ArgAction::SetTrue,
+        conflicts_with_all = ["path_filter", "revisions", "working_tree", "file_path", "all_files"],
+    )]
+    stdin: bool,
 
     /// Output to stdout instead of clipboard when exporting.
     #[arg(long = "stdout", action = ArgAction::SetTrue)]
@@ -379,6 +388,7 @@ impl From<Cli> for CliArgs {
             path_filter: options.path_filter,
             file_path: options.file_path,
             all_files: options.all_files,
+            stdin: options.stdin,
             start_line: options.start_line,
             pr_target,
             repo_url: options.repo_url,
@@ -402,6 +412,7 @@ impl TuiOptions {
             || self.file_path.is_some()
             || self.start_line.is_some()
             || self.all_files
+            || self.stdin
             || self.repo_url.is_some()
             || self.remote.is_some()
     }
@@ -418,6 +429,7 @@ impl TuiOptions {
             file_path: later.file_path.or(self.file_path),
             start_line: later.start_line.or(self.start_line),
             all_files: self.all_files || later.all_files,
+            stdin: self.stdin || later.stdin,
             repo_url: later.repo_url.or(self.repo_url),
             remote: later.remote.or(self.remote),
         }
@@ -1287,5 +1299,18 @@ mod tests {
         ])
         .expect_err("parse should fail");
         assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn should_parse_stdin_flag() {
+        let parsed = parse_for_test(&["tuicr", "--stdin"]).expect("parse should succeed");
+        assert!(parsed.stdin);
+    }
+
+    #[test]
+    fn should_reject_stdin_combined_with_file() {
+        let err =
+            parse_for_test(&["tuicr", "--stdin", "--file", "x.rs"]).expect_err("parse should fail");
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
     }
 }
