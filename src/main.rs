@@ -9,7 +9,7 @@ use crossterm::{
     terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate},
 };
 
-use tuicr::app::{self, App, AppStartupOptions, FocusedPanel, InputMode};
+use tuicr::app::{self, App, AppStartupOptions, FocusedPanel, InputMode, PendingPrefix};
 use tuicr::cli::parse_cli_args;
 use tuicr::config::IgnoreWhitespaceConfig;
 use tuicr::editor::{EditorCommand, EditorError, EditorLaunch, EditorSurface, EditorTarget};
@@ -419,14 +419,6 @@ fn main() -> anyhow::Result<()> {
         app.set_warning(message);
     }
 
-    // Track pending z command for zz centering
-    let mut pending_z = false;
-    // Track pending Z command for ZZ export+quit / ZQ quit
-    let mut pending_shift_z = false;
-    // Track pending d command for dd delete
-    let mut pending_d = false;
-    // Track pending leader command for leader-prefixed actions.
-    let mut pending_leader = false;
     // Track pending Ctrl+C for "press twice to exit" (with timestamp for 2s timeout)
     let mut pending_ctrl_c: Option<Instant> = None;
     // Only re-render when state actually changed; the diff renderer rebuilds
@@ -579,9 +571,11 @@ fn main() -> anyhow::Result<()> {
                         continue;
                     }
 
+                    // This key either completes the pending prefix or cancels it.
+                    let pending_prefix = app.pending_prefix.take();
+
                     // Handle pending z command for zz/zt/zb viewport positioning
-                    if pending_z {
-                        pending_z = false;
+                    if pending_prefix == Some(PendingPrefix::Z) {
                         match key.code {
                             crossterm::event::KeyCode::Char('z') => {
                                 app.center_cursor();
@@ -600,8 +594,7 @@ fn main() -> anyhow::Result<()> {
                     }
 
                     // Handle pending Z command for ZZ (export+quit) / ZQ (quit)
-                    if pending_shift_z {
-                        pending_shift_z = false;
+                    if pending_prefix == Some(PendingPrefix::ShiftZ) {
                         match key.code {
                             crossterm::event::KeyCode::Char('Z') => {
                                 // ZZ: save session, export, and quit (same as :wq)
@@ -623,52 +616,47 @@ fn main() -> anyhow::Result<()> {
                     }
 
                     // Handle pending d command for dd delete comment
-                    if pending_d {
-                        pending_d = false;
-                        if key.code == crossterm::event::KeyCode::Char('d')
-                            && key.modifiers == crossterm::event::KeyModifiers::NONE
-                        {
-                            // In the target selector `dd` deletes the saved
-                            // review under the cursor, not a comment.
-                            if app.input_mode == InputMode::CommitSelect {
-                                handler::handle_commit_select_action(
-                                    &mut app,
-                                    Action::SessionsTabDelete,
-                                );
-                                continue;
-                            }
-                            if app.input_mode == InputMode::Summary {
-                                if !app.delete_selected_summary_comment() {
-                                    app.set_warning(
-                                        "Selected comment is no longer editable or available",
-                                    );
-                                }
-                                // Refresh IDs and clamp selection before another queued dd.
-                                break;
-                            }
-                            if app.cursor_on_locked_comment() {
-                                let forge = app.forge_display_name();
-                                app.set_message(format!(
-                                    "Comment already pushed to {forge} — read only in tuicr"
-                                ));
-                            } else if !app.delete_comment_at_cursor() {
-                                if app.cursor_on_remote_thread() {
-                                    let forge = app.forge_display_name();
-                                    app.set_message(format!(
-                                        "{forge} comment — read only in tuicr"
-                                    ));
-                                } else {
-                                    app.set_message("No comment at cursor");
-                                }
-                            }
+                    if pending_prefix == Some(PendingPrefix::D)
+                        && key.code == crossterm::event::KeyCode::Char('d')
+                        && key.modifiers == crossterm::event::KeyModifiers::NONE
+                    {
+                        // In the target selector `dd` deletes the saved
+                        // review under the cursor, not a comment.
+                        if app.input_mode == InputMode::CommitSelect {
+                            handler::handle_commit_select_action(
+                                &mut app,
+                                Action::SessionsTabDelete,
+                            );
                             continue;
                         }
-                        // Otherwise fall through to normal handling
+                        if app.input_mode == InputMode::Summary {
+                            if !app.delete_selected_summary_comment() {
+                                app.set_warning(
+                                    "Selected comment is no longer editable or available",
+                                );
+                            }
+                            // Refresh IDs and clamp selection before another queued dd.
+                            break;
+                        }
+                        if app.cursor_on_locked_comment() {
+                            let forge = app.forge_display_name();
+                            app.set_message(format!(
+                                "Comment already pushed to {forge} — read only in tuicr"
+                            ));
+                        } else if !app.delete_comment_at_cursor() {
+                            if app.cursor_on_remote_thread() {
+                                let forge = app.forge_display_name();
+                                app.set_message(format!("{forge} comment — read only in tuicr"));
+                            } else {
+                                app.set_message("No comment at cursor");
+                            }
+                        }
+                        continue;
                     }
+                    // Otherwise fall through to normal handling
 
                     // Handle pending leader command for panel focus, file list toggle, and review comments.
-                    if pending_leader {
-                        pending_leader = false;
+                    if pending_prefix == Some(PendingPrefix::Leader) {
                         match key.code {
                             crossterm::event::KeyCode::Char('e') => {
                                 app.toggle_file_list();
@@ -768,22 +756,22 @@ fn main() -> anyhow::Result<()> {
                     // Handle pending command setters (these work in any mode)
                     match action {
                         Action::PendingZCommand => {
-                            pending_z = true;
+                            app.pending_prefix = Some(PendingPrefix::Z);
                             app.pending_count = None;
                             continue;
                         }
                         Action::PendingShiftZCommand => {
-                            pending_shift_z = true;
+                            app.pending_prefix = Some(PendingPrefix::ShiftZ);
                             app.pending_count = None;
                             continue;
                         }
                         Action::PendingDCommand => {
-                            pending_d = true;
+                            app.pending_prefix = Some(PendingPrefix::D);
                             app.pending_count = None;
                             continue;
                         }
                         Action::PendingLeaderCommand => {
-                            pending_leader = true;
+                            app.pending_prefix = Some(PendingPrefix::Leader);
                             app.pending_count = None;
                             continue;
                         }
@@ -901,24 +889,13 @@ fn main() -> anyhow::Result<()> {
                 // can leave stale cells it would never rewrite.
                 Event::Resize(..) => app.request_full_redraw(),
                 Event::Paste(text) => {
-                    // Bracketed-paste payload — route to whichever handler is
-                    // currently accepting text input. Other modes ignore.
-                    // Vim comment box: feed the overlay so the buffer stays synced.
-                    if app.input_mode == InputMode::Comment && app.comment_vim_enabled {
-                        app.ensure_comment_vim_editor();
-                        app.comment_vim_feed_paste(text);
-                        continue;
+                    // Like any key but Ctrl+C, a paste disarms the
+                    // press-twice exit; `handle_paste` drops the other
+                    // half-typed sequences.
+                    if pending_ctrl_c.take().is_some() {
+                        app.message = None;
                     }
-                    let action = Action::Paste(text);
-                    match app.input_mode {
-                        InputMode::Comment => handle_comment_action(&mut app, action),
-                        InputMode::Command => handle_command_action(&mut app, action),
-                        InputMode::Search => handle_search_action(&mut app, action),
-                        InputMode::CommitSelect if app.pr_filter_editing() => {
-                            handle_commit_select_action(&mut app, action)
-                        }
-                        _ => {}
-                    }
+                    handler::handle_paste(&mut app, text);
                 }
                 _ => {}
             }
