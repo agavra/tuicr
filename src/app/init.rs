@@ -530,6 +530,7 @@ impl App {
             diff_files,
             diff_source,
             pending_editor_target: None,
+            pending_open_url: None,
             editor_override: None,
             editor_launches: Vec::new(),
             input_mode,

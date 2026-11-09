@@ -113,6 +113,43 @@ fn build_pr_app() -> App {
 }
 
 #[test]
+fn should_queue_reviewed_pr_url_once() {
+    let mut app = build_pr_app();
+    // Use the reviewed source, not metadata or a local checkout remote.
+    app.pr_info = None;
+    assert!(app.queue_open_pr_url());
+    assert_eq!(
+        app.take_pending_open_url().as_deref(),
+        Some("https://github.com/owner/repo/pull/42")
+    );
+    assert_eq!(app.take_pending_open_url(), None);
+}
+
+#[test]
+fn should_dispatch_open_url_and_warn_for_local_reviews() {
+    use crate::handler::handle_command_action;
+    use crate::input::Action;
+
+    let mut app = build_pr_app();
+    app.enter_command_mode();
+    app.command_buffer = "open-url".to_string();
+    handle_command_action(&mut app, Action::SubmitInput);
+    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.take_pending_open_url().is_some());
+
+    app.diff_source = DiffSource::Unstaged;
+    assert!(!app.queue_open_pr_url());
+    app.enter_command_mode();
+    app.command_buffer = "open-url".to_string();
+    handle_command_action(&mut app, Action::SubmitInput);
+    assert_eq!(app.take_pending_open_url(), None);
+    assert_eq!(
+        app.message.as_ref().map(|message| message.content.as_str()),
+        Some(":open-url only applies in PR mode")
+    );
+}
+
+#[test]
 fn should_not_add_pr_info_to_file_tree() {
     let app = build_pr_app();
     assert!(
