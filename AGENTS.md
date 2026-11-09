@@ -365,6 +365,8 @@ These are non-obvious things the implementation chain hit. Worth preserving for 
 
 24. **Gerrit's `/changes/{N}/comments` returns published comments only.** The caller's drafts live at `/changes/{N}/drafts`, with `author` unset. `:submit draft` marks the local copies `PushedDraft`, and the refetch that follows runs `prune_locked_comments`, so a backend that cannot read its drafts back deletes the only copy the TUI had. The Gerrit backend therefore reads `/drafts` too.
 
+25. **PR open reads every changed file's line count, so it must batch.** The end-of-file expand row needs each file's total lines, and `populate_file_line_count_cache` asks for all of them before the first frame. In PR mode it goes through `ForgeContextProvider::file_line_counts` → `ForgeBackend::file_line_counts`, never a per-file loop: GitHub reads local blobs with one `git cat-file --batch` (`vcs::git::cli::read_git_objects`), then the rest with one GraphQL `object(expression:)` query per 50 files. Blobs GraphQL truncates or won't return as text, and every blob of a failed query, fall back to a REST call each. `read_git_objects` feeds `cat-file` stdin from a thread: a PR can list more specs than a pipe buffer holds, and writing them all before reading would deadlock. Other backends use the trait's one-file-at-a-time default.
+
 ### Keeping Docs Updated
 
 When adding user-facing features, update the relevant documentation:
