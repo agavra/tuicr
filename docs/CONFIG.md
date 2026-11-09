@@ -237,6 +237,16 @@ Invalid `--theme` values cause an immediate non-zero exit. The same is true when
 local theme file exists but is invalid. Invalid config-selected local themes emit startup warnings
 and fall back through normal precedence.
 
+## Syntaxes
+
+Diffs are highlighted with the grammars bundled from [bat](https://github.com/sharkdp/bat). For a
+language they lack, drop its Sublime Text grammar (`*.sublime-syntax`) into the sibling
+`syntaxes/` directory (`~/.config/tuicr/syntaxes/` on Linux / macOS, `%APPDATA%\tuicr\syntaxes\`
+on Windows). It applies to the file extensions the grammar's `file_extensions` lists.
+
+Grammars that `extends:` another (a Sublime Text 4 feature) are not supported. A file that fails to
+parse is skipped with a startup warning. Loading any grammar here adds about 200ms to startup.
+
 ## Comment types
 
 Comment categories control:

@@ -330,6 +330,10 @@ pub fn themes_dir() -> Result<PathBuf> {
     Ok(config_dir()?.join("themes"))
 }
 
+pub fn syntaxes_dir() -> Result<PathBuf> {
+    Ok(config_dir()?.join("syntaxes"))
+}
+
 fn config_path_env_parts() -> (Option<PathBuf>, Option<PathBuf>, Option<PathBuf>) {
     (
         std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from),
