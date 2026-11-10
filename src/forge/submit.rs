@@ -186,6 +186,9 @@ pub enum UnmappableReason {
     /// for line comments authored through tuicr today, but we keep the
     /// variant so the resolver can surface a clear message if it ever does.
     LineNotInDiff,
+    /// The comment is on a commit message, which is not a file of the PR
+    /// diff. tuicr posts no inline comments there.
+    CommitMessage,
 }
 
 impl UnmappableReason {
@@ -196,6 +199,7 @@ impl UnmappableReason {
             UnmappableReason::BinaryFile => "binary file",
             UnmappableReason::TooLargeFile => "file too large",
             UnmappableReason::LineNotInDiff => "line not in current diff",
+            UnmappableReason::CommitMessage => "commit message comments are not posted inline",
         }
     }
 }

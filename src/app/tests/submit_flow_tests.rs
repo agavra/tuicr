@@ -145,6 +145,39 @@ fn add_line_comment(app: &mut App, path: &str, line: u32, comment: Comment) {
     review.line_comments.entry(line).or_default().push(comment);
 }
 
+fn register_commit_message_file(app: &mut App, short_id: &str) -> DiffFile {
+    let file = DiffFile {
+        old_path: None,
+        new_path: Some(DiffFile::commit_message_path(short_id)),
+        status: FileStatus::Added,
+        hunks: vec![DiffHunk {
+            header: String::new(),
+            old_start: 0,
+            old_count: 0,
+            new_start: 1,
+            new_count: 3,
+            lines: ["Subject", "", "Body"]
+                .into_iter()
+                .enumerate()
+                .map(|(index, content)| DiffLine {
+                    origin: LineOrigin::Context,
+                    content: content.to_string(),
+                    old_lineno: None,
+                    new_lineno: Some(index as u32 + 1),
+                    raw_content: None,
+                    highlighted_spans: None,
+                })
+                .collect(),
+        }],
+        is_binary: false,
+        is_too_large: false,
+        is_commit_message: true,
+        content_hash: 0,
+    };
+    app.session.add_diff_file(&file);
+    file
+}
+
 fn deliver_matching_pr_threads_event(
     app: &mut App,
     threads: std::result::Result<Vec<crate::forge::remote_comments::RemoteReviewThread>, String>,
@@ -347,6 +380,187 @@ fn should_open_resolver_when_any_comment_is_unmappable() {
     assert_eq!(state.resolver_choices.len(), 1);
     // Default action is MoveToSummary per spec
     assert_eq!(state.resolver_choices[0], ResolverAction::MoveToSummary);
+}
+
+#[test]
+fn should_resolve_commit_message_comments_missing_from_cumulative_pr_diff() {
+    // given a single-commit view of a multi-commit PR
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    app.pr_commits = vec![pr_commit("abcdef0123"), pr_commit("deadbeef02")];
+    app.review_commits = app
+        .pr_commits
+        .iter()
+        .map(pr_commit_to_commit_info)
+        .collect();
+    app.commit_selection_range = Some((1, 1));
+    app.range_diff_files = Some(app.diff_files.clone());
+    let file = register_commit_message_file(&mut app, "deadbee");
+    let path = file.display_path().to_path_buf();
+    app.diff_files.insert(0, file);
+    let inline_comment = line_comment(LineSide::New, Some(11), None);
+    let inline_id = inline_comment.id.clone();
+    add_line_comment(&mut app, "src/lib.rs", 11, inline_comment);
+    let mut comment = line_comment(LineSide::New, Some(1), None);
+    comment.commit_id = Some("deadbeef02".to_string());
+    add_line_comment(&mut app, path.to_str().unwrap(), 1, comment);
+
+    // when
+    app.start_submit(SubmitEvent::Comment);
+
+    // then — the real inline anchor is unchanged; the message is not dropped
+    assert_eq!(app.input_mode, InputMode::SubmitResolver);
+    let state = app.submit_state.as_ref().expect("submit state");
+    assert_eq!(state.mappable.len(), 1);
+    assert_eq!(state.mappable[0].comment_id, inline_id);
+    assert_eq!(state.unmappable.len(), 1);
+    assert_eq!(state.unmappable[0].file, path);
+    assert_eq!(state.unmappable[0].reason, UnmappableReason::CommitMessage);
+}
+
+#[test]
+fn should_not_map_single_commit_pr_message_comments_inline() {
+    // given a single-commit PR whose displayed diff contains the message
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    app.pr_commits = vec![pr_commit("abcdef0123")];
+    let file = register_commit_message_file(&mut app, "abcdef0");
+    let path = file.display_path().to_path_buf();
+    app.diff_files.insert(0, file);
+    add_line_comment(
+        &mut app,
+        path.to_str().unwrap(),
+        1,
+        line_comment(LineSide::New, Some(1), None),
+    );
+
+    // when
+    app.start_submit(SubmitEvent::Comment);
+
+    // then — the synthetic line never becomes a forge inline anchor
+    assert!(app.range_diff_files.is_none());
+    let state = app.submit_state.as_ref().expect("submit state");
+    assert!(state.mappable.is_empty());
+    assert_eq!(state.unmappable.len(), 1);
+    assert_eq!(state.unmappable[0].file, path);
+    assert_eq!(state.unmappable[0].reason, UnmappableReason::CommitMessage);
+}
+
+#[test]
+fn should_allow_commit_message_comment_as_the_only_local_draft() {
+    // given a saved message comment while the PR's cumulative diff is visible
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    app.pr_commits = vec![pr_commit("abcdef0123"), pr_commit("deadbeef02")];
+    let file = register_commit_message_file(&mut app, "deadbee");
+    add_line_comment(
+        &mut app,
+        file.display_path().to_str().unwrap(),
+        1,
+        line_comment(LineSide::New, Some(1), None),
+    );
+
+    // when
+    app.start_submit(SubmitEvent::Comment);
+
+    // then — it counts as a draft even though no real diff file has it
+    assert!(app.submit_state.is_some());
+    assert_eq!(app.input_mode, InputMode::SubmitResolver);
+    assert!(
+        app.message
+            .as_ref()
+            .is_none_or(|message| !message.content.contains("Nothing to submit"))
+    );
+}
+
+#[test]
+fn should_order_commit_message_comments_oldest_first_then_by_anchor() {
+    // given message comments saved out of line order on two PR commits
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    app.pr_commits = vec![pr_commit("abcdef0123"), pr_commit("deadbeef02")];
+    for short_id in ["abcdef0", "deadbee"] {
+        let file = register_commit_message_file(&mut app, short_id);
+        let path = file.display_path();
+        app.session
+            .get_file_mut(path)
+            .unwrap()
+            .file_comments
+            .push(Comment::new(
+                "file".to_string(),
+                CommentType::from_id("note"),
+                None,
+            ));
+        for line in [3, 1] {
+            add_line_comment(
+                &mut app,
+                path.to_str().unwrap(),
+                line,
+                Comment::new(
+                    format!("line {line}"),
+                    CommentType::from_id("note"),
+                    Some(LineSide::New),
+                ),
+            );
+        }
+    }
+
+    // when
+    app.start_submit(SubmitEvent::Comment);
+
+    // then
+    let state = app.submit_state.as_ref().expect("submit state");
+    let comments: Vec<_> = state
+        .unmappable
+        .iter()
+        .map(|item| (item.file.to_str().unwrap(), item.comment.content.as_str()))
+        .collect();
+    assert_eq!(
+        comments,
+        vec![
+            ("Commit Message (deadbee)", "file"),
+            ("Commit Message (deadbee)", "line 1"),
+            ("Commit Message (deadbee)", "line 3"),
+            ("Commit Message (abcdef0)", "file"),
+            ("Commit Message (abcdef0)", "line 1"),
+            ("Commit Message (abcdef0)", "line 3"),
+        ]
+    );
+}
+
+#[test]
+fn should_skip_locked_and_hidden_commit_message_comments() {
+    // given only the older commit selected, plus a locked and a hidden draft
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    app.pr_commits = vec![pr_commit("abcdef0123"), pr_commit("deadbeef02")];
+    app.review_commits = app
+        .pr_commits
+        .iter()
+        .map(pr_commit_to_commit_info)
+        .collect();
+    app.commit_selection_range = Some((1, 1));
+    let hidden_file = register_commit_message_file(&mut app, "abcdef0");
+    let mut hidden = line_comment(LineSide::New, Some(1), None);
+    hidden.commit_id = Some("abcdef0123".to_string());
+    add_line_comment(
+        &mut app,
+        hidden_file.display_path().to_str().unwrap(),
+        1,
+        hidden,
+    );
+    let file = register_commit_message_file(&mut app, "deadbee");
+    let path = file.display_path();
+    let mut locked = line_comment(LineSide::New, Some(1), None);
+    locked.lifecycle_state = CommentLifecycleState::Submitted;
+    add_line_comment(&mut app, path.to_str().unwrap(), 1, locked);
+    let visible = line_comment(LineSide::New, Some(3), None);
+    let visible_id = visible.id.clone();
+    add_line_comment(&mut app, path.to_str().unwrap(), 3, visible);
+
+    // when
+    app.start_submit(SubmitEvent::Comment);
+
+    // then — message comments use the same draft/visibility filter as files
+    let state = app.submit_state.as_ref().expect("submit state");
+    assert!(state.mappable.is_empty());
+    assert_eq!(state.unmappable.len(), 1);
+    assert_eq!(state.unmappable[0].comment.id, visible_id);
 }
 
 #[test]
