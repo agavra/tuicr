@@ -255,6 +255,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  [count]Ctrl-w >/< ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Grow/shrink active pane by columns (default 1)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 format!("  {leader}e        "),
                 Style::default().add_modifier(Modifier::BOLD),
             ),

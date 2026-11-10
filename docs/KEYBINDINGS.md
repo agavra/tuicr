@@ -131,10 +131,23 @@ considers files that pass the active filters.
 | `<leader>l` | Move focus one panel right (side-by-side: file list → diff → old side → new side) |
 | `<leader>k` | Move focus up (comments to files, or diff/files to commit selector when visible) |
 | `<leader>j` | Move focus down (files to comments when visible, otherwise diff) |
+| `[count]Ctrl-w >` / `[count]Ctrl-w <` | Grow / shrink the active pane by `count` terminal columns (default: one) |
 | `<leader>e` | Toggle file list visibility |
 | `<leader>s` | Toggle commit selector visibility (also `:set commits!`) |
 | `<leader>n` | Toggle relative line numbers (also `:set relativenumber!`) |
 | `Enter` | Select file (when file list is focused) |
+
+In Normal mode, `5 Ctrl-w >` grows the active pane by five columns. The file
+list and comment navigator share the sidebar width; growing the diff shrinks
+that sidebar. Both panes keep at least one content column plus their borders
+when the terminal has room. Resizing does nothing while the full-width commit
+selector is focused or the sidebar is hidden. `Esc` or an unsupported second
+key cancels the chord. Text inputs keep their existing `Ctrl-w` editing binding.
+
+Set `file_list_width` in `config.toml` for a startup width in columns. Without
+it, the sidebar starts at 20% of the terminal width. Keyboard resizing lasts
+for the current run and does not rewrite config. Side-by-side diff columns
+continue to share the diff pane equally.
 
 ## Comment navigator
 
