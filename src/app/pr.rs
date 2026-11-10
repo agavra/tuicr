@@ -77,6 +77,7 @@ impl App {
         let preserve_hunks =
             Self::is_strict_commit_selection(self.commit_selection_range, self.pr_commits.len());
         Self::register_diff_files(&mut self.session, &self.diff_files, preserve_hunks);
+        self.insert_commit_message_if_single();
 
         self.sort_files_by_directory(true);
         self.expand_all_dirs();
@@ -280,6 +281,7 @@ impl App {
         for file in &self.diff_files {
             self.session.add_diff_file(file);
         }
+        self.insert_commit_message_if_single();
         self.sort_files_by_directory(true);
         self.expand_all_dirs();
         self.rebuild_annotations();
@@ -437,6 +439,7 @@ impl App {
         // Range diffs can hide hunks that are still reviewed in the broader
         // PR session, so registration must not prune them.
         Self::register_diff_files(&mut self.session, &self.diff_files, true);
+        self.insert_commit_message_if_single();
         self.sort_files_by_directory(true);
         self.expand_all_dirs();
         self.rebuild_annotations();
@@ -608,6 +611,7 @@ impl App {
             for file in &self.diff_files {
                 self.session.add_diff_file(file);
             }
+            self.insert_commit_message_if_single();
             self.sort_files_by_directory(true);
             self.expand_all_dirs();
             self.rebuild_annotations();
@@ -709,6 +713,7 @@ impl App {
             for file in &self.diff_files {
                 self.session.add_diff_file(file);
             }
+            self.insert_commit_message_if_single();
             self.sort_files_by_directory(true);
             self.expand_all_dirs();
             self.rebuild_annotations();

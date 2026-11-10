@@ -360,6 +360,7 @@ struct FakeForgeBackend {
     commits: Vec<crate::forge::traits::PullRequestCommit>,
     review_metadata: PullRequestReviewMetadata,
     range_patch: Option<String>,
+    line_count_requests: std::sync::Arc<std::sync::Mutex<Vec<PathBuf>>>,
 }
 
 impl FakeForgeBackend {
@@ -370,6 +371,7 @@ impl FakeForgeBackend {
             commits: Vec::new(),
             review_metadata: PullRequestReviewMetadata::default(),
             range_patch: None,
+            line_count_requests: Default::default(),
         }
     }
 }
@@ -398,6 +400,10 @@ impl crate::forge::traits::ForgeBackend for FakeForgeBackend {
         _request: crate::forge::traits::ForgeFileLinesRequest,
     ) -> Result<Vec<crate::model::DiffLine>> {
         Ok(Vec::new())
+    }
+    fn file_line_count(&self, request: crate::forge::traits::ForgeFileLinesRequest) -> Result<u32> {
+        self.line_count_requests.lock().unwrap().push(request.path);
+        Ok(0)
     }
     fn list_review_threads(
         &self,
@@ -636,6 +642,16 @@ fn sample_pr_commit(oid: &str, summary: &str) -> crate::forge::traits::PullReque
     }
 }
 
+fn sample_pr_commit_with_body(
+    oid: &str,
+    summary: &str,
+    body: &str,
+) -> crate::forge::traits::PullRequestCommit {
+    let mut commit = sample_pr_commit(oid, summary);
+    commit.body = Some(body.to_string());
+    commit
+}
+
 fn review_record(author: &str, oid: &str, submitted_at: &str) -> PullRequestReviewRecord {
     PullRequestReviewRecord {
         author: Some(author.to_string()),
@@ -837,30 +853,255 @@ fn should_populate_inline_selector_when_pr_has_multiple_commits() {
     assert_eq!(app.review_commits.len(), 3);
     // and — default selection covers all commits.
     assert_eq!(app.commit_selection_range, Some((0, 2)));
+    assert!(!app.diff_files.iter().any(|file| file.is_commit_message));
 }
 
 #[test]
-fn should_hide_inline_selector_for_single_commit_pr() {
-    // given a PR with exactly one commit
+fn should_show_single_pr_commit_message_on_open_and_same_head_reload() {
+    // given a PR with exactly one commit and a multiline message
+    let _reviews = TestReviewsDir::new();
     let mut app = build_app();
-    app.forge_repository = Some(ForgeRepository::github("github.com", "agavra", "tuicr"));
-    app.pr_tab = PullRequestsTab::new(app.forge_repository.clone());
-    app.pr_tab.start_initial_load();
-    let summary = sample_pr(42, "solo");
-    app.pr_tab
-        .apply_initial_load(Ok((vec![summary.clone()], false)));
-    let mut backend = FakeForgeBackend::open_pr_details(
-        test_pr_details(42, "solo"),
-        crate::forge::github::gh::tests_fixture::SIMPLE_PATCH.to_string(),
+    let details = test_pr_details(424310, "solo");
+    let patch = crate::forge::github::gh::tests_fixture::SIMPLE_PATCH;
+    let commit = sample_pr_commit_with_body(
+        &details.head_sha,
+        "only",
+        "first body line\nsecond body line",
     );
-    backend.commits = vec![sample_pr_commit("aaaaaaa1111", "only")];
-    // when
-    app.open_pr_with_backend(&summary, Box::new(backend), None)
-        .unwrap();
-    // then
+    let opened = crate::forge::pr_open::prepare_open_pr(
+        details.clone(),
+        structured_patch(patch),
+        vec![commit.clone()],
+        PullRequestReviewMetadata::default(),
+        crate::forge::traits::PullRequestInfo::from_details(details.clone()),
+        None,
+        &SyntaxHighlighter::default(),
+    )
+    .unwrap();
+
+    // when PR mode is entered without an inline selector
+    app.enter_pr_diff_mode(
+        Box::new(FakeForgeBackend::open_pr_details(
+            details.clone(),
+            patch.to_string(),
+        )),
+        opened,
+    )
+    .unwrap();
+
+    // then the single commit's message is already at the top
     assert!(!app.show_commit_selector);
+    assert!(!app.has_inline_commit_selector());
+    assert!(!app.has_review_commits());
     assert!(app.commit_list.is_empty());
     assert_eq!(app.commit_selection_range, None);
+    assert_eq!(app.pr_range_sha_pair(), None);
+    let message_path = PathBuf::from(format!("Commit Message ({})", commit.short_oid));
+    assert!(app.diff_files[0].is_commit_message);
+    assert_eq!(app.diff_files[0].display_path(), &message_path);
+    assert_eq!(
+        app.diff_files
+            .iter()
+            .filter(|file| file.is_commit_message)
+            .count(),
+        1
+    );
+    assert_eq!(
+        app.diff_files[0].hunks[0]
+            .lines
+            .iter()
+            .map(|line| line.content.as_str())
+            .collect::<Vec<_>>(),
+        vec!["only", "", "first body line", "second body line"]
+    );
+    app.session
+        .get_file_mut(&message_path)
+        .unwrap()
+        .add_line_comment(
+            3,
+            Comment::new(
+                "message draft".to_string(),
+                CommentType::from_id("note"),
+                None,
+            ),
+        );
+    app.session.get_file_mut(&message_path).unwrap().reviewed = true;
+    let request = PrReloadRequest {
+        repository: details.repository.clone(),
+        pr_number: details.number,
+        head_sha: details.head_sha.clone(),
+        started_at: Instant::now(),
+        anchor: None,
+        restore_overview_cursor: None,
+    };
+
+    // when the same head is refreshed
+    app.finish_pr_reload(
+        details.clone(),
+        structured_patch(patch),
+        vec![commit],
+        PullRequestReviewMetadata::default(),
+        crate::forge::traits::PullRequestInfo::from_details(details),
+        &request,
+    )
+    .unwrap();
+
+    // then the message, its draft and its reviewed mark survive
+    assert!(app.diff_files[0].is_commit_message);
+    assert_eq!(app.diff_files[0].display_path(), &message_path);
+    assert_eq!(
+        app.diff_files
+            .iter()
+            .filter(|file| file.is_commit_message)
+            .count(),
+        1
+    );
+    assert_eq!(
+        app.diff_files[0].hunks[0]
+            .lines
+            .iter()
+            .map(|line| line.content.as_str())
+            .collect::<Vec<_>>(),
+        vec!["only", "", "first body line", "second body line"]
+    );
+    assert!(app.session.is_file_reviewed(&message_path));
+    assert_eq!(
+        app.session.files[&message_path].line_comments[&3][0].content,
+        "message draft"
+    );
+    assert_eq!(app.commit_selection_range, None);
+    assert!(!app.has_inline_commit_selector());
+}
+
+#[test]
+fn should_show_selected_pr_commit_message_and_remove_it_when_widening() {
+    // given a multi-commit PR showing its cumulative diff
+    let _reviews = TestReviewsDir::new();
+    let mut app = build_app();
+    let details = test_pr_details(424311, "message range");
+    let selected = sample_pr_commit_with_body(
+        "middle22222",
+        "middle subject",
+        "first body line\nsecond body line",
+    );
+    let mut backend =
+        FakeForgeBackend::open_pr_details(details.clone(), two_hunk_patch().to_string());
+    backend.commits = vec![
+        sample_pr_commit("first111111", "first"),
+        selected.clone(),
+        sample_pr_commit("last3333333", "last"),
+    ];
+    app.open_pr_with_backend(
+        &sample_pr(details.number, &details.title),
+        Box::new(backend),
+        None,
+    )
+    .unwrap();
+    let cumulative_file = app.diff_files[0].clone();
+    assert!(!app.diff_files.iter().any(|file| file.is_commit_message));
+    app.commit_selection_range = Some((1, 1));
+    let request = PrRangeReloadRequest {
+        repository: details.repository.clone(),
+        pr_number: details.number,
+        head_sha: details.head_sha.clone(),
+        start_sha: "first111111".to_string(),
+        end_sha: selected.oid.clone(),
+        range: (1, 1),
+        started_at: Instant::now(),
+        anchor: None,
+    };
+
+    // when the range diff for only the middle commit lands
+    app.finish_pr_range_reload(&request, structured_patch(first_hunk_patch()))
+        .unwrap();
+
+    // then the selected message is first and can receive a comment
+    let message_path = PathBuf::from(format!("Commit Message ({})", selected.short_oid));
+    assert!(app.diff_files[0].is_commit_message);
+    assert_eq!(app.diff_files[0].display_path(), &message_path);
+    assert_eq!(
+        app.diff_files
+            .iter()
+            .filter(|file| file.is_commit_message)
+            .count(),
+        1
+    );
+    assert_eq!(
+        app.diff_files[0].hunks[0]
+            .lines
+            .iter()
+            .map(|line| line.content.as_str())
+            .collect::<Vec<_>>(),
+        vec!["middle subject", "", "first body line", "second body line"]
+    );
+    app.session
+        .get_file_mut(&message_path)
+        .unwrap()
+        .add_line_comment(
+            3,
+            Comment::new(
+                "message comment".to_string(),
+                CommentType::from_id("note"),
+                None,
+            ),
+        );
+    assert_eq!(
+        app.session.files[&message_path].line_comments[&3][0].content,
+        "message comment"
+    );
+
+    // when the selection is widened to all commits
+    app.commit_selection_range = Some((0, 2));
+    app.reload_pr_inline_selection();
+
+    // then the cached cumulative diff replaces the message and range diff
+    assert!(!app.diff_files.iter().any(|file| file.is_commit_message));
+    assert_eq!(
+        app.diff_files[0].display_path(),
+        cumulative_file.display_path()
+    );
+    assert_eq!(app.diff_files[0].content_hash, cumulative_file.content_hash);
+    assert_eq!(app.diff_files[0].hunks.len(), cumulative_file.hunks.len());
+    assert!(app.pr_range_reload_state.is_none());
+    assert_eq!(
+        app.session.files[&message_path].line_comments[&3][0].content,
+        "message comment"
+    );
+}
+
+#[test]
+fn should_not_ask_the_forge_for_a_commit_message_line_count() {
+    // given a single-commit PR, whose diff opens with the commit's message
+    let _reviews = TestReviewsDir::new();
+    let mut app = build_app();
+    let details = test_pr_details(424314, "line counts");
+    let patch = crate::forge::github::gh::tests_fixture::SIMPLE_PATCH;
+    let backend = FakeForgeBackend::open_pr_details(details.clone(), patch.to_string());
+    let requests = backend.line_count_requests.clone();
+    let opened = crate::forge::pr_open::prepare_open_pr(
+        details.clone(),
+        structured_patch(patch),
+        vec![sample_pr_commit_with_body(
+            &details.head_sha,
+            "only",
+            "body",
+        )],
+        PullRequestReviewMetadata::default(),
+        crate::forge::traits::PullRequestInfo::from_details(details),
+        None,
+        &SyntaxHighlighter::default(),
+    )
+    .unwrap();
+
+    // when the diff is laid out
+    app.enter_pr_diff_mode(Box::new(backend), opened).unwrap();
+
+    // then line counts are looked up for the real files only
+    let message_path = app.diff_files[0].display_path().clone();
+    assert!(app.diff_files[0].is_commit_message);
+    let requests = requests.lock().unwrap();
+    assert!(!requests.is_empty());
+    assert!(!requests.contains(&message_path));
 }
 
 #[test]
