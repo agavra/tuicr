@@ -83,6 +83,10 @@ impl App {
             self.populate_file_line_count_cache();
         }
 
+        #[cfg(test)]
+        {
+            self.rows_built += 1;
+        }
         self.line_annotations.clear();
         self.colored_hunks.clear();
 

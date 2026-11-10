@@ -241,7 +241,7 @@ impl App {
                 }
                 all_commits.extend(review_commits);
 
-                let mut app = Self::build(
+                let mut app = Self::build_without_rows(
                     vcs,
                     vcs_info,
                     theme,
@@ -257,7 +257,6 @@ impl App {
                 )?
                 .with_vcs_open_options(options.vcs_open_options());
 
-                app.range_diff_files = Some(app.diff_files.clone());
                 app.commit_list = all_commits.clone();
                 let range = Self::initial_commit_range(options.commit_selection, all_commits.len());
                 app.commit_selection_range = range;
@@ -276,10 +275,7 @@ impl App {
                 ) {
                     app.reload_inline_selection()?;
                 } else {
-                    app.insert_commit_message_if_single();
-                    app.sort_files_by_directory(true);
-                    app.expand_all_dirs();
-                    app.rebuild_annotations();
+                    app.finish_range_load();
                 }
 
                 return Ok(app);
@@ -303,7 +299,7 @@ impl App {
             // Reverse to newest-first display order
             let review_commits: Vec<CommitInfo> = review_commits.into_iter().rev().collect();
 
-            let mut app = Self::build(
+            let mut app = Self::build_without_rows(
                 vcs,
                 vcs_info,
                 theme,
@@ -321,7 +317,6 @@ impl App {
 
             // Set up inline commit selector for multi-commit reviews
             if review_commits.len() > 1 {
-                app.range_diff_files = Some(app.diff_files.clone());
                 app.commit_list = review_commits.clone();
                 let range =
                     Self::initial_commit_range(options.commit_selection, review_commits.len());
@@ -343,10 +338,7 @@ impl App {
             ) {
                 app.reload_inline_selection()?;
             } else {
-                app.insert_commit_message_if_single();
-                app.sort_files_by_directory(true);
-                app.expand_all_dirs();
-                app.rebuild_annotations();
+                app.finish_range_load();
             }
 
             Ok(app)
@@ -468,6 +460,41 @@ impl App {
     /// filesystem/VCS requirements.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn build(
+        vcs: Box<dyn VcsBackend>,
+        vcs_info: VcsInfo,
+        theme: Theme,
+        comment_type_configs: Option<Vec<CommentTypeConfig>>,
+        output_to_stdout: bool,
+        diff_files: Vec<DiffFile>,
+        session: ReviewSession,
+        diff_source: DiffSource,
+        input_mode: InputMode,
+        commit_list: Vec<CommitInfo>,
+        path_filter: Option<&str>,
+        repo_url_override: Option<ForgeRepository>,
+    ) -> Result<Self> {
+        let mut app = Self::build_without_rows(
+            vcs,
+            vcs_info,
+            theme,
+            comment_type_configs,
+            output_to_stdout,
+            diff_files,
+            session,
+            diff_source,
+            input_mode,
+            commit_list,
+            path_filter,
+            repo_url_override,
+        )?;
+        app.rebuild_annotations();
+        Ok(app)
+    }
+
+    /// Build the app without display rows. Call this when the caller builds the rows
+    /// afterwards.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn build_without_rows(
         vcs: Box<dyn VcsBackend>,
         vcs_info: VcsInfo,
         theme: Theme,
@@ -666,6 +693,8 @@ impl App {
             initial_comments_visibility: None,
             commit_diff_cache: HashMap::new(),
             range_diff_files: None,
+            #[cfg(test)]
+            rows_built: 0,
             saved_inline_selection: None,
             path_filter: path_filter.map(|s| s.to_string()),
             export: ExportConfig::default(),
@@ -678,7 +707,6 @@ impl App {
         app.sort_files_by_directory(true);
         app.expand_all_dirs();
         app.populate_file_line_count_cache();
-        app.rebuild_annotations();
         app.detect_forge_repository();
         Ok(app)
     }

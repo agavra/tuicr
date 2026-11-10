@@ -1,3 +1,4 @@
+mod attrs;
 mod cli;
 pub mod context;
 pub mod diff;
@@ -17,8 +18,8 @@ use crate::process::{CommandOutputError, CommandOutputErrorKind, run_command_out
 use crate::syntax::SyntaxHighlighter;
 
 use super::traits::{
-    ChangeKind, CommitInfo, DiffWhitespaceMode, ResolvedRevisionRange, VcsBackend, VcsChangeStatus,
-    VcsInfo,
+    ChangeKind, CommitInfo, DiffWhitespaceMode, OldAndNewContents, ResolvedRevisionRange,
+    VcsBackend, VcsChangeStatus, VcsInfo,
 };
 use cli::GitCliBackend;
 pub use libgit2::Libgit2Backend;
@@ -168,7 +169,37 @@ impl GitBackend {
         preference: GitBackendPreference,
         whitespace_mode: DiffWhitespaceMode,
     ) -> Result<Self> {
-        // libgit2 doesn't support reftable, split index, or SHA-256 repositories.
+        let env_changes_config = env_changes_git_config(std::env::vars_os().map(|(name, _)| name));
+        Self::discover_with(cwd, preference, whitespace_mode, env_changes_config)
+    }
+
+    /// Run `discover_from` with the environment check as a parameter, so tests can set
+    /// either result without changing process-wide variables.
+    fn discover_with(
+        cwd: &Path,
+        preference: GitBackendPreference,
+        whitespace_mode: DiffWhitespaceMode,
+        env_changes_config: bool,
+    ) -> Result<Self> {
+        // Read settings from libgit2's config, because launching `git` four times
+        // costs about 69 ms on every start.
+        if preference == GitBackendPreference::Libgit2
+            && !env_changes_config
+            && let Ok(backend) = Libgit2Backend::discover_from(cwd, whitespace_mode.clone())
+            && let Ok(config) = backend.config()
+        {
+            if !config_requires_cli(&config) {
+                return Ok(Self::Libgit2(backend));
+            }
+            return Ok(Self::Cli(GitCliBackend::discover_from(
+                cwd,
+                whitespace_mode,
+            )?));
+        }
+
+        // Call `git` here, because libgit2 could not open the repository or read its
+        // config, or the environment changes config that libgit2 ignores.
+        // SHA-256 and reftable repositories fail to open in libgit2.
         // TODO: remove reftable fallback logic when libgit2 supports it as part of https://github.com/libgit2/libgit2/issues/5352
         // TODO: remove split index fallback logic when libgit2 supports it as part of https://github.com/libgit2/libgit2/issues/6132
         let use_cli = preference == GitBackendPreference::Cli
@@ -196,12 +227,19 @@ impl GitBackend {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    static GIT_LAUNCHES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Read a named remote's fetch URL, including Git's `insteadOf` rewrites.
 pub(super) fn remote_url(repo_root: &Path, name: &str) -> Result<String> {
     run_git_command(repo_root, &["remote", "get-url", "--", name])
 }
 
 fn run_git_command(workdir: &Path, args: &[&str]) -> Result<String> {
+    #[cfg(test)]
+    GIT_LAUNCHES.with(|count| count.set(count.get() + 1));
     // `-c commit.gpgsign=false` is a no-op for the read-only `config`/`init`
     // calls this makes in production, but it keeps the test-only `commit`
     // calls below from prompting contributors with commit signing enabled
@@ -230,6 +268,29 @@ pub(super) fn git_command_error(error: CommandOutputError) -> TuicrError {
             TuicrError::VcsCommand(format!("Failed to run git: {}", error.stderr))
         }
     }
+}
+
+/// Return whether the config selects a layout that needs the Git CLI backend:
+/// reftable, SHA-256, split index or sparse checkout. This function repeats
+/// `uses_reftable`, `uses_sha256`, `uses_split_index` and `GitRepoMode::detect`
+/// without launching `git`, so change them together.
+fn config_requires_cli(config: &git2::Config) -> bool {
+    let value = |key: &str| config.get_string(key).unwrap_or_default();
+    value("extensions.refStorage").eq_ignore_ascii_case("reftable")
+        || value("extensions.objectFormat").eq_ignore_ascii_case("sha256")
+        || git_bool_config_enabled(&value("core.splitIndex"))
+        || git_bool_config_enabled(&value("core.sparseCheckout"))
+        || git_bool_config_enabled(&value("index.sparse"))
+}
+
+/// Return whether the environment changes where `git` reads config (`GIT_CONFIG*`)
+/// or finds the repository (`GIT_DIR`, `GIT_COMMON_DIR`). libgit2 ignores these
+/// variables, so tuicr must call `git` when one is set.
+fn env_changes_git_config(mut names: impl Iterator<Item = std::ffi::OsString>) -> bool {
+    names.any(|name| {
+        let name = name.to_string_lossy();
+        name.starts_with("GIT_CONFIG") || name == "GIT_DIR" || name == "GIT_COMMON_DIR"
+    })
 }
 
 fn git_bool_config_enabled(value: &str) -> bool {
@@ -382,6 +443,13 @@ impl VcsBackend for GitBackend {
         match self {
             Self::Libgit2(backend) => backend.get_commit_range_diff(revision_range, highlighter),
             Self::Cli(backend) => backend.get_commit_range_diff(revision_range, highlighter),
+        }
+    }
+
+    fn uncolored_file_contents(&self, file: &DiffFile) -> Option<OldAndNewContents> {
+        match self {
+            Self::Libgit2(backend) => backend.uncolored_file_contents(file),
+            Self::Cli(backend) => backend.uncolored_file_contents(file),
         }
     }
 
@@ -576,6 +644,111 @@ mod tests {
             GitBackend::Libgit2(backend) => assert!(!backend.supports_sparse_checkout()),
             GitBackend::Cli(_) => panic!("standard repo should use libgit2 by default"),
         }
+    }
+
+    fn reset_git_launches() {
+        GIT_LAUNCHES.with(|count| count.set(0));
+    }
+
+    fn git_launches() -> usize {
+        GIT_LAUNCHES.with(|count| count.get())
+    }
+
+    /// Startup must not launch `git` for an ordinary repository, because each
+    /// launch costs about 17 ms.
+    #[test]
+    fn should_not_launch_git_when_detecting_an_ordinary_repository() {
+        let temp_dir = tempdir().expect("failed to create temp dir");
+        setup_standard_repo(temp_dir.path());
+        reset_git_launches();
+
+        let backend = GitBackend::discover_with(
+            temp_dir.path(),
+            GitBackendPreference::Libgit2,
+            DiffWhitespaceMode::Normal,
+            false,
+        )
+        .expect("failed to discover backend");
+
+        assert!(matches!(backend, GitBackend::Libgit2(_)));
+        assert_eq!(git_launches(), 0);
+    }
+
+    /// libgit2 ignores config from environment variables, so tuicr must call `git`.
+    #[test]
+    fn should_ask_git_when_the_environment_changes_config() {
+        let temp_dir = tempdir().expect("failed to create temp dir");
+        setup_standard_repo(temp_dir.path());
+        reset_git_launches();
+
+        GitBackend::discover_with(
+            temp_dir.path(),
+            GitBackendPreference::Libgit2,
+            DiffWhitespaceMode::Normal,
+            true,
+        )
+        .expect("failed to discover backend");
+
+        assert!(git_launches() > 0);
+    }
+
+    #[test]
+    fn should_detect_environment_variables_that_change_git_config() {
+        for name in [
+            "GIT_CONFIG_COUNT",
+            "GIT_CONFIG_PARAMETERS",
+            "GIT_CONFIG_GLOBAL",
+            "GIT_DIR",
+        ] {
+            assert!(
+                env_changes_git_config(std::iter::once(name.into())),
+                "{name}"
+            );
+        }
+        assert!(!env_changes_git_config(std::iter::once(
+            "GIT_AUTHOR_NAME".into()
+        )));
+    }
+
+    /// A linked worktree keeps these settings in `config.worktree`, which the main
+    /// repository config does not contain.
+    #[test]
+    fn should_choose_cli_backend_for_sparse_checkout_in_worktree_config() {
+        let temp_dir = tempdir().expect("failed to create temp dir");
+        let main = temp_dir.path().join("main");
+        std::fs::create_dir(&main).expect("failed to create main");
+        setup_standard_repo(&main);
+        run_git_command(&main, &["commit", "--allow-empty", "-m", "root"])
+            .expect("failed to commit");
+        let linked = temp_dir.path().join("linked");
+        run_git_command(
+            &main,
+            &[
+                "worktree",
+                "add",
+                linked.to_str().expect("utf-8 path"),
+                "-b",
+                "linked",
+            ],
+        )
+        .expect("failed to add worktree");
+        run_git_command(&main, &["config", "extensions.worktreeConfig", "true"])
+            .expect("failed to enable worktree config");
+        run_git_command(
+            &linked,
+            &["config", "--worktree", "core.sparseCheckout", "true"],
+        )
+        .expect("failed to set sparse checkout");
+
+        let backend = GitBackend::discover_with(
+            &linked,
+            GitBackendPreference::Libgit2,
+            DiffWhitespaceMode::Normal,
+            false,
+        )
+        .expect("failed to discover backend");
+
+        assert!(matches!(backend, GitBackend::Cli(_)));
     }
 
     #[test]

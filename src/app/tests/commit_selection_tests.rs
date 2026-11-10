@@ -856,3 +856,91 @@ fn mouse_wheel_moves_commit_picker_cursor_by_configured_lines() {
     wheel(&mut app, crossterm::event::MouseEventKind::ScrollUp);
     assert_eq!(app.commit_list_cursor, 3);
 }
+
+fn named_file(path: &str) -> DiffFile {
+    commit_only_file(&PathBuf::from(path), Vec::new())
+}
+
+/// If a review never narrows the selection, the load must not copy its files.
+#[test]
+fn should_restore_the_whole_range_after_narrowing_and_widening() {
+    let mut app = build_app_with_range_diff(
+        vec![normal_commit("c2"), normal_commit("c1")],
+        vec![named_file("subset.rs")],
+    );
+    app.review_commits = app.commit_list.clone();
+    app.diff_files = vec![named_file("whole.rs")];
+
+    app.commit_selection_range = Some((1, 1));
+    app.reload_inline_selection().expect("narrow");
+    app.commit_selection_range = Some((0, 1));
+    app.reload_inline_selection().expect("widen");
+
+    assert!(
+        app.diff_files
+            .iter()
+            .any(|f| f.display_path() == Path::new("whole.rs"))
+    );
+}
+
+/// `finish_range_load` builds the rows after a range load. It reads state that exists
+/// only after `build` returns, so `build` must not build them.
+#[test]
+fn should_build_rows_once_on_a_range_load() {
+    let vcs_info = VcsInfo {
+        root_path: PathBuf::from("/tmp"),
+        head_commit: "head".into(),
+        branch_name: None,
+        vcs_type: VcsType::Git,
+    };
+    let session = ReviewSession::new(
+        vcs_info.root_path.clone(),
+        vcs_info.head_commit.clone(),
+        None,
+        SessionDiffSource::WorkingTree,
+    );
+    let mut app = App::build_without_rows(
+        Box::new(DummyVcs {
+            info: vcs_info.clone(),
+            range_diff: Vec::new(),
+        }),
+        vcs_info,
+        Theme::dark(),
+        None,
+        false,
+        vec![named_file("whole.rs")],
+        session,
+        DiffSource::WorkingTree,
+        InputMode::Normal,
+        Vec::new(),
+        None,
+        None,
+    )
+    .expect("build");
+
+    app.finish_range_load();
+
+    assert_eq!(app.rows_built, 1);
+    assert!(!app.line_annotations.is_empty());
+}
+
+/// If the commit picker closes with every commit selected, tuicr must not reload the
+/// range from the backend.
+#[test]
+fn should_keep_the_loaded_files_when_the_whole_range_is_reselected() {
+    let mut app = build_app_with_range_diff(
+        vec![normal_commit("c2"), normal_commit("c1")],
+        vec![named_file("refetched.rs")],
+    );
+    app.review_commits = app.commit_list.clone();
+    app.diff_files = vec![named_file("whole.rs")];
+
+    app.commit_selection_range = Some((0, 1));
+    app.reload_inline_selection().expect("reselect");
+
+    assert!(
+        app.diff_files
+            .iter()
+            .any(|f| f.display_path() == Path::new("whole.rs"))
+    );
+}
