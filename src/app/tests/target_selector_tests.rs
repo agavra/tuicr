@@ -630,6 +630,7 @@ fn sample_pr_commit(oid: &str, summary: &str) -> crate::forge::traits::PullReque
         oid: oid.to_string(),
         short_oid: oid.chars().take(7).collect(),
         summary: summary.to_string(),
+        body: None,
         author: "Alice".to_string(),
         timestamp: None,
     }

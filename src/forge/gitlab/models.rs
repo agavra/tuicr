@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use crate::error::{Result, TuicrError};
 use crate::forge::remote_comments::{RemoteCommentSide, RemoteReviewComment, RemoteReviewThread};
 use crate::forge::traits::{
-    ForgeRepository, PullRequestCommit, PullRequestDetails, PullRequestSummary,
+    ForgeRepository, PullRequestCommit, PullRequestDetails, PullRequestSummary, commit_message_body,
 };
 use crate::model::{FilePatch, FileStatus};
 use crate::vcs::git::raw::is_binary_patch;
@@ -206,6 +206,8 @@ pub struct GlabCommit {
     #[serde(default)]
     pub title: String,
     #[serde(default)]
+    pub message: String,
+    #[serde(default)]
     pub author_name: String,
     #[serde(default)]
     pub committed_date: Option<DateTime<Utc>>,
@@ -222,6 +224,7 @@ impl GlabCommit {
             oid: self.id,
             short_oid,
             summary: self.title,
+            body: commit_message_body(&self.message),
             author: self.author_name,
             timestamp: self.committed_date,
         }
@@ -382,6 +385,28 @@ mod tests {
 
     fn gitlab_repo() -> ForgeRepository {
         ForgeRepository::gitlab("gitlab.com", "owner", "repo")
+    }
+
+    #[test]
+    fn should_read_commit_body_from_message_and_summary_from_title() {
+        // given
+        let json = r#"{
+            "id": "abcdef1234567890",
+            "short_id": "abcdef12",
+            "title": "Fix the parser",
+            "message": "Fix the parser\n\nHandle nested expressions.\n",
+            "author_name": "Alice",
+            "committed_date": "2026-01-01T00:00:00Z"
+        }"#;
+        let commit: GlabCommit = serde_json::from_str(json).unwrap();
+        // when
+        let converted = commit.into_pull_request_commit();
+        // then
+        assert_eq!(converted.summary, "Fix the parser");
+        assert_eq!(
+            converted.body.as_deref(),
+            Some("Handle nested expressions.")
+        );
     }
 
     #[test]

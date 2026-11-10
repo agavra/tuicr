@@ -424,7 +424,7 @@ pub fn pr_commit_to_commit_info(commit: &crate::forge::traits::PullRequestCommit
         short_id: commit.short_oid.clone(),
         branch_name: None,
         summary: commit.summary.clone(),
-        body: None,
+        body: commit.body.clone(),
         author: commit.author.clone(),
         time: commit.timestamp.unwrap_or_else(chrono::Utc::now),
     }

@@ -10,7 +10,7 @@ use serde::Deserialize;
 
 use crate::forge::remote_comments::{RemoteCommentSide, RemoteReviewComment, RemoteReviewThread};
 use crate::forge::traits::{
-    ForgeRepository, PullRequestCommit, PullRequestDetails, PullRequestSummary,
+    ForgeRepository, PullRequestCommit, PullRequestDetails, PullRequestSummary, commit_message_body,
 };
 
 /// Azure DevOps list envelope: `{ "count": N, "value": [ ... ] }`.
@@ -190,6 +190,8 @@ pub struct AzGitCommitRef {
     pub commit_id: String,
     #[serde(default)]
     pub comment: String,
+    #[serde(default, rename = "commentTruncated")]
+    pub comment_truncated: bool,
     #[serde(default)]
     pub author: Option<AzGitUserDate>,
 }
@@ -214,6 +216,11 @@ impl AzGitCommitRef {
             oid: self.commit_id,
             short_oid,
             summary,
+            body: if self.comment_truncated {
+                None
+            } else {
+                commit_message_body(&self.comment)
+            },
             author,
             timestamp,
         }
@@ -554,7 +561,24 @@ mod tests {
         assert_eq!(prc.oid, "abcdef1234567890");
         assert_eq!(prc.short_oid, "abcdef12");
         assert_eq!(prc.summary, "First line");
+        assert_eq!(prc.body.as_deref(), Some("body"));
         assert_eq!(prc.author, "Bob");
         assert!(prc.timestamp.is_some());
+    }
+
+    #[test]
+    fn should_omit_body_when_the_commit_comment_is_truncated() {
+        // given
+        let json = r#"{
+            "commitId": "abcdef1234567890",
+            "comment": "First line\n\nPartial body",
+            "commentTruncated": true
+        }"#;
+        let commit: AzGitCommitRef = serde_json::from_str(json).unwrap();
+        // when
+        let converted = commit.into_pull_request_commit();
+        // then
+        assert_eq!(converted.summary, "First line");
+        assert_eq!(converted.body, None);
     }
 }
