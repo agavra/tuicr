@@ -67,6 +67,9 @@ OS=$(uname -s)
 case "$OS" in
     Linux)
         TARGET_OS="unknown-linux-gnu"
+        if ldd --version 2>&1 | grep -qi musl; then
+            TARGET_OS="unknown-linux-musl"
+        fi
         EXT="tar.gz"
         ;;
     Darwin)
