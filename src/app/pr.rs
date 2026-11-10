@@ -626,13 +626,20 @@ impl App {
         if let DiffSource::PullRequest(pr) = &mut self.diff_source {
             pr.base_sha = opened.details.base_sha.clone();
         }
-        self.diff_files = opened.diff_files;
         self.pr_info = Some(opened.pr_info);
-        self.clear_expanded_gaps();
-        for file in &self.diff_files {
-            self.session.add_diff_file(file);
+        if Self::is_strict_commit_selection(self.commit_selection_range, self.pr_commits.len()) {
+            // The head did not move, so neither did the commits: the narrowed
+            // diff on screen is still the diff of the selection. Only the
+            // cumulative diff behind it is refreshed.
+            self.range_diff_files = Some(opened.diff_files);
+        } else {
+            self.diff_files = opened.diff_files;
+            self.clear_expanded_gaps();
+            for file in &self.diff_files {
+                self.session.add_diff_file(file);
+            }
+            self.insert_commit_message_if_single();
         }
-        self.insert_commit_message_if_single();
         self.sort_files_by_directory(true);
         self.expand_all_dirs();
         self.rebuild_annotations();

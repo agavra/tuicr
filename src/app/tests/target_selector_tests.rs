@@ -1070,6 +1070,105 @@ fn should_show_selected_pr_commit_message_and_remove_it_when_widening() {
 }
 
 #[test]
+fn should_keep_selected_pr_diff_on_same_head_reload_and_refresh_cumulative_cache() {
+    // given a multi-commit PR narrowed to its middle commit
+    let _reviews = TestReviewsDir::new();
+    let mut app = build_app();
+    let details = test_pr_details(424312, "same-head message range");
+    let selected = sample_pr_commit_with_body("middle22222", "middle subject", "middle body");
+    // Forge returns oldest-first; prepare_open_pr reverses this order.
+    let commits = vec![
+        sample_pr_commit("first111111", "first"),
+        selected.clone(),
+        sample_pr_commit("last3333333", "last"),
+    ];
+    let mut backend =
+        FakeForgeBackend::open_pr_details(details.clone(), two_hunk_patch().to_string());
+    backend.commits = commits.clone();
+    app.open_pr_with_backend(
+        &sample_pr(details.number, &details.title),
+        Box::new(backend),
+        None,
+    )
+    .unwrap();
+    let cumulative_file = app.diff_files[0].clone();
+    assert_eq!(cumulative_file.hunks.len(), 2);
+    app.commit_selection_range = Some((1, 1));
+    let range_request = PrRangeReloadRequest {
+        repository: details.repository.clone(),
+        pr_number: details.number,
+        head_sha: details.head_sha.clone(),
+        start_sha: "first111111".to_string(),
+        end_sha: selected.oid.clone(),
+        range: (1, 1),
+        started_at: Instant::now(),
+        anchor: None,
+    };
+    app.finish_pr_range_reload(&range_request, structured_patch(first_hunk_patch()))
+        .unwrap();
+    let narrowed_file = app.diff_files[1].clone();
+    assert_eq!(narrowed_file.hunks.len(), 1);
+    // A missing cache makes the reload's refresh observable.
+    app.range_diff_files = None;
+    let request = PrReloadRequest {
+        repository: details.repository.clone(),
+        pr_number: details.number,
+        head_sha: details.head_sha.clone(),
+        started_at: Instant::now(),
+        anchor: None,
+        restore_overview_cursor: None,
+    };
+
+    // when a same-head reload delivers the cumulative PR diff
+    app.finish_pr_reload(
+        details.clone(),
+        structured_patch(two_hunk_patch()),
+        commits,
+        PullRequestReviewMetadata::default(),
+        crate::forge::traits::PullRequestInfo::from_details(details),
+        &request,
+    )
+    .unwrap();
+
+    // then the selection, selected message and narrowed diff remain on screen
+    assert_eq!(app.commit_selection_range, Some((1, 1)));
+    assert_eq!(app.diff_files.len(), 2);
+    assert!(app.diff_files[0].is_commit_message);
+    assert_eq!(
+        app.diff_files[0].display_path(),
+        &PathBuf::from(format!("Commit Message ({})", selected.short_oid))
+    );
+    assert!(!app.diff_files[1].is_commit_message);
+    assert_eq!(
+        app.diff_files[1].display_path(),
+        narrowed_file.display_path()
+    );
+    assert_eq!(app.diff_files[1].content_hash, narrowed_file.content_hash);
+    assert_eq!(app.diff_files[1].hunks.len(), 1);
+    let cached = app.range_diff_files.as_ref().unwrap();
+    assert_eq!(cached.len(), 1);
+    assert!(!cached[0].is_commit_message);
+    assert_eq!(cached[0].display_path(), cumulative_file.display_path());
+    assert_eq!(cached[0].content_hash, cumulative_file.content_hash);
+    assert_eq!(cached[0].hunks.len(), 2);
+
+    // when the selection widens to all commits
+    app.commit_selection_range = Some((0, 2));
+    app.reload_pr_inline_selection();
+
+    // then the refreshed cumulative cache replaces the message and narrowed diff
+    assert_eq!(app.diff_files.len(), 1);
+    assert!(!app.diff_files.iter().any(|file| file.is_commit_message));
+    assert_eq!(
+        app.diff_files[0].display_path(),
+        cumulative_file.display_path()
+    );
+    assert_eq!(app.diff_files[0].content_hash, cumulative_file.content_hash);
+    assert_eq!(app.diff_files[0].hunks.len(), 2);
+    assert!(app.pr_range_reload_state.is_none());
+}
+
+#[test]
 fn should_not_ask_the_forge_for_a_commit_message_line_count() {
     // given a single-commit PR, whose diff opens with the commit's message
     let _reviews = TestReviewsDir::new();
