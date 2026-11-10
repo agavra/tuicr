@@ -63,8 +63,9 @@ shape is ambiguous across forges and resolves to GitHub, so spell out the host
 when you need to name a Bitbucket repository explicitly.
 
 tuicr detects the forge from the repository's remotes. A remote routes to
-Bitbucket when its host is `bitbucket.org` (or `altssh.bitbucket.org`, the
-SSH-over-443 endpoint). Bitbucket is checked before GitLab and GitHub, because
+Bitbucket when its host is `bitbucket.org`, `ssh.bitbucket.org` (SSH), or
+`altssh.bitbucket.org` (SSH over port 443). Bitbucket is checked before GitLab
+and GitHub, because
 the GitHub parser accepts any host and would otherwise claim your Bitbucket
 remotes.
 

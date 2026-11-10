@@ -254,7 +254,7 @@ Repository-managed agent integrations:
 
 Forge review (`tuicr pr <target>`, `tuicr mr <target>`, or their explicit `tuicr tui` forms) is the only feature in `src/forge/`. GitHub operations shell out to `gh`; GitLab operations shell out to `glab`; Gitea operations shell out to `tea`; Bitbucket Cloud operations shell out to `bkt`.
 
-Forge selection is host-driven: `parse_any_remote_url` tries Bitbucket (`bitbucket.org` only), then GitLab (host contains `gitlab`, or matches `glab config get host`), then Azure, then Gitea (host contains `gitea`, or matches a login in `tea logins list --output json`; forks like Forgejo are deliberately not matched by name), then GitHub. GitHub must stay last — its parser accepts any host, so it would otherwise claim every Bitbucket, self-hosted GitLab, and self-hosted Gitea remote. Bitbucket Data Center is deliberately unsupported: it speaks REST 1.0, so those remotes are not claimed at all.
+Forge selection is host-driven: `parse_any_remote_url` tries Bitbucket (Bitbucket Cloud only, including its SSH hosts), then GitLab (host contains `gitlab`, or matches `glab config get host`), then Azure, then Gitea (host contains `gitea`, or matches a login in `tea logins list --output json`; forks like Forgejo are deliberately not matched by name), then GitHub. GitHub must stay last — its parser accepts any host, so it would otherwise claim every Bitbucket, self-hosted GitLab, and self-hosted Gitea remote. Bitbucket Data Center is deliberately unsupported: it speaks REST 1.0, so those remotes are not claimed at all.
 
 ### ForgeBackend trait
 
