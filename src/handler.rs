@@ -384,7 +384,7 @@ fn handle_left_click(app: &mut App, pos: Position) {
     {
         app.focused_panel = FocusedPanel::CommitSelector;
         app.commit_list_cursor = idx;
-        handle_commit_selector_action(app, Action::SelectFile);
+        handle_commit_selector_action(app, Action::ToggleExpand);
         return;
     }
 
@@ -1465,9 +1465,14 @@ pub fn handle_commit_selector_action(app: &mut App, action: Action) {
                 app.commit_select_up();
             }
         }
-        // Toggle + auto-advance so repeated presses sweep a contiguous run.
+        // Space toggles + auto-advances so repeated presses sweep a contiguous
+        // run; Enter selects only the cursor commit, unselecting the others.
         Action::ToggleExpand | Action::ToggleCommitSelect | Action::SelectFile => {
-            app.toggle_commit_selection_and_advance();
+            if action == Action::SelectFile {
+                app.select_only_cursor_commit();
+            } else {
+                app.toggle_commit_selection_and_advance();
+            }
             // PR mode reloads via the forge `compare` API on a background
             // thread (persisting the new range so it survives a restart);
             // local reviews reload from the VCS.

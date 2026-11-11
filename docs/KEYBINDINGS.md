@@ -345,13 +345,14 @@ crash, or by `tuicr review delete`/`clear` emptying a review another tuicr had o
 Shown at the top of the diff when reviewing multiple commits. Focus it with `<leader>k` or `Tab`.
 When opening a GitHub PR or GitLab MR you have reviewed before, tuicr may preselect only commits
 newer than your latest submitted review; commits already covered by that review are marked with
-`✓`. Use `Space` / `Enter` here to expand or adjust the range. Bitbucket does not record which
+`✓`. Use `Space` to expand or adjust the range, or `Enter` to jump to a single commit. Bitbucket does not record which
 commit an approval covered, so no commits are preselected there.
 
 | Key | Action |
 |-----|--------|
 | `j` / `k` | Navigate commits |
-| `Space` / `Enter` | Toggle commit selection (updates diff) |
+| `Space` | Toggle commit selection (updates diff) |
+| `Enter` | Select only the commit under the cursor, unselecting the others (updates diff) |
 | `(` / `)` | Cycle through individual commits |
 | `Esc` | Return focus to diff |
 

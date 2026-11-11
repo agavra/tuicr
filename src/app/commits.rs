@@ -661,6 +661,17 @@ impl App {
         }
     }
 
+    /// Select only the cursor commit, dropping the rest of the range.
+    /// Unlike `toggle_commit_selection`, pressing it on the sole selected
+    /// commit keeps that commit selected. No-op on the "show more" row.
+    pub fn select_only_cursor_commit(&mut self) {
+        let cursor = self.commit_list_cursor;
+        if cursor >= self.commit_list.len() {
+            return;
+        }
+        self.commit_selection_range = Some((cursor, cursor));
+    }
+
     // Check if cursor is on the commit expand row
     pub fn is_on_expand_row(&self) -> bool {
         self.can_show_more_commits() && self.commit_list_cursor == self.visible_commit_count
