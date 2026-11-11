@@ -5,7 +5,7 @@
 //! conversions bridge tuicr's UTF-8 byte offset and edtui's `Index2` (row +
 //! char-col), both UTF-8 aware.
 
-use crossterm::event::{Event, KeyEvent};
+use crossterm::event::{Event, KeyCode, KeyEvent};
 use edtui::{EditorEventHandler, EditorMode, EditorState, Index2, Lines};
 
 /// Active modal editor for the comment box. Present only while in comment mode
@@ -48,7 +48,11 @@ impl CommentVimEditor {
     /// Feed a key event to the editor and return the resulting
     /// `(text, byte_cursor)` for the caller to sync into the canonical buffer.
     pub fn feed_key(&mut self, key: KeyEvent) -> (String, usize) {
-        self.events.on_key_event(key, &mut self.state);
+        // edtui cannot convert BackTab and panics on it. Normal-mode comment
+        // type cycling is handled by the caller; ignore it in other modes.
+        if key.code != KeyCode::BackTab {
+            self.events.on_key_event(key, &mut self.state);
+        }
         self.text_and_cursor()
     }
 
@@ -129,6 +133,15 @@ mod tests {
         }
         assert_eq!(last, ("hi".to_string(), 2));
         assert_eq!(editor.label(), "INSERT");
+    }
+
+    #[test]
+    fn insert_mode_backtab_is_ignored() {
+        let mut editor = CommentVimEditor::from_buffer("hello", 5);
+        let result = editor.feed_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+        assert_eq!(result, ("hello".to_string(), 5));
+        assert_eq!(editor.label(), "INSERT");
+        assert_eq!(editor.feed_key(key('!')), ("hello!".to_string(), 6));
     }
 
     #[test]
