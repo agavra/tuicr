@@ -169,10 +169,10 @@ Multi-line comments collapse to their last line — Gitea has no range form. See
 
 ### To Bitbucket
 
-`:submit` offers Comment or Approve on a Bitbucket Cloud PR. Inline comments post as inline PR
-comments, multi-line ranges included; review-level comments become general PR comments. Requires
-`bkt` authenticated to `bitbucket.org`. Request changes and Draft are not supported yet, and
-Bitbucket Data Center is out of scope. See [docs/BITBUCKET.md](docs/BITBUCKET.md) for setup,
+`:submit` offers Comment, Approve, Request changes, or Draft on a Bitbucket Cloud PR. Inline
+comments post as inline PR comments, multi-line ranges included; review-level comments become
+general PR comments. Draft posts them as pending comments that you publish from Bitbucket. Requires
+`bkt` authenticated to `bitbucket.org`. Bitbucket Data Center is out of scope. See [docs/BITBUCKET.md](docs/BITBUCKET.md) for setup,
 required token scopes, and troubleshooting.
 
 ### To Azure DevOps

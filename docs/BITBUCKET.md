@@ -70,16 +70,24 @@ remotes.
 
 ## Submit a review
 
-`:submit` opens a picker. On Bitbucket it offers two events:
+`:submit` opens a picker. On Bitbucket it offers four events:
 
 | Event | Result |
 |-------|--------|
 | Comment | Posts your inline and review-level comments without changing approval state. |
 | Approve | Posts your comments, then approves the pull request. |
+| Request changes | Posts your comments, then marks the pull request as changes requested. |
+| Draft | Posts your comments as pending. Only you see them until you publish them from Bitbucket. |
 
-Comments are posted before the approval, so if the approval is rejected — you
-may not be a reviewer on the pull request — your feedback is already saved and
-tuicr says so rather than reporting a clean failure.
+Comments are posted before the approval or change request, so if that second
+step is rejected — you may not be a reviewer on the pull request — your
+feedback is already saved and tuicr says so rather than reporting a clean
+failure.
+
+A draft leaves Bitbucket's own pending-comment banner on the pull request;
+publish from there. Until you do, tuicr shows those comments marked `draft`
+(and `(draft)` in exports), and a pending review-level comment shows as a
+pending review summary.
 
 Inline comments land on their lines as Bitbucket inline pull request comments.
 Multi-line selections are preserved: Bitbucket's `inline` anchor supports
@@ -90,18 +98,6 @@ Because Bitbucket has no "review" object, existing general comments on a pull
 request show up in tuicr's review-summary area, and existing inline comments
 show up as threads on their lines. Approvals appear through the pull request's
 participants rather than as comments.
-
-### Not yet supported
-
-`:submit request-changes` and `:submit draft` return an unsupported-operation
-error rather than silently downgrading to a plain comment:
-
-- **Request changes** — Bitbucket Cloud has a request-changes endpoint, but
-  tuicr does not drive it yet. Post comments with `:submit`, then request
-  changes in Bitbucket.
-- **Draft (pending) reviews** — Bitbucket has pending comments, but `bkt` does
-  not expose a way to publish them as a batch. Use `:submit` to publish
-  directly.
 
 ## Data Center
 
