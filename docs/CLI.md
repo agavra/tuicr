@@ -140,6 +140,7 @@ out to.
 | `AZURE_DEVOPS_EXT_PAT`, `AZURE_DEVOPS_PAT` | Azure DevOps PAT. Checked in that order; without one tuicr falls back to `az rest`. See [AZURE.md](AZURE.md) |
 | `GERRIT_URL` | Gerrit server root; also identifies Gerrit remotes on otherwise neutral hostnames. See [GERRIT.md](GERRIT.md) |
 | `GERRIT_USERNAME`, `GERRIT_PASSWORD` | Gerrit REST API credentials. `GERRIT_PASSWORD` must be an HTTP password, not the account password |
+| `GITLAB_SUBFOLDER` | Subfolder a self-hosted GitLab is installed under (`gitlab` for `https://example.com/gitlab/`). Read by `glab` and by tuicr, and overrides `glab`'s per-host `subfolder` setting. See [GITLAB.md](GITLAB.md) |
 | `TUICR_GLAB_DEBUG` | Log `glab` invocations for debugging. See [GITLAB.md](GITLAB.md) |
 | `TMUX`, `ZELLIJ`, `SSH_TTY` | Detected to choose a clipboard path — OSC 52 over SSH, `tmux load-buffer` inside tmux |
 | `REX_SESSION` | Prefer OSC 52 clipboard writes to reach the Rex client's clipboard |

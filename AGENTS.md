@@ -80,6 +80,7 @@ src/
 │   ├── gitlab/          # GitLab backend via `glab` CLI
 │   │   ├── mod.rs       # GitLabGlabBackend export
 │   │   ├── glab.rs      # ForgeBackend impl and glab command runner
+│   │   ├── instance.rs  # Relative-URL install subfolder: lookup, per-host memo, path stripping
 │   │   └── models.rs    # GitLab API response models
 │   ├── bitbucket/       # Bitbucket Cloud backend via `bkt` CLI (no Data Center)
 │   │   ├── mod.rs       # BitbucketBktBackend export
@@ -254,7 +255,7 @@ Repository-managed agent integrations:
 
 Forge review (`tuicr pr <target>`, `tuicr mr <target>`, or their explicit `tuicr tui` forms) is the only feature in `src/forge/`. GitHub operations shell out to `gh`; GitLab operations shell out to `glab`; Gitea operations shell out to `tea`; Bitbucket Cloud operations shell out to `bkt`.
 
-Forge selection is host-driven: `parse_any_remote_url` tries Bitbucket (`bitbucket.org` only), then GitLab (host contains `gitlab`, or matches `glab config get host`), then Azure, then Gitea (host contains `gitea`, or matches a login in `tea logins list --output json`; forks like Forgejo are deliberately not matched by name), then GitHub. GitHub must stay last — its parser accepts any host, so it would otherwise claim every Bitbucket, self-hosted GitLab, and self-hosted Gitea remote. Bitbucket Data Center is deliberately unsupported: it speaks REST 1.0, so those remotes are not claimed at all.
+Forge selection is host-driven: `parse_any_remote_url` tries Bitbucket (`bitbucket.org` only), then GitLab (host contains `gitlab`, or matches the *hostname* of `glab config get host`, which is often written as a full URL), then Azure, then Gitea (host contains `gitea`, or matches a login in `tea logins list --output json`; forks like Forgejo are deliberately not matched by name), then GitHub. GitHub must stay last — its parser accepts any host, so it would otherwise claim every Bitbucket, self-hosted GitLab, and self-hosted Gitea remote. Bitbucket Data Center is deliberately unsupported: it speaks REST 1.0, so those remotes are not claimed at all.
 
 ### ForgeBackend trait
 
@@ -366,6 +367,8 @@ These are non-obvious things the implementation chain hit. Worth preserving for 
 24. **Gerrit's `/changes/{N}/comments` returns published comments only.** The caller's drafts live at `/changes/{N}/drafts`, with `author` unset. `:submit draft` marks the local copies `PushedDraft`, and the refetch that follows runs `prune_locked_comments`, so a backend that cannot read its drafts back deletes the only copy the TUI had. The Gerrit backend therefore reads `/drafts` too.
 
 25. **PR open reads every changed file's line count, so it must batch.** The end-of-file expand row needs each file's total lines, and `populate_file_line_count_cache` asks for all of them before the first frame. In PR mode it goes through `ForgeContextProvider::file_line_counts` → `ForgeBackend::file_line_counts`, never a per-file loop: GitHub reads local blobs with one `git cat-file --batch` (`vcs::git::cli::read_git_objects`), then the rest with one GraphQL `object(expression:)` query per 50 files. Blobs GraphQL truncates or won't return as text, and every blob of a failed query, fall back to a REST call each. `read_git_objects` feeds `cat-file` stdin from a thread: a PR can list more specs than a pipe buffer holds, and writing them all before reading would deadlock. Other backends use the trait's one-file-at-a-time default.
+
+26. **`glab` already prefixes a relative-URL install's subfolder, so the subfolder comes off the project id — not out of `owner`.** On a GitLab served from `https://host/<sub>/`, a clone URL cannot distinguish `<sub>` from a top-level group, so it lands in `ForgeRepository.owner` and the project id became `<sub>%2Fgroup%2Fproject` while `glab` was already requesting `/<sub>/api/v4/…` — a 404 on every call. `owner` deliberately keeps it: it is persisted in session slugs and `PrSessionKey`, it is parsed at three sites (including `owner/repo#iid`, which has no host whose subfolder could be looked up), and the hostname-only parser must not spawn `glab` because `resolve_owner_repo` runs on every session save. `GitLabGlabBackend::project_path`/`api_project` are therefore the only supported way from a `ForgeRepository` to an API project path (the GitLab analogue of `gerrit_project()`/`azure_coords()`), and `repo_arg` stays subfolder-ful on purpose — `glab` strips its configured subfolder when it parses a `--repo` URL. The subfolder comes from `glab` itself (`GITLAB_SUBFOLDER`, else `glab config get subfolder --host`), never from tuicr config, so tuicr strips exactly what `glab` prepends; it is memoized per host in a `Mutex` (gotcha 23). Stripping is segment-aligned, happens once, and never leaves fewer than two segments — a GitLab project always has a namespace, so `<sub>/project` is a group named like the subfolder. Related: `glab config get host` is often written as a URL, so only its hostname may be compared — and its path is explicitly *not* a subfolder source, since `glab` prefixes from the `subfolder` key alone.
 
 ### Keeping Docs Updated
 

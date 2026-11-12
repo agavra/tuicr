@@ -156,7 +156,9 @@ Requires `gh` authenticated to the repo.
 `:submit` offers Comment, Approve, Request changes, or Draft on a GitLab MR. Inline comments post
 as discussion notes, or as draft notes for Draft. Review-level comments become the summary.
 Requires `glab` authenticated to the host. Request changes needs your account to be an assigned
-reviewer. See [docs/GITLAB.md](docs/GITLAB.md) for setup, self-hosted instances, and
+reviewer. An instance served from a subfolder (`https://example.com/gitlab/`) works once `glab`
+knows about it (`glab config set subfolder gitlab --host example.com`, `glab` 1.128+).
+See [docs/GITLAB.md](docs/GITLAB.md) for setup, self-hosted instances, and
 troubleshooting.
 
 ### To Gitea
