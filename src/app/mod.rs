@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use chrono::Utc;
@@ -28,6 +29,7 @@ use crate::vcs::{
     ChangeKind, CommitInfo, DiffWhitespaceMode, FileBackend, GitBackendPreference, PrNoopVcs,
     ResolvedRevisionRange, RevisionDiffTarget, VcsBackend, VcsChangeStatus, VcsInfo, detect_vcs,
 };
+use crate::word_diff::ChangedRanges;
 
 const VISIBLE_COMMIT_COUNT: usize = 10;
 const COMMIT_PAGE_SIZE: usize = 10;
@@ -1144,6 +1146,9 @@ pub enum CommentVimPending {
     Cancel,
 }
 
+/// One entry per line of a hunk; see `word_diff::hunk_changed_ranges`.
+pub type HunkChangedRanges = Arc<[Option<ChangedRanges>]>;
+
 pub struct App {
     pub theme: Theme,
     pub vcs: Box<dyn VcsBackend>,
@@ -1202,6 +1207,9 @@ pub struct App {
     pub focused_panel: FocusedPanel,
     pub diff_view_mode: DiffViewMode,
     pub relative_line_numbers: bool,
+    /// Emphasize the changed words of paired deletion/addition lines.
+    /// Config `word_diff`, toggled with `:set worddiff!`.
+    pub word_diff: bool,
     pub wrap_style: WrapStyle,
     /// Which side the cursor targets in side-by-side view (old/left vs
     /// new/right). Drives the `▶` caret placement and the side a new line
@@ -1467,6 +1475,14 @@ pub struct App {
     /// so that they aren't re-colored.
     /// Cleared by `rebuild_annotations`, which runs whenever the diff is replaced.
     pub colored_hunks: HashSet<(usize, usize)>,
+    /// Changed-word ranges per line of each visible hunk, keyed like
+    /// `colored_hunks` and filled by the same pass. `Arc` so a renderer can
+    /// hold a hunk's entry while it borrows the rest of `App`.
+    /// Each entry carries the `content_hash` of the file it was computed
+    /// from and is ignored once that no longer matches. It is not cleared by
+    /// `rebuild_annotations`: renderers call that mid-frame on a width change
+    /// (`sync_viewport_width`), which would drop the ranges for that frame.
+    pub word_diff_ranges: HashMap<(usize, usize), (u64, HunkChangedRanges)>,
     /// Output to stdout instead of clipboard when exporting
     pub output_to_stdout: bool,
     /// Pending output to print to stdout after TUI exits

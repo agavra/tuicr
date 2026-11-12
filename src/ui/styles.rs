@@ -65,6 +65,30 @@ pub fn patch_highlighted_span_bg(style: Style, theme: &Theme, origin: LineOrigin
     }
 }
 
+/// Style patched over the changed words of a paired deletion/addition line:
+/// the line's background pushed toward its diff foreground, so it stays in
+/// the same hue but stands out. `highlighted` selects the syntax background
+/// the line is drawn on. Themes using named terminal colors can't be blended
+/// and get reversed video instead.
+pub fn word_emphasis_style(theme: &Theme, origin: LineOrigin, highlighted: bool) -> Style {
+    let (line_bg, accent) = match (origin, highlighted) {
+        (LineOrigin::Addition, true) => (theme.syntax_add_bg, theme.diff_add),
+        (LineOrigin::Addition, false) => (theme.diff_add_bg, theme.diff_add),
+        (LineOrigin::Deletion, true) => (theme.syntax_del_bg, theme.diff_del),
+        (LineOrigin::Deletion, false) => (theme.diff_del_bg, theme.diff_del),
+        (LineOrigin::Context, _) => return Style::default(),
+    };
+    match (line_bg, accent) {
+        (Color::Rgb(..), Color::Rgb(..)) => {
+            Style::default().bg(crate::theme::blend(line_bg, accent, WORD_EMPHASIS_PERCENT))
+        }
+        _ => Style::default().add_modifier(Modifier::REVERSED),
+    }
+}
+
+/// How far `word_emphasis_style` moves the background toward the foreground.
+const WORD_EMPHASIS_PERCENT: u8 = 30;
+
 pub fn expanded_context_style(theme: &Theme) -> Style {
     Style::default().fg(theme.expanded_context_fg)
 }
@@ -251,6 +275,36 @@ mod tests {
         assert_eq!(
             diff_marker_style(&theme, LineOrigin::Context, true),
             diff_context_style(&theme)
+        );
+    }
+    /// Changed words sit on the line's own background pushed toward its diff
+    /// color, so syntax colors stay on the text.
+    #[test]
+    fn word_emphasis_blends_the_line_background_toward_the_diff_color() {
+        let theme = Theme::catppuccin_macchiato();
+
+        assert_eq!(
+            word_emphasis_style(&theme, LineOrigin::Addition, true).bg,
+            Some(crate::theme::blend(theme.syntax_add_bg, theme.diff_add, 30))
+        );
+        assert_eq!(
+            word_emphasis_style(&theme, LineOrigin::Deletion, false).bg,
+            Some(crate::theme::blend(theme.diff_del_bg, theme.diff_del, 30))
+        );
+        assert_eq!(
+            word_emphasis_style(&theme, LineOrigin::Addition, true).fg,
+            None
+        );
+        assert_eq!(
+            word_emphasis_style(&theme, LineOrigin::Context, true),
+            Style::default()
+        );
+        let mut named = Theme::dark();
+        named.diff_add = Color::Green;
+        assert!(
+            word_emphasis_style(&named, LineOrigin::Addition, false)
+                .add_modifier
+                .contains(Modifier::REVERSED)
         );
     }
 
