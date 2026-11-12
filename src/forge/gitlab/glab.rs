@@ -250,7 +250,7 @@ where
             // cached by the time a call fails, so this costs nothing.
             let suggest_subfolder = !host.eq_ignore_ascii_case(DEFAULT_GITLAB_HOST)
                 && self.install_subfolder(host).is_none();
-            map_glab_error_with_hints(err, host, suggest_subfolder)
+            map_glab_error(err, host, suggest_subfolder)
         })
     }
 
@@ -965,7 +965,7 @@ fn is_gitlab_host(host: &str, lookup: HostLookup) -> bool {
 /// install subfolder from this value would break requests that work today.
 fn glab_default_host() -> Option<String> {
     let output = run_command_output("glab", None, ["config", "get", "host"]).ok()?;
-    instance::parse_configured_host(&output).map(|configured| configured.host)
+    instance::parse_configured_hostname(&output)
 }
 
 fn parse_numeric_target(target: &str) -> Option<PullRequestTarget> {
@@ -1171,15 +1171,9 @@ fn looks_like_not_found(stderr: &str) -> bool {
     lowered.contains("404") || lowered.contains("not found")
 }
 
-fn map_glab_error(error: GlabCommandError, host: &str) -> TuicrError {
-    map_glab_error_with_hints(error, host, false)
-}
-
-fn map_glab_error_with_hints(
-    error: GlabCommandError,
-    host: &str,
-    suggest_subfolder: bool,
-) -> TuicrError {
+/// `suggest_subfolder` appends [`subfolder_hint`] to a not-found failure. Only
+/// callers that know the host has no configured subfolder pass `true`.
+fn map_glab_error(error: GlabCommandError, host: &str, suggest_subfolder: bool) -> TuicrError {
     match error {
         GlabCommandError::MissingGlab => TuicrError::Forge(
             "GitLab integration requires `glab`.\nInstall GitLab CLI and run `glab auth login`."
@@ -1295,7 +1289,7 @@ fn map_create_notes_error(error: GlabCommandError, host: &str) -> TuicrError {
             "Cannot submit review: GitLab token lacks merge request write permission.".to_string(),
         );
     }
-    map_glab_error(error, host)
+    map_glab_error(error, host, false)
 }
 
 fn looks_like_auth_failure(stderr: &str) -> bool {
@@ -1592,8 +1586,7 @@ mod tests {
 
     #[test]
     fn should_hint_at_subfolder_config_on_a_404() {
-        let message =
-            map_glab_error_with_hints(not_found_error(), "git.example.com", true).to_string();
+        let message = map_glab_error(not_found_error(), "git.example.com", true).to_string();
         assert!(
             message.contains("glab config set subfolder <path> --host git.example.com"),
             "expected a subfolder hint, got {message}"
@@ -1602,8 +1595,7 @@ mod tests {
 
     #[test]
     fn should_not_hint_at_subfolder_config_when_one_is_configured() {
-        let message =
-            map_glab_error_with_hints(not_found_error(), "git.example.com", false).to_string();
+        let message = map_glab_error(not_found_error(), "git.example.com", false).to_string();
         assert!(
             !message.contains("subfolder"),
             "expected no subfolder hint, got {message}"
@@ -1616,7 +1608,7 @@ mod tests {
             status: Some(1),
             stderr: "HTTP 500: something broke".to_string(),
         };
-        let message = map_glab_error_with_hints(error, "git.example.com", true).to_string();
+        let message = map_glab_error(error, "git.example.com", true).to_string();
         assert!(
             !message.contains("subfolder"),
             "expected no subfolder hint, got {message}"

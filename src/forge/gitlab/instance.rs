@@ -17,32 +17,27 @@ const SUBFOLDER_KEY: &str = "subfolder";
 /// `glab` resolves this itself, ahead of its config file. tuicr reads it too so
 /// the common case costs no process spawn. Like `glab`, it applies to every
 /// host rather than being scoped to one.
-pub(crate) const SUBFOLDER_ENV_VAR: &str = "GITLAB_SUBFOLDER";
+pub(super) const SUBFOLDER_ENV_VAR: &str = "GITLAB_SUBFOLDER";
 
 /// Normalize a subfolder value as `glab` does: surrounding slashes are
 /// meaningless, so `gitlab`, `/gitlab` and `gitlab/` are the same prefix.
 /// Nested paths (`apps/gitlab`) are kept whole. `None` means "root install".
-pub(crate) fn normalize_subfolder(raw: &str) -> Option<String> {
+pub(super) fn normalize_subfolder(raw: &str) -> Option<String> {
     let trimmed = raw.trim().trim_matches('"').trim_matches('\'');
     let path = trimmed.trim_matches('/');
     (!path.is_empty()).then(|| path.to_string())
 }
 
-/// A `glab config get host` value. Users write it either bare
-/// (`git.example.com`) or as a URL (`https://git.example.com:8443/gitlab/`),
+/// The hostname out of a `glab config get host` value. Users write it either
+/// bare (`git.example.com`) or as a URL (`https://git.example.com:8443/gitlab/`),
 /// and the host has to be compared on its own: the whole-string comparison
 /// this replaced never matched the URL form, so a self-hosted instance on a
 /// domain without "gitlab" in it was not recognized as GitLab at all.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ConfiguredHost {
-    pub(crate) host: String,
-    /// The path the value carries, if any. Informational only: it is *not* a
-    /// subfolder source, because `glab` prefixes its API URLs from the
-    /// `subfolder` key alone.
-    pub(crate) path: Option<String>,
-}
-
-pub(crate) fn parse_configured_host(raw: &str) -> Option<ConfiguredHost> {
+///
+/// Any path the value carries is dropped rather than returned: it is *not* a
+/// subfolder source, because `glab` prefixes its API URLs from the `subfolder`
+/// key alone.
+pub(super) fn parse_configured_hostname(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
     let without_scheme = trimmed
         .strip_prefix("https://")
@@ -53,18 +48,12 @@ pub(crate) fn parse_configured_host(raw: &str) -> Option<ConfiguredHost> {
         .rsplit_once('@')
         .map(|(_, rest)| rest)
         .unwrap_or(without_scheme);
-    let (authority, path) = match without_user.split_once('/') {
-        Some((authority, path)) => (authority, path),
-        None => (without_user, ""),
-    };
+    let authority = without_user
+        .split_once('/')
+        .map(|(authority, _path)| authority)
+        .unwrap_or(without_user);
     let host = strip_port(authority);
-    if host.is_empty() {
-        return None;
-    }
-    Some(ConfiguredHost {
-        host: host.to_ascii_lowercase(),
-        path: normalize_subfolder(path),
-    })
+    (!host.is_empty()).then(|| host.to_ascii_lowercase())
 }
 
 /// Remove an install subfolder from the front of a project path, so
@@ -85,7 +74,7 @@ pub(crate) fn parse_configured_host(raw: &str) -> Option<ConfiguredHost> {
 /// so `group/proj` is correctly a no-op. The one false positive left is an SSH
 /// remote at least three segments deep whose top-level group is named like the
 /// subfolder.
-pub(crate) fn strip_subfolder_prefix(project_path: &str, subfolder: &str) -> Option<String> {
+pub(super) fn strip_subfolder_prefix(project_path: &str, subfolder: &str) -> Option<String> {
     let path: Vec<&str> = project_path.split('/').filter(|p| !p.is_empty()).collect();
     let prefix: Vec<&str> = subfolder.split('/').filter(|p| !p.is_empty()).collect();
     if prefix.is_empty() || path.len() < prefix.len() + 2 {
@@ -105,10 +94,10 @@ pub(crate) fn strip_subfolder_prefix(project_path: &str, subfolder: &str) -> Opt
 /// gotcha 23); the lock is held across the lookup so concurrent callers for
 /// one host spawn `glab` at most once between them.
 #[derive(Debug, Clone, Default)]
-pub(crate) struct SubfolderCache(Arc<Mutex<HashMap<String, Option<String>>>>);
+pub(super) struct SubfolderCache(Arc<Mutex<HashMap<String, Option<String>>>>);
 
 impl SubfolderCache {
-    pub(crate) fn resolve<R: GlabCommandRunner>(&self, host: &str, runner: &R) -> Option<String> {
+    pub(super) fn resolve<R: GlabCommandRunner>(&self, host: &str, runner: &R) -> Option<String> {
         let key = host.to_ascii_lowercase();
         let mut cache = self.0.lock().unwrap_or_else(|err| err.into_inner());
         if let Some(cached) = cache.get(&key) {
@@ -122,7 +111,7 @@ impl SubfolderCache {
     /// Seed a host's subfolder without consulting `glab`. Test-only seam for
     /// the pure-helper and endpoint tests.
     #[cfg(test)]
-    pub(crate) fn seeded(host: &str, subfolder: Option<&str>) -> Self {
+    pub(super) fn seeded(host: &str, subfolder: Option<&str>) -> Self {
         let cache = Self::default();
         cache.0.lock().unwrap().insert(
             host.to_ascii_lowercase(),
@@ -203,37 +192,26 @@ mod tests {
     }
 
     #[test]
-    fn parse_configured_host_accepts_bare_host_and_url_forms() {
+    fn parse_configured_hostname_accepts_bare_host_and_url_forms() {
         assert_eq!(
-            parse_configured_host("git.example.com"),
-            Some(ConfiguredHost {
-                host: "git.example.com".to_string(),
-                path: None,
-            })
+            parse_configured_hostname("git.example.com").as_deref(),
+            Some("git.example.com")
+        );
+        // The path is dropped: `glab` prefixes from the `subfolder` key alone.
+        assert_eq!(
+            parse_configured_hostname("https://git.example.com/gitlab").as_deref(),
+            Some("git.example.com")
         );
         assert_eq!(
-            parse_configured_host("https://git.example.com/gitlab"),
-            Some(ConfiguredHost {
-                host: "git.example.com".to_string(),
-                path: Some("gitlab".to_string()),
-            })
+            parse_configured_hostname("http://GIT.example.com:8443/gitlab/").as_deref(),
+            Some("git.example.com")
         );
         assert_eq!(
-            parse_configured_host("http://GIT.example.com:8443/gitlab/"),
-            Some(ConfiguredHost {
-                host: "git.example.com".to_string(),
-                path: Some("gitlab".to_string()),
-            })
+            parse_configured_hostname("https://user@git.example.com").as_deref(),
+            Some("git.example.com")
         );
-        assert_eq!(
-            parse_configured_host("https://user@git.example.com"),
-            Some(ConfiguredHost {
-                host: "git.example.com".to_string(),
-                path: None,
-            })
-        );
-        assert_eq!(parse_configured_host("  "), None);
-        assert_eq!(parse_configured_host("https:///gitlab"), None);
+        assert_eq!(parse_configured_hostname("  "), None);
+        assert_eq!(parse_configured_hostname("https:///gitlab"), None);
     }
 
     #[test]
