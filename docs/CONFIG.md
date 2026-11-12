@@ -29,6 +29,7 @@ ignore_whitespace = "auto" # or true / false; omitted defaults to false
 commit_order = "descending"
 initial_commit_selection = "all"
 show_file_list = true
+file_list_position = "left"
 compact_folders = false
 show_pr_checks = false
 show_pr_comments = true
@@ -96,6 +97,7 @@ session_header = true
 | `ignore_whitespace`        | `false`      | Whitespace comparison for local Git, jj, and hg diffs: `false` compares normally, `true` ignores all whitespace, and `"auto"` chooses by file extension. PR diffs are unchanged. See [Whitespace comparison](#whitespace-comparison). |
 | `ignore_whitespace_overrides` | (none)    | Table of extension-to-boolean overrides, used only with `ignore_whitespace = "auto"`. `true` ignores whitespace; `false` compares normally. |
 | `show_file_list`           | `true`       | Whether the file list panel is visible on startup. Toggle with `<leader>e`.                                                                                |
+| `file_list_position`       | `left`       | `left` or `right`: which side of the diff the file list and comment navigator sit on. `<leader>h` / `<leader>l` move focus toward the pane on that side. |
 | `compact_folders` | `false` | Join single-child directory chains into one file-tree row. Restart tuicr after changing this setting. |
 | `show_pr_checks`           | `false`      | Whether PR CI checks are fetched and shown. Set to `true` to include GitHub check rollups.                                                           |
 | `show_pr_comments`         | `true`       | Whether PR conversation comments are fetched and shown. Set to `false` to skip PR comments.                                                         |

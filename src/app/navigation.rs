@@ -250,11 +250,39 @@ impl App {
     }
 
     /// `<leader>h` — move focus one panel left. In side-by-side view the two
-    /// diff columns are stops on that walk, so the order is
-    /// file list → old → new; from the new side this only steps to the old one.
+    /// diff columns are stops on that walk, so with the file list on the left
+    /// the order is file list → old → new, and with it on the right
+    /// old → new → file list.
     pub fn focus_pane_left(&mut self) {
-        if self.diff_panes_are_walkable() && self.cursor_side == LineSide::New {
-            self.set_cursor_side(LineSide::Old);
+        match self.file_list_position {
+            FileListPosition::Left => self.focus_toward_file_list(),
+            FileListPosition::Right => self.focus_away_from_file_list(),
+        }
+    }
+
+    /// `<leader>l` — move focus one panel right; the mirror of
+    /// [`focus_pane_left`].
+    pub fn focus_pane_right(&mut self) {
+        match self.file_list_position {
+            FileListPosition::Left => self.focus_away_from_file_list(),
+            FileListPosition::Right => self.focus_toward_file_list(),
+        }
+    }
+
+    /// The side-by-side column that borders the file list.
+    fn diff_side_nearest_file_list(&self) -> LineSide {
+        match self.file_list_position {
+            FileListPosition::Left => LineSide::Old,
+            FileListPosition::Right => LineSide::New,
+        }
+    }
+
+    /// One step of the panel walk toward the file list: from the far diff
+    /// column to the near one, then out to the file list (if shown).
+    fn focus_toward_file_list(&mut self) {
+        let near = self.diff_side_nearest_file_list();
+        if self.diff_panes_are_walkable() && self.cursor_side != near {
+            self.set_cursor_side(near);
             return;
         }
         if self.show_file_list {
@@ -262,13 +290,17 @@ impl App {
         }
     }
 
-    /// `<leader>l` — move focus one panel right; the mirror of
-    /// [`focus_pane_left`]. Entering the diff from the file list keeps
-    /// whichever side was already active rather than resetting it.
-    pub fn focus_pane_right(&mut self) {
+    /// One step of the panel walk away from the file list. Entering the diff
+    /// from the file list keeps whichever side was already active rather than
+    /// resetting it; inside the diff it steps to the far column and stops.
+    fn focus_away_from_file_list(&mut self) {
         if self.diff_panes_are_walkable() {
-            if self.cursor_side == LineSide::Old {
-                self.set_cursor_side(LineSide::New);
+            let near = self.diff_side_nearest_file_list();
+            if self.cursor_side == near {
+                self.set_cursor_side(match near {
+                    LineSide::Old => LineSide::New,
+                    LineSide::New => LineSide::Old,
+                });
             }
             return;
         }

@@ -230,6 +230,73 @@ fn leader_walk_ignores_the_sides_in_unified_view() {
 }
 
 #[test]
+fn leader_walk_mirrors_when_the_file_list_is_on_the_right() {
+    let mut app = build_app();
+    app.file_list_position = FileListPosition::Right;
+    app.diff_view_mode = DiffViewMode::SideBySide;
+    app.show_file_list = true;
+    app.focused_panel = FocusedPanel::Diff;
+    app.cursor_side = LineSide::Old;
+
+    // Layout is old | new | file list: `l` walks old -> new -> file list.
+    app.focus_pane_right();
+    assert_eq!(app.focused_panel, FocusedPanel::Diff);
+    assert_eq!(app.cursor_side, LineSide::New);
+
+    app.focus_pane_right();
+    assert_eq!(app.focused_panel, FocusedPanel::FileList);
+    assert_eq!(app.cursor_side, LineSide::New);
+
+    // Already rightmost: stays put.
+    app.focus_pane_right();
+    assert_eq!(app.focused_panel, FocusedPanel::FileList);
+
+    // `h` comes back: file list -> diff (side kept) -> old.
+    app.focus_pane_left();
+    assert_eq!(app.focused_panel, FocusedPanel::Diff);
+    assert_eq!(app.cursor_side, LineSide::New);
+
+    app.focus_pane_left();
+    assert_eq!(app.cursor_side, LineSide::Old);
+
+    // Already leftmost: stays put.
+    app.focus_pane_left();
+    assert_eq!(app.focused_panel, FocusedPanel::Diff);
+    assert_eq!(app.cursor_side, LineSide::Old);
+}
+
+#[test]
+fn leader_walk_on_the_right_in_unified_view() {
+    let mut app = build_app();
+    app.file_list_position = FileListPosition::Right;
+    app.diff_view_mode = DiffViewMode::Unified;
+    app.show_file_list = true;
+    app.focused_panel = FocusedPanel::Diff;
+
+    // The diff is the left pane, so `h` has nowhere to go.
+    app.focus_pane_left();
+    assert_eq!(app.focused_panel, FocusedPanel::Diff);
+
+    app.focus_pane_right();
+    assert_eq!(app.focused_panel, FocusedPanel::FileList);
+
+    app.focus_pane_left();
+    assert_eq!(app.focused_panel, FocusedPanel::Diff);
+}
+
+#[test]
+fn leader_walk_on_the_right_skips_a_hidden_file_list() {
+    let mut app = build_app();
+    app.file_list_position = FileListPosition::Right;
+    app.diff_view_mode = DiffViewMode::Unified;
+    app.show_file_list = false;
+    app.focused_panel = FocusedPanel::Diff;
+
+    app.focus_pane_right();
+    assert_eq!(app.focused_panel, FocusedPanel::Diff);
+}
+
+#[test]
 fn horizontal_keys_scroll_in_unified_and_leave_side_unchanged() {
     let mut app = build_app();
     app.diff_view_mode = DiffViewMode::Unified;
