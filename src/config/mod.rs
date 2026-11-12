@@ -79,12 +79,16 @@ pub struct ForgeConfig {
     /// reader can see the comment classification at a glance. Defaults to
     /// `true`; set to `false` to send the raw comment body.
     pub comment_type_prefix: bool,
+    /// GitHub search query for the Pull Requests review scope. `None` keeps
+    /// `review-requested:@me`. Other forges ignore it.
+    pub pr_search: Option<String>,
 }
 
 impl Default for ForgeConfig {
     fn default() -> Self {
         Self {
             comment_type_prefix: true,
+            pr_search: None,
         }
     }
 }
@@ -304,7 +308,7 @@ const KNOWN_KEYS: &[&str] = &[
     "export",
 ];
 
-const FORGE_KNOWN_KEYS: &[&str] = &["comment_type_prefix"];
+const FORGE_KNOWN_KEYS: &[&str] = &["comment_type_prefix", "pr_search"];
 
 const EXPORT_KNOWN_KEYS: &[&str] = &[
     "intro",
@@ -713,6 +717,14 @@ fn parse_forge(value: &Value, warnings: &mut Vec<String>) -> Option<ForgeConfig>
     if let Some(v) = read_section_bool(table, "forge", "comment_type_prefix", warnings) {
         cfg.comment_type_prefix = v;
         any_override = true;
+    }
+
+    if let Some(v) = read_section_string(table, "forge", "pr_search", warnings) {
+        let trimmed = v.trim();
+        if !trimmed.is_empty() {
+            cfg.pr_search = Some(trimmed.to_string());
+            any_override = true;
+        }
     }
 
     if any_override { Some(cfg) } else { None }
@@ -2228,6 +2240,73 @@ comment_type_prefix = "yes"
     fn forge_defaults_enable_comment_type_prefix() {
         let cfg = ForgeConfig::default();
         assert!(cfg.comment_type_prefix);
+        assert!(cfg.pr_search.is_none());
+    }
+
+    #[test]
+    fn should_parse_forge_pr_search() {
+        let outcome = parse_config(
+            r#"[forge]
+pr_search = "review-requested:@me draft:false status:success"
+"#,
+        );
+        let forge = outcome
+            .config
+            .as_ref()
+            .and_then(|cfg| cfg.forge.clone())
+            .expect("forge section should parse");
+        assert_eq!(
+            forge.pr_search.as_deref(),
+            Some("review-requested:@me draft:false status:success")
+        );
+        assert!(forge.comment_type_prefix);
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_ignore_blank_forge_pr_search() {
+        for source in [
+            r#"[forge]
+pr_search = ""
+"#,
+            r#"[forge]
+pr_search = "   "
+"#,
+        ] {
+            let outcome = parse_config(source);
+            assert!(
+                outcome
+                    .config
+                    .as_ref()
+                    .and_then(|cfg| cfg.forge.clone())
+                    .is_none(),
+                "blank pr_search should leave the forge section unset: {source:?}"
+            );
+            assert!(outcome.warnings.is_empty());
+        }
+    }
+
+    #[test]
+    fn should_warn_on_non_string_forge_pr_search() {
+        let outcome = parse_config(
+            r#"[forge]
+pr_search = 1
+"#,
+        );
+        assert!(
+            outcome
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.forge.clone())
+                .is_none()
+        );
+        assert_eq!(
+            outcome.warnings,
+            vec![
+                "Warning: Config key 'forge.pr_search' must be a string; ignoring value"
+                    .to_string()
+            ]
+        );
     }
 
     #[test]

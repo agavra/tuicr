@@ -267,7 +267,11 @@ where
         ];
         if query.scope == PullRequestListScope::ReviewRequested {
             args.push("--search".to_string());
-            args.push("review-requested:@me".to_string());
+            let search = match query.search.as_deref().map(str::trim) {
+                Some(search) if !search.is_empty() => search.to_string(),
+                _ => "review-requested:@me".to_string(),
+            };
+            args.push(search);
         }
         let output = self.run_gh(args, &query.repository.host)?;
         let rows: Vec<GhPullRequestSummary> = serde_json::from_str(&output)?;
@@ -1807,6 +1811,98 @@ Match host github-work
     }
 
     #[test]
+    fn list_pull_requests_pr_search_replaces_review_requested_query() {
+        let runner = FakeGhRunner::default();
+        let backend = GitHubGhBackend::with_runner(None, runner);
+        let mut query = PullRequestListQuery::first_page_with_scope(
+            repo(),
+            1,
+            PullRequestListScope::ReviewRequested,
+        );
+        query.search = Some("review-requested:@me draft:false status:success".to_string());
+        backend.list_pull_requests(query).unwrap();
+
+        let calls = backend.runner.calls.lock().unwrap();
+        assert_eq!(
+            calls[0],
+            vec![
+                "pr",
+                "list",
+                "--repo",
+                "agavra/tuicr",
+                "--state",
+                "open",
+                "--limit",
+                "2",
+                "--json",
+                PR_LIST_JSON_FIELDS,
+                "--search",
+                "review-requested:@me draft:false status:success",
+            ]
+        );
+    }
+
+    #[test]
+    fn list_pull_requests_pr_search_blank_uses_review_requested() {
+        for search in [Some("   ".to_string()), Some(String::new())] {
+            let runner = FakeGhRunner::default();
+            let backend = GitHubGhBackend::with_runner(None, runner);
+            let mut query = PullRequestListQuery::first_page_with_scope(
+                repo(),
+                1,
+                PullRequestListScope::ReviewRequested,
+            );
+            query.search = search;
+            backend.list_pull_requests(query).unwrap();
+
+            let calls = backend.runner.calls.lock().unwrap();
+            assert_eq!(
+                calls[0],
+                vec![
+                    "pr",
+                    "list",
+                    "--repo",
+                    "agavra/tuicr",
+                    "--state",
+                    "open",
+                    "--limit",
+                    "2",
+                    "--json",
+                    PR_LIST_JSON_FIELDS,
+                    "--search",
+                    "review-requested:@me",
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn list_pull_requests_pr_search_does_not_apply_to_open_scope() {
+        let runner = FakeGhRunner::default();
+        let backend = GitHubGhBackend::with_runner(None, runner);
+        let mut query = PullRequestListQuery::first_page(repo(), 1);
+        query.search = Some("review-requested:@me draft:false status:success".to_string());
+        backend.list_pull_requests(query).unwrap();
+
+        let calls = backend.runner.calls.lock().unwrap();
+        assert_eq!(
+            calls[0],
+            vec![
+                "pr",
+                "list",
+                "--repo",
+                "agavra/tuicr",
+                "--state",
+                "open",
+                "--limit",
+                "2",
+                "--json",
+                PR_LIST_JSON_FIELDS,
+            ]
+        );
+    }
+
+    #[test]
     fn list_pull_requests_can_load_next_slice() {
         let runner = FakeGhRunner::default();
         let backend = GitHubGhBackend::with_runner(None, runner);
@@ -1816,6 +1912,7 @@ Match host github-work
                 already_loaded: 1,
                 page_size: 1,
                 scope: PullRequestListScope::Open,
+                search: None,
             })
             .unwrap();
 

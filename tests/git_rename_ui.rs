@@ -234,10 +234,12 @@ fn should_render_an_unstaged_rename_without_changing_the_repository() {
         .iter()
         .all(|token| screen.contains(token))
     });
-    assert!(
-        data.join("tuicr/reviews").is_dir(),
-        "session storage must be isolated"
-    );
+    // ProjectDirs uses Application Support on macOS, regardless of XDG_DATA_HOME.
+    #[cfg(target_os = "macos")]
+    let reviews_dir = home.join("Library/Application Support/tuicr/reviews");
+    #[cfg(not(target_os = "macos"))]
+    let reviews_dir = data.join("tuicr/reviews");
+    assert!(reviews_dir.is_dir(), "session storage must be isolated");
     let tree: String = screen
         .lines()
         .filter_map(|line| line.split('│').nth(1))

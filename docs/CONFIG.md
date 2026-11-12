@@ -312,6 +312,7 @@ comment_type_prefix = false
 | Key                   | Default | Description                                                                                                                                                                 |
 | --------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `comment_type_prefix` | `true`  | Prepend `[TYPE] ` to comment bodies on submit (e.g. `[ISSUE] Magic number should be a constant`). The tag uses the type's `label`, uppercased — the same text the TUI badge and export show. Set to `false` to send the raw comment body without a classification tag. |
+| `pr_search`           | unset   | GitHub search for the Pull Requests review scope (`r`). Same syntax as `gh pr list --search` (for example `review-requested:@me draft:false status:success`). Applied only on GitHub; other forges ignore it. Unset keeps `review-requested:@me`. |
 
 When enabled (the default), submitted comments look like:
 

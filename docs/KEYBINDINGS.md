@@ -323,7 +323,7 @@ comments that the author publishes from Gerrit's Reply UI.
 | `Space` | Toggle local commit selection |
 | `Enter` | Confirm local commit range, open PR, load more PRs, or resume a saved review |
 | `/` | Filter currently loaded PR rows locally |
-| `r` | In Pull Requests tab, toggle all open PRs / PRs requesting your review |
+| `r` | In Pull Requests tab, toggle all open PRs against the review query (`review-requested:@me` when `pr_search` is unset) |
 | `a` | In Sessions tab, show or hide saved reviews holding no progress |
 | `dd` | In Sessions tab, delete the saved review under the cursor (asks to confirm) |
 | `Esc` | Return to the diff |

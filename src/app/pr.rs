@@ -744,6 +744,7 @@ impl App {
 
         let show_pr_checks = self.show_pr_checks;
         let show_pr_comments = self.show_pr_comments;
+        let pr_search = self.forge_config.pr_search.clone();
         std::thread::spawn(move || {
             // Canonical resolution (fork parent lookup) is GitHub-only.
             let canonical = if skip_resolution || origin.kind != ForgeKind::GitHub {
@@ -755,8 +756,9 @@ impl App {
                 resolve_canonical_repository(&origin, override_repo.as_ref(), &runner)
             };
             let backend = create_forge_backend(&canonical, None, show_pr_checks, show_pr_comments);
-            let query =
+            let mut query =
                 PullRequestListQuery::first_page_with_scope(canonical.clone(), PR_PAGE_SIZE, scope);
+            query.search = pr_search;
             let result = backend
                 .list_pull_requests(query)
                 .map(|page| (page.pull_requests, page.has_more))
@@ -780,6 +782,7 @@ impl App {
 
         let show_pr_checks = self.show_pr_checks;
         let show_pr_comments = self.show_pr_comments;
+        let pr_search = self.forge_config.pr_search.clone();
         std::thread::spawn(move || {
             let backend = create_forge_backend(&repository, None, show_pr_checks, show_pr_comments);
             let query = PullRequestListQuery {
@@ -787,6 +790,7 @@ impl App {
                 already_loaded,
                 page_size: PR_PAGE_SIZE,
                 scope,
+                search: pr_search,
             };
             let result = backend
                 .list_pull_requests(query)
