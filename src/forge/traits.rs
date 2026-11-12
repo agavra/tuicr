@@ -233,6 +233,10 @@ pub struct PullRequestListQuery {
     pub already_loaded: usize,
     pub page_size: usize,
     pub scope: PullRequestListScope,
+    /// GitHub `gh pr list --search` value for the
+    /// [`PullRequestListScope::ReviewRequested`] scope. Other forges leave it
+    /// unread. `None` or a blank string keeps `review-requested:@me`.
+    pub search: Option<String>,
 }
 
 impl PullRequestListQuery {
@@ -250,6 +254,7 @@ impl PullRequestListQuery {
             already_loaded: 0,
             page_size,
             scope,
+            search: None,
         }
     }
 }
