@@ -95,17 +95,10 @@ impl App {
         // current inline selection are hidden. `None` => no selector, show all.
         let commit_set = self.selected_commit_set();
 
-        if let Some(info) = &self.pr_info {
-            let pr_line_count = crate::ui::pr_info_panel::build_pr_info_lines(
-                info,
-                crate::ui::pr_info_panel::pr_info_content_width(self.diff_state.viewport_width),
-                &self.theme,
-            )
-            .len();
-            for line_idx in 0..pr_line_count {
-                self.line_annotations
-                    .push(AnnotatedLine::PrInfoLine { line_idx });
-            }
+        let pr_line_count = crate::ui::pr_info_panel::pr_info_render_height(self);
+        for line_idx in 0..pr_line_count {
+            self.line_annotations
+                .push(AnnotatedLine::PrInfoLine { line_idx });
         }
 
         // The review-comments header is omitted in single-file view and

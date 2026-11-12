@@ -325,7 +325,7 @@ A first-session cheatsheet. Press `?` inside tuicr for the full reference.
 | `c` / `C` | Add line / file comment |
 | `v` / `V` | Visual mode (range comment) |
 | `s` (visual mode) | Suggest changes to the selected code lines |
-| `r` | Toggle file reviewed |
+| `r` | Toggle file reviewed (on the PR description: mark it reviewed and collapse it to one row) |
 | `R` | Toggle hunk reviewed |
 | `e` | Open focused file in `$EDITOR` (in PR review: the PR's revision, as a read-only copy when the checkout differs) |
 | `y` | Copy review to clipboard |

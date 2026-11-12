@@ -196,6 +196,7 @@ Repository-managed agent integrations:
 
 - Persisted review state with `files: HashMap<PathBuf, FileReview>`
 - Each `FileReview` has: `reviewed: bool`, `reviewed_hunks: BTreeSet<String>`, `file_comments: Vec<Comment>`, `line_comments: HashMap<u32, Vec<Comment>>`
+- PR sessions also persist `pr_description_reviewed: bool` (`r` on the PR description). When set, `ui::pr_info_panel::pr_info_display_lines` yields only the title row, and every PR-info row counter (annotations, row heights, search) goes through it so they stay in sync with the renderer. It merges three-way like a file's `reviewed` flag and carries over unconditionally to a new PR head
 
 **ReviewStore** (`src/review_store.rs`):
 

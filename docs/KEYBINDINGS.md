@@ -150,7 +150,7 @@ Shown below the file tree when local comments or visible remote PR threads exist
 
 | Key | Action |
 |-----|--------|
-| `r` | Toggle file reviewed |
+| `r` | Toggle file reviewed (on the PR description: mark it reviewed and collapse it to one row) |
 | `R` | Toggle hunk reviewed |
 | `c` | Add line comment (or file comment if not on a diff line) |
 | `C` | Add file comment |
@@ -162,6 +162,11 @@ Shown below the file tree when local comments or visible remote PR threads exist
 | `e` | Open focused file in `$EDITOR` |
 | `y` | Copy review to clipboard |
 | `Y` | Copy the comment at cursor to clipboard |
+
+In PR review, `r` with the cursor anywhere on the PR description marks the
+description reviewed and collapses it to its `═══ ✓ PR #N title` row; `r` on that
+row expands it again. The mark is saved with the session like a file's reviewed
+mark (`:w`), carries over when the PR gets new commits, and `:clear` resets it.
 
 `e` opens the file at the cursor's line. Terminal editors (`vim`, `nvim`, `nano`, …)
 take over the screen and tuicr reloads the diff once they exit. Windowed editors
