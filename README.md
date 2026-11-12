@@ -43,6 +43,9 @@ mise use github:agavra/tuicr
 
 # Nix
 nix run github:agavra/tuicr
+
+# Home Manager (programs.tuicr)
+programs.tuicr.enable = true;
 ```
 
 Pre-built binaries: [GitHub Releases](https://github.com/agavra/tuicr/releases). Linux releases
@@ -288,6 +291,19 @@ relative_line_numbers = false # show rendered-row distances in the diff gutter
 id = "issue"
 color = "red"
 definition = "must fix before merge"
+```
+
+With Home Manager, the same settings go in `programs.tuicr.settings`:
+
+```nix
+programs.tuicr = {
+  enable = true;
+  settings = {
+    theme = "catppuccin-mocha";
+    diff_view = "side-by-side";
+    mouse = true;
+  };
+};
 ```
 
 Bundled themes: `dark`, `light`, `ayu-light`, `ayu-mirage`, `onedark`, `github-light`,
