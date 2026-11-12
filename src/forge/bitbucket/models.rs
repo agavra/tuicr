@@ -219,6 +219,7 @@ impl BbPullRequest {
             head_ref_name: self.source.branch.name.clone(),
             base_ref_name: self.destination.branch.name.clone(),
             updated_at: self.updated_on,
+            last_commit_at: None,
             url: self.links.html_href(),
             state: normalize_state(&self.state),
             is_draft: self.draft,

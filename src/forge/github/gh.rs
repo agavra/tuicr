@@ -1,6 +1,9 @@
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+use chrono::{DateTime, Utc};
 
 use crate::error::{Result, TuicrError};
 use crate::forge::local_git::read_blob;
@@ -272,12 +275,20 @@ where
         let output = self.run_gh(args, &query.repository.host)?;
         let rows: Vec<GhPullRequestSummary> = serde_json::from_str(&output)?;
         let has_more = rows.len() > query.already_loaded + page_size;
-        let pull_requests = rows
+        let mut pull_requests = rows
             .into_iter()
             .skip(query.already_loaded)
             .take(page_size)
             .map(|row| row.into_summary(&query.repository))
             .collect::<Vec<_>>();
+        // Best-effort: a failed lookup leaves the column empty rather than
+        // failing the whole list.
+        let numbers: Vec<u64> = pull_requests.iter().map(|pr| pr.number).collect();
+        if let Ok(dates) = self.fetch_last_commit_dates(&query.repository, &numbers) {
+            for pr in &mut pull_requests {
+                pr.last_commit_at = dates.get(&pr.number).copied();
+            }
+        }
         let total_loaded = query.already_loaded + pull_requests.len();
 
         Ok(PagedPullRequests {
@@ -699,6 +710,58 @@ where
             args.push(pr.repository.host.clone());
         }
         args
+    }
+
+    /// Committer date of each listed PR's newest commit, keyed by PR number,
+    /// in one GraphQL query. `gh pr list --json commits` would instead fetch
+    /// up to 100 commits, each with up to 100 authors, for every PR on the
+    /// page. A PR missing from the response is missing from the map.
+    fn fetch_last_commit_dates(
+        &self,
+        repository: &ForgeRepository,
+        numbers: &[u64],
+    ) -> Result<HashMap<u64, DateTime<Utc>>> {
+        if numbers.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let fields: Vec<String> = numbers
+            .iter()
+            .map(|n| {
+                format!(
+                    "pr{n}: pullRequest(number: {n}) {{ commits(last: 1) {{ nodes {{ commit {{ committedDate }} }} }} }}"
+                )
+            })
+            .collect();
+        let query = format!(
+            "query($owner: String!, $name: String!) {{ repository(owner: $owner, name: $name) {{ {} }} }}",
+            fields.join(" ")
+        );
+        let mut args = vec![
+            "api".to_string(),
+            "graphql".to_string(),
+            "-f".to_string(),
+            format!("query={query}"),
+            "-f".to_string(),
+            format!("owner={}", repository.owner),
+            "-f".to_string(),
+            format!("name={}", repository.name),
+        ];
+        if repository.host != DEFAULT_GITHUB_HOST {
+            args.push("--hostname".to_string());
+            args.push(repository.host.clone());
+        }
+        let output = self.run_gh(args, &repository.host)?;
+        let value: serde_json::Value = serde_json::from_str(&output)?;
+        let prs = &value["data"]["repository"];
+        Ok(numbers
+            .iter()
+            .filter_map(|&n| {
+                let date = prs[format!("pr{n}")]["commits"]["nodes"][0]["commit"]["committedDate"]
+                    .as_str()?;
+                let date = DateTime::parse_from_rfc3339(date).ok()?;
+                Some((n, date.with_timezone(&Utc)))
+            })
+            .collect())
     }
 
     /// Read `<sha>:<path>` blobs as text with one GraphQL query, in order.
@@ -1168,6 +1231,8 @@ index 1111111..2222222 100644
 mod tests {
     use std::sync::Mutex;
 
+    use chrono::TimeZone;
+
     use super::*;
     use crate::forge::traits::ForgeBackend;
 
@@ -1196,6 +1261,18 @@ mod tests {
     "isDraft": true
   }
 ]
+"##;
+
+    // Only #148 has a commit; #125 resolves without one.
+    const LAST_COMMIT_JSON: &str = r##"
+{
+  "data": {
+    "repository": {
+      "pr148": { "commits": { "nodes": [ { "commit": { "committedDate": "2026-03-01T09:00:00Z" } } ] } },
+      "pr125": { "commits": { "nodes": [] } }
+    }
+  }
+}
 "##;
 
     const PR_VIEW_JSON: &str = r##"
@@ -1238,6 +1315,8 @@ index 1111111..2222222 100644
         /// When set, `run_with_stdin` returns this error instead of a stub
         /// success response. Lets tests exercise error mapping.
         stdin_error: Mutex<Option<GhCommandError>>,
+        /// When set, the PR list's last-commit GraphQL query fails.
+        last_commit_error: Mutex<bool>,
         /// When set, `run_with_stdin` returns this body as the success output.
         /// Defaults to `CREATE_REVIEW_RESPONSE_JSON` when None.
         stdin_response: Mutex<Option<String>>,
@@ -1266,7 +1345,15 @@ index 1111111..2222222 100644
                         .find(|a| a.starts_with("query="))
                         .map(String::as_str)
                         .unwrap_or("");
-                    if query.contains("reviewThreads(") {
+                    if query.contains("commits(last: 1)") {
+                        if *self.last_commit_error.lock().unwrap() {
+                            return Err(GhCommandError::Failed {
+                                status: Some(1),
+                                stderr: "rate limited".to_string(),
+                            });
+                        }
+                        Ok(LAST_COMMIT_JSON.to_string())
+                    } else if query.contains("reviewThreads(") {
                         Ok(REVIEW_THREADS_JSON.to_string())
                     } else if query.contains("viewer { login }") && query.contains("commit { oid }")
                     {
@@ -1839,6 +1926,99 @@ Match host github-work
                 "--json",
                 PR_LIST_JSON_FIELDS,
             ]
+        );
+    }
+
+    #[test]
+    fn list_pull_requests_reads_last_commit_date_in_one_graphql_call() {
+        let runner = FakeGhRunner::default();
+        let backend = GitHubGhBackend::with_runner(None, runner);
+        let result = backend
+            .list_pull_requests(PullRequestListQuery::first_page(repo(), 2))
+            .unwrap();
+
+        let last_commit: Vec<_> = result
+            .pull_requests
+            .iter()
+            .map(|pr| (pr.number, pr.last_commit_at))
+            .collect();
+        assert_eq!(
+            last_commit,
+            vec![
+                (
+                    148,
+                    Some(Utc.with_ymd_and_hms(2026, 3, 1, 9, 0, 0).unwrap())
+                ),
+                (125, None),
+            ]
+        );
+
+        let calls = backend.runner.calls.lock().unwrap();
+        assert_eq!(calls.len(), 2, "pr list plus one graphql query");
+        let query = calls[1]
+            .iter()
+            .find(|a| a.starts_with("query="))
+            .expect("graphql query arg");
+        assert!(query.contains("pr148: pullRequest(number: 148)"));
+        assert!(query.contains("pr125: pullRequest(number: 125)"));
+        assert!(calls[1].contains(&"owner=agavra".to_string()));
+        assert!(calls[1].contains(&"name=tuicr".to_string()));
+    }
+
+    #[test]
+    fn list_pull_requests_queries_last_commit_only_for_the_loaded_slice() {
+        let runner = FakeGhRunner::default();
+        let backend = GitHubGhBackend::with_runner(None, runner);
+        backend
+            .list_pull_requests(PullRequestListQuery {
+                repository: repo(),
+                already_loaded: 1,
+                page_size: 1,
+                scope: PullRequestListScope::ReviewRequested,
+            })
+            .unwrap();
+
+        let calls = backend.runner.calls.lock().unwrap();
+        let query = calls[1]
+            .iter()
+            .find(|a| a.starts_with("query="))
+            .expect("graphql query arg");
+        assert!(query.contains("pullRequest(number: 125)"));
+        assert!(!query.contains("pullRequest(number: 148)"));
+    }
+
+    #[test]
+    fn list_pull_requests_still_loads_when_last_commit_query_fails() {
+        let runner = FakeGhRunner::default();
+        *runner.last_commit_error.lock().unwrap() = true;
+        let backend = GitHubGhBackend::with_runner(None, runner);
+        let result = backend
+            .list_pull_requests(PullRequestListQuery::first_page(repo(), 2))
+            .unwrap();
+
+        assert_eq!(result.pull_requests.len(), 2);
+        assert!(
+            result
+                .pull_requests
+                .iter()
+                .all(|pr| pr.last_commit_at.is_none())
+        );
+    }
+
+    #[test]
+    fn list_pull_requests_routes_last_commit_query_to_enterprise_host() {
+        let runner = FakeGhRunner::default();
+        let backend = GitHubGhBackend::with_runner(None, runner);
+        let repository = ForgeRepository::github("github.example.com", "agavra", "tuicr");
+        backend
+            .list_pull_requests(PullRequestListQuery::first_page(repository, 1))
+            .unwrap();
+
+        let calls = backend.runner.calls.lock().unwrap();
+        assert!(
+            calls[1]
+                .windows(2)
+                .any(|w| w[0] == "--hostname" && w[1] == "github.example.com")
         );
     }
 

@@ -263,6 +263,11 @@ pub struct PullRequestSummary {
     pub head_ref_name: String,
     pub base_ref_name: String,
     pub updated_at: Option<DateTime<Utc>>,
+    /// Committer date of the newest commit. Unlike `updated_at`, it moves
+    /// only when the code does (a rebase counts). Only GitHub fills it; the
+    /// row omits it when `None`.
+    #[serde(default)]
+    pub last_commit_at: Option<DateTime<Utc>>,
     pub url: String,
     pub state: String,
     pub is_draft: bool,

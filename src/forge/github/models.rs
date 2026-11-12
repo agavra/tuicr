@@ -117,6 +117,7 @@ impl GhPullRequestSummary {
             head_ref_name: self.head_ref_name,
             base_ref_name: self.base_ref_name,
             updated_at: self.updated_at,
+            last_commit_at: None,
             url: self.url,
             state: self.state,
             is_draft: self.is_draft,
