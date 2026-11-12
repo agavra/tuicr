@@ -165,13 +165,14 @@ impl PullRequestsTab {
         None
     }
 
-    /// Toggle between all open PRs and PRs awaiting the current user's review,
-    /// then transition to `Loading` so the caller can refetch page 1.
+    /// Step to the next list scope the repository's forge supports (see
+    /// `ForgeKind::pr_list_scopes`), then transition to `Loading` so the
+    /// caller can refetch page 1.
     pub fn toggle_scope_and_start_reload(
         &mut self,
     ) -> Option<(ForgeRepository, PullRequestListScope)> {
         let repository = self.repository()?.clone();
-        let next_scope = self.scope().toggled();
+        let next_scope = self.scope().next_for(repository.kind);
         *self = PullRequestsTab::Loading {
             repository: repository.clone(),
             scope: next_scope,
@@ -744,6 +745,62 @@ mod tests {
         assert_eq!(
             request.unwrap(),
             (repo(), PullRequestListScope::ReviewRequested, 1)
+        );
+    }
+
+    #[test]
+    fn should_cycle_github_scopes_and_reload_each() {
+        // given
+        let mut tab = PullRequestsTab::new(Some(repo()));
+        let mut seen = Vec::new();
+        // when
+        for _ in 0..3 {
+            let (_, scope) = tab.toggle_scope_and_start_reload().unwrap();
+            assert!(matches!(tab.view().status, PrTabStatus::Loading));
+            tab.apply_initial_load(Ok((vec![pr(1, "a", "a", "h", "m")], true)));
+            seen.push(scope);
+        }
+        // then
+        assert_eq!(
+            seen,
+            vec![
+                PullRequestListScope::ReviewRequested,
+                PullRequestListScope::PersonallyRequested,
+                PullRequestListScope::Open,
+            ]
+        );
+    }
+
+    #[test]
+    fn should_toggle_between_two_scopes_on_forges_without_personal_requests() {
+        // given
+        let gitlab = ForgeRepository::gitlab("gitlab.com", "group", "project");
+        let mut tab = PullRequestsTab::new(Some(gitlab.clone()));
+        // when
+        let first = tab.toggle_scope_and_start_reload();
+        let second = tab.toggle_scope_and_start_reload();
+        // then
+        assert_eq!(
+            first.unwrap(),
+            (gitlab.clone(), PullRequestListScope::ReviewRequested)
+        );
+        assert_eq!(second.unwrap(), (gitlab, PullRequestListScope::Open));
+    }
+
+    #[test]
+    fn should_preserve_personally_requested_scope_for_load_more() {
+        // given
+        let mut tab = PullRequestsTab::new(Some(repo()));
+        tab.toggle_scope_and_start_reload();
+        tab.toggle_scope_and_start_reload();
+        tab.apply_initial_load(Ok((vec![pr(1, "a", "a", "h", "m")], true)));
+        tab.set_filter("a".to_string());
+        // when
+        let request = tab.start_load_more();
+        // then
+        assert_eq!(
+            request.unwrap(),
+            (repo(), PullRequestListScope::PersonallyRequested, 1)
         );
     }
 }

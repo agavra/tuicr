@@ -448,8 +448,11 @@ impl ForgeBackend for AzureDevOpsBackend {
         );
         // "Requested" scope → only PRs where the current user is a reviewer.
         // Best-effort: if the user id can't be resolved, fall back to all active.
-        if query.scope == PullRequestListScope::ReviewRequested
-            && let Some(id) = self.current_user_id(&query.repository).ok().flatten()
+        // `PersonallyRequested` is not in Azure DevOps' scope cycle.
+        if matches!(
+            query.scope,
+            PullRequestListScope::ReviewRequested | PullRequestListScope::PersonallyRequested
+        ) && let Some(id) = self.current_user_id(&query.repository).ok().flatten()
         {
             url.push_str(&format!("&searchCriteria.reviewerId={id}"));
         }

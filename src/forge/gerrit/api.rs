@@ -552,7 +552,12 @@ impl ForgeBackend for GerritBackend {
         //
         // Both operators need a logged-in user, so an anonymous session falls
         // back to every open change rather than erroring.
-        if query.scope == PullRequestListScope::ReviewRequested && self.http.is_authenticated() {
+        // `PersonallyRequested` is not in Gerrit's scope cycle.
+        if matches!(
+            query.scope,
+            PullRequestListScope::ReviewRequested | PullRequestListScope::PersonallyRequested
+        ) && self.http.is_authenticated()
+        {
             terms.push_str("+attention:self+-owner:self");
         }
         // Fetch one extra to detect a further page, the same probe the Azure

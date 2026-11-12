@@ -323,11 +323,16 @@ comments that the author publishes from Gerrit's Reply UI.
 | `Space` | Toggle local commit selection |
 | `Enter` | Confirm local commit range, open PR, load more PRs, or resume a saved review |
 | `/` | Filter currently loaded PR rows locally |
-| `r` | In Pull Requests tab, toggle all open PRs / PRs requesting your review |
+| `r` | In Pull Requests tab, cycle all open PRs / PRs requesting your review / (GitHub) PRs requesting you by name |
 | `a` | In Sessions tab, show or hide saved reviews holding no progress |
 | `dd` | In Sessions tab, delete the saved review under the cursor (asks to confirm) |
 | `Esc` | Return to the diff |
 | `:q` | Quit |
+
+In the Pull Requests tab, `r` steps through the list scopes the forge supports and
+refetches the first page: all open PRs, then PRs requesting your review, then back. On
+GitHub a third scope, `requested (me)`, sits between "requested" and "all": it lists only
+PRs that request your review by name, leaving out requests made to a team you belong to.
 
 The Sessions tab lists saved reviews for the current checkout, so you can pick one
 instead of retyping the commit range it was opened with. Rows show the review target,

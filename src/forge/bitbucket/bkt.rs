@@ -342,7 +342,9 @@ where
         ];
         match query.scope {
             PullRequestListScope::Open => params.push(("state", "OPEN".to_string())),
-            PullRequestListScope::ReviewRequested => {
+            // `PersonallyRequested` is not in Bitbucket's scope cycle; Cloud
+            // has no team reviewers, so it would mean the same thing anyway.
+            PullRequestListScope::ReviewRequested | PullRequestListScope::PersonallyRequested => {
                 // Cloud has no workspace-wide "review requested" endpoint; the
                 // repository-scoped `q` filter is the equivalent.
                 let uuid = self.viewer_uuid()?.ok_or_else(|| {

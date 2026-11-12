@@ -335,7 +335,11 @@ where
             "--per-page".to_string(),
             requested.to_string(),
         ];
-        if query.scope == PullRequestListScope::ReviewRequested {
+        // `PersonallyRequested` is not in GitLab's scope cycle.
+        if matches!(
+            query.scope,
+            PullRequestListScope::ReviewRequested | PullRequestListScope::PersonallyRequested
+        ) {
             args.push("--reviewer=@me".to_string());
         }
         let output = self.run_glab(args, &query.repository.host)?;

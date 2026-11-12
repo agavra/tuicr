@@ -36,6 +36,28 @@ impl ForgeKind {
             ForgeKind::Gerrit => "Gerrit",
         }
     }
+
+    /// PR list scopes this forge can query, in the order `r` steps through
+    /// them in the selector's Pull Requests tab. `Open` always comes first.
+    pub fn pr_list_scopes(self) -> &'static [PullRequestListScope] {
+        match self {
+            // Only GitHub tells a personal review request apart from one
+            // made through a team the user belongs to.
+            ForgeKind::GitHub => &[
+                PullRequestListScope::Open,
+                PullRequestListScope::ReviewRequested,
+                PullRequestListScope::PersonallyRequested,
+            ],
+            ForgeKind::GitLab
+            | ForgeKind::Gitea
+            | ForgeKind::Bitbucket
+            | ForgeKind::AzureDevOps
+            | ForgeKind::Gerrit => &[
+                PullRequestListScope::Open,
+                PullRequestListScope::ReviewRequested,
+            ],
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -208,21 +230,31 @@ impl PullRequestTarget {
 pub enum PullRequestListScope {
     #[default]
     Open,
+    /// PRs requesting the user's review, directly or through a team.
     ReviewRequested,
+    /// PRs requesting the user's review by name, excluding team requests.
+    /// Only offered where `ForgeKind::pr_list_scopes` lists it.
+    PersonallyRequested,
 }
 
 impl PullRequestListScope {
-    pub fn toggled(self) -> Self {
-        match self {
-            Self::Open => Self::ReviewRequested,
-            Self::ReviewRequested => Self::Open,
-        }
+    /// The scope after this one in `forge`'s cycle, wrapping back to `Open`.
+    /// A scope the forge does not list also falls back to `Open`.
+    pub fn next_for(self, forge: ForgeKind) -> Self {
+        let scopes = forge.pr_list_scopes();
+        scopes
+            .iter()
+            .position(|scope| *scope == self)
+            .and_then(|idx| scopes.get(idx + 1))
+            .copied()
+            .unwrap_or(Self::Open)
     }
 
     pub fn label(self) -> &'static str {
         match self {
             Self::Open => "all",
             Self::ReviewRequested => "requested",
+            Self::PersonallyRequested => "requested (me)",
         }
     }
 }
@@ -724,6 +756,52 @@ mod tests {
         assert_eq!(
             ForgeFileLinesRequest::side_for_status(FileStatus::Deleted),
             ForgeFileSide::Base,
+        );
+    }
+
+    #[test]
+    fn should_cycle_github_scopes_through_personally_requested() {
+        // given
+        let forge = ForgeKind::GitHub;
+        // when
+        let first = PullRequestListScope::Open.next_for(forge);
+        let second = first.next_for(forge);
+        let third = second.next_for(forge);
+        // then
+        assert_eq!(first, PullRequestListScope::ReviewRequested);
+        assert_eq!(second, PullRequestListScope::PersonallyRequested);
+        assert_eq!(third, PullRequestListScope::Open);
+    }
+
+    #[test]
+    fn should_skip_personally_requested_on_forges_without_it() {
+        for forge in [
+            ForgeKind::GitLab,
+            ForgeKind::Gitea,
+            ForgeKind::Bitbucket,
+            ForgeKind::AzureDevOps,
+            ForgeKind::Gerrit,
+        ] {
+            // when
+            let first = PullRequestListScope::Open.next_for(forge);
+            let second = first.next_for(forge);
+            // then
+            assert_eq!(first, PullRequestListScope::ReviewRequested, "{forge:?}");
+            assert_eq!(second, PullRequestListScope::Open, "{forge:?}");
+            assert!(
+                !forge
+                    .pr_list_scopes()
+                    .contains(&PullRequestListScope::PersonallyRequested),
+                "{forge:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn should_fall_back_to_open_for_a_scope_the_forge_does_not_list() {
+        assert_eq!(
+            PullRequestListScope::PersonallyRequested.next_for(ForgeKind::GitLab),
+            PullRequestListScope::Open
         );
     }
 }

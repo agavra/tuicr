@@ -737,7 +737,10 @@ where
     fn list_pull_requests(&self, query: PullRequestListQuery) -> Result<PagedPullRequests> {
         match query.scope {
             PullRequestListScope::Open => self.list_open_pull_requests(&query),
-            PullRequestListScope::ReviewRequested => self.list_review_requested(&query),
+            // `PersonallyRequested` is not in Gitea's scope cycle.
+            PullRequestListScope::ReviewRequested | PullRequestListScope::PersonallyRequested => {
+                self.list_review_requested(&query)
+            }
         }
     }
 
