@@ -14,6 +14,8 @@
 ## What it does
 
 - GitHub-style continuous diff in the terminal. Scroll through every changed file in one stream.
+- Word-level diff: when a line changes, the words that differ get a stronger background, so a one-character
+  edit stands out without comparing the old and new lines by eye.
 - PR-style comments at the line, range, file, and review level. 
 - Review tracking at file or hunk granularity, persisted across sessions.
 - Three export targets: push a real review to GitHub, GitLab, Gitea, Bitbucket, Azure DevOps, or Gerrit, copy
@@ -355,6 +357,7 @@ A first-session cheatsheet. Press `?` inside tuicr for the full reference.
 | `y` | Copy review to clipboard |
 | `:edit` | Open focused file in `$EDITOR` |
 | `:submit` | Push review to GitHub, GitLab, Gitea, Bitbucket, Azure DevOps, or Gerrit |
+| `:set worddiff!` | Toggle word-level emphasis of changed words |
 | `:theme` | Open a live-preview theme picker (`/` to filter); `:theme <name>` applies directly. Session-only; set `theme` in `config.toml` to keep it |
 | `Tab` in `:` prompt | Complete or cycle commands |
 | `Ctrl-l` | Redraw the whole screen |

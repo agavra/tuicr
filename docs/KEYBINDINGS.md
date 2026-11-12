@@ -281,6 +281,8 @@ In command mode,
 | `:set wrap!` (`:wrap`) | Toggle line wrap in diff view |
 | `:set relativenumber` / `:set norelativenumber` | Enable / disable relative rendered-row numbers |
 | `:set relativenumber!` | Toggle relative rendered-row numbers |
+| `:set worddiff` / `:set noworddiff` | Enable / disable word-level emphasis of changed words |
+| `:set worddiff!` | Toggle word-level emphasis of changed words |
 | `:set commits` | Show inline commit selector |
 | `:set nocommits` | Hide inline commit selector |
 | `:set commits!` | Toggle inline commit selector |

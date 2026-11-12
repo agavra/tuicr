@@ -24,6 +24,7 @@ pub mod tuicrignore;
 pub mod ui;
 pub mod update;
 pub mod vcs;
+pub mod word_diff;
 
 pub use error::{Result, TuicrError};
 pub use model::{Comment, CommentType, LineRange, LineSide, ReviewSession, SessionDiffSource};
