@@ -207,6 +207,9 @@ pub fn handle_mouse_event(app: &mut App, event: MouseEvent) {
                 InputMode::ThemePicker => {
                     app.move_theme_picker_selection(if scroll_up { -1 } else { 1 });
                 }
+                InputMode::FilePicker => {
+                    app.move_file_picker_selection(if scroll_up { -1 } else { 1 });
+                }
                 InputMode::CommitSelect | InputMode::Normal if over_commit_list => {
                     wheel_commit_list(app, scroll_up);
                 }
@@ -1589,6 +1592,32 @@ fn handle_file_tree_prompt_action(app: &mut App, action: Action) {
         Action::ClearLine => app.file_tree_prompt_clear_line(),
         Action::SubmitInput => app.commit_file_tree_prompt(),
         Action::ExitMode => app.cancel_file_tree_prompt(),
+        _ => {}
+    }
+}
+
+/// Handle actions in `InputMode::FilePicker`, with the same draft gate as
+/// `handle_theme_picker_action`.
+pub fn handle_file_picker_action(app: &mut App, action: Action) {
+    if app.file_picker_filtering() {
+        match action {
+            Action::InsertChar(c) => app.file_picker_filter_insert_char(c),
+            Action::DeleteChar => app.file_picker_filter_delete_char(),
+            Action::ClearLine => app.file_picker_filter_clear_line(),
+            Action::CursorDown(n) => app.move_file_picker_selection(n as isize),
+            Action::CursorUp(n) => app.move_file_picker_selection(-(n as isize)),
+            Action::SubmitInput => app.submit_file_picker_filter(),
+            Action::ExitMode => app.cancel_file_picker_filter(),
+            _ => {}
+        }
+        return;
+    }
+    match action {
+        Action::CursorDown(n) => app.move_file_picker_selection(n as isize),
+        Action::CursorUp(n) => app.move_file_picker_selection(-(n as isize)),
+        Action::FilePickerFilter => app.begin_file_picker_filter(),
+        Action::SubmitInput => app.confirm_file_picker(),
+        Action::ExitMode => app.cancel_file_picker(),
         _ => {}
     }
 }

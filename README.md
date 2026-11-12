@@ -316,6 +316,7 @@ A first-session cheatsheet. Press `?` inside tuicr for the full reference.
 | `Ctrl-d` / `Ctrl-u` | Half-page down / up |
 | `g` / `G` | Top / bottom |
 | `{` / `}` | Previous / next file |
+| `<leader>p` | Pick a file by path from a popup and jump to it (`/` filters); handy with the file list hidden |
 | `[` / `]` | Previous / next hunk |
 | `m` / `M` | Next / previous comment |
 | `/` | Search the diff by case-insensitive regex, or search the file tree/help by text — whichever is focused/open |
