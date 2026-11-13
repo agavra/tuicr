@@ -1883,6 +1883,7 @@ mod tests {
             10,
             false,
         );
+        last.comments[0].url = "https://example.test/t10".to_string();
         last.comments.push(RemoteReviewComment {
             id: "reply".to_string(),
             author: Some("eve".to_string()),
@@ -1912,6 +1913,12 @@ mod tests {
             "{markdown}"
         );
         assert!(!markdown.contains("\n1. **[ISSUE]**"), "{markdown}");
+        // root URL and reply bullet align under the two-digit marker
+        assert!(
+            markdown.contains("\n    <https://example.test/t10>\n"),
+            "{markdown}"
+        );
+        assert!(markdown.contains("\n    - @eve - r1\n"), "{markdown}");
     }
 
     #[test]
