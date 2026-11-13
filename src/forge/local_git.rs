@@ -71,9 +71,8 @@ pub(crate) fn read_blob(repo_root: &Path, sha: &str, path: &Path) -> Option<Stri
     if !is_hex_object_id(sha) {
         return None;
     }
-    // Diff paths arrive with forward slashes, but a path joined on Windows can
-    // carry backslashes, and git only resolves `<sha>:<path>` with slashes.
-    let spec = format!("{}:{}", sha, path.to_string_lossy().replace('\\', "/"));
+    // git only resolves `<sha>:<path>` with slashes; see `forge_path`.
+    let spec = format!("{}:{}", sha, crate::forge::forge_path(path));
     if !object_exists_unchecked(repo_root, &spec) {
         return None;
     }
@@ -133,7 +132,7 @@ pub(crate) mod test_support {
 
 #[cfg(test)]
 mod tests {
-    use super::test_support::init_repo_with_commit;
+    use super::test_support::{git, init_repo_with_commit};
     use super::*;
     use std::path::PathBuf;
 
@@ -238,5 +237,29 @@ mod tests {
         assert_eq!(message.trim_end_matches('\n'), expected);
         assert_eq!(abbreviated.trim_end_matches('\n'), expected);
         assert_eq!(missing, None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reads_a_blob_whose_name_has_a_backslash() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        git(root, &["init", "--quiet"]);
+        git(root, &["config", "user.email", "test@example.com"]);
+        git(root, &["config", "user.name", "test"]);
+        std::fs::write(root.join("a\\b.rs"), "x\n").expect("write");
+        git(root, &["add", "--", "a\\b.rs"]);
+        git(root, &["commit", "--quiet", "-m", "add file"]);
+        let sha = run_command_output(
+            "git",
+            Some(root),
+            ["rev-parse", "HEAD"].iter().map(|s| OsStr::new(*s)),
+        )
+        .expect("rev-parse");
+
+        assert_eq!(
+            read_blob(root, sha.trim(), &PathBuf::from("a\\b.rs")),
+            Some("x\n".to_string())
+        );
     }
 }

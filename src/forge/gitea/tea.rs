@@ -40,6 +40,7 @@ use crate::forge::traits::{
     PullRequestListScope, PullRequestReviewMetadata, PullRequestReviewRecord,
     PullRequestReviewStatus, PullRequestSummary, PullRequestTarget,
 };
+use crate::forge::{percent_encode_component, percent_encode_path};
 use crate::model::{DiffLine, FilePatch, FileStatus};
 use crate::process::{CommandOutputErrorKind, run_command_output, run_command_streams};
 use crate::vcs::git::raw::{FileMetadata, pair_metadata_with_patch, run_git_diff};
@@ -1488,29 +1489,6 @@ fn local_range_diff(repo_root: &Path, start_sha: &str, end_sha: &str) -> Option<
 }
 
 // ----- URL helpers -----
-
-/// Percent-encode one path segment's worth of text, keeping `/` intact so a
-/// repository-relative path stays a path.
-fn percent_encode_path(value: &str) -> String {
-    value
-        .split('/')
-        .map(percent_encode_component)
-        .collect::<Vec<_>>()
-        .join("/")
-}
-
-fn percent_encode_component(value: &str) -> String {
-    let mut encoded = String::with_capacity(value.len());
-    for byte in value.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                encoded.push(byte as char);
-            }
-            _ => encoded.push_str(&format!("%{byte:02X}")),
-        }
-    }
-    encoded
-}
 
 fn strip_scheme(value: &str) -> Option<&str> {
     value

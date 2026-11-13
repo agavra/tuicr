@@ -13,6 +13,7 @@ use crate::forge::traits::{
     PagedPullRequests, PullRequestCommit, PullRequestDetails, PullRequestListQuery,
     PullRequestListScope, PullRequestReviewMetadata, PullRequestReviewRecord, PullRequestTarget,
 };
+use crate::forge::{forge_path, percent_encode_component};
 use crate::model::{DiffLine, FilePatch, LineOrigin};
 use crate::process::{
     CommandOutputError, CommandOutputErrorKind, run_command_output, run_command_output_with_stdin,
@@ -109,10 +110,7 @@ fn gl_encode_project_path(project_path: &str) -> String {
 
 /// Percent-encode a file path for use in GitLab repository file API endpoints.
 fn gl_encode_file_path(path: &str) -> String {
-    path.replace('/', "%2F")
-        .replace(' ', "%20")
-        .replace('#', "%23")
-        .replace('?', "%3F")
+    percent_encode_component(path)
 }
 
 fn non_empty(value: &str) -> Option<String> {
@@ -702,14 +700,14 @@ where
         }
 
         for comment in request.comments {
-            let new_path = comment.path.to_string_lossy().replace('\\', "/");
+            let new_path = forge_path(&comment.path);
             // GitLab positions need both old_path and new_path. Renamed files
             // set comment.old_path to the base-side path; otherwise both
             // sides share the display path.
             let old_path = comment
                 .old_path
                 .as_ref()
-                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .map(|p| forge_path(p))
                 .unwrap_or_else(|| new_path.clone());
 
             // Build the position object with integer line numbers.
@@ -888,13 +886,12 @@ where
 {
     fn fetch_file_via_api(&self, request: &ForgeFileLinesRequest) -> Result<String> {
         let project = self.api_project(&request.repository);
-        let path_str = request.path.to_string_lossy().replace('\\', "/");
-        let encoded_path = gl_encode_file_path(&path_str);
+        let encoded_path = gl_encode_file_path(&forge_path(&request.path));
         let endpoint = format!(
             "projects/{}/repository/files/{}/raw?ref={}",
             project,
             encoded_path,
-            request.sha(),
+            percent_encode_component(request.sha()),
         );
         let mut args = vec!["api".to_string()];
         args.extend(Self::api_hostname_args(&request.repository));
@@ -2826,5 +2823,116 @@ mod tests {
     fn should_reject_empty_target() {
         assert!(parse_pull_request_target_gitlab("").is_err());
         assert!(parse_pull_request_target_gitlab("  ").is_err());
+    }
+
+    fn file_request(
+        path: &str,
+        side: crate::forge::traits::ForgeFileSide,
+    ) -> ForgeFileLinesRequest {
+        ForgeFileLinesRequest {
+            repository: ForgeRepository::gitlab("gitlab.com", "owner", "repo"),
+            base_sha: "basesha".to_string(),
+            head_sha: "headsha".to_string(),
+            path: PathBuf::from(path),
+            status: crate::model::FileStatus::Modified,
+            side,
+            start_line: 0,
+            end_line: 0,
+        }
+    }
+
+    #[test]
+    fn fetch_file_content_falls_back_to_the_raw_endpoint_at_the_requested_side() {
+        use crate::forge::traits::ForgeFileSide;
+        // given — no local checkout
+        let runner =
+            RecordingRunner::new_with_responses(vec!["a\tb\n".to_string(), "old\n".to_string()]);
+        let backend = GitLabGlabBackend::with_runner(None, runner);
+        // when
+        let head = backend
+            .fetch_file_content(file_request("src/a.rs", ForgeFileSide::Head))
+            .unwrap();
+        let base = backend
+            .fetch_file_content(file_request("src/a.rs", ForgeFileSide::Base))
+            .unwrap();
+        // then — exact bytes, and the ref follows the side
+        assert_eq!(head, "a\tb\n");
+        assert_eq!(base, "old\n");
+        let calls = backend.runner.calls.borrow();
+        assert_eq!(
+            calls[0].0.last().unwrap(),
+            "projects/owner%2Frepo/repository/files/src%2Fa.rs/raw?ref=headsha"
+        );
+        assert!(calls[1].0.last().unwrap().ends_with("/raw?ref=basesha"));
+    }
+
+    #[test]
+    fn fetch_file_content_encodes_percent_and_url_syntax_in_the_path() {
+        use crate::forge::traits::ForgeFileSide;
+        // given — a literal `%2F` must not be read back as `/`
+        let runner = RecordingRunner::new_with_responses(vec![String::new()]);
+        let backend = GitLabGlabBackend::with_runner(None, runner);
+        // when
+        backend
+            .fetch_file_content(file_request("a%2Fb#c?d e.rs", ForgeFileSide::Head))
+            .unwrap();
+        // then
+        let calls = backend.runner.calls.borrow();
+        assert!(
+            calls[0]
+                .0
+                .last()
+                .unwrap()
+                .contains("/files/a%252Fb%23c%3Fd%20e.rs/raw"),
+            "{:?}",
+            calls[0].0
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_keep_unix_backslashes_in_fetch_paths_and_comment_anchors() {
+        use crate::forge::traits::ForgeFileSide;
+        // given
+        let repo = ForgeRepository::gitlab("gitlab.com", "owner", "repo");
+        let pr = make_pr_details(repo.clone());
+        let inline = InlineComment {
+            path: "src/a\\b.rs".into(),
+            line: 1,
+            side: GhSide::Right,
+            counterpart_line: None,
+            start_line: None,
+            start_side: None,
+            range_anchors: None,
+            old_path: Some("old/c\\d.rs".into()),
+            body: "x".to_string(),
+            comment_id: "c1".to_string(),
+        };
+        let runner = RecordingRunner::new_with_responses(vec![
+            r#"{"id":"d","individual_note":false}"#.to_string(),
+            String::new(),
+        ]);
+        let backend = GitLabGlabBackend::with_runner(Some(repo), runner);
+        // when
+        backend
+            .create_review(
+                &pr,
+                CreateReviewRequest {
+                    event: crate::forge::submit::SubmitEvent::Comment,
+                    commit_id: "headsha1",
+                    body: "",
+                    comments: &[inline],
+                },
+            )
+            .unwrap();
+        backend
+            .fetch_file_content(file_request("src/a\\b.rs", ForgeFileSide::Head))
+            .unwrap();
+        // then
+        let calls = backend.runner.calls.borrow();
+        let body: serde_json::Value = serde_json::from_str(calls[0].1.as_ref().unwrap()).unwrap();
+        assert_eq!(body["position"]["new_path"], "src/a\\b.rs");
+        assert_eq!(body["position"]["old_path"], "old/c\\d.rs");
+        assert!(calls[1].0.last().unwrap().contains("src%2Fa%5Cb.rs"));
     }
 }
