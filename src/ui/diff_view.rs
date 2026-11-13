@@ -1284,6 +1284,28 @@ pub(super) fn scroll_spans_by_width(line: Line<'_>, mut columns: usize) -> Line<
     Line::from(spans)
 }
 
+/// Render a run of one-row-per-item lines, building only the rows inside
+/// `visible` (`start..end` in logical line indices). Rows outside it become
+/// blank placeholders in bulk, so a huge expansion costs O(viewport).
+pub(super) fn render_culled_run<'a, T>(
+    lines: &mut Vec<Line<'a>>,
+    line_idx: &mut usize,
+    items: &[T],
+    visible: (usize, usize),
+    mut render: impl FnMut(&mut Vec<Line<'a>>, &mut usize, &T),
+) {
+    let end = *line_idx + items.len();
+    let first = visible.0.clamp(*line_idx, end) - *line_idx;
+    let last = visible.1.clamp(*line_idx + first, end) - *line_idx;
+    lines.resize(lines.len() + first, Line::default());
+    *line_idx += first;
+    for item in &items[first..last] {
+        render(lines, line_idx, item);
+    }
+    lines.resize(lines.len() + items.len() - last, Line::default());
+    *line_idx = end;
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -1297,6 +1319,47 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn should_build_only_visible_rows_of_a_culled_run() {
+        // given - 10 rows starting at logical line 2, viewport 5..8
+        let mut lines: Vec<Line> = vec![Line::default(); 2];
+        let mut line_idx = 2;
+        let mut built = Vec::new();
+        // when
+        render_culled_run(
+            &mut lines,
+            &mut line_idx,
+            &[0; 10],
+            (5, 8),
+            |lines, idx, _| {
+                built.push(*idx);
+                lines.push(Line::from("x"));
+                *idx += 1;
+            },
+        );
+        // then
+        assert_eq!(built, vec![5, 6, 7]);
+        assert_eq!(lines.len(), 12);
+        assert_eq!(line_idx, 12);
+        assert_eq!(lines[5].spans.len(), 1);
+        assert!(lines[4].spans.is_empty() && lines[8].spans.is_empty());
+    }
+
+    #[test]
+    fn should_build_nothing_for_a_run_outside_the_viewport() {
+        let mut lines: Vec<Line> = Vec::new();
+        let mut line_idx = 0;
+        let mut calls = 0;
+        render_culled_run(&mut lines, &mut line_idx, &[0; 4], (10, 20), |_, _, _| {
+            calls += 1
+        });
+        assert_eq!((calls, lines.len(), line_idx), (0, 4, 4));
+        render_culled_run(&mut lines, &mut line_idx, &[0; 4], (0, 2), |_, _, _| {
+            calls += 1
+        });
+        assert_eq!((calls, lines.len(), line_idx), (0, 8, 8));
+    }
 
     #[test]
     fn row_map_covers_partly_visible_wrapped_lines() {

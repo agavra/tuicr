@@ -8,9 +8,7 @@ use ratatui::{
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{
-    App, DiffSource, ExpandDirection, FocusedPanel, GAP_EXPAND_BATCH, GapId, InputMode,
-};
+use crate::app::{App, ExpandDirection, FocusedPanel, GAP_EXPAND_BATCH, GapId, InputMode};
 use crate::model::{DiffLine, FileStatus, LineOrigin, LineRange, LineSide};
 use crate::theme::Theme;
 use crate::ui::comment_panel;
@@ -967,15 +965,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
 
         // End-of-file gap (after all hunks, not for deleted files)
         if file.status != FileStatus::Deleted
-            && matches!(
-                app.diff_source,
-                DiffSource::WorkingTree
-                    | DiffSource::Unstaged
-                    | DiffSource::StagedAndUnstaged
-                    | DiffSource::StagedUnstagedAndCommits(_)
-                    | DiffSource::CommitRange(_)
-                    | DiffSource::PullRequest(_)
-            )
+            && app.eof_gap_enabled()
             && let Some(last_hunk) = file.hunks.last()
         {
             let eof_start = last_hunk.new_start + last_hunk.new_count;
@@ -995,14 +985,15 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
 
                 // Render top expanded lines (↓ direction)
                 if let Some(top) = top_lines {
-                    for expanded_line in top {
-                        render_sbs_expanded_context_line(
-                            &mut lines,
-                            &mut line_idx,
-                            expanded_line,
-                            &ctx,
-                        );
-                    }
+                    crate::ui::diff_view::render_culled_run(
+                        &mut lines,
+                        &mut line_idx,
+                        top,
+                        (ctx.visible_start, ctx.visible_end),
+                        |lines, line_idx, expanded_line| {
+                            render_sbs_expanded_context_line(lines, line_idx, expanded_line, &ctx);
+                        },
+                    );
                 }
 
                 // Expander / hidden lines
@@ -1028,14 +1019,15 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
 
                 // Render bottom expanded lines
                 if let Some(bot) = bot_lines {
-                    for expanded_line in bot {
-                        render_sbs_expanded_context_line(
-                            &mut lines,
-                            &mut line_idx,
-                            expanded_line,
-                            &ctx,
-                        );
-                    }
+                    crate::ui::diff_view::render_culled_run(
+                        &mut lines,
+                        &mut line_idx,
+                        bot,
+                        (ctx.visible_start, ctx.visible_end),
+                        |lines, line_idx, expanded_line| {
+                            render_sbs_expanded_context_line(lines, line_idx, expanded_line, &ctx);
+                        },
+                    );
                 }
             }
         }

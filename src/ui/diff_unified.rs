@@ -10,7 +10,7 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{
-    App, DiffSource, ExpandDirection, FocusedPanel, GAP_EXPAND_BATCH, GapId, InputMode, WrapStyle,
+    App, ExpandDirection, FocusedPanel, GAP_EXPAND_BATCH, GapId, InputMode, WrapStyle,
 };
 use crate::forge::remote_comments::PrCommentsVisibility;
 use crate::model::{FileStatus, LineOrigin, LineRange, LineSide};
@@ -1130,15 +1130,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
 
         // End-of-file gap (after all hunks, not for deleted files)
         if file.status != FileStatus::Deleted
-            && matches!(
-                app.diff_source,
-                DiffSource::WorkingTree
-                    | DiffSource::Unstaged
-                    | DiffSource::StagedAndUnstaged
-                    | DiffSource::StagedUnstagedAndCommits(_)
-                    | DiffSource::CommitRange(_)
-                    | DiffSource::PullRequest(_)
-            )
+            && app.eof_gap_enabled()
             && let Some(last_hunk) = file.hunks.last()
         {
             let eof_start = last_hunk.new_start + last_hunk.new_count;
@@ -1158,22 +1150,28 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
 
                 // Render top expanded lines (↓ direction)
                 if let Some(top) = top_lines {
-                    for expanded_line in top {
-                        let line_search = app
-                            .search_paint_at(line_idx)
-                            .map(|needle| (needle, search_style));
-                        render_expanded_context_line(
-                            &mut lines,
-                            &mut content_rows,
-                            &mut line_idx,
-                            current_line_idx,
-                            expanded_line,
-                            &app.theme,
-                            lw,
-                            app.relative_line_numbers,
-                            line_search,
-                        );
-                    }
+                    crate::ui::diff_view::render_culled_run(
+                        &mut lines,
+                        &mut line_idx,
+                        top,
+                        (visible_start, visible_end),
+                        |lines, line_idx, expanded_line| {
+                            let line_search = app
+                                .search_paint_at(*line_idx)
+                                .map(|needle| (needle, search_style));
+                            render_expanded_context_line(
+                                lines,
+                                &mut content_rows,
+                                line_idx,
+                                current_line_idx,
+                                expanded_line,
+                                &app.theme,
+                                lw,
+                                app.relative_line_numbers,
+                                line_search,
+                            );
+                        },
+                    );
                 }
 
                 // Expander / hidden lines
@@ -1199,22 +1197,28 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
 
                 // Render bottom expanded lines
                 if let Some(bot) = bot_lines {
-                    for expanded_line in bot {
-                        let line_search = app
-                            .search_paint_at(line_idx)
-                            .map(|needle| (needle, search_style));
-                        render_expanded_context_line(
-                            &mut lines,
-                            &mut content_rows,
-                            &mut line_idx,
-                            current_line_idx,
-                            expanded_line,
-                            &app.theme,
-                            lw,
-                            app.relative_line_numbers,
-                            line_search,
-                        );
-                    }
+                    crate::ui::diff_view::render_culled_run(
+                        &mut lines,
+                        &mut line_idx,
+                        bot,
+                        (visible_start, visible_end),
+                        |lines, line_idx, expanded_line| {
+                            let line_search = app
+                                .search_paint_at(*line_idx)
+                                .map(|needle| (needle, search_style));
+                            render_expanded_context_line(
+                                lines,
+                                &mut content_rows,
+                                line_idx,
+                                current_line_idx,
+                                expanded_line,
+                                &app.theme,
+                                lw,
+                                app.relative_line_numbers,
+                                line_search,
+                            );
+                        },
+                    );
                 }
             }
         }

@@ -209,11 +209,7 @@ impl App {
     }
 
     /// Look up an expanded context line by sequential index across top + bottom.
-    pub(in crate::app) fn get_expanded_line(
-        &self,
-        gap_id: &GapId,
-        idx: usize,
-    ) -> Option<&DiffLine> {
+    pub(crate) fn get_expanded_line(&self, gap_id: &GapId, idx: usize) -> Option<&DiffLine> {
         let top = self.expanded_top.get(gap_id);
         let top_len = top.map_or(0, |v| v.len());
         if idx < top_len {
@@ -398,7 +394,7 @@ impl App {
         self.file_line_count_cache.clear();
     }
 
-    pub(in crate::app) fn eof_gap_enabled(&self) -> bool {
+    pub(crate) fn eof_gap_enabled(&self) -> bool {
         matches!(
             self.diff_source,
             DiffSource::WorkingTree
