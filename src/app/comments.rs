@@ -782,8 +782,11 @@ impl App {
     }
 
     pub fn clear_comments(&mut self, scope: ClearScope) {
+        let description_was_reviewed = self.session.pr_description_reviewed;
         let (cleared, unreviewed) = self.session.clear_comments(scope);
-        if cleared == 0 && unreviewed == 0 {
+        let description_unreviewed =
+            description_was_reviewed && !self.session.pr_description_reviewed;
+        if cleared == 0 && unreviewed == 0 && !description_unreviewed {
             self.set_message("No comments to clear");
             return;
         }
@@ -791,6 +794,7 @@ impl App {
         self.dirty = true;
         self.rebuild_annotations();
         let msg = match (cleared, unreviewed) {
+            (0, 0) => "Unreviewed the PR description".to_string(),
             (0, n) => format!("Unreviewed {n} files"),
             (c, 0) => format!("Cleared {c} comments"),
             (c, n) => format!("Cleared {c} comments, unreviewed {n} files"),

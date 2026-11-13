@@ -545,6 +545,7 @@ impl App {
             summary_state: SummaryState::default(),
             file_filter: FileTreeFilter::default(),
             theme_picker: ThemePickerState::default(),
+            file_picker: FilePickerState::default(),
             command_buffer: String::new(),
             command_completion: None,
             command_return_mode: InputMode::Normal,
@@ -1019,6 +1020,10 @@ impl App {
         app.commit_selection_start = commit_selection;
         let since_last_review_message =
             app.apply_pr_commit_selector(commits_for_selector, review_metadata);
+        app.insert_commit_message_if_single();
+        app.sort_files_by_directory(true);
+        app.expand_all_dirs();
+        app.rebuild_annotations();
         if matches!(&app.diff_source, DiffSource::PullRequest(_))
             && let Some(range) = app.commit_selection_range
             && !app.pr_commits.is_empty()

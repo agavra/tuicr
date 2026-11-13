@@ -282,6 +282,13 @@ impl App {
             }
         }
 
+        if current.pr_description_reviewed == base.pr_description_reviewed
+            && current.pr_description_reviewed != latest.pr_description_reviewed
+        {
+            current.pr_description_reviewed = latest.pr_description_reviewed;
+            changed += 1;
+        }
+
         let base_comments = Self::collect_stored_comments(base);
         let current_comments = Self::collect_stored_comments(current);
         let latest_comments = Self::collect_stored_comments(latest);
@@ -662,9 +669,12 @@ impl App {
             .cloned()
             .collect();
 
+        // The description is PR metadata, not part of the head's diff, so its
+        // reviewed mark carries over to the new head unconditionally.
         ReviewSession {
             files,
             review_comments,
+            pr_description_reviewed: previous.pr_description_reviewed,
             ..next
         }
     }

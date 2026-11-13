@@ -241,20 +241,9 @@ fn full_row_text(app: &App, idx: usize, annotation: &AnnotatedLine) -> String {
         // Reconstruct the concatenated text of the pre-built PR-info line so
         // the outer wrap pass counts the same rows the renderer emits.
         AnnotatedLine::PrInfoLine { line_idx: pr_line } => {
-            let body: String = app
-                .pr_info
-                .as_ref()
-                .and_then(|info| {
-                    crate::ui::pr_info_panel::build_pr_info_lines(
-                        info,
-                        crate::ui::pr_info_panel::pr_info_content_width(
-                            app.diff_state.viewport_width,
-                        ),
-                        &app.theme,
-                    )
-                    .into_iter()
-                    .nth(*pr_line)
-                })
+            let body: String = crate::ui::pr_info_panel::pr_info_display_lines(app)
+                .into_iter()
+                .nth(*pr_line)
                 .map(|line| {
                     line.spans
                         .iter()

@@ -342,6 +342,7 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             InputMode::SubmitConfirm => " SUBMIT ".to_string(),
             InputMode::SubmitActionPicker => " SUBMIT ".to_string(),
             InputMode::ThemePicker => " THEME ".to_string(),
+            InputMode::FilePicker => " FILES ".to_string(),
         };
 
         let mode_span = Span::styled(mode_str, styles::mode_style(theme));
@@ -353,6 +354,10 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             // still reads NORMAL; the hint is what tells the user Enter/Esc
             // are the way out.
             Cow::Borrowed("   \u{21b5} apply \u{00b7} esc cancel")
+        } else if app.file_picker_filtering() {
+            Cow::Borrowed(
+                "   \u{2191}/\u{2193} move \u{00b7} \u{21b5} open \u{00b7} esc cancel filter",
+            )
         } else if app.theme_picker_filtering() {
             Cow::Borrowed("   \u{21b5} apply filter \u{00b7} esc cancel filter")
         } else {
@@ -394,6 +399,9 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                 }
                 InputMode::ThemePicker => Cow::Borrowed(
                     "   j/k move \u{00b7} \u{21b5} apply \u{00b7} / filter \u{00b7} esc cancel",
+                ),
+                InputMode::FilePicker => Cow::Borrowed(
+                    "   j/k move \u{00b7} \u{21b5} open \u{00b7} / filter \u{00b7} esc cancel",
                 ),
             }
         };
@@ -1010,6 +1018,7 @@ mod header_snapshot_tests {
             oid: oid.to_string(),
             short_oid: oid[..7.min(oid.len())].to_string(),
             summary: summary.to_string(),
+            body: None,
             author: "Alice".to_string(),
             timestamp: None,
         }

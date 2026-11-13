@@ -333,13 +333,32 @@ where
             "--output".to_string(),
             "json".to_string(),
             "--per-page".to_string(),
-            requested.to_string(),
+            requested.min(100).to_string(),
         ];
-        if query.scope == PullRequestListScope::ReviewRequested {
+        // `PersonallyRequested` is not in GitLab's scope cycle.
+        if matches!(
+            query.scope,
+            PullRequestListScope::ReviewRequested | PullRequestListScope::PersonallyRequested
+        ) {
             args.push("--reviewer=@me".to_string());
         }
-        let output = self.run_glab(args, &query.repository.host)?;
-        let rows: Vec<GlabMrSummary> = serde_json::from_str(&output)?;
+        // GitLab caps per_page at 100, so larger picker windows need multiple
+        // API pages, including one extra row to determine whether more exist.
+        let per_page = requested.min(100);
+        let mut rows = Vec::new();
+        for page in 1..=requested.div_ceil(per_page) {
+            let mut page_args = args.clone();
+            if page > 1 {
+                page_args.extend(["--page".to_string(), page.to_string()]);
+            }
+            let output = self.run_glab(page_args, &query.repository.host)?;
+            let page_rows: Vec<GlabMrSummary> = serde_json::from_str(&output)?;
+            let received = page_rows.len();
+            rows.extend(page_rows);
+            if received < per_page {
+                break;
+            }
+        }
         let has_more = rows.len() > query.already_loaded + page_size;
         let pull_requests = rows
             .into_iter()
@@ -1284,6 +1303,64 @@ mod tests {
                 .next()
                 .unwrap_or_default();
             Ok(resp)
+        }
+    }
+
+    /// Model GitLab's server-side cap even when glab requests a larger page.
+    struct CappedListRunner {
+        total: usize,
+    }
+
+    impl GlabCommandRunner for CappedListRunner {
+        fn run(&self, args: &[String]) -> GlabCommandResult<String> {
+            let value = |flag: &str| {
+                args.windows(2)
+                    .find(|pair| pair[0] == flag)
+                    .map(|pair| pair[1].parse::<usize>().unwrap())
+            };
+            let per_page = value("--per-page").unwrap().min(100);
+            let page = value("--page").unwrap_or(1);
+            let start = ((page - 1) * per_page).min(self.total);
+            let rows = (start..(start + per_page).min(self.total))
+                .map(|index| serde_json::json!({"iid": index + 1}))
+                .collect::<Vec<_>>();
+            Ok(serde_json::to_string(&rows).unwrap())
+        }
+    }
+
+    #[test]
+    fn list_pull_requests_paginates_beyond_gitlab_cap() {
+        for (total, already_loaded, page_size) in [
+            (150, 90, 30),
+            (150, 120, 30),
+            (100, 90, 30),
+            (251, 0, 250),
+            (251, 250, 30),
+            (0, 0, 30),
+        ] {
+            let backend = GitLabGlabBackend::with_runner(None, CappedListRunner { total });
+            let result = backend
+                .list_pull_requests(PullRequestListQuery {
+                    repository: ForgeRepository::gitlab("gitlab.com", "owner", "repo"),
+                    already_loaded,
+                    page_size,
+                    scope: PullRequestListScope::Open,
+                })
+                .unwrap();
+            let end = (already_loaded + page_size).min(total);
+            assert_eq!(
+                result
+                    .pull_requests
+                    .iter()
+                    .map(|mr| mr.number)
+                    .collect::<Vec<_>>(),
+                (already_loaded + 1..=end)
+                    .map(|n| n as u64)
+                    .collect::<Vec<_>>(),
+                "total={total}, already_loaded={already_loaded}",
+            );
+            assert_eq!(result.total_loaded, end);
+            assert_eq!(result.has_more, total > end);
         }
     }
 

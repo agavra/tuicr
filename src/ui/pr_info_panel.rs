@@ -29,17 +29,34 @@ pub(crate) fn pr_info_content_width(viewport_width: usize) -> usize {
 }
 
 pub fn pr_info_render_height(app: &App) -> usize {
-    app.pr_info
-        .as_ref()
-        .map(|info| {
-            build_pr_info_lines(
-                info,
-                pr_info_content_width(app.diff_state.viewport_width),
-                &app.theme,
-            )
-            .len()
-        })
-        .unwrap_or(0)
+    pr_info_display_lines(app).len()
+}
+
+/// The PR-info rows as displayed: the full panel, or only the title row once
+/// the description is marked reviewed. Every counter of PR-info rows
+/// (annotations, row heights, search) goes through this so they agree with
+/// the renderer.
+pub fn pr_info_display_lines(app: &App) -> Vec<Line<'static>> {
+    let Some(info) = app.pr_info.as_ref() else {
+        return Vec::new();
+    };
+    if app.session.pr_description_reviewed {
+        return vec![build_collapsed_pr_info_line(info, &app.theme)];
+    }
+    build_pr_info_lines(
+        info,
+        pr_info_content_width(app.diff_state.viewport_width),
+        &app.theme,
+    )
+}
+
+/// Single row a reviewed PR description collapses to. The `✓` mirrors the
+/// mark on a reviewed file's header.
+pub fn build_collapsed_pr_info_line(info: &PullRequestInfo, theme: &Theme) -> Line<'static> {
+    section_header_line(
+        theme,
+        format!("═══ ✓ PR #{} {} ", info.details.number, info.details.title),
+    )
 }
 
 pub fn issue_comments_render_height(app: &App) -> usize {
@@ -73,12 +90,7 @@ pub fn append_pr_info_section(
     line_idx: &mut usize,
     current_line_idx: usize,
 ) {
-    let Some(info) = app.pr_info.as_ref() else {
-        return;
-    };
-
-    let content_width = pr_info_content_width(app.diff_state.viewport_width);
-    for mut pr_line in build_pr_info_lines(info, content_width, &app.theme) {
+    for mut pr_line in pr_info_display_lines(app) {
         let indicator = cursor_indicator_spaced(*line_idx, current_line_idx);
         pr_line.spans.insert(
             0,
@@ -299,10 +311,14 @@ fn format_issue_comment_lines(
 }
 
 fn push_section_header(lines: &mut Vec<Line<'static>>, theme: &Theme, title: String) {
-    lines.push(Line::from(vec![
+    lines.push(section_header_line(theme, title));
+}
+
+fn section_header_line(theme: &Theme, title: String) -> Line<'static> {
+    Line::from(vec![
         Span::styled(title, styles::file_header_style(theme)),
         Span::styled(HEADER_RULE, styles::file_header_style(theme)),
-    ]));
+    ])
 }
 
 fn push_wrapped_line(lines: &mut Vec<Line<'static>>, text: String, width: usize) {

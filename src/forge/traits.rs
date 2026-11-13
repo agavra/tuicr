@@ -36,6 +36,28 @@ impl ForgeKind {
             ForgeKind::Gerrit => "Gerrit",
         }
     }
+
+    /// PR list scopes this forge can query, in the order `r` steps through
+    /// them in the selector's Pull Requests tab. `Open` always comes first.
+    pub fn pr_list_scopes(self) -> &'static [PullRequestListScope] {
+        match self {
+            // Only GitHub tells a personal review request apart from one
+            // made through a team the user belongs to.
+            ForgeKind::GitHub => &[
+                PullRequestListScope::Open,
+                PullRequestListScope::ReviewRequested,
+                PullRequestListScope::PersonallyRequested,
+            ],
+            ForgeKind::GitLab
+            | ForgeKind::Gitea
+            | ForgeKind::Bitbucket
+            | ForgeKind::AzureDevOps
+            | ForgeKind::Gerrit => &[
+                PullRequestListScope::Open,
+                PullRequestListScope::ReviewRequested,
+            ],
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -208,21 +230,31 @@ impl PullRequestTarget {
 pub enum PullRequestListScope {
     #[default]
     Open,
+    /// PRs requesting the user's review, directly or through a team.
     ReviewRequested,
+    /// PRs requesting the user's review by name, excluding team requests.
+    /// Only offered where `ForgeKind::pr_list_scopes` lists it.
+    PersonallyRequested,
 }
 
 impl PullRequestListScope {
-    pub fn toggled(self) -> Self {
-        match self {
-            Self::Open => Self::ReviewRequested,
-            Self::ReviewRequested => Self::Open,
-        }
+    /// The scope after this one in `forge`'s cycle, wrapping back to `Open`.
+    /// A scope the forge does not list also falls back to `Open`.
+    pub fn next_for(self, forge: ForgeKind) -> Self {
+        let scopes = forge.pr_list_scopes();
+        scopes
+            .iter()
+            .position(|scope| *scope == self)
+            .and_then(|idx| scopes.get(idx + 1))
+            .copied()
+            .unwrap_or(Self::Open)
     }
 
     pub fn label(self) -> &'static str {
         match self {
             Self::Open => "all",
             Self::ReviewRequested => "requested",
+            Self::PersonallyRequested => "requested (me)",
         }
     }
 }
@@ -263,6 +295,11 @@ pub struct PullRequestSummary {
     pub head_ref_name: String,
     pub base_ref_name: String,
     pub updated_at: Option<DateTime<Utc>>,
+    /// Committer date of the newest commit. Unlike `updated_at`, it moves
+    /// only when the code does (a rebase counts). Only GitHub fills it; the
+    /// row omits it when `None`.
+    #[serde(default)]
+    pub last_commit_at: Option<DateTime<Utc>>,
     pub url: String,
     pub state: String,
     pub is_draft: bool,
@@ -472,8 +509,30 @@ pub struct PullRequestCommit {
     pub oid: String,
     pub short_oid: String,
     pub summary: String,
+    /// The commit message after its subject line. `None` when the commit
+    /// has a subject only, or the backend could not supply the rest.
+    #[serde(default)]
+    pub body: Option<String>,
     pub author: String,
     pub timestamp: Option<DateTime<Utc>>,
+}
+
+/// The body of a raw commit message: what follows the subject line and the
+/// blank line(s) after it, or `None` for a subject-only message. Splits the
+/// way the VCS backends split a local commit, so a commit reads the same in
+/// a pull request review as in a local one.
+pub fn commit_message_body(message: &str) -> Option<String> {
+    let mut lines = message
+        .lines()
+        .skip(1)
+        .skip_while(|line| line.trim().is_empty());
+    let mut body = lines.next()?.to_string();
+    for line in lines {
+        body.push('\n');
+        body.push_str(line);
+    }
+    body.truncate(body.trim_end().len());
+    Some(body)
 }
 
 /// Minimal review metadata used to infer "commits since my last review".
@@ -665,6 +724,50 @@ mod tests {
     use super::*;
 
     #[test]
+    fn should_omit_commit_body_for_a_subject_only() {
+        // given / when / then
+        assert_eq!(commit_message_body("Subject"), None);
+        assert_eq!(commit_message_body("Subject\n\n \t\n"), None);
+    }
+
+    #[test]
+    fn should_preserve_paragraphs_inside_commit_body() {
+        // given
+        let message = "Subject\n\nFirst paragraph.\nContinued.\n\nSecond paragraph.";
+        // when
+        let body = commit_message_body(message);
+        // then
+        assert_eq!(
+            body.as_deref(),
+            Some("First paragraph.\nContinued.\n\nSecond paragraph.")
+        );
+    }
+
+    #[test]
+    fn should_skip_multiple_blank_commit_message_separators() {
+        // given / when
+        let body = commit_message_body("Subject\n\n \t\n\n  Indented body.");
+        // then
+        assert_eq!(body.as_deref(), Some("  Indented body."));
+    }
+
+    #[test]
+    fn should_trim_trailing_commit_body_whitespace() {
+        // given / when
+        let body = commit_message_body("Subject\n\nBody. \t\n\n");
+        // then
+        assert_eq!(body.as_deref(), Some("Body."));
+    }
+
+    #[test]
+    fn should_normalize_crlf_commit_message_lines() {
+        // given / when
+        let body = commit_message_body("Subject\r\n\r\nFirst.\r\n\r\nSecond.\r\n");
+        // then
+        assert_eq!(body.as_deref(), Some("First.\n\nSecond."));
+    }
+
+    #[test]
     fn should_round_trip_pr_session_key_via_serde() {
         // given
         let key = PrSessionKey::new(
@@ -724,6 +827,52 @@ mod tests {
         assert_eq!(
             ForgeFileLinesRequest::side_for_status(FileStatus::Deleted),
             ForgeFileSide::Base,
+        );
+    }
+
+    #[test]
+    fn should_cycle_github_scopes_through_personally_requested() {
+        // given
+        let forge = ForgeKind::GitHub;
+        // when
+        let first = PullRequestListScope::Open.next_for(forge);
+        let second = first.next_for(forge);
+        let third = second.next_for(forge);
+        // then
+        assert_eq!(first, PullRequestListScope::ReviewRequested);
+        assert_eq!(second, PullRequestListScope::PersonallyRequested);
+        assert_eq!(third, PullRequestListScope::Open);
+    }
+
+    #[test]
+    fn should_skip_personally_requested_on_forges_without_it() {
+        for forge in [
+            ForgeKind::GitLab,
+            ForgeKind::Gitea,
+            ForgeKind::Bitbucket,
+            ForgeKind::AzureDevOps,
+            ForgeKind::Gerrit,
+        ] {
+            // when
+            let first = PullRequestListScope::Open.next_for(forge);
+            let second = first.next_for(forge);
+            // then
+            assert_eq!(first, PullRequestListScope::ReviewRequested, "{forge:?}");
+            assert_eq!(second, PullRequestListScope::Open, "{forge:?}");
+            assert!(
+                !forge
+                    .pr_list_scopes()
+                    .contains(&PullRequestListScope::PersonallyRequested),
+                "{forge:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn should_fall_back_to_open_for_a_scope_the_forge_does_not_list() {
+        assert_eq!(
+            PullRequestListScope::PersonallyRequested.next_for(ForgeKind::GitLab),
+            PullRequestListScope::Open
         );
     }
 }

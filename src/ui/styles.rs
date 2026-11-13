@@ -40,6 +40,22 @@ pub fn diff_syntax_bg(theme: &Theme, origin: LineOrigin) -> Option<Color> {
     }
 }
 
+/// Style of the change bar (`▌`) and the gap after it. A syntax-colored line
+/// sits on `syntax_add_bg`/`syntax_del_bg`, so its bar does too and the row
+/// keeps one background; an uncolored line keeps `diff_add_bg`/`diff_del_bg`.
+pub fn diff_marker_style(theme: &Theme, origin: LineOrigin, highlighted: bool) -> Style {
+    let style = match origin {
+        LineOrigin::Addition => diff_add_style(theme),
+        LineOrigin::Deletion => diff_del_style(theme),
+        LineOrigin::Context => return diff_context_style(theme),
+    };
+    if highlighted {
+        patch_highlighted_span_bg(style, theme, origin)
+    } else {
+        style
+    }
+}
+
 /// Apply `diff_syntax_bg` to `style`, leaving it untouched when there is no
 /// live override for `origin` (context lines).
 pub fn patch_highlighted_span_bg(style: Style, theme: &Theme, origin: LineOrigin) -> Style {
@@ -223,6 +239,29 @@ pub fn pseudo_commit_tag_style(theme: &Theme) -> Style {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A syntax-colored line's change bar takes the syntax background; an
+    /// uncolored line's keeps the plain diff background.
+    #[test]
+    fn diff_marker_style_follows_the_line_background() {
+        let theme = Theme::catppuccin_macchiato();
+
+        let colored = diff_marker_style(&theme, LineOrigin::Addition, true);
+        assert_eq!(colored.bg, Some(theme.syntax_add_bg));
+        assert_eq!(colored.fg, Some(theme.diff_add));
+        assert_eq!(
+            diff_marker_style(&theme, LineOrigin::Deletion, true).bg,
+            Some(theme.syntax_del_bg)
+        );
+        assert_eq!(
+            diff_marker_style(&theme, LineOrigin::Addition, false),
+            diff_add_style(&theme)
+        );
+        assert_eq!(
+            diff_marker_style(&theme, LineOrigin::Context, true),
+            diff_context_style(&theme)
+        );
+    }
 
     #[test]
     fn selection_marker_changes_only_marker_foregrounds() {

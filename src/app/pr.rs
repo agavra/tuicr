@@ -49,6 +49,7 @@ impl App {
         // refreshed by future `gh pr view` calls in PR 6.
         self.current_pr_head = Some(details.head_sha.clone());
         self.input_mode = InputMode::Normal;
+        self.file_picker = FilePickerState::default();
         // A prompt raised on the selector (e.g. a Sessions-tab delete) while
         // the PR was loading belongs to a screen that is now gone.
         self.pending_confirm = None;
@@ -77,6 +78,7 @@ impl App {
         let preserve_hunks =
             Self::is_strict_commit_selection(self.commit_selection_range, self.pr_commits.len());
         Self::register_diff_files(&mut self.session, &self.diff_files, preserve_hunks);
+        self.insert_commit_message_if_single();
 
         self.sort_files_by_directory(true);
         self.expand_all_dirs();
@@ -280,6 +282,7 @@ impl App {
         for file in &self.diff_files {
             self.session.add_diff_file(file);
         }
+        self.insert_commit_message_if_single();
         self.sort_files_by_directory(true);
         self.expand_all_dirs();
         self.rebuild_annotations();
@@ -437,6 +440,7 @@ impl App {
         // Range diffs can hide hunks that are still reviewed in the broader
         // PR session, so registration must not prune them.
         Self::register_diff_files(&mut self.session, &self.diff_files, true);
+        self.insert_commit_message_if_single();
         self.sort_files_by_directory(true);
         self.expand_all_dirs();
         self.rebuild_annotations();
@@ -594,23 +598,7 @@ impl App {
                 self.set_message("Reloaded PR at new head".to_string());
             }
         } else {
-            self.set_pr_last_reviewed_commit_from_metadata(
-                &opened.commits,
-                &opened.review_metadata,
-            );
-            // Keep the active base in sync even when the head has not changed.
-            if let DiffSource::PullRequest(pr) = &mut self.diff_source {
-                pr.base_sha = opened.details.base_sha.clone();
-            }
-            self.diff_files = opened.diff_files;
-            self.pr_info = Some(opened.pr_info);
-            self.clear_expanded_gaps();
-            for file in &self.diff_files {
-                self.session.add_diff_file(file);
-            }
-            self.sort_files_by_directory(true);
-            self.expand_all_dirs();
-            self.rebuild_annotations();
+            self.apply_same_head_pr_reload(opened);
             self.refetch_pr_threads();
             self.set_message("Reloaded PR (no new commits)".to_string());
         }
@@ -628,6 +616,34 @@ impl App {
         self.diff_state.cursor_line = self.diff_state.cursor_line.min(self.max_cursor_line());
         self.ensure_cursor_visible();
         Ok(())
+    }
+
+    /// Take in a reload that found the PR's head unchanged: refresh the
+    /// diff, the PR info and the reviewed-commit markers, and keep the
+    /// session.
+    fn apply_same_head_pr_reload(&mut self, opened: crate::forge::pr_open::OpenedPullRequest) {
+        self.set_pr_last_reviewed_commit_from_metadata(&opened.commits, &opened.review_metadata);
+        // Keep the active base in sync even when the head has not changed.
+        if let DiffSource::PullRequest(pr) = &mut self.diff_source {
+            pr.base_sha = opened.details.base_sha.clone();
+        }
+        self.pr_info = Some(opened.pr_info);
+        if Self::is_strict_commit_selection(self.commit_selection_range, self.pr_commits.len()) {
+            // The head did not move, so neither did the commits: the narrowed
+            // diff on screen is still the diff of the selection. Only the
+            // cumulative diff behind it is refreshed.
+            self.range_diff_files = Some(opened.diff_files);
+        } else {
+            self.diff_files = opened.diff_files;
+            self.clear_expanded_gaps();
+            for file in &self.diff_files {
+                self.session.add_diff_file(file);
+            }
+            self.insert_commit_message_if_single();
+        }
+        self.sort_files_by_directory(true);
+        self.expand_all_dirs();
+        self.rebuild_annotations();
     }
 
     /// Synchronous reload. Production code uses `spawn_pr_reload` for the
@@ -695,23 +711,7 @@ impl App {
         } else {
             // Same head: re-parse the diff to pick up any side-channel
             // changes (rare), but keep the session intact.
-            self.set_pr_last_reviewed_commit_from_metadata(
-                &opened.commits,
-                &opened.review_metadata,
-            );
-            // Keep the active base in sync even when the head has not changed.
-            if let DiffSource::PullRequest(pr) = &mut self.diff_source {
-                pr.base_sha = opened.details.base_sha.clone();
-            }
-            self.diff_files = opened.diff_files;
-            self.pr_info = Some(opened.pr_info);
-            self.clear_expanded_gaps();
-            for file in &self.diff_files {
-                self.session.add_diff_file(file);
-            }
-            self.sort_files_by_directory(true);
-            self.expand_all_dirs();
-            self.rebuild_annotations();
+            self.apply_same_head_pr_reload(opened);
         }
 
         // Same-head reload keeps the old cursor; clamp it into the (possibly
