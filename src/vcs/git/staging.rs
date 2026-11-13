@@ -3,11 +3,23 @@ use std::path::Path;
 
 use crate::error::Result;
 
-pub fn stage_file(repo: &Repository, path: &Path) -> Result<()> {
+/// Open the repository index, reloading it if it changed on disk.
+///
+/// The `Repository` is long-lived and caches its index, so without this an
+/// external `git add` is invisible and writing the cached index back would
+/// silently unstage it.
+pub fn fresh_index(repo: &Repository) -> Result<git2::Index> {
     let mut index = repo.index()?;
+    index.read(false)?;
+    Ok(index)
+}
+
+pub fn stage_file(repo: &Repository, path: &Path) -> Result<()> {
+    let mut index = fresh_index(repo)?;
+    // `symlink_metadata` so a dangling symlink still counts as present.
     if repo
         .workdir()
-        .is_some_and(|workdir| workdir.join(path).exists())
+        .is_some_and(|workdir| workdir.join(path).symlink_metadata().is_ok())
     {
         index.add_path(path)?;
     } else {
@@ -79,5 +91,18 @@ mod tests {
             .expect("failed to diff HEAD against index");
         let delta = diff.deltas().next().expect("expected staged deletion");
         assert_eq!(delta.status(), git2::Delta::Deleted);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stage_file_adds_dangling_symlink() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let repo = Repository::init(temp_dir.path()).unwrap();
+        std::os::unix::fs::symlink("missing", temp_dir.path().join("dangling")).unwrap();
+
+        stage_file(&repo, Path::new("dangling")).unwrap();
+
+        let index = fresh_index(&repo).unwrap();
+        assert!(index.get_path(Path::new("dangling"), 0).is_some());
     }
 }
