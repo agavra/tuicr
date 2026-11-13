@@ -410,6 +410,16 @@ impl RepoCoordinate {
     pub fn parse(input: &str) -> Option<Self> {
         let trimmed = input.trim();
         let without_forge = trimmed.strip_prefix("forge:").unwrap_or(trimmed);
+        // `forge:<host>/<owner…>/<repo>` is the path tuicr itself writes for a
+        // PR session, and the owner may span several segments (Azure
+        // `org/project`, GitLab subgroups, nested Gerrit projects).
+        // Tried first: hostname parsers would strip e.g. Gerrit's `a/` prefix.
+        if without_forge.len() < trimmed.len()
+            && !without_forge.contains("/_git/")
+            && let Some(coord) = Self::parse_forge_path(without_forge)
+        {
+            return Some(coord);
+        }
         if let Some(repo) = parse_any_remote_url_by_hostname(without_forge) {
             return Some(Self {
                 owner: Some(repo.owner),
@@ -438,6 +448,22 @@ impl RepoCoordinate {
         let owner = (segments.len() >= 2).then(|| segments[segments.len() - 2].to_string());
         Some(Self {
             owner,
+            repo: repo.to_string(),
+        })
+    }
+
+    fn parse_forge_path(path: &str) -> Option<Self> {
+        let segments: Vec<&str> = path.split('/').filter(|seg| !seg.is_empty()).collect();
+        if segments.len() < 3 || path.contains("://") {
+            return None;
+        }
+        let repo = segments[segments.len() - 1];
+        let repo = repo.strip_suffix(".git").unwrap_or(repo);
+        if repo.is_empty() {
+            return None;
+        }
+        Some(Self {
+            owner: Some(segments[1..segments.len() - 1].join("/")),
             repo: repo.to_string(),
         })
     }
@@ -532,10 +558,10 @@ fn parse_path_segments(s: &str) -> Option<(String, String)> {
         .collect();
     let repo_seg = segments.pop()?;
     let owner_seg = segments.pop()?;
-    if owner_seg.is_empty() || repo_seg.is_empty() {
+    let repo = repo_seg.strip_suffix(".git").unwrap_or(repo_seg);
+    if owner_seg.is_empty() || repo.is_empty() {
         return None;
     }
-    let repo = repo_seg.strip_suffix(".git").unwrap_or(repo_seg);
     Some((owner_seg.to_string(), repo.to_string()))
 }
 
@@ -1196,6 +1222,38 @@ mod tests {
                 "parsing {input}"
             );
         }
+    }
+
+    #[test]
+    fn should_parse_forge_path_written_for_pr_sessions_with_multi_segment_owner() {
+        for (host, owner, name) in [
+            ("dev.azure.com", "myorg/myproject", "myrepo"),
+            ("git.corp.example", "org/team", "svc"),
+            ("review.example.org", "platform/build", "tools"),
+        ] {
+            let path = format!("forge:{host}/{owner}/{name}");
+            assert_eq!(
+                RepoCoordinate::parse(&path),
+                Some(coord(Some(owner), name)),
+                "{path}"
+            );
+        }
+        assert_eq!(RepoCoordinate::parse("forge:host/owner/.git"), None);
+    }
+
+    #[test]
+    fn should_reject_dot_git_only_repo_segment() {
+        assert_eq!(
+            parse_remote_owner_repo("https://github.com/owner/.git"),
+            None
+        );
+    }
+
+    #[test]
+    fn should_keep_gerrit_a_prefix_owner_in_forge_path() {
+        let c = RepoCoordinate::parse("forge:gerrit.example.org/a/tools").unwrap();
+        assert_eq!(c.owner.as_deref(), Some("a"));
+        assert_eq!(c.repo, "tools");
     }
 
     #[test]

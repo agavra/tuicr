@@ -146,6 +146,11 @@ pub fn detect_gitlab_repository(repo_root: &Path) -> Option<ForgeRepository> {
 
 /// `repo_root`'s remote URLs, `origin` first, then every other remote.
 fn remote_urls(repo_root: &Path) -> Vec<String> {
+    remotes(repo_root).into_iter().map(|(_, url)| url).collect()
+}
+
+/// `repo_root`'s `(name, url)` remotes, `origin` first, each remote once.
+pub(crate) fn remotes(repo_root: &Path) -> Vec<(String, String)> {
     let Ok(repo) = Repository::discover(repo_root) else {
         // Local VCS discovery already falls back to Git for repository formats
         // libgit2 cannot open (notably reftable and SHA-256). Remote metadata
@@ -165,27 +170,30 @@ fn remote_urls(repo_root: &Path) -> Vec<String> {
                     ["remote", "get-url", "--", name],
                 )
                 .ok()
-                .map(|url| url.trim_end_matches(['\r', '\n']).to_string())
+                .map(|url| {
+                    (
+                        name.to_string(),
+                        url.trim_end_matches(['\r', '\n']).to_string(),
+                    )
+                })
             })
             .collect();
     };
-    let mut all_urls: Vec<String> = Vec::new();
-
-    if let Ok(remote) = repo.find_remote("origin")
-        && let Some(url) = remote.url()
-    {
-        all_urls.push(url.to_string());
-    }
+    let mut all: Vec<(String, String)> = Vec::new();
+    let mut push = |name: &str| {
+        if let Ok(remote) = repo.find_remote(name)
+            && let Some(url) = remote.url()
+        {
+            all.push((name.to_string(), url.to_string()));
+        }
+    };
+    push("origin");
     if let Ok(remotes) = repo.remotes() {
-        for name in remotes.iter().flatten() {
-            if let Ok(remote) = repo.find_remote(name)
-                && let Some(url) = remote.url()
-            {
-                all_urls.push(url.to_string());
-            }
+        for name in remotes.iter().flatten().filter(|name| *name != "origin") {
+            push(name);
         }
     }
-    all_urls
+    all
 }
 
 /// Try to detect an Azure DevOps forge repository for the local checkout at
@@ -409,5 +417,24 @@ mod tests {
     #[test]
     fn should_keep_a_backslash_in_a_unix_forge_path() {
         assert_eq!(forge_path(Path::new("a\\b/c.rs")), "a\\b/c.rs");
+    }
+
+    #[test]
+    fn should_list_origin_once_in_remotes() {
+        let dir = std::env::temp_dir().join(format!("tuicr-remotes-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .current_dir(&dir)
+                .args(args)
+                .output()
+                .unwrap()
+        };
+        git(&["init", "-q"]);
+        git(&["remote", "add", "origin", "https://github.com/a/b.git"]);
+        git(&["remote", "add", "up", "https://github.com/c/d.git"]);
+        let names: Vec<String> = remotes(&dir).into_iter().map(|(n, _)| n).collect();
+        assert_eq!(names, ["origin", "up"]);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

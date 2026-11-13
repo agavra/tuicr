@@ -879,25 +879,10 @@ fn revision_present(root: &Path, pr: &PullRequestDetails) -> bool {
 
 /// Name of the remote in `root` that points at `repo`, preferring `origin`.
 fn remote_for_repository(root: &Path, repo: &ForgeRepository) -> Option<String> {
-    let git_repo = git2::Repository::discover(root).ok()?;
-    let matches = |name: &str| {
-        git_repo
-            .find_remote(name)
-            .ok()
-            .and_then(|remote| remote.url().map(str::to_string))
-            .and_then(|url| parse_gerrit_remote_url(&url))
-            .is_some_and(|parsed| &parsed == repo)
-    };
-    if matches("origin") {
-        return Some("origin".to_string());
-    }
-    git_repo
-        .remotes()
-        .ok()?
-        .iter()
-        .flatten()
-        .find(|name| matches(name))
-        .map(str::to_string)
+    crate::forge::remotes(root)
+        .into_iter()
+        .find(|(_, url)| parse_gerrit_remote_url(url).is_some_and(|parsed| &parsed == repo))
+        .map(|(name, _)| name)
 }
 
 fn missing_checkout() -> TuicrError {
@@ -1225,6 +1210,34 @@ mod tests {
                 "{url} should parse"
             );
         }
+    }
+
+    #[test]
+    fn should_find_gerrit_remote_in_a_repo_libgit2_cannot_open() {
+        let dir = std::env::temp_dir().join(format!("tuicr-gerrit-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .current_dir(&dir)
+                .args(args)
+                .output()
+                .unwrap()
+        };
+        git(&["init", "-q", "--ref-format=reftable"]);
+        if !dir.join(".git/reftable").exists() {
+            return; // this git has no reftable support
+        }
+        git(&[
+            "remote",
+            "add",
+            "origin",
+            "https://gerrit.example.com/platform/base",
+        ]);
+        assert_eq!(
+            remote_for_repository(&dir, &gerrit_repo()),
+            Some("origin".to_string())
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
