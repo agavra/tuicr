@@ -479,9 +479,8 @@ impl App {
             return Ok(());
         };
 
-        // Save first: the selected row may be the session on screen, and
-        // loading it before the save would reinstall a stale snapshot.
-        self.save_outgoing_session()?;
+        // The loaders save the outgoing session only once the switch is going
+        // ahead, so a failed or empty resume leaves the review on screen alone.
         let session = match crate::persistence::storage::load_session(summary.session_ref.path()) {
             Ok(session) => session,
             Err(e) => {
@@ -556,6 +555,15 @@ impl App {
         // they can hand back a different session than the row that was picked
         // — a range saved on another branch, or an older working-tree session.
         // Install the selected one and keep its comments and reviewed state.
+        // Read it again: the loaders just saved the outgoing session, and the
+        // row may be that very session, so the earlier read can be stale.
+        let session = match crate::persistence::storage::load_session(summary.session_ref.path()) {
+            Ok(session) => session,
+            Err(e) => {
+                self.set_error(format!("Failed to load session: {e}"));
+                return Ok(());
+            }
+        };
         self.install_resumed_session(session)?;
         Ok(())
     }

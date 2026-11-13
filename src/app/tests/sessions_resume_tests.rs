@@ -911,6 +911,122 @@ fn should_return_focus_to_the_diff_when_a_local_switch_hides_the_focused_pane() 
     assert_eq!(app.focused_panel, FocusedPanel::Diff);
 }
 
+/// A dirty staged review (unsaved reviewed mark) with commits `bbb`, `aaa`
+/// available for the next resume; returns its session file path.
+fn dirty_staged_app() -> (App, PathBuf) {
+    let (mut app, _) = build_app(vec![commit("bbb"), commit("aaa")]);
+    stage_session(&mut app, working_tree_session(SessionDiffSource::Staged));
+    app.sessions_tab_select().expect("resume staged");
+    let path = app.session_path.clone().expect("session path");
+    app.toggle_reviewed_for_file_idx(0, false);
+    assert!(app.dirty);
+    (app, path)
+}
+
+fn target_sessions() -> Vec<(&'static str, ReviewSession)> {
+    let mut with_working_tree = range_session(&["aaa", "bbb"], Some("main"));
+    with_working_tree.diff_source = SessionDiffSource::StagedUnstagedAndCommits;
+    vec![
+        (
+            "local",
+            working_tree_session(SessionDiffSource::WorkingTree),
+        ),
+        ("range", range_session(&["aaa", "bbb"], Some("main"))),
+        ("range+working tree", with_working_tree),
+    ]
+}
+
+#[test]
+fn should_save_the_outgoing_session_through_every_loader_once_the_switch_succeeds() {
+    for (name, target) in target_sessions() {
+        // given
+        let _reviews = TestReviewsDir::new();
+        let (mut app, outgoing_path) = dirty_staged_app();
+
+        // when
+        stage_session(&mut app, target);
+        app.sessions_tab_select().expect("resume");
+
+        // then
+        let saved = crate::persistence::storage::load_session(&outgoing_path).expect("load");
+        assert!(saved.files.values().any(|f| f.reviewed), "{name}");
+        assert!(!app.dirty, "{name}");
+    }
+}
+
+#[test]
+fn should_not_save_the_outgoing_session_when_the_resume_finds_nothing_to_load() {
+    // given — Unstaged resume hits NoChanges
+    let _reviews = TestReviewsDir::new();
+    let (mut app, outgoing_path) = dirty_staged_app();
+
+    // when
+    stage_session(&mut app, working_tree_session(SessionDiffSource::Unstaged));
+    app.sessions_tab_select().expect("resume unstaged");
+
+    // then — nothing was written and the unsaved mark is still pending
+    let disk = crate::persistence::storage::load_session(&outgoing_path).expect("load");
+    assert!(!disk.files.values().any(|f| f.reviewed));
+    assert!(app.dirty);
+    assert!(app.session.files[Path::new("staged.py")].reviewed);
+}
+
+#[test]
+fn should_not_save_the_outgoing_session_when_a_resume_cannot_open_the_target() {
+    // given — a range whose commits are gone, and a pristine session
+    let _reviews = TestReviewsDir::new();
+    let (mut app, outgoing_path) = dirty_staged_app();
+
+    for target in [
+        range_session(&["gone1", "gone2"], Some("main")),
+        working_tree_session(SessionDiffSource::Pristine),
+    ] {
+        // when
+        stage_session(&mut app, target);
+        app.sessions_tab_select().expect("resume");
+
+        // then
+        let disk = crate::persistence::storage::load_session(&outgoing_path).expect("load");
+        assert!(!disk.files.values().any(|f| f.reviewed));
+        assert!(app.dirty);
+    }
+}
+
+#[test]
+fn should_keep_the_dirty_review_open_when_the_outgoing_save_fails_for_each_loader() {
+    for (name, target) in target_sessions() {
+        // given — the open session file became unreadable
+        let _reviews = TestReviewsDir::new();
+        let (mut app, path) = dirty_staged_app();
+        stage_session(&mut app, target);
+        std::fs::write(&path, "not JSON").expect("corrupt");
+
+        // when
+        let result = app.sessions_tab_select();
+
+        // then — the switch aborts and the unsaved mark stays in memory
+        assert!(result.is_err(), "{name}");
+        assert!(app.dirty, "{name}");
+        assert!(matches!(app.diff_source, DiffSource::Staged), "{name}");
+    }
+}
+
+#[test]
+fn should_move_focus_off_the_commit_pane_whenever_installing_a_single_commit_hides_it() {
+    // given — the pane of a multi-commit review has focus
+    let _reviews = TestReviewsDir::new();
+    let (mut app, _) = build_app(vec![commit("bbb"), commit("aaa")]);
+    app.focused_panel = FocusedPanel::CommitSelector;
+
+    // when — a one-commit review is installed
+    app.install_review_commits(vec![commit("aaa")], CommitSelectionStart::All)
+        .expect("install");
+
+    // then
+    assert!(!app.show_commit_selector);
+    assert_eq!(app.focused_panel, FocusedPanel::Diff);
+}
+
 #[test]
 fn should_report_a_range_whose_changes_are_all_ignored_without_replacing_the_review() {
     // given — a loaded staged review and a range whose diff is empty
