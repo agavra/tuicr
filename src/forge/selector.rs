@@ -225,32 +225,18 @@ impl PullRequestsTab {
     /// Apply the result of a load-more fetch. Appends rows.
     pub fn apply_load_more(&mut self, result: Result<(Vec<PullRequestSummary>, bool), String>) {
         if let PullRequestsTab::Loaded {
-            repository,
             rows,
             has_more,
             loading_more,
-            scope,
             ..
         } = self
         {
             *loading_more = false;
-            match result {
-                Ok((new_rows, more)) => {
-                    rows.extend(new_rows);
-                    *has_more = more;
-                }
-                Err(message) => {
-                    // Don't tear down the loaded list on a load-more failure;
-                    // surface the message and clear the busy flag so the user
-                    // can try again.
-                    let repository = Some(repository.clone());
-                    let scope = *scope;
-                    *self = PullRequestsTab::Error {
-                        repository,
-                        scope,
-                        message,
-                    };
-                }
+            // On failure keep the loaded rows (the caller surfaces the
+            // error) so the user can retry the load-more row.
+            if let Ok((new_rows, more)) = result {
+                rows.extend(new_rows);
+                *has_more = more;
             }
         }
     }
@@ -712,8 +698,10 @@ mod tests {
         tab.start_load_more();
         // when
         tab.apply_load_more(Err("net down".to_string()));
-        // then — moves into Error but the original rows can be re-fetched
-        assert!(matches!(tab, PullRequestsTab::Error { .. }));
+        // then — rows kept and load-more can be retried
+        assert!(matches!(tab, PullRequestsTab::Loaded { .. }));
+        assert_eq!(tab.visible_indices().len(), 1);
+        assert!(tab.start_load_more().is_some());
     }
 
     #[test]
