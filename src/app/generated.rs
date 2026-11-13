@@ -3,14 +3,18 @@ use super::*;
 impl App {
     /// Apply resolved `[generated]` settings and detect matching files.
     ///
-    /// Called from startup after config load, because `App::build` runs before
-    /// the config is applied and would otherwise detect against the defaults.
+    /// Called from startup after config load. `App::build` has already built
+    /// annotations against the defaults (collapse on, count on), so they are
+    /// rebuilt whenever the configured settings differ from those or
+    /// detection finds new files; otherwise a `collapse = false` config would
+    /// leave the annotations describing collapsed files the renderer draws
+    /// expanded.
     pub fn apply_generated_config(&mut self, config: &GeneratedConfig) {
+        let previous = (self.collapse_generated, self.count_generated);
         self.collapse_generated = config.collapse();
         self.count_generated = config.count();
-        // Annotations were built during `App::build`, before detection could
-        // run, so any newly collapsed file is not reflected in them yet.
-        if self.detect_generated_files() {
+        let settings_changed = previous != (self.collapse_generated, self.count_generated);
+        if self.detect_generated_files() || settings_changed {
             self.rebuild_annotations();
         }
     }
