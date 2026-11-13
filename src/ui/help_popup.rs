@@ -752,6 +752,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  :file <p> ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Write review to file <p>"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  :copy-url ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
