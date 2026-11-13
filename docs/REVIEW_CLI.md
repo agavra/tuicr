@@ -76,6 +76,12 @@ tuicr review list --repo git@gitlab.com:org/team/svc.git
 #   -> [ ..., { "slug": "gl:org/team/svc/pr/123", "kind": "pr", ... } ]
 ```
 
+The `forge:<host>/<owner>/<repo>` form is the path tuicr stores for PR sessions
+and keeps every owner segment, so `forge:dev.azure.com/myorg/myproject/myrepo`
+and `forge:gerrit.example.org/a/tools` (owner `a`) select exactly that repo.
+A path whose repo segment is empty (`forge:host/owner/.git`) is not a valid
+selector.
+
 `--repo` for `add` / `comments` is only consulted when resolving a *local*
 slug; PR slugs and JSON paths ignore it.
 

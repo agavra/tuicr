@@ -66,6 +66,8 @@ Numbered once. Forge/PR-mode gotchas (F*, G*) live in `docs/FORGES.md`.
 
 28. **PR editor snapshots live in a private per-user cache dir keyed by the full revision SHA.** `editor_target::snapshot_root` (host, PR, the SHA actually fetched) sits under `ProjectDirs` cache `snapshots/` (`0700`, owner-checked); `materialize` creates directories without following symlinks and links an exclusively created temp file into place, so never write snapshots with `fs::write` or under the shared temp dir. `TUICR_GLAB_DEBUG` logs to `glab-debug.log` in the same cache dir (`0600`, `O_NOFOLLOW`). The directory name is a truncated readable slug plus a hash of host/repo/PR/SHA, so it stays under NAME_MAX for any namespace. The debug log refuses to append to an existing file that is not an owner-only regular file.
 
+28. **Local slugs and `forge:` paths read `origin` and owners faithfully.** Gerrit's `remote_for_repository` reads remotes through `forge::remotes` (libgit2, then `git remote get-url`) so reftable/SHA-256 checkouts work. `resolve_owner_repo` (local slugs) still uses libgit2 only; changing it re-slugs existing reviews and must land with the storage identity change. `RepoCoordinate::parse` tries `forge:<host>/<owner…>/<repo>` (`parse_forge_path`) *before* the hostname parsers, which would strip Gerrit's `a/` and drop multi-segment owners.
+
 ### Keeping Docs Updated
 
 When adding user-facing features, update the relevant documentation:
