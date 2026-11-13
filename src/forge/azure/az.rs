@@ -2055,6 +2055,7 @@ mod tests {
             base_sha: "base000".to_string(),
             head_sha: "head111".to_string(),
             path: PathBuf::from("src/a\\b.rs"),
+            status: crate::model::FileStatus::Modified,
             side: crate::forge::traits::ForgeFileSide::Head,
             start_line: 0,
             end_line: 0,

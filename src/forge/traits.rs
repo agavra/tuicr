@@ -425,6 +425,11 @@ pub struct ForgeFileLinesRequest {
     pub head_sha: String,
     /// File path relative to the repository root.
     pub path: PathBuf,
+    /// File status, used to choose the appropriate side without forcing the
+    /// caller to also compute it. Renames use `Renamed`; `path` should already
+    /// reflect the chosen side. Kept public for library callers; not read
+    /// internally.
+    pub status: FileStatus,
     /// Which side to read from. The caller is responsible for picking the
     /// right side per the spec mapping rules.
     pub side: ForgeFileSide,
@@ -452,6 +457,7 @@ impl ForgeFileLinesRequest {
             base_sha,
             head_sha,
             path,
+            status,
             side,
             start_line: line_range.0,
             end_line: line_range.1,

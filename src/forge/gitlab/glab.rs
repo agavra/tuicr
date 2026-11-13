@@ -2954,6 +2954,7 @@ mod tests {
             base_sha: "basesha".to_string(),
             head_sha: "headsha".to_string(),
             path: PathBuf::from(path),
+            status: crate::model::FileStatus::Modified,
             side,
             start_line: 0,
             end_line: 0,
