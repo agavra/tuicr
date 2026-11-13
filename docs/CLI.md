@@ -37,7 +37,10 @@ command (`tuicr review add --help`).
 These apply to the TUI and can be given on the bare command, on `tui`, or on
 `pr` / `mr`. When the same option appears at more than one level, string values
 take the last one given and boolean flags stay on once set, so
-`tuicr --stdout tui pr 125 --theme nord-dark` is valid.
+`tuicr --stdout tui pr 125 --theme nord-dark` is valid. Conflicts between
+options (`--file` / `--all-files` against `-r`, `-w`, `-p`) are checked on the
+merged set, so they also fail when split across levels. `pr` rejects the
+local-review flags `-r`, `-w`, `-p`, `--file` and `-A`.
 
 | Flag | Short | Value | Description |
 |---|---|---|---|

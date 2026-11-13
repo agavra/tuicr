@@ -444,6 +444,34 @@ impl Cli {
                         "--line cannot be used with `tuicr pr`\n",
                     ));
                 }
+                if args.pr_target.is_some() {
+                    for (flag, given) in [
+                        ("--revisions", args.revisions.is_some()),
+                        ("--working-tree", args.working_tree),
+                        ("--path", args.path_filter.is_some()),
+                        ("--file", args.file_path.is_some()),
+                        ("--all-files", args.all_files),
+                    ] {
+                        if given {
+                            return Err(clap::Error::raw(
+                                clap::error::ErrorKind::ArgumentConflict,
+                                format!("{flag} cannot be used with `tuicr pr`\n"),
+                            ));
+                        }
+                    }
+                }
+                // clap only checks conflicts within one command level, and
+                // the root, `tui` and `pr` levels are merged afterwards.
+                let any_diff_scope =
+                    args.revisions.is_some() || args.working_tree || args.path_filter.is_some();
+                if (args.file_path.is_some() || args.all_files) && any_diff_scope
+                    || args.file_path.is_some() && args.all_files
+                {
+                    return Err(clap::Error::raw(
+                        clap::error::ErrorKind::ArgumentConflict,
+                        "--file, --all-files and the diff scope flags (--revisions, --working-tree, --path) cannot be combined\n",
+                    ));
+                }
                 if args.start_line.is_some()
                     && args.file_path.is_none()
                     && args.path_filter.is_none()
@@ -601,6 +629,40 @@ mod tests {
                     .contains("--line cannot be used with `tuicr pr`")
             );
         }
+    }
+
+    #[test]
+    fn should_reject_conflicting_flags_split_across_levels() {
+        for args in [
+            &["tuicr", "-A", "tui", "--file", "f.md"][..],
+            &["tuicr", "--file", "f.md", "tui", "--path", "src/"][..],
+            &["tuicr", "-r", "HEAD", "tui", "-A"][..],
+            &["tuicr", "-w", "tui", "--file", "f.md"][..],
+        ] {
+            let err = parse_for_test(args).expect_err("parse should fail");
+            assert_eq!(err.kind(), ErrorKind::ArgumentConflict, "{args:?}");
+        }
+    }
+
+    #[test]
+    fn should_reject_local_only_flags_with_pr_subcommand() {
+        for args in [
+            &["tuicr", "pr", "125", "--file", "f.md"][..],
+            &["tuicr", "pr", "125", "-A"][..],
+            &["tuicr", "pr", "125", "-p", "src/"][..],
+            &["tuicr", "pr", "125", "-r", "HEAD~2..HEAD", "-w"][..],
+            &["tuicr", "-w", "pr", "125"][..],
+        ] {
+            let err = parse_for_test(args).expect_err("parse should fail");
+            assert_eq!(err.kind(), ErrorKind::ArgumentConflict, "{args:?}");
+        }
+    }
+
+    #[test]
+    fn should_allow_revisions_with_working_tree() {
+        let parsed =
+            parse_for_test(&["tuicr", "-r", "HEAD~2..HEAD", "tui", "-w"]).expect("should parse");
+        assert!(parsed.working_tree);
     }
 
     #[test]
