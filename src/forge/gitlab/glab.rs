@@ -584,7 +584,7 @@ where
             all.extend(
                 discussions
                     .into_iter()
-                    .filter_map(|d| d.into_review_thread()),
+                    .filter_map(|d| d.into_review_thread(&pr.head_sha)),
             );
             if received < 100 {
                 break;
