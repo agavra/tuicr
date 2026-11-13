@@ -793,3 +793,28 @@ fn system_runtime_reports_success_failure_and_missing_manager_commands() {
         Err(UpdateError::Manager { .. })
     ));
 }
+
+#[cfg(unix)]
+#[test]
+fn detects_cargo_install_behind_a_symlinked_cargo_home() {
+    let temp = TempDir::new().unwrap();
+    let real = temp.path().join("real-cargo");
+    let link = temp.path().join("dot-cargo");
+    std::fs::create_dir_all(real.join("bin")).unwrap();
+    std::fs::write(real.join("bin/tuicr"), b"binary").unwrap();
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+
+    let executable = canonical_executable(&link.join("bin/tuicr")).unwrap();
+    let root = canonical_cargo_root(None, Some(&link));
+
+    assert_eq!(
+        detect_install_method(&executable, None, root.as_deref()),
+        InstallMethod::Cargo
+    );
+    let root = canonical_cargo_root(Some(temp.path()), None);
+    assert_eq!(
+        root,
+        Some(temp.path().join(".cargo")),
+        "missing root falls back to raw path"
+    );
+}
