@@ -404,6 +404,9 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
     app.diff_state.viewport_height = inner.height as usize;
     app.diff_inner_area = Some(inner);
 
+    // Size the PR-info rows (built below) at the real width, not last frame's.
+    app.sync_viewport_width(inner.width as usize);
+
     // Reset comment input annotation offset (will be set if a comment input box is rendered)
     app.comment_input_annotation_offset = None;
 
@@ -1082,7 +1085,6 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
         .max()
         .unwrap_or(0);
 
-    app.sync_viewport_width(inner.width as usize);
     app.diff_state.max_content_width = max_content_width;
 
     let scroll_offset = app.diff_state.scroll_offset;

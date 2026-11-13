@@ -1546,15 +1546,7 @@ impl App {
     /// Uses viewport_width to account for pre-wrapped visual segments so the
     /// annotation count stays in sync with what format_comment_lines renders.
     pub(crate) fn comment_display_lines(comment: &Comment, viewport_width: usize) -> usize {
-        // Mirrors the content_area calculation in format_comment_lines:
-        // indicator(1) + border_prefix(7) + safety_margin(2) = 10
-        let content_area = viewport_width.saturating_sub(10);
-        let visual_lines: usize = comment
-            .content
-            .split('\n')
-            .map(|line| crate::ui::comment_panel::wrap_segments(line, content_area).len())
-            .sum();
-        2 + visual_lines // top border + visual segments + bottom border
+        crate::ui::comment_panel::comment_box_rows(&comment.content, viewport_width)
     }
 
     /// Update viewport_width and trigger annotation rebuild if it changed.
