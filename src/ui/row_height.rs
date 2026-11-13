@@ -1602,4 +1602,131 @@ mod tests {
             );
         }
     }
+
+    // ---- shared file preamble, gap/hunk-header and EOF-gap builders ----
+
+    /// Text of every screen row the shared builders produce (file header,
+    /// reviewed banner, hunk header, expander and hidden-lines stubs, file
+    /// comment, binary label, spacing), keyed by annotation kind, drawn by the
+    /// real renderer of `mode`.
+    fn shared_builder_rows(app: &mut App, mode: DiffViewMode) -> Vec<(&'static str, String)> {
+        app.diff_view_mode = mode;
+        app.rebuild_annotations();
+        let (w, h) = (120u16, 300u16);
+        let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+        terminal
+            .draw(|frame| match mode {
+                DiffViewMode::Unified => {
+                    crate::ui::diff_unified::render_unified_diff(frame, app, Rect::new(0, 0, w, h));
+                }
+                DiffViewMode::SideBySide => {
+                    crate::ui::diff_side_by_side::render_side_by_side_diff(
+                        frame,
+                        app,
+                        Rect::new(0, 0, w, h),
+                    );
+                }
+            })
+            .expect("draw");
+        let buf = terminal.backend().buffer().clone();
+        let mut out = Vec::new();
+        for row in 0..h {
+            let text: String = (0..w).map(|x| buf[(x, row)].symbol().to_string()).collect();
+            let inner = text.trim_matches('│').trim();
+            let kind = if inner.starts_with("═══") {
+                "FileHeader"
+            } else if inner.starts_with("Marked reviewed") {
+                "ReviewedBanner"
+            } else if inner.starts_with("@@") || inner.starts_with("✓ @@") {
+                "HunkHeader"
+            } else if inner.starts_with("... ") && inner.contains("expand (") {
+                "Expander"
+            } else if inner.starts_with("... ") && inner.contains("lines hidden") {
+                "HiddenLines"
+            } else if inner.starts_with("(binary file)") {
+                "BinaryOrEmpty"
+            } else if inner.contains("overall the file looks good") {
+                "FileComment"
+            } else {
+                continue;
+            };
+            out.push((kind, text.trim_end().to_string()));
+        }
+        out
+    }
+
+    fn assert_shared_rows_match(app: &mut App, required: &[&str]) {
+        let unified = shared_builder_rows(app, DiffViewMode::Unified);
+        let sbs = shared_builder_rows(app, DiffViewMode::SideBySide);
+        for r in required {
+            assert!(
+                unified.iter().any(|(b, _)| b == r),
+                "fixture lacks {r}: {unified:?}"
+            );
+        }
+        assert_eq!(unified, sbs);
+    }
+
+    #[test]
+    fn should_draw_identical_shared_rows_in_both_renderers() {
+        let mut app = make_app();
+        // A trailing gap with hidden lines and expanders for the first code file.
+        let idx = app.diff_files.iter().position(|f| !f.is_binary).unwrap();
+        app.file_line_count_cache.insert(idx, 10101);
+        assert_shared_rows_match(
+            &mut app,
+            &[
+                "FileHeader",
+                "HunkHeader",
+                "Expander",
+                "HiddenLines",
+                "FileComment",
+                "BinaryOrEmpty",
+            ],
+        );
+    }
+
+    #[test]
+    fn should_draw_identical_shared_rows_for_expanded_eof_in_both_renderers() {
+        for bottom in [false, true] {
+            let (mut app, _) = eof_gap_app(DiffViewMode::Unified, bottom);
+            // Keep the fixture's top-of-file/EOF stubs but shrink the run so
+            // the 300-row viewport shows the whole file.
+            let eof = app
+                .expanded_top
+                .keys()
+                .chain(app.expanded_bottom.keys())
+                .next()
+                .cloned()
+                .unwrap();
+            for map in [&mut app.expanded_top, &mut app.expanded_bottom] {
+                if let Some(v) = map.get_mut(&eof) {
+                    v.truncate(20);
+                }
+            }
+            app.file_line_count_cache.insert(eof.file_idx, 10101);
+            assert_shared_rows_match(&mut app, &["Expander", "HiddenLines"]);
+        }
+    }
+
+    #[test]
+    fn should_draw_identical_shared_rows_for_reviewed_file_in_both_renderers() {
+        // Collapsed continuous view, then single-file view with the banner.
+        let mut app = make_app();
+        let path = app.diff_files[0].display_path().clone();
+        app.session.get_file_mut(&path).unwrap().reviewed = true;
+        assert_shared_rows_match(&mut app, &["FileHeader"]);
+        app.is_single_file_view = true;
+        app.diff_state.current_file_idx = 0;
+        app.session.get_file_mut(&path).unwrap().reviewed = true;
+        let unified = shared_builder_rows(&mut app, DiffViewMode::Unified);
+        assert!(
+            unified.iter().any(|(b, _)| *b == "ReviewedBanner"),
+            "{unified:?}"
+        );
+        assert_eq!(
+            unified,
+            shared_builder_rows(&mut app, DiffViewMode::SideBySide)
+        );
+    }
 }
