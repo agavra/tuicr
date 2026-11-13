@@ -258,30 +258,7 @@ impl App {
                 )?
                 .with_vcs_open_options(options.vcs_open_options());
 
-                app.range_diff_files = Some(app.diff_files.clone());
-                app.commit_list = all_commits.clone();
-                let range = Self::initial_commit_range(options.commit_selection, all_commits.len());
-                app.commit_selection_range = range;
-                app.commit_list_cursor = range.map(|(start, _)| start).unwrap_or(0);
-                app.commit_list_scroll_offset = 0;
-                app.visible_commit_count = all_commits.len();
-                app.has_more_commit = false;
-                app.show_commit_selector = all_commits.len() > 1;
-                app.commit_diff_cache.clear();
-                app.review_commits = all_commits;
-                // `initial_commit_selection = oldest` scopes the review to a single
-                // commit; narrow the loaded diff to it.
-                if Self::is_strict_commit_selection(
-                    app.commit_selection_range,
-                    app.review_commits.len(),
-                ) {
-                    app.reload_inline_selection()?;
-                } else {
-                    app.insert_commit_message_if_single();
-                    app.sort_files_by_directory(true);
-                    app.expand_all_dirs();
-                    app.rebuild_annotations();
-                }
+                app.install_review_commits(all_commits, options.commit_selection)?;
 
                 return Ok(app);
             }
@@ -320,35 +297,7 @@ impl App {
             )?
             .with_vcs_open_options(options.vcs_open_options());
 
-            // Set up inline commit selector for multi-commit reviews
-            if review_commits.len() > 1 {
-                app.range_diff_files = Some(app.diff_files.clone());
-                app.commit_list = review_commits.clone();
-                let range =
-                    Self::initial_commit_range(options.commit_selection, review_commits.len());
-                app.commit_selection_range = range;
-                app.commit_list_cursor = range.map(|(start, _)| start).unwrap_or(0);
-                app.commit_list_scroll_offset = 0;
-                app.visible_commit_count = review_commits.len();
-                app.has_more_commit = false;
-                app.show_commit_selector = true;
-                app.commit_diff_cache.clear();
-            }
-            app.review_commits = review_commits;
-            // `initial_commit_selection = oldest` opens the review scoped to a single
-            // commit; narrow the loaded diff to it. Otherwise finalize the
-            // full-range diff already loaded above.
-            if Self::is_strict_commit_selection(
-                app.commit_selection_range,
-                app.review_commits.len(),
-            ) {
-                app.reload_inline_selection()?;
-            } else {
-                app.insert_commit_message_if_single();
-                app.sort_files_by_directory(true);
-                app.expand_all_dirs();
-                app.rebuild_annotations();
-            }
+            app.install_review_commits(review_commits, options.commit_selection)?;
 
             Ok(app)
         } else if options.working_tree {
