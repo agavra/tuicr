@@ -744,7 +744,8 @@ impl App {
         let offset = self.loaded_history_commit_count();
         let limit = self.commit_page_size;
 
-        let new_commits = self.vcs.get_recent_commits(offset, limit)?;
+        // A PR on screen parks the checkout's backend; history lives there.
+        let new_commits = self.with_local_vcs(|app| app.vcs.get_recent_commits(offset, limit))?;
 
         if new_commits.is_empty() {
             self.has_more_commit = false;

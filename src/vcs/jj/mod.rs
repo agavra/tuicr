@@ -57,6 +57,23 @@ impl JjBackend {
         Self::from_path(root_path, whitespace_mode)
     }
 
+    /// Discover a Jujutsu repository from `path` rather than the current directory.
+    pub(crate) fn discover_from(path: &Path, whitespace_mode: DiffWhitespaceMode) -> Result<Self> {
+        let root_output = Command::new("jj")
+            .args(["root", "--color=never"])
+            .current_dir(path)
+            .output()
+            .map_err(|e| TuicrError::VcsCommand(format!("Failed to run jj: {}", e)))?;
+
+        if !root_output.status.success() {
+            return Err(TuicrError::NotARepository);
+        }
+
+        let root_path = PathBuf::from(String::from_utf8_lossy(&root_output.stdout).trim());
+
+        Self::from_path(root_path, whitespace_mode)
+    }
+
     /// Create backend from a known path (used by discover and tests)
     fn from_path(root_path: PathBuf, whitespace_mode: DiffWhitespaceMode) -> Result<Self> {
         // Canonicalize to resolve symlinks (e.g., /var -> /private/var on macOS)

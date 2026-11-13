@@ -138,10 +138,14 @@ impl App {
             return false;
         }
         let local = self.parked_vcs.take().or_else(|| {
-            self.local_repo_root.as_ref()?;
+            let root = self.local_repo_root.as_deref()?;
             let options = self.vcs_open_options.clone();
-            let vcs =
-                detect_vcs(options.git_backend_preference, options.diff_whitespace_mode).ok()?;
+            let vcs = crate::vcs::detect_vcs_in(
+                root,
+                options.git_backend_preference,
+                options.diff_whitespace_mode,
+            )
+            .ok()?;
             let info = vcs.info().clone();
             Some((vcs, info))
         });

@@ -3546,6 +3546,7 @@ fn should_hold_the_commit_message_back_in_cli_startup_with_a_strict_range() {
         },
         CommitSelectionStart::Oldest,
         None,
+        VcsOpenOptions::default(),
     )
     .unwrap();
 
@@ -3591,6 +3592,7 @@ fn should_open_a_single_commit_pr_from_the_cli_with_its_message_first() {
         },
         CommitSelectionStart::All,
         None,
+        VcsOpenOptions::default(),
     )
     .unwrap();
 
@@ -4460,4 +4462,131 @@ fn should_keep_the_pr_backend_when_a_local_load_finds_nothing() {
     app.enter_target_selector(TargetTab::Local).unwrap();
     assert_eq!(app.commit_list.len(), 2);
     drop(dir);
+}
+
+fn app_in_pr_mode_with_commits(n: usize) -> (App, tempfile::TempDir, TestReviewsDir) {
+    let reviews = TestReviewsDir::new();
+    let dir = tempfile::tempdir().expect("failed to create test repo dir");
+    let commits = (0..n)
+        .map(|i| CommitInfo {
+            id: format!("c{i}"),
+            short_id: format!("c{i}"),
+            branch_name: None,
+            summary: format!("commit {i}"),
+            body: None,
+            author: "a".to_string(),
+            time: chrono::Utc::now(),
+        })
+        .collect();
+    let mut app = build_app_rooted(dir.path().to_path_buf(), commits, None);
+    let backend = Box::new(FakeForgeBackend::open_pr_details(
+        test_pr_details(42, "first"),
+        crate::forge::github::gh::tests_fixture::SIMPLE_PATCH.to_string(),
+    ));
+    app.open_pr_with_backend(&sample_pr(42, "first"), backend, None)
+        .unwrap();
+    (app, dir, reviews)
+}
+
+/// "Show more" pages through the checkout's history, not the PR's no-op
+/// backend (which answers with nothing and used to end pagination at 10).
+#[test]
+fn should_page_local_history_after_entering_pr_mode() {
+    // given a PR opened from a checkout with 25 commits
+    let (mut app, _dir, _reviews) = app_in_pr_mode_with_commits(25);
+    app.enter_target_selector(TargetTab::Local).unwrap();
+    assert_eq!(app.commit_list.len(), VISIBLE_COMMIT_COUNT);
+    assert!(app.has_more_commit);
+
+    // when the list is expanded past the first page
+    app.visible_commit_count = app.commit_list.len();
+    app.expand_commit().unwrap();
+
+    // then older commits were fetched and the PR backend is back in place
+    assert!(app.commit_list.len() > VISIBLE_COMMIT_COUNT);
+    assert_eq!(app.commit_list[VISIBLE_COMMIT_COUNT].id, "c10");
+    assert!(
+        app.vcs_info
+            .root_path
+            .to_string_lossy()
+            .starts_with("forge:")
+    );
+}
+
+/// A lazily reopened backend follows the recorded checkout, not wherever the
+/// process currently is.
+#[test]
+fn should_reopen_the_recorded_checkout_not_the_cwd() {
+    // given a PR app with no parked backend and a real recorded checkout
+    let (mut app, _dir, _reviews) = app_in_pr_mode_from_checkout();
+    let repo = tempfile::tempdir().unwrap();
+    crate::forge::local_git::test_support::init_repo_with_commit(repo.path(), &["one"]);
+    app.parked_vcs = None;
+    app.local_repo_root = Some(repo.path().to_path_buf());
+    assert_ne!(
+        std::env::current_dir().unwrap().canonicalize().unwrap(),
+        repo.path().canonicalize().unwrap()
+    );
+
+    // when a local action runs
+    let root = app
+        .with_local_vcs(|app| Ok(app.vcs_info.root_path.clone()))
+        .unwrap();
+
+    // then it ran against the recorded checkout
+    assert_eq!(
+        root.canonicalize().unwrap(),
+        repo.path().canonicalize().unwrap()
+    );
+}
+
+/// `tuicr pr` records the configured backend and whitespace mode so the
+/// reopened checkout backend matches a normal start.
+#[test]
+fn should_record_the_startup_vcs_options_for_cli_pr_startup() {
+    let _reviews = TestReviewsDir::new();
+    let details = test_pr_details(424398, "cli opts");
+    let patch = crate::forge::github::gh::tests_fixture::SIMPLE_PATCH;
+    let opened = crate::forge::pr_open::prepare_open_pr(
+        details.clone(),
+        structured_patch(patch),
+        vec![sample_pr_commit_with_body(
+            &details.head_sha,
+            "only",
+            "body",
+        )],
+        PullRequestReviewMetadata::default(),
+        crate::forge::traits::PullRequestInfo::from_details(details.clone()),
+        None,
+        &SyntaxHighlighter::default(),
+    )
+    .unwrap();
+    let configured = VcsOpenOptions {
+        git_backend_preference: GitBackendPreference::Cli,
+        diff_whitespace_mode: DiffWhitespaceMode::IgnoreAll,
+    };
+
+    let app = App::from_opened_pr(
+        opened,
+        Box::new(FakeForgeBackend::open_pr_details(
+            details.clone(),
+            patch.to_string(),
+        )),
+        details.repository.clone(),
+        Theme::dark(),
+        None,
+        true,
+        None,
+        PrDisplayOptions {
+            show_checks: false,
+            show_comments: true,
+            comments_visibility: None,
+        },
+        CommitSelectionStart::All,
+        None,
+        configured.clone(),
+    )
+    .unwrap();
+
+    assert_eq!(app.vcs_open_options, configured);
 }

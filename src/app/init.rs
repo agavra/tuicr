@@ -31,6 +31,7 @@ impl App {
                     show_comments: options.show_pr_comments,
                     comments_visibility: options.pr_comments_visibility,
                 },
+                options.vcs_open_options(),
             );
         }
 
@@ -785,6 +786,7 @@ impl App {
                 show_comments: true,
                 comments_visibility: None,
             },
+            VcsOpenOptions::default(),
         )
     }
 
@@ -796,6 +798,7 @@ impl App {
         repo_url_override: Option<ForgeRepository>,
         commit_selection: CommitSelectionStart,
         display_options: PrDisplayOptions,
+        vcs_open_options: VcsOpenOptions,
     ) -> Result<Self> {
         use crate::forge::azure::az::parse_pull_request_target_azure;
         use crate::forge::bitbucket::bkt::parse_pull_request_target_bitbucket;
@@ -891,6 +894,7 @@ impl App {
             display_options,
             commit_selection,
             local_repo_root,
+            vcs_open_options,
         )?;
         // Spawn thread-fetch on startup; the main event loop will drain
         // the receiver via `poll_pr_threads_events` once it begins.
@@ -912,6 +916,7 @@ impl App {
         display_options: PrDisplayOptions,
         commit_selection: CommitSelectionStart,
         local_repo_root: Option<PathBuf>,
+        vcs_open_options: VcsOpenOptions,
     ) -> Result<Self> {
         let pr_source = PullRequestDiffSource::from_details(&opened.details);
         let diff_source = DiffSource::PullRequest(Box::new(pr_source));
@@ -949,6 +954,7 @@ impl App {
         // directory here — PRs opened later from the PR tab resolve their
         // local checkout from it.
         app.local_repo_root = local_repo_root;
+        app.vcs_open_options = vcs_open_options;
         // Wire the forge backend so context expansion routes through it.
         app.forge_backend = Some(backend);
         app.forge_repository = Some(target_repo);
