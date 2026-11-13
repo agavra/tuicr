@@ -114,6 +114,18 @@ pub struct DiffAnchor {
     pub origin: LineOrigin,
 }
 
+impl DiffAnchor {
+    /// Line number on the opposite side, for context lines only. Added and
+    /// deleted lines occupy a single side, so GitLab gets no counterpart.
+    pub fn counterpart_line(&self, side: LineSide) -> Option<u32> {
+        match (self.origin, side) {
+            (LineOrigin::Context, LineSide::New) => Some(self.old_line),
+            (LineOrigin::Context, LineSide::Old) => Some(self.new_line),
+            _ => None,
+        }
+    }
+}
+
 /// Both ends of a multi-line selection, addressed in both line counters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RangeAnchors {
@@ -275,10 +287,10 @@ pub fn map_comment(
     match anchor {
         CommentAnchor::FileLevel => match file.first_valid_line(LineSide::New) {
             Some(line) => {
-                // Use find_line_with_counterpart so context lines include both
-                // new_line and old_line in the GitLab position object.
-                let counterpart_line =
-                    find_line_with_counterpart(file, line, LineSide::New).and_then(|(_, cp)| cp);
+                // Context lines include both new_line and old_line in the
+                // GitLab position object.
+                let counterpart_line = find_diff_anchor(file, line, LineSide::New)
+                    .and_then(|a| a.counterpart_line(LineSide::New));
                 MappedComment::Inline(InlineComment {
                     path,
                     line,
@@ -306,17 +318,17 @@ pub fn map_comment(
                 reason: UnmappableReason::MixedSideRange,
             },
         },
-        CommentAnchor::Line { line, side } => match find_line_with_counterpart(file, line, side) {
+        CommentAnchor::Line { line, side } => match find_diff_anchor(file, line, side) {
             None => MappedComment::Unmappable {
                 comment: comment.clone(),
                 file: path,
                 reason: UnmappableReason::LineNotInDiff,
             },
-            Some((primary_line, counterpart_line)) => MappedComment::Inline(InlineComment {
+            Some(found) => MappedComment::Inline(InlineComment {
                 path,
-                line: primary_line,
+                line,
                 side: side.into(),
-                counterpart_line,
+                counterpart_line: found.counterpart_line(side),
                 start_line: None,
                 start_side: None,
                 range_anchors: None,
@@ -338,32 +350,6 @@ fn renamed_old_path(file: &DiffFile) -> Option<PathBuf> {
     let old = file.old_path.as_ref()?;
     let new = file.new_path.as_ref()?;
     if old == new { None } else { Some(old.clone()) }
-}
-
-/// Find `line` on `side` and return `(line, counterpart)` where `counterpart`
-/// is the line number on the opposite side for context lines (`None` for
-/// purely added/deleted lines).
-fn find_line_with_counterpart(
-    file: &DiffFile,
-    line: u32,
-    side: LineSide,
-) -> Option<(u32, Option<u32>)> {
-    for hunk in &file.hunks {
-        for dl in &hunk.lines {
-            let candidate = match side {
-                LineSide::New => dl.new_lineno,
-                LineSide::Old => dl.old_lineno,
-            };
-            if candidate == Some(line) {
-                let counterpart = match side {
-                    LineSide::New => dl.old_lineno,
-                    LineSide::Old => dl.new_lineno,
-                };
-                return Some((line, counterpart));
-            }
-        }
-    }
-    None
 }
 
 /// Locate `line` on `side` and report both of its diff counters.
@@ -433,28 +419,26 @@ fn map_range(
     // contain every intermediate line (the user could have selected across
     // a gap), but the start and end must be anchorable.
     // Context lines count on either side, like single-line mapping.
-    if find_line_with_counterpart(file, range.start, side).is_none()
-        || find_line_with_counterpart(file, range.end, side).is_none()
-    {
+    let (Some(start), Some(end)) = (
+        find_diff_anchor(file, range.start, side),
+        find_diff_anchor(file, range.end, side),
+    ) else {
         return MappedComment::Unmappable {
             comment: comment.clone(),
             file: path,
             reason: UnmappableReason::MixedSideRange,
         };
-    }
+    };
 
     let old_path = renamed_old_path(file);
     // A range anchored on a context line must name both sides in the position,
     // exactly like a single-line comment on that same line.
-    let counterpart_of =
-        |line: u32| find_line_with_counterpart(file, line, side).and_then(|(_, cp)| cp);
-
     if range.is_single() {
         return MappedComment::Inline(InlineComment {
             path,
             line: range.start,
             side: side.into(),
-            counterpart_line: counterpart_of(range.start),
+            counterpart_line: start.counterpart_line(side),
             start_line: None,
             start_side: None,
             range_anchors: None,
@@ -464,15 +448,13 @@ fn map_range(
         });
     }
 
-    let range_anchors = find_diff_anchor(file, range.start, side)
-        .zip(find_diff_anchor(file, range.end, side))
-        .map(|(start, end)| RangeAnchors { start, end });
+    let range_anchors = Some(RangeAnchors { start, end });
 
     MappedComment::Inline(InlineComment {
         path,
         line: range.end,
         side: side.into(),
-        counterpart_line: counterpart_of(range.end),
+        counterpart_line: end.counterpart_line(side),
         start_line: Some(range.start),
         start_side: Some(side.into()),
         range_anchors,
@@ -1037,6 +1019,88 @@ mod tests {
                 }
                 other => panic!("expected Inline for {range:?}, got {other:?}"),
             }
+        }
+    }
+
+    fn range_result(file: &DiffFile, side: LineSide, range: LineRange) -> MappedComment {
+        let comment = comment_range(side, range);
+        map_comment(
+            &comment,
+            anchor_from(&comment),
+            file,
+            ctx_of(&default_config(), &test_comment_types()),
+        )
+    }
+
+    #[test]
+    fn should_mark_range_with_only_start_on_side_as_unmappable() {
+        let file = file_with_hunks(vec![hunk(vec![
+            line(LineOrigin::Addition, Some(10), None),
+            line(LineOrigin::Deletion, None, Some(20)),
+        ])]);
+        match range_result(&file, LineSide::New, LineRange::new(10, 20)) {
+            MappedComment::Unmappable { reason, .. } => {
+                assert_eq!(reason, UnmappableReason::MixedSideRange)
+            }
+            other => panic!("expected Unmappable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn should_mark_range_with_only_end_on_side_as_unmappable() {
+        let file = file_with_hunks(vec![hunk(vec![
+            line(LineOrigin::Deletion, None, Some(20)),
+            line(LineOrigin::Addition, Some(30), None),
+        ])]);
+        match range_result(&file, LineSide::New, LineRange::new(20, 30)) {
+            MappedComment::Unmappable { reason, .. } => {
+                assert_eq!(reason, UnmappableReason::MixedSideRange)
+            }
+            other => panic!("expected Unmappable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn should_anchor_old_side_range_from_context_to_deletion() {
+        let file = file_with_hunks(vec![hunk(vec![
+            line(LineOrigin::Context, Some(4), Some(5)),
+            line(LineOrigin::Deletion, None, Some(6)),
+        ])]);
+        match range_result(&file, LineSide::Old, LineRange::new(5, 6)) {
+            MappedComment::Inline(ic) => {
+                // End is a deletion: no counterpart.
+                assert_eq!(ic.counterpart_line, None);
+                assert_eq!(ic.side, GhSide::Left);
+                let a = ic.range_anchors.expect("anchors");
+                assert_eq!(
+                    a.start,
+                    DiffAnchor {
+                        old_line: 5,
+                        new_line: 4,
+                        origin: LineOrigin::Context
+                    }
+                );
+                assert_eq!(a.start.counterpart_line(LineSide::Old), Some(4));
+                assert_eq!(
+                    a.end,
+                    DiffAnchor {
+                        old_line: 6,
+                        new_line: 5,
+                        origin: LineOrigin::Deletion
+                    }
+                );
+                assert_eq!(a.end.counterpart_line(LineSide::Old), None);
+            }
+            other => panic!("expected Inline, got {other:?}"),
+        }
+        // Reverse: ending on context gives the new-side counterpart.
+        let file = file_with_hunks(vec![hunk(vec![
+            line(LineOrigin::Deletion, None, Some(6)),
+            line(LineOrigin::Context, Some(6), Some(7)),
+        ])]);
+        match range_result(&file, LineSide::Old, LineRange::new(6, 7)) {
+            MappedComment::Inline(ic) => assert_eq!(ic.counterpart_line, Some(6)),
+            other => panic!("expected Inline, got {other:?}"),
         }
     }
 
