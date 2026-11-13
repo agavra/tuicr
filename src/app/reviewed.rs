@@ -573,12 +573,10 @@ impl App {
     /// Reviewed files within the population `file_count()` reports, so the two
     /// always form a coherent fraction.
     pub fn reviewed_count(&self) -> usize {
-        if !self.file_filter_active() {
-            return self.session.reviewed_count();
-        }
-        // Counting the whole session here would read as `12/5` next to a
-        // filtered total, so count only reviewed files that survive the
-        // patterns. Hiding them does not remove them from the count.
+        // Counting the whole session would include files outside `diff_files`
+        // (e.g. a narrowed commit selection), so count only reviewed files
+        // that survive the patterns. Hiding them does not remove them from
+        // the count.
         self.diff_files
             .iter()
             .filter(|file| {

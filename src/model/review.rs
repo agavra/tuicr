@@ -237,8 +237,14 @@ impl ReviewSession {
 
     /// Register a transient filtered diff without dropping hunk keys that
     /// belong to the broader persisted review scope.
+    /// A subset hash must not overwrite the persisted one, so an existing
+    /// file keeps its `reviewed` flag, `content_hash` and hunk marks.
     pub fn add_diff_file_preserving_hunks(&mut self, file: &DiffFile) -> bool {
-        self.add_file(file.display_path().clone(), file.status, file.content_hash)
+        let path = file.display_path().clone();
+        if !self.files.contains_key(&path) {
+            self.add_file(path, file.status, file.content_hash);
+        }
+        false
     }
 
     pub fn get_file_mut(&mut self, path: &PathBuf) -> Option<&mut FileReview> {

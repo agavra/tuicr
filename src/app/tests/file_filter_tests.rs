@@ -812,3 +812,26 @@ fn should_drop_bare_carriage_returns_when_pasting_into_the_prompt() {
 
     assert_eq!(app.file_tree_draft().unwrap().buffer, "main");
 }
+
+/// The session keeps files that are not in the current diff (a narrowed commit
+/// selection), so counting it would give `2/1` and underflow the hide message.
+#[test]
+fn should_not_count_reviewed_session_files_outside_the_diff() {
+    let mut app = app_with(&["src/main.rs"]);
+    app.session.add_file(
+        std::path::PathBuf::from("gone.rs"),
+        crate::model::FileStatus::Modified,
+        1,
+    );
+    app.session
+        .get_file_mut(&std::path::PathBuf::from("gone.rs"))
+        .unwrap()
+        .reviewed = true;
+    app.session
+        .get_file_mut(&std::path::PathBuf::from("src/main.rs"))
+        .unwrap()
+        .reviewed = true;
+
+    assert_eq!(app.reviewed_count(), 1);
+    assert_eq!(app.file_count(), 1);
+}

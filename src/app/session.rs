@@ -292,6 +292,24 @@ impl App {
                 current_review.reviewed = latest_review.reviewed;
                 changed += 1;
             }
+
+            if let Some(current_review) = current.files.get_mut(path) {
+                let empty = std::collections::BTreeSet::new();
+                let base_hunks = base
+                    .files
+                    .get(path)
+                    .map_or(&empty, |review| &review.reviewed_hunks);
+                for key in base_hunks.difference(&latest_review.reviewed_hunks) {
+                    if current_review.reviewed_hunks.remove(key) {
+                        changed += 1;
+                    }
+                }
+                for key in latest_review.reviewed_hunks.difference(base_hunks) {
+                    if current_review.reviewed_hunks.insert(key.clone()) {
+                        changed += 1;
+                    }
+                }
+            }
         }
 
         if current.pr_description_reviewed == base.pr_description_reviewed

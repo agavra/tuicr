@@ -303,7 +303,7 @@ impl App {
 
     /// Restore the cached cumulative PR diff into the diff view. Used when
     /// the user toggles the selector back to "all commits".
-    fn apply_cached_full_pr_diff(&mut self) {
+    pub(in crate::app) fn apply_cached_full_pr_diff(&mut self) {
         let Some(files) = self.range_diff_files.clone() else {
             return;
         };
@@ -313,9 +313,7 @@ impl App {
         let anchor = self.capture_pr_cursor_anchor();
         self.diff_files = files;
         self.clear_expanded_gaps();
-        for file in &self.diff_files {
-            self.session.add_diff_file(file);
-        }
+        Self::register_diff_files(&mut self.session, &self.diff_files, true);
         self.rebuild_pr_diff_view(true);
         if let Some(anchor) = anchor {
             self.restore_pr_cursor_to_anchor(&anchor);

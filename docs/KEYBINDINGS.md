@@ -395,6 +395,10 @@ When a pull request opens with a narrowed range, the message appears once the se
 loaded. When the PR's diff base or its known commit list changes, a reload resets the selection to
 all commits.
 
+Reviewed marks belong to the whole review, not to the selected commits: pressing `r` on a file
+while narrowed to one commit marks the entire cumulative file, and the mark stays when you
+widen or change the selection.
+
 | Key | Action |
 |-----|--------|
 | `j` / `k` | Navigate commits |

@@ -110,7 +110,7 @@ impl App {
         } else {
             self.set_message(format!(
                 "Hiding {hidden} reviewed \u{00b7} {} of {total} shown",
-                total - hidden
+                total.saturating_sub(hidden)
             ));
         }
     }
