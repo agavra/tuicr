@@ -69,6 +69,12 @@ impl<'a> Matcher<'a> {
     }
 
     fn is_ignored(&mut self, path: &Path) -> bool {
+        // Diff paths are repo-relative; anything else (`..`, absolute) is kept.
+        // `matched_path_or_any_parents` panics on a rooted path, and `.gitignore`
+        // files outside the repository must not be read.
+        if !path.components().all(|c| matches!(c, Component::Normal(_))) {
+            return false;
+        }
         if let Some(decided) = self.tuicrignore.as_ref().and_then(|m| {
             match m.matched_path_or_any_parents(path, false) {
                 Match::None => None,
@@ -76,11 +82,6 @@ impl<'a> Matcher<'a> {
             }
         }) {
             return decided;
-        }
-        // Diff paths are repo-relative; anything else (`..`, absolute) would
-        // read `.gitignore` files outside the repository.
-        if !path.components().all(|c| matches!(c, Component::Normal(_))) {
-            return false;
         }
         let mut prefix = PathBuf::new();
         let mut components = path.components().peekable();
@@ -148,6 +149,15 @@ mod tests {
             is_commit_message: false,
             content_hash: 0,
         }
+    }
+
+    #[test]
+    fn keeps_paths_outside_the_repo_when_tuicrignore_exists() {
+        let dir = tempdir().expect("failed to create temp dir");
+        fs::write(dir.path().join(".tuicrignore"), "*.log\n").expect("write");
+        let outside = std::env::temp_dir().join("outside.rs");
+        let kept = filter_paths(dir.path(), vec![outside.clone()]);
+        assert_eq!(kept, vec![outside]);
     }
 
     #[test]
