@@ -182,6 +182,8 @@ impl App {
         self.pr_range_reload_state = None;
         self.pr_range_reload_rx = None;
         self.current_pr_head = None;
+        // Annotations were built while the PR state was still present.
+        self.rebuild_annotations();
     }
 
     /// Run a local-target action with the checkout's backend active.

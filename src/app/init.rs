@@ -835,10 +835,13 @@ impl App {
         //   3. detected local `origin` as the final fallback
         // URL- and owner-repo-hash targets carry their own repository, which
         // wins over all of the above since it's PR-specific.
-        let local_repo_root = std::env::current_dir().ok();
-        let detected_repo = local_repo_root
+        let launch_dir = std::env::current_dir().ok();
+        let detected_repo = launch_dir
             .as_deref()
             .and_then(crate::forge::detect_forge_repository);
+        let local_repo_root = launch_dir
+            .as_deref()
+            .and_then(|dir| checkout_root_for_launch_dir(dir, &vcs_open_options));
 
         let target_repo = pr_target_repository(
             parsed.repository.as_ref(),
@@ -857,7 +860,7 @@ impl App {
         // Use the local checkout for `.tuicrignore` only when it matches the
         // PR's target repository — using a foreign repo's checkout would
         // mis-filter the PR diff.
-        let local_checkout_for_target = local_repo_root
+        let local_checkout_for_target = launch_dir
             .as_deref()
             .and_then(|root| crate::forge::local_checkout_for_repo(root, &target_repo));
 
@@ -990,4 +993,21 @@ impl App {
         }
         Ok(app)
     }
+}
+
+/// The checkout root a `tuicr pr` launch directory belongs to, or `None`
+/// outside any checkout. Local sessions are scoped by this root, so a
+/// subdirectory launch must not narrow them and a non-checkout must not
+/// scope the tab to the directory.
+pub(in crate::app) fn checkout_root_for_launch_dir(
+    dir: &std::path::Path,
+    options: &VcsOpenOptions,
+) -> Option<PathBuf> {
+    crate::vcs::detect_vcs_in(
+        dir,
+        options.git_backend_preference,
+        options.diff_whitespace_mode.clone(),
+    )
+    .ok()
+    .map(|vcs| vcs.info().root_path.clone())
 }

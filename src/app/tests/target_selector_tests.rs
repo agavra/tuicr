@@ -4464,6 +4464,59 @@ fn should_keep_the_pr_backend_when_a_local_load_finds_nothing() {
     drop(dir);
 }
 
+/// Leaving PR mode for a local review must drop the PR rows from the
+/// annotation cache, or row 0 stays a PR-description row with no `pr_info`.
+#[test]
+fn should_drop_pr_annotations_when_a_local_review_replaces_the_pr() {
+    // given a PR app whose annotations include PR rows
+    let (mut app, _dir, _reviews) = app_in_pr_mode_from_checkout();
+    app.rebuild_annotations();
+    let is_pr_row = |a: &AnnotatedLine| {
+        matches!(
+            a,
+            AnnotatedLine::PrInfoLine { .. } | AnnotatedLine::RemoteReviewSummaryLine { .. }
+        )
+    };
+    assert!(app.line_annotations.iter().any(is_pr_row));
+
+    // when a local action replaces the PR (as the local loaders do)
+    app.with_local_vcs(|app| {
+        app.diff_source = DiffSource::WorkingTree;
+        app.rebuild_annotations();
+        Ok(())
+    })
+    .unwrap();
+
+    // then no PR row survives
+    assert!(app.pr_info.is_none());
+    assert!(!app.line_annotations.iter().any(is_pr_row));
+}
+
+/// `tuicr pr` from a checkout subdirectory records the checkout root, and
+/// from outside any checkout records nothing.
+#[test]
+fn should_record_the_checkout_root_for_cli_pr_launch_dirs() {
+    use crate::app::init::checkout_root_for_launch_dir;
+    let options = VcsOpenOptions::default();
+
+    // given a checkout with a subdirectory
+    let repo = tempfile::tempdir().unwrap();
+    crate::forge::local_git::test_support::init_repo_with_commit(repo.path(), &["one"]);
+    let sub = repo.path().join("src");
+    std::fs::create_dir(&sub).unwrap();
+
+    // then the subdirectory resolves to the root
+    let root = checkout_root_for_launch_dir(&sub, &options).unwrap();
+    assert_eq!(
+        root.canonicalize().unwrap(),
+        repo.path().canonicalize().unwrap()
+    );
+
+    // and a directory outside any checkout resolves to nothing
+    let plain = tempfile::tempdir().unwrap();
+    assert_eq!(checkout_root_for_launch_dir(plain.path(), &options), None);
+}
+
 fn app_in_pr_mode_with_commits(n: usize) -> (App, tempfile::TempDir, TestReviewsDir) {
     let reviews = TestReviewsDir::new();
     let dir = tempfile::tempdir().expect("failed to create test repo dir");
