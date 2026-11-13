@@ -81,6 +81,10 @@ comments_header = "## Local tuicr Comments"
 remote_comments_header = "## Existing GitHub Comments"
 legend = true
 session_header = true
+
+[generated]
+collapse = true
+count = true
 ```
 
 ## Options
@@ -125,6 +129,7 @@ session_header = true
 | `diff_watch_interval_ms`   | `0`          | Poll interval for re-reading the local diff so uncommitted changes show without `:e`. The same tick refreshes the commit pane, including the "Staged changes" and "Unstaged changes" rows. A commit-range review, from `-r` or picked in the commit selector, keeps its range in the pane. With `-w` it refreshes only those two rows. Without it the pane never gains them. `0` (default) disables it. Ignored for PR and `--all-files` reviews. |
 | `backend`                  | `libgit2`    | Git backend: `libgit2` or `cli`. Sparse-checkout repos auto-route to `cli`.                                                                                |
 | `comment_types`            | (none)       | Comment categories. Untyped by default. See [Comment types](#comment-types).                                                                               |
+| `generated`                | (table)      | Collapse and progress settings for files `.gitattributes` marks `linguist-generated` or `gitlab-generated`. Collapsed by default. See [Generated files](#generated-files). |
 | `export_legend`            | `true`       | Include the `Comment types:` legend in the exported review. Superseded by `legend` under [Export](#export).                                                |
 
 ## Whitespace comparison
@@ -369,6 +374,49 @@ The example above produces an export that opens directly on the comment list:
 ### Relationship to `export_legend`
 
 The top-level `export_legend` key predates this section and still works. When both are set, `legend` wins. When `[export]` omits `legend`, `export_legend` stays in force, so adding an `[export]` block to trim the intro will not switch the legend back on.
+
+## Generated files
+
+Files marked as code-generated in `.gitattributes` start collapsed to their header row, so a review of hand-written code is not buried under regenerated protobufs or API clients. Press `Space` in the diff to expand one.
+
+A file counts as generated when `.gitattributes` sets either `linguist-generated` (GitHub's Linguist) or `gitlab-generated`. Both documented spellings work:
+
+```gitattributes
+*.pb.go linguist-generated=true
+schema.generated.ts gitlab-generated
+vendor/** linguist-generated=true
+```
+
+Resolution is delegated to git itself, so nested `.gitattributes` files, `.git/info/attributes`, `core.attributesFile`, and `[attr]` macros all behave the way `git check-attr` does. An explicit opt-out — `-linguist-generated`, `linguist-generated=false`, `-gitlab-generated`, or `gitlab-generated=false` — wins over an opt-in on either attribute, so a directory-wide rule can be excepted per file.
+
+To show generated files expanded, or to leave them out of review progress:
+
+```toml
+[generated]
+collapse = false
+count = false
+```
+
+| Key        | Default | Description                                                                                                                       |
+| ---------- | ------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `collapse` | `true`  | Hide the diff body of generated files, leaving the header row. `Space` expands one file; `:set generated!` toggles all of them.     |
+| `count`    | `true`  | Count generated files toward the `Files · reviewed/total` progress indicator. |
+
+Whenever generated files are detected (`collapse = true` or `count = false`), the file list title reports `N generated`, headers carry a `[generated]` label, and generated filenames are dimmed in the tree. A collapsed file's header also shows how many comments and visible remote threads its hidden body holds, for example `· 2 comments`.
+
+`count` is deliberately independent of `collapse`: expanding a generated file to look at it should not add it to the denominator, or review progress would drop as a side effect of looking. You can also exclude generated files from progress without collapsing them.
+
+Runtime commands:
+
+| Command             | Effect                                            |
+| ------------------- | ------------------------------------------------- |
+| `:set generated`    | Collapse generated files.                         |
+| `:set nogenerated`  | Show generated files.                             |
+| `:set generated!`, `:generated` | Toggle.                               |
+
+`.gitattributes` is read from the local worktree, so this needs a git repository: mercurial and non-colocated jujutsu repos report nothing as generated (colocated jujutsu repos work), and in pull request mode the attributes come from your local checkout rather than the pull request's head; with no matching local checkout nothing is collapsed. Detection also quietly finds nothing when libgit2 cannot open the repository, for example one using the reftable ref format or the `relativeworktrees` extension. Attributes are re-read on reload (`:e`), so editing `.gitattributes` mid-session takes effect without a restart.
+
+To hide files from a review entirely rather than collapse them, use `.tuicrignore` below.
 
 ## .tuicrignore
 

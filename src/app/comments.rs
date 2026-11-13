@@ -340,7 +340,7 @@ impl App {
                     self.set_warning("That summary comment no longer exists");
                     return false;
                 };
-                target_file = Some((file_idx, path));
+                target_file = Some(file_idx);
                 SummaryAnnotationTarget::File {
                     file_idx,
                     comment_idx,
@@ -383,7 +383,7 @@ impl App {
                         })
                     })
                     .map(|hunk_idx| (file_idx, hunk_idx));
-                target_file = Some((file_idx, path));
+                target_file = Some(file_idx);
                 SummaryAnnotationTarget::Line {
                     file_idx,
                     line,
@@ -401,11 +401,11 @@ impl App {
         self.is_single_file_view = false;
         self.revealed_reviewed_file = None;
         self.revealed_reviewed_hunk = None;
-        if let Some((file_idx, path)) = &target_file {
-            self.diff_state.current_file_idx = *file_idx;
-            if self.session.is_file_reviewed(path) {
-                self.reveal_reviewed_file(*file_idx);
-            }
+        if let Some(file_idx) = target_file {
+            self.diff_state.current_file_idx = file_idx;
+            // Reveal whatever collapsed the target: a reviewed mark, a
+            // generated attribute, or a `Space` override.
+            self.reveal_file_if_collapsed(file_idx);
         }
         if let Some((file_idx, hunk_idx)) = target_hunk
             && self.is_hunk_reviewed(file_idx, hunk_idx)
@@ -786,6 +786,17 @@ impl App {
         let (cleared, unreviewed) = self.session.clear_comments(scope);
         let description_unreviewed =
             description_was_reviewed && !self.session.pr_description_reviewed;
+        // `:clear` starts the review over, so `Space` overrides and reveals go
+        // too, letting every file fall back to its reviewed/generated default.
+        let had_overrides = scope == ClearScope::CommentsAndReviewed
+            && (!self.collapse_override.is_empty() || self.revealed_reviewed_file.is_some());
+        if scope == ClearScope::CommentsAndReviewed {
+            self.collapse_override.clear();
+            self.revealed_reviewed_file = None;
+        }
+        if had_overrides && cleared == 0 && unreviewed == 0 && !description_unreviewed {
+            self.rebuild_annotations();
+        }
         if cleared == 0 && unreviewed == 0 && !description_unreviewed {
             self.set_message("No comments to clear");
             return;
@@ -982,6 +993,16 @@ impl App {
     }
 
     pub fn enter_comment_mode(&mut self, file_level: bool, line: Option<(u32, LineSide)>) {
+        // The comment box and the saved comment both render in the file body,
+        // so a comment started on a collapsed file's header opens that file.
+        if let Some(file_idx) = self
+            .line_annotations
+            .get(self.diff_state.cursor_line)
+            .and_then(annotation_file_idx)
+            && self.reveal_file_if_collapsed(file_idx)
+        {
+            self.rebuild_annotations();
+        }
         self.input_mode = InputMode::Comment;
         if self.diff_view_mode != DiffViewMode::SideBySide {
             self.diff_state.scroll_x = 0;

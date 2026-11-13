@@ -19,11 +19,8 @@ const UNREVIEWED_BOX: &str = "\u{25a2}"; // ▢
 pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focused_panel == FocusedPanel::FileList;
 
-    let mut title = format!(
-        " Files \u{00b7} {}/{} ",
-        app.reviewed_count(),
-        app.file_count()
-    );
+    let (reviewed, total) = app.review_progress();
+    let mut title = format!(" Files \u{00b7} {reviewed}/{total} ");
     // A filter changes what the counts above mean, so say how much is hidden.
     if app.file_filter_active() {
         title.push_str(&format!(
@@ -31,6 +28,10 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
             app.file_count(),
             app.unfiltered_file_count()
         ));
+    }
+    let generated = app.generated_file_count();
+    if generated > 0 {
+        title.push_str(&format!("\u{00b7} {generated} generated "));
     }
     let mut block = Block::default()
         .title(title)
@@ -127,7 +128,19 @@ pub(super) fn render_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
                                 styles::file_status_style(&app.theme, status),
                             ));
                         }
-                        spans.push(Span::raw(filename.to_string()));
+                        // Generated files read as dimmed so the tree shows
+                        // what is skippable at a glance. Deliberately not a
+                        // glyph: `▶` already means "collapsed directory" in
+                        // this panel, and the ▣/▢ checkbox stays about
+                        // reviewed state alone.
+                        if app.is_generated_file(path) {
+                            spans.push(Span::styled(
+                                filename.to_string(),
+                                styles::dim_style(&app.theme),
+                            ));
+                        } else {
+                            spans.push(Span::raw(filename.to_string()));
+                        }
                         Line::from(spans)
                     }
                 }

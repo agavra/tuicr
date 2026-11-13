@@ -12,6 +12,7 @@ mod file_filter_tests;
 mod file_picker_tests;
 mod file_session_identity_tests;
 mod find_source_line_tests;
+mod generated_tests;
 mod locked_comment_tests;
 mod persistence_merge_tests;
 mod pr_info_tests;

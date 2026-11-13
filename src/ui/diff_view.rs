@@ -32,18 +32,40 @@ pub(super) const REVIEWED_BANNER_TEXT: &str = "  Marked reviewed -- r to re-open
 /// `HEADER_RULE`. Callers concatenate `HEADER_RULE` themselves so the rule
 /// can be styled as a separate span (both renderers) or absorbed into a
 /// single width computation (`row_height`).
-pub(super) fn file_header_prefix_text(app: &App, file: &DiffFile) -> String {
+pub(super) fn file_header_prefix_text(app: &App, file_idx: usize, file: &DiffFile) -> String {
     let path = file.display_path();
     let is_reviewed = app.session.is_file_reviewed(path);
     let review_mark = if is_reviewed { "✓ " } else { "" };
-    if file.is_commit_message || app.is_pristine_mode {
-        format!("═══ {}{} ", review_mark, path.display())
+    // Shown whether or not the body is collapsed: once a generated file is
+    // expanded the label is the only thing left saying why it was hidden.
+    let generated_mark = if app.is_generated_file(path) {
+        " [generated]"
     } else {
+        ""
+    };
+    // A collapsed body hides its comments and remote threads, so the header
+    // is the only place left to say they exist.
+    let comment_mark = match app.collapsed_file_comment_count(file_idx) {
+        0 => String::new(),
+        1 => " \u{00b7} 1 comment".to_string(),
+        n => format!(" \u{00b7} {n} comments"),
+    };
+    if file.is_commit_message || app.is_pristine_mode {
         format!(
-            "═══ {}{} [{}] ",
+            "═══ {}{}{}{} ",
             review_mark,
             path.display(),
-            file.status.as_char()
+            generated_mark,
+            comment_mark
+        )
+    } else {
+        format!(
+            "═══ {}{} [{}]{}{} ",
+            review_mark,
+            path.display(),
+            file.status.as_char(),
+            generated_mark,
+            comment_mark
         )
     }
 }

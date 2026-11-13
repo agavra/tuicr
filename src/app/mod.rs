@@ -6,7 +6,7 @@ use chrono::Utc;
 use ratatui::style::Color;
 
 use crate::comment_vim::CommentVimEditor;
-use crate::config::{CommentTypeConfig, ExportConfig};
+use crate::config::{CommentTypeConfig, ExportConfig, GeneratedConfig};
 use crate::editor::{EditorLaunch, EditorTarget};
 use crate::error::{Result, TuicrError};
 use crate::forge::context::{ContextProvider, ForgeContextProvider, VcsContextProvider};
@@ -1140,6 +1140,17 @@ pub enum CommentVimPending {
     Cancel,
 }
 
+/// A file's `Space` collapse state, pinned to the content it was set on.
+///
+/// The hash is what retires the override: once a reload or a different
+/// commit selection changes the file's diff, the override stops applying, so
+/// new changes are never left hidden behind an old manual collapse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CollapseOverride {
+    pub collapsed: bool,
+    pub content_hash: u64,
+}
+
 pub struct App {
     pub theme: Theme,
     pub vcs: Box<dyn VcsBackend>,
@@ -1388,9 +1399,10 @@ pub struct App {
     /// focused file in the diff panel instead of the continuous-scroll
     /// concatenation. Toggled via `:focus` or `<leader>f`.
     pub is_single_file_view: bool,
-    /// A reviewed file whose body is temporarily expanded after opening a
-    /// comment from the summary view. The persisted reviewed marker is left
-    /// untouched; this is only a presentation override for continuous view.
+    /// A collapsed file (reviewed, generated, or collapsed with `Space`) whose
+    /// body is temporarily expanded after opening a comment from the summary
+    /// view. The persisted reviewed marker is left untouched; this is only a
+    /// presentation override for continuous view.
     pub revealed_reviewed_file: Option<PathBuf>,
     /// A reviewed hunk whose body is temporarily expanded after opening a
     /// comment from the summary view. The persisted reviewed marker is left
@@ -1509,6 +1521,36 @@ pub struct App {
     pub path_filter: Option<String>,
     /// Resolved `[export]` settings shaping the generated review markdown.
     pub export: ExportConfig,
+    /// Whether files `.gitattributes` marks as code-generated have their diff
+    /// body hidden. Seeded from `[generated] collapse`, flipped at runtime by
+    /// `:set generated!`. On by default.
+    pub collapse_generated: bool,
+    /// Whether generated files count toward review progress. Seeded from
+    /// `[generated] count`, which defaults to true. Independent of
+    /// `collapse_generated`: expanding a generated file to peek at it must
+    /// not add it to the denominator.
+    pub count_generated: bool,
+    /// Diff files that `.gitattributes` marks as code-generated, keyed by
+    /// display path.
+    ///
+    /// Path-keyed rather than index-keyed because reloads, watch ticks, and
+    /// commit-selection changes all replace `diff_files` wholesale and shift
+    /// every index. Empty whenever detection is disabled, which is what lets
+    /// the render path short-circuit for free.
+    pub generated_files: HashSet<PathBuf>,
+    /// Per-file collapse override set with `Space`, taking precedence over
+    /// the reviewed/generated defaults `should_collapse_file` would otherwise
+    /// derive. Keyed by path rather than index so it survives the reloads
+    /// and commit-selection changes that replace `diff_files` wholesale.
+    pub collapse_override: HashMap<PathBuf, CollapseOverride>,
+    /// Display paths already looked up in `.gitattributes`.
+    ///
+    /// Doubles as the staleness test for detection: a diff file set with no
+    /// unprobed path needs no work, which is how `rebuild_annotations` can
+    /// keep detection current without every `diff_files` assignment having to
+    /// remember to trigger it. Cleared on explicit reload so an edited
+    /// `.gitattributes` takes effect.
+    pub generated_probed: HashSet<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2006,6 +2048,7 @@ mod editor_target;
 mod file_filter;
 mod file_picker;
 mod gaps;
+mod generated;
 mod init;
 mod modes;
 mod navigation;

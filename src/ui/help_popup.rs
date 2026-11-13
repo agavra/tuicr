@@ -575,6 +575,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  Space     ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Expand / collapse the current file"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  c         ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
@@ -933,6 +940,27 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("  Show files marked reviewed (noreviewed hides, reviewed! toggles)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :set generated",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  Collapse files marked generated in .gitattributes"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :set nogenerated",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  Show generated files"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :set generated!",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  Toggle generated file collapse (alias :generated)"),
         ]),
         Line::from(vec![
             Span::styled(
