@@ -902,3 +902,50 @@ fn space_in_inline_selector_still_toggles_commit_selection() {
 
     assert_eq!(app.commit_selection_range, Some((2, 5)));
 }
+
+/// A commit subset hashes differently from the cumulative diff. Narrowing the
+/// commit pane must not read that as the file changing and drop its mark.
+#[test]
+fn should_keep_a_file_reviewed_mark_when_narrowing_to_a_commit_with_a_different_hash() {
+    let mut app = build_app(vec![normal_commit("c2"), normal_commit("c1")]);
+    app.review_commits = app.commit_list.clone();
+    let path = PathBuf::from("src/shared.rs");
+    app.session.add_file(path.clone(), FileStatus::Modified, 7);
+    app.session.get_file_mut(&path).unwrap().reviewed = true;
+    let mut subset = commit_only_file(&path, Vec::new());
+    subset.content_hash = 99;
+    app.commit_diff_cache.insert((0, 0), vec![subset]);
+
+    app.commit_selection_range = Some((0, 0));
+    app.reload_inline_selection()
+        .expect("reload should succeed");
+
+    let review = app.session.files.get(&path).unwrap();
+    assert!(review.reviewed, "narrowing must keep the reviewed mark");
+    assert_eq!(review.content_hash, Some(7));
+}
+
+/// Widening back to the cached cumulative PR diff must not prune hunk marks
+/// that only exist in a single commit's diff.
+#[test]
+fn should_keep_commit_only_hunk_marks_when_widening_to_the_cached_pr_diff() {
+    let mut app = build_app(vec![normal_commit("c2"), normal_commit("c1")]);
+    let path = PathBuf::from("src/shared.rs");
+    let mut commit_file = commit_only_file(&path, vec![one_line_hunk()]);
+    commit_file.content_hash = 99;
+    let key = commit_file.hunk_review_keys().remove(0);
+    app.session.add_file(path.clone(), FileStatus::Modified, 7);
+    app.session
+        .get_file_mut(&path)
+        .unwrap()
+        .reviewed_hunks
+        .insert(key.clone());
+    app.range_diff_files = Some(vec![commit_only_file(&path, Vec::new())]);
+
+    app.apply_cached_full_pr_diff();
+
+    assert!(
+        app.session.files[&path].reviewed_hunks.contains(&key),
+        "widening must keep hunk marks from individual commits"
+    );
+}
