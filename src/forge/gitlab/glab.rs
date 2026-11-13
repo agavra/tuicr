@@ -1704,6 +1704,31 @@ mod tests {
     }
 
     #[test]
+    fn should_mark_stale_position_outdated_against_pinned_pr_head() {
+        let repo = ForgeRepository::gitlab("gitlab.com", "owner", "repo");
+        let pr = make_pr_details(repo.clone());
+        let discussions = serde_json::json!([{
+            "id": "inline",
+            "individual_note": false,
+            "notes": [{
+                "id": 1, "body": "inline root", "author": {"username": "alice"},
+                "resolved": false,
+                "position": {
+                    "position_type": "text", "head_sha": "oldsha",
+                    "new_path": "src/lib.rs", "new_line": 5
+                }
+            }]
+        }]);
+        let runner = RecordingRunner::new_with_responses(vec![discussions.to_string()]);
+        let backend = GitLabGlabBackend::with_runner(Some(repo), runner);
+
+        let threads = backend.list_review_threads(&pr).unwrap();
+
+        assert_eq!(threads.len(), 1);
+        assert!(threads[0].is_outdated);
+    }
+
+    #[test]
     fn should_keep_project_id_when_no_subfolder_is_configured() {
         let repo = subfolder_repo();
         let pr = make_pr_details(repo.clone());

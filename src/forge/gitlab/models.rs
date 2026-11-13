@@ -738,6 +738,28 @@ mod tests {
     }
 
     #[test]
+    fn should_keep_resolved_state_on_replied_general_thread() {
+        let mut root = note(1, "general", None);
+        root.resolved = true;
+        let discussion = GlabDiscussion {
+            id: "d".to_string(),
+            individual_note: false,
+            notes: vec![root, note(2, "reply", None)],
+        };
+        assert!(discussion.into_review_thread("head").unwrap().is_resolved);
+    }
+
+    #[test]
+    fn should_not_mark_empty_position_head_sha_outdated() {
+        let discussion = GlabDiscussion {
+            id: "d".to_string(),
+            individual_note: false,
+            notes: vec![note(1, "x", Some(text_position(Some(""))))],
+        };
+        assert!(!discussion.into_review_thread("new").unwrap().is_outdated);
+    }
+
+    #[test]
     fn should_convert_individual_note_discussion_to_review_level_thread() {
         let discussion = GlabDiscussion {
             id: "disc-3".to_string(),
