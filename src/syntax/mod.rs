@@ -98,6 +98,7 @@ fn build_syntax_set_with(dir: &Path) -> (Option<syntect::parsing::SyntaxSet>, Ve
         let parsed = std::fs::read_to_string(&path)
             .map_err(|e| e.to_string())
             .and_then(|text| {
+                reject_panicking_grammar(&text)?;
                 let stem = path.file_stem().and_then(|stem| stem.to_str());
                 syntect::parsing::SyntaxDefinition::load_from_str(&text, true, stem)
                     .map_err(|e| e.to_string())
@@ -120,6 +121,50 @@ fn build_syntax_set_with(dir: &Path) -> (Option<syntect::parsing::SyntaxSet>, Ve
         }
     }
     (Some(builder.build()), warnings)
+}
+
+/// Reject the grammar shapes that make syntect panic while parsing.
+///
+/// `catch_unwind` cannot recover: the panic happens under syntect's global scope
+/// repository lock and poisons it, so every later highlight would panic too.
+/// The shapes are an empty context list nested in a `push`/`set` list
+/// (`push: [[]]`) and a non-string `escape`.
+fn reject_panicking_grammar(text: &str) -> Result<(), String> {
+    use yaml_rust::{Yaml, YamlLoader};
+
+    fn check(node: &Yaml) -> Result<(), String> {
+        match node {
+            Yaml::Hash(map) => {
+                for (key, value) in map {
+                    match key.as_str() {
+                        Some("push" | "set")
+                            if value
+                                .as_vec()
+                                .and_then(|list| list.first())
+                                .and_then(Yaml::as_vec)
+                                .is_some_and(|inner| inner.is_empty()) =>
+                        {
+                            return Err("empty context list in `push`/`set`".to_string());
+                        }
+                        Some("escape") if value.as_str().is_none() => {
+                            return Err("`escape` must be a string".to_string());
+                        }
+                        _ => {}
+                    }
+                    check(value)?;
+                }
+                Ok(())
+            }
+            Yaml::Array(items) => items.iter().try_for_each(check),
+            _ => Ok(()),
+        }
+    }
+
+    // Malformed YAML is left to syntect, which reports it as an error.
+    match YamlLoader::load_from_str(text) {
+        Ok(docs) => docs.iter().try_for_each(check),
+        Err(_) => Ok(()),
+    }
 }
 
 fn syntax_set() -> syntect::parsing::SyntaxSet {
