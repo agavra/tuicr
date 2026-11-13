@@ -1630,7 +1630,11 @@ fn render_deletion_addition_pair_side_by_side(
                         column_pad_style(ctx.theme, dl, LineOrigin::Deletion),
                         "▌",
                         ctx.display_lineno(dl.old_lineno, line_idx),
-                        styles::diff_del_style(ctx.theme),
+                        styles::diff_marker_style(
+                            ctx.theme,
+                            LineOrigin::Deletion,
+                            dl.highlighted_spans.is_some(),
+                        ),
                     ),
                     None => (Vec::new(), Style::default(), " ", None, Style::default()),
                 };
@@ -1646,7 +1650,11 @@ fn render_deletion_addition_pair_side_by_side(
                         column_pad_style(ctx.theme, al, LineOrigin::Addition),
                         "▌",
                         ctx.display_lineno(al.new_lineno, line_idx),
-                        styles::diff_add_style(ctx.theme),
+                        styles::diff_marker_style(
+                            ctx.theme,
+                            LineOrigin::Addition,
+                            al.highlighted_spans.is_some(),
+                        ),
                     ),
                     None => (Vec::new(), Style::default(), " ", None, Style::default()),
                 };
@@ -1793,7 +1801,11 @@ fn render_standalone_addition_side_by_side(
             SideSpec {
                 lineno: ctx.display_lineno(diff_line.new_lineno, line_idx),
                 marker: "▌",
-                marker_style: styles::diff_add_style(ctx.theme),
+                marker_style: styles::diff_marker_style(
+                    ctx.theme,
+                    LineOrigin::Addition,
+                    diff_line.highlighted_spans.is_some(),
+                ),
             },
             w,
         );
@@ -1920,7 +1932,14 @@ fn add_deletion_spans(
         format!("{line_num} "),
         styles::dim_style(theme),
     ));
-    spans.push(Span::styled("▌".to_string(), styles::diff_del_style(theme)));
+    spans.push(Span::styled(
+        "▌".to_string(),
+        styles::diff_marker_style(
+            theme,
+            LineOrigin::Deletion,
+            diff_line.highlighted_spans.is_some(),
+        ),
+    ));
 
     // Use syntax highlighting if available
     if let Some(ref highlighted) = diff_line.highlighted_spans {
@@ -1964,7 +1983,14 @@ fn add_addition_spans(
         format!("{line_num} "),
         styles::dim_style(theme),
     ));
-    spans.push(Span::styled("▌".to_string(), styles::diff_add_style(theme)));
+    spans.push(Span::styled(
+        "▌".to_string(),
+        styles::diff_marker_style(
+            theme,
+            LineOrigin::Addition,
+            diff_line.highlighted_spans.is_some(),
+        ),
+    ));
 
     // Use syntax highlighting if available
     if let Some(ref highlighted) = diff_line.highlighted_spans {
@@ -3007,5 +3033,46 @@ mod remote_comments_side_by_side_snapshot_tests {
         let buffer = draw_sbs(&mut app, 160, 20);
         assert_eq!(gutter_numbers(&app, &buffer, bravo), vec![41, 51]);
         assert_eq!(gutter_numbers(&app, &buffer, changed), vec![1, 1]);
+    }
+
+    /// Both change bars of a syntax-colored pair sit on their row's background.
+    #[test]
+    fn should_paint_syntax_colored_columns_in_one_background() {
+        /// Top-left cell of the first occurrence of `needle` on screen.
+        fn locate(buffer: &Buffer, needle: &str) -> (u16, u16) {
+            for y in 0..buffer.area.height {
+                let row: String = (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect();
+                if let Some(byte_idx) = row.find(needle) {
+                    return (row[..byte_idx].chars().count() as u16, y);
+                }
+            }
+            panic!("could not find {needle:?} in rendered buffer");
+        }
+
+        for wrap in [false, true] {
+            let mut app = make_pr_app();
+            app.theme = crate::theme::Theme::catppuccin_macchiato();
+            app.diff_files = vec![diff_file_with_pair("let total = 17;", "let total = 14;")];
+            app.set_diff_wrap(wrap);
+            app.rebuild_annotations();
+            app.color_visible_hunks(20);
+
+            let buffer = draw_sbs(&mut app, 160, 20);
+
+            let lines = &app.diff_files[0].hunks[0].lines;
+            assert!(lines.iter().all(|l| l.highlighted_spans.is_some()));
+            for (needle, bg) in [
+                ("let total = 17", app.theme.syntax_del_bg),
+                ("let total = 14", app.theme.syntax_add_bg),
+            ] {
+                let (text_x, y) = locate(&buffer, needle);
+                let bar_x = text_x - 1;
+                assert_eq!(buffer[(bar_x, y)].symbol(), "▌", "wrap={wrap} {needle}");
+                assert_eq!(buffer[(bar_x, y)].bg, bg, "wrap={wrap} {needle}: bar");
+                assert_eq!(buffer[(text_x, y)].bg, bg, "wrap={wrap} {needle}: text");
+            }
+        }
     }
 }
