@@ -5,7 +5,7 @@ use std::io::Write as IoWrite;
 use arboard::Clipboard;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 
-use crate::app::{CommentTypeDefinition, DiffSource};
+use crate::app::{CommentTypeDefinition, DiffSource, resolve_comment_type_label};
 use crate::config::ExportConfig;
 use crate::error::{Result, TuicrError};
 use crate::forge::remote_comments::{
@@ -362,7 +362,7 @@ fn generate_markdown(
             review_comment_location.clone(),
             None,
             None,
-            export_comment_type_label(&comment.comment_type, comment_types),
+            resolve_comment_type_label(&comment.comment_type, comment_types),
             &comment.content,
             None,
         ));
@@ -381,7 +381,7 @@ fn generate_markdown(
                 path_str.clone(),
                 None,
                 None,
-                export_comment_type_label(&comment.comment_type, comment_types),
+                resolve_comment_type_label(&comment.comment_type, comment_types),
                 &comment.content,
                 comment.commit_id.as_deref(),
             ));
@@ -401,7 +401,7 @@ fn generate_markdown(
                     path_str.clone(),
                     line_range,
                     comment.side,
-                    export_comment_type_label(&comment.comment_type, comment_types),
+                    resolve_comment_type_label(&comment.comment_type, comment_types),
                     &comment.content,
                     comment.commit_id.as_deref(),
                 ));
@@ -544,26 +544,6 @@ fn collect_used_comment_type_ids(session: &ReviewSession) -> HashSet<String> {
         }
     }
     ids
-}
-
-/// Export label for a comment type. Returns an empty string for
-/// [`CommentType::None`] so the caller omits the `**[TYPE]**` marker.
-fn export_comment_type_label(
-    comment_type: &CommentType,
-    comment_types: &[CommentTypeDefinition],
-) -> String {
-    if comment_type.is_none() {
-        return String::new();
-    }
-
-    if let Some(definition) = comment_types
-        .iter()
-        .find(|definition| definition.id == comment_type.id())
-    {
-        return definition.label.to_ascii_uppercase();
-    }
-
-    comment_type.as_str()
 }
 
 #[cfg(test)]
