@@ -790,6 +790,7 @@ impl App {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn new_from_pr_target_with_pr_display_options(
         theme: Theme,
         comment_type_configs: Option<Vec<CommentTypeConfig>>,
