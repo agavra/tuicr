@@ -30,11 +30,23 @@ pub(in crate::app) fn short_sha(sha: &str) -> &str {
 /// It lives in the user's cache dir rather than the shared temp dir, so another
 /// local user cannot pre-create it, plant content in it, or swap in symlinks.
 fn snapshot_base() -> io::Result<PathBuf> {
+    #[cfg(test)]
+    if let Some(base) = TEST_BASE.with(|b| b.borrow().clone()) {
+        private_dir(&base)?;
+        return Ok(base);
+    }
     let dirs = directories::ProjectDirs::from("", "", "tuicr")
         .ok_or_else(|| io::Error::other("could not determine the cache directory"))?;
     let base = dirs.cache_dir().join("snapshots");
     private_dir(&base)?;
     Ok(base)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Redirects snapshots away from the real cache dir in tests.
+    pub(in crate::app) static TEST_BASE: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// Create `dir` if needed and insist it is a real directory only we can use.
@@ -61,14 +73,20 @@ fn private_dir(dir: &Path) -> io::Result<()> {
     }
     #[cfg(unix)]
     {
-        use std::os::unix::fs::MetadataExt;
         // SAFETY: geteuid has no preconditions and cannot fail.
-        if meta.uid() != unsafe { libc::geteuid() } || meta.mode() & 0o077 != 0 {
-            return Err(io::Error::other(format!(
-                "{} is not private to the current user",
-                dir.display()
-            )));
-        }
+        check_owner_only(dir, &meta, unsafe { libc::geteuid() })?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn check_owner_only(dir: &Path, meta: &std::fs::Metadata, euid: u32) -> io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    if meta.uid() != euid || meta.mode() & 0o077 != 0 {
+        return Err(io::Error::other(format!(
+            "{} is not private to the current user",
+            dir.display()
+        )));
     }
     Ok(())
 }
@@ -83,13 +101,17 @@ pub(in crate::app) fn snapshot_root(key: &PrSessionKey, sha: &str) -> io::Result
 }
 
 fn snapshot_root_in(base: &Path, key: &PrSessionKey, sha: &str) -> PathBuf {
+    use sha2::{Digest, Sha256};
     let repository = &key.repository;
-    let slug = sanitize_component(&format!("{}/{}", repository.host, repository.slug()));
-    base.join(format!(
-        "{slug}-pr{}-{}",
-        key.number,
-        sanitize_component(sha)
-    ))
+    let identity = format!("{}/{}", repository.host, repository.slug());
+    // Hosts, namespaces and SHAs are unbounded, but one path component is capped
+    // at NAME_MAX (255 bytes): keep a truncated readable part and let a hash of
+    // the whole identity keep the name unique.
+    let digest = Sha256::digest(format!("{identity}\0{}\0{sha}", key.number));
+    let hash: String = digest.iter().take(8).map(|b| format!("{b:02x}")).collect();
+    let readable: String = sanitize_component(&identity).chars().take(60).collect();
+    let revision: String = sanitize_component(sha).chars().take(64).collect();
+    base.join(format!("{readable}-{hash}-pr{}-{revision}", key.number))
 }
 
 /// Fold a repository slug into one path-safe directory-name component.
@@ -207,10 +229,38 @@ mod tests {
     fn snapshot_root_names_the_host_repo_pr_and_full_revision() {
         let base = PathBuf::from("/base");
         let root = snapshot_root_in(&base, &key(), "1a2b3c4d5e6f7a8b");
-        assert_eq!(
-            root,
-            base.join("github.com-agavra-tuicr-pr624-1a2b3c4d5e6f7a8b")
-        );
+        let name = root.file_name().unwrap().to_str().unwrap();
+        assert!(name.starts_with("github.com-agavra-tuicr-"), "{name}");
+        assert!(name.ends_with("-pr624-1a2b3c4d5e6f7a8b"), "{name}");
+    }
+
+    #[test]
+    fn snapshot_root_stays_under_name_max_for_a_long_namespace() {
+        let base = PathBuf::from("/base");
+        let sha = "a".repeat(64);
+        let repo = |ns: &str| ForgeRepository::github("gitlab.example.com", ns, "project");
+        let long = "n".repeat(300);
+        let a = snapshot_root_in(&base, &PrSessionKey::new(repo(&long), 1, &sha), &sha);
+        let other = format!("{}x", "n".repeat(299));
+        let b = snapshot_root_in(&base, &PrSessionKey::new(repo(&other), 1, &sha), &sha);
+        for root in [&a, &b] {
+            assert_eq!(root.parent().unwrap(), base);
+            let len = root.file_name().unwrap().len();
+            assert!(len <= 255, "component is {len} bytes");
+        }
+        assert_ne!(a, b, "truncated names must still be unique");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn check_owner_only_rejects_a_directory_owned_by_someone_else() {
+        use std::os::unix::fs::MetadataExt;
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let meta = std::fs::symlink_metadata(dir.path()).unwrap();
+        assert!(check_owner_only(dir.path(), &meta, meta.uid()).is_ok());
+        assert!(check_owner_only(dir.path(), &meta, meta.uid().wrapping_add(1)).is_err());
     }
 
     #[test]
