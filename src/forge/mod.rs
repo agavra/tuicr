@@ -100,7 +100,7 @@ where
 /// Forge PR diffs are three-dot, so this — not the base branch tip a forge
 /// reports — is the revision the patch's old side lives at. Returns `None`
 /// when either object is missing or git fails, so callers can fall back to
-/// the forge (or leave `base_sha` unrefined). See the `base_sha` gotcha in AGENTS.md.
+/// the forge (or leave `base_sha` unrefined). See gotcha F6 in docs/FORGES.md.
 pub(crate) fn local_merge_base(repo_root: &Path, base_sha: &str, head_sha: &str) -> Option<String> {
     use std::ffi::OsStr;
 

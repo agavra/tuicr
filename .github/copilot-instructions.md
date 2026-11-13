@@ -78,7 +78,8 @@ Do **not** pass `--patch`. That flag produces per-commit mbox patches with dupli
 |---|---|
 | `README.md` | Keybindings, `:*` commands, CLI flags, features, installation |
 | `src/ui/help_popup.rs` | Keybindings or commands (update `help_text` vec) |
-| `AGENTS.md` | Module structure, key types, data flow, forge invariants/gotchas |
+| `AGENTS.md` | Key types, invariants, behavior notes, general gotchas |
+| `docs/FORGES.md` | Forge/PR-mode contracts and gotchas (F*, G*) |
 
 ### Dogfooding
 
