@@ -34,6 +34,11 @@ impl App {
     ) -> Option<String> {
         self.pr_last_reviewed_commit_index = None;
         if commits.len() <= 1 {
+            // A lone commit gets no selector, but it stays on the review so
+            // the diff can open with its message, as a local single-commit
+            // review does.
+            self.review_commits = commits.iter().map(pr_commit_to_commit_info).collect();
+            self.pr_commits = commits;
             return None;
         }
 

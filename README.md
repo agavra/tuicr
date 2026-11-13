@@ -107,6 +107,10 @@ review when that metadata is available; commits already covered by that review a
 `✓` in the inline selector.
 (Bitbucket does not record which commit an approval covered, so that preselection does not apply
 there.)
+Narrow a multi-commit review to one commit with `(` / `)` and tuicr puts that commit's message above
+its diff, in pull requests as well as local ranges, where it can be read, marked reviewed and
+commented on like a file. tuicr does not post inline comments on commit messages, so `:submit` sends
+those comments in the review summary.
 Use `:summary` during a review to show every pending local-draft comment. The summary replaces the
 diff while leaving the file sidebar visible when it is open. The first
 comment is selected when the view opens; use `j`/`k` to select the next or previous comment, and

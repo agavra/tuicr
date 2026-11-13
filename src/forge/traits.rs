@@ -509,8 +509,30 @@ pub struct PullRequestCommit {
     pub oid: String,
     pub short_oid: String,
     pub summary: String,
+    /// The commit message after its subject line. `None` when the commit
+    /// has a subject only, or the backend could not supply the rest.
+    #[serde(default)]
+    pub body: Option<String>,
     pub author: String,
     pub timestamp: Option<DateTime<Utc>>,
+}
+
+/// The body of a raw commit message: what follows the subject line and the
+/// blank line(s) after it, or `None` for a subject-only message. Splits the
+/// way the VCS backends split a local commit, so a commit reads the same in
+/// a pull request review as in a local one.
+pub fn commit_message_body(message: &str) -> Option<String> {
+    let mut lines = message
+        .lines()
+        .skip(1)
+        .skip_while(|line| line.trim().is_empty());
+    let mut body = lines.next()?.to_string();
+    for line in lines {
+        body.push('\n');
+        body.push_str(line);
+    }
+    body.truncate(body.trim_end().len());
+    Some(body)
 }
 
 /// Minimal review metadata used to infer "commits since my last review".
@@ -700,6 +722,50 @@ pub trait ForgeBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn should_omit_commit_body_for_a_subject_only() {
+        // given / when / then
+        assert_eq!(commit_message_body("Subject"), None);
+        assert_eq!(commit_message_body("Subject\n\n \t\n"), None);
+    }
+
+    #[test]
+    fn should_preserve_paragraphs_inside_commit_body() {
+        // given
+        let message = "Subject\n\nFirst paragraph.\nContinued.\n\nSecond paragraph.";
+        // when
+        let body = commit_message_body(message);
+        // then
+        assert_eq!(
+            body.as_deref(),
+            Some("First paragraph.\nContinued.\n\nSecond paragraph.")
+        );
+    }
+
+    #[test]
+    fn should_skip_multiple_blank_commit_message_separators() {
+        // given / when
+        let body = commit_message_body("Subject\n\n \t\n\n  Indented body.");
+        // then
+        assert_eq!(body.as_deref(), Some("  Indented body."));
+    }
+
+    #[test]
+    fn should_trim_trailing_commit_body_whitespace() {
+        // given / when
+        let body = commit_message_body("Subject\n\nBody. \t\n\n");
+        // then
+        assert_eq!(body.as_deref(), Some("Body."));
+    }
+
+    #[test]
+    fn should_normalize_crlf_commit_message_lines() {
+        // given / when
+        let body = commit_message_body("Subject\r\n\r\nFirst.\r\n\r\nSecond.\r\n");
+        // then
+        assert_eq!(body.as_deref(), Some("First.\n\nSecond."));
+    }
 
     #[test]
     fn should_round_trip_pr_session_key_via_serde() {

@@ -1018,6 +1018,7 @@ mod header_snapshot_tests {
             oid: oid.to_string(),
             short_oid: oid[..7.min(oid.len())].to_string(),
             summary: summary.to_string(),
+            body: None,
             author: "Alice".to_string(),
             timestamp: None,
         }

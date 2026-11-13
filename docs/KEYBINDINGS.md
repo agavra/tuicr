@@ -374,6 +374,11 @@ newer than your latest submitted review; commits already covered by that review 
 `✓`. Use `Space` to expand or adjust the range, or `Enter` to jump to a single commit. Bitbucket does not record which
 commit an approval covered, so no commits are preselected there.
 
+When exactly one commit is selected, its message is shown above its diff as a
+`Commit Message (<sha>)` entry, in local and pull request reviews alike. A review of a single
+commit, including a single-commit pull request, shows the message without the selector. Comments
+on a commit message in a pull request are submitted in the review summary rather than inline.
+
 | Key | Action |
 |-----|--------|
 | `j` / `k` | Navigate commits |

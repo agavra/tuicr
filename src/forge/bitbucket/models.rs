@@ -21,7 +21,7 @@ use crate::forge::remote_comments::{
 };
 use crate::forge::traits::{
     ForgeRepository, PullRequestCommit, PullRequestDetails, PullRequestReviewRecord,
-    PullRequestSummary,
+    PullRequestSummary, commit_message_body,
 };
 use crate::model::FileStatus;
 use crate::vcs::git::raw::FileMetadata;
@@ -331,6 +331,7 @@ impl BbCommit {
             oid: self.hash,
             short_oid,
             summary,
+            body: commit_message_body(&self.message),
             author: self.author.map(|author| author.label()).unwrap_or_default(),
             timestamp: self.date,
         }
@@ -720,6 +721,7 @@ mod tests {
         let converted = commit.into_pull_request_commit();
         // then — summary is the subject line only, author loses the email
         assert_eq!(converted.summary, "fix(runtime): stop the crash");
+        assert_eq!(converted.body.as_deref(), Some("Longer body here."));
         assert_eq!(converted.short_oid, "7d9bf1f");
         assert_eq!(converted.author, "Example User");
         assert!(converted.timestamp.is_some());

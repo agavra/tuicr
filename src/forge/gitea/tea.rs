@@ -38,7 +38,7 @@ use crate::forge::traits::{
     GhCreateReviewResponse, PagedPullRequests, PullRequestCheckStatus, PullRequestCommit,
     PullRequestDetails, PullRequestInfo, PullRequestIssueComment, PullRequestListQuery,
     PullRequestListScope, PullRequestReviewMetadata, PullRequestReviewRecord,
-    PullRequestReviewStatus, PullRequestSummary, PullRequestTarget,
+    PullRequestReviewStatus, PullRequestSummary, PullRequestTarget, commit_message_body,
 };
 use crate::model::{DiffLine, FilePatch, FileStatus};
 use crate::process::{CommandOutputErrorKind, run_command_output, run_command_streams};
@@ -1216,6 +1216,7 @@ fn into_pull_request_commit(commit: GiteaCommit) -> PullRequestCommit {
         oid: commit.sha,
         short_oid,
         summary,
+        body: commit_message_body(&payload.message),
         author,
         timestamp: commit.created,
     }
@@ -2365,20 +2366,21 @@ mod tests {
 
     #[test]
     fn should_convert_commits_using_the_first_message_line_as_the_summary() {
-        let commit = into_pull_request_commit(GiteaCommit {
-            sha: "abcdef1234567890".to_string(),
-            commit: Some(super::super::models::GiteaCommitPayload {
-                message: "fix: the thing\n\nlonger body".to_string(),
-                author: Some(super::super::models::GiteaCommitAuthor {
-                    name: "Fallback Name".to_string(),
-                }),
-            }),
-            author: Some(GiteaUser {
-                login: "handle".to_string(),
-            }),
-            created: None,
-        });
+        // given
+        let json = r#"{
+            "sha": "abcdef1234567890",
+            "commit": {
+                "message": "fix: the thing\n\nlonger body\n",
+                "author": { "name": "Fallback Name" }
+            },
+            "author": { "login": "handle" }
+        }"#;
+        let payload: GiteaCommit = serde_json::from_str(json).unwrap();
+        // when
+        let commit = into_pull_request_commit(payload);
+        // then
         assert_eq!(commit.summary, "fix: the thing");
+        assert_eq!(commit.body.as_deref(), Some("longer body"));
         assert_eq!(commit.short_oid, "abcdef1");
         assert_eq!(commit.author, "handle");
     }

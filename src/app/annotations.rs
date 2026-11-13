@@ -43,7 +43,12 @@ impl App {
         let eligible: Vec<usize> = (0..self.diff_files.len())
             .filter(|&file_idx| {
                 let file = &self.diff_files[file_idx];
-                !file.hunks.is_empty() && file.status != FileStatus::Deleted
+                // A commit message is synthetic: no revision holds a file by
+                // its name, so counting its lines would only cost the forge a
+                // request in PR mode.
+                !file.is_commit_message
+                    && !file.hunks.is_empty()
+                    && file.status != FileStatus::Deleted
             })
             .collect();
         if let (DiffSource::PullRequest(pr), Some(backend)) =

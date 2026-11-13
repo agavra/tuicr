@@ -39,6 +39,24 @@ pub(crate) fn read_blob(repo_root: &Path, sha: &str, path: &Path) -> Option<Stri
     .ok()
 }
 
+/// Read a commit's full raw message from the checkout at `repo_root` using
+/// `git show -s --format=%B <sha>^{commit}`.
+///
+/// Returns `None` on any failure — the object is missing or not a commit,
+/// `repo_root` is not a checkout, or `git` is not on PATH — so callers fall
+/// back to the forge API. The message is lossy UTF-8.
+pub(crate) fn read_commit_message(repo_root: &Path, sha: &str) -> Option<String> {
+    let spec = format!("{sha}^{{commit}}");
+    run_command_output(
+        "git",
+        Some(repo_root),
+        ["show", "-s", "--format=%B", spec.as_str()]
+            .iter()
+            .map(|s| OsStr::new(*s)),
+    )
+    .ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -81,5 +99,48 @@ mod tests {
             read_blob(root, "deadbeef", &PathBuf::from("file.txt")),
             None
         );
+    }
+
+    #[test]
+    fn should_read_a_full_commit_message() {
+        // given
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        git(root, &["init", "--quiet"]);
+        git(root, &["config", "user.email", "test@example.com"]);
+        git(root, &["config", "user.name", "test"]);
+        git(root, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(root.join("file.txt"), "one\ntwo\n").expect("write");
+        git(root, &["add", "file.txt"]);
+        git(
+            root,
+            &[
+                "commit",
+                "--quiet",
+                "-m",
+                "Fix the parser",
+                "-m",
+                "Handle nested expressions.",
+                "-m",
+                "Keep context.",
+            ],
+        );
+        let sha = run_command_output(
+            "git",
+            Some(root),
+            ["rev-parse", "HEAD"].iter().map(|s| OsStr::new(*s)),
+        )
+        .expect("rev-parse");
+
+        // when
+        let message = read_commit_message(root, sha.trim()).expect("commit message");
+        let missing = read_commit_message(root, "deadbeef");
+
+        // then
+        assert_eq!(
+            message.trim_end_matches('\n'),
+            "Fix the parser\n\nHandle nested expressions.\n\nKeep context."
+        );
+        assert_eq!(missing, None);
     }
 }

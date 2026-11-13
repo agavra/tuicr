@@ -11,8 +11,8 @@
 //!
 //! Diffs come from a local clone (`git diff base...head`) because Azure DevOps
 //! has no single unified-diff REST endpoint — the same approach GitLab uses for
-//! its commit-range path. PR metadata, commits, file content, and review
-//! submission go through the REST API.
+//! its commit-range path. PR metadata and review submission go through the
+//! REST API; commit messages and file content prefer the clone when available.
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -23,7 +23,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use serde_json::json;
 
 use crate::error::{Result, TuicrError};
-use crate::forge::local_git::read_blob;
+use crate::forge::local_git::{read_blob, read_commit_message};
 use crate::forge::local_merge_base;
 use crate::forge::remote_comments::RemoteReviewThread;
 use crate::forge::submit::{GhSide, SubmitEvent};
@@ -574,7 +574,28 @@ impl ForgeBackend for AzureDevOpsBackend {
         Ok(list
             .value
             .into_iter()
-            .map(AzGitCommitRef::into_pull_request_commit)
+            .map(|mut commit| {
+                if commit.comment_truncated {
+                    // The clone already holds the PR's commits; avoid a REST round trip
+                    // for each long message, especially with the Azure CLI transport.
+                    let message = self
+                        .local_checkout
+                        .as_deref()
+                        .and_then(|root| read_commit_message(root, &commit.commit_id))
+                        .or_else(|| {
+                            let url = format!("{base}/commits/{}", commit.commit_id);
+                            self.get_json::<AzGitCommitRef>(&pr.repository, url)
+                                .ok()
+                                .filter(|full| !full.comment_truncated)
+                                .map(|full| full.comment)
+                        });
+                    if let Some(message) = message {
+                        commit.comment = message;
+                        commit.comment_truncated = false;
+                    }
+                }
+                commit.into_pull_request_commit()
+            })
             .collect())
     }
 
@@ -1167,14 +1188,14 @@ mod tests {
 
     struct RecordingHttp {
         calls: Mutex<Vec<(String, String, Option<String>)>>,
-        responses: Mutex<Vec<String>>,
+        responses: Mutex<Vec<AzHttpResult<String>>>,
     }
 
     impl RecordingHttp {
         fn with_responses(responses: Vec<String>) -> Self {
             Self {
                 calls: Mutex::new(Vec::new()),
-                responses: Mutex::new(responses),
+                responses: Mutex::new(responses.into_iter().map(Ok).collect()),
             }
         }
     }
@@ -1187,11 +1208,11 @@ mod tests {
                 body.map(str::to_string),
             ));
             let mut responses = self.responses.lock().unwrap();
-            Ok(if responses.is_empty() {
-                "{}".to_string()
+            if responses.is_empty() {
+                Ok("{}".to_string())
             } else {
                 responses.remove(0)
-            })
+            }
         }
     }
 
@@ -1249,6 +1270,200 @@ mod tests {
 
     fn body_json(call: &(String, String, Option<String>)) -> serde_json::Value {
         serde_json::from_str(call.2.as_deref().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn should_read_a_truncated_commit_message_from_the_clone_without_an_extra_request() {
+        // given
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let git = |args: &[&str]| {
+            run_command_output("git", Some(root), args.iter().map(|s| OsStr::new(*s)))
+                .expect("git command")
+        };
+        git(&["init", "--quiet"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "user.name", "test"]);
+        git(&["config", "commit.gpgsign", "false"]);
+        std::fs::write(root.join("file.txt"), "one\ntwo\n").expect("write");
+        git(&["add", "file.txt"]);
+        git(&[
+            "commit",
+            "--quiet",
+            "-m",
+            "Fix the parser",
+            "-m",
+            "Handle nested expressions.",
+            "-m",
+            "Keep context.",
+        ]);
+        let sha = git(&["rev-parse", "HEAD"]);
+        let sha = sha.trim();
+        let shared = SharedHttp::new(vec![
+            json!({
+                "count": 1,
+                "value": [{
+                    "commitId": sha,
+                    "comment": "Fix the par",
+                    "commentTruncated": true,
+                    "author": { "name": "Alice" }
+                }]
+            })
+            .to_string(),
+        ]);
+        let backend =
+            AzureDevOpsBackend::with_transport(Some(azure_repo()), Box::new(shared.clone()))
+                .with_local_checkout(Some(root.to_path_buf()));
+
+        // when
+        let commits = backend.list_pull_request_commits(&pr_details()).unwrap();
+
+        // then
+        assert_eq!(commits.len(), 1);
+        assert_eq!(commits[0].oid, sha);
+        assert_eq!(commits[0].summary, "Fix the parser");
+        assert_eq!(
+            commits[0].body.as_deref(),
+            Some("Handle nested expressions.\n\nKeep context.")
+        );
+        assert_eq!(commits[0].author, "Alice");
+        let calls = shared.0.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "GET");
+        assert!(calls[0].1.contains("/pullRequests/42/commits"));
+    }
+
+    #[test]
+    fn should_fetch_a_truncated_message_when_the_commit_is_missing_from_the_clone() {
+        // given
+        let dir = tempfile::tempdir().expect("tempdir");
+        run_command_output(
+            "git",
+            Some(dir.path()),
+            ["init", "--quiet"].iter().map(|s| OsStr::new(*s)),
+        )
+        .expect("git init");
+        let shared = SharedHttp::new(vec![
+            r#"{"count":1,"value":[{"commitId":"deadbeef","comment":"Fix the par","commentTruncated":true}]}"#.to_string(),
+            r#"{"commitId":"deadbeef","comment":"Fix the parser\n\nHandle nested expressions."}"#.to_string(),
+        ]);
+        let backend =
+            AzureDevOpsBackend::with_transport(Some(azure_repo()), Box::new(shared.clone()))
+                .with_local_checkout(Some(dir.path().to_path_buf()));
+
+        // when
+        let commits = backend.list_pull_request_commits(&pr_details()).unwrap();
+
+        // then
+        assert_eq!(commits.len(), 1);
+        assert_eq!(commits[0].summary, "Fix the parser");
+        assert_eq!(
+            commits[0].body.as_deref(),
+            Some("Handle nested expressions.")
+        );
+        let calls = shared.0.calls.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert!(calls[1].1.contains("/commits/deadbeef?api-version=7.1"));
+    }
+
+    #[test]
+    fn should_fetch_the_full_message_for_a_truncated_commit() {
+        // given
+        let shared = SharedHttp::new(vec![
+            r#"{"count":1,"value":[{"commitId":"abcdef1234567890","comment":"Fix the par","commentTruncated":true,"author":{"name":"Alice"}}]}"#.to_string(),
+            r#"{"commitId":"abcdef1234567890","comment":"Fix the parser\n\nHandle nested expressions.\n\nKeep context.\n"}"#.to_string(),
+        ]);
+        let backend =
+            AzureDevOpsBackend::with_transport(Some(azure_repo()), Box::new(shared.clone()));
+        // when
+        let commits = backend.list_pull_request_commits(&pr_details()).unwrap();
+        // then
+        assert_eq!(commits.len(), 1);
+        assert_eq!(commits[0].summary, "Fix the parser");
+        assert_eq!(
+            commits[0].body.as_deref(),
+            Some("Handle nested expressions.\n\nKeep context.")
+        );
+        assert_eq!(commits[0].author, "Alice");
+        let calls = shared.0.calls.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].0, "GET");
+        assert!(calls[0].1.contains("/pullRequests/42/commits"));
+        assert_eq!(calls[1].0, "GET");
+        assert_eq!(
+            calls[1].1,
+            "https://dev.azure.com/myorg/myproject/_apis/git/repositories/myrepo/commits/abcdef1234567890?api-version=7.1"
+        );
+    }
+
+    #[test]
+    fn should_use_an_untruncated_commit_without_an_extra_request() {
+        // given
+        let shared = SharedHttp::new(vec![
+            r#"{"count":1,"value":[{"commitId":"abcdef1234567890","comment":"Fix the parser\n\nHandle nested expressions.","commentTruncated":false}]}"#.to_string(),
+        ]);
+        let backend =
+            AzureDevOpsBackend::with_transport(Some(azure_repo()), Box::new(shared.clone()));
+        // when
+        let commits = backend.list_pull_request_commits(&pr_details()).unwrap();
+        // then
+        assert_eq!(commits.len(), 1);
+        assert_eq!(commits[0].summary, "Fix the parser");
+        assert_eq!(
+            commits[0].body.as_deref(),
+            Some("Handle nested expressions.")
+        );
+        assert_eq!(shared.0.calls.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn should_keep_the_commit_list_when_a_full_message_fetch_fails() {
+        // given
+        let shared = SharedHttp::new(vec![
+            r#"{"count":3,"value":[
+                {"commitId":"aaaa","comment":"First subject\n\nPartial body","commentTruncated":true},
+                {"commitId":"bbbb","comment":"Second subject\n\nComplete body."},
+                {"commitId":"cccc","comment":"Third sub","commentTruncated":true}
+            ]}"#.to_string(),
+        ]);
+        shared.0.responses.lock().unwrap().extend([
+            Err(AzHttpError::Failed {
+                status: Some(503),
+                body: "Unavailable".to_string(),
+            }),
+            Ok(r#"{"commitId":"cccc","comment":"Third subject\n\nThird body."}"#.to_string()),
+        ]);
+        let backend =
+            AzureDevOpsBackend::with_transport(Some(azure_repo()), Box::new(shared.clone()));
+        // when
+        let commits = backend.list_pull_request_commits(&pr_details()).unwrap();
+        // then
+        assert_eq!(commits.len(), 3);
+        assert_eq!(commits[0].oid, "aaaa");
+        assert_eq!(commits[0].summary, "First subject");
+        assert_eq!(commits[0].body, None);
+        assert_eq!(commits[1].body.as_deref(), Some("Complete body."));
+        assert_eq!(commits[2].summary, "Third subject");
+        assert_eq!(commits[2].body.as_deref(), Some("Third body."));
+        assert_eq!(shared.0.calls.lock().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn should_not_use_a_body_when_the_full_commit_is_still_flagged_truncated() {
+        // given
+        let shared = SharedHttp::new(vec![
+            r#"{"count":1,"value":[{"commitId":"aaaa","comment":"Subject","commentTruncated":true}]}"#.to_string(),
+            r#"{"commitId":"aaaa","comment":"Subject\n\nPartial body","commentTruncated":true}"#.to_string(),
+        ]);
+        let backend =
+            AzureDevOpsBackend::with_transport(Some(azure_repo()), Box::new(shared.clone()));
+        // when
+        let commits = backend.list_pull_request_commits(&pr_details()).unwrap();
+        // then
+        assert_eq!(commits.len(), 1);
+        assert_eq!(commits[0].summary, "Subject");
+        assert_eq!(commits[0].body, None);
+        assert_eq!(shared.0.calls.lock().unwrap().len(), 2);
     }
 
     #[test]

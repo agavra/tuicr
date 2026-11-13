@@ -24,7 +24,7 @@ impl App {
     ) {
         use crate::forge::submit::{
             CommentAnchor, InlineComment, ResolverAction, SubmitContext, UnmappableItem,
-            map_comment,
+            UnmappableReason, map_comment,
         };
 
         let DiffSource::PullRequest(pr) = &self.diff_source else {
@@ -72,6 +72,9 @@ impl App {
         // comments (session.review_comments) are NOT inline-mapped; they
         // appear in the body via `build_review_body`.
         for file in &files {
+            if file.is_commit_message {
+                continue;
+            }
             let Some(review) = self.session.files.get(file.display_path()) else {
                 continue;
             };
@@ -108,6 +111,33 @@ impl App {
                         &mut unmappable,
                     );
                 }
+            }
+        }
+
+        // Comments on a commit message are never posted inline: the message
+        // is not a file of the PR diff, and most forges have nowhere to
+        // anchor one. The resolver can move them into the review summary.
+        for commit in self.pr_commits.iter().rev() {
+            let path = DiffFile::commit_message_path(&commit.short_oid);
+            let Some(review) = self.session.files.get(&path) else {
+                continue;
+            };
+            let mut keys: Vec<&u32> = review.line_comments.keys().collect();
+            keys.sort();
+            for comment in review
+                .file_comments
+                .iter()
+                .chain(keys.into_iter().flat_map(|key| &review.line_comments[key]))
+            {
+                if comment.is_locked() || !self.comment_visible(comment) {
+                    continue;
+                }
+                total_local_drafts += 1;
+                unmappable.push(UnmappableItem {
+                    comment: comment.clone(),
+                    file: path.clone(),
+                    reason: UnmappableReason::CommitMessage,
+                });
             }
         }
 

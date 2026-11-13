@@ -82,10 +82,7 @@ impl App {
         let content_hash = DiffFile::compute_content_hash(&hunks);
         let commit_msg_file = DiffFile {
             old_path: None,
-            new_path: Some(PathBuf::from(format!(
-                "Commit Message ({})",
-                commit.short_id
-            ))),
+            new_path: Some(DiffFile::commit_message_path(&commit.short_id)),
             status: FileStatus::Added,
             hunks,
             is_binary: false,
