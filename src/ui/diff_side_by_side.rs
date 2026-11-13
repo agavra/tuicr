@@ -2131,6 +2131,7 @@ mod remote_comments_side_by_side_snapshot_tests {
                 new_lineno: Some(4),
                 raw_content: None,
                 highlighted_spans: None,
+                stage: None,
             }],
             old_start: 3,
             old_count: 1,
