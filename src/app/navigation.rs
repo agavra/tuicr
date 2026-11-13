@@ -506,6 +506,7 @@ impl App {
         // unreached half of the gap stays collapsed behind an expander.
         if !matches!(result, FindSourceLineResult::Exact(_))
             && let Some(gap_id) = self.find_gap_containing_lineno(current_file, target_lineno, side)
+            && !self.gap_is_hidden(&gap_id)
         {
             let (direction, limit) = self.expand_plan_to_reach(&gap_id, target_lineno, side);
             if let Err(e) = self.expand_gap(gap_id, direction, limit) {

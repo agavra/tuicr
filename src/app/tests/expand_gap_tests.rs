@@ -1948,3 +1948,111 @@ fn should_not_panic_jumping_into_hidden_gap_of_collapsed_reviewed_file() {
     assert_eq!(app.expanded_top.get(&gap_id).map_or(0, |v| v.len()), before);
     assert!(!app.expanded_bottom.contains_key(&gap_id));
 }
+
+fn collapsed_hunk_app(file_count: usize) -> App {
+    let files = (0..file_count)
+        .map(|i| {
+            make_file_with_hunks(
+                &format!("f{i}.rs"),
+                vec![make_hunk(1, 5), make_hunk(50, 5), make_hunk(90, 5)],
+            )
+        })
+        .collect();
+    build_app_with_files(files, 200)
+}
+
+fn expanded_len(app: &App, hunk_idx: usize) -> usize {
+    let gap = GapId {
+        file_idx: 0,
+        hunk_idx,
+    };
+    app.expanded_top.get(&gap).map_or(0, |v| v.len())
+        + app.expanded_bottom.get(&gap).map_or(0, |v| v.len())
+}
+
+fn mark_hunk_reviewed(app: &mut App, hunk_idx: usize) {
+    app.diff_state.cursor_line = app
+        .line_annotations
+        .iter()
+        .position(|l| {
+            matches!(l, AnnotatedLine::HunkHeader { file_idx: 0, hunk_idx: h } if *h == hunk_idx)
+        })
+        .unwrap();
+    app.toggle_hunk_reviewed();
+    assert!(app.should_collapse_hunk(0, hunk_idx));
+    app.diff_state.cursor_line = 0;
+    app.diff_state.current_file_idx = 0;
+}
+
+#[test]
+fn goto_line_skips_gap_in_collapsed_reviewed_file() {
+    let mut app = collapsed_hunk_app(1);
+    app.toggle_reviewed();
+    assert!(app.should_collapse_file(0));
+    app.go_to_source_line(20, LineSide::New);
+    assert_eq!(expanded_len(&app, 1), 0);
+}
+
+#[test]
+fn goto_line_skips_gap_before_a_reviewed_hunk() {
+    let mut app = collapsed_hunk_app(1);
+    mark_hunk_reviewed(&mut app, 1);
+    app.go_to_source_line(20, LineSide::New); // gap 1: before reviewed hunk 1
+    assert_eq!(expanded_len(&app, 1), 0);
+}
+
+#[test]
+fn goto_line_skips_gap_after_a_reviewed_hunk() {
+    let mut app = collapsed_hunk_app(1);
+    mark_hunk_reviewed(&mut app, 1);
+    app.go_to_source_line(70, LineSide::New); // gap 2: after reviewed hunk 1
+    assert_eq!(expanded_len(&app, 2), 0);
+}
+
+#[test]
+fn goto_line_skips_eof_gap_after_a_reviewed_last_hunk() {
+    let mut app = collapsed_hunk_app(1);
+    mark_hunk_reviewed(&mut app, 2);
+    app.go_to_source_line(150, LineSide::New); // EOF gap of 200-line file
+    assert_eq!(expanded_len(&app, 3), 0);
+}
+
+#[test]
+fn goto_line_still_expands_gap_beside_unreviewed_hunks() {
+    let mut app = collapsed_hunk_app(1);
+    mark_hunk_reviewed(&mut app, 0);
+    app.go_to_source_line(70, LineSide::New);
+    assert!(expanded_len(&app, 2) > 0);
+}
+
+#[test]
+fn expand_gap_down_and_up_reveal_exactly_the_requested_count() {
+    let mut app = collapsed_hunk_app(1);
+    let gap = GapId {
+        file_idx: 0,
+        hunk_idx: 1,
+    };
+    app.expand_gap(gap.clone(), ExpandDirection::Down, Some(3))
+        .unwrap();
+    assert_eq!(app.expanded_top[&gap].len(), 3);
+    app.expand_gap(gap.clone(), ExpandDirection::Up, Some(4))
+        .unwrap();
+    assert_eq!(app.expanded_bottom[&gap].len(), 4);
+}
+
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn expand_gap_count_beyond_u32_expands_whole_gap_without_panicking() {
+    let mut app = collapsed_hunk_app(1);
+    let gap = GapId {
+        file_idx: 0,
+        hunk_idx: 1,
+    };
+    app.expand_gap(
+        gap.clone(),
+        ExpandDirection::Down,
+        Some(u32::MAX as usize + 1),
+    )
+    .unwrap();
+    assert_eq!(app.expanded_top[&gap].len(), 44);
+}
