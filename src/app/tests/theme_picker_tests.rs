@@ -536,3 +536,33 @@ fn runtime_theme_changes_are_opaque_when_transparency_is_off() {
     app.apply_theme("light");
     assert_eq!(app.theme.panel_bg, crate::theme::Theme::light().panel_bg);
 }
+
+#[test]
+fn failed_confirm_after_preview_restores_original_theme_and_cached_syntax() {
+    let mut app = app_with_files(vec![
+        diff_file_with_marker_bg("a.rs", MARKER_BG),
+        diff_file_with_marker_bg("b.rs", MARKER_BG),
+    ]);
+    app.diff_state.current_file_idx = 0;
+    let original_panel_bg = app.theme.panel_bg;
+    let original_add_bg = app.theme.syntax_add_bg;
+    app.enter_theme_picker_mode();
+    handle_theme_picker_action(&mut app, Action::CursorDown(1));
+    assert_eq!(app.theme_picker.selected_name(), Some("light"));
+    assert_ne!(app.theme.panel_bg, original_panel_bg);
+
+    // The previewed row vanishes (e.g. a local theme file deleted) before Enter.
+    app.theme_picker.candidates = vec!["deleted-local-theme".to_string()];
+    app.theme_picker.select(0);
+    handle_theme_picker_action(&mut app, Action::SubmitInput);
+
+    assert_eq!(app.theme.panel_bg, original_panel_bg);
+    assert_eq!(app.theme.syntax_add_bg, original_add_bg);
+    for file in &app.diff_files {
+        assert_eq!(addition_bg(file), Some(original_add_bg));
+    }
+    assert!(matches!(
+        app.message.as_ref().map(|m| &m.message_type),
+        Some(MessageType::Error)
+    ));
+}
