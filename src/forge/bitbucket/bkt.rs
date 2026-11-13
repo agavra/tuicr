@@ -1302,14 +1302,17 @@ mod tests {
     }
 
     #[test]
-    fn should_read_more_than_ten_pages_of_commits() {
-        // given — eleven pages, the last without `next`
-        struct Pages(std::cell::Cell<usize>);
+    fn should_read_ten_pages_and_exactly_the_ceiling_but_not_more() {
+        // Every page but the last advertises `next`.
+        struct Pages {
+            last: usize,
+            seen: std::cell::Cell<usize>,
+        }
         impl BktCommandRunner for Pages {
             fn run(&self, _args: &[String]) -> BktCommandResult<String> {
-                let n = self.0.get() + 1;
-                self.0.set(n);
-                let next = if n < 11 {
+                let n = self.seen.get() + 1;
+                self.seen.set(n);
+                let next = if n < self.last {
                     r#","next":"https://api.bitbucket.org/2.0/next""#
                 } else {
                     ""
@@ -1319,11 +1322,19 @@ mod tests {
                 ))
             }
         }
-        let backend = BitbucketBktBackend::with_runner(Some(repo()), Pages(Default::default()));
-        // when
-        let commits = backend.list_pull_request_commits(&details()).unwrap();
-        // then
-        assert_eq!(commits.len(), 11);
+        let run = |last| {
+            let runner = Pages {
+                last,
+                seen: Default::default(),
+            };
+            BitbucketBktBackend::with_runner(Some(repo()), runner)
+                .list_pull_request_commits(&details())
+        };
+        // past the old cap, and a complete final page at the ceiling
+        assert_eq!(run(11).unwrap().len(), 11);
+        assert_eq!(run(MAX_PAGES).unwrap().len(), MAX_PAGES);
+        // one more page of `next` beyond the ceiling is an error, not a prefix
+        assert!(run(MAX_PAGES + 1).is_err());
     }
 
     #[test]

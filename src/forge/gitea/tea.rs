@@ -1927,6 +1927,45 @@ mod tests {
     }
 
     #[test]
+    fn should_not_report_more_when_the_window_ends_exactly_at_the_last_row() {
+        let pr = |n: u64| PR_JSON.replace("\"number\": 42", &format!("\"number\": {n}"));
+        let runner = FakeTeaRunner::default()
+            .route("page=1&", &format!("[{}]", pr(1)))
+            .route("page=2&", &format!("[{}]", pr(2)))
+            .route("page=3&", "[]");
+        let backend = GiteaTeaBackend::with_runner(Some(repo()), runner);
+        let page = backend
+            .list_pull_requests(PullRequestListQuery::first_page(repo(), 2))
+            .expect("page");
+
+        assert_eq!(page.pull_requests.len(), 2);
+        assert!(!page.has_more);
+    }
+
+    #[test]
+    fn should_report_more_and_stop_fetching_once_the_window_and_lookahead_are_read() {
+        let pr = |n: u64| PR_JSON.replace("\"number\": 42", &format!("\"number\": {n}"));
+        let runner = FakeTeaRunner::default()
+            .route("page=1&", &format!("[{}]", pr(1)))
+            .route("page=2&", &format!("[{}]", pr(2)))
+            .route("page=3&", &format!("[{}]", pr(3)))
+            .route("page=4&", &format!("[{}]", pr(4)));
+        let backend = GiteaTeaBackend::with_runner(Some(repo()), runner);
+        let page = backend
+            .list_pull_requests(PullRequestListQuery::first_page(repo(), 2))
+            .expect("page");
+
+        let numbers: Vec<u64> = page.pull_requests.iter().map(|p| p.number).collect();
+        assert_eq!(numbers, vec![1, 2]);
+        assert!(page.has_more, "row 3 exists");
+        assert_eq!(
+            backend.runner.endpoints().len(),
+            3,
+            "window + one look-ahead"
+        );
+    }
+
+    #[test]
     fn should_stop_paging_when_total_count_is_reached() {
         let runner =
             FakeTeaRunner::default().route_counted("/pulls?state=open", &format!("[{PR_JSON}]"), 1);
