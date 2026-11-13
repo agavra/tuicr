@@ -13,6 +13,7 @@ use ratatui::{
 use crate::app::{App, SUBMIT_PICKER_EVENTS};
 use crate::forge::submit::{ResolverAction, SubmitEvent, UnmappableItem};
 use crate::ui::styles;
+use crate::ui::text_utils::wrap_spans;
 
 /// Render the bare-`:submit` action picker. Lists the available review
 /// events plus a Cancel row; the user picks one with j/k + Enter (or
@@ -103,11 +104,10 @@ pub fn render_submit_resolver(frame: &mut Frame, app: &App) {
                 "{cursor} {action_label}  {row}",
                 row = describe_row(app, item)
             );
-            // Wrap long rows by hand so no text is clipped.
-            let chars: Vec<char> = text.chars().collect();
-            let lines: Vec<Line> = chars
-                .chunks(width)
-                .map(|c| Line::from(c.iter().collect::<String>()))
+            // Wrap by display width so wide (CJK) text is never clipped.
+            let lines: Vec<Line> = wrap_spans(&[Span::raw(text)], width)
+                .into_iter()
+                .map(Line::from)
                 .collect();
             ListItem::new(lines)
         })
@@ -233,7 +233,11 @@ fn describe_row(app: &App, item: &UnmappableItem) -> String {
         format!("[{label}] ")
     };
     let path = item.file.display();
-    let content = item.comment.content.replace(['\r', '\n'], " ");
+    let content = item
+        .comment
+        .content
+        .replace("\r\n", " ")
+        .replace(['\r', '\n'], " ");
     let preview: String = content.chars().take(40).collect();
     let ellipsis = if content.chars().count() > 40 {
         "…"
@@ -760,5 +764,43 @@ mod tests {
         let text = buffer_text(&buffer);
         assert!(text.contains("Moved to summary: 1"), "counts: {text}");
         assert!(text.contains("Omitted: 1"));
+    }
+
+    fn one_row_app(body: &str) -> App {
+        use crate::forge::submit::UnmappableReason;
+        let mut app = make_pr_app();
+        app.submit_state = Some(SubmitState {
+            event: SubmitEvent::Comment,
+            mappable: Vec::new(),
+            unmappable: vec![unmappable_item(
+                "x.rs",
+                CommentType::from_id("note"),
+                body,
+                UnmappableReason::FileLevelNoAnchor,
+            )],
+            resolver_choices: vec![ResolverAction::Omit],
+            resolver_cursor: 0,
+            commit_id: "abcdef0123".to_string(),
+            skip_confirm: false,
+        });
+        app
+    }
+
+    #[test]
+    fn resolver_wraps_cjk_rows_by_display_width_without_clipping() {
+        // 40 double-width chars: the preview alone is 80 cells, wider than the
+        // 82-cell modal list once the prefix is added, so it must wrap.
+        let body = "漢".repeat(40);
+        let app = one_row_app(&body);
+        let text = buffer_text(&draw_resolver(&app));
+        let shown = text.chars().filter(|c| *c == '漢').count();
+        assert_eq!(shown, 40, "all CJK chars visible, none clipped: {text}");
+    }
+
+    #[test]
+    fn resolver_row_collapses_crlf_to_single_space() {
+        let app = one_row_app("first line\r\nsecond line");
+        let text = buffer_text(&draw_resolver(&app));
+        assert!(text.contains("first line second line"), "crlf: {text}");
     }
 }
