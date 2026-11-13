@@ -19,10 +19,9 @@ pub(crate) type HighlightedLines = Vec<Option<HighlightedSpans>>;
 ///
 /// Sublime-syntax grammars start in a `main` context entered at the top of the
 /// file. For Vue, syntect stays in `text.html.vue`'s outer scope until it
-/// sees `<template>`, `<script>`, or `<style>`. Same shape for Svelte / Astro
-/// / MDX (fenced code blocks) / PHP / ERB-family templates: anything inside a
-/// nested block in a hunk that doesn't include the opening tag will fall back
-/// to the theme's default foreground.
+/// sees `<template>`, `<script>`, or `<style>`. Same shape for Svelte / PHP / ERB
+/// templates: anything inside a nested block in a hunk that doesn't include
+/// the opening tag will fall back to the theme's default foreground.
 ///
 /// Container extensions kept narrow. `html` and `md` are intentionally
 /// omitted: the vast majority of changes in those files are outside any
@@ -30,18 +29,16 @@ pub(crate) type HighlightedLines = Vec<Option<HighlightedSpans>>;
 /// be a net regression. Add only when an extension is overwhelmingly used as
 /// a container (i.e. most hunks live inside a nested grammar).
 pub(crate) fn needs_full_file_highlight(path: &Path) -> bool {
+    let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+        return false;
+    };
+    // `get_syntax` matches extensions case-insensitively, so this must too.
     matches!(
-        path.extension().and_then(|e| e.to_str()),
-        Some(
-            "vue"     // text.html.vue: HTML + JS/TS + CSS blocks
-            | "svelte" // source.svelte: HTML + JS/TS + CSS blocks
-            | "astro"  // source.astro: frontmatter + HTML + JS
-            | "mdx"    // text.html.markdown with JSX inside
-            | "php"    // text.html.php: outer HTML, switches at <?php
-            | "erb"    // text.html.erb: outer HTML, switches at <% %>
-            | "eex"    // text.html.elixir: same shape as erb
-            | "heex" // text.html.heex: Phoenix component templates
-        )
+        ext.to_ascii_lowercase().as_str(),
+        "vue"       // text.html.vue: HTML + JS/TS + CSS blocks
+        | "svelte"  // source.svelte: HTML + JS/TS + CSS blocks
+        | "php"     // text.html.php: outer HTML, switches at <?php
+        | "erb" // text.html.erb: outer HTML, switches at <% %>
     )
 }
 
@@ -541,6 +538,16 @@ impl SyntaxHighlighter {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn should_match_container_extensions_case_insensitively() {
+        use super::needs_full_file_highlight;
+        use std::path::Path;
+        assert!(needs_full_file_highlight(Path::new("App.VUE")));
+        assert!(needs_full_file_highlight(Path::new("a.vue")));
+        assert!(!needs_full_file_highlight(Path::new("a.heex")));
+        assert!(!needs_full_file_highlight(Path::new("a.mdx")));
+    }
+
     use super::*;
     use crate::model::diff_types::DiffLine;
 
