@@ -8,6 +8,27 @@
 use crossterm::event::{Event, KeyCode, KeyEvent};
 use edtui::{EditorEventHandler, EditorMode, EditorState, Index2, Lines};
 
+/// Key codes edtui can convert; anything else makes it panic.
+fn edtui_handles(code: KeyCode) -> bool {
+    matches!(
+        code,
+        KeyCode::Char(_)
+            | KeyCode::Enter
+            | KeyCode::Esc
+            | KeyCode::Backspace
+            | KeyCode::Delete
+            | KeyCode::Tab
+            | KeyCode::Left
+            | KeyCode::Right
+            | KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::Home
+            | KeyCode::End
+            | KeyCode::PageUp
+            | KeyCode::PageDown
+    )
+}
+
 /// Active modal editor for the comment box. Present only while in comment mode
 /// with `comment_vim` enabled.
 pub struct CommentVimEditor {
@@ -48,9 +69,10 @@ impl CommentVimEditor {
     /// Feed a key event to the editor and return the resulting
     /// `(text, byte_cursor)` for the caller to sync into the canonical buffer.
     pub fn feed_key(&mut self, key: KeyEvent) -> (String, usize) {
-        // edtui cannot convert BackTab and panics on it. Normal-mode comment
-        // type cycling is handled by the caller; ignore it in other modes.
-        if key.code != KeyCode::BackTab {
+        // edtui panics on keys it cannot map (BackTab, F-keys, Insert, ...), so
+        // only forward the ones it understands. Normal-mode comment type
+        // cycling is handled by the caller.
+        if edtui_handles(key.code) {
             self.events.on_key_event(key, &mut self.state);
         }
         self.text_and_cursor()
@@ -142,6 +164,19 @@ mod tests {
         assert_eq!(result, ("hello".to_string(), 5));
         assert_eq!(editor.label(), "INSERT");
         assert_eq!(editor.feed_key(key('!')), ("hello!".to_string(), 6));
+    }
+
+    #[test]
+    fn unmapped_keys_are_ignored_in_both_modes() {
+        let mut editor = CommentVimEditor::from_buffer("hello", 5);
+        for code in [KeyCode::F(1), KeyCode::Insert] {
+            let r = editor.feed_key(KeyEvent::new(code, KeyModifiers::NONE));
+            assert_eq!(r, ("hello".to_string(), 5));
+        }
+        editor.feed_key(special(KeyCode::Esc));
+        assert_eq!(editor.label(), "NORMAL");
+        let r = editor.feed_key(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
+        assert_eq!(r.0, "hello");
     }
 
     #[test]
