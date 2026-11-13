@@ -877,6 +877,7 @@ fn make_in_flight(
         review_comment_ids: Vec::new(),
         moved_to_summary_count,
         head_sha_snapshot: head_sha.to_string(),
+        pr_head_sha: "abcdef0123".to_string(),
         repository: ForgeRepository::github("github.com", "agavra", "tuicr"),
         pr_number: 125,
         started_at: Instant::now(),
@@ -1261,39 +1262,76 @@ fn should_keep_comments_as_local_draft_on_submit_failure() {
     assert!(msg.content.contains("pull request write permission"));
 }
 
+fn deliver_submit_result(app: &mut App, in_flight: SubmitInFlightState, review_id: u64) {
+    app.pr_submit_state = Some(in_flight.clone());
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.pr_submit_rx = Some(rx);
+    tx.send(PrSubmitEvent::Done {
+        repository: in_flight.repository.clone(),
+        pr_number: in_flight.pr_number,
+        head_sha: in_flight.head_sha_snapshot.clone(),
+        result: Ok(make_response(review_id, "u", "COMMENTED")),
+    })
+    .unwrap();
+    app.poll_pr_submit_events();
+}
+
 #[test]
-fn should_discard_stale_submit_result_when_head_sha_changed() {
-    // given a PR session pretending we already swapped heads after submit dispatched.
+fn should_persist_late_submit_receipt_to_its_own_session_when_another_pr_is_open() {
+    // given PR 125 @ OLD_HEAD has a saved local draft, a submit in flight for
+    // it, and a different head of the PR (standing in for another PR) on screen
     let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
     let comment = line_comment(LineSide::New, Some(11), None);
     let comment_id = comment.id.clone();
     add_line_comment(&mut app, "src/lib.rs", 11, comment);
-    // record that a submit was in flight for an *older* head.
-    let in_flight = make_in_flight(SubmitEvent::Comment, &[comment_id.as_str()], "OLD_HEAD", 0);
-    app.pr_submit_state = Some(in_flight);
-    let (tx, rx) = std::sync::mpsc::channel();
-    app.pr_submit_rx = Some(rx);
-    // simulate the bg thread coming back for the OLD head, but with
-    // a fresh-head session note: poll path checks repository/pr_number/head_sha.
-    tx.send(PrSubmitEvent::Done {
-        repository: ForgeRepository::github("github.com", "agavra", "tuicr"),
-        pr_number: 125,
-        head_sha: "DIFFERENT_HEAD".to_string(),
-        result: Ok(make_response(42, "u", "COMMENTED")),
-    })
-    .unwrap();
-    drop(tx);
-    // when
-    app.poll_pr_submit_events();
-    // then — comment lifecycle untouched, info message about discarded result.
+    let mut origin = app.session.clone();
+    origin.pr_session_key = Some(PrSessionKey::new(
+        ForgeRepository::github("github.com", "agavra", "tuicr"),
+        125,
+        "OLD_HEAD".to_string(),
+    ));
+    crate::persistence::storage::save_session(&origin).unwrap();
+    let mut in_flight = make_in_flight(SubmitEvent::Comment, &[comment_id.as_str()], "OLD_HEAD", 0);
+    in_flight.pr_head_sha = "OLD_HEAD".to_string();
+
+    // when the late result arrives
+    deliver_submit_result(&mut app, in_flight.clone(), 42);
+
+    // then the open session is untouched and says so
     let review = app.session.files.get(&PathBuf::from("src/lib.rs")).unwrap();
-    let saved = &review.line_comments.get(&11).unwrap()[0];
-    assert_eq!(saved.lifecycle_state, CommentLifecycleState::LocalDraft);
+    assert_eq!(
+        review.line_comments[&11][0].lifecycle_state,
+        CommentLifecycleState::LocalDraft
+    );
     let msg = app.message.as_ref().expect("info message");
-    assert!(
-        msg.content.contains("Discarded stale submit result"),
-        "got: {}",
-        msg.content
+    assert!(msg.content.contains("Discarded stale submit result"));
+    // and the originating session records the receipt, so the draft is not resubmitted
+    let key = PrSessionKey::new(in_flight.repository.clone(), 125, "OLD_HEAD".to_string());
+    let (_, saved) = crate::persistence::storage::load_pr_session(&key)
+        .unwrap()
+        .expect("origin session");
+    let saved = &saved.files[&PathBuf::from("src/lib.rs")].line_comments[&11][0];
+    assert_eq!(saved.lifecycle_state, CommentLifecycleState::Submitted);
+    assert_eq!(saved.remote_review_id.as_deref(), Some("42"));
+}
+
+#[test]
+fn should_apply_subset_submit_result_when_pr_head_is_unchanged() {
+    // given a submit whose commit_id is a selected subset commit, not the PR head
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    let comment = line_comment(LineSide::New, Some(11), None);
+    let comment_id = comment.id.clone();
+    add_line_comment(&mut app, "src/lib.rs", 11, comment);
+    let in_flight = make_in_flight(SubmitEvent::Comment, &[comment_id.as_str()], "subset99", 0);
+
+    // when its result arrives
+    deliver_submit_result(&mut app, in_flight, 7);
+
+    // then it still applies
+    let review = app.session.files.get(&PathBuf::from("src/lib.rs")).unwrap();
+    assert_eq!(
+        review.line_comments[&11][0].lifecycle_state,
+        CommentLifecycleState::Submitted
     );
 }
 

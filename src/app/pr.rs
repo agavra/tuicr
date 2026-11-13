@@ -61,6 +61,11 @@ impl App {
         self.forge_review_summaries = Vec::new();
         self.forge_review_threads_loading = false;
         self.pr_threads_rx = None;
+        // Results fetched for the previous PR must not land in this one.
+        self.pr_reload_state = None;
+        self.pr_reload_rx = None;
+        self.pr_range_reload_state = None;
+        self.pr_range_reload_rx = None;
         // Latest known remote head — equal to the session head at open time;
         // refreshed by future `gh pr view` calls in PR 6.
         self.current_pr_head = Some(details.head_sha.clone());
@@ -282,12 +287,29 @@ impl App {
         self.spawn_pr_range_reload();
     }
 
+    /// Whether an async result for `(repository, number, head)` belongs to the
+    /// PR session on screen now, not the one it was spawned from.
+    pub(in crate::app) fn pr_result_is_current(
+        &self,
+        repository: &crate::forge::traits::ForgeRepository,
+        number: u64,
+        head_sha: &str,
+    ) -> bool {
+        matches!(&self.diff_source, DiffSource::PullRequest(pr)
+            if pr.key.repository == *repository
+                && pr.key.number == number
+                && pr.key.head_sha == head_sha)
+    }
+
     /// Restore the cached cumulative PR diff into the diff view. Used when
     /// the user toggles the selector back to "all commits".
     fn apply_cached_full_pr_diff(&mut self) {
         let Some(files) = self.range_diff_files.clone() else {
             return;
         };
+        // A late subset result must not overwrite the all-commits view.
+        self.pr_range_reload_state = None;
+        self.pr_range_reload_rx = None;
         let anchor = self.capture_pr_cursor_anchor();
         self.diff_files = files;
         self.clear_expanded_gaps();
@@ -395,14 +417,17 @@ impl App {
         // Only apply if this result still matches the active in-flight
         // request — toggling again, switching PRs, or reloading the head
         // before this lands invalidates it.
-        let still_active = in_flight.as_ref().is_some_and(|s| {
-            s.start_sha == request.start_sha
-                && s.end_sha == request.end_sha
-                && s.repository == request.repository
-                && s.pr_number == request.pr_number
-                && s.head_sha == request.head_sha
-                && s.range == request.range
-        });
+        let still_active =
+            self.pr_result_is_current(&request.repository, request.pr_number, &request.head_sha)
+                && self.commit_selection_range == Some(request.range)
+                && in_flight.as_ref().is_some_and(|s| {
+                    s.start_sha == request.start_sha
+                        && s.end_sha == request.end_sha
+                        && s.repository == request.repository
+                        && s.pr_number == request.pr_number
+                        && s.head_sha == request.head_sha
+                        && s.range == request.range
+                });
         if !still_active {
             return;
         }
@@ -539,6 +564,7 @@ impl App {
         if !in_flight
             .as_ref()
             .is_some_and(|s| s.pr_number == request.pr_number && s.repository == request.repository)
+            || !self.pr_result_is_current(&request.repository, request.pr_number, &request.head_sha)
         {
             return;
         }

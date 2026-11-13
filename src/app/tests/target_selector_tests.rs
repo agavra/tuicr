@@ -4179,3 +4179,191 @@ fn should_prefer_the_exact_head_session_over_carried_commit_message_state() {
         "exact-head wins on live reload"
     );
 }
+
+// ---- late async results must belong to the PR on screen ----
+
+fn open_two_commit_pr(app: &mut App, number: u64) {
+    let summary = sample_pr(number, "async identity");
+    let mut backend = FakeForgeBackend::open_pr_details(
+        test_pr_details(number, "async identity"),
+        two_hunk_patch().to_string(),
+    );
+    backend.commits = vec![
+        sample_pr_commit("aaa1111", "first"),
+        sample_pr_commit("bbb2222", "second"),
+    ];
+    app.open_pr_with_backend(&summary, Box::new(backend), None)
+        .unwrap();
+}
+
+fn late_reload_request(app: &App, pr_number: u64, head_sha: &str) -> PrReloadRequest {
+    let DiffSource::PullRequest(pr) = &app.diff_source else {
+        panic!("expected PR mode");
+    };
+    PrReloadRequest {
+        repository: pr.key.repository.clone(),
+        pr_number,
+        head_sha: head_sha.to_string(),
+        started_at: Instant::now(),
+        anchor: None,
+        restore_overview_cursor: None,
+    }
+}
+
+fn late_range_request(
+    app: &App,
+    pr_number: u64,
+    head_sha: &str,
+    range: (usize, usize),
+) -> PrRangeReloadRequest {
+    let DiffSource::PullRequest(pr) = &app.diff_source else {
+        panic!("expected PR mode");
+    };
+    PrRangeReloadRequest {
+        repository: pr.key.repository.clone(),
+        pr_number,
+        head_sha: head_sha.to_string(),
+        start_sha: "aaa1111".to_string(),
+        end_sha: "bbb2222".to_string(),
+        range,
+        started_at: Instant::now(),
+        anchor: None,
+    }
+}
+
+fn live_head(app: &App) -> String {
+    let DiffSource::PullRequest(pr) = &app.diff_source else {
+        panic!("expected PR mode");
+    };
+    pr.key.head_sha.clone()
+}
+
+#[test]
+fn should_drop_late_reload_result_for_another_pr() {
+    // given PR 43 is open while a reload spawned for PR 42 is still in flight
+    let _reviews = TestReviewsDir::new();
+    let mut app = build_app();
+    open_two_commit_pr(&mut app, 43);
+    let request = late_reload_request(&app, 42, "stale-head");
+    app.pr_reload_state = Some(request.clone());
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.pr_reload_rx = Some(rx);
+    tx.send(PrReloadEvent::Done {
+        request,
+        result: Err("boom".to_string()),
+    })
+    .unwrap();
+
+    // when the result lands
+    app.poll_pr_reload_events();
+
+    // then it is dropped without touching PR 43
+    assert!(app.message.is_none(), "got {:?}", app.message);
+}
+
+#[test]
+fn should_drop_late_reload_result_for_an_older_head_of_the_open_pr() {
+    // given a reload spawned at an older head of the open PR
+    let _reviews = TestReviewsDir::new();
+    let mut app = build_app();
+    open_two_commit_pr(&mut app, 43);
+    let request = late_reload_request(&app, 43, "older-head");
+    app.pr_reload_state = Some(request.clone());
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.pr_reload_rx = Some(rx);
+    tx.send(PrReloadEvent::Done {
+        request,
+        result: Err("boom".to_string()),
+    })
+    .unwrap();
+
+    // when / then
+    app.poll_pr_reload_events();
+    assert!(app.message.is_none(), "got {:?}", app.message);
+}
+
+#[test]
+fn should_drop_late_range_result_for_another_pr() {
+    // given PR 43 open with a subset selected, and a range request from PR 42
+    let _reviews = TestReviewsDir::new();
+    let mut app = build_app();
+    open_two_commit_pr(&mut app, 43);
+    app.commit_selection_range = Some((0, 0));
+    let request = late_range_request(&app, 42, &live_head(&app), (0, 0));
+    app.pr_range_reload_state = Some(request.clone());
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.pr_range_reload_rx = Some(rx);
+    tx.send(PrRangeReloadEvent::Done {
+        request,
+        result: Err("boom".to_string()),
+    })
+    .unwrap();
+
+    // when / then
+    app.poll_pr_range_reload_events();
+    assert!(app.message.is_none(), "got {:?}", app.message);
+}
+
+#[test]
+fn should_drop_late_range_result_when_selection_changed() {
+    // given a range request for (1, 1) while the live selection is (0, 0)
+    let _reviews = TestReviewsDir::new();
+    let mut app = build_app();
+    open_two_commit_pr(&mut app, 43);
+    app.commit_selection_range = Some((0, 0));
+    let request = late_range_request(&app, 43, &live_head(&app), (1, 1));
+    app.pr_range_reload_state = Some(request.clone());
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.pr_range_reload_rx = Some(rx);
+    tx.send(PrRangeReloadEvent::Done {
+        request,
+        result: Err("boom".to_string()),
+    })
+    .unwrap();
+
+    // when / then
+    app.poll_pr_range_reload_events();
+    assert!(app.message.is_none(), "got {:?}", app.message);
+}
+
+#[test]
+fn should_cancel_range_reload_when_widening_to_all_commits() {
+    // given a subset range fetch in flight
+    let _reviews = TestReviewsDir::new();
+    let mut app = build_app();
+    open_two_commit_pr(&mut app, 43);
+    app.range_diff_files = Some(app.diff_files.clone());
+    app.commit_selection_range = Some((0, 1));
+    let request = late_range_request(&app, 43, &live_head(&app), (0, 0));
+    app.pr_range_reload_state = Some(request);
+    let (_tx, rx) = std::sync::mpsc::channel();
+    app.pr_range_reload_rx = Some(rx);
+
+    // when the selection widens to every commit
+    app.reload_pr_inline_selection();
+
+    // then the fetch is cancelled
+    assert!(app.pr_range_reload_state.is_none());
+    assert!(app.pr_range_reload_rx.is_none());
+}
+
+#[test]
+fn should_clear_in_flight_reloads_when_entering_another_pr() {
+    // given reload and range reload state left over from PR 42
+    let _reviews = TestReviewsDir::new();
+    let mut app = build_app();
+    open_two_commit_pr(&mut app, 42);
+    app.pr_reload_state = Some(late_reload_request(&app, 42, &live_head(&app)));
+    app.pr_range_reload_state = Some(late_range_request(&app, 42, &live_head(&app), (0, 0)));
+    let (_tx, rx) = std::sync::mpsc::channel();
+    app.pr_reload_rx = Some(rx);
+    let (_tx2, rx2) = std::sync::mpsc::channel();
+    app.pr_range_reload_rx = Some(rx2);
+
+    // when PR 43 is opened
+    open_two_commit_pr(&mut app, 43);
+
+    // then none of it survives
+    assert!(app.pr_reload_state.is_none() && app.pr_reload_rx.is_none());
+    assert!(app.pr_range_reload_state.is_none() && app.pr_range_reload_rx.is_none());
+}
