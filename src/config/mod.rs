@@ -265,6 +265,9 @@ pub struct AppConfig {
     /// (xclip / wl-copy), `"osc52"`. Omit the key (the default) to keep
     /// automatic detection; an invalid or empty list also falls back to it.
     pub clipboard: Option<Vec<String>>,
+    /// Shell command that receives copied text on stdin, tried before
+    /// `clipboard`. A failing command falls back to the normal order.
+    pub clipboard_command: Option<String>,
     /// `[forge]` section settings. Always present; `None` means "no override"
     /// and downstream code should treat it as `ForgeConfig::default()`.
     pub forge: Option<ForgeConfig>,
@@ -333,6 +336,7 @@ const KNOWN_KEYS: &[&str] = &[
     "single_file_view",
     "username",
     "clipboard",
+    "clipboard_command",
     "forge",
     "export",
 ];
@@ -752,6 +756,7 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         no_update_check: read_bool(table, "no_update_check", &mut warnings),
         single_file_view: read_bool(table, "single_file_view", &mut warnings),
         username: read_string(table, "username", &mut warnings),
+        clipboard_command: read_string(table, "clipboard_command", &mut warnings),
         clipboard: read_enum_list(
             table,
             "clipboard",
@@ -1212,6 +1217,16 @@ mod tests {
             None
         );
         assert_eq!(outcome.warnings.len(), 2);
+    }
+
+    #[test]
+    fn should_parse_clipboard_command() {
+        let outcome = parse_config("clipboard_command = \"tmux load-buffer -\"\n");
+        assert_eq!(
+            outcome.config.and_then(|cfg| cfg.clipboard_command),
+            Some("tmux load-buffer -".to_string())
+        );
+        assert!(outcome.warnings.is_empty());
     }
 
     #[test]

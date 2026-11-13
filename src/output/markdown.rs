@@ -182,10 +182,12 @@ pub fn export_to_clipboard(
         remote_threads,
         session_slug,
         None,
+        None,
     )
 }
 
-/// Export using the configured copy order, or automatic detection for `None`.
+/// Export using the configured command and copy order.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn export_to_clipboard_with(
     session: &ReviewSession,
     diff_source: &DiffSource,
@@ -194,6 +196,7 @@ pub(crate) fn export_to_clipboard_with(
     remote_threads: &[RemoteReviewThread],
     session_slug: Option<&str>,
     clipboard_override: Option<&[CopyMethod]>,
+    clipboard_command: Option<&str>,
 ) -> Result<String> {
     let content = generate_export_content(
         session,
@@ -203,7 +206,8 @@ pub(crate) fn export_to_clipboard_with(
         remote_threads,
         session_slug,
     )?;
-    let via_terminal = copy_text_to_clipboard_with(&content, clipboard_override)?;
+    let via_terminal =
+        copy_text_to_clipboard_with(&content, clipboard_override, clipboard_command)?;
     Ok(if via_terminal {
         "Review copied to clipboard (via terminal)".to_string()
     } else {
@@ -237,14 +241,20 @@ pub fn export_to_file(
 /// terminal relay (tmux / OSC 52) was used, `Ok(false)` if a direct system
 /// clipboard handled it.
 pub fn copy_text_to_clipboard(text: &str) -> Result<bool> {
-    copy_text_to_clipboard_with(text, None)
+    copy_text_to_clipboard_with(text, None, None)
 }
 
 /// Copy using the configured order, or automatic detection for `None`.
 pub(crate) fn copy_text_to_clipboard_with(
     text: &str,
     clipboard_override: Option<&[CopyMethod]>,
+    clipboard_command: Option<&str>,
 ) -> Result<bool> {
+    if let Some(command) = clipboard_command
+        && try_clipboard_command(command, text)
+    {
+        return Ok(false);
+    }
     for method in copy_method_order(&ClipboardEnv::detect(), clipboard_override) {
         match method {
             CopyMethod::Pbcopy if try_clipboard_cmd("pbcopy", &[], text) => return Ok(false),
@@ -265,6 +275,15 @@ pub(crate) fn copy_text_to_clipboard_with(
     }
     // Breaks loudly if a future branch forgets to add it
     unreachable!("copy_method_order must end with TerminalRelay")
+}
+
+/// Run the user's `clipboard_command` through the shell with the text on stdin.
+fn try_clipboard_command(command: &str, text: &str) -> bool {
+    if cfg!(windows) {
+        try_clipboard_cmd("cmd", &["/C", command], text)
+    } else {
+        try_clipboard_cmd("sh", &["-c", command], text)
+    }
 }
 
 /// Try xclip (X11) then wl-copy (Wayland). Returns true if either succeeds.
