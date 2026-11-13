@@ -488,6 +488,31 @@ pub struct GhCreateReviewResponse {
     pub state: String,
 }
 
+/// What a multi-request submit had already posted when it failed. Forges
+/// without a single review object (GitLab, Bitbucket, Azure) post the summary
+/// and each inline comment separately, so a later failure leaves some of them
+/// live on the forge.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SubmitReceipts {
+    /// The review body (summary + review-level comments) was posted.
+    pub body_posted: bool,
+    /// `InlineComment::comment_id`s that were posted.
+    pub comment_ids: Vec<String>,
+}
+
+impl SubmitReceipts {
+    /// Attach these receipts to `err`; with nothing posted, `err` is unchanged.
+    pub fn into_error(self, err: TuicrError) -> TuicrError {
+        if !self.body_posted && self.comment_ids.is_empty() {
+            return err;
+        }
+        TuicrError::PartialSubmit {
+            message: err.to_string(),
+            receipts: self,
+        }
+    }
+}
+
 /// Request to create a review against a PR. The payload is the forge-agnostic
 /// shape of the JSON body the backend will POST; downstream the GitHub
 /// backend reshapes it via `build_review_payload` and writes it on stdin.
@@ -703,6 +728,32 @@ pub trait ForgeBackend {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn should_leave_error_unchanged_when_nothing_was_posted() {
+        let err = SubmitReceipts::default().into_error(TuicrError::Forge("x".to_string()));
+        assert!(matches!(err, TuicrError::Forge(_)), "{err:?}");
+    }
+
+    #[test]
+    fn should_wrap_error_when_only_the_body_was_posted() {
+        let receipts = SubmitReceipts {
+            body_posted: true,
+            comment_ids: Vec::new(),
+        };
+        let err = receipts.into_error(TuicrError::Forge("x".to_string()));
+        assert!(matches!(err, TuicrError::PartialSubmit { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn should_wrap_error_when_only_comments_were_posted() {
+        let receipts = SubmitReceipts {
+            body_posted: false,
+            comment_ids: vec!["c".to_string()],
+        };
+        let err = receipts.into_error(TuicrError::Forge("x".to_string()));
+        assert!(matches!(err, TuicrError::PartialSubmit { .. }), "{err:?}");
+    }
+
     use super::*;
 
     #[test]

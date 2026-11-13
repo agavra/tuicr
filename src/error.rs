@@ -32,6 +32,15 @@ pub enum TuicrError {
     #[error("{0}")]
     Forge(String),
 
+    /// A submit that failed after some comments were already posted. The
+    /// message is what the user sees; the receipts let the app lock the posted
+    /// comments so a retry does not duplicate them.
+    #[error("{message}")]
+    PartialSubmit {
+        message: String,
+        receipts: crate::forge::traits::SubmitReceipts,
+    },
+
     #[error("Unsupported operation: {0}")]
     UnsupportedOperation(String),
 

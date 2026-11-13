@@ -238,7 +238,12 @@ fn describe_row(app: &App, item: &UnmappableItem) -> String {
 }
 
 fn body_summary_label(app: &App, moved_count: usize) -> String {
-    let review_level = app.session.review_comments.len();
+    let review_level = app
+        .session
+        .review_comments
+        .iter()
+        .filter(|c| !c.is_locked())
+        .count();
     match (review_level, moved_count) {
         (0, 0) => "empty".to_string(),
         (n, 0) => format!("{n} review comment{s}", s = plural(n)),
@@ -616,6 +621,21 @@ mod tests {
         assert!(text.contains("[n]"));
         // No stale-head warning when current_pr_head matches
         assert!(!text.contains("Warning: this review targets"));
+    }
+
+    #[test]
+    fn body_summary_ignores_locked_review_comments() {
+        let mut app = make_pr_app();
+        let mut old = Comment::new("old".to_string(), CommentType::from_id("note"), None);
+        old.lifecycle_state = crate::model::comment::CommentLifecycleState::Submitted;
+        app.session.review_comments.push(old);
+        assert_eq!(body_summary_label(&app, 0), "empty");
+        app.session.review_comments.push(Comment::new(
+            "new".to_string(),
+            CommentType::from_id("note"),
+            None,
+        ));
+        assert_eq!(body_summary_label(&app, 0), "1 review comment");
     }
 
     #[test]
