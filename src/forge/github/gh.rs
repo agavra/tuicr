@@ -247,7 +247,12 @@ where
         ];
         let search = match query.scope {
             PullRequestListScope::Open => None,
-            PullRequestListScope::ReviewRequested => Some("review-requested:@me"),
+            // A configured `pr_search` replaces the default review query; a
+            // blank value keeps it.
+            PullRequestListScope::ReviewRequested => match query.search.as_deref().map(str::trim) {
+                Some(search) if !search.is_empty() => Some(search),
+                _ => Some("review-requested:@me"),
+            },
             // Leaves out PRs that reach the user only through a team request.
             PullRequestListScope::PersonallyRequested => Some("user-review-requested:@me"),
         };
@@ -1822,6 +1827,148 @@ Match host github-work
     }
 
     #[test]
+    fn list_pull_requests_pr_search_replaces_review_requested_query() {
+        let runner = FakeGhRunner::default();
+        let backend = GitHubGhBackend::with_runner(None, runner);
+        let mut query = PullRequestListQuery::first_page_with_scope(
+            repo(),
+            1,
+            PullRequestListScope::ReviewRequested,
+        );
+        query.search = Some("review-requested:@me draft:false status:success".to_string());
+        backend.list_pull_requests(query).unwrap();
+
+        let calls = backend.runner.calls.lock().unwrap();
+        assert_eq!(
+            calls[0],
+            vec![
+                "pr",
+                "list",
+                "--repo",
+                "agavra/tuicr",
+                "--state",
+                "open",
+                "--limit",
+                "2",
+                "--json",
+                PR_LIST_JSON_FIELDS,
+                "--search",
+                "review-requested:@me draft:false status:success",
+            ]
+        );
+    }
+
+    #[test]
+    fn list_pull_requests_pr_search_applies_to_later_pages() {
+        let runner = FakeGhRunner::default();
+        let backend = GitHubGhBackend::with_runner(None, runner);
+        backend
+            .list_pull_requests(PullRequestListQuery {
+                repository: repo(),
+                already_loaded: 1,
+                page_size: 1,
+                scope: PullRequestListScope::ReviewRequested,
+                search: Some("review-requested:@me draft:false".to_string()),
+            })
+            .unwrap();
+
+        let calls = backend.runner.calls.lock().unwrap();
+        assert_eq!(
+            calls[0],
+            vec![
+                "pr",
+                "list",
+                "--repo",
+                "agavra/tuicr",
+                "--state",
+                "open",
+                "--limit",
+                "3",
+                "--json",
+                PR_LIST_JSON_FIELDS,
+                "--search",
+                "review-requested:@me draft:false",
+            ]
+        );
+    }
+
+    #[test]
+    fn list_pull_requests_pr_search_does_not_apply_to_personally_requested() {
+        let runner = FakeGhRunner::default();
+        let backend = GitHubGhBackend::with_runner(None, runner);
+        let mut query = PullRequestListQuery::first_page_with_scope(
+            repo(),
+            1,
+            PullRequestListScope::PersonallyRequested,
+        );
+        query.search = Some("review-requested:@me draft:false".to_string());
+        backend.list_pull_requests(query).unwrap();
+
+        let calls = backend.runner.calls.lock().unwrap();
+        assert_eq!(calls[0].last().unwrap(), "user-review-requested:@me");
+    }
+
+    #[test]
+    fn list_pull_requests_pr_search_blank_uses_review_requested() {
+        for search in [Some("   ".to_string()), Some(String::new())] {
+            let runner = FakeGhRunner::default();
+            let backend = GitHubGhBackend::with_runner(None, runner);
+            let mut query = PullRequestListQuery::first_page_with_scope(
+                repo(),
+                1,
+                PullRequestListScope::ReviewRequested,
+            );
+            query.search = search;
+            backend.list_pull_requests(query).unwrap();
+
+            let calls = backend.runner.calls.lock().unwrap();
+            assert_eq!(
+                calls[0],
+                vec![
+                    "pr",
+                    "list",
+                    "--repo",
+                    "agavra/tuicr",
+                    "--state",
+                    "open",
+                    "--limit",
+                    "2",
+                    "--json",
+                    PR_LIST_JSON_FIELDS,
+                    "--search",
+                    "review-requested:@me",
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn list_pull_requests_pr_search_does_not_apply_to_open_scope() {
+        let runner = FakeGhRunner::default();
+        let backend = GitHubGhBackend::with_runner(None, runner);
+        let mut query = PullRequestListQuery::first_page(repo(), 1);
+        query.search = Some("review-requested:@me draft:false status:success".to_string());
+        backend.list_pull_requests(query).unwrap();
+
+        let calls = backend.runner.calls.lock().unwrap();
+        assert_eq!(
+            calls[0],
+            vec![
+                "pr",
+                "list",
+                "--repo",
+                "agavra/tuicr",
+                "--state",
+                "open",
+                "--limit",
+                "2",
+                "--json",
+                PR_LIST_JSON_FIELDS,
+            ]
+        );
+    }
+
+    #[test]
     fn list_pull_requests_can_load_next_slice() {
         let runner = FakeGhRunner::default();
         let backend = GitHubGhBackend::with_runner(None, runner);
@@ -1831,6 +1978,7 @@ Match host github-work
                 already_loaded: 1,
                 page_size: 1,
                 scope: PullRequestListScope::Open,
+                search: None,
             })
             .unwrap();
 
@@ -1903,6 +2051,7 @@ Match host github-work
                 already_loaded: 1,
                 page_size: 1,
                 scope: PullRequestListScope::ReviewRequested,
+                search: None,
             })
             .unwrap();
 

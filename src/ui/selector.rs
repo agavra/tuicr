@@ -156,7 +156,7 @@ fn pr_status_hint_span(app: &App, strip_bg: ratatui::style::Color) -> (Span<'sta
     let (content, style) = match &view.status {
         PrTabStatus::Disabled(reason) => (format!("{reason} — Shift-Tab to go back "), base),
         PrTabStatus::Idle => {
-            let prefix = pr_scope_prefix(view.scope);
+            let prefix = pr_scope_prefix(app, view.scope);
             (format!(" {prefix}waiting… "), base)
         }
         PrTabStatus::Loading => {
@@ -166,7 +166,7 @@ fn pr_status_hint_span(app: &App, strip_bg: ratatui::style::Color) -> (Span<'sta
                     .map(|d| d.as_millis() as u64)
                     .unwrap_or(0),
             ));
-            let prefix = pr_scope_prefix(view.scope);
+            let prefix = pr_scope_prefix(app, view.scope);
             (format!("{glyph} {prefix}loading… "), base)
         }
         PrTabStatus::LoadingMore => {
@@ -176,7 +176,7 @@ fn pr_status_hint_span(app: &App, strip_bg: ratatui::style::Color) -> (Span<'sta
                     .map(|d| d.as_millis() as u64)
                     .unwrap_or(0),
             ));
-            let prefix = pr_scope_prefix(view.scope);
+            let prefix = pr_scope_prefix(app, view.scope);
             (format!("{glyph} {prefix}loading more… "), base)
         }
         PrTabStatus::Error(msg) => (
@@ -184,7 +184,11 @@ fn pr_status_hint_span(app: &App, strip_bg: ratatui::style::Color) -> (Span<'sta
             styles::error_inline_style(theme).bg(strip_bg),
         ),
         PrTabStatus::Ready => {
-            let mut s = format!("{}{} loaded", pr_scope_prefix(view.scope), view.rows.len());
+            let mut s = format!(
+                "{}{} loaded",
+                pr_scope_prefix(app, view.scope),
+                view.rows.len()
+            );
             if !view.filter.is_empty() {
                 s.push_str(&format!(" \u{00b7} /{}", view.filter));
             }
@@ -196,11 +200,10 @@ fn pr_status_hint_span(app: &App, strip_bg: ratatui::style::Color) -> (Span<'sta
     (Span::styled(content, style), width)
 }
 
-fn pr_scope_prefix(scope: PullRequestListScope) -> &'static str {
+fn pr_scope_prefix(app: &App, scope: PullRequestListScope) -> String {
     match scope {
-        PullRequestListScope::Open => "",
-        PullRequestListScope::ReviewRequested => "requested · ",
-        PullRequestListScope::PersonallyRequested => "requested (me) · ",
+        PullRequestListScope::Open => String::new(),
+        other => format!("{} · ", app.pr_scope_label(other)),
     }
 }
 
@@ -635,7 +638,7 @@ fn render_target_selector_footer(frame: &mut Frame, app: &App, area: Rect) {
                     .unwrap_or(PullRequestListScope::ReviewRequested);
                 let scope_hint = match next_scope {
                     PullRequestListScope::Open => "r all PRs".to_string(),
-                    other => format!("r {}", other.label()),
+                    other => format!("r {}", app.pr_scope_label(other)),
                 };
                 format!("   j/k navigate · ↵ open · {scope_hint} · / filter · esc back")
             }

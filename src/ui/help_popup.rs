@@ -409,7 +409,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  r         ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Cycle PR scope: all / requested / requested (me) on GitHub"),
+            Span::raw("Cycle PR scope: all / requested (search with pr_search) / requested (me)"),
         ]),
         Line::from(vec![
             Span::styled(

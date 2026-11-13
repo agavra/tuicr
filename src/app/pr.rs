@@ -892,6 +892,43 @@ impl App {
         Ok(head_changed)
     }
 
+    /// The list request for one page of the Pull Requests tab. The first
+    /// page and every "load more" page carry the configured
+    /// `forge.pr_search`; the backend decides whether its scope reads it.
+    pub(in crate::app) fn pr_list_query(
+        &self,
+        repository: ForgeRepository,
+        scope: crate::forge::traits::PullRequestListScope,
+        already_loaded: usize,
+    ) -> crate::forge::traits::PullRequestListQuery {
+        crate::forge::traits::PullRequestListQuery {
+            repository,
+            already_loaded,
+            page_size: crate::forge::selector::PR_PAGE_SIZE,
+            scope,
+            search: self.forge_config.pr_search.clone(),
+        }
+    }
+
+    /// Name of a PR list scope as the selector shows it. The review scope
+    /// reads `search` when a `forge.pr_search` query replaces
+    /// `review-requested:@me`, which only GitHub applies.
+    pub fn pr_scope_label(
+        &self,
+        scope: crate::forge::traits::PullRequestListScope,
+    ) -> &'static str {
+        use crate::forge::traits::{ForgeKind, PullRequestListScope};
+        let custom_search = self.forge_config.pr_search.is_some()
+            && self
+                .pr_tab
+                .repository()
+                .is_some_and(|repo| repo.kind == ForgeKind::GitHub);
+        match scope {
+            PullRequestListScope::ReviewRequested if custom_search => "search",
+            other => other.label(),
+        }
+    }
+
     /// Spawn a background thread that fetches the initial PR list. The
     /// resulting `PrLoadEvent::Initial` is delivered through `pr_load_rx`
     /// and applied in the main loop via `poll_pr_load_events`.
@@ -907,14 +944,14 @@ impl App {
         skip_resolution: bool,
         scope: crate::forge::traits::PullRequestListScope,
     ) {
-        use crate::forge::selector::PR_PAGE_SIZE;
-        use crate::forge::traits::{ForgeKind, PullRequestListQuery};
+        use crate::forge::traits::ForgeKind;
 
         let (tx, rx) = std::sync::mpsc::channel();
         self.pr_load_rx = Some(rx);
 
         let show_pr_checks = self.show_pr_checks;
         let show_pr_comments = self.show_pr_comments;
+        let mut query = self.pr_list_query(origin.clone(), scope, 0);
         std::thread::spawn(move || {
             // Canonical resolution (fork parent lookup) is GitHub-only.
             let canonical = if skip_resolution || origin.kind != ForgeKind::GitHub {
@@ -926,8 +963,7 @@ impl App {
                 resolve_canonical_repository(&origin, override_repo.as_ref(), &runner)
             };
             let backend = create_forge_backend(&canonical, None, show_pr_checks, show_pr_comments);
-            let query =
-                PullRequestListQuery::first_page_with_scope(canonical.clone(), PR_PAGE_SIZE, scope);
+            query.repository = canonical.clone();
             let result = backend
                 .list_pull_requests(query)
                 .map(|page| (page.pull_requests, page.has_more))
@@ -943,22 +979,15 @@ impl App {
         scope: crate::forge::traits::PullRequestListScope,
         already_loaded: usize,
     ) {
-        use crate::forge::selector::PR_PAGE_SIZE;
-        use crate::forge::traits::PullRequestListQuery;
-
         let (tx, rx) = std::sync::mpsc::channel();
         self.pr_load_rx = Some(rx);
 
         let show_pr_checks = self.show_pr_checks;
         let show_pr_comments = self.show_pr_comments;
+        let query = self.pr_list_query(repository, scope, already_loaded);
         std::thread::spawn(move || {
-            let backend = create_forge_backend(&repository, None, show_pr_checks, show_pr_comments);
-            let query = PullRequestListQuery {
-                repository,
-                already_loaded,
-                page_size: PR_PAGE_SIZE,
-                scope,
-            };
+            let backend =
+                create_forge_backend(&query.repository, None, show_pr_checks, show_pr_comments);
             let result = backend
                 .list_pull_requests(query)
                 .map(|page| (page.pull_requests, page.has_more))

@@ -1543,6 +1543,7 @@ mod tests {
                     already_loaded,
                     page_size,
                     scope: PullRequestListScope::Open,
+                    search: None,
                 })
                 .unwrap();
             let end = (already_loaded + page_size).min(total);
