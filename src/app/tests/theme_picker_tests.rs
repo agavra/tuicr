@@ -164,24 +164,19 @@ fn session_theme_announcement_does_not_overwrite_a_syntax_theme_fallback_warning
 }
 
 #[test]
-fn picker_confirmation_keeps_syntax_theme_fallback_warning_after_it_would_expire() {
+fn confirming_an_unresolvable_row_keeps_the_original_theme_and_does_not_announce() {
     let mut app = app();
-    let warning = "Failed to load syntax theme; using bundled syntax theme";
-    app.theme_picker.candidates = vec!["local-teal".to_string()];
+    app.theme = crate::theme::Theme::light();
+    app.enter_theme_picker_mode();
+    app.theme_picker.candidates = vec!["no-such-theme-xyz".to_string()];
     app.theme_picker.select(0);
-    app.show_theme_preview_warnings(&[warning.to_string()]);
-
-    assert_eq!(
-        app.message.as_ref().and_then(|message| message.expires_at),
-        None
-    );
-    assert!(!app.clear_expired_message());
 
     app.confirm_theme_picker();
 
-    let message = app.message.expect("syntax theme fallback warning");
-    assert_eq!(message.message_type, MessageType::Warning);
-    assert_eq!(message.content, warning);
+    assert_eq!(app.theme.panel_bg, crate::theme::Theme::light().panel_bg);
+    let message = app.message.expect("error message");
+    assert_eq!(message.message_type, MessageType::Error);
+    assert!(!message.content.starts_with("Theme:"));
 }
 
 #[test]
@@ -505,4 +500,39 @@ fn should_drop_carriage_returns_when_pasting_into_the_filter_draft() {
     crate::handler::handle_paste(&mut app, "da\r\nr\rk".into());
 
     assert_eq!(app.theme_picker.draft.as_deref(), Some("dark"));
+}
+
+#[test]
+fn confirming_without_navigating_applies_the_selected_theme() {
+    let mut app = app();
+    app.theme = crate::theme::Theme::light();
+    app.enter_theme_picker_mode();
+    assert_eq!(app.theme_picker.selected_name(), Some("dark"));
+
+    handle_theme_picker_action(&mut app, Action::SubmitInput);
+
+    assert_eq!(app.theme.panel_bg, crate::theme::Theme::dark().panel_bg);
+}
+
+#[test]
+fn runtime_theme_changes_keep_transparent_background() {
+    let mut app = app();
+    app.transparent_background = true;
+    app.theme = crate::theme::Theme::dark().with_transparent_background();
+
+    app.apply_theme("light");
+    assert_eq!(app.theme.panel_bg, Color::Reset);
+
+    app.enter_theme_picker_mode();
+    handle_theme_picker_action(&mut app, Action::CursorDown(1));
+    assert_eq!(app.theme.panel_bg, Color::Reset);
+    handle_theme_picker_action(&mut app, Action::SubmitInput);
+    assert_eq!(app.theme.panel_bg, Color::Reset);
+}
+
+#[test]
+fn runtime_theme_changes_are_opaque_when_transparency_is_off() {
+    let mut app = app();
+    app.apply_theme("light");
+    assert_eq!(app.theme.panel_bg, crate::theme::Theme::light().panel_bg);
 }

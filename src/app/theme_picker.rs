@@ -48,13 +48,20 @@ impl App {
     /// this session and close.
     pub fn confirm_theme_picker(&mut self) {
         let name = self.theme_picker.selected_name().map(str::to_string);
+        let original = self.theme_picker.original.take();
         self.exit_theme_picker_mode();
         let Some(name) = name else {
             self.set_warning("No theme selected");
             return;
         };
-        self.announce_session_theme(&name);
-        self.rehighlight_all_files();
+        // Opening and confirming without navigating never previewed the row,
+        // so resolve it for real; announce only once it applied.
+        if !self.apply_theme(&name)
+            && let Some(original) = original
+        {
+            self.set_theme(original);
+            self.rehighlight_all_files();
+        }
     }
 
     fn exit_theme_picker_mode(&mut self) {
@@ -105,7 +112,7 @@ impl App {
         };
         match resolve_theme_name(name, &theme_dir) {
             Ok(Some((theme, warnings))) => {
-                self.set_theme(theme);
+                self.set_theme(self.with_transparency(theme));
                 self.rehighlight_current_file();
                 self.show_theme_preview_warnings(&warnings);
             }
@@ -118,21 +125,32 @@ impl App {
         }
     }
 
+    /// Re-apply the `transparent_background` setting to a freshly resolved theme.
+    fn with_transparency(&self, theme: Theme) -> Theme {
+        if self.transparent_background {
+            theme.with_transparent_background()
+        } else {
+            theme
+        }
+    }
+
     /// Apply `name` for this session directly (`:theme <name>`, no picker).
-    pub fn apply_theme(&mut self, name: &str) {
+    /// Returns whether the theme resolved and was applied.
+    pub fn apply_theme(&mut self, name: &str) -> bool {
         let theme_dir = match themes_dir() {
             Ok(dir) => dir,
             Err(err) => {
                 self.set_error(format!("Could not determine theme directory: {err}"));
-                return;
+                return false;
             }
         };
         match resolve_theme_name(name, &theme_dir) {
             Ok(Some((theme, warnings))) => {
-                self.set_theme(theme);
+                self.set_theme(self.with_transparency(theme));
                 self.show_theme_preview_warnings(&warnings);
                 self.announce_session_theme(name);
                 self.rehighlight_all_files();
+                return true;
             }
             Ok(None) => {
                 self.set_error(format!(
@@ -144,6 +162,7 @@ impl App {
                 self.set_error(format!("Could not load theme '{name}': {err}"));
             }
         }
+        false
     }
 
     pub(super) fn show_theme_preview_warnings(&mut self, warnings: &[String]) {

@@ -2530,6 +2530,14 @@ impl Theme {
     /// expanders, hidden-line stubs) — derived as a brightness shift from
     /// `panel_bg` so it adapts across all themed palettes without per-theme
     /// tuning.
+    /// Drop the panel background so the terminal's own shows through
+    /// (`transparent_background`). Apply to every resolved theme, not just
+    /// the startup one.
+    pub fn with_transparent_background(mut self) -> Self {
+        self.panel_bg = Color::Reset;
+        self
+    }
+
     pub fn section_highlight_bg(&self) -> Color {
         shift_lightness(self.panel_bg, 18)
     }

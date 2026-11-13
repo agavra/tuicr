@@ -1208,6 +1208,8 @@ pub struct App {
     pub summary_state: SummaryState,
     /// File-tree include/exclude filters and `/` search.
     pub file_filter: FileTreeFilter,
+    /// `transparent_background`: reapplied to every theme resolved at runtime.
+    pub transparent_background: bool,
     /// Runtime `:theme` picker state.
     pub theme_picker: ThemePickerState,
     /// `<leader>p` file picker state.
