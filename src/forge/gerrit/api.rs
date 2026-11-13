@@ -1000,18 +1000,27 @@ pub fn parse_gerrit_remote_url(remote_url: &str) -> Option<ForgeRepository> {
     if !is_gerrit_remote(host, port) {
         return None;
     }
-    repository_from_path(host, strip_configured_path_prefix(path))
+    // The prefix is an HTTP(S) concept; an SSH path is the bare project name.
+    let path = if trimmed.starts_with("ssh://") {
+        path
+    } else {
+        strip_configured_path_prefix(path)
+    };
+    repository_from_path(host, path)
 }
 
 /// Drop the `GERRIT_URL` path prefix from a remote's path. When Gerrit is
 /// served under a subdirectory that prefix belongs to the server URL, not to
-/// the project name.
+/// the project name. Only whole path segments match (`gerrit` is not a prefix
+/// of `gerrit-tools/x`).
 fn strip_configured_path_prefix(path: &str) -> &str {
     let Some(prefix) = configured_path_prefix() else {
         return path;
     };
-    path.strip_prefix(prefix.as_str())
-        .map_or(path, |rest| rest.trim_start_matches('/'))
+    match path.strip_prefix(prefix.as_str()) {
+        Some(rest) if rest.is_empty() || rest.starts_with('/') => rest.trim_start_matches('/'),
+        _ => path,
+    }
 }
 
 fn repository_from_path(host: &str, path: &str) -> Option<ForgeRepository> {
@@ -1052,7 +1061,15 @@ fn parse_gerrit_url_target(target: &str) -> Option<PullRequestTarget> {
         return None;
     }
 
-    let segments: Vec<&str> = trim_url_suffix(path)
+    let path = trim_url_suffix(path);
+    // Drop a trailing fragment (`#message-…`), but keep the legacy `/#/c/<n>`
+    // hash route, whose fragment is the path.
+    let path = match path.split_once('#') {
+        Some((head, fragment)) if !fragment.starts_with('/') => head,
+        _ => path,
+    };
+    let path = strip_configured_path_prefix(path);
+    let segments: Vec<&str> = path
         .split('/')
         .filter(|segment| !segment.is_empty() && *segment != "#")
         .collect();
@@ -1270,6 +1287,49 @@ mod tests {
             web_base(&repo.expect("parsed")),
             "https://review.internal/gerrit"
         );
+        unsafe { std::env::remove_var(URL_ENV_VAR) };
+    }
+
+    #[test]
+    fn should_strip_the_configured_prefix_only_on_a_segment_boundary_and_not_for_ssh() {
+        // given
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        unsafe { std::env::set_var(URL_ENV_VAR, "https://review.internal/gerrit/") };
+        // when/then — `gerrit-tools` is a project, not the prefix plus `-tools`
+        assert_eq!(
+            parse_gerrit_remote_url("https://review.internal/gerrit-tools/base"),
+            Some(ForgeRepository::gerrit(
+                "review.internal",
+                "gerrit-tools/base"
+            ))
+        );
+        // an SSH path is the project name itself
+        assert_eq!(
+            parse_gerrit_remote_url("ssh://jdoe@review.internal:29418/gerrit/base"),
+            Some(ForgeRepository::gerrit("review.internal", "gerrit/base"))
+        );
+        unsafe { std::env::remove_var(URL_ENV_VAR) };
+    }
+
+    #[test]
+    fn should_parse_change_targets_with_fragments_and_a_prefix_containing_c() {
+        // given
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        unsafe { std::env::set_var(URL_ENV_VAR, "https://review.internal/tools/c/") };
+        let repo = ForgeRepository::gerrit("review.internal", "platform/base");
+        // when/then
+        for url in [
+            "https://review.internal/tools/c/c/platform/base/+/3965",
+            "https://review.internal/tools/c/c/platform/base/+/3965#message-123",
+            "https://review.internal/tools/c/c/platform/base/+/3965/2?tab=x#message-1",
+        ] {
+            let target = parse_pull_request_target_gerrit(url).expect(url);
+            assert_eq!(target.number, 3965, "{url}");
+            assert_eq!(target.repository, Some(repo.clone()), "{url}");
+        }
+        // the legacy hash route still works
+        let legacy = parse_pull_request_target_gerrit("https://review.internal/#/c/3965/").unwrap();
+        assert_eq!(legacy.number, 3965);
         unsafe { std::env::remove_var(URL_ENV_VAR) };
     }
 

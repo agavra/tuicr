@@ -947,10 +947,13 @@ fn parse_numeric_target(target: &str) -> Option<PullRequestTarget> {
 fn parse_azure_url_target(target: &str) -> Option<PullRequestTarget> {
     // The repo parser already tolerates the trailing `/pullrequest/{id}` (it
     // only reads up to the segment after `_git`).
-    let repository = parse_azure_remote_url(target)?;
-    let lower = target.to_ascii_lowercase();
+    // Browser-copied URLs carry `?_a=files` or `#...`; parse without them but
+    // keep the original text for display.
+    let url = trim_url_suffix(target);
+    let repository = parse_azure_remote_url(url)?;
+    let lower = url.to_ascii_lowercase();
     let marker = lower.find("/pullrequest/")?;
-    let after = &target[marker + "/pullrequest/".len()..];
+    let after = &url[marker + "/pullrequest/".len()..];
     let id_str = after.split('/').next()?;
     let number = id_str.parse::<u64>().ok()?;
     if number == 0 {
@@ -1144,6 +1147,17 @@ mod tests {
         .unwrap();
         assert_eq!(target.number, 42);
         assert_eq!(target.repository.unwrap(), azure_repo());
+    }
+
+    #[test]
+    fn parses_pr_web_url_target_with_query_and_fragment() {
+        for suffix in ["?_a=files", "?_a=overview#discussion", "/?_a=files", "#x"] {
+            let url =
+                format!("https://dev.azure.com/myorg/myproject/_git/myrepo/pullrequest/42{suffix}");
+            let target = parse_pull_request_target_azure(&url).unwrap();
+            assert_eq!(target.number, 42, "{url}");
+            assert_eq!(target.repository.unwrap(), azure_repo(), "{url}");
+        }
     }
 
     #[test]
