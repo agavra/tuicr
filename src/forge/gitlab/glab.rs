@@ -1007,7 +1007,7 @@ fn parse_gitlab_remote(remote_url: &str, lookup: HostLookup) -> Option<ForgeRepo
 /// configured against (covers self-hosted instances with custom domains like
 /// `git.example.com`).
 fn is_gitlab_host(host: &str, lookup: HostLookup) -> bool {
-    if host.contains("gitlab") {
+    if host.to_ascii_lowercase().contains("gitlab") {
         return true;
     }
     if lookup == HostLookup::HostnameOnly {
@@ -1053,7 +1053,7 @@ fn parse_gitlab_url_target(target: &str) -> Option<PullRequestTarget> {
     if parts.len() < 6 {
         return None;
     }
-    let host = parts[0];
+    let host = strip_port(parts[0].rsplit_once('@').map_or(parts[0], |(_, h)| h));
     // Find the "-" separator that precedes "merge_requests"
     let dash_pos = parts[1..].iter().position(|&p| p == "-")? + 1;
     if parts.get(dash_pos + 1)? != &"merge_requests" {
@@ -1091,7 +1091,7 @@ fn parse_gitlab_repo_hash_target(target: &str) -> Option<PullRequestTarget> {
     // Need at least owner + repo (2 parts); host is optional prefix when no "." in first part
     let repository = if parts.len() >= 3 && parts[0].contains('.') {
         // [host, ...namespace..., repo]
-        let host = parts[0];
+        let host = strip_port(parts[0]);
         let (owner_parts, repo_slice) = parts[1..].split_at(parts.len() - 2);
         let owner = owner_parts.join("/");
         ForgeRepository::gitlab(host, owner, strip_git_suffix(repo_slice[0]))
@@ -1457,6 +1457,27 @@ mod tests {
 
     use super::*;
     use crate::forge::remote_comments::RemoteReviewState;
+
+    #[test]
+    fn gitlab_url_target_strips_port_and_userinfo() {
+        let t = parse_gitlab_url_target("https://u@gitlab.com:8443/g/sub/r/-/merge_requests/7")
+            .unwrap();
+        assert_eq!(t.repository.unwrap().host, "gitlab.com");
+    }
+
+    #[test]
+    fn gitlab_repo_hash_target_strips_port() {
+        let t = parse_gitlab_repo_hash_target("gitlab.com:8443/g/r#7").unwrap();
+        assert_eq!(t.repository.unwrap().host, "gitlab.com");
+    }
+
+    #[test]
+    fn hostname_match_is_case_insensitive() {
+        assert!(is_gitlab_host(
+            "GITLAB.example.com",
+            HostLookup::HostnameOnly
+        ));
+    }
 
     #[cfg(unix)]
     #[test]

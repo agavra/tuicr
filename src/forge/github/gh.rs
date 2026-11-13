@@ -907,7 +907,7 @@ fn parse_url_target(target: &str) -> Option<PullRequestTarget> {
     let without_scheme = strip_scheme(target)?;
     let trimmed = trim_url_suffix(without_scheme);
     let mut parts = trimmed.split('/').filter(|part| !part.is_empty());
-    let host = parts.next()?;
+    let host = strip_port(strip_userinfo(parts.next()?));
     let owner = parts.next()?;
     let repo = parts.next()?;
     let segment = parts.next()?;
@@ -952,7 +952,11 @@ fn parse_repo_hash_target(target: &str) -> Option<PullRequestTarget> {
         [owner, repo] => {
             ForgeRepository::github(DEFAULT_GITHUB_HOST, *owner, strip_git_suffix(repo))
         }
-        [host, owner, repo] => forge_repo_from_host(host, owner, strip_git_suffix(repo)),
+        // A dotless first segment is a GitLab subgroup (`group/sub/repo#N`),
+        // not a host: leave it to the GitLab target parser.
+        [host, owner, repo] if host.contains('.') => {
+            forge_repo_from_host(strip_port(host), owner, strip_git_suffix(repo))
+        }
         _ => return None,
     };
 
@@ -964,13 +968,12 @@ fn parse_repo_hash_target(target: &str) -> Option<PullRequestTarget> {
 /// Build a `ForgeRepository` from host/owner/repo, picking the forge kind
 /// based on the host name.
 fn forge_repo_from_host(host: &str, owner: &str, repo: &str) -> ForgeRepository {
-    if host.contains("gitlab") {
-        ForgeRepository::gitlab(host, owner, repo)
-    } else if crate::forge::gitea::tea::is_gitea_host(host) {
-        ForgeRepository::gitea(host, owner, repo)
-    } else {
-        ForgeRepository::github(host, owner, repo)
-    }
+    crate::forge::parse_any_remote_url(&format!("https://{host}/{owner}/{repo}"))
+        .unwrap_or_else(|| ForgeRepository::github(host, owner, repo))
+}
+
+fn strip_userinfo(host: &str) -> &str {
+    host.rsplit_once('@').map(|(_, h)| h).unwrap_or(host)
 }
 
 /// Resolve an SSH host alias to its real `HostName` via `~/.ssh/config`.
@@ -1595,6 +1598,17 @@ index 1111111..2222222 100644
     }
 
     #[test]
+    fn leaves_dotless_three_segment_shorthand_to_gitlab() {
+        assert!(parse_pull_request_target("group/subgroup/repo#42").is_err());
+    }
+
+    #[test]
+    fn strips_port_from_host_qualified_shorthand() {
+        let target = parse_pull_request_target("github.example.com:443/agavra/tuicr#125").unwrap();
+        assert_eq!(target.repository.unwrap().host, "github.example.com");
+    }
+
+    #[test]
     fn parses_full_pull_request_url() {
         let target = parse_pull_request_target("https://github.com/agavra/tuicr/pull/125").unwrap();
         assert_eq!(target.number, 125);
@@ -1651,6 +1665,23 @@ index 1111111..2222222 100644
             parse_github_remote_url("ssh://git@github.example.com:2222/agavra/tuicr.git").unwrap();
         assert_eq!(repository.host, "github.example.com");
         assert_eq!(repository.slug(), "agavra/tuicr");
+    }
+
+    #[test]
+    fn url_target_strips_port_and_userinfo() {
+        let t = parse_pull_request_target("https://github.com:443/agavra/tuicr/pull/125").unwrap();
+        assert_eq!(t.repository.unwrap().host, "github.com");
+        let t = parse_pull_request_target("https://u@github.com/agavra/tuicr/pull/125").unwrap();
+        assert_eq!(t.repository.unwrap().host, "github.com");
+    }
+
+    #[test]
+    fn repo_hash_target_matches_gitlab_host_case_insensitively() {
+        let t = parse_pull_request_target("GITLAB.example.com/agavra/tuicr#125").unwrap();
+        assert_eq!(
+            t.repository.unwrap().kind,
+            crate::forge::traits::ForgeKind::GitLab
+        );
     }
 
     #[test]

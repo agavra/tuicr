@@ -314,23 +314,21 @@ pub fn is_gitea_host(host: &str) -> bool {
 /// Parse a git remote URL into a Gitea repository, or `None` when the host is
 /// not a Gitea instance.
 pub fn parse_gitea_remote_url(remote_url: &str) -> Option<ForgeRepository> {
+    parse_gitea_remote_url_with(remote_url, resolve_ssh_hostname)
+}
+
+fn parse_gitea_remote_url_with(
+    remote_url: &str,
+    resolve: impl Fn(&str) -> String,
+) -> Option<ForgeRepository> {
     let trimmed = trim_url_suffix(remote_url.trim());
     if trimmed.is_empty() {
         return None;
     }
 
     if let Some((host, path)) = parse_scp_like_remote(trimmed) {
-        // Check the literal host before resolving the SSH alias: a config that
-        // maps a recognizable name onto an opaque bastion would otherwise stop
-        // looking like Gitea. Mirrors the GitLab backend's ordering.
-        let resolved = resolve_ssh_hostname(host);
-        let gitea_host = if is_gitea_host(host) {
-            host
-        } else if is_gitea_host(&resolved) {
-            &resolved
-        } else {
-            return None;
-        };
+        let resolved = resolve(host);
+        let gitea_host = scp_gitea_host(host, &resolved)?;
         return gitea_repository_from_path(gitea_host, path);
     }
 
@@ -345,6 +343,20 @@ pub fn parse_gitea_remote_url(remote_url: &str) -> Option<ForgeRepository> {
         return None;
     }
     gitea_repository_from_path(host, path)
+}
+
+/// Pick the host for an SCP-style remote. The resolved `HostName` wins when it
+/// is a Gitea host, so `tea` logins and URL matching see the real endpoint
+/// rather than the alias. A recognizable literal host still counts when the
+/// resolved one is opaque (a config mapping a Gitea name onto a bastion).
+fn scp_gitea_host<'a>(host: &'a str, resolved: &'a str) -> Option<&'a str> {
+    if is_gitea_host(resolved) {
+        Some(resolved)
+    } else if is_gitea_host(host) {
+        Some(host)
+    } else {
+        None
+    }
 }
 
 /// Gitea repositories are always exactly `<owner>/<repo>` — no nested groups,
@@ -1499,6 +1511,27 @@ fn resolve_ssh_hostname_from_config(alias: &str, config: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn scp_host_prefers_resolved_gitea_host_over_alias() {
+        assert_eq!(
+            super::scp_gitea_host("gitea-work", "code.gitea.example.com"),
+            Some("code.gitea.example.com")
+        );
+        assert_eq!(
+            super::scp_gitea_host("gitea-work", "bastion.example.com"),
+            Some("gitea-work")
+        );
+    }
+
+    #[test]
+    fn scp_remote_prefers_resolved_gitea_host_over_alias() {
+        let repo = super::parse_gitea_remote_url_with("git@gitea-work:o/r.git", |_| {
+            "code.gitea.example.com".to_string()
+        })
+        .unwrap();
+        assert_eq!(repo.host, "code.gitea.example.com");
+    }
+
     use super::*;
     use crate::forge::submit::InlineComment;
     use std::cell::RefCell;

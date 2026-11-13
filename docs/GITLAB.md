@@ -31,7 +31,9 @@ all open the same review. The target accepts several forms:
 | `host/owner/repo#iid` | `git.example.com/mygroup/myrepo#125` |
 
 Nested groups and subgroups work in the `owner/repo` slot, for example
-`mygroup/subgroup/myrepo#125`.
+`mygroup/subgroup/myrepo#125`. A three-segment `a/b/c#iid` is read as
+`host/owner/repo` only when `a` contains a `.`; use a full URL for single-label
+hosts.
 
 tuicr detects the forge from the repository's remotes. A remote routes to GitLab
 when its host contains `gitlab` or matches a self-hosted host configured in
