@@ -2588,6 +2588,50 @@ mod tests {
         assert_eq!(summaries[0].author.as_deref(), Some("me"));
     }
 
+    /// Serves `/draft_notes` in pages of the requested `per_page`.
+    struct PagedDraftRunner {
+        total: usize,
+    }
+
+    impl GlabCommandRunner for PagedDraftRunner {
+        fn run(&self, args: &[String]) -> GlabCommandResult<String> {
+            let endpoint = args
+                .iter()
+                .find(|a| a.starts_with("projects/") || *a == "user")
+                .unwrap();
+            if endpoint == "user" {
+                return Ok(r#"{"username":"me"}"#.to_string());
+            }
+            if !endpoint.contains("/draft_notes?") {
+                return Ok("[]".to_string());
+            }
+            let page: usize = endpoint.rsplit("page=").next().unwrap().parse().unwrap();
+            let rows: Vec<_> = ((page - 1) * 100..(page * 100).min(self.total))
+                .map(
+                    |i| serde_json::json!({"id": i + 1, "note": format!("n{i}"), "position": null}),
+                )
+                .collect();
+            Ok(serde_json::to_string(&rows).unwrap())
+        }
+
+        fn run_with_stdin(&self, _args: &[String], _stdin: &str) -> GlabCommandResult<String> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn should_read_every_page_of_draft_notes() {
+        let repo = ForgeRepository::gitlab("gitlab.com", "owner", "repo");
+        let pr = make_pr_details(repo.clone());
+        // Exactly two full pages, then an empty third: a reader that stops
+        // after a full page, or after page one, loses drafts.
+        let backend = GitLabGlabBackend::with_runner(Some(repo), PagedDraftRunner { total: 250 });
+        assert_eq!(backend.list_review_summaries(&pr).unwrap().len(), 250);
+        let repo = ForgeRepository::gitlab("gitlab.com", "owner", "repo");
+        let backend = GitLabGlabBackend::with_runner(Some(repo), PagedDraftRunner { total: 200 });
+        assert_eq!(backend.list_review_summaries(&pr).unwrap().len(), 200);
+    }
+
     #[test]
     fn should_post_comment_submission_to_notes_and_discussions() {
         // Guard against the draft branching regressing the default Comment path:

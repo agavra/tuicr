@@ -418,20 +418,19 @@ pub fn draft_notes_to_review(
             }
             continue;
         }
-        match note.position.as_ref() {
-            Some(position) => {
-                if let Some((path, line, side)) = position.anchor() {
-                    threads.push(RemoteReviewThread {
-                        id: comment.id.clone(),
-                        path,
-                        line,
-                        side,
-                        is_resolved: false,
-                        is_outdated: false,
-                        comments: vec![comment],
-                    });
-                }
-            }
+        // GitLab sends general draft notes with a position object whose
+        // coordinates are all null, so only a resolvable anchor makes a thread.
+        let anchor = note.position.as_ref().and_then(GlabNotePosition::anchor);
+        match anchor {
+            Some((path, line, side)) => threads.push(RemoteReviewThread {
+                id: comment.id.clone(),
+                path,
+                line,
+                side,
+                is_resolved: false,
+                is_outdated: false,
+                comments: vec![comment],
+            }),
             None => summaries.push(RemoteReviewSummary {
                 id: comment.id,
                 author: author.map(str::to_string),
@@ -460,6 +459,41 @@ mod tests {
     use crate::forge::traits::ForgeRepository;
     use crate::syntax::SyntaxHighlighter;
     use crate::vcs::diff_parser::parse_file_patches;
+
+    fn draft(json: &str) -> GlabDraftNote {
+        serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn should_read_general_draft_with_null_position_as_summary() {
+        let notes = vec![draft(
+            r#"{"id":5,"note":"Example title","discussion_id":null,"position":{"old_path":null,"new_path":null,"position_type":"text","old_line":null,"new_line":null}}"#,
+        )];
+        let mut threads = Vec::new();
+        let summaries = draft_notes_to_review(notes, &mut threads, Some("me"), "u");
+        assert!(threads.is_empty());
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].body, "Example title");
+    }
+
+    #[test]
+    fn should_append_draft_reply_to_its_discussion() {
+        let mut threads = vec![RemoteReviewThread {
+            id: "disc1".into(),
+            path: "a.rs".into(),
+            line: Some(1),
+            side: RemoteCommentSide::Right,
+            is_resolved: false,
+            is_outdated: false,
+            comments: vec![RemoteReviewComment::default()],
+        }];
+        let notes = vec![draft(r#"{"id":7,"note":"reply","discussion_id":"disc1"}"#)];
+        let summaries = draft_notes_to_review(notes, &mut threads, None, "u");
+        assert!(summaries.is_empty());
+        assert_eq!(threads[0].comments.len(), 2);
+        assert_eq!(threads[0].comments[1].body, "reply");
+        assert!(threads[0].comments[1].is_draft);
+    }
 
     fn gitlab_repo() -> ForgeRepository {
         ForgeRepository::gitlab("gitlab.com", "owner", "repo")
