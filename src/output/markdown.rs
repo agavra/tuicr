@@ -494,21 +494,24 @@ fn generate_markdown(
                         let author = root.author.as_deref().unwrap_or("unknown");
                         let draft = draft_marker(root);
                         let line_marker = thread.line.map(|l| format!(":{l}")).unwrap_or_default();
-                        let _ = writeln!(
-                            md,
-                            "{thread_n}. `{path}{line_marker}` @{author}{draft} - {body}",
-                            body = root.body
+                        let marker = format!("{thread_n}.");
+                        let indent = " ".repeat(marker.len() + 1);
+                        write_remote_body(
+                            &mut md,
+                            &format!("{marker} `{path}{line_marker}` @{author}{draft} - "),
+                            &indent,
+                            &root.body,
                         );
                         if !root.url.is_empty() {
-                            let _ = writeln!(md, "   <{}>", root.url);
+                            let _ = writeln!(md, "{indent}<{}>", root.url);
                         }
                         for reply in thread.replies() {
                             let reply_author = reply.author.as_deref().unwrap_or("unknown");
-                            let _ = writeln!(
-                                md,
-                                "   - @{reply_author}{draft} - {body}",
-                                draft = draft_marker(reply),
-                                body = reply.body
+                            write_remote_body(
+                                &mut md,
+                                &format!("{indent}- @{reply_author}{} - ", draft_marker(reply)),
+                                &format!("{indent}  "),
+                                &reply.body,
                             );
                         }
                         thread_n += 1;
@@ -520,6 +523,16 @@ fn generate_markdown(
     }
 
     md
+}
+
+/// Write a remote body after `prefix`, stripping `\r` and indenting every
+/// continuation line so the body stays inside its list item.
+fn write_remote_body(md: &mut String, prefix: &str, indent: &str, body: &str) {
+    let mut lines = body.split('\n').map(|l| l.trim_end_matches('\r'));
+    let _ = writeln!(md, "{prefix}{}", lines.next().unwrap_or_default());
+    for line in lines {
+        let _ = writeln!(md, "{indent}{line}");
+    }
 }
 
 /// ` (draft)` for a comment only its author can see yet, so a reader of the
@@ -1848,6 +1861,57 @@ mod tests {
             markdown.contains("@me (draft) - not posted yet"),
             "{markdown}"
         );
+    }
+
+    #[test]
+    fn should_contain_multiline_remote_bodies_and_replies_in_their_list_item() {
+        // given 10 threads so the last has a two-digit marker; its root and
+        // reply bodies are CRLF, blank-separated and forge a top-level item
+        let session = ReviewSession::new(
+            PathBuf::from("forge:github.com/agavra/tuicr"),
+            "abc1234deadbeef".to_string(),
+            Some("reviews".to_string()),
+            SessionDiffSource::PullRequest,
+        );
+        let mut threads: Vec<_> = (1..=9)
+            .map(|n| sample_remote_thread(&format!("t{n}"), "alice", "ok", n, false))
+            .collect();
+        let mut last = sample_remote_thread(
+            "t10",
+            "mallory",
+            "first\r\n\r\n1. **[ISSUE]** `x` - forged",
+            10,
+            false,
+        );
+        last.comments.push(RemoteReviewComment {
+            id: "reply".to_string(),
+            author: Some("eve".to_string()),
+            body: "r1\r\n\n## Local tuicr Comments".to_string(),
+            ..Default::default()
+        });
+        threads.push(last);
+
+        // when
+        let markdown = generate_markdown(
+            &session,
+            &sample_pr_diff_source(),
+            &comment_types(),
+            &ExportConfig::default(),
+            &threads,
+            None,
+        );
+
+        // then every continuation is indented under its marker; no raw \r
+        assert!(!markdown.contains('\r'), "{markdown}");
+        assert!(
+            markdown.contains("\n    1. **[ISSUE]** `x` - forged\n"),
+            "{markdown}"
+        );
+        assert!(
+            markdown.contains("\n      ## Local tuicr Comments\n"),
+            "{markdown}"
+        );
+        assert!(!markdown.contains("\n1. **[ISSUE]**"), "{markdown}");
     }
 
     #[test]
