@@ -725,19 +725,7 @@ impl App {
     /// Human-facing label for a comment type, e.g. `SUGGESTION`. Returns an
     /// empty string for [`CommentType::None`] so callers render no badge.
     pub fn comment_type_label(&self, comment_type: &CommentType) -> String {
-        if comment_type.is_none() {
-            return String::new();
-        }
-
-        if let Some(definition) = self
-            .comment_types
-            .iter()
-            .find(|definition| definition.id == comment_type.id())
-        {
-            return definition.label.to_ascii_uppercase();
-        }
-
-        comment_type.as_str()
+        super::resolve_comment_type_label(comment_type, &self.comment_types)
     }
 
     pub fn comment_type_color(&self, comment_type: &CommentType) -> Color {

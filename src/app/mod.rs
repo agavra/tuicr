@@ -1521,6 +1521,25 @@ pub struct CommentTypeDefinition {
     pub color: Option<Color>,
 }
 
+/// Resolved `[TYPE]` text for a comment type: the configured label uppercased,
+/// else the uppercased id. Empty for [`CommentType::None`] so callers omit the
+/// tag. The single resolver behind the TUI, export and forge submit labels.
+pub fn resolve_comment_type_label(
+    comment_type: &crate::model::CommentType,
+    comment_types: &[CommentTypeDefinition],
+) -> String {
+    if comment_type.is_none() {
+        return String::new();
+    }
+    match comment_types
+        .iter()
+        .find(|definition| definition.id == comment_type.id())
+    {
+        Some(definition) => definition.label.to_ascii_uppercase(),
+        None => comment_type.as_str(),
+    }
+}
+
 #[derive(Default)]
 pub struct FileListState {
     pub list_state: ratatui::widgets::ListState,
