@@ -106,10 +106,19 @@ struct UpdateContext {
 impl UpdateContext {
     fn current() -> Result<Self, UpdateError> {
         let executable = std::env::current_exe().map_err(UpdateError::CurrentExecutable)?;
-        let executable = canonical_executable(&executable)?;
         let home = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf());
         let cargo_home = std::env::var_os("CARGO_HOME").map(PathBuf::from);
-        let cargo_root = canonical_cargo_root(home.as_deref(), cargo_home.as_deref());
+        Self::resolve(&executable, home.as_deref(), cargo_home.as_deref())
+    }
+
+    /// Canonicalizes the executable and Cargo root alike, then detects the install method.
+    fn resolve(
+        executable: &Path,
+        home: Option<&Path>,
+        cargo_home: Option<&Path>,
+    ) -> Result<Self, UpdateError> {
+        let executable = canonical_executable(executable)?;
+        let cargo_root = canonical_cargo_root(home, cargo_home);
         let method = detect_install_method(&executable, None, cargo_root.as_deref());
 
         Ok(Self {
