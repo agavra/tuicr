@@ -19,7 +19,6 @@
 
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -31,6 +30,9 @@ use crate::forge::local_git::read_blob;
 use crate::forge::remote_comments::{
     RemoteCommentSide, RemoteReviewComment, RemoteReviewState, RemoteReviewSummary,
     RemoteReviewThread,
+};
+use crate::forge::remote_url::{
+    parse_scp_like_remote, read_ssh_hostname, strip_port, strip_scheme, trim_url_suffix,
 };
 use crate::forge::submit::{GhSide, SubmitEvent};
 use crate::forge::traits::{
@@ -314,7 +316,7 @@ pub fn is_gitea_host(host: &str) -> bool {
 /// Parse a git remote URL into a Gitea repository, or `None` when the host is
 /// not a Gitea instance.
 pub fn parse_gitea_remote_url(remote_url: &str) -> Option<ForgeRepository> {
-    parse_gitea_remote_url_with(remote_url, resolve_ssh_hostname)
+    parse_gitea_remote_url_with(remote_url, read_ssh_hostname)
 }
 
 fn parse_gitea_remote_url_with(
@@ -1467,90 +1469,13 @@ fn local_range_diff(repo_root: &Path, start_sha: &str, end_sha: &str) -> Option<
 
 // ----- URL helpers -----
 
-fn strip_scheme(value: &str) -> Option<&str> {
-    value
-        .strip_prefix("https://")
-        .or_else(|| value.strip_prefix("http://"))
-        .or_else(|| value.strip_prefix("ssh://"))
-}
-
-fn trim_url_suffix(value: &str) -> &str {
-    value
-        .split(['?', '#'])
-        .next()
-        .unwrap_or(value)
-        .trim_end_matches('/')
-}
-
-/// Strip a trailing `:<port>`. Self-hosted instances commonly use a non-default
-/// SSH port, which is meaningless for the HTTPS API host.
-fn strip_port(host: &str) -> &str {
-    match host.rsplit_once(':') {
-        Some((h, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => h,
-        _ => host,
-    }
-}
-
 fn strip_git_suffix(value: &str) -> &str {
     value.strip_suffix(".git").unwrap_or(value)
 }
 
-fn parse_scp_like_remote(remote_url: &str) -> Option<(&str, &str)> {
-    if remote_url.contains("://") {
-        return None;
-    }
-    let (host_part, path) = remote_url.split_once(':')?;
-    if host_part.contains('/') || path.is_empty() {
-        return None;
-    }
-    let host = host_part
-        .rsplit_once('@')
-        .map(|(_, host)| host)
-        .unwrap_or(host_part);
-    Some((host, path))
-}
-
-/// Resolve an SSH host alias through `~/.ssh/config`, so a remote written
-/// against an alias still identifies its real instance.
-fn resolve_ssh_hostname(alias: &str) -> String {
-    let Ok(home) = std::env::var("HOME") else {
-        return alias.to_string();
-    };
-    let Ok(content) = fs::read_to_string(PathBuf::from(home).join(".ssh/config")) else {
-        return alias.to_string();
-    };
-    resolve_ssh_hostname_from_config(alias, &content)
-}
-
-/// Only exact `Host` patterns are matched; wildcards, negation, `Match`, and
-/// `Include` fall through to the alias unchanged.
-fn resolve_ssh_hostname_from_config(alias: &str, config: &str) -> String {
-    let mut in_block = false;
-    for raw in config.lines() {
-        let line = raw.split_once('#').map_or(raw, |(before, _)| before).trim();
-        if line.is_empty() {
-            continue;
-        }
-        let (key, value) = line
-            .split_once(|c: char| c.is_whitespace() || c == '=')
-            .unwrap_or((line, ""));
-        let value = value
-            .trim_start_matches(|c: char| c.is_whitespace() || c == '=')
-            .trim();
-
-        if key.eq_ignore_ascii_case("Host") {
-            in_block = value.split_whitespace().any(|pattern| pattern == alias);
-        } else if key.eq_ignore_ascii_case("Match") {
-            in_block = false;
-        } else if in_block && key.eq_ignore_ascii_case("HostName") {
-            return value.to_string();
-        }
-    }
-    alias.to_string()
-}
-
 #[cfg(test)]
 mod tests {
+    use crate::forge::remote_url::resolve_ssh_hostname_from_config;
     #[test]
     fn scp_host_prefers_resolved_gitea_host_over_alias() {
         assert_eq!(

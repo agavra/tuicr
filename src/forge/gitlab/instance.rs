@@ -9,7 +9,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use super::glab::{GlabCommandRunner, strip_port};
+use super::glab::GlabCommandRunner;
+use crate::forge::remote_url::strip_port;
 
 /// `glab`'s per-host config key naming a relative-URL install's path prefix.
 const SUBFOLDER_KEY: &str = "subfolder";

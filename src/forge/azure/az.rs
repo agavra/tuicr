@@ -27,6 +27,9 @@ use crate::forge::forge_path;
 use crate::forge::local_git::{read_blob, read_commit_message};
 use crate::forge::local_merge_base;
 use crate::forge::remote_comments::RemoteReviewThread;
+use crate::forge::remote_url::{
+    parse_scp_like_remote, strip_port, strip_scheme, trim_detail, trim_url_suffix,
+};
 use crate::forge::submit::{GhSide, SubmitEvent};
 use crate::forge::traits::{
     CreateReviewRequest, ForgeBackend, ForgeFileLinesRequest, ForgeRepository,
@@ -49,7 +52,6 @@ const API_VERSION: &str = "7.1";
 const AZ_RESOURCE: &str = "499b84ac-1321-427f-aa17-267ca6975798";
 /// How much of an error body to keep, in characters. Long enough for a real
 /// Azure DevOps message, short enough not to flood the status line.
-const MAX_DETAIL_CHARS: usize = 400;
 /// Canonical Azure DevOps cloud host. `*.visualstudio.com` URLs are normalized
 /// to this so all API URLs share one shape.
 const DEFAULT_AZURE_HOST: &str = "dev.azure.com";
@@ -909,19 +911,6 @@ fn map_http_error(error: AzHttpError, host: &str) -> TuicrError {
     }
 }
 
-/// Keep error detail readable: collapse whitespace and cap the length.
-///
-/// The cap counts characters, not bytes: an error body can quote non-ASCII
-/// names or be an HTML page, and slicing at a byte offset panics when it lands
-/// inside a multi-byte character.
-fn trim_detail(detail: &str) -> String {
-    let collapsed = detail.split_whitespace().collect::<Vec<_>>().join(" ");
-    match collapsed.char_indices().nth(MAX_DETAIL_CHARS) {
-        Some((end, _)) => format!("{}…", &collapsed[..end]),
-        None => collapsed,
-    }
-}
-
 // ---------- URL & target parsing ----------
 
 /// True when `host` is an Azure DevOps cloud host.
@@ -1139,49 +1128,13 @@ fn malformed_target<T>(input: &str) -> Result<T> {
 
 // ---------- Small URL helpers (mirror gh/glab) ----------
 
-fn parse_scp_like_remote(remote_url: &str) -> Option<(&str, &str)> {
-    if remote_url.contains("://") {
-        return None;
-    }
-    let (host_part, path) = remote_url.split_once(':')?;
-    if host_part.contains('/') || path.is_empty() {
-        return None;
-    }
-    let host = host_part
-        .rsplit_once('@')
-        .map(|(_, host)| host)
-        .unwrap_or(host_part);
-    Some((host, path))
-}
-
-fn strip_scheme(value: &str) -> Option<&str> {
-    value
-        .strip_prefix("https://")
-        .or_else(|| value.strip_prefix("http://"))
-        .or_else(|| value.strip_prefix("ssh://"))
-}
-
-fn trim_url_suffix(value: &str) -> &str {
-    value
-        .split(['?', '#'])
-        .next()
-        .unwrap_or(value)
-        .trim_end_matches('/')
-}
-
-fn strip_port(host: &str) -> &str {
-    match host.rsplit_once(':') {
-        Some((h, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => h,
-        _ => host,
-    }
-}
-
 fn strip_git_suffix(value: &str) -> &str {
     value.strip_suffix(".git").unwrap_or(value)
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::forge::remote_url::MAX_DETAIL_CHARS;
     use std::path::PathBuf;
     use std::sync::Mutex;
 

@@ -29,6 +29,7 @@ use serde_json::{Map, Value, json};
 use crate::error::{Result, TuicrError};
 use crate::forge::local_git::{commit_present, read_blob};
 use crate::forge::remote_comments::{RemoteReviewSummary, RemoteReviewThread};
+use crate::forge::remote_url::{parse_scp_like_remote, strip_scheme, trim_detail};
 use crate::forge::submit::{GhSide, InlineComment, SubmitEvent};
 use crate::forge::traits::{
     CreateReviewRequest, ForgeBackend, ForgeFileLinesRequest, ForgeRepository,
@@ -65,7 +66,6 @@ const PASSWORD_ENV_VAR: &str = "GERRIT_PASSWORD";
 const REVIEW_LABEL: &str = "Code-Review";
 /// How much of a server error body to keep, in characters. Long enough for a
 /// real Gerrit message, short enough not to flood the status line.
-const MAX_DETAIL_CHARS: usize = 400;
 /// Gerrit prefixes every JSON response with this XSSI guard.
 const MAGIC_PREFIX: &str = ")]}'";
 
@@ -927,19 +927,6 @@ fn map_http_error(error: GerritHttpError, server: &str) -> TuicrError {
     }
 }
 
-/// Keep error detail readable: collapse whitespace and cap the length.
-///
-/// The cap counts characters, not bytes: Gerrit error bodies are often
-/// non-ASCII HTML, and slicing at a byte offset panics when it lands inside a
-/// multi-byte character.
-fn trim_detail(detail: &str) -> String {
-    let collapsed = detail.split_whitespace().collect::<Vec<_>>().join(" ");
-    match collapsed.char_indices().nth(MAX_DETAIL_CHARS) {
-        Some((end, _)) => format!("{}…", &collapsed[..end]),
-        None => collapsed,
-    }
-}
-
 /// Percent-encode a file path for a Gerrit URL path segment. Gerrit expects
 /// the whole path in one segment, so `/` is encoded too.
 fn encode_path(path: &str) -> String {
@@ -1112,28 +1099,6 @@ fn malformed_target<T>(input: &str) -> Result<T> {
 
 // ---------- Small URL helpers (mirror az) ----------
 
-fn parse_scp_like_remote(remote_url: &str) -> Option<(&str, &str)> {
-    if remote_url.contains("://") {
-        return None;
-    }
-    let (host_part, path) = remote_url.split_once(':')?;
-    if host_part.contains('/') || path.is_empty() {
-        return None;
-    }
-    let host = host_part
-        .rsplit_once('@')
-        .map(|(_, host)| host)
-        .unwrap_or(host_part);
-    Some((host, path))
-}
-
-fn strip_scheme(value: &str) -> Option<&str> {
-    value
-        .strip_prefix("https://")
-        .or_else(|| value.strip_prefix("http://"))
-        .or_else(|| value.strip_prefix("ssh://"))
-}
-
 /// Reduce a URL to `host[:port]/path…` by dropping the scheme and any
 /// `user@` / `user:password@` userinfo. Both are optional, so a bare
 /// `host/path` passes through untouched.
@@ -1166,6 +1131,7 @@ fn strip_git_suffix(value: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
+    use crate::forge::remote_url::MAX_DETAIL_CHARS;
     use std::sync::{Arc, Mutex};
 
     use super::*;
