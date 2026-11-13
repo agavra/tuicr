@@ -1,10 +1,11 @@
 use git2::Repository;
 use std::path::Path;
 
+use super::diff::fresh_index;
 use crate::error::Result;
 
 pub fn stage_file(repo: &Repository, path: &Path) -> Result<()> {
-    let mut index = repo.index()?;
+    let mut index = fresh_index(repo)?;
     if repo
         .workdir()
         .is_some_and(|workdir| workdir.join(path).exists())

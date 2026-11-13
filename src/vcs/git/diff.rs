@@ -10,6 +10,19 @@ use crate::vcs::traits::{
 use crate::vcs::whitespace::{WhitespaceComparison, materialize_diff};
 use crate::vcs::{enhance_with_full_file_highlight, tabify};
 
+/// Open the repository index, re-reading it from disk if it changed.
+///
+/// `Repository::index` hands back libgit2's cached copy, which is read once
+/// and only refreshed by diffs that are given no index. Staging done in
+/// another process would otherwise stay invisible, and `stage_file` would
+/// write the stale copy back over it. Like libgit2, a failed re-read keeps
+/// the cached copy rather than failing the caller.
+pub(crate) fn fresh_index(repo: &Repository) -> Result<git2::Index> {
+    let mut index = repo.index()?;
+    let _ = index.read(false);
+    Ok(index)
+}
+
 pub fn get_working_tree_diff(
     repo: &Repository,
     whitespace_mode: &DiffWhitespaceMode,
@@ -67,7 +80,7 @@ fn get_staged_diff_once(
     highlighter: &SyntaxHighlighter,
 ) -> Result<Vec<DiffFile>> {
     let head = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
-    let index = repo.index()?;
+    let index = fresh_index(repo)?;
     let mut opts = diff_options(comparison);
 
     let diff = repo.diff_tree_to_index(head.as_ref(), Some(&index), Some(&mut opts))?;
@@ -93,12 +106,12 @@ pub fn list_changed_paths(repo: &Repository, kind: ChangeKind) -> Result<Vec<Pat
     let diff = match kind {
         ChangeKind::Staged => {
             let head = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
-            let index = repo.index()?;
+            let index = fresh_index(repo)?;
             let mut opts = diff_options(WhitespaceComparison::Normal);
             repo.diff_tree_to_index(head.as_ref(), Some(&index), Some(&mut opts))?
         }
         ChangeKind::Unstaged => {
-            let index = repo.index()?;
+            let index = fresh_index(repo)?;
             let mut opts = diff_options(WhitespaceComparison::Normal);
             opts.include_untracked(true);
             // `show_untracked_content(false)` keeps libgit2 from reading each
@@ -139,7 +152,7 @@ fn get_unstaged_diff_once(
     comparison: WhitespaceComparison,
     highlighter: &SyntaxHighlighter,
 ) -> Result<Vec<DiffFile>> {
-    let index = repo.index()?;
+    let index = fresh_index(repo)?;
     let mut opts = diff_options(comparison);
     opts.include_untracked(true);
     opts.show_untracked_content(true);
@@ -1144,5 +1157,92 @@ mod tests {
             );
             assert_has_hunks(&files, "keep.txt", &format!("{label} subset"));
         }
+    }
+
+    /// Stage `path` through a separate repository handle, the way `git add`
+    /// in another shell would.
+    fn stage_externally(root: &Path, path: &str) {
+        let other = Repository::open(root).expect("open second handle");
+        let mut index = other.index().expect("open index");
+        index.add_path(Path::new(path)).expect("add path");
+        index.write().expect("write index");
+    }
+
+    fn staged_paths(backend: &Libgit2Backend) -> Vec<PathBuf> {
+        backend
+            .list_changed_paths(ChangeKind::Staged)
+            .expect("list staged paths")
+    }
+
+    #[test]
+    fn libgit2_backend_sees_staging_done_outside_it() {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let repo = Repository::init(temp_dir.path()).expect("failed to init repo");
+        create_initial_commit(&repo, "f.txt", "base\n");
+        fs::write(temp_dir.path().join("f.txt"), "edited\n").expect("edit file");
+
+        let backend = Libgit2Backend::discover_from(temp_dir.path(), DiffWhitespaceMode::Normal)
+            .expect("open backend");
+        let highlighter = SyntaxHighlighter::default();
+        // Load the index into the backend's cache before the outside change.
+        assert!(staged_paths(&backend).is_empty());
+        assert!(matches!(
+            backend.get_staged_diff(&highlighter),
+            Err(TuicrError::NoChanges)
+        ));
+
+        stage_externally(temp_dir.path(), "f.txt");
+
+        assert_eq!(staged_paths(&backend), vec![PathBuf::from("f.txt")]);
+        assert!(
+            backend
+                .list_changed_paths(ChangeKind::Unstaged)
+                .expect("list unstaged paths")
+                .is_empty()
+        );
+        let staged = backend
+            .get_staged_diff(&highlighter)
+            .expect("staged diff after outside staging");
+        assert_eq!(staged.len(), 1);
+        assert!(matches!(
+            backend.get_unstaged_diff(&highlighter),
+            Err(TuicrError::NoChanges)
+        ));
+    }
+
+    #[test]
+    fn libgit2_stage_file_keeps_files_staged_outside_it() {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let repo = Repository::init(temp_dir.path()).expect("failed to init repo");
+        create_initial_commit(&repo, "a.txt", "a\n");
+        fs::write(temp_dir.path().join("b.txt"), "b\n").expect("write b");
+        let mut index = repo.index().expect("open index");
+        index.add_path(Path::new("b.txt")).expect("add b");
+        index.write().expect("write index");
+        let sig = git2::Signature::now("Test User", "test@example.com").expect("signature");
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let parent = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "add b", &tree, &[&parent])
+            .expect("commit b");
+        fs::write(temp_dir.path().join("a.txt"), "a edited\n").expect("edit a");
+        fs::write(temp_dir.path().join("b.txt"), "b edited\n").expect("edit b");
+
+        let backend = Libgit2Backend::discover_from(temp_dir.path(), DiffWhitespaceMode::Normal)
+            .expect("open backend");
+        assert!(staged_paths(&backend).is_empty());
+
+        stage_externally(temp_dir.path(), "b.txt");
+        backend.stage_file(Path::new("a.txt")).expect("stage a.txt");
+
+        let mut staged = staged_paths(&backend);
+        staged.sort();
+        assert_eq!(staged, vec![PathBuf::from("a.txt"), PathBuf::from("b.txt")]);
+        let reopened = Repository::open(temp_dir.path()).expect("reopen repo");
+        let index = reopened.index().expect("open index");
+        let head = reopened.head().unwrap().peel_to_tree().unwrap();
+        let on_disk = reopened
+            .diff_tree_to_index(Some(&head), Some(&index), None)
+            .expect("diff HEAD to index");
+        assert_eq!(on_disk.deltas().len(), 2);
     }
 }

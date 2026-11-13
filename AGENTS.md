@@ -237,6 +237,7 @@ Repository-managed agent integrations:
 - **Clipboard**: Uses `arboard` crate for cross-platform clipboard support
 - **Hunk navigation**: `next_hunk()`/`prev_hunk()` calculate positions by iterating through files
 - **Ignore filtering**: `.tuicrignore` is applied whenever diffs are loaded/reloaded
+- **Fresh git index**: `repo.index()` returns libgit2's cached copy, so the libgit2 backend opens it through `diff::fresh_index`, which re-reads it when the file changed on disk. Passing the cached index to a diff, or writing it back from `stage_file`, would ignore or undo staging done in another shell.
 - **File-tree filters**: `i`/`e` regex filters narrow the tree *and* the diff at render/measure
   time (`App::file_passes_filter`), unlike `.tuicrignore` which drops files at load time. They
   are session-local and never persisted
