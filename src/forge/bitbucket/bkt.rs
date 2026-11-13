@@ -14,11 +14,10 @@
 //!   the opposite of `git diff old..new`. Verified against the live API.
 
 use std::ffi::OsStr;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::error::{Result, TuicrError};
 use crate::forge::local_git::read_blob;
-use crate::forge::local_merge_base;
 use crate::forge::remote_comments::{RemoteReviewSummary, RemoteReviewThread};
 use crate::forge::remote_url::{
     parse_scp_like_remote, read_ssh_hostname, strip_scheme, trim_url_suffix,
@@ -31,10 +30,10 @@ use crate::forge::traits::{
     SubmitReceipts,
 };
 use crate::forge::{forge_path, percent_encode_component, percent_encode_path};
-use crate::model::{DiffLine, FilePatch};
+use crate::forge::{local_merge_base, local_range_diff};
+use crate::model::FilePatch;
 use crate::process::{CommandOutputError, CommandOutputErrorKind, run_command_output};
-use crate::vcs::git::raw::{pair_metadata_with_patch, run_git_diff};
-use crate::vcs::slice_context_lines;
+use crate::vcs::git::raw::pair_metadata_with_patch;
 
 use super::models::{
     BbComment, BbCommit, BbDiffStat, BbPaged, BbPullRequest, BbUser, group_into_review_threads,
@@ -90,22 +89,6 @@ impl From<CommandOutputError> for BktCommandError {
             }
         }
     }
-}
-
-/// Return `Some(diff)` when both SHAs exist locally, via `git diff <start>..<end>`.
-fn local_range_diff(repo_root: &Path, start_sha: &str, end_sha: &str) -> Option<Vec<FilePatch>> {
-    for sha in [start_sha, end_sha] {
-        let exists = run_command_output(
-            "git",
-            Some(repo_root),
-            ["cat-file", "-e", sha].iter().map(|s| OsStr::new(*s)),
-        );
-        if exists.is_err() {
-            return None;
-        }
-    }
-    let range = format!("{start_sha}..{end_sha}");
-    run_git_diff(repo_root, &[range.as_str()]).ok()
 }
 
 #[derive(Debug, Clone)]
@@ -527,15 +510,6 @@ where
         Ok(review_summaries(&self.list_comments(pr)?))
     }
 
-    fn fetch_file_lines(&self, request: ForgeFileLinesRequest) -> Result<Vec<DiffLine>> {
-        if request.start_line == 0 || request.start_line > request.end_line {
-            return Ok(Vec::new());
-        }
-        let (start_line, end_line) = (request.start_line, request.end_line);
-        let content = self.fetch_file_content(request)?;
-        Ok(slice_context_lines(&content, start_line, end_line))
-    }
-
     /// Local blob when the checkout has the PR's SHA, REST otherwise. The PR's
     /// exact SHAs may or may not be present locally; we silently fall back.
     fn fetch_file_content(&self, request: ForgeFileLinesRequest) -> Result<String> {
@@ -872,7 +846,6 @@ mod tests {
 
     use super::*;
     use crate::forge::submit::InlineComment;
-    use crate::model::FileStatus;
 
     /// Runner that records every argv it is handed and replays canned
     /// responses in order, so tests assert on the exact commands built
@@ -1339,7 +1312,6 @@ mod tests {
             base_sha: "b".repeat(40),
             head_sha: "a".repeat(40),
             path: PathBuf::from("src/lib.rs"),
-            status: FileStatus::Modified,
             side: crate::forge::traits::ForgeFileSide::Head,
             start_line: 2,
             end_line: 3,
@@ -2019,7 +1991,6 @@ mod tests {
             base_sha: "b".repeat(40),
             head_sha: "a".repeat(40),
             path: PathBuf::from("src/a#b?c%2F.md"),
-            status: crate::model::FileStatus::Modified,
             side: crate::forge::traits::ForgeFileSide::Head,
             start_line: 0,
             end_line: 0,
@@ -2046,7 +2017,6 @@ mod tests {
             base_sha: "b".repeat(40),
             head_sha: "a".repeat(40),
             path: PathBuf::from("a\\b.rs"),
-            status: crate::model::FileStatus::Modified,
             side: crate::forge::traits::ForgeFileSide::Head,
             start_line: 0,
             end_line: 0,

@@ -466,7 +466,6 @@ fn normalize_state(state: &str) -> String {
 mod tests {
     use super::*;
     use crate::forge::traits::ForgeRepository;
-    use crate::syntax::SyntaxHighlighter;
     use crate::vcs::diff_parser::parse_file_patches;
 
     fn draft(json: &str) -> GlabDraftNote {
@@ -539,8 +538,7 @@ mod tests {
             "diff":"@@ -1,2 +1 @@\n--- count rows\n SELECT 1;\n"
         }"#;
         let diff: GlabDiff = serde_json::from_str(json).unwrap();
-        let files = parse_file_patches(vec![diff.into_file_patch()], &SyntaxHighlighter::default())
-            .unwrap();
+        let files = parse_file_patches(vec![diff.into_file_patch()]).unwrap();
 
         assert_eq!(files[0].status, FileStatus::Renamed);
         assert_eq!(

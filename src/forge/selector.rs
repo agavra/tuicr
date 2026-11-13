@@ -4,7 +4,6 @@
 //! initial fetch) and by background fetch results delivered through an
 //! `mpsc::Receiver`. UI rendering, filter input, and key dispatch all read
 //! from this state; no I/O happens here.
-#![allow(dead_code)]
 
 use crate::forge::traits::{ForgeRepository, PullRequestListScope, PullRequestSummary};
 

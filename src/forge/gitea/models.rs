@@ -156,13 +156,9 @@ pub(crate) struct GiteaPullReviewComment {
     #[serde(default)]
     pub resolver: Option<GiteaUser>,
     #[serde(default)]
-    pub pull_request_review_id: u64,
-    #[serde(default)]
     pub created_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub path: String,
-    #[serde(default)]
-    pub commit_id: String,
     #[serde(default)]
     pub html_url: String,
     /// Line number on the new (right) side; 0 when the comment is old-side.
@@ -188,8 +184,6 @@ pub(crate) struct GiteaCommitStatus {
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct GiteaCombinedStatus {
     #[serde(default)]
-    pub state: String,
-    #[serde(default)]
     pub statuses: Vec<GiteaCommitStatus>,
 }
 
@@ -207,12 +201,7 @@ pub(crate) struct GiteaIssueComment {
 
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct GiteaRepositoryMeta {
-    #[serde(default)]
-    pub name: String,
-    #[serde(default)]
-    pub owner: Option<GiteaUser>,
-    /// `"<owner>/<repo>"`. Preferred over `owner`/`name` because Gitea fills
-    /// it in even when the owner object is elided.
+    /// `"<owner>/<repo>"`.
     #[serde(default)]
     pub full_name: String,
 }
@@ -221,8 +210,6 @@ pub(crate) struct GiteaRepositoryMeta {
 pub(crate) struct GiteaPullRequestMeta {
     #[serde(default)]
     pub draft: bool,
-    #[serde(default)]
-    pub merged: bool,
     #[serde(default)]
     pub html_url: Option<String>,
 }

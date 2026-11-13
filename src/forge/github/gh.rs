@@ -6,7 +6,6 @@ use chrono::{DateTime, Utc};
 
 use crate::error::{Result, TuicrError};
 use crate::forge::local_git::read_blob;
-use crate::forge::local_merge_base;
 use crate::forge::remote_comments::{RemoteReviewSummary, RemoteReviewThread};
 use crate::forge::remote_url::{
     parse_scp_like_remote, read_ssh_hostname, strip_port, strip_scheme, trim_url_suffix,
@@ -17,13 +16,13 @@ use crate::forge::traits::{
     PullRequestListQuery, PullRequestListScope, PullRequestTarget,
 };
 use crate::forge::{forge_path, percent_encode_component, percent_encode_path};
-use crate::model::{DiffLine, FilePatch};
+use crate::forge::{local_merge_base, local_range_diff};
+use crate::model::FilePatch;
 use crate::process::{
     CommandOutputError, CommandOutputErrorKind, run_command_output, run_command_output_with_stdin,
 };
-use crate::vcs::git::raw::{FileMetadata, pair_metadata_with_patch, run_git_diff};
+use crate::vcs::git::raw::{FileMetadata, pair_metadata_with_patch};
 use crate::vcs::git::read_git_objects;
-use crate::vcs::slice_context_lines;
 
 use super::models::{GhCompare, GhPrCommit, GhPullRequestFile, GhPullRequestSummary};
 use super::review_summaries::{
@@ -39,10 +38,6 @@ const DEFAULT_GITHUB_HOST: &str = "github.com";
 const BLOB_TEXTS_PER_QUERY: usize = 50;
 const PR_LIST_JSON_FIELDS: &str =
     "number,title,author,headRefName,baseRefName,updatedAt,url,state,isDraft";
-const PR_VIEW_JSON_FIELDS: &str = concat!(
-    "number,title,url,state,isDraft,author,headRefName,baseRefName,",
-    "headRefOid,baseRefOid,body,updatedAt,closed,mergedAt"
-);
 const PR_INFO_JSON_FIELDS: &str = concat!(
     "number,title,url,state,isDraft,author,headRefName,baseRefName,",
     "headRefOid,baseRefOid,body,updatedAt,closed,mergedAt,",
@@ -117,25 +112,6 @@ impl From<CommandOutputError> for GhCommandError {
             }
         }
     }
-}
-
-/// Return `Some(diff)` when both `start_sha` and `end_sha` are present in
-/// the local checkout at `repo_root`, by running `git diff <start>..<end>`.
-/// Returns `None` when the checkout is missing either SHA or the command
-/// fails — callers fall back to the forge in that case.
-fn local_range_diff(repo_root: &Path, start_sha: &str, end_sha: &str) -> Option<Vec<FilePatch>> {
-    for sha in [start_sha, end_sha] {
-        let exists = run_command_output(
-            "git",
-            Some(repo_root),
-            ["cat-file", "-e", sha].iter().map(|s| OsStr::new(*s)),
-        );
-        if exists.is_err() {
-            return None;
-        }
-    }
-    let range = format!("{start_sha}..{end_sha}");
-    run_git_diff(repo_root, &[range.as_str()]).ok()
 }
 
 #[derive(Debug, Clone)]
@@ -522,15 +498,6 @@ where
             }
         }
         Ok(all)
-    }
-
-    fn fetch_file_lines(&self, request: ForgeFileLinesRequest) -> Result<Vec<DiffLine>> {
-        if request.start_line == 0 || request.start_line > request.end_line {
-            return Ok(Vec::new());
-        }
-        let (start_line, end_line) = (request.start_line, request.end_line);
-        let content = self.fetch_file_content(request)?;
-        Ok(slice_context_lines(&content, start_line, end_line))
     }
 
     /// Local blob when the checkout has the PR's SHA, REST otherwise. The PR's
@@ -2632,7 +2599,6 @@ Match host github-work
             base_sha: "0".repeat(40),
             head_sha: "1".repeat(40),
             path: PathBuf::from("a.rs"),
-            status: crate::model::FileStatus::Modified,
             side: crate::forge::traits::ForgeFileSide::Head,
             start_line: 0,
             end_line: 0,
@@ -3026,7 +2992,6 @@ mod line_count_tests {
 
     use super::*;
     use crate::forge::traits::ForgeFileSide;
-    use crate::model::FileStatus;
 
     const HEAD: &str = "1111111111111111111111111111111111111111";
 
@@ -3070,7 +3035,6 @@ mod line_count_tests {
             base_sha: "0000000000000000000000000000000000000000".to_string(),
             head_sha: HEAD.to_string(),
             path: PathBuf::from(path),
-            status: FileStatus::Modified,
             side: ForgeFileSide::Head,
             start_line: 0,
             end_line: 0,

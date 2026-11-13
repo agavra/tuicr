@@ -135,18 +135,25 @@ impl<'a> ForgeContextProvider<'a> {
         new_path: Option<&PathBuf>,
         file_status: FileStatus,
     ) -> Option<ForgeFileLinesRequest> {
-        let side = ForgeFileLinesRequest::side_for_status(file_status);
-        let path = ForgeFileLinesRequest::path_for_side(side, old_path, new_path)?;
-        Some(ForgeFileLinesRequest {
-            repository: self.repository.clone(),
-            base_sha: self.base_sha.clone(),
-            head_sha: self.head_sha.clone(),
-            path,
-            status: file_status,
-            side,
-            start_line: 0,
-            end_line: 0,
-        })
+        self.request_for(old_path, new_path, file_status, (0, 0))
+    }
+
+    fn request_for(
+        &self,
+        old_path: Option<&PathBuf>,
+        new_path: Option<&PathBuf>,
+        file_status: FileStatus,
+        line_range: (u32, u32),
+    ) -> Option<ForgeFileLinesRequest> {
+        ForgeFileLinesRequest::for_file(
+            self.repository.clone(),
+            self.base_sha.clone(),
+            self.head_sha.clone(),
+            file_status,
+            old_path,
+            new_path,
+            line_range,
+        )
     }
 
     pub fn for_pr(
@@ -172,19 +179,10 @@ impl ContextProvider for ForgeContextProvider<'_> {
         start_line: u32,
         end_line: u32,
     ) -> Result<Vec<DiffLine>> {
-        let side = ForgeFileLinesRequest::side_for_status(file_status);
-        let Some(path) = ForgeFileLinesRequest::path_for_side(side, old_path, new_path) else {
+        let Some(request) =
+            self.request_for(old_path, new_path, file_status, (start_line, end_line))
+        else {
             return Ok(Vec::new());
-        };
-        let request = ForgeFileLinesRequest {
-            repository: self.repository.clone(),
-            base_sha: self.base_sha.clone(),
-            head_sha: self.head_sha.clone(),
-            path,
-            status: file_status,
-            side,
-            start_line,
-            end_line,
         };
         self.forge.fetch_file_lines(request)
     }

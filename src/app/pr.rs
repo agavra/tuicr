@@ -529,7 +529,6 @@ impl App {
     ) -> Result<()> {
         use crate::vcs::diff_parser::parse_file_patches;
 
-        let highlighter = self.theme.syntax_highlighter();
         let local_checkout = self
             .forge_backend
             .as_deref()
@@ -540,7 +539,7 @@ impl App {
             Some(root) => crate::tuicrignore::filter_file_patches(root, patches),
             None => patches,
         };
-        let parsed = match parse_file_patches(patches, highlighter) {
+        let parsed = match parse_file_patches(patches) {
             Ok(files) => files,
             Err(TuicrError::NoChanges) => Vec::new(),
             Err(e) => return Err(e),
@@ -679,7 +678,6 @@ impl App {
             .forge_backend
             .as_deref()
             .and_then(|backend| backend.local_checkout_path());
-        let highlighter = self.theme.syntax_highlighter();
         let opened = prepare_open_pr(
             details,
             patches,
@@ -687,7 +685,6 @@ impl App {
             review_metadata,
             pr_info,
             local_checkout.as_deref(),
-            highlighter,
         )?;
 
         let head_changed = opened.details.head_sha != request.head_sha;
@@ -867,13 +864,7 @@ impl App {
             current.key.number,
             current.key.number.to_string(),
         );
-        let highlighter = self.theme.syntax_highlighter();
-        let opened = open_pull_request(
-            backend.as_ref(),
-            target,
-            local_checkout.as_deref(),
-            highlighter,
-        )?;
+        let opened = open_pull_request(backend.as_ref(), target, local_checkout.as_deref())?;
 
         let head_changed = opened.details.head_sha != current.key.head_sha;
         if head_changed {
@@ -1204,7 +1195,6 @@ impl App {
         use crate::forge::pr_open::prepare_open_pr;
 
         let local_checkout = self.local_checkout_for(&request.repository);
-        let highlighter = self.theme.syntax_highlighter();
         let mut opened = prepare_open_pr(
             details.clone(),
             patches,
@@ -1212,7 +1202,6 @@ impl App {
             review_metadata,
             pr_info,
             local_checkout.as_deref(),
-            highlighter,
         )?;
         self.seed_configured_visibility(&mut opened.session);
         let opened = Self::opened_pr_with_persisted_session(opened)?;
@@ -1480,13 +1469,7 @@ impl App {
             summary.number,
             summary.number.to_string(),
         );
-        let highlighter = self.theme.syntax_highlighter();
-        let mut opened = open_pull_request(
-            backend.as_ref(),
-            target,
-            local_checkout.as_deref(),
-            highlighter,
-        )?;
+        let mut opened = open_pull_request(backend.as_ref(), target, local_checkout.as_deref())?;
         self.seed_configured_visibility(&mut opened.session);
         let opened = Self::opened_pr_with_persisted_session(opened)?;
         // Sync thread + summary fetch — tests assert on
