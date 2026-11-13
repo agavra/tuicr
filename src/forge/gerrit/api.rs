@@ -1937,6 +1937,84 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn should_fetch_a_root_change_ref_and_accept_the_empty_tree_base() {
+        // given — a "server" whose only commit is a root, published under the
+        // change ref, and a checkout that has never seen it
+        let server = tempfile::tempdir().expect("tempdir");
+        let checkout = tempfile::tempdir().expect("tempdir");
+        let git = |dir: &Path, args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .current_dir(dir)
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .output()
+                .expect("git");
+            assert!(out.status.success(), "{args:?}");
+            String::from_utf8(out.stdout).unwrap()
+        };
+        git(server.path(), &["init", "-q"]);
+        std::fs::write(server.path().join("a.txt"), "one\n").unwrap();
+        git(server.path(), &["add", "."]);
+        git(server.path(), &["commit", "-q", "-m", "root"]);
+        let head = git(server.path(), &["rev-parse", "HEAD"])
+            .trim()
+            .to_string();
+        git(
+            server.path(),
+            &["update-ref", "refs/changes/65/3965/2", head.as_str()],
+        );
+        // The remote URL is a Gerrit SSH URL (so it is recognised). Its
+        // transport is a stub that serves the command from the local "server"
+        // directory, so nothing touches a network. (`url.<x>.insteadOf` is no
+        // use: libgit2 reports the rewritten URL, which no longer parses.)
+        git(checkout.path(), &["init", "-q"]);
+        git(
+            checkout.path(),
+            &[
+                "remote",
+                "add",
+                "origin",
+                "ssh://gerrit.example.com:29418/platform/base",
+            ],
+        );
+        let stub = server.path().join("stub-ssh.sh");
+        std::fs::write(
+            &stub,
+            format!(
+                "#!/bin/sh\nfor last; do :; done\n\
+                 exec sh -c \"$(printf '%s' \"$last\" | sed \"s#/platform/base#{}/.git#\")\"\n",
+                server.path().display()
+            ),
+        )
+        .unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        unsafe {
+            std::env::set_var("GIT_SSH_COMMAND", &stub);
+            std::env::set_var("GIT_SSH_VARIANT", "ssh");
+        }
+        let mut pr = details();
+        pr.head_sha = head;
+        pr.base_sha = EMPTY_TREE_SHA.to_string();
+        let (backend, _http) = backend_with(true, vec![]);
+        let backend = backend.with_local_checkout(Some(checkout.path().to_path_buf()));
+        // when
+        let result = backend.get_pull_request_diff(&pr);
+        unsafe {
+            std::env::remove_var("GIT_SSH_COMMAND");
+            std::env::remove_var("GIT_SSH_VARIANT");
+        }
+        let patches = result.expect("diff");
+        // then — the fetch ran and the root base did not make it fail
+        assert_eq!(patches.len(), 1);
+        assert_eq!(patches[0].new_path.as_deref(), Some(Path::new("a.txt")));
+    }
+
+    #[test]
     fn should_not_ask_for_drafts_when_reading_anonymously() {
         // given
         let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
