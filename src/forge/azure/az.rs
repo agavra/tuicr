@@ -31,7 +31,7 @@ use crate::forge::submit::{GhSide, SubmitEvent};
 use crate::forge::traits::{
     CreateReviewRequest, ForgeBackend, ForgeFileLinesRequest, ForgeRepository,
     GhCreateReviewResponse, PagedPullRequests, PullRequestCommit, PullRequestDetails,
-    PullRequestListQuery, PullRequestListScope, PullRequestTarget,
+    PullRequestListQuery, PullRequestListScope, PullRequestTarget, SubmitReceipts,
 };
 use crate::model::{DiffLine, FilePatch};
 use crate::process::{CommandOutputError, CommandOutputErrorKind, run_command_output};
@@ -605,96 +605,111 @@ impl ForgeBackend for AzureDevOpsBackend {
         pr: &PullRequestDetails,
         request: CreateReviewRequest<'_>,
     ) -> Result<GhCreateReviewResponse> {
-        let base = git_api_base(&pr.repository);
-        let threads_url = format!("{base}/pullRequests/{}/threads", pr.number);
-        let mut first_thread_id = 0u64;
+        let mut receipts = SubmitReceipts::default();
+        let result = (|| -> Result<GhCreateReviewResponse> {
+            let base = git_api_base(&pr.repository);
+            let threads_url = format!("{base}/pullRequests/{}/threads", pr.number);
+            let mut first_thread_id = 0u64;
 
-        // Overall review body → a context-less PR comment thread.
-        if !request.body.is_empty() {
-            let payload = json!({
-                "comments": [{ "parentCommentId": 0, "content": request.body, "commentType": "text" }],
-                "status": "active",
-            });
-            let out = self.send(
-                &pr.repository,
-                "POST",
-                threads_url.clone(),
-                &serde_json::to_string(&payload)?,
-            )?;
-            capture_thread_id(&out, &mut first_thread_id);
-        }
-
-        // Each inline comment → a thread anchored to a file/line range.
-        for comment in request.comments {
-            let mut file_path = forge_path(&comment.path);
-            if !file_path.starts_with('/') {
-                file_path = format!("/{file_path}");
-            }
-            let start_line = comment.start_line.unwrap_or(comment.line);
-            // Azure anchors a thread via left/right file line ranges. We only
-            // ever produce single-side ranges (the submit mapper rejects
-            // mixed-side ranges), so both endpoints use `comment.side`.
-            let start = json!({ "line": start_line, "offset": 1 });
-            let end = json!({ "line": comment.line, "offset": 1 });
-            let thread_context = match comment.side {
-                GhSide::Right => json!({
-                    "filePath": file_path,
-                    "rightFileStart": start,
-                    "rightFileEnd": end,
-                }),
-                GhSide::Left => json!({
-                    "filePath": file_path,
-                    "leftFileStart": start,
-                    "leftFileEnd": end,
-                }),
+            // Resolve the voter before anything is posted: a failure here must
+            // not be reported after threads already landed.
+            let voter = match request.event {
+                SubmitEvent::Approve | SubmitEvent::RequestChanges => {
+                    Some(self.current_user_id(&pr.repository)?.ok_or_else(|| {
+                        TuicrError::Forge(
+                            "Could not resolve the current Azure DevOps user to record a vote"
+                                .to_string(),
+                        )
+                    })?)
+                }
+                SubmitEvent::Comment | SubmitEvent::Draft => None,
             };
-            let payload = json!({
-                "comments": [{ "parentCommentId": 0, "content": comment.body, "commentType": "text" }],
-                "status": "active",
-                "threadContext": thread_context,
-            });
-            let out = self.send(
-                &pr.repository,
-                "POST",
-                threads_url.clone(),
-                &serde_json::to_string(&payload)?,
-            )?;
-            capture_thread_id(&out, &mut first_thread_id);
-        }
 
-        // Approve / reject map to an Azure reviewer vote. Comment and Draft
-        // (Azure has no draft-review primitive) post comments without voting.
-        let vote = match request.event {
-            SubmitEvent::Approve => Some(10),
-            SubmitEvent::RequestChanges => Some(-10),
-            SubmitEvent::Comment | SubmitEvent::Draft => None,
-        };
-        if let Some(vote) = vote {
-            let user_id = self.current_user_id(&pr.repository)?.ok_or_else(|| {
-                TuicrError::Forge(
-                    "Could not resolve the current Azure DevOps user to record a vote".to_string(),
-                )
-            })?;
-            let url = format!("{base}/pullRequests/{}/reviewers/{}", pr.number, user_id);
-            let payload = json!({ "vote": vote });
-            self.send(
-                &pr.repository,
-                "PUT",
-                url,
-                &serde_json::to_string(&payload)?,
-            )?;
-        }
+            // Overall review body → a context-less PR comment thread.
+            if !request.body.is_empty() {
+                let payload = json!({
+                    "comments": [{ "parentCommentId": 0, "content": request.body, "commentType": "text" }],
+                    "status": "active",
+                });
+                let out = self.send(
+                    &pr.repository,
+                    "POST",
+                    threads_url.clone(),
+                    &serde_json::to_string(&payload)?,
+                )?;
+                capture_thread_id(&out, &mut first_thread_id);
+                receipts.body_posted = true;
+            }
 
-        let state = match request.event {
-            SubmitEvent::Approve => "APPROVED",
-            SubmitEvent::RequestChanges => "CHANGES_REQUESTED",
-            SubmitEvent::Comment | SubmitEvent::Draft => "COMMENTED",
-        };
-        Ok(GhCreateReviewResponse {
-            id: first_thread_id,
-            html_url: pr.url.clone(),
-            state: state.to_string(),
-        })
+            // Each inline comment → a thread anchored to a file/line range.
+            for comment in request.comments {
+                let mut file_path = forge_path(&comment.path);
+                if !file_path.starts_with('/') {
+                    file_path = format!("/{file_path}");
+                }
+                let start_line = comment.start_line.unwrap_or(comment.line);
+                // Azure anchors a thread via left/right file line ranges. We only
+                // ever produce single-side ranges (the submit mapper rejects
+                // mixed-side ranges), so both endpoints use `comment.side`.
+                let start = json!({ "line": start_line, "offset": 1 });
+                let end = json!({ "line": comment.line, "offset": 1 });
+                let thread_context = match comment.side {
+                    GhSide::Right => json!({
+                        "filePath": file_path,
+                        "rightFileStart": start,
+                        "rightFileEnd": end,
+                    }),
+                    GhSide::Left => json!({
+                        "filePath": file_path,
+                        "leftFileStart": start,
+                        "leftFileEnd": end,
+                    }),
+                };
+                let payload = json!({
+                    "comments": [{ "parentCommentId": 0, "content": comment.body, "commentType": "text" }],
+                    "status": "active",
+                    "threadContext": thread_context,
+                });
+                let out = self.send(
+                    &pr.repository,
+                    "POST",
+                    threads_url.clone(),
+                    &serde_json::to_string(&payload)?,
+                )?;
+                capture_thread_id(&out, &mut first_thread_id);
+                receipts.comment_ids.push(comment.comment_id.clone());
+            }
+
+            // Approve / reject map to an Azure reviewer vote. Comment and Draft
+            // (Azure has no draft-review primitive) post comments without voting.
+            let vote = match request.event {
+                SubmitEvent::Approve => Some(10),
+                SubmitEvent::RequestChanges => Some(-10),
+                SubmitEvent::Comment | SubmitEvent::Draft => None,
+            };
+            if let (Some(vote), Some(user_id)) = (vote, voter) {
+                let url = format!("{base}/pullRequests/{}/reviewers/{}", pr.number, user_id);
+                let payload = json!({ "vote": vote });
+                self.send(
+                    &pr.repository,
+                    "PUT",
+                    url,
+                    &serde_json::to_string(&payload)?,
+                )?;
+            }
+
+            let state = match request.event {
+                SubmitEvent::Approve => "APPROVED",
+                SubmitEvent::RequestChanges => "CHANGES_REQUESTED",
+                SubmitEvent::Comment | SubmitEvent::Draft => "COMMENTED",
+            };
+            Ok(GhCreateReviewResponse {
+                id: first_thread_id,
+                html_url: pr.url.clone(),
+                state: state.to_string(),
+            })
+        })();
+        result.map_err(|err| receipts.into_error(err))
     }
 }
 
@@ -1702,5 +1717,101 @@ mod tests {
             body_json(&calls[1])["threadContext"]["filePath"],
             "/src/a\\b.rs"
         );
+    }
+
+    #[test]
+    fn create_review_reports_posted_threads_when_a_later_post_fails() {
+        // given — the second thread POST fails
+        let http = RecordingHttp {
+            calls: Mutex::new(Vec::new()),
+            responses: Mutex::new(vec![
+                Ok(r#"{"id": 1}"#.to_string()),
+                Err(AzHttpError::Failed {
+                    status: Some(500),
+                    body: "boom".to_string(),
+                }),
+            ]),
+        };
+        let backend = AzureDevOpsBackend::with_transport(Some(azure_repo()), Box::new(http));
+        let mut second = inline(11, GhSide::Right);
+        second.comment_id = "c2".to_string();
+        let comments = [inline(10, GhSide::Right), second];
+        let request = CreateReviewRequest {
+            event: SubmitEvent::Comment,
+            commit_id: "head111",
+            body: "",
+            comments: &comments,
+        };
+        // when
+        let err = backend.create_review(&pr_details(), request).unwrap_err();
+        // then — the first thread is reported as posted
+        match err {
+            TuicrError::PartialSubmit { receipts, .. } => {
+                assert_eq!(receipts.comment_ids, vec!["c1".to_string()]);
+                assert!(!receipts.body_posted);
+            }
+            other => panic!("expected PartialSubmit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn create_review_reports_the_body_as_posted_when_a_comment_fails() {
+        // given the body thread posts, then the first inline thread fails
+        let http = RecordingHttp {
+            calls: Mutex::new(Vec::new()),
+            responses: Mutex::new(vec![
+                Ok(r#"{"id": 1}"#.to_string()),
+                Err(AzHttpError::Failed {
+                    status: Some(500),
+                    body: "boom".to_string(),
+                }),
+            ]),
+        };
+        let backend = AzureDevOpsBackend::with_transport(Some(azure_repo()), Box::new(http));
+        let comments = [inline(10, GhSide::Right)];
+        let request = CreateReviewRequest {
+            event: SubmitEvent::Comment,
+            commit_id: "head111",
+            body: "summary",
+            comments: &comments,
+        };
+        // when
+        let err = backend.create_review(&pr_details(), request).unwrap_err();
+        // then
+        match err {
+            TuicrError::PartialSubmit { receipts, .. } => {
+                assert!(receipts.body_posted);
+                assert!(receipts.comment_ids.is_empty());
+            }
+            other => panic!("expected PartialSubmit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn create_review_resolves_the_voter_before_posting_any_thread() {
+        // given the identity lookup fails
+        let shared = SharedHttp(std::sync::Arc::new(RecordingHttp {
+            calls: Mutex::new(Vec::new()),
+            responses: Mutex::new(vec![Err(AzHttpError::Failed {
+                status: Some(500),
+                body: "boom".to_string(),
+            })]),
+        }));
+        let backend =
+            AzureDevOpsBackend::with_transport(Some(azure_repo()), Box::new(shared.clone()));
+        let comments = [inline(10, GhSide::Right)];
+        let request = CreateReviewRequest {
+            event: SubmitEvent::Approve,
+            commit_id: "head111",
+            body: "summary",
+            comments: &comments,
+        };
+        // when
+        let err = backend.create_review(&pr_details(), request).unwrap_err();
+        // then nothing was posted and the error is not a partial submit
+        assert!(!matches!(err, TuicrError::PartialSubmit { .. }), "{err:?}");
+        let calls = shared.0.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].1.contains("connectionData"));
     }
 }

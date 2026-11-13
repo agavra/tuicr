@@ -1014,6 +1014,8 @@ pub enum PrSubmitEvent {
         pr_number: u64,
         head_sha: String,
         result: std::result::Result<crate::forge::traits::GhCreateReviewResponse, String>,
+        /// What a failed submit had already posted (empty on success).
+        partial: crate::forge::traits::SubmitReceipts,
     },
 }
 

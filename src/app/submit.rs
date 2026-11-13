@@ -1,4 +1,5 @@
 use super::*;
+use crate::forge::traits::SubmitReceipts;
 
 impl App {
     /// Drive `:submit*` preflight: walk every local-draft comment in the
@@ -142,8 +143,27 @@ impl App {
         // bare "LGTM" approval. Every other event needs at least one local
         // draft comment or a review-level comment, otherwise there's
         // nothing to submit.
-        let bare_allowed = matches!(event, crate::forge::submit::SubmitEvent::Approve);
-        if !bare_allowed && total_local_drafts == 0 && self.session.review_comments.is_empty() {
+        // A request-changes vote can also go out bare on forges that cast it
+        // as its own call after the comments: a partial submit locks the
+        // comments that landed, and the retry must still be able to vote.
+        // GitHub rejects an empty request-changes review, so it is excluded.
+        let bare_allowed = match event {
+            crate::forge::submit::SubmitEvent::Approve => true,
+            crate::forge::submit::SubmitEvent::RequestChanges => {
+                self.forge_kind().is_some_and(|kind| {
+                    use crate::forge::traits::ForgeKind;
+                    matches!(
+                        kind,
+                        ForgeKind::GitLab | ForgeKind::Bitbucket | ForgeKind::AzureDevOps
+                    )
+                })
+            }
+            _ => false,
+        };
+        if !bare_allowed
+            && total_local_drafts == 0
+            && !self.session.review_comments.iter().any(|c| !c.is_locked())
+        {
             self.set_warning("Nothing to submit — no local-draft comments");
             return;
         }
@@ -300,9 +320,7 @@ impl App {
     /// network round-trip on a background thread. The result is applied
     /// later in `poll_pr_submit_events`.
     pub fn spawn_pr_submit(&mut self) -> Result<()> {
-        use crate::forge::submit::{
-            MovedToSummaryItem, ResolverAction, SubmitContext, build_review_body,
-        };
+        use crate::forge::submit::{MovedToSummaryItem, ResolverAction};
         use crate::forge::traits::{CreateReviewRequest, PullRequestTarget};
 
         // Snapshot identity from the PR diff source first so the borrow on
@@ -337,17 +355,7 @@ impl App {
             .collect();
         let summary_comment_ids: Vec<String> =
             summary_items.iter().map(|i| i.comment.id.clone()).collect();
-        let review_comment_ids: Vec<String> = self
-            .session
-            .review_comments
-            .iter()
-            .map(|c| c.id.clone())
-            .collect();
-        let body = build_review_body(
-            &self.session.review_comments,
-            &summary_items,
-            SubmitContext::new(&self.forge_config, &self.comment_types),
-        );
+        let (body, review_comment_ids) = self.build_submit_body(&summary_items);
 
         // Save the session BEFORE the network call — keeps the user's
         // local-draft work durable if anything goes sideways below.
@@ -399,28 +407,56 @@ impl App {
                 pr_number,
                 pr_number.to_string(),
             );
-            let result = match backend.get_pull_request(target) {
-                Ok(details) => backend
-                    .create_review(
-                        &details,
-                        CreateReviewRequest {
-                            event,
-                            commit_id: &commit_id,
-                            body: &body,
-                            comments: &mappable,
-                        },
-                    )
-                    .map_err(|e| e.to_string()),
-                Err(e) => Err(e.to_string()),
+            let (result, partial) = match backend.get_pull_request(target) {
+                Ok(details) => match backend.create_review(
+                    &details,
+                    CreateReviewRequest {
+                        event,
+                        commit_id: &commit_id,
+                        body: &body,
+                        comments: &mappable,
+                    },
+                ) {
+                    Ok(response) => (Ok(response), SubmitReceipts::default()),
+                    Err(e) => {
+                        let (message, receipts) = split_partial_submit(e);
+                        (Err(message), receipts)
+                    }
+                },
+                Err(e) => (Err(e.to_string()), SubmitReceipts::default()),
             };
             let _ = tx.send(PrSubmitEvent::Done {
                 repository,
                 pr_number,
                 head_sha,
                 result,
+                partial,
             });
         });
         Ok(())
+    }
+
+    /// The review body and the ids of the review-level comments it carries.
+    /// Locked comments already went out in an earlier (partial) submit, so
+    /// they are neither repeated in the body nor re-marked.
+    pub(super) fn build_submit_body(
+        &self,
+        summary_items: &[crate::forge::submit::MovedToSummaryItem],
+    ) -> (String, Vec<String>) {
+        let unlocked: Vec<_> = self
+            .session
+            .review_comments
+            .iter()
+            .filter(|c| !c.is_locked())
+            .cloned()
+            .collect();
+        let ids = unlocked.iter().map(|c| c.id.clone()).collect();
+        let body = crate::forge::submit::build_review_body(
+            &unlocked,
+            summary_items,
+            crate::forge::submit::SubmitContext::new(&self.forge_config, &self.comment_types),
+        );
+        (body, ids)
     }
 
     /// Pump a pending create-review result. Applies lifecycle writes + the
@@ -435,7 +471,9 @@ impl App {
         };
         self.pr_submit_rx = None;
         let in_flight = self.pr_submit_state.take();
-        let PrSubmitEvent::Done { result, .. } = event;
+        let PrSubmitEvent::Done {
+            result, partial, ..
+        } = event;
 
         // The review is already posted, so a result for a PR that is no
         // longer open must still reach its own session: otherwise those
@@ -448,14 +486,71 @@ impl App {
             in_flight.pr_number,
             &in_flight.pr_head_sha,
         ) {
-            if let Ok(response) = result {
-                self.persist_submit_receipt_to_origin(&in_flight, &response);
+            match result {
+                Ok(response) => self.persist_submit_receipt_to_origin(&in_flight, &response),
+                // Comments that posted before the failure belong to their own
+                // PR's session too, or a retry there would post them again.
+                Err(_) => {
+                    if let Some(posted) = Self::partially_posted(&in_flight, &partial) {
+                        self.persist_submit_receipt_to_origin(&posted, &Self::partial_response());
+                    }
+                }
             }
             self.set_message("Discarded stale submit result (PR was reloaded)".to_string());
             return;
         }
 
+        if result.is_err() {
+            self.lock_partially_submitted(&in_flight, &partial);
+        }
         self.finish_pr_submit(in_flight, result);
+    }
+
+    /// A submit that failed midway left some comments live on the forge.
+    /// Lock those so a retry does not post them again; the rest stay editable
+    /// local drafts.
+    fn lock_partially_submitted(
+        &mut self,
+        in_flight: &SubmitInFlightState,
+        partial: &SubmitReceipts,
+    ) {
+        let Some(posted) = Self::partially_posted(in_flight, partial) else {
+            return;
+        };
+        self.apply_submit_success(&posted, &Self::partial_response());
+        let _ = self.save_current_session_merging_external();
+    }
+
+    /// The part of `in_flight` that the receipts say went out, if any.
+    fn partially_posted(
+        in_flight: &SubmitInFlightState,
+        partial: &SubmitReceipts,
+    ) -> Option<SubmitInFlightState> {
+        let mut posted = SubmitInFlightState {
+            mappable: in_flight
+                .mappable
+                .iter()
+                .filter(|c| partial.comment_ids.contains(&c.comment_id))
+                .cloned()
+                .collect(),
+            summary_comment_ids: Vec::new(),
+            review_comment_ids: Vec::new(),
+            ..in_flight.clone()
+        };
+        if partial.body_posted {
+            posted.summary_comment_ids = in_flight.summary_comment_ids.clone();
+            posted.review_comment_ids = in_flight.review_comment_ids.clone();
+        }
+        (!posted.mappable.is_empty() || partial.body_posted).then_some(posted)
+    }
+
+    /// No review id exists for these forges' partial posts.
+    fn partial_response() -> crate::forge::traits::GhCreateReviewResponse {
+        crate::forge::traits::GhCreateReviewResponse {
+            id: 0,
+            html_url: String::new(),
+            state: String::new(),
+        }
     }
 
     /// Human-readable name of the forge backing the current PR/MR review.
@@ -636,5 +731,14 @@ impl App {
             }
             review.line_comments.retain(|_, v| !v.is_empty());
         }
+    }
+}
+
+/// Separate a `create_review` error into the user-facing message and what was
+/// already posted (nothing, for a plain error).
+pub(super) fn split_partial_submit(err: TuicrError) -> (String, SubmitReceipts) {
+    match err {
+        TuicrError::PartialSubmit { message, receipts } => (message, receipts),
+        e => (e.to_string(), SubmitReceipts::default()),
     }
 }

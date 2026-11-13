@@ -337,6 +337,11 @@ are no inline comments; inline comments alone do not satisfy it. GitLab `draft` 
 notes that the author publishes from GitLab's own "Submit review" UI. Gerrit `draft` stores draft
 comments that the author publishes from Gerrit's Reply UI.
 
+GitLab, Bitbucket and Azure DevOps post a submit as several requests. If one fails midway, the
+comments that already posted are locked and not posted again; the rest stay local drafts. Retry
+with the same command. `:submit request-changes` may run with nothing left but the vote (a bare
+retry); GitHub rejects an empty request-changes review, so it needs a comment there.
+
 ## Commit selection / review target selector
 
 | Key | Action |

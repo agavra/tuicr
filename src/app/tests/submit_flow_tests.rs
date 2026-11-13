@@ -5,6 +5,7 @@ use crate::app::*;
 use crate::forge::submit::{ResolverAction, SubmitEvent, UnmappableReason};
 use crate::forge::traits::{
     ForgeRepository, PrSessionKey, PullRequestDetails, PullRequestInfo, PullRequestIssueComment,
+    SubmitReceipts,
 };
 use crate::model::comment::{Comment, CommentLifecycleState, CommentType, LineContext};
 use crate::model::diff_types::{DiffHunk, DiffLine, FileStatus, LineOrigin};
@@ -1271,6 +1272,7 @@ fn deliver_submit_result(app: &mut App, in_flight: SubmitInFlightState, review_i
         pr_number: in_flight.pr_number,
         head_sha: in_flight.head_sha_snapshot.clone(),
         result: Ok(make_response(review_id, "u", "COMMENTED")),
+        partial: Default::default(),
     })
     .unwrap();
     app.poll_pr_submit_events();
@@ -1356,6 +1358,7 @@ fn should_apply_result_via_poll_when_head_sha_matches() {
         pr_number: 125,
         head_sha: "abcdef0123".to_string(),
         result: Ok(make_response(123, "u", "COMMENTED")),
+        partial: Default::default(),
     })
     .unwrap();
     drop(tx);
@@ -1816,4 +1819,392 @@ fn should_point_at_drafts_left_on_an_older_patch_set() {
     app.poll_pr_threads_events();
     // then
     assert!(app.message.is_none(), "{:?}", app.message);
+}
+
+#[test]
+fn should_lock_comments_that_posted_before_the_submit_failed() {
+    // given two inline comments and a review-level one in flight
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    let posted = line_comment(LineSide::New, Some(11), None);
+    let posted_id = posted.id.clone();
+    let unposted = line_comment(LineSide::New, Some(12), None);
+    let unposted_id = unposted.id.clone();
+    add_line_comment(&mut app, "src/lib.rs", 11, posted);
+    add_line_comment(&mut app, "src/lib.rs", 12, unposted);
+    let review_comment = Comment::new("body".to_string(), CommentType::from_id("note"), None);
+    let review_id = review_comment.id.clone();
+    app.session.review_comments.push(review_comment);
+    let mut in_flight = make_in_flight(
+        SubmitEvent::Comment,
+        &[posted_id.as_str(), unposted_id.as_str()],
+        "abcdef0123",
+        0,
+    );
+    in_flight.review_comment_ids = vec![review_id];
+    app.pr_submit_state = Some(in_flight);
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.pr_submit_rx = Some(rx);
+    // when the forge reports a failure after the body and first comment landed
+    tx.send(PrSubmitEvent::Done {
+        repository: ForgeRepository::github("github.com", "agavra", "tuicr"),
+        pr_number: 125,
+        head_sha: "abcdef0123".to_string(),
+        result: Err("HTTP 500".to_string()),
+        partial: crate::forge::traits::SubmitReceipts {
+            body_posted: true,
+            comment_ids: vec![posted_id],
+        },
+    })
+    .unwrap();
+    drop(tx);
+    app.poll_pr_submit_events();
+    // then the posted ones are locked, the rest stay editable drafts
+    let review = app.session.files.get(&PathBuf::from("src/lib.rs")).unwrap();
+    assert_eq!(
+        review.line_comments[&11][0].lifecycle_state,
+        CommentLifecycleState::Submitted
+    );
+    assert_eq!(
+        review.line_comments[&12][0].lifecycle_state,
+        CommentLifecycleState::LocalDraft
+    );
+    assert!(app.session.review_comments[0].is_locked());
+    assert_eq!(
+        app.message.as_ref().expect("error").message_type,
+        MessageType::Error
+    );
+}
+
+#[test]
+fn should_not_resubmit_locked_review_level_comments() {
+    // given only an already-submitted review-level comment
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    let mut locked = Comment::new("body".to_string(), CommentType::from_id("note"), None);
+    locked.lifecycle_state = CommentLifecycleState::Submitted;
+    app.session.review_comments.push(locked);
+    // when
+    app.start_submit(SubmitEvent::Comment);
+    // then there is nothing to submit
+    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.submit_state.is_none());
+}
+
+fn locked(mut comment: Comment) -> Comment {
+    comment.lifecycle_state = CommentLifecycleState::Submitted;
+    comment
+}
+
+fn assert_nothing_to_submit(app: &App) {
+    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(app.submit_state.is_none());
+}
+
+#[test]
+fn should_not_resubmit_locked_file_comments() {
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    let review = app
+        .session
+        .get_file_mut(&PathBuf::from("src/lib.rs"))
+        .unwrap();
+    review.file_comments.push(locked(Comment::new(
+        "f".to_string(),
+        CommentType::from_id("note"),
+        None,
+    )));
+    app.start_submit(SubmitEvent::Comment);
+    assert_nothing_to_submit(&app);
+}
+
+#[test]
+fn should_not_resubmit_locked_line_comments() {
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    let comment = locked(line_comment(LineSide::New, Some(11), None));
+    add_line_comment(&mut app, "src/lib.rs", 11, comment);
+    app.start_submit(SubmitEvent::Comment);
+    assert_nothing_to_submit(&app);
+}
+
+#[test]
+fn should_not_resubmit_locked_commit_message_comments() {
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    register_commit_message_file(&mut app, "abcdef0");
+    app.pr_commits = vec![crate::forge::traits::PullRequestCommit {
+        oid: "abcdef0123".to_string(),
+        short_oid: "abcdef0".to_string(),
+        summary: "C".to_string(),
+        body: None,
+        author: "me".to_string(),
+        timestamp: None,
+    }];
+    let path = DiffFile::commit_message_path("abcdef0");
+    let review = app.session.get_file_mut(&path).unwrap();
+    review.file_comments.push(locked(Comment::new(
+        "m".to_string(),
+        CommentType::from_id("note"),
+        None,
+    )));
+    app.start_submit(SubmitEvent::Comment);
+    assert_nothing_to_submit(&app);
+}
+
+fn set_forge(app: &mut App, repository: ForgeRepository) {
+    let DiffSource::PullRequest(pr) = &mut app.diff_source else {
+        panic!("expected PR mode");
+    };
+    pr.key.repository = repository;
+}
+
+#[test]
+fn should_let_request_changes_retry_bare_on_forges_that_vote_separately() {
+    // given a partial submit locked every comment and only the vote is left
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    set_forge(&mut app, ForgeRepository::gitlab("gitlab.com", "o", "r"));
+    app.session.review_comments.push(locked(Comment::new(
+        "b".to_string(),
+        CommentType::from_id("note"),
+        None,
+    )));
+    // when
+    app.start_submit(SubmitEvent::RequestChanges);
+    // then the retry reaches the confirmation modal
+    assert_eq!(app.input_mode, InputMode::SubmitConfirm);
+}
+
+#[test]
+fn should_not_allow_bare_request_changes_on_github() {
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    app.session.review_comments.push(locked(Comment::new(
+        "b".to_string(),
+        CommentType::from_id("note"),
+        None,
+    )));
+    app.start_submit(SubmitEvent::RequestChanges);
+    assert_nothing_to_submit(&app);
+}
+
+#[test]
+fn should_not_allow_bare_comment_on_forges_that_vote_separately() {
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    set_forge(&mut app, ForgeRepository::gitlab("gitlab.com", "o", "r"));
+    app.start_submit(SubmitEvent::Comment);
+    assert_nothing_to_submit(&app);
+}
+
+#[test]
+fn should_only_send_unlocked_review_comments_on_submit() {
+    // given one locked and one live review-level comment
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    let old = locked(Comment::new(
+        "old".to_string(),
+        CommentType::from_id("note"),
+        None,
+    ));
+    let live = Comment::new("new".to_string(), CommentType::from_id("note"), None);
+    let live_id = live.id.clone();
+    app.session.review_comments.push(old);
+    app.session.review_comments.push(live);
+    app.start_submit(SubmitEvent::Comment);
+    // when
+    app.confirm_submit();
+    // then only the live one is in flight
+    let in_flight = app.pr_submit_state.as_ref().expect("in flight");
+    assert_eq!(in_flight.review_comment_ids, vec![live_id]);
+}
+
+fn fail_submit_with(app: &mut App, in_flight: SubmitInFlightState, partial: SubmitReceipts) {
+    app.pr_submit_state = Some(in_flight);
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.pr_submit_rx = Some(rx);
+    tx.send(PrSubmitEvent::Done {
+        repository: ForgeRepository::github("github.com", "agavra", "tuicr"),
+        pr_number: 125,
+        head_sha: "abcdef0123".to_string(),
+        result: Err("HTTP 500".to_string()),
+        partial,
+    })
+    .unwrap();
+    drop(tx);
+    app.poll_pr_submit_events();
+}
+
+#[test]
+fn should_lock_body_comments_when_only_the_body_posted() {
+    // given a body (review + moved-to-summary comments) and one unposted inline comment
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    let review = Comment::new("r".to_string(), CommentType::from_id("note"), None);
+    let moved = Comment::new("m".to_string(), CommentType::from_id("note"), None);
+    let (review_id, moved_id) = (review.id.clone(), moved.id.clone());
+    app.session.review_comments.push(review);
+    app.session.review_comments.push(moved);
+    let mut in_flight = make_in_flight(SubmitEvent::Comment, &["c1"], "abcdef0123", 1);
+    in_flight.review_comment_ids = vec![review_id];
+    in_flight.summary_comment_ids = vec![moved_id];
+    // when the body landed but no inline comment did
+    fail_submit_with(
+        &mut app,
+        in_flight,
+        SubmitReceipts {
+            body_posted: true,
+            comment_ids: Vec::new(),
+        },
+    );
+    // then both body-borne comments are locked
+    assert!(app.session.review_comments.iter().all(|c| c.is_locked()));
+}
+
+#[test]
+fn should_keep_body_comments_editable_when_only_inline_comments_posted() {
+    // given a review-level comment that was never posted
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    let review = Comment::new("r".to_string(), CommentType::from_id("note"), None);
+    let review_id = review.id.clone();
+    app.session.review_comments.push(review);
+    let posted = line_comment(LineSide::New, Some(11), None);
+    let posted_id = posted.id.clone();
+    add_line_comment(&mut app, "src/lib.rs", 11, posted);
+    let mut in_flight =
+        make_in_flight(SubmitEvent::Comment, &[posted_id.as_str()], "abcdef0123", 0);
+    in_flight.review_comment_ids = vec![review_id];
+    // when an inline comment landed but the body did not
+    fail_submit_with(
+        &mut app,
+        in_flight,
+        SubmitReceipts {
+            body_posted: false,
+            comment_ids: vec![posted_id],
+        },
+    );
+    // then the review-level comment stays a local draft
+    assert!(!app.session.review_comments[0].is_locked());
+}
+
+#[test]
+fn should_leave_everything_editable_when_nothing_posted_before_the_failure() {
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    let review = Comment::new("r".to_string(), CommentType::from_id("note"), None);
+    let review_id = review.id.clone();
+    app.session.review_comments.push(review);
+    let mut in_flight = make_in_flight(SubmitEvent::Comment, &[], "abcdef0123", 0);
+    in_flight.review_comment_ids = vec![review_id];
+    fail_submit_with(&mut app, in_flight, SubmitReceipts::default());
+    assert!(!app.session.review_comments[0].is_locked());
+}
+
+#[test]
+fn should_persist_late_partial_receipts_to_their_own_session_when_another_pr_is_open() {
+    // given PR 125 @ OLD_HEAD saved with two drafts, and another head on screen
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    let posted = line_comment(LineSide::New, Some(11), None);
+    let posted_id = posted.id.clone();
+    let unposted = line_comment(LineSide::New, Some(12), None);
+    let unposted_id = unposted.id.clone();
+    add_line_comment(&mut app, "src/lib.rs", 11, posted);
+    add_line_comment(&mut app, "src/lib.rs", 12, unposted);
+    let mut origin = app.session.clone();
+    origin.pr_session_key = Some(PrSessionKey::new(
+        ForgeRepository::github("github.com", "agavra", "tuicr"),
+        125,
+        "OLD_HEAD".to_string(),
+    ));
+    crate::persistence::storage::save_session(&origin).unwrap();
+    let mut in_flight = make_in_flight(
+        SubmitEvent::Comment,
+        &[posted_id.as_str(), unposted_id.as_str()],
+        "OLD_HEAD",
+        0,
+    );
+    in_flight.pr_head_sha = "OLD_HEAD".to_string();
+
+    // when a failure arrives after only the first comment posted
+    fail_submit_with(
+        &mut app,
+        in_flight.clone(),
+        SubmitReceipts {
+            body_posted: false,
+            comment_ids: vec![posted_id],
+        },
+    );
+
+    // then the open session is untouched
+    let review = app.session.files.get(&PathBuf::from("src/lib.rs")).unwrap();
+    assert_eq!(
+        review.line_comments[&11][0].lifecycle_state,
+        CommentLifecycleState::LocalDraft
+    );
+    // and the origin session locks the posted one only
+    let key = PrSessionKey::new(in_flight.repository.clone(), 125, "OLD_HEAD".to_string());
+    let (_, saved) = crate::persistence::storage::load_pr_session(&key)
+        .unwrap()
+        .expect("origin session");
+    let lines = &saved.files[&PathBuf::from("src/lib.rs")].line_comments;
+    assert!(lines[&11][0].is_locked());
+    assert_eq!(
+        lines[&12][0].lifecycle_state,
+        CommentLifecycleState::LocalDraft
+    );
+}
+
+#[test]
+fn should_hand_partial_receipts_from_the_error_to_the_result() {
+    // given a partial-submit error
+    let receipts = SubmitReceipts {
+        body_posted: true,
+        comment_ids: vec!["c1".to_string()],
+    };
+    let err = receipts
+        .clone()
+        .into_error(crate::error::TuicrError::Forge("boom".to_string()));
+    // when split for the UI
+    let (message, got) = crate::app::submit::split_partial_submit(err);
+    // then both survive
+    assert_eq!(message, "boom");
+    assert_eq!(got, receipts);
+    // and a plain error carries no receipts
+    let (message, got) =
+        crate::app::submit::split_partial_submit(crate::error::TuicrError::Forge("x".to_string()));
+    assert_eq!(message, "x");
+    assert_eq!(got, SubmitReceipts::default());
+}
+
+#[test]
+fn should_leave_locked_review_comments_out_of_the_body() {
+    // given one locked and one live review-level comment
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    app.session.review_comments.push(locked(Comment::new(
+        "ALREADY-POSTED".to_string(),
+        CommentType::from_id("note"),
+        None,
+    )));
+    let live = Comment::new(
+        "STILL-LOCAL".to_string(),
+        CommentType::from_id("note"),
+        None,
+    );
+    let live_id = live.id.clone();
+    app.session.review_comments.push(live);
+    // when the body is built
+    let (body, ids) = app.build_submit_body(&[]);
+    // then only the live one is in it
+    assert!(body.contains("STILL-LOCAL"), "{body}");
+    assert!(!body.contains("ALREADY-POSTED"), "{body}");
+    assert_eq!(ids, vec![live_id]);
+}
+
+#[test]
+fn should_let_request_changes_retry_bare_on_bitbucket_and_azure() {
+    for repository in [
+        ForgeRepository::bitbucket("bitbucket.org", "w", "r"),
+        ForgeRepository::azure("dev.azure.com", "org/proj", "r"),
+    ] {
+        let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+        let kind = repository.kind;
+        set_forge(&mut app, repository);
+        app.session.review_comments.push(locked(Comment::new(
+            "b".to_string(),
+            CommentType::from_id("note"),
+            None,
+        )));
+        app.start_submit(SubmitEvent::RequestChanges);
+        assert_eq!(app.input_mode, InputMode::SubmitConfirm, "{kind:?}");
+    }
 }

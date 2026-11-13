@@ -26,6 +26,7 @@ use crate::forge::traits::{
     CreateReviewRequest, ForgeBackend, ForgeFileLinesRequest, ForgeRepository,
     GhCreateReviewResponse, PagedPullRequests, PullRequestCommit, PullRequestDetails,
     PullRequestListQuery, PullRequestListScope, PullRequestReviewMetadata, PullRequestTarget,
+    SubmitReceipts,
 };
 use crate::forge::{forge_path, percent_encode_component, percent_encode_path};
 use crate::model::{DiffLine, FilePatch};
@@ -552,73 +553,79 @@ where
         pr: &PullRequestDetails,
         request: CreateReviewRequest<'_>,
     ) -> Result<GhCreateReviewResponse> {
-        // Bitbucket has no review object. Every comment posts on its own; a
-        // draft marks each one `pending`, which only its author can see until
-        // they publish from Bitbucket's own UI — mirroring GitHub's pending
-        // review and GitLab's draft notes. Approval and change requests are
-        // separate participant-state calls made after the comments land.
-        let is_draft = request.event == SubmitEvent::Draft;
-        let mut first_comment_id: Option<u64> = None;
+        let mut receipts = SubmitReceipts::default();
+        let result = (|| -> Result<GhCreateReviewResponse> {
+            // Bitbucket has no review object. Every comment posts on its own; a
+            // draft marks each one `pending`, which only its author can see until
+            // they publish from Bitbucket's own UI — mirroring GitHub's pending
+            // review and GitLab's draft notes. Approval and change requests are
+            // separate participant-state calls made after the comments land.
+            let is_draft = request.event == SubmitEvent::Draft;
+            let mut first_comment_id: Option<u64> = None;
 
-        // The review body becomes a general (non-inline) comment.
-        if !request.body.is_empty() {
-            let mut body = serde_json::json!({ "content": { "raw": request.body } });
-            if is_draft {
-                body["pending"] = serde_json::Value::Bool(true);
+            // The review body becomes a general (non-inline) comment.
+            if !request.body.is_empty() {
+                let mut body = serde_json::json!({ "content": { "raw": request.body } });
+                if is_draft {
+                    body["pending"] = serde_json::Value::Bool(true);
+                }
+                let id = self.post_comment(pr, &body)?;
+                receipts.body_posted = true;
+                first_comment_id = first_comment_id.or(id);
             }
-            let id = self.post_comment(pr, &body)?;
-            first_comment_id = first_comment_id.or(id);
-        }
 
-        for comment in request.comments {
-            let mut body = serde_json::json!({
-                "content": { "raw": comment.body },
-                "inline": Self::inline_anchor(comment),
-            });
-            if is_draft {
-                body["pending"] = serde_json::Value::Bool(true);
+            for comment in request.comments {
+                let mut body = serde_json::json!({
+                    "content": { "raw": comment.body },
+                    "inline": Self::inline_anchor(comment),
+                });
+                if is_draft {
+                    body["pending"] = serde_json::Value::Bool(true);
+                }
+                let id = self.post_comment(pr, &body)?;
+                receipts.comment_ids.push(comment.comment_id.clone());
+                first_comment_id = first_comment_id.or(id);
             }
-            let id = self.post_comment(pr, &body)?;
-            first_comment_id = first_comment_id.or(id);
-        }
 
-        let state = match request.event {
-            SubmitEvent::Approve => {
-                let mut args = vec![
-                    "pr".to_string(),
-                    "approve".to_string(),
-                    pr.number.to_string(),
-                ];
-                args.extend(Self::repo_args(&pr.repository));
-                self.runner.run(&args).map_err(map_approve_error)?;
-                "APPROVED"
-            }
-            SubmitEvent::RequestChanges => {
-                // `bkt` has no first-class command for this; Cloud's endpoint
-                // takes no body.
-                let args = vec![
-                    "api".to_string(),
-                    format!(
-                        "{}/pullrequests/{}/request-changes",
-                        Self::repo_path(&pr.repository),
-                        pr.number
-                    ),
-                    "--method".to_string(),
-                    "POST".to_string(),
-                ];
-                self.runner.run(&args).map_err(map_request_changes_error)?;
-                "CHANGES_REQUESTED"
-            }
-            SubmitEvent::Draft => "PENDING",
-            SubmitEvent::Comment => "COMMENTED",
-        };
+            let state = match request.event {
+                SubmitEvent::Approve => {
+                    let mut args = vec![
+                        "pr".to_string(),
+                        "approve".to_string(),
+                        pr.number.to_string(),
+                    ];
+                    args.extend(Self::repo_args(&pr.repository));
+                    self.runner.run(&args).map_err(map_approve_error)?;
+                    "APPROVED"
+                }
+                SubmitEvent::RequestChanges => {
+                    // `bkt` has no first-class command for this; Cloud's endpoint
+                    // takes no body.
+                    let args = vec![
+                        "api".to_string(),
+                        format!(
+                            "{}/pullrequests/{}/request-changes",
+                            Self::repo_path(&pr.repository),
+                            pr.number
+                        ),
+                        "--method".to_string(),
+                        "POST".to_string(),
+                    ];
+                    self.runner.run(&args).map_err(map_request_changes_error)?;
+                    "CHANGES_REQUESTED"
+                }
+                SubmitEvent::Draft => "PENDING",
+                SubmitEvent::Comment => "COMMENTED",
+            };
 
-        // Synthesized: Bitbucket returns no review object to report.
-        Ok(GhCreateReviewResponse {
-            id: first_comment_id.unwrap_or(0),
-            html_url: pr.url.clone(),
-            state: state.to_string(),
-        })
+            // Synthesized: Bitbucket returns no review object to report.
+            Ok(GhCreateReviewResponse {
+                id: first_comment_id.unwrap_or(0),
+                html_url: pr.url.clone(),
+                state: state.to_string(),
+            })
+        })();
+        result.map_err(|err| receipts.into_error(err))
     }
 }
 
@@ -2082,5 +2089,52 @@ mod tests {
         let calls = backend.runner.calls.borrow();
         let inline: serde_json::Value = serde_json::from_str(&calls[0][5]).unwrap();
         assert_eq!(inline["inline"]["path"], "src/a\\b.rs");
+    }
+
+    #[test]
+    fn should_report_posted_comments_when_the_approval_fails() {
+        // given — body and one inline comment post, then approve fails
+        struct ApproveFails;
+        impl BktCommandRunner for ApproveFails {
+            fn run(&self, args: &[String]) -> BktCommandResult<String> {
+                if args[0] == "pr" && args[1] == "approve" {
+                    return Err(BktCommandError::Failed {
+                        status: Some(1),
+                        stderr: "403 Forbidden".to_string(),
+                    });
+                }
+                Ok(r#"{"id":1}"#.to_string())
+            }
+        }
+        let backend = BitbucketBktBackend::with_runner(Some(repo()), ApproveFails);
+        let comment = InlineComment {
+            path: "src/lib.rs".into(),
+            line: 3,
+            side: GhSide::Right,
+            counterpart_line: None,
+            start_line: None,
+            start_side: None,
+            range_anchors: None,
+            old_path: None,
+            body: "x".to_string(),
+            comment_id: "c-bb".to_string(),
+        };
+        let request = CreateReviewRequest {
+            event: SubmitEvent::Approve,
+            commit_id: &"a".repeat(40),
+            body: "summary",
+            comments: &[comment],
+        };
+        // when
+        let err = backend.create_review(&details(), request).unwrap_err();
+        // then
+        match err {
+            TuicrError::PartialSubmit { receipts, message } => {
+                assert!(receipts.body_posted);
+                assert_eq!(receipts.comment_ids, vec!["c-bb".to_string()]);
+                assert!(message.contains("Comments were posted"), "{message}");
+            }
+            other => panic!("expected PartialSubmit, got {other:?}"),
+        }
     }
 }

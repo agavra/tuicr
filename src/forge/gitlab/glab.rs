@@ -27,7 +27,7 @@ use super::models::{
     GlabMrSummary, GlabMrVersion, GlabUser, draft_notes_to_review,
 };
 use crate::forge::submit::{DiffAnchor, GhSide, SubmitEvent};
-use crate::forge::traits::CreateReviewRequest;
+use crate::forge::traits::{CreateReviewRequest, SubmitReceipts};
 
 const DEFAULT_GITLAB_HOST: &str = "gitlab.com";
 
@@ -647,236 +647,248 @@ where
         pr: &PullRequestDetails,
         request: CreateReviewRequest<'_>,
     ) -> Result<GhCreateReviewResponse> {
-        match request.event {
-            SubmitEvent::Comment
-            | SubmitEvent::Approve
-            | SubmitEvent::RequestChanges
-            | SubmitEvent::Draft => {}
-        }
-
-        // Draft submissions create GitLab draft notes (the pending-review
-        // primitive) and stop short of publishing, mirroring GitHub's pending
-        // review. The author publishes from the GitLab "Submit review" UI.
-        let is_draft = request.event == SubmitEvent::Draft;
-
-        let project = self.api_project(&pr.repository);
-        let start_sha = pr
-            .diff_start_sha
-            .as_deref()
-            .unwrap_or(&pr.base_sha)
-            .to_string();
-
-        let mut first_discussion_id: Option<String> = None;
-
-        // Post the overall review body as a general MR note (if non-empty).
-        if !request.body.is_empty() {
-            let endpoint = if is_draft {
-                format!(
-                    "projects/{}/merge_requests/{}/draft_notes",
-                    project, pr.number
-                )
-            } else {
-                format!("projects/{}/merge_requests/{}/notes", project, pr.number)
-            };
-            let body_json = if is_draft {
-                serde_json::to_string(&serde_json::json!({ "note": request.body }))?
-            } else {
-                serde_json::to_string(&serde_json::json!({ "body": request.body }))?
-            };
-            let mut args = vec![
-                "api".to_string(),
-                endpoint,
-                "--method".to_string(),
-                "POST".to_string(),
-                "--header".to_string(),
-                "Content-Type: application/json".to_string(),
-                "--input".to_string(),
-                "-".to_string(),
-            ];
-            args.extend(Self::api_hostname_args(&pr.repository));
-            self.runner
-                .run_with_stdin(&args, &body_json)
-                .map_err(|err| map_create_notes_error(err, &pr.repository.host))?;
-        }
-
-        for comment in request.comments {
-            let new_path = forge_path(&comment.path);
-            // GitLab positions need both old_path and new_path. Renamed files
-            // set comment.old_path to the base-side path; otherwise both
-            // sides share the display path.
-            let old_path = comment
-                .old_path
-                .as_ref()
-                .map(|p| forge_path(p))
-                .unwrap_or_else(|| new_path.clone());
-
-            // Build the position object with integer line numbers.
-            // For context lines (unchanged), GitLab requires BOTH old_line and
-            // new_line to resolve the position. For added lines only new_line,
-            // for deleted lines only old_line. counterpart_line carries the
-            // "other side" line number populated by the diff mapper for context lines.
-            let mut position = serde_json::json!({
-                "position_type": "text",
-                "base_sha": pr.base_sha,
-                "start_sha": start_sha,
-                "head_sha": pr.head_sha,
-                "old_path": old_path,
-                "new_path": new_path,
-            });
-            match comment.side {
-                GhSide::Right => {
-                    position["new_line"] = serde_json::Value::Number(comment.line.into());
-                    if let Some(old_line) = comment.counterpart_line {
-                        position["old_line"] = serde_json::Value::Number(old_line.into());
-                    }
-                }
-                GhSide::Left => {
-                    position["old_line"] = serde_json::Value::Number(comment.line.into());
-                    if let Some(new_line) = comment.counterpart_line {
-                        position["new_line"] = serde_json::Value::Number(new_line.into());
-                    }
-                }
+        let mut receipts = SubmitReceipts::default();
+        let result = (|| -> Result<GhCreateReviewResponse> {
+            match request.event {
+                SubmitEvent::Comment
+                | SubmitEvent::Approve
+                | SubmitEvent::RequestChanges
+                | SubmitEvent::Draft => {}
             }
-            // Multi-line range comments need an explicit `line_range` so
-            // GitLab anchors the discussion across the full selection
-            // instead of collapsing to the end line. Without anchors the
-            // endpoints' line codes cannot be built, so fall back to a
-            // single-line comment on the end line rather than fail the submit.
-            if let Some(anchors) = comment.range_anchors {
-                position["line_range"] = serde_json::json!({
-                    "start": gl_range_endpoint(&new_path, anchors.start),
-                    "end": gl_range_endpoint(&new_path, anchors.end),
-                });
-            }
-            let body_json = if is_draft {
-                serde_json::to_string(&serde_json::json!({
-                    "note": comment.body,
-                    "position": position,
-                }))?
-            } else {
-                serde_json::to_string(&serde_json::json!({
-                    "body": comment.body,
-                    "position": position,
-                }))?
-            };
 
-            let endpoint = if is_draft {
-                format!(
-                    "projects/{}/merge_requests/{}/draft_notes",
-                    project, pr.number,
-                )
-            } else {
-                format!(
-                    "projects/{}/merge_requests/{}/discussions",
-                    project, pr.number,
-                )
-            };
-            let mut args = vec![
-                "api".to_string(),
-                endpoint,
-                "--method".to_string(),
-                "POST".to_string(),
-                "--header".to_string(),
-                "Content-Type: application/json".to_string(),
-                "--input".to_string(),
-                "-".to_string(),
-            ];
-            args.extend(Self::api_hostname_args(&pr.repository));
+            // Draft submissions create GitLab draft notes (the pending-review
+            // primitive) and stop short of publishing, mirroring GitHub's pending
+            // review. The author publishes from the GitLab "Submit review" UI.
+            let is_draft = request.event == SubmitEvent::Draft;
 
-            if std::env::var("TUICR_GLAB_DEBUG").is_ok() {
-                let host = &pr.repository.host;
-                let subfolder = self
-                    .install_subfolder(&pr.repository.host)
-                    .map(|sub| format!("/{sub}"))
-                    .unwrap_or_default();
-                let project_encoded = self.api_project(&pr.repository);
-                let endpoint_label = if is_draft {
-                    "draft_notes"
+            let project = self.api_project(&pr.repository);
+            let start_sha = pr
+                .diff_start_sha
+                .as_deref()
+                .unwrap_or(&pr.base_sha)
+                .to_string();
+
+            let mut first_discussion_id: Option<String> = None;
+
+            // Post the overall review body as a general MR note (if non-empty).
+            if !request.body.is_empty() {
+                let endpoint = if is_draft {
+                    format!(
+                        "projects/{}/merge_requests/{}/draft_notes",
+                        project, pr.number
+                    )
                 } else {
-                    "discussions"
+                    format!("projects/{}/merge_requests/{}/notes", project, pr.number)
                 };
-                let url = format!(
-                    "https://{host}{subfolder}/api/v4/projects/{project_encoded}/merge_requests/{}/{endpoint_label}",
-                    pr.number
-                );
-                glab_debug_log(&format!(
-                    "[GLAB_DEBUG] equivalent curl command:\n  curl --request POST \\\n    --header 'PRIVATE-TOKEN: <token>' \\\n    --header 'Content-Type: application/json' \\\n    --data '{}' \\\n    '{}'\n  # Get token with: glab auth status -t\n",
-                    body_json, url
-                ));
+                let body_json = if is_draft {
+                    serde_json::to_string(&serde_json::json!({ "note": request.body }))?
+                } else {
+                    serde_json::to_string(&serde_json::json!({ "body": request.body }))?
+                };
+                let mut args = vec![
+                    "api".to_string(),
+                    endpoint,
+                    "--method".to_string(),
+                    "POST".to_string(),
+                    "--header".to_string(),
+                    "Content-Type: application/json".to_string(),
+                    "--input".to_string(),
+                    "-".to_string(),
+                ];
+                args.extend(Self::api_hostname_args(&pr.repository));
+                self.runner
+                    .run_with_stdin(&args, &body_json)
+                    .map_err(|err| map_create_notes_error(err, &pr.repository.host))?;
+                receipts.body_posted = true;
             }
 
-            let output = self
-                .runner
-                .run_with_stdin(&args, &body_json)
-                .map_err(|err| map_create_notes_error(err, &pr.repository.host))?;
+            for comment in request.comments {
+                let new_path = forge_path(&comment.path);
+                // GitLab positions need both old_path and new_path. Renamed files
+                // set comment.old_path to the base-side path; otherwise both
+                // sides share the display path.
+                let old_path = comment
+                    .old_path
+                    .as_ref()
+                    .map(|p| forge_path(p))
+                    .unwrap_or_else(|| new_path.clone());
 
-            if std::env::var("TUICR_GLAB_DEBUG").is_ok() {
-                glab_debug_log(&format!("[GLAB_DEBUG] glab response: {output}\n"));
+                // Build the position object with integer line numbers.
+                // For context lines (unchanged), GitLab requires BOTH old_line and
+                // new_line to resolve the position. For added lines only new_line,
+                // for deleted lines only old_line. counterpart_line carries the
+                // "other side" line number populated by the diff mapper for context lines.
+                let mut position = serde_json::json!({
+                    "position_type": "text",
+                    "base_sha": pr.base_sha,
+                    "start_sha": start_sha,
+                    "head_sha": pr.head_sha,
+                    "old_path": old_path,
+                    "new_path": new_path,
+                });
+                match comment.side {
+                    GhSide::Right => {
+                        position["new_line"] = serde_json::Value::Number(comment.line.into());
+                        if let Some(old_line) = comment.counterpart_line {
+                            position["old_line"] = serde_json::Value::Number(old_line.into());
+                        }
+                    }
+                    GhSide::Left => {
+                        position["old_line"] = serde_json::Value::Number(comment.line.into());
+                        if let Some(new_line) = comment.counterpart_line {
+                            position["new_line"] = serde_json::Value::Number(new_line.into());
+                        }
+                    }
+                }
+                // Multi-line range comments need an explicit `line_range` so
+                // GitLab anchors the discussion across the full selection
+                // instead of collapsing to the end line. Without anchors the
+                // endpoints' line codes cannot be built, so fall back to a
+                // single-line comment on the end line rather than fail the submit.
+                if let Some(anchors) = comment.range_anchors {
+                    position["line_range"] = serde_json::json!({
+                        "start": gl_range_endpoint(&new_path, anchors.start),
+                        "end": gl_range_endpoint(&new_path, anchors.end),
+                    });
+                }
+                let body_json = if is_draft {
+                    serde_json::to_string(&serde_json::json!({
+                        "note": comment.body,
+                        "position": position,
+                    }))?
+                } else {
+                    serde_json::to_string(&serde_json::json!({
+                        "body": comment.body,
+                        "position": position,
+                    }))?
+                };
+
+                let endpoint = if is_draft {
+                    format!(
+                        "projects/{}/merge_requests/{}/draft_notes",
+                        project, pr.number,
+                    )
+                } else {
+                    format!(
+                        "projects/{}/merge_requests/{}/discussions",
+                        project, pr.number,
+                    )
+                };
+                let mut args = vec![
+                    "api".to_string(),
+                    endpoint,
+                    "--method".to_string(),
+                    "POST".to_string(),
+                    "--header".to_string(),
+                    "Content-Type: application/json".to_string(),
+                    "--input".to_string(),
+                    "-".to_string(),
+                ];
+                args.extend(Self::api_hostname_args(&pr.repository));
+
+                if std::env::var("TUICR_GLAB_DEBUG").is_ok() {
+                    let host = &pr.repository.host;
+                    let subfolder = self
+                        .install_subfolder(&pr.repository.host)
+                        .map(|sub| format!("/{sub}"))
+                        .unwrap_or_default();
+                    let project_encoded = self.api_project(&pr.repository);
+                    let endpoint_label = if is_draft {
+                        "draft_notes"
+                    } else {
+                        "discussions"
+                    };
+                    let url = format!(
+                        "https://{host}{subfolder}/api/v4/projects/{project_encoded}/merge_requests/{}/{endpoint_label}",
+                        pr.number
+                    );
+                    glab_debug_log(&format!(
+                        "[GLAB_DEBUG] equivalent curl command:\n  curl --request POST \\\n    --header 'PRIVATE-TOKEN: <token>' \\\n    --header 'Content-Type: application/json' \\\n    --data '{}' \\\n    '{}'\n  # Get token with: glab auth status -t\n",
+                        body_json, url
+                    ));
+                }
+
+                let output = self
+                    .runner
+                    .run_with_stdin(&args, &body_json)
+                    .map_err(|err| map_create_notes_error(err, &pr.repository.host))?;
+
+                if std::env::var("TUICR_GLAB_DEBUG").is_ok() {
+                    glab_debug_log(&format!("[GLAB_DEBUG] glab response: {output}\n"));
+                }
+
+                receipts.comment_ids.push(comment.comment_id.clone());
+
+                // Discussions return a string `id`; draft_notes return a numeric
+                // one. Capture either so the success message reports a real id.
+                if first_discussion_id.is_none()
+                    && let Ok(value) = serde_json::from_str::<serde_json::Value>(&output)
+                    && let Some(id) = value.get("id").and_then(|v| {
+                        v.as_str()
+                            .map(str::to_string)
+                            .or_else(|| v.as_u64().map(|n| n.to_string()))
+                    })
+                {
+                    first_discussion_id = Some(id);
+                }
             }
 
-            // Discussions return a string `id`; draft_notes return a numeric
-            // one. Capture either so the success message reports a real id.
-            if first_discussion_id.is_none()
-                && let Ok(value) = serde_json::from_str::<serde_json::Value>(&output)
-                && let Some(id) = value.get("id").and_then(|v| {
-                    v.as_str()
-                        .map(str::to_string)
-                        .or_else(|| v.as_u64().map(|n| n.to_string()))
-                })
-            {
-                first_discussion_id = Some(id);
+            if request.event == SubmitEvent::Approve {
+                let endpoint =
+                    format!("projects/{}/merge_requests/{}/approve", project, pr.number,);
+                let mut args = vec![
+                    "api".to_string(),
+                    endpoint,
+                    "--method".to_string(),
+                    "POST".to_string(),
+                ];
+                args.extend(Self::api_hostname_args(&pr.repository));
+                // A 401 here means GitLab refused this approval (own MR, author
+                // approval disabled), not that the glab login is bad.
+                self.runner
+                    .run(&args)
+                    .map_err(|err| map_approve_error(err, &pr.repository.host))?;
             }
-        }
 
-        if request.event == SubmitEvent::Approve {
-            let endpoint = format!("projects/{}/merge_requests/{}/approve", project, pr.number,);
-            let mut args = vec![
-                "api".to_string(),
-                endpoint,
-                "--method".to_string(),
-                "POST".to_string(),
-            ];
-            args.extend(Self::api_hostname_args(&pr.repository));
-            self.run_glab(args, &pr.repository.host)?;
-        }
-
-        if request.event == SubmitEvent::RequestChanges {
-            let full_path = self.project_path(&pr.repository);
-            let query = "mutation($projectPath: ID!, $iid: String!) { \
+            if request.event == SubmitEvent::RequestChanges {
+                let full_path = self.project_path(&pr.repository);
+                let query = "mutation($projectPath: ID!, $iid: String!) { \
                 mergeRequestRequestChanges(input: { projectPath: $projectPath, iid: $iid }) { errors } }";
-            let mut args = vec![
-                "api".to_string(),
-                "graphql".to_string(),
-                "-f".to_string(),
-                format!("query={query}"),
-                "-f".to_string(),
-                format!("projectPath={full_path}"),
-                "-f".to_string(),
-                format!("iid={}", pr.number),
-            ];
-            args.extend(Self::api_hostname_args(&pr.repository));
-            let output = self.run_glab(args, &pr.repository.host)?;
-            check_graphql_errors(&output, "mergeRequestRequestChanges")?;
-        }
+                let mut args = vec![
+                    "api".to_string(),
+                    "graphql".to_string(),
+                    "-f".to_string(),
+                    format!("query={query}"),
+                    "-f".to_string(),
+                    format!("projectPath={full_path}"),
+                    "-f".to_string(),
+                    format!("iid={}", pr.number),
+                ];
+                args.extend(Self::api_hostname_args(&pr.repository));
+                let output = self.run_glab(args, &pr.repository.host)?;
+                check_graphql_errors(&output, "mergeRequestRequestChanges")?;
+            }
 
-        let id = first_discussion_id
-            .as_deref()
-            .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(0);
+            let id = first_discussion_id
+                .as_deref()
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(0);
 
-        let state = if request.event == SubmitEvent::RequestChanges {
-            "CHANGES_REQUESTED"
-        } else if is_draft {
-            "PENDING"
-        } else {
-            "COMMENTED"
-        };
+            let state = if request.event == SubmitEvent::RequestChanges {
+                "CHANGES_REQUESTED"
+            } else if is_draft {
+                "PENDING"
+            } else {
+                "COMMENTED"
+            };
 
-        Ok(GhCreateReviewResponse {
-            id,
-            html_url: pr.url.clone(),
-            state: state.to_string(),
-        })
+            Ok(GhCreateReviewResponse {
+                id,
+                html_url: pr.url.clone(),
+                state: state.to_string(),
+            })
+        })();
+        result.map_err(|err| receipts.into_error(err))
     }
 }
 
@@ -1343,6 +1355,32 @@ fn map_create_notes_error(error: GlabCommandError, host: &str) -> TuicrError {
         );
     }
     map_glab_error(error, host, false)
+}
+
+/// The `/approve` call is the one place a 401 does not mean a bad login:
+/// GitLab answers it when the user may not approve this MR (their own, with
+/// author approval disabled).
+fn map_approve_error(error: GlabCommandError, host: &str) -> TuicrError {
+    match error {
+        GlabCommandError::Failed { ref stderr, .. }
+            if looks_like_http_401(stderr) || looks_like_permission_failure(stderr) =>
+        {
+            TuicrError::Forge(
+                "GitLab rejected the approval: you may not be an eligible approver \
+                 (for example your own merge request)."
+                    .to_string(),
+            )
+        }
+        error => map_glab_error(error, host, false),
+    }
+}
+
+/// An HTTP 401 answer from GitLab, as opposed to the CLI's own login errors.
+fn looks_like_http_401(stderr: &str) -> bool {
+    let lower = stderr.to_ascii_lowercase();
+    lower.contains("401 unauthorized")
+        || lower.contains("http 401")
+        || lower.contains("status: 401")
 }
 
 fn looks_like_auth_failure(stderr: &str) -> bool {
@@ -2447,13 +2485,15 @@ mod tests {
         };
         let err = backend.create_review(&pr, request).unwrap_err();
         match err {
-            TuicrError::Forge(msg) => {
+            // The inline comment posted before the vote was rejected.
+            TuicrError::PartialSubmit { message, receipts } => {
                 assert!(
-                    msg.contains("You are not a reviewer"),
-                    "expected reviewer error message, got {msg}"
+                    message.contains("You are not a reviewer"),
+                    "expected reviewer error message, got {message}"
                 );
+                assert_eq!(receipts.comment_ids, vec!["c-rc-err".to_string()]);
             }
-            other => panic!("expected TuicrError::Forge, got {other:?}"),
+            other => panic!("expected TuicrError::PartialSubmit, got {other:?}"),
         }
     }
 
@@ -3029,5 +3069,116 @@ mod tests {
         assert_eq!(body["position"]["new_path"], "src/a\\b.rs");
         assert_eq!(body["position"]["old_path"], "old/c\\d.rs");
         assert!(calls[1].0.last().unwrap().contains("src%2Fa%5Cb.rs"));
+    }
+
+    /// Replays canned responses, failing the `/approve` call with a 401.
+    struct ApproveUnauthorized {
+        calls: RefCell<usize>,
+    }
+
+    impl GlabCommandRunner for ApproveUnauthorized {
+        fn run(&self, args: &[String]) -> GlabCommandResult<String> {
+            *self.calls.borrow_mut() += 1;
+            if args.iter().any(|a| a.ends_with("/approve")) {
+                return Err(GlabCommandError::Failed {
+                    status: Some(1),
+                    stderr: "glab: 401 Unauthorized (HTTP 401)".to_string(),
+                });
+            }
+            Ok(String::new())
+        }
+
+        fn run_with_stdin(&self, _args: &[String], _stdin: &str) -> GlabCommandResult<String> {
+            *self.calls.borrow_mut() += 1;
+            Ok(r#"{"id":"d1"}"#.to_string())
+        }
+    }
+
+    #[test]
+    fn should_report_posted_comments_and_not_blame_auth_when_approve_is_401() {
+        // given — the body note and one comment post, then /approve answers 401
+        let repo = ForgeRepository::gitlab("gitlab.com", "owner", "repo");
+        let pr = make_pr_details(repo.clone());
+        let comment = InlineComment {
+            path: "src/lib.rs".into(),
+            line: 15,
+            side: GhSide::Right,
+            counterpart_line: None,
+            start_line: None,
+            start_side: None,
+            range_anchors: None,
+            old_path: None,
+            body: "x".to_string(),
+            comment_id: "c-gl".to_string(),
+        };
+        let backend = GitLabGlabBackend::with_runner(
+            Some(repo),
+            ApproveUnauthorized {
+                calls: RefCell::new(0),
+            },
+        );
+        let request = CreateReviewRequest {
+            event: crate::forge::submit::SubmitEvent::Approve,
+            commit_id: "headsha1",
+            body: "summary",
+            comments: &[comment],
+        };
+        // when
+        let err = backend.create_review(&pr, request).unwrap_err();
+        // then
+        match err {
+            TuicrError::PartialSubmit { receipts, message } => {
+                assert!(receipts.body_posted);
+                assert_eq!(receipts.comment_ids, vec!["c-gl".to_string()]);
+                assert!(message.contains("rejected the approval"), "{message}");
+                assert!(!message.contains("glab auth login"), "{message}");
+            }
+            other => panic!("expected PartialSubmit, got {other:?}"),
+        }
+    }
+
+    /// Fails `/approve` with the given stderr.
+    struct ApproveFails(&'static str);
+
+    impl GlabCommandRunner for ApproveFails {
+        fn run(&self, args: &[String]) -> GlabCommandResult<String> {
+            if args.iter().any(|a| a.ends_with("/approve")) {
+                return Err(GlabCommandError::Failed {
+                    status: Some(1),
+                    stderr: self.0.to_string(),
+                });
+            }
+            Ok(String::new())
+        }
+
+        fn run_with_stdin(&self, _args: &[String], _stdin: &str) -> GlabCommandResult<String> {
+            Ok(String::new())
+        }
+    }
+
+    fn approve_error_message(stderr: &'static str) -> String {
+        let repo = ForgeRepository::gitlab("gitlab.com", "owner", "repo");
+        let pr = make_pr_details(repo.clone());
+        let backend = GitLabGlabBackend::with_runner(Some(repo), ApproveFails(stderr));
+        let request = CreateReviewRequest {
+            event: crate::forge::submit::SubmitEvent::Approve,
+            commit_id: "h",
+            body: "",
+            comments: &[],
+        };
+        backend.create_review(&pr, request).unwrap_err().to_string()
+    }
+
+    #[test]
+    fn should_report_ineligible_approver_when_approve_is_forbidden() {
+        let message = approve_error_message("glab: 403 Forbidden");
+        assert!(message.contains("rejected the approval"), "{message}");
+    }
+
+    #[test]
+    fn should_still_report_a_missing_login_when_approve_fails_to_authenticate() {
+        let message = approve_error_message("glab: not logged in. Run glab auth login");
+        assert!(message.contains("authentication failed"), "{message}");
+        assert!(!message.contains("rejected the approval"), "{message}");
     }
 }
