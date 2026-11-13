@@ -808,6 +808,427 @@ mod tests {
         }
     }
 
+    fn eof_gap_app(mode: DiffViewMode, bottom: bool) -> (App, GapId) {
+        let mut app = make_app();
+        let idx = app.diff_files.iter().position(|f| !f.is_binary).unwrap();
+        let eof = GapId {
+            file_idx: idx,
+            hunk_idx: app.diff_files[idx].hunks.len(),
+        };
+        let expanded: Vec<DiffLine> = (101..10101)
+            .map(|n| DiffLine {
+                origin: LineOrigin::Context,
+                content: format!("EOF ctx {n} {}", "x".repeat(100)),
+                old_lineno: Some(n),
+                new_lineno: Some(n),
+                raw_content: None,
+                highlighted_spans: None,
+            })
+            .collect();
+        app.file_line_count_cache.insert(idx, 10101);
+        if bottom {
+            app.expanded_bottom.insert(eof.clone(), expanded);
+        } else {
+            app.expanded_top.insert(eof.clone(), expanded);
+        }
+        app.diff_view_mode = mode;
+        (app, eof)
+    }
+
+    fn expanded_rows_built(app: &mut App, mode: DiffViewMode, height: u16) -> usize {
+        crate::ui::diff_view::EXPANDED_ROWS_BUILT.with(|v| v.set(0));
+        render_diff(app, mode, 60, height);
+        crate::ui::diff_view::EXPANDED_ROWS_BUILT.with(|v| v.get())
+    }
+
+    /// Both renderers must build only viewport rows of a huge EOF expansion,
+    /// from either the top (`↓`) or bottom (`↑`) run, and keep row parity.
+    #[test]
+    fn should_cull_offscreen_eof_expansion_in_both_renderers() {
+        for mode in [DiffViewMode::Unified, DiffViewMode::SideBySide] {
+            for bottom in [false, true] {
+                let (mut app, eof) = eof_gap_app(mode, bottom);
+                app.rebuild_annotations();
+                let first = app
+                    .line_annotations
+                    .iter()
+                    .position(|a| {
+                        matches!(a, AnnotatedLine::ExpandedContext { gap_id, .. } if *gap_id == eof)
+                    })
+                    .expect("EOF expansion annotations");
+                for wrap in [false, true] {
+                    app.set_diff_wrap(wrap);
+                    for delta in [0, 5000, 9990] {
+                        app.diff_state.scroll_offset = first + delta;
+                        let built = expanded_rows_built(&mut app, mode, 24);
+                        let ctx = format!("{mode:?} bottom={bottom} wrap={wrap} delta={delta}");
+                        assert!(built > 0, "viewport shows expanded rows: {ctx}");
+                        assert!(
+                            built <= app.diff_state.viewport_height,
+                            "built {built} offscreen EOF rows: {ctx}"
+                        );
+                        assert_parity(&app);
+                    }
+                }
+            }
+        }
+    }
+
+    /// The renderers must honour `App::eof_gap_enabled`: sources without an
+    /// EOF gap draw no expanded rows even if stale expansions are cached.
+    #[test]
+    fn should_not_render_eof_expansion_when_eof_gap_is_disabled() {
+        for mode in [DiffViewMode::Unified, DiffViewMode::SideBySide] {
+            let (mut app, eof) = eof_gap_app(mode, false);
+            app.diff_source = DiffSource::Staged;
+            assert!(!app.eof_gap_enabled());
+            // Tall enough that any rendered EOF row would be visible.
+            let with_stale = expanded_rows_built(&mut app, mode, 400);
+            app.expanded_top.remove(&eof);
+            let without = expanded_rows_built(&mut app, mode, 400);
+            assert_eq!(with_stale, without, "{mode:?}");
+        }
+    }
+
+    // ---- shared review-level section (`append_review_comments_section`) ----
+
+    fn row_text(line: &ratatui::text::Line) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    fn review_comment(text: &str, author: &str) -> Comment {
+        let mut c = Comment::new(text.to_string(), CommentType::from_id("note"), None);
+        c.author = author.to_string();
+        c
+    }
+
+    fn general_thread(body: &str) -> RemoteReviewThread {
+        RemoteReviewThread {
+            id: format!("general-{body}"),
+            path: String::new(),
+            line: None,
+            side: RemoteCommentSide::Right,
+            is_resolved: false,
+            is_outdated: false,
+            comments: vec![RemoteReviewComment {
+                id: format!("c-{body}"),
+                author: Some("reviewer".to_string()),
+                body: body.to_string(),
+                url: "https://example.com/c".to_string(),
+                ..Default::default()
+            }],
+        }
+    }
+
+    fn build_section(
+        app: &App,
+        cursor: usize,
+        visible: (usize, usize),
+    ) -> (Vec<String>, crate::ui::diff_view::ReviewSectionState) {
+        let mut lines = Vec::new();
+        let mut line_idx = 0;
+        let state = crate::ui::diff_view::append_review_comments_section(
+            app,
+            &mut lines,
+            &mut line_idx,
+            cursor,
+            60,
+            visible,
+        );
+        assert_eq!(lines.len(), line_idx, "line_idx tracks rows");
+        (lines.iter().map(row_text).collect(), state)
+    }
+
+    fn section_app() -> App {
+        let mut app = make_app();
+        app.forge_review_summaries.clear();
+        app.forge_review_threads.clear();
+        app
+    }
+
+    #[test]
+    fn should_render_review_section_header_summaries_and_gutter() {
+        let mut app = make_app();
+        app.session
+            .review_comments
+            .push(review_comment("mine", &app.username.clone()));
+        // cursor on row 0: the header gets the spaced `▶ ` marker
+        let (rows, _) = build_section(&app, 0, (0, 1000));
+        assert!(
+            rows[0].starts_with("▶ ═══ Review Comments"),
+            "{:?}",
+            rows[0]
+        );
+        assert!(rows.iter().any(|r| r.contains("a long review summary")));
+        // cursor elsewhere: spaced blank gutter on the header, one-column on rows
+        let (rows, _) = build_section(&app, 5, (0, 1000));
+        assert!(
+            rows[0].starts_with("  ═══ Review Comments"),
+            "{:?}",
+            rows[0]
+        );
+        assert!(rows[1].starts_with(' '), "{:?}", rows[1]);
+        let (rows, _) = build_section(&app, 1, (0, 1000));
+        assert!(rows[1].starts_with('▶'), "{:?}", rows[1]);
+        // single-file view drops the header banner
+        app.is_single_file_view = true;
+        let (rows, _) = build_section(&app, 99, (0, 1000));
+        assert!(!rows.iter().any(|r| r.contains("Review Comments")));
+        // no summaries -> nothing rendered
+        let (rows, _) = build_section(&section_app(), 0, (0, 1000));
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn should_tint_only_foreign_review_comments_and_use_panel_width() {
+        let mut app = section_app();
+        app.session
+            .review_comments
+            .push(review_comment("mine", &app.username.clone()));
+        app.session
+            .review_comments
+            .push(review_comment("theirs", "bob-the-author"));
+        let (rows, _) = build_section(&app, 99, (0, 1000));
+        let mine = rows.iter().position(|r| r.contains("mine")).unwrap();
+        let theirs = rows.iter().position(|r| r.contains("theirs")).unwrap();
+        let tinted: Vec<usize> = (0..rows.len())
+            .filter(|&i| rows[i].contains("bob-the-author"))
+            .collect();
+        assert_eq!(tinted.len(), 1, "only the foreign box names its author");
+        assert!(mine < tinted[0] && tinted[0] < theirs);
+        // box width is panel_width - 1 (+1 gutter column) on every row
+        let expected = crate::ui::comment_panel::format_comment_lines(
+            &app.theme,
+            crate::ui::diff_view::comment_type_presentation(&app, &CommentType::from_id("note")),
+            "mine",
+            None,
+            59,
+            None,
+        );
+        assert_eq!(
+            rows[mine - 1].chars().count(),
+            row_text(&expected[0]).chars().count() + 1
+        );
+    }
+
+    #[test]
+    fn should_blank_offscreen_review_comment_boxes_but_keep_row_count() {
+        let mut app = section_app();
+        app.session
+            .review_comments
+            .push(review_comment("hello-box", "me"));
+        let (shown, _) = build_section(&app, 99, (0, 1000));
+        let (culled, _) = build_section(&app, 99, (500, 600));
+        assert!(shown.iter().any(|r| r.contains("hello-box")));
+        assert_eq!(shown.len(), culled.len());
+        // row 0 is the header banner; the comment box rows after it are blank
+        assert!(culled[1..].iter().all(|r| r.is_empty()));
+    }
+
+    #[test]
+    fn should_render_general_threads_only_when_visible_and_without_anchor() {
+        let mut app = section_app();
+        app.forge_review_threads = vec![general_thread("general-note-body")];
+        let mut anchored = general_thread("anchored-body");
+        anchored.line = Some(3);
+        app.forge_review_threads.push(anchored);
+        let (rows, _) = build_section(&app, 99, (0, 1000));
+        assert!(rows.iter().any(|r| r.contains("general-note-body")));
+        assert!(!rows.iter().any(|r| r.contains("anchored-body")));
+        app.session.remote_comments_visibility =
+            crate::forge::remote_comments::PrCommentsVisibility::Hide;
+        let (rows, _) = build_section(&app, 99, (0, 1000));
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn should_place_new_review_comment_input_box_and_report_geometry() {
+        let mut app = section_app();
+        app.session
+            .review_comments
+            .push(review_comment("existing", "me"));
+        app.input_mode = InputMode::Comment;
+        app.comment_is_review_level = true;
+        app.comment_buffer = "draft".to_string();
+        app.comment_cursor = 5;
+        let (before, _) = {
+            let mut quiet = section_app();
+            quiet
+                .session
+                .review_comments
+                .push(review_comment("existing", "me"));
+            build_section(&quiet, 99, (0, 1000))
+        };
+        let (rows, st) = build_section(&app, 99, (0, 1000));
+        let start = before.len();
+        let input_rows = rows.len() - start;
+        assert!(input_rows >= 3);
+        let (expected, info) = crate::ui::comment_panel::format_comment_input_lines(
+            &app.theme,
+            crate::ui::diff_view::comment_type_presentation(&app, &app.comment_type),
+            "draft",
+            5,
+            None,
+            false,
+            59,
+            None,
+            app.supports_keyboard_enhancement,
+        );
+        for (got, want) in rows[start..].iter().zip(&expected) {
+            assert_eq!(got.trim_start(), row_text(want).trim_start());
+        }
+        assert_eq!(st.cursor_logical_line, Some(start + info.line_offset));
+        assert_eq!(st.cursor_column, 1 + info.column);
+        assert_eq!(st.input_box_range, Some((start, start + input_rows - 1)));
+        assert_eq!(st.annotation_offset, Some((start, input_rows, 0)));
+    }
+
+    #[test]
+    fn should_replace_the_edited_review_comment_with_an_editing_box() {
+        let mut app = section_app();
+        let first = review_comment("first-body", "me");
+        let second = review_comment("second-body", "me");
+        app.editing_comment_id = Some(first.id.clone());
+        app.session.review_comments.push(first.clone());
+        app.session.review_comments.push(second);
+        app.input_mode = InputMode::Comment;
+        app.comment_is_review_level = true;
+        app.comment_buffer = "edited".to_string();
+        app.comment_cursor = 6;
+        let (rows, st) = build_section(&app, 99, (0, 1000));
+        // second comment still shown normally; first replaced by editor
+        assert!(rows.iter().any(|r| r.contains("second-body")));
+        assert!(!rows.iter().any(|r| r.contains("first-body")));
+        assert!(rows.iter().any(|r| r.contains("edited")));
+        let (expected, info) = crate::ui::comment_panel::format_comment_input_lines(
+            &app.theme,
+            crate::ui::diff_view::comment_type_presentation(&app, &app.comment_type),
+            "edited",
+            6,
+            None,
+            true,
+            59,
+            None,
+            app.supports_keyboard_enhancement,
+        );
+        assert_eq!(
+            rows[1..=expected.len()]
+                .iter()
+                .map(|r| r.trim_start())
+                .collect::<Vec<_>>(),
+            expected
+                .iter()
+                .map(|r| row_text(r))
+                .collect::<Vec<_>>()
+                .iter()
+                .map(|r| r.trim_start())
+                .collect::<Vec<_>>()
+        );
+        let replaced = App::comment_display_lines(&first, 60);
+        assert_eq!(st.annotation_offset, Some((1, expected.len(), replaced)));
+        assert_eq!(st.cursor_logical_line, Some(1 + info.line_offset));
+        assert_eq!(st.cursor_column, 1 + info.column);
+        assert_eq!(st.input_box_range, Some((1, expected.len())));
+        // an editing id with no matching comment must not add a new-comment box
+        // (the edited comment is rendered, so no extra input rows follow)
+        assert_eq!(
+            rows.len(),
+            1 + expected.len() + App::comment_display_lines(&app.session.review_comments[1], 60)
+        );
+    }
+
+    #[test]
+    fn should_not_open_review_input_outside_review_level_comment_mode() {
+        for (mode, review_level) in [(InputMode::Comment, false), (InputMode::Normal, true)] {
+            let mut app = section_app();
+            app.session
+                .review_comments
+                .push(review_comment("existing", "me"));
+            app.editing_comment_id = Some("stale".to_string());
+            app.input_mode = mode;
+            app.comment_is_review_level = review_level;
+            app.comment_buffer = "draft".to_string();
+            let (rows, st) = build_section(&app, 99, (0, 1000));
+            assert!(!rows.iter().any(|r| r.contains("draft")), "{mode:?}");
+            assert!(rows.iter().any(|r| r.contains("existing")), "{mode:?}");
+            assert_eq!(st.annotation_offset, None);
+            // and with no editing id the same state shows no input either
+            app.editing_comment_id = None;
+            let (rows, st) = build_section(&app, 99, (0, 1000));
+            assert!(!rows.iter().any(|r| r.contains("draft")), "{mode:?}");
+            assert_eq!(st.input_box_range, None);
+        }
+    }
+
+    #[test]
+    fn should_not_open_new_review_input_while_a_comment_is_being_edited() {
+        let mut app = section_app();
+        let c = review_comment("body", "me");
+        app.editing_comment_id = Some(c.id.clone());
+        app.session.review_comments.push(c);
+        app.input_mode = InputMode::Comment;
+        app.comment_is_review_level = true;
+        app.comment_buffer = "ed".to_string();
+        let (_, st) = build_section(&app, 99, (0, 1000));
+        // exactly one input box (the editor), reported with replaced rows
+        assert!(matches!(st.annotation_offset, Some((1, _, replaced)) if replaced > 0));
+    }
+
+    /// Both renderers must hand the review section's cursor, scroll box and
+    /// annotation geometry on to the frame.
+    #[test]
+    fn should_wire_review_section_geometry_into_both_renderers() {
+        for mode in [DiffViewMode::Unified, DiffViewMode::SideBySide] {
+            let mut app = section_app();
+            for i in 0..12 {
+                app.session
+                    .review_comments
+                    .push(review_comment(&format!("filler {i}"), "me"));
+            }
+            app.comment_is_file_level = false;
+            app.input_mode = InputMode::Comment;
+            app.comment_is_review_level = true;
+            app.comment_buffer = "draft".to_string();
+            app.comment_cursor = 5;
+            app.set_diff_wrap(false);
+            app.diff_state.scroll_offset = 0;
+            render_diff(&mut app, mode, 60, 10);
+            let (start, len, replaced) = app
+                .comment_input_annotation_offset
+                .unwrap_or_else(|| panic!("{mode:?}: annotation offset set"));
+            assert_eq!(replaced, 0, "{mode:?}");
+            assert!(len >= 3 && start > 10, "{mode:?}: {start} {len}");
+            // box range scrolled the input into view
+            let off = app.diff_state.scroll_offset;
+            assert!(
+                off + 10 > start + len - 1 && off <= start,
+                "{mode:?}: scroll {off}"
+            );
+            // cursor column = gutter + info.column, row inside viewport
+            let (col, row) = app.comment_cursor_screen_pos.expect("cursor pos");
+            assert!(col >= 1 && row < 10, "{mode:?}: {col},{row}");
+            let (_, info) = crate::ui::comment_panel::format_comment_input_lines(
+                &app.theme,
+                crate::ui::diff_view::comment_type_presentation(&app, &app.comment_type),
+                "draft",
+                5,
+                None,
+                false,
+                59,
+                None,
+                app.supports_keyboard_enhancement,
+            );
+            let inner_x = app.diff_inner_area.unwrap().x;
+            let inner_y = app.diff_inner_area.unwrap().y;
+            assert_eq!(col, inner_x + 1 + info.column, "{mode:?}");
+            assert_eq!(
+                (row - inner_y) as usize,
+                start + info.line_offset - off,
+                "{mode:?}"
+            );
+        }
+    }
+
     #[test]
     fn parity_unified_with_wrap() {
         for wrap_style in [WrapStyle::Flow, WrapStyle::Gutter] {

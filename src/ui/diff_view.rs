@@ -1284,6 +1284,157 @@ pub(super) fn scroll_spans_by_width(line: Line<'_>, mut columns: usize) -> Line<
     Line::from(spans)
 }
 
+/// Cursor/IME bookkeeping produced while building the review-level section.
+#[derive(Default)]
+pub(super) struct ReviewSectionState {
+    pub cursor_logical_line: Option<usize>,
+    pub cursor_column: u16,
+    pub input_box_range: Option<(usize, usize)>,
+    /// `(line_idx, input rows, annotation rows replaced)`.
+    pub annotation_offset: Option<(usize, usize, usize)>,
+}
+
+/// Prefix each row with the cursor gutter marker and append it.
+pub(super) fn push_with_indicator<'a>(
+    lines: &mut Vec<Line<'a>>,
+    line_idx: &mut usize,
+    current_line_idx: usize,
+    theme: &Theme,
+    rows: Vec<Line<'a>>,
+) {
+    for mut row in rows {
+        let indicator = cursor_indicator(*line_idx, current_line_idx);
+        row.spans.insert(
+            0,
+            Span::styled(indicator, styles::current_line_indicator_style(theme)),
+        );
+        lines.push(row);
+        *line_idx += 1;
+    }
+}
+
+/// Build the review-level comment section shared by both renderers: the
+/// `Review Comments` header, forge review summaries, review comments (or the
+/// inline editor replacing one), general remote threads and the new-comment
+/// input box. `comment_width` is the text width of comment boxes.
+pub(super) fn append_review_comments_section<'a>(
+    app: &App,
+    lines: &mut Vec<Line<'a>>,
+    line_idx: &mut usize,
+    current_line_idx: usize,
+    panel_width: usize,
+    visible: (usize, usize),
+) -> ReviewSectionState {
+    use crate::app::InputMode;
+    use crate::forge::remote_comments::PrCommentsVisibility;
+    let comment_width = panel_width.saturating_sub(1);
+    let mut state = ReviewSectionState::default();
+    let is_review_comment_mode =
+        app.input_mode == InputMode::Comment && app.comment_is_review_level;
+
+    // Redundant in single-file view (see `show_review_comments_header`).
+    if app.show_review_comments_header() {
+        let general_indicator = cursor_indicator_spaced(*line_idx, current_line_idx);
+        lines.push(Line::from(vec![
+            Span::styled(
+                general_indicator,
+                styles::current_line_indicator_style(&app.theme),
+            ),
+            Span::styled(
+                REVIEW_COMMENTS_HEADER_PREFIX,
+                styles::file_header_style(&app.theme),
+            ),
+            Span::styled(HEADER_RULE, styles::file_header_style(&app.theme)),
+        ]));
+        *line_idx += 1;
+    }
+
+    for summary in &app.forge_review_summaries {
+        let rows = comment_panel::format_remote_review_summary_lines(
+            &app.theme,
+            summary,
+            app.forge_kind(),
+        );
+        push_with_indicator(lines, line_idx, current_line_idx, &app.theme, rows);
+    }
+
+    let input_lines = |is_editing: bool| {
+        comment_panel::format_comment_input_lines(
+            &app.theme,
+            comment_type_presentation(app, &app.comment_type),
+            &app.comment_buffer,
+            app.comment_cursor,
+            None,
+            is_editing,
+            comment_width,
+            app.comment_vim_mode_label()
+                .as_ref()
+                .map(|(t, w)| (t.as_str(), *w)),
+            app.supports_keyboard_enhancement,
+        )
+    };
+
+    for comment in &app.session.review_comments {
+        let is_being_edited =
+            app.editing_comment_id.as_ref() == Some(&comment.id) && is_review_comment_mode;
+        let replaced = App::comment_display_lines(comment, panel_width);
+
+        if is_being_edited {
+            let (rows, cursor_info) = input_lines(true);
+            state.cursor_logical_line = Some(*line_idx + cursor_info.line_offset);
+            state.cursor_column = 1 + cursor_info.column;
+            state.input_box_range = Some((*line_idx, *line_idx + rows.len().saturating_sub(1)));
+            state.annotation_offset = Some((*line_idx, rows.len(), replaced));
+            push_with_indicator(lines, line_idx, current_line_idx, &app.theme, rows);
+        } else {
+            if !comment_box_visible(*line_idx, replaced, visible) {
+                skip_comment_box(lines, line_idx, replaced);
+                continue;
+            }
+            let rows = comment_panel::format_comment_lines(
+                &app.theme,
+                comment_type_presentation(app, &comment.comment_type),
+                &comment.content,
+                None,
+                comment_width,
+                (comment.author != app.username).then_some(comment.author.as_str()),
+            );
+            push_with_indicator(lines, line_idx, current_line_idx, &app.theme, rows);
+        }
+    }
+
+    // General MR notes (line: None); inline threads are rendered in-diff.
+    let visibility = app.session.remote_comments_visibility;
+    if !matches!(visibility, PrCommentsVisibility::Hide) {
+        for thread in &app.forge_review_threads {
+            if thread.line.is_some() {
+                continue;
+            }
+            let Some(muted) = visibility.render_decision(thread) else {
+                continue;
+            };
+            let rows = comment_panel::format_remote_thread_lines(
+                &app.theme,
+                thread,
+                muted,
+                app.forge_kind(),
+            );
+            push_with_indicator(lines, line_idx, current_line_idx, &app.theme, rows);
+        }
+    }
+
+    if is_review_comment_mode && app.editing_comment_id.is_none() {
+        let (rows, cursor_info) = input_lines(false);
+        state.cursor_logical_line = Some(*line_idx + cursor_info.line_offset);
+        state.cursor_column = 1 + cursor_info.column;
+        state.input_box_range = Some((*line_idx, *line_idx + rows.len().saturating_sub(1)));
+        state.annotation_offset = Some((*line_idx, rows.len(), 0));
+        push_with_indicator(lines, line_idx, current_line_idx, &app.theme, rows);
+    }
+
+    state
+}
+
 /// Render a run of one-row-per-item lines, building only the rows inside
 /// `visible` (`start..end` in logical line indices). Rows outside it become
 /// blank placeholders in bulk, so a huge expansion costs O(viewport).
@@ -1516,4 +1667,9 @@ mod tests {
         // then: scroll so box_end (10) is visible => scroll = 10 - 10 + 1 = 1
         assert_eq!(scroll, 1);
     }
+}
+
+#[cfg(test)]
+std::thread_local! {
+    pub(super) static EXPANDED_ROWS_BUILT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
