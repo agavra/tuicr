@@ -276,6 +276,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                format!("  {leader}p        "),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Pick a file from a popup and jump to it (`/` filters)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 format!("  {leader}n        "),
                 Style::default().add_modifier(Modifier::BOLD),
             ),
@@ -329,10 +336,17 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
-                "  Space/Enter",
+                "  Space     ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("  Toggle commit selection (updates diff)"),
+            Span::raw("Toggle commit selection (updates diff)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  Enter     ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Select only this commit (updates diff)"),
         ]),
         Line::from(vec![
             Span::styled(
@@ -394,7 +408,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  r         ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Toggle PRs requesting your review"),
+            Span::raw("Cycle PR scope: all / requested / requested (me) on GitHub"),
         ]),
         Line::from(vec![
             Span::styled(
@@ -550,7 +564,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  r         ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Toggle file reviewed"),
+            Span::raw("Toggle file reviewed (PR description: collapse)"),
         ]),
         Line::from(vec![
             Span::styled(

@@ -342,7 +342,9 @@ where
         ];
         match query.scope {
             PullRequestListScope::Open => params.push(("state", "OPEN".to_string())),
-            PullRequestListScope::ReviewRequested => {
+            // `PersonallyRequested` is not in Bitbucket's scope cycle; Cloud
+            // has no team reviewers, so it would mean the same thing anyway.
+            PullRequestListScope::ReviewRequested | PullRequestListScope::PersonallyRequested => {
                 // Cloud has no workspace-wide "review requested" endpoint; the
                 // repository-scoped `q` filter is the equivalent.
                 let uuid = self.viewer_uuid()?.ok_or_else(|| {
@@ -550,61 +552,72 @@ where
         pr: &PullRequestDetails,
         request: CreateReviewRequest<'_>,
     ) -> Result<GhCreateReviewResponse> {
-        // Bitbucket has no pending-review primitive reachable through `bkt`,
-        // and Cloud's request-changes endpoint is not yet wired up here.
-        // Reject up front rather than silently downgrading to a plain comment.
-        match request.event {
-            SubmitEvent::Comment | SubmitEvent::Approve => {}
-            SubmitEvent::RequestChanges => {
-                return Err(TuicrError::UnsupportedOperation(
-                    "Requesting changes is not supported for Bitbucket yet. \
-                     Use `:submit` to post comments, then request changes in Bitbucket."
-                        .to_string(),
-                ));
-            }
-            SubmitEvent::Draft => {
-                return Err(TuicrError::UnsupportedOperation(
-                    "Draft (pending) reviews are not supported for Bitbucket yet. \
-                     Use `:submit` to publish comments directly."
-                        .to_string(),
-                ));
-            }
-        }
-
+        // Bitbucket has no review object. Every comment posts on its own; a
+        // draft marks each one `pending`, which only its author can see until
+        // they publish from Bitbucket's own UI — mirroring GitHub's pending
+        // review and GitLab's draft notes. Approval and change requests are
+        // separate participant-state calls made after the comments land.
+        let is_draft = request.event == SubmitEvent::Draft;
         let mut first_comment_id: Option<u64> = None;
 
         // The review body becomes a general (non-inline) comment.
         if !request.body.is_empty() {
-            let body = serde_json::json!({ "content": { "raw": request.body } });
+            let mut body = serde_json::json!({ "content": { "raw": request.body } });
+            if is_draft {
+                body["pending"] = serde_json::Value::Bool(true);
+            }
             let id = self.post_comment(pr, &body)?;
             first_comment_id = first_comment_id.or(id);
         }
 
         for comment in request.comments {
-            let body = serde_json::json!({
+            let mut body = serde_json::json!({
                 "content": { "raw": comment.body },
                 "inline": Self::inline_anchor(comment),
             });
+            if is_draft {
+                body["pending"] = serde_json::Value::Bool(true);
+            }
             let id = self.post_comment(pr, &body)?;
             first_comment_id = first_comment_id.or(id);
         }
 
-        let approved = request.event == SubmitEvent::Approve;
-        if approved {
-            let mut args = vec![
-                "pr".to_string(),
-                "approve".to_string(),
-                pr.number.to_string(),
-            ];
-            args.extend(Self::repo_args(&pr.repository));
-            self.runner.run(&args).map_err(map_approve_error)?;
-        }
+        let state = match request.event {
+            SubmitEvent::Approve => {
+                let mut args = vec![
+                    "pr".to_string(),
+                    "approve".to_string(),
+                    pr.number.to_string(),
+                ];
+                args.extend(Self::repo_args(&pr.repository));
+                self.runner.run(&args).map_err(map_approve_error)?;
+                "APPROVED"
+            }
+            SubmitEvent::RequestChanges => {
+                // `bkt` has no first-class command for this; Cloud's endpoint
+                // takes no body.
+                let args = vec![
+                    "api".to_string(),
+                    format!(
+                        "{}/pullrequests/{}/request-changes",
+                        Self::repo_path(&pr.repository),
+                        pr.number
+                    ),
+                    "--method".to_string(),
+                    "POST".to_string(),
+                ];
+                self.runner.run(&args).map_err(map_request_changes_error)?;
+                "CHANGES_REQUESTED"
+            }
+            SubmitEvent::Draft => "PENDING",
+            SubmitEvent::Comment => "COMMENTED",
+        };
 
         // Synthesized: Bitbucket returns no review object to report.
         Ok(GhCreateReviewResponse {
             id: first_comment_id.unwrap_or(0),
             html_url: pr.url.clone(),
-            state: if approved { "APPROVED" } else { "COMMENTED" }.to_string(),
+            state: state.to_string(),
         })
     }
 }
@@ -664,11 +677,12 @@ pub fn parse_bitbucket_remote_url(remote_url: &str) -> Option<ForgeRepository> {
     bitbucket_repository_from_path(BITBUCKET_CLOUD_HOST, path)
 }
 
-/// True only for Bitbucket Cloud. `altssh.bitbucket.org` is the SSH-over-443
-/// transport host used on networks that block port 22; it maps back to the
-/// same Cloud instance.
+/// True only for Bitbucket Cloud. `ssh.bitbucket.org` serves SSH on port 22;
+/// `altssh.bitbucket.org` serves SSH on port 443. Both map to the same Cloud
+/// instance.
 fn is_bitbucket_cloud_host(host: &str) -> bool {
     host.eq_ignore_ascii_case(BITBUCKET_CLOUD_HOST)
+        || host.eq_ignore_ascii_case("ssh.bitbucket.org")
         || host.eq_ignore_ascii_case("altssh.bitbucket.org")
         || host.eq_ignore_ascii_case("api.bitbucket.org")
 }
@@ -849,6 +863,19 @@ fn map_approve_error(error: BktCommandError) -> TuicrError {
         BktCommandError::Failed { stderr, .. } if looks_like_permission_failure(stderr) => {
             TuicrError::Forge(
                 "Comments were posted, but Bitbucket rejected the approval: \
+                 you may not be a reviewer on this pull request."
+                    .to_string(),
+            )
+        }
+        _ => map_bkt_error(error),
+    }
+}
+
+fn map_request_changes_error(error: BktCommandError) -> TuicrError {
+    match &error {
+        BktCommandError::Failed { stderr, .. } if looks_like_permission_failure(stderr) => {
+            TuicrError::Forge(
+                "Comments were posted, but Bitbucket rejected the change request: \
                  you may not be a reviewer on this pull request."
                     .to_string(),
             )
@@ -1510,10 +1537,41 @@ mod tests {
     }
 
     #[test]
-    fn should_reject_request_changes_and_draft_before_posting_anything() {
-        for event in [SubmitEvent::RequestChanges, SubmitEvent::Draft] {
+    fn should_post_every_comment_as_pending_on_draft() {
+        // given
+        let backend = backend(vec![r#"{"id":111}"#, r#"{"id":222}"#]);
+        let comments = vec![inline_comment(14, GhSide::Right, Some(10))];
+        let request = CreateReviewRequest {
+            event: SubmitEvent::Draft,
+            commit_id: &"a".repeat(40),
+            body: "draft summary",
+            comments: &comments,
+        };
+        // when
+        let response = backend.create_review(&details(), request).unwrap();
+        // then — body and inline comment both pending, nothing else sent
+        let calls = backend.runner.calls.borrow();
+        assert_eq!(calls.len(), 2);
+        for call in calls.iter() {
+            assert_eq!(call[0], "api");
+            let posted: serde_json::Value = serde_json::from_str(&call[5]).unwrap();
+            assert_eq!(posted["pending"], true, "not pending: {posted}");
+        }
+        let inline: serde_json::Value = serde_json::from_str(&calls[1][5]).unwrap();
+        assert_eq!(inline["inline"]["start_to"], 10);
+        assert_eq!(response.id, 111);
+        assert_eq!(response.state, "PENDING");
+    }
+
+    #[test]
+    fn should_not_mark_comments_pending_outside_draft() {
+        for event in [
+            SubmitEvent::Comment,
+            SubmitEvent::Approve,
+            SubmitEvent::RequestChanges,
+        ] {
             // given
-            let backend = backend(vec![]);
+            let backend = backend(vec![r#"{"id":1}"#, "{}"]);
             let request = CreateReviewRequest {
                 event,
                 commit_id: &"a".repeat(40),
@@ -1521,14 +1579,71 @@ mod tests {
                 comments: &[],
             };
             // when
-            let err = backend.create_review(&details(), request).unwrap_err();
-            // then — nothing was sent, so the user can retry with `:submit`
-            assert!(
-                err.to_string().contains("not supported for Bitbucket yet"),
-                "unexpected error for {event:?}: {err}"
-            );
-            assert!(backend.runner.calls.borrow().is_empty());
+            backend.create_review(&details(), request).unwrap();
+            // then
+            let calls = backend.runner.calls.borrow();
+            let posted: serde_json::Value = serde_json::from_str(&calls[0][5]).unwrap();
+            assert!(posted.get("pending").is_none(), "{event:?}: {posted}");
         }
+    }
+
+    #[test]
+    fn should_request_changes_after_posting_comments() {
+        // given
+        let backend = backend(vec![r#"{"id":1}"#, "{}"]);
+        let comments = vec![inline_comment(3, GhSide::Right, None)];
+        let request = CreateReviewRequest {
+            event: SubmitEvent::RequestChanges,
+            commit_id: &"a".repeat(40),
+            body: "",
+            comments: &comments,
+        };
+        // when
+        let response = backend.create_review(&details(), request).unwrap();
+        // then — comments land first, so a rejected request keeps the feedback
+        let calls = backend.runner.calls.borrow();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(
+            calls[1],
+            vec![
+                "api",
+                "/2.0/repositories/example-workspace/repo/pullrequests/830/request-changes",
+                "--method",
+                "POST",
+            ]
+        );
+        assert_eq!(response.state, "CHANGES_REQUESTED");
+    }
+
+    #[test]
+    fn should_say_comments_survived_when_only_the_change_request_fails() {
+        // given — the request-changes call fails after comments posted
+        struct RequestChangesFails;
+        impl BktCommandRunner for RequestChangesFails {
+            fn run(&self, args: &[String]) -> BktCommandResult<String> {
+                if args[1].ends_with("/request-changes") {
+                    return Err(BktCommandError::Failed {
+                        status: Some(1),
+                        stderr: "403 Forbidden".to_string(),
+                    });
+                }
+                Ok(r#"{"id":1}"#.to_string())
+            }
+        }
+        let backend = BitbucketBktBackend::with_runner(Some(repo()), RequestChangesFails);
+        let request = CreateReviewRequest {
+            event: SubmitEvent::RequestChanges,
+            commit_id: &"a".repeat(40),
+            body: "text",
+            comments: &[],
+        };
+        // when
+        let err = backend.create_review(&details(), request).unwrap_err();
+        // then — the message must not imply the comments were lost
+        assert!(
+            err.to_string().contains("Comments were posted"),
+            "unexpected error: {err}"
+        );
     }
 
     // ---- error mapping ---------------------------------------------------

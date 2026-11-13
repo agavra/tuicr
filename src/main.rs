@@ -16,14 +16,15 @@ use tuicr::editor::{EditorCommand, EditorError, EditorLaunch, EditorSurface, Edi
 use tuicr::handler::{
     handle_command_action, handle_comment_action, handle_comment_navigator_action,
     handle_commit_select_action, handle_commit_selector_action, handle_confirm_action,
-    handle_diff_action, handle_file_list_action, handle_help_action, handle_mouse_event,
-    handle_search_action, handle_submit_action_picker_action, handle_submit_confirm_action,
-    handle_submit_resolver_action, handle_summary_action, handle_theme_picker_action,
-    handle_visual_action,
+    handle_diff_action, handle_file_list_action, handle_file_picker_action, handle_help_action,
+    handle_mouse_event, handle_search_action, handle_submit_action_picker_action,
+    handle_submit_confirm_action, handle_submit_resolver_action, handle_summary_action,
+    handle_theme_picker_action, handle_visual_action,
 };
 use tuicr::input::{
-    Action, map_file_tree_mode_with_q_quits, map_file_tree_prompt_mode,
-    map_key_to_action_with_q_quits, map_target_filter_mode, map_theme_picker_filter_mode,
+    Action, map_file_picker_filter_mode, map_file_tree_mode_with_q_quits,
+    map_file_tree_prompt_mode, map_key_to_action_with_q_quits, map_target_filter_mode,
+    map_theme_picker_filter_mode,
 };
 use tuicr::terminal_state::{TerminalFeatures, TerminalSession};
 use tuicr::theme::{is_syntax_theme_fallback_warning, resolve_theme_with_config};
@@ -722,6 +723,10 @@ fn main() -> anyhow::Result<()> {
                                 app.relative_line_numbers = !app.relative_line_numbers;
                                 continue;
                             }
+                            crossterm::event::KeyCode::Char('p') => {
+                                app.enter_file_picker_mode();
+                                continue;
+                            }
                             _ => {}
                         }
                         // Otherwise fall through to normal handling
@@ -755,6 +760,10 @@ fn main() -> anyhow::Result<()> {
                         // The theme picker's `/` filter draft captures all
                         // input until Enter/Esc, same shape as the two above.
                         map_theme_picker_filter_mode(key)
+                    } else if app.input_mode == InputMode::FilePicker && app.file_picker_filtering()
+                    {
+                        // Same for the file picker's `/` draft.
+                        map_file_picker_filter_mode(key)
                     } else if app.input_mode == InputMode::Normal
                         && app.focused_panel == FocusedPanel::FileList
                     {
@@ -974,6 +983,7 @@ fn dispatch_action(app: &mut App, action: Action) {
         InputMode::SubmitConfirm => handle_submit_confirm_action(app, action),
         InputMode::SubmitActionPicker => handle_submit_action_picker_action(app, action),
         InputMode::ThemePicker => handle_theme_picker_action(app, action),
+        InputMode::FilePicker => handle_file_picker_action(app, action),
         InputMode::Normal => match app.focused_panel {
             FocusedPanel::FileList => handle_file_list_action(app, action),
             FocusedPanel::Comments => handle_comment_navigator_action(app, action),

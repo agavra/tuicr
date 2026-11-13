@@ -424,7 +424,7 @@ pub fn pr_commit_to_commit_info(commit: &crate::forge::traits::PullRequestCommit
         short_id: commit.short_oid.clone(),
         branch_name: None,
         summary: commit.summary.clone(),
-        body: None,
+        body: commit.body.clone(),
         author: commit.author.clone(),
         time: commit.timestamp.unwrap_or_else(chrono::Utc::now),
     }
@@ -617,6 +617,10 @@ pub enum InputMode {
     /// a live preview immediately; `/` opens a filter draft the same way the
     /// file tree's `i`/`e`/`/` prompts work.
     ThemePicker,
+    /// Modal file picker opened by `<leader>p`. Lists the files that pass
+    /// the file-tree filters; `Enter` jumps to the selected one, and `/`
+    /// opens a filter draft the same way the theme picker does.
+    FilePicker,
 }
 
 /// CommandCompletionState keeps one Tab-completion run anchored to the text
@@ -1191,6 +1195,8 @@ pub struct App {
     pub file_filter: FileTreeFilter,
     /// Runtime `:theme` picker state.
     pub theme_picker: ThemePickerState,
+    /// `<leader>p` file picker state.
+    pub file_picker: FilePickerState,
     pub command_buffer: String,
     pub(crate) command_completion: Option<CommandCompletionState>,
     pub(crate) command_return_mode: InputMode,
@@ -1790,6 +1796,70 @@ impl ThemePickerState {
     }
 }
 
+/// `<leader>p` file picker state (`InputMode::FilePicker`).
+///
+/// `candidates` pairs each listed file's absolute `diff_files` index with its
+/// display path, captured once when the picker opens from the files that pass
+/// `App::file_passes_filter`. `draft` is the open `/` prompt, the same shape
+/// as `ThemePickerState`'s, but it narrows the list as it is typed and its
+/// `Enter` jumps straight to the selected match, so there is no committed
+/// filter to keep.
+#[derive(Default)]
+pub struct FilePickerState {
+    pub candidates: Vec<(usize, String)>,
+    pub draft: Option<String>,
+    /// File highlighted when the draft opened, restored if it is discarded.
+    pub file_before_draft: Option<usize>,
+    /// Selection + scroll offset into the filtered view.
+    pub list_state: ratatui::widgets::ListState,
+}
+
+impl FilePickerState {
+    /// Indices into `candidates` that survive the open draft
+    /// (case-insensitive substring match on the display path; an empty or
+    /// absent draft shows every candidate).
+    pub fn filtered_indices(&self) -> Vec<usize> {
+        let needle = self
+            .draft
+            .as_deref()
+            .unwrap_or_default()
+            .trim()
+            .to_lowercase();
+        self.candidates
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, path))| needle.is_empty() || path.to_lowercase().contains(&needle))
+            .map(|(idx, _)| idx)
+            .collect()
+    }
+
+    /// Index into the filtered view currently highlighted.
+    pub fn selected(&self) -> usize {
+        self.list_state.selected().unwrap_or(0)
+    }
+
+    pub fn select(&mut self, index: usize) {
+        self.list_state.select(Some(index));
+    }
+
+    /// The absolute `diff_files` index of the highlighted row, if any rows
+    /// are visible.
+    pub fn selected_file_idx(&self) -> Option<usize> {
+        self.selected_candidate().map(|(file_idx, _)| *file_idx)
+    }
+
+    /// The display path of the highlighted row, if any rows are visible.
+    pub fn selected_path(&self) -> Option<&str> {
+        self.selected_candidate().map(|(_, path)| path.as_str())
+    }
+
+    fn selected_candidate(&self) -> Option<&(usize, String)> {
+        self.filtered_indices()
+            .get(self.selected())
+            .and_then(|idx| self.candidates.get(*idx))
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct HelpState {
     pub scroll_offset: usize,
@@ -1920,6 +1990,7 @@ mod commits;
 mod diff_load;
 mod editor_target;
 mod file_filter;
+mod file_picker;
 mod gaps;
 mod init;
 mod modes;

@@ -18,6 +18,7 @@ Full reference. Press `?` inside tuicr for an in-app version of this list.
 | `{N}G` | Go to source line N in current file |
 | `{N}{motion}` | Vim-style count prefix — repeats `j` / `k` / `h` / `l` / `{` / `}` / `[` / `]` `N` times |
 | `{` / `}` | Jump to previous / next file |
+| `<leader>p` | Open the file picker (see below) |
 | `[` / `]` | Jump to previous / next hunk |
 | `m` / `M` | Jump to next / previous comment |
 | `/` | Search within diff (case-insensitive regex); matches on diff content are highlighted and the status bar shows the `[current/total]` position (headers, comments, and PR info are searchable but not highlighted) |
@@ -33,6 +34,21 @@ Full reference. Press `?` inside tuicr for an in-app version of this list.
 a search. Use it when the terminal leaves stale text on screen, for example after
 a font size change in a window that wasn't visible. tuicr also redraws in full
 whenever the terminal reports a resize.
+
+## File picker
+
+`<leader>p` opens a popup over the diff that lists the files in the review, so you
+can jump to one without showing the file list. It lists only the files on screen:
+the file tree's `i` / `e` filters and hidden reviewed files (`:set reviewed!`)
+apply. The diff's current file starts selected.
+
+| Key | Action |
+|-----|--------|
+| `j` / `↓` | Select next file |
+| `k` / `↑` | Select previous file |
+| `/` | Filter paths by case-insensitive substring; the list narrows as you type. `↑` / `↓` move the selection, `Enter` jumps to it and closes, `Esc` drops the filter and keeps the popup open |
+| `Enter` | Jump to the selected file, the same as `Enter` in the file tree (single-file view switches to it) |
+| `Esc` | Close without moving |
 
 ## Diff search
 
@@ -150,7 +166,7 @@ Shown below the file tree when local comments or visible remote PR threads exist
 
 | Key | Action |
 |-----|--------|
-| `r` | Toggle file reviewed |
+| `r` | Toggle file reviewed (on the PR description: mark it reviewed and collapse it to one row) |
 | `R` | Toggle hunk reviewed |
 | `c` | Add line comment (or file comment if not on a diff line) |
 | `C` | Add file comment |
@@ -162,6 +178,11 @@ Shown below the file tree when local comments or visible remote PR threads exist
 | `e` | Open focused file in `$EDITOR` |
 | `y` | Copy review to clipboard |
 | `Y` | Copy the comment at cursor to clipboard |
+
+In PR review, `r` with the cursor anywhere on the PR description marks the
+description reviewed and collapses it to its `═══ ✓ PR #N title` row; `r` on that
+row expands it again. The mark is saved with the session like a file's reviewed
+mark (`:w`), carries over when the PR gets new commits, and `:clear` resets it.
 
 `e` opens the file at the cursor's line. Terminal editors (`vim`, `nvim`, `nano`, …)
 take over the screen and tuicr reloads the diff once they exit. Windowed editors
@@ -304,10 +325,10 @@ Not every forge supports every event:
 |---|---|---|---|---|---|---|
 | `comment` | yes | yes | yes | yes | yes | yes |
 | `approve` | yes | yes | yes | yes | yes (vote +10) | yes (vote +2) |
-| `request-changes` | yes | yes | yes | no | yes (vote -10) | yes (vote -1) |
-| `draft` | yes | yes | yes | no | yes (plain comment) | yes |
+| `request-changes` | yes | yes | yes | yes | yes (vote -10) | yes (vote -1) |
+| `draft` | yes | yes | yes | yes | yes (plain comment) | yes |
 
-Bitbucket rejects `request-changes` and `draft` up front rather than silently downgrading them.
+Bitbucket `draft` posts pending comments that the author publishes from Bitbucket's own UI.
 Azure DevOps has no pending-review primitive, so `draft` posts as a plain comment with no vote.
 Gitea requires a review summary for `request-changes` and `draft`, and for `comment` when there
 are no inline comments; inline comments alone do not satisfy it. GitLab `draft` creates draft
@@ -323,11 +344,16 @@ comments that the author publishes from Gerrit's Reply UI.
 | `Space` | Toggle local commit selection |
 | `Enter` | Confirm local commit range, open PR, load more PRs, or resume a saved review |
 | `/` | Filter currently loaded PR rows locally |
-| `r` | In Pull Requests tab, toggle all open PRs / PRs requesting your review |
+| `r` | In Pull Requests tab, cycle all open PRs / PRs requesting your review / (GitHub) PRs requesting you by name |
 | `a` | In Sessions tab, show or hide saved reviews holding no progress |
 | `dd` | In Sessions tab, delete the saved review under the cursor (asks to confirm) |
 | `Esc` | Return to the diff |
 | `:q` | Quit |
+
+In the Pull Requests tab, `r` steps through the list scopes the forge supports and
+refetches the first page: all open PRs, then PRs requesting your review, then back. On
+GitHub a third scope, `requested (me)`, sits between "requested" and "all": it lists only
+PRs that request your review by name, leaving out requests made to a team you belong to.
 
 The Sessions tab lists saved reviews for the current checkout, so you can pick one
 instead of retyping the commit range it was opened with. Rows show the review target,
@@ -345,13 +371,19 @@ crash, or by `tuicr review delete`/`clear` emptying a review another tuicr had o
 Shown at the top of the diff when reviewing multiple commits. Focus it with `<leader>k` or `Tab`.
 When opening a GitHub PR or GitLab MR you have reviewed before, tuicr may preselect only commits
 newer than your latest submitted review; commits already covered by that review are marked with
-`✓`. Use `Space` / `Enter` here to expand or adjust the range. Bitbucket does not record which
+`✓`. Use `Space` to expand or adjust the range, or `Enter` to jump to a single commit. Bitbucket does not record which
 commit an approval covered, so no commits are preselected there.
+
+When exactly one commit is selected, its message is shown above its diff as a
+`Commit Message (<sha>)` entry, in local and pull request reviews alike. A review of a single
+commit, including a single-commit pull request, shows the message without the selector. Comments
+on a commit message in a pull request are submitted in the review summary rather than inline.
 
 | Key | Action |
 |-----|--------|
 | `j` / `k` | Navigate commits |
-| `Space` / `Enter` | Toggle commit selection (updates diff) |
+| `Space` | Toggle commit selection (updates diff) |
+| `Enter` | Select only the commit under the cursor, unselecting the others (updates diff) |
 | `(` / `)` | Cycle through individual commits |
 | `Esc` | Return focus to diff |
 

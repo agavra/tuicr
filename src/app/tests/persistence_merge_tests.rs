@@ -100,3 +100,29 @@ fn should_apply_external_edit_when_comment_is_unchanged_locally() {
         "new"
     );
 }
+
+#[test]
+fn should_merge_external_pr_description_reviewed_mark() {
+    let base = test_session();
+    let mut current = base.clone();
+    let mut latest = base.clone();
+    latest.pr_description_reviewed = true;
+
+    let changed = App::merge_external_session_changes(&mut current, &base, &latest);
+
+    assert_eq!(changed, 1);
+    assert!(current.pr_description_reviewed);
+}
+
+#[test]
+fn should_keep_local_pr_description_reviewed_mark_over_stale_disk_state() {
+    let base = test_session();
+    let mut current = base.clone();
+    let latest = base.clone();
+    current.pr_description_reviewed = true;
+
+    let changed = App::merge_external_session_changes(&mut current, &base, &latest);
+
+    assert_eq!(changed, 0);
+    assert!(current.pr_description_reviewed);
+}

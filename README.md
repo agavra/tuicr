@@ -43,6 +43,9 @@ mise use github:agavra/tuicr
 
 # Nix
 nix run github:agavra/tuicr
+
+# Home Manager (programs.tuicr)
+programs.tuicr.enable = true;
 ```
 
 Pre-built binaries: [GitHub Releases](https://github.com/agavra/tuicr/releases). Linux releases
@@ -104,6 +107,10 @@ review when that metadata is available; commits already covered by that review a
 `✓` in the inline selector.
 (Bitbucket does not record which commit an approval covered, so that preselection does not apply
 there.)
+Narrow a multi-commit review to one commit with `(` / `)` and tuicr puts that commit's message above
+its diff, in pull requests as well as local ranges, where it can be read, marked reviewed and
+commented on like a file. tuicr does not post inline comments on commit messages, so `:submit` sends
+those comments in the review summary.
 Use `:summary` during a review to show every pending local-draft comment. The summary replaces the
 diff while leaving the file sidebar visible when it is open. The first
 comment is selected when the view opens; use `j`/`k` to select the next or previous comment, and
@@ -171,10 +178,10 @@ Multi-line comments collapse to their last line — Gitea has no range form. See
 
 ### To Bitbucket
 
-`:submit` offers Comment or Approve on a Bitbucket Cloud PR. Inline comments post as inline PR
-comments, multi-line ranges included; review-level comments become general PR comments. Requires
-`bkt` authenticated to `bitbucket.org`. Request changes and Draft are not supported yet, and
-Bitbucket Data Center is out of scope. See [docs/BITBUCKET.md](docs/BITBUCKET.md) for setup,
+`:submit` offers Comment, Approve, Request changes, or Draft on a Bitbucket Cloud PR. Inline
+comments post as inline PR comments, multi-line ranges included; review-level comments become
+general PR comments. Draft posts them as pending comments that you publish from Bitbucket. Requires
+`bkt` authenticated to `bitbucket.org`. Bitbucket Data Center is out of scope. See [docs/BITBUCKET.md](docs/BITBUCKET.md) for setup,
 required token scopes, and troubleshooting.
 
 ### To Azure DevOps
@@ -292,6 +299,19 @@ color = "red"
 definition = "must fix before merge"
 ```
 
+With Home Manager, the same settings go in `programs.tuicr.settings`:
+
+```nix
+programs.tuicr = {
+  enable = true;
+  settings = {
+    theme = "catppuccin-mocha";
+    diff_view = "side-by-side";
+    mouse = true;
+  };
+};
+```
+
 Bundled themes: `dark`, `light`, `ayu-light`, `ayu-mirage`, `onedark`, `github-light`,
 `github-dark`, `catppuccin-latte`, `catppuccin-frappe`, `catppuccin-macchiato`,
 `catppuccin-mocha`, `everforest-dark`, `everforest-light`, `gruvbox-dark`,
@@ -318,6 +338,7 @@ A first-session cheatsheet. Press `?` inside tuicr for the full reference.
 | `Ctrl-d` / `Ctrl-u` | Half-page down / up |
 | `g` / `G` | Top / bottom |
 | `{` / `}` | Previous / next file |
+| `<leader>p` | Pick a file by path from a popup and jump to it (`/` filters); handy with the file list hidden |
 | `[` / `]` | Previous / next hunk |
 | `m` / `M` | Next / previous comment |
 | `/` | Search the diff by case-insensitive regex, or search the file tree/help by text — whichever is focused/open |
@@ -327,7 +348,7 @@ A first-session cheatsheet. Press `?` inside tuicr for the full reference.
 | `c` / `C` | Add line / file comment |
 | `v` / `V` | Visual mode (range comment) |
 | `s` (visual mode) | Suggest changes to the selected code lines |
-| `r` | Toggle file reviewed |
+| `r` | Toggle file reviewed (on the PR description: mark it reviewed and collapse it to one row) |
 | `R` | Toggle hunk reviewed |
 | `e` | Open focused file in `$EDITOR` (in PR review: the PR's revision, as a read-only copy when the checkout differs) |
 | `y` | Copy review to clipboard |

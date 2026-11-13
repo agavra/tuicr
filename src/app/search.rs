@@ -302,22 +302,15 @@ impl App {
     }
 
     fn pr_info_search_lines(&self) -> Vec<String> {
-        let Some(info) = self.pr_info.as_ref() else {
-            return Vec::new();
-        };
-        crate::ui::pr_info_panel::build_pr_info_lines(
-            info,
-            crate::ui::pr_info_panel::pr_info_content_width(self.diff_state.viewport_width),
-            &self.theme,
-        )
-        .iter()
-        .map(|line| {
-            line.spans
-                .iter()
-                .map(|span| span.content.as_ref())
-                .collect::<String>()
-        })
-        .collect()
+        crate::ui::pr_info_panel::pr_info_display_lines(self)
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect()
     }
 
     fn line_text_for_search<'a>(

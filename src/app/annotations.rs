@@ -43,7 +43,12 @@ impl App {
         let eligible: Vec<usize> = (0..self.diff_files.len())
             .filter(|&file_idx| {
                 let file = &self.diff_files[file_idx];
-                !file.hunks.is_empty() && file.status != FileStatus::Deleted
+                // A commit message is synthetic: no revision holds a file by
+                // its name, so counting its lines would only cost the forge a
+                // request in PR mode.
+                !file.is_commit_message
+                    && !file.hunks.is_empty()
+                    && file.status != FileStatus::Deleted
             })
             .collect();
         if let (DiffSource::PullRequest(pr), Some(backend)) =
@@ -95,17 +100,10 @@ impl App {
         // current inline selection are hidden. `None` => no selector, show all.
         let commit_set = self.selected_commit_set();
 
-        if let Some(info) = &self.pr_info {
-            let pr_line_count = crate::ui::pr_info_panel::build_pr_info_lines(
-                info,
-                crate::ui::pr_info_panel::pr_info_content_width(self.diff_state.viewport_width),
-                &self.theme,
-            )
-            .len();
-            for line_idx in 0..pr_line_count {
-                self.line_annotations
-                    .push(AnnotatedLine::PrInfoLine { line_idx });
-            }
+        let pr_line_count = crate::ui::pr_info_panel::pr_info_render_height(self);
+        for line_idx in 0..pr_line_count {
+            self.line_annotations
+                .push(AnnotatedLine::PrInfoLine { line_idx });
         }
 
         // The review-comments header is omitted in single-file view and

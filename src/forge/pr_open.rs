@@ -634,6 +634,7 @@ rename to new_name.rs
                         oid: oid.to_string(),
                         short_oid: oid.to_string(),
                         summary: format!("commit {oid}"),
+                        body: None,
                         author: "alice".to_string(),
                         timestamp: None,
                     })

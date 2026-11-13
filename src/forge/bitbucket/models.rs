@@ -21,7 +21,7 @@ use crate::forge::remote_comments::{
 };
 use crate::forge::traits::{
     ForgeRepository, PullRequestCommit, PullRequestDetails, PullRequestReviewRecord,
-    PullRequestSummary,
+    PullRequestSummary, commit_message_body,
 };
 use crate::model::FileStatus;
 use crate::vcs::git::raw::FileMetadata;
@@ -219,6 +219,7 @@ impl BbPullRequest {
             head_ref_name: self.source.branch.name.clone(),
             base_ref_name: self.destination.branch.name.clone(),
             updated_at: self.updated_on,
+            last_commit_at: None,
             url: self.links.html_href(),
             state: normalize_state(&self.state),
             is_draft: self.draft,
@@ -330,6 +331,7 @@ impl BbCommit {
             oid: self.hash,
             short_oid,
             summary,
+            body: commit_message_body(&self.message),
             author: self.author.map(|author| author.label()).unwrap_or_default(),
             timestamp: self.date,
         }
@@ -405,7 +407,10 @@ impl BbComment {
             created_at: self.created_on,
             in_reply_to: self.parent.map(|parent| parent.id.to_string()),
             url: self.links.html_href(),
-            ..Default::default()
+            // Bitbucket returns the viewer's own unpublished comments with
+            // `pending: true`; keep them marked so a `:submit draft` refetch
+            // shows them as drafts rather than as published feedback.
+            is_draft: self.pending,
         }
     }
 
@@ -502,7 +507,11 @@ pub fn review_summaries(comments: &[BbComment]) -> Vec<RemoteReviewSummary> {
             id: comment.id.to_string(),
             author: comment.user.label(),
             body: comment.content.raw.clone(),
-            state: RemoteReviewState::Commented,
+            state: if comment.pending {
+                RemoteReviewState::Pending
+            } else {
+                RemoteReviewState::Commented
+            },
             created_at: comment.created_on,
             url: comment.links.html_href(),
         })
@@ -712,6 +721,7 @@ mod tests {
         let converted = commit.into_pull_request_commit();
         // then — summary is the subject line only, author loses the email
         assert_eq!(converted.summary, "fix(runtime): stop the crash");
+        assert_eq!(converted.body.as_deref(), Some("Longer body here."));
         assert_eq!(converted.short_oid, "7d9bf1f");
         assert_eq!(converted.author, "Example User");
         assert!(converted.timestamp.is_some());
@@ -906,6 +916,38 @@ mod tests {
         assert_eq!(summaries[0].body, "LGTM overall");
         assert_eq!(summaries[0].author.as_deref(), Some("Alice"));
         assert_eq!(summaries[0].state, RemoteReviewState::Commented);
+    }
+
+    #[test]
+    fn should_mark_pending_inline_comments_as_drafts() {
+        // given — a published root plus the viewer's own unpublished reply,
+        // as left behind by `:submit draft`
+        let json = r#"{ "values": [
+          { "id": 1, "content": { "raw": "published" }, "user": { "display_name": "A" },
+            "pending": false, "parent": null, "inline": { "path": "a.rs", "to": 3 } },
+          { "id": 2, "content": { "raw": "my draft reply" }, "user": { "display_name": "B" },
+            "pending": true, "parent": { "id": 1 }, "inline": { "path": "a.rs", "to": 3 } }
+        ] }"#;
+        // when
+        let threads = group_into_review_threads(comments_of(json));
+        // then — the draft joins the thread it answers, flagged as a draft
+        assert_eq!(threads.len(), 1);
+        assert!(!threads[0].comments[0].is_draft);
+        assert!(threads[0].comments[1].is_draft);
+    }
+
+    #[test]
+    fn should_surface_a_pending_general_comment_as_a_pending_summary() {
+        // given — a draft review body
+        let json = r#"{ "values": [
+          { "id": 1, "content": { "raw": "draft summary" }, "user": { "display_name": "A" },
+            "pending": true, "parent": null }
+        ] }"#;
+        // when
+        let summaries = review_summaries(&comments_of(json));
+        // then
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].state, RemoteReviewState::Pending);
     }
 
     #[test]

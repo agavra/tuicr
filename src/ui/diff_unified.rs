@@ -681,7 +681,14 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                 styles::current_line_indicator_style(&app.theme),
                             ),
                             Span::styled(line_num_str, line_num_style),
-                            Span::styled(format!("{prefix} "), style),
+                            Span::styled(
+                                format!("{prefix} "),
+                                styles::diff_marker_style(
+                                    &app.theme,
+                                    diff_line.origin,
+                                    diff_line.highlighted_spans.is_some(),
+                                ),
+                            ),
                         ];
                         let content_start = line_spans.len();
                         content_rows.insert(line_idx);
@@ -3044,5 +3051,73 @@ mod remote_comments_snapshot_tests {
         assert_eq!(gutter_numbers(&app, &buffer, charlie), vec![42]);
         assert_eq!(gutter_numbers(&app, &buffer, bravo), vec![1]);
         assert_eq!(gutter_numbers(&app, &buffer, delta), vec![1]);
+    }
+
+    /// The change bar of a syntax-colored line sits on the same background
+    /// as the rest of the row, so the row shows one green.
+    #[test]
+    fn should_paint_a_syntax_colored_row_in_one_background() {
+        /// Top-left cell of the first occurrence of `needle` on screen.
+        fn locate(buffer: &Buffer, needle: &str) -> (u16, u16) {
+            for y in 0..buffer.area.height {
+                let row: String = (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect();
+                if let Some(byte_idx) = row.find(needle) {
+                    return (row[..byte_idx].chars().count() as u16, y);
+                }
+            }
+            panic!("could not find {needle:?} in rendered buffer");
+        }
+
+        let hunks = vec![DiffHunk {
+            header: "@@ -0,0 +1,1 @@".to_string(),
+            lines: vec![DiffLine {
+                origin: LineOrigin::Addition,
+                content: "let total = 14;".to_string(),
+                raw_content: None,
+                old_lineno: None,
+                new_lineno: Some(1),
+                highlighted_spans: None,
+            }],
+            old_start: 0,
+            old_count: 0,
+            new_start: 1,
+            new_count: 1,
+        }];
+        let content_hash = DiffFile::compute_content_hash(&hunks);
+        let file = DiffFile {
+            old_path: None,
+            new_path: Some(PathBuf::from("src/lib.rs")),
+            status: FileStatus::Added,
+            hunks,
+            is_binary: false,
+            is_too_large: false,
+            is_commit_message: false,
+            content_hash,
+        };
+        let mut app = make_revision_app(vec![file]);
+        app.theme = Theme::catppuccin_macchiato();
+        app.rebuild_annotations();
+        app.color_visible_hunks(12);
+
+        let buffer = draw_diff(&mut app);
+
+        assert!(
+            app.diff_files[0].hunks[0].lines[0]
+                .highlighted_spans
+                .is_some(),
+            "the test needs a syntax-colored line"
+        );
+        let (text_x, y) = locate(&buffer, "let total");
+        let (bar_x, _) = locate(&buffer, "▌");
+        for x in bar_x..text_x + 3 {
+            assert_eq!(
+                buffer[(x, y)].bg,
+                app.theme.syntax_add_bg,
+                "cell {x} ({:?})",
+                buffer[(x, y)].symbol()
+            );
+        }
     }
 }

@@ -19,7 +19,7 @@ use crate::forge::remote_comments::{
     RemoteReviewThread,
 };
 use crate::forge::traits::{
-    ForgeRepository, PullRequestCommit, PullRequestDetails, PullRequestSummary,
+    ForgeRepository, PullRequestCommit, PullRequestDetails, PullRequestSummary, commit_message_body,
 };
 
 /// Gerrit's timestamp format: UTC, space-separated, nanosecond precision.
@@ -167,6 +167,7 @@ impl GerritChange {
             head_ref_name,
             base_ref_name: self.branch,
             updated_at: at(&self.updated),
+            last_commit_at: None,
             url,
             state: normalize_state(&self.status),
             is_draft: self.work_in_progress,
@@ -186,7 +187,9 @@ impl GerritChange {
                     .unwrap_or_default();
                 // A Gerrit change is one commit, so its body is the commit
                 // message minus the subject line.
-                let body = commit.map(|c| commit_body(&c.message)).unwrap_or_default();
+                let body = commit
+                    .and_then(|c| commit_message_body(&c.message))
+                    .unwrap_or_default();
                 (sha.clone(), base, body)
             }
             None => (String::new(), String::new(), String::new()),
@@ -220,24 +223,20 @@ impl GerritChange {
         let timestamp = at(&self.updated);
         let summary = self.subject.clone();
         match self.current() {
-            Some((sha, _)) => vec![PullRequestCommit {
+            Some((sha, revision)) => vec![PullRequestCommit {
                 oid: sha.clone(),
                 short_oid: sha.chars().take(8).collect(),
                 summary,
+                body: revision
+                    .commit
+                    .as_ref()
+                    .and_then(|commit| commit_message_body(&commit.message)),
                 author,
                 timestamp,
             }],
             None => Vec::new(),
         }
     }
-}
-
-/// Everything after the subject line of a commit message.
-fn commit_body(message: &str) -> String {
-    message
-        .split_once('\n')
-        .map(|(_, rest)| rest.trim_start_matches('\n').trim_end().to_string())
-        .unwrap_or_default()
 }
 
 /// Map Gerrit change status onto the state vocabulary the UI shares across
@@ -508,6 +507,7 @@ mod tests {
         assert_eq!(commits.len(), 1);
         assert_eq!(commits[0].short_oid, "674ac754");
         assert_eq!(commits[0].summary, "Implement feature X");
+        assert_eq!(commits[0].body.as_deref(), Some("Longer rationale."));
     }
 
     #[test]

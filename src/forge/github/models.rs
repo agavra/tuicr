@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use crate::error::{Result, TuicrError};
 use crate::forge::traits::{
-    ForgeRepository, PullRequestCommit, PullRequestDetails, PullRequestSummary,
+    ForgeRepository, PullRequestCommit, PullRequestDetails, PullRequestSummary, commit_message_body,
 };
 use crate::model::FileStatus;
 use crate::vcs::git::raw::FileMetadata;
@@ -117,6 +117,7 @@ impl GhPullRequestSummary {
             head_ref_name: self.head_ref_name,
             base_ref_name: self.base_ref_name,
             updated_at: self.updated_at,
+            last_commit_at: None,
             url: self.url,
             state: self.state,
             is_draft: self.is_draft,
@@ -230,6 +231,7 @@ impl GhPrCommit {
             oid: self.sha,
             short_oid,
             summary,
+            body: commit_message_body(&self.commit.message),
             author,
             timestamp,
         }
@@ -250,6 +252,27 @@ fn require_field(value: &str, field: &str) -> Result<()> {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn should_read_commit_body_from_the_nested_message() {
+        // given
+        let json = r#"{
+            "sha": "abcdef1234567890",
+            "commit": {
+                "message": "Fix the parser\n\nKeep blank lines in the body.\n\nAdd coverage.\n",
+                "author": { "name": "Alice", "date": "2026-01-01T00:00:00Z" }
+            }
+        }"#;
+        let commit: GhPrCommit = serde_json::from_str(json).unwrap();
+        // when
+        let converted = commit.into_pull_request_commit();
+        // then
+        assert_eq!(converted.summary, "Fix the parser");
+        assert_eq!(
+            converted.body.as_deref(),
+            Some("Keep blank lines in the body.\n\nAdd coverage.")
+        );
+    }
 
     #[test]
     fn file_metadata_uses_json_paths_verbatim() {
