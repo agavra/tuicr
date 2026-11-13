@@ -42,6 +42,42 @@ use crate::vcs::VcsBackend;
 /// always run to completion; callers decide which error wins, which keeps
 /// error reporting as deterministic as the sequential code it replaces. A
 /// panic in `second` is re-raised on the calling thread once `first` returns.
+/// A repository-relative path as the forge spells it: `/`-separated. Only
+/// Windows paths carry `\\` as a separator; on Unix it is a legal filename byte
+/// and must reach the forge untouched.
+pub(crate) fn forge_path(path: &Path) -> String {
+    let path = path.to_string_lossy();
+    if cfg!(windows) {
+        path.replace('\\', "/")
+    } else {
+        path.into_owned()
+    }
+}
+
+/// Percent-encode a path, keeping `/` intact so a repository-relative path
+/// stays a path.
+pub(crate) fn percent_encode_path(value: &str) -> String {
+    value
+        .split('/')
+        .map(percent_encode_component)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Percent-encode everything but RFC 3986 unreserved bytes (`/` and `%` too).
+pub(crate) fn percent_encode_component(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(byte as char);
+            }
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
+}
+
 pub(crate) fn join<A, B, RA, RB>(first: A, second: B) -> (RA, RB)
 where
     A: FnOnce() -> RA,
@@ -358,5 +394,20 @@ mod tests {
             local_checkout_for_repo(dir.path(), &target),
             Some(dir.path().to_path_buf())
         );
+    }
+
+    #[test]
+    fn should_percent_encode_path_keeping_separators_and_escaping_percent() {
+        assert_eq!(
+            percent_encode_path("src/a file#?%.rs"),
+            "src/a%20file%23%3F%25.rs"
+        );
+        assert_eq!(percent_encode_component("feat/x"), "feat%2Fx");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_keep_a_backslash_in_a_unix_forge_path() {
+        assert_eq!(forge_path(Path::new("a\\b/c.rs")), "a\\b/c.rs");
     }
 }

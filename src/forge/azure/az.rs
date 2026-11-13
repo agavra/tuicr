@@ -23,6 +23,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use serde_json::json;
 
 use crate::error::{Result, TuicrError};
+use crate::forge::forge_path;
 use crate::forge::local_git::{read_blob, read_commit_message};
 use crate::forge::local_merge_base;
 use crate::forge::remote_comments::RemoteReviewThread;
@@ -423,7 +424,7 @@ impl AzureDevOpsBackend {
 
     fn fetch_file_via_api(&self, request: &ForgeFileLinesRequest) -> Result<String> {
         let base = git_api_base(&request.repository);
-        let mut path = request.path.to_string_lossy().replace('\\', "/");
+        let mut path = forge_path(&request.path);
         if !path.starts_with('/') {
             path = format!("/{path}");
         }
@@ -625,7 +626,7 @@ impl ForgeBackend for AzureDevOpsBackend {
 
         // Each inline comment → a thread anchored to a file/line range.
         for comment in request.comments {
-            let mut file_path = comment.path.to_string_lossy().replace('\\', "/");
+            let mut file_path = forge_path(&comment.path);
             if !file_path.starts_with('/') {
                 file_path = format!("/{file_path}");
             }

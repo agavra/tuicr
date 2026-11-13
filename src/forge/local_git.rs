@@ -71,9 +71,8 @@ pub(crate) fn read_blob(repo_root: &Path, sha: &str, path: &Path) -> Option<Stri
     if !is_hex_object_id(sha) {
         return None;
     }
-    // Diff paths arrive with forward slashes, but a path joined on Windows can
-    // carry backslashes, and git only resolves `<sha>:<path>` with slashes.
-    let spec = format!("{}:{}", sha, path.to_string_lossy().replace('\\', "/"));
+    // git only resolves `<sha>:<path>` with slashes; see `forge_path`.
+    let spec = format!("{}:{}", sha, crate::forge::forge_path(path));
     if !object_exists_unchecked(repo_root, &spec) {
         return None;
     }

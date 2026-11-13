@@ -14,6 +14,7 @@ use crate::forge::traits::{
     PagedPullRequests, PullRequestCommit, PullRequestDetails, PullRequestInfo,
     PullRequestListQuery, PullRequestListScope, PullRequestTarget,
 };
+use crate::forge::{forge_path, percent_encode_component, percent_encode_path};
 use crate::model::{DiffLine, FilePatch};
 use crate::process::{
     CommandOutputError, CommandOutputErrorKind, run_command_output, run_command_output_with_stdin,
@@ -587,7 +588,7 @@ where
         let specs: Vec<String> = requests
             .iter()
             .map(|r| {
-                let path = r.path.to_string_lossy().replace('\\', "/");
+                let path = forge_path(&r.path);
                 format!("{}:{path}", r.sha())
             })
             .collect();
@@ -831,13 +832,12 @@ where
         // `Accept: application/vnd.github.raw` header skips JSON wrapping
         // and returns raw bytes, which we use here to keep parsing simple
         // and binary-safe (callers already gate binary files out).
-        let path_str = request.path.to_string_lossy().replace('\\', "/");
         let endpoint = format!(
             "repos/{}/{}/contents/{}?ref={}",
             request.repository.owner,
             request.repository.name,
-            path_str,
-            request.sha(),
+            percent_encode_path(&forge_path(&request.path)),
+            percent_encode_component(request.sha()),
         );
         let mut args = vec![
             "api".to_string(),
@@ -3061,5 +3061,46 @@ mod line_count_tests {
         let calls = backend.runner.calls.lock().unwrap();
         assert_eq!(calls.len(), 2);
         assert!(calls[1].iter().any(|arg| arg.contains("/contents/b.rs")));
+    }
+
+    #[test]
+    fn should_percent_encode_the_path_and_ref_of_a_contents_request() {
+        // given — `#` would end the URL path and drop `?ref=`; `?` and `%` corrupt it
+        let runner = BlobRunner {
+            rest_text: "body".to_string(),
+            ..Default::default()
+        };
+        let backend = GitHubGhBackend::with_runner(None, runner);
+        // when
+        let text = backend
+            .fetch_file_content(request("src/C#/a?b%2F.cs"))
+            .unwrap();
+        // then
+        assert_eq!(text, "body");
+        let calls = backend.runner.calls.lock().unwrap();
+        assert!(
+            calls[0].iter().any(|arg| arg
+                == &format!("repos/agavra/tuicr/contents/src/C%23/a%3Fb%252F.cs?ref={HEAD}")),
+            "{:?}",
+            calls[0]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_keep_a_unix_backslash_in_a_contents_request() {
+        // given
+        let backend = GitHubGhBackend::with_runner(None, BlobRunner::default());
+        // when
+        backend.fetch_file_content(request("src/a\\b.rs")).unwrap();
+        // then — `\` is a filename byte, not a separator
+        let calls = backend.runner.calls.lock().unwrap();
+        assert!(
+            calls[0]
+                .iter()
+                .any(|arg| arg.contains("/contents/src/a%5Cb.rs?")),
+            "{:?}",
+            calls[0]
+        );
     }
 }

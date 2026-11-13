@@ -35,6 +35,7 @@ use crate::forge::traits::{
     GhCreateReviewResponse, PagedPullRequests, PullRequestCommit, PullRequestDetails,
     PullRequestListQuery, PullRequestListScope, PullRequestTarget,
 };
+use crate::forge::{forge_path, percent_encode_component};
 use crate::model::{DiffLine, FilePatch};
 use crate::process::run_command_output;
 use crate::vcs::git::raw::run_git_diff;
@@ -449,7 +450,7 @@ impl GerritBackend {
             "/projects/{}/commits/{}/files/{}/content",
             encode_path(&gerrit_project(&request.repository)),
             request.sha(),
-            encode_path(&request.path.to_string_lossy()),
+            encode_path(&forge_path(&request.path)),
         );
         let encoded = self.get(&request.repository, &path)?;
         let bytes = BASE64.decode(encoded.trim()).map_err(|err| {
@@ -610,6 +611,10 @@ impl ForgeBackend for GerritBackend {
 
     fn local_checkout_path(&self) -> Option<PathBuf> {
         self.local_checkout.clone()
+    }
+
+    fn fetch_file_content(&self, request: ForgeFileLinesRequest) -> Result<String> {
+        self.file_content(&request)
     }
 
     fn fetch_file_lines(&self, request: ForgeFileLinesRequest) -> Result<Vec<DiffLine>> {
@@ -932,16 +937,7 @@ fn trim_detail(detail: &str) -> String {
 /// Percent-encode a file path for a Gerrit URL path segment. Gerrit expects
 /// the whole path in one segment, so `/` is encoded too.
 fn encode_path(path: &str) -> String {
-    let mut out = String::with_capacity(path.len());
-    for byte in path.replace('\\', "/").bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(byte as char)
-            }
-            other => out.push_str(&format!("%{other:02X}")),
-        }
-    }
-    out
+    percent_encode_component(path)
 }
 
 /// Encode a value used inside a `q=` query term. Gerrit reads `/` literally in
@@ -1977,6 +1973,40 @@ mod tests {
         assert!(
             error.to_string().contains(USER_ENV_VAR),
             "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn should_read_file_content_through_the_trait_byte_faithfully() {
+        // given — the editor calls `fetch_file_content`, not `fetch_file_lines`
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        unsafe { std::env::remove_var(URL_ENV_VAR) };
+        let (backend, http) = backend_with(true, vec![&BASE64.encode("a\tb\n\tc\n")]);
+        let request = ForgeFileLinesRequest {
+            repository: gerrit_repo(),
+            base_sha: "def5678".to_string(),
+            head_sha: "abc1234".to_string(),
+            path: PathBuf::from("src/a.rs"),
+            status: crate::model::FileStatus::Modified,
+            side: crate::forge::traits::ForgeFileSide::Head,
+            start_line: 0,
+            end_line: 0,
+        };
+        let backend: &dyn ForgeBackend = &backend;
+        // when
+        let content = backend.fetch_file_content(request).expect("content");
+        // then — tabs are not expanded
+        assert_eq!(content, "a\tb\n\tc\n");
+        assert_eq!(http.calls().len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_encode_a_unix_backslash_in_a_gerrit_path() {
+        assert_eq!(encode_path("src/a\\b.rs"), "src%2Fa%5Cb.rs");
+        assert_eq!(
+            forge_path(Path::new("src/a\\b.rs")),
+            "src/a\\b.rs".to_string()
         );
     }
 }

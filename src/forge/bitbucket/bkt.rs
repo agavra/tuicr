@@ -27,6 +27,7 @@ use crate::forge::traits::{
     GhCreateReviewResponse, PagedPullRequests, PullRequestCommit, PullRequestDetails,
     PullRequestListQuery, PullRequestListScope, PullRequestReviewMetadata, PullRequestTarget,
 };
+use crate::forge::{forge_path, percent_encode_component, percent_encode_path};
 use crate::model::{DiffLine, FilePatch};
 use crate::process::{CommandOutputError, CommandOutputErrorKind, run_command_output};
 use crate::vcs::git::raw::{pair_metadata_with_patch, run_git_diff};
@@ -262,14 +263,13 @@ where
     }
 
     fn fetch_file_via_api(&self, request: &ForgeFileLinesRequest) -> Result<String> {
-        let path_str = request.path.to_string_lossy().replace('\\', "/");
-        // `bkt api` percent-encodes nothing for us, but the `src` endpoint
-        // takes the path as literal path segments, so it needs no encoding.
+        // `bkt api` percent-encodes nothing for us, so a `#`, `?` or `%` in the
+        // path would be read as URL syntax.
         let path = format!(
             "{}/src/{}/{}",
             Self::repo_path(&request.repository),
-            request.sha(),
-            path_str,
+            percent_encode_component(request.sha()),
+            percent_encode_path(&forge_path(&request.path)),
         );
         self.run_api(path, &[])
     }
@@ -311,7 +311,7 @@ where
     /// selections add `start_to` / `start_from`; Bitbucket ignores a start
     /// that equals the end, so single-line comments simply omit it.
     fn inline_anchor(comment: &crate::forge::submit::InlineComment) -> serde_json::Value {
-        let path = comment.path.to_string_lossy().replace('\\', "/");
+        let path = forge_path(&comment.path);
         let mut inline = serde_json::json!({ "path": path });
         let (line_key, start_key) = match comment.side {
             GhSide::Right => ("to", "start_to"),
@@ -2014,5 +2014,52 @@ mod tests {
                 "wrongly claimed {target:?}"
             );
         }
+    }
+
+    #[test]
+    fn should_percent_encode_the_src_path_but_keep_separators() {
+        // given — `#`, `?` and `%` are URL syntax to `bkt api`
+        let backend = backend(vec!["text"]);
+        let request = ForgeFileLinesRequest {
+            repository: repo(),
+            base_sha: "b".repeat(40),
+            head_sha: "a".repeat(40),
+            path: PathBuf::from("src/a#b?c%2F.md"),
+            status: crate::model::FileStatus::Modified,
+            side: crate::forge::traits::ForgeFileSide::Head,
+            start_line: 0,
+            end_line: 0,
+        };
+        // when
+        let text = backend.fetch_file_content(request).unwrap();
+        // then
+        assert_eq!(text, "text");
+        let calls = backend.runner.calls.borrow();
+        assert!(
+            calls[0][1].ends_with(&format!("/src/{}/src/a%23b%3Fc%252F.md", "a".repeat(40))),
+            "{:?}",
+            calls[0]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_keep_a_unix_backslash_in_the_src_path() {
+        // given
+        let backend = backend(vec![""]);
+        let request = ForgeFileLinesRequest {
+            repository: repo(),
+            base_sha: "b".repeat(40),
+            head_sha: "a".repeat(40),
+            path: PathBuf::from("a\\b.rs"),
+            status: crate::model::FileStatus::Modified,
+            side: crate::forge::traits::ForgeFileSide::Head,
+            start_line: 0,
+            end_line: 0,
+        };
+        // when
+        backend.fetch_file_content(request).unwrap();
+        // then
+        assert!(backend.runner.calls.borrow()[0][1].ends_with("/a%5Cb.rs"));
     }
 }
