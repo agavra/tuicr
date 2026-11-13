@@ -12,6 +12,9 @@ use crate::theme::Theme;
 use crate::ui::styles;
 use crate::ui::text_utils::{truncate_or_pad, truncate_str};
 use crate::vcs::CommitInfo;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+const MIN_BRANCH_CHIP_WIDTH: usize = 4;
 
 pub const CURSOR_GLYPH: &str = "\u{25b8}"; // ▸
 pub const RANGE_BAR_GLYPH: &str = "\u{258c}"; // ▌
@@ -124,13 +127,34 @@ pub fn render_commit_row<'a>(spec: &CommitRowSpec<'a>) -> Line<'a> {
     // Branch column: always branch_col_width cells. With a branch we render
     // `[<name>]` padded out with trailing spaces; without one we render
     // the same number of spaces so the summary column starts at the same x.
-    if let Some(branch_name) = &spec.commit.branch_name {
-        let chip = format!(
-            "[{}]",
-            truncate_str(branch_name, branch_col_width.saturating_sub(3))
-        );
+    // A chip needs `[`, one name cell, `]` and a separator, so narrower columns
+    // omit it rather than render a stray `[` glued to the summary.
+    if let Some(branch_name) = spec.commit.branch_name.as_deref()
+        && branch_col_width >= MIN_BRANCH_CHIP_WIDTH
+    {
+        let inner = branch_col_width - 3;
+        let name = if branch_name.width() <= inner {
+            branch_name.to_string()
+        } else if inner >= 4 {
+            truncate_str(branch_name, inner)
+        } else {
+            // No room for "..."; keep what fits plus a one-cell ellipsis.
+            let mut kept: String = String::new();
+            let mut used = 0;
+            for c in branch_name.chars() {
+                let w = UnicodeWidthChar::width(c).unwrap_or(0);
+                if used + w > inner - 1 {
+                    break;
+                }
+                used += w;
+                kept.push(c);
+            }
+            format!("{kept}\u{2026}")
+        };
+        let chip = format!("[{name}]");
+        let pad = branch_col_width.saturating_sub(chip.width());
         spans.push(Span::styled(
-            truncate_or_pad_column(&chip, branch_col_width),
+            format!("{chip}{}", " ".repeat(pad)),
             styles::branch_style(theme),
         ));
     } else {
@@ -376,6 +400,40 @@ mod tests {
         // then
         let text = line_text(&line);
         assert!(text.contains("[feat/foo]"), "got: {text:?}");
+    }
+
+    #[test]
+    fn should_keep_branch_chip_within_its_column_at_every_width() {
+        // given - accented and wide branch names, a column that fits nothing at narrow widths
+        let theme = Theme::dark();
+        for branch in [
+            "\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}",
+            "\u{754c}\u{754c}\u{754c}\u{754c}\u{754c}\u{754c}\u{754c}",
+        ] {
+            let with = commit("abc1234", "Add feature", Some(branch));
+            let without = commit("abc1234", "Add feature", None);
+            for width in 30..130u16 {
+                let render = |c: &CommitInfo| {
+                    line_text(&render_commit_row(&CommitRowSpec {
+                        commit: c,
+                        available_width: width,
+                        is_cursor: false,
+                        is_selected: false,
+                        is_reviewed: false,
+                        theme: &theme,
+                    }))
+                };
+                // when
+                let (a, b) = (render(&with), render(&without));
+                // then - columns stay aligned and a chip is never left unclosed
+                assert_eq!(a.width(), b.width(), "width {width}: {a:?}");
+                assert_eq!(
+                    a.matches('[').count(),
+                    a.matches(']').count(),
+                    "width {width}: {a:?}"
+                );
+            }
+        }
     }
 
     #[test]

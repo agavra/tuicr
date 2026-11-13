@@ -15,7 +15,7 @@ use crate::ui::diff_side_by_side::render_side_by_side_diff;
 use crate::ui::diff_unified::render_unified_diff;
 use crate::ui::styles;
 use crate::ui::text_utils::col_of_char;
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Static header rule used for file/section headers; avoids `"═".repeat(40)` per frame.
 pub(super) const HEADER_RULE: &str = "════════════════════════════════════════";
@@ -309,7 +309,7 @@ pub(super) fn diff_title(app: &App, area_width: u16) -> String {
 /// back to suffix-truncating the basename only when the basename alone is
 /// wider than `max_width`.
 pub(super) fn truncate_path_smart(path: &str, max_width: usize) -> String {
-    if path.chars().count() <= max_width {
+    if path.width() <= max_width {
         return path.to_string();
     }
     let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
@@ -320,19 +320,28 @@ pub(super) fn truncate_path_smart(path: &str, max_width: usize) -> String {
     for n in (1..segments.len()).rev() {
         let tail = segments[segments.len() - n..].join("/");
         let candidate = format!("\u{2026}/{tail}");
-        if candidate.chars().count() <= max_width {
+        if candidate.width() <= max_width {
             return candidate;
         }
     }
 
     let basename = *segments.last().unwrap();
-    let basename_w = basename.chars().count();
+    let basename_w = basename.width();
     if basename_w <= max_width {
         return basename.to_string();
     }
     // Basename alone is too wide: keep the leading chars + `…`.
     let kept = max_width.saturating_sub(1);
-    let mut s: String = basename.chars().take(kept).collect();
+    let mut s = String::new();
+    let mut used = 0;
+    for c in basename.chars() {
+        let w = c.width().unwrap_or(0);
+        if used + w > kept {
+            break;
+        }
+        used += w;
+        s.push(c);
+    }
     s.push('\u{2026}');
     s
 }

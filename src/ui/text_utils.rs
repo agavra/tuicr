@@ -2,19 +2,22 @@ use ratatui::{buffer::CellWidth, style::Style, text::Span};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-pub(super) fn truncate_str(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        s.to_string()
-    } else {
-        let truncate_at = max_len.saturating_sub(3);
-        let end = s
-            .char_indices()
-            .map(|(i, _)| i)
-            .take_while(|&i| i <= truncate_at)
-            .last()
-            .unwrap_or(0);
-        format!("{}...", &s[..end])
+pub(super) fn truncate_str(s: &str, max_width: usize) -> String {
+    if s.width() <= max_width {
+        return s.to_string();
     }
+    let budget = max_width.saturating_sub(3);
+    let mut kept = String::new();
+    let mut used = 0;
+    for c in s.chars() {
+        let w = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+        if used + w > budget {
+            break;
+        }
+        used += w;
+        kept.push(c);
+    }
+    format!("{kept}...")
 }
 
 /// Truncate or pad a string to a specific width
@@ -669,7 +672,7 @@ mod tests {
         let result = truncate_str(s, 47);
         // then - should not panic and should end with "..."
         assert!(result.ends_with("..."));
-        assert!(result.len() <= 47);
+        assert!(unicode_width::UnicodeWidthStr::width(result.as_str()) <= 47);
     }
 
     #[test]

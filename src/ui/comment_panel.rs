@@ -5,7 +5,8 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
 };
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::App;
 use crate::forge::traits::ForgeKind;
@@ -20,11 +21,13 @@ use crate::vcs::{TAB_WIDTH, tabify};
 const BORDER_PREFIX: &str = "    │  ";
 const BORDER_PREFIX_WIDTH: usize = 7;
 
-fn char_width(c: char) -> usize {
-    if c == '\t' {
+fn grapheme_width(g: &str) -> usize {
+    if g == "\t" {
         TAB_WIDTH
     } else {
-        UnicodeWidthChar::width(c).unwrap_or(0)
+        // Measure the whole cluster: per-char widths would count a VS16 emoji
+        // or ZWJ sequence as narrower than the terminal draws it.
+        UnicodeWidthStr::width(g)
     }
 }
 
@@ -47,17 +50,17 @@ pub(crate) fn wrap_segments(text: &str, content_area: usize) -> Vec<&str> {
     while !remaining.is_empty() {
         let mut take_bytes = 0usize;
         let mut taken_width = 0usize;
-        for c in remaining.chars() {
-            let cw = char_width(c);
-            if taken_width + cw > content_area {
+        for g in remaining.graphemes(true) {
+            let gw = grapheme_width(g);
+            if taken_width + gw > content_area {
                 break;
             }
-            taken_width += cw;
-            take_bytes += c.len_utf8();
+            taken_width += gw;
+            take_bytes += g.len();
         }
-        // Single character wider than content_area — emit it anyway so we don't loop forever
+        // Single grapheme wider than content_area — emit it anyway so we don't loop forever
         if take_bytes == 0 {
-            take_bytes = remaining.chars().next().map_or(0, |c| c.len_utf8());
+            take_bytes = remaining.graphemes(true).next().map_or(0, str::len);
         }
         let (seg, rest) = remaining.split_at(take_bytes);
         segments.push(seg);
@@ -802,6 +805,24 @@ mod tests {
 
         // then - '中' is emitted even though it exceeds content_area
         assert_eq!(segments, vec!["中", "a"]);
+    }
+
+    #[test]
+    fn should_wrap_vs16_emoji_by_display_width() {
+        // given - each warning sign + VS16 is drawn two cells wide
+        let text = "\u{26a0}\u{fe0f}".repeat(8);
+
+        // when
+        let segments = wrap_segments(&text, 10);
+
+        // then - every segment fits and no emoji is split
+        assert!(
+            segments
+                .iter()
+                .all(|seg| UnicodeWidthStr::width(*seg) <= 10)
+        );
+        assert_eq!(segments.concat(), text);
+        assert_eq!(segments.len(), 2);
     }
 
     #[test]
