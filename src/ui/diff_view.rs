@@ -15,7 +15,7 @@ use crate::ui::diff_side_by_side::render_side_by_side_diff;
 use crate::ui::diff_unified::render_unified_diff;
 use crate::ui::styles;
 use crate::ui::text_utils::col_of_char;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthStr;
 
 /// Static header rule used for file/section headers; avoids `"═".repeat(40)` per frame.
 pub(super) const HEADER_RULE: &str = "════════════════════════════════════════";
@@ -332,16 +332,7 @@ pub(super) fn truncate_path_smart(path: &str, max_width: usize) -> String {
     }
     // Basename alone is too wide: keep the leading chars + `…`.
     let kept = max_width.saturating_sub(1);
-    let mut s = String::new();
-    let mut used = 0;
-    for c in basename.chars() {
-        let w = c.width().unwrap_or(0);
-        if used + w > kept {
-            break;
-        }
-        used += w;
-        s.push(c);
-    }
+    let mut s = crate::ui::text_utils::prefix_within_width(basename, kept).to_string();
     s.push('\u{2026}');
     s
 }
@@ -1295,6 +1286,16 @@ pub(super) fn scroll_spans_by_width(line: Line<'_>, mut columns: usize) -> Line<
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn should_fit_vs16_basename_within_path_budget() {
+        // given - each warning sign + VS16 is two cells
+        let path = format!("dir/{}", "\u{26a0}\u{fe0f}".repeat(40));
+        // when
+        let out = truncate_path_smart(&path, 20);
+        // then
+        assert!(out.width() <= 20, "{out:?} is {} cells", out.width());
+    }
+
     use super::*;
 
     #[test]

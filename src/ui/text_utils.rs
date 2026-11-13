@@ -2,21 +2,28 @@ use ratatui::{buffer::CellWidth, style::Style, text::Span};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-pub(super) fn truncate_str(s: &str, max_width: usize) -> String {
-    if s.width() <= max_width {
-        return s.to_string();
-    }
-    let budget = max_width.saturating_sub(3);
-    let mut kept = String::new();
+/// Longest prefix of `s` whose display width is at most `budget`, cut on
+/// grapheme boundaries. Per-char widths would count a VS16 emoji as one cell
+/// although terminals draw two.
+pub(super) fn prefix_within_width(s: &str, budget: usize) -> &str {
     let mut used = 0;
-    for c in s.chars() {
-        let w = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+    let mut end = 0;
+    for g in s.graphemes(true) {
+        let w = g.width();
         if used + w > budget {
             break;
         }
         used += w;
-        kept.push(c);
+        end += g.len();
     }
+    &s[..end]
+}
+
+pub(super) fn truncate_str(s: &str, max_width: usize) -> String {
+    if s.width() <= max_width {
+        return s.to_string();
+    }
+    let kept = prefix_within_width(s, max_width.saturating_sub(3));
     format!("{kept}...")
 }
 
@@ -662,6 +669,17 @@ mod tests {
         let result = truncate_str(s, 10);
         // then
         assert_eq!(result, "hello w...");
+    }
+
+    #[test]
+    fn should_truncate_vs16_clusters_by_display_width() {
+        // given - 20 clusters of two cells each
+        let s = "\u{26a0}\u{fe0f}".repeat(20);
+        // when
+        let out = truncate_str(&s, 10);
+        // then
+        assert!(out.width() <= 10, "{out:?}");
+        assert!(out.ends_with("..."));
     }
 
     #[test]

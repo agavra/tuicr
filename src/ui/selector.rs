@@ -1454,6 +1454,21 @@ mod selector_render_snapshot_tests {
     }
 
     #[test]
+    fn should_clamp_filter_cursor_when_draft_width_exceeds_u16() {
+        // given - 65,536 cells would wrap to 0 if narrowed with `as u16`
+        let mut app = pr_filter_app();
+        app.pr_filter_draft = Some("a".repeat(usize::from(u16::MAX) + 1));
+        // when
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render(frame, &mut app))
+            .expect("draw frame");
+        // then - cursor is pinned to the last column
+        assert_eq!(terminal.get_cursor_position().unwrap().x, 119);
+    }
+
+    #[test]
     fn should_measure_committed_pr_filter_hint_by_display_width() {
         // given
         let mut app = pr_filter_app();

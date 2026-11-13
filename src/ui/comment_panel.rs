@@ -826,6 +826,18 @@ mod tests {
     }
 
     #[test]
+    fn should_keep_zwj_cluster_whole_when_wider_than_the_content_area() {
+        // given - a family-style cluster is two cells; the area is one
+        let text = "\u{1f469}\u{200d}\u{1f4bb}a";
+
+        // when
+        let segments = wrap_segments(text, 1);
+
+        // then - the oversized cluster is emitted as one segment
+        assert_eq!(segments, vec!["\u{1f469}\u{200d}\u{1f4bb}", "a"]);
+    }
+
+    #[test]
     fn wrap_segments_handles_exact_width_boundary() {
         // given - text exactly fills content_area
         let text = "12345";

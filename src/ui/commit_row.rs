@@ -10,9 +10,9 @@ use ratatui::text::{Line, Span};
 use crate::app::{STAGED_SELECTION_ID, UNSTAGED_SELECTION_ID};
 use crate::theme::Theme;
 use crate::ui::styles;
-use crate::ui::text_utils::{truncate_or_pad, truncate_str};
+use crate::ui::text_utils::{prefix_within_width, truncate_or_pad, truncate_str};
 use crate::vcs::CommitInfo;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthStr;
 
 const MIN_BRANCH_CHIP_WIDTH: usize = 4;
 
@@ -139,16 +139,7 @@ pub fn render_commit_row<'a>(spec: &CommitRowSpec<'a>) -> Line<'a> {
             truncate_str(branch_name, inner)
         } else {
             // No room for "..."; keep what fits plus a one-cell ellipsis.
-            let mut kept: String = String::new();
-            let mut used = 0;
-            for c in branch_name.chars() {
-                let w = UnicodeWidthChar::width(c).unwrap_or(0);
-                if used + w > inner - 1 {
-                    break;
-                }
-                used += w;
-                kept.push(c);
-            }
+            let kept = prefix_within_width(branch_name, inner - 1);
             format!("{kept}\u{2026}")
         };
         let chip = format!("[{name}]");
@@ -409,6 +400,8 @@ mod tests {
         for branch in [
             "\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}",
             "\u{754c}\u{754c}\u{754c}\u{754c}\u{754c}\u{754c}\u{754c}",
+            // VS16 clusters are two cells but one char
+            &"\u{26a0}\u{fe0f}".repeat(30),
         ] {
             let with = commit("abc1234", "Add feature", Some(branch));
             let without = commit("abc1234", "Add feature", None);

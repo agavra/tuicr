@@ -7,7 +7,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
 };
-use unicode_width::{UnicodeWidthChar as _, UnicodeWidthStr};
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, DiffSource, FocusedPanel, InputMode, Message, MessageType};
 use crate::theme::Theme;
@@ -267,16 +267,7 @@ fn header_source_chunk(app: &App) -> Option<String> {
         DiffSource::PullRequest(pr) => {
             let slug = pr.key.repository.display_name();
             let trimmed_title = if pr.title.width() > 60 {
-                let mut truncated = String::new();
-                let mut used = 0;
-                for c in pr.title.chars() {
-                    let w = c.width().unwrap_or(0);
-                    if used + w > 59 {
-                        break;
-                    }
-                    used += w;
-                    truncated.push(c);
-                }
+                let truncated = crate::ui::text_utils::prefix_within_width(&pr.title, 59);
                 format!("{truncated}\u{2026}")
             } else {
                 pr.title.clone()
@@ -1146,6 +1137,20 @@ mod header_snapshot_tests {
         assert!(chunk.contains('\u{2026}'));
         let title = chunk.rsplit(" \u{00b7} ").next().unwrap();
         assert!(title.width() <= 60, "{title:?}");
+    }
+
+    #[test]
+    fn should_truncate_vs16_title_to_sixty_cells() {
+        // given - each warning sign + VS16 is two cells; 40 of them are 80
+        let mut pr = pr_source(false, false);
+        pr.title = "\u{26a0}\u{fe0f}".repeat(40);
+        let app = build_pr_app(pr);
+        // when
+        let chunk = super::header_source_chunk(&app).expect("pr chunk");
+        // then
+        let title = chunk.rsplit(" \u{00b7} ").next().unwrap();
+        assert!(title.width() <= 60, "{title:?} is {} cells", title.width());
+        assert!(title.ends_with('\u{2026}'));
     }
 
     fn build_local_app(diff_source: DiffSource, head_commit: &str) -> App {
