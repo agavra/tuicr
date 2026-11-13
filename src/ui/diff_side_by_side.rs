@@ -1515,22 +1515,21 @@ fn render_context_line_side_by_side(
 
     // Add comments if any
     let mut cursor_info_out: Option<SideBySideCursorInfo> = None;
-    if let Some(new_ln) = diff_line.new_lineno {
-        let (new_line_idx, cursor_info) = add_comments_to_line(
-            new_ln,
-            line_comments,
-            LineSide::New,
-            ctx,
-            file_idx,
-            line_idx,
-            lines,
-        );
-        line_idx = new_line_idx;
-        cursor_info_out = cursor_info;
+    // A context row exists on both sides, so comments anchored to either
+    // line number render beneath it (Old first, matching unified mode).
+    for (line_no, side) in [
+        (diff_line.old_lineno, LineSide::Old),
+        (diff_line.new_lineno, LineSide::New),
+    ] {
+        let Some(line_no) = line_no else { continue };
+        let (next_idx, cursor_info) =
+            add_comments_to_line(line_no, line_comments, side, ctx, file_idx, line_idx, lines);
+        line_idx = next_idx;
+        cursor_info_out = cursor_info_out.or(cursor_info);
         if let Some(file) = ctx.app.diff_files.get(file_idx) {
             line_idx = add_remote_threads_to_line(
-                new_ln,
-                LineSide::New,
+                line_no,
+                side,
                 ctx,
                 file.display_path(),
                 line_idx,
@@ -1827,22 +1826,21 @@ fn render_standalone_addition_side_by_side(
 
     // Add comments if any
     let mut cursor_info_out: Option<SideBySideCursorInfo> = None;
-    if let Some(new_ln) = diff_line.new_lineno {
-        let (new_line_idx, cursor_info) = add_comments_to_line(
-            new_ln,
-            line_comments,
-            LineSide::New,
-            ctx,
-            file_idx,
-            line_idx,
-            lines,
-        );
-        line_idx = new_line_idx;
-        cursor_info_out = cursor_info;
+    // A context row exists on both sides, so comments anchored to either
+    // line number render beneath it (Old first, matching unified mode).
+    for (line_no, side) in [
+        (diff_line.old_lineno, LineSide::Old),
+        (diff_line.new_lineno, LineSide::New),
+    ] {
+        let Some(line_no) = line_no else { continue };
+        let (next_idx, cursor_info) =
+            add_comments_to_line(line_no, line_comments, side, ctx, file_idx, line_idx, lines);
+        line_idx = next_idx;
+        cursor_info_out = cursor_info_out.or(cursor_info);
         if let Some(file) = ctx.app.diff_files.get(file_idx) {
             line_idx = add_remote_threads_to_line(
-                new_ln,
-                LineSide::New,
+                line_no,
+                side,
                 ctx,
                 file.display_path(),
                 line_idx,
@@ -1887,22 +1885,21 @@ fn render_commit_message_line_side_by_side(
     line_idx += 1;
 
     let mut cursor_info_out: Option<SideBySideCursorInfo> = None;
-    if let Some(new_ln) = diff_line.new_lineno {
-        let (new_line_idx, cursor_info) = add_comments_to_line(
-            new_ln,
-            line_comments,
-            LineSide::New,
-            ctx,
-            file_idx,
-            line_idx,
-            lines,
-        );
-        line_idx = new_line_idx;
-        cursor_info_out = cursor_info;
+    // A context row exists on both sides, so comments anchored to either
+    // line number render beneath it (Old first, matching unified mode).
+    for (line_no, side) in [
+        (diff_line.old_lineno, LineSide::Old),
+        (diff_line.new_lineno, LineSide::New),
+    ] {
+        let Some(line_no) = line_no else { continue };
+        let (next_idx, cursor_info) =
+            add_comments_to_line(line_no, line_comments, side, ctx, file_idx, line_idx, lines);
+        line_idx = next_idx;
+        cursor_info_out = cursor_info_out.or(cursor_info);
         if let Some(file) = ctx.app.diff_files.get(file_idx) {
             line_idx = add_remote_threads_to_line(
-                new_ln,
-                LineSide::New,
+                line_no,
+                side,
                 ctx,
                 file.display_path(),
                 line_idx,
@@ -2521,6 +2518,67 @@ mod remote_comments_side_by_side_snapshot_tests {
             body.contains(NEEDLE),
             "comment scrolled into view should render at its annotated row:\n{body}"
         );
+    }
+
+    /// An Old-side comment on a context row (reachable via `<leader>h`) must
+    /// render in side-by-side mode, with annotations and height model agreeing.
+    #[test]
+    fn should_render_old_side_comment_on_context_row() {
+        use crate::app::AnnotatedLine;
+        use crate::model::{Comment, CommentType};
+
+        const NEEDLE: &str = "old-side-context-note";
+
+        let hunks = vec![DiffHunk {
+            header: "@@ -3,1 +4,1 @@".to_string(),
+            lines: vec![DiffLine {
+                origin: LineOrigin::Context,
+                content: "shared".to_string(),
+                old_lineno: Some(3),
+                new_lineno: Some(4),
+                raw_content: None,
+                highlighted_spans: None,
+            }],
+            old_start: 3,
+            old_count: 1,
+            new_start: 4,
+            new_count: 1,
+        }];
+        let content_hash = DiffFile::compute_content_hash(&hunks);
+        let path = PathBuf::from("src/lib.rs");
+        let file = DiffFile {
+            old_path: Some(path.clone()),
+            new_path: Some(path.clone()),
+            status: FileStatus::Modified,
+            hunks,
+            is_binary: false,
+            is_too_large: false,
+            is_commit_message: false,
+            content_hash,
+        };
+
+        let mut app = make_pr_app_with(vec![file]);
+        app.session
+            .get_file_mut(&path)
+            .expect("file registered in session")
+            .add_line_comment(
+                3,
+                Comment::new(
+                    NEEDLE.to_string(),
+                    CommentType::from_id("note"),
+                    Some(LineSide::Old),
+                ),
+            );
+        app.rebuild_annotations();
+
+        assert!(
+            app.line_annotations
+                .iter()
+                .any(|a| matches!(a, AnnotatedLine::LineComment { .. })),
+            "old-side comment should be annotated"
+        );
+        let body = body_text(&draw(&mut app));
+        assert!(body.contains(NEEDLE), "old-side comment missing:\n{body}");
     }
 
     #[test]
