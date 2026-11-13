@@ -372,6 +372,62 @@ fn render_sessions_tab(frame: &mut Frame, app: &mut App, area: Rect) {
     );
 }
 
+/// Pointer, range-bar placeholder, `#number` and its trailing space.
+const PR_ROW_LEAD_WIDTH: usize = 2 + 2 + 6 + 1;
+const PR_TITLE_MIN_WIDTH: usize = 20;
+const PR_TITLE_MAX_WIDTH: usize = 60;
+const PR_AUTHOR_WIDTH: usize = 12;
+
+/// The `  author · updated · commit 2mo [draft]` tail of each PR row. The
+/// last-commit part appears only for forges that report it (GitHub); when
+/// any row has one, the updated times are padded so it lines up.
+fn pr_row_metadata(view: &PrTabView<'_>) -> Vec<String> {
+    let updated: Vec<String> = view
+        .rows
+        .iter()
+        .map(|row| {
+            row.summary
+                .updated_at
+                .as_ref()
+                .map(format_relative_short)
+                .unwrap_or_else(|| "\u{2014}".to_string())
+        })
+        .collect();
+    let has_last_commit = view
+        .rows
+        .iter()
+        .any(|row| row.summary.last_commit_at.is_some());
+    let updated_width = if has_last_commit {
+        updated.iter().map(|u| u.chars().count()).max().unwrap_or(0)
+    } else {
+        0
+    };
+
+    view.rows
+        .iter()
+        .zip(updated)
+        .map(|(row, updated)| {
+            let author = truncate_or_pad(
+                row.summary.author.as_deref().unwrap_or("?"),
+                PR_AUTHOR_WIDTH,
+            );
+            let last_commit = row
+                .summary
+                .last_commit_at
+                .as_ref()
+                .map(|at| format!(" \u{00b7} commit {}", format_relative_short(at)))
+                .unwrap_or_default();
+            let updated = if last_commit.is_empty() {
+                updated
+            } else {
+                format!("{updated:<updated_width$}")
+            };
+            let draft = if row.summary.is_draft { " [draft]" } else { "" };
+            format!("  {author} \u{00b7} {updated}{last_commit}{draft}")
+        })
+        .collect()
+}
+
 fn render_pr_list(frame: &mut Frame, app: &App, area: Rect, view: &PrTabView<'_>) {
     let theme = &app.theme;
     if area.height == 0 {
@@ -414,8 +470,30 @@ fn render_pr_list(frame: &mut Frame, app: &App, area: Rect, view: &PrTabView<'_>
         .as_ref()
         .map(|s| pr_open_spinner_glyph(s.started_at.elapsed()));
 
+    // Metadata trails the title, so a narrow terminal cuts it off first.
+    // When the page carries last-commit times, shrink the title column to
+    // keep both times visible; it stays the same width on every row so the
+    // metadata lands at the same x. Pages without them keep the fixed width.
+    let metadata: Vec<String> = pr_row_metadata(view);
+    let has_last_commit = view
+        .rows
+        .iter()
+        .any(|row| row.summary.last_commit_at.is_some());
+    let title_width = if has_last_commit {
+        let metadata_width = metadata
+            .iter()
+            .map(|m| m.chars().count())
+            .max()
+            .unwrap_or(0);
+        (area.width as usize)
+            .saturating_sub(PR_ROW_LEAD_WIDTH + metadata_width)
+            .clamp(PR_TITLE_MIN_WIDTH, PR_TITLE_MAX_WIDTH)
+    } else {
+        PR_TITLE_MAX_WIDTH
+    };
+
     let mut lines: Vec<Line> = Vec::new();
-    for (i, row) in view.rows.iter().enumerate() {
+    for (i, (row, metadata)) in view.rows.iter().zip(metadata).enumerate() {
         let is_cursor = i == view.cursor;
         let is_loading = matches!(
             (spinner, app.pr_open_state.as_ref()),
@@ -437,18 +515,9 @@ fn render_pr_list(frame: &mut Frame, app: &App, area: Rect, view: &PrTabView<'_>
 
         // PRs are single-select. Mirror the commit-row column layout for
         // visual consistency (leading cursor + a placeholder column where
-        // the range bar lives on commit rows) and pad title/author so the
-        // date column lands at the same x across rows.
+        // the range bar lives on commit rows).
         let number = format!("#{:<5}", row.summary.number);
-        let title = truncate_or_pad(&row.summary.title, 60);
-        let author = truncate_or_pad(row.summary.author.as_deref().unwrap_or("?"), 12);
-        let updated = row
-            .summary
-            .updated_at
-            .as_ref()
-            .map(format_relative_short)
-            .unwrap_or_else(|| "—".to_string());
-        let draft = if row.summary.is_draft { " [draft]" } else { "" };
+        let title = truncate_or_pad(&row.summary.title, title_width);
 
         lines.push(Line::from(vec![
             Span::styled(
@@ -459,10 +528,7 @@ fn render_pr_list(frame: &mut Frame, app: &App, area: Rect, view: &PrTabView<'_>
             Span::styled(number, styles::hash_style(theme)),
             Span::styled(" ", Style::default()),
             Span::styled(title, Style::default().fg(theme.fg_primary)),
-            Span::styled(
-                format!("  {} \u{00b7} {}{}", author, updated, draft),
-                Style::default().fg(theme.fg_secondary),
-            ),
+            Span::styled(metadata, Style::default().fg(theme.fg_secondary)),
         ]));
     }
 
@@ -623,6 +689,7 @@ mod selector_render_snapshot_tests {
     use crate::syntax::SyntaxHighlighter;
     use crate::theme::Theme;
     use crate::ui::render;
+    use crate::ui::text_utils::truncate_or_pad;
     use crate::vcs::CommitInfo;
     use crate::vcs::traits::{VcsBackend, VcsChangeStatus, VcsInfo, VcsType};
     use chrono::{TimeZone, Utc};
@@ -733,6 +800,7 @@ mod selector_render_snapshot_tests {
             head_ref_name: format!("feat/{number}"),
             base_ref_name: "main".to_string(),
             updated_at: Some(Utc.with_ymd_and_hms(2026, 5, 1, 0, 0, 0).unwrap()),
+            last_commit_at: None,
             url: format!("https://github.com/agavra/tuicr/pull/{number}"),
             state: "OPEN".to_string(),
             is_draft: false,
@@ -979,6 +1047,116 @@ mod selector_render_snapshot_tests {
         ] {
             assert!(body.contains(needle), "missing {needle:?} in:\n{body}");
         }
+    }
+
+    fn app_with_prs(prs: Vec<PullRequestSummary>) -> App {
+        let mut app = make_app(vec![commit(0)]);
+        app.forge_repository = Some(repo());
+        let mut tab = PullRequestsTab::new(Some(repo()));
+        tab.start_initial_load();
+        tab.apply_initial_load(Ok((prs, false)));
+        app.pr_tab = tab;
+        app.target_tab = crate::app::TargetTab::PullRequests;
+        app
+    }
+
+    fn pr_dated(
+        number: u64,
+        author: &str,
+        updated_days: i64,
+        commit_days: Option<i64>,
+    ) -> PullRequestSummary {
+        let mut summary = pr(number, &format!("PR number {number}"), author);
+        summary.updated_at = Some(Utc::now() - chrono::Duration::days(updated_days));
+        summary.last_commit_at = commit_days.map(|d| Utc::now() - chrono::Duration::days(d));
+        summary
+    }
+
+    fn row_containing(buffer: &Buffer, needle: &str) -> String {
+        (0..buffer.area.height)
+            .map(|y| row_text(buffer, y))
+            .find(|row| row.contains(needle))
+            .unwrap_or_else(|| panic!("no row contains {needle:?}"))
+    }
+
+    #[test]
+    fn should_render_last_commit_time_beside_updated_time() {
+        // given — updated 2 days ago, last commit two months ago
+        let mut app = app_with_prs(vec![
+            pr_dated(148, "alice", 2, Some(60)),
+            pr_dated(125, "ypares", 14, Some(3)),
+        ]);
+        // when
+        let buffer = draw(&mut app);
+        // then
+        let first = row_containing(&buffer, "#148");
+        let second = row_containing(&buffer, "#125");
+        assert!(
+            first.contains("alice        · 2d · commit 2mo"),
+            "{first:?}"
+        );
+        assert!(
+            second.contains("ypares       · 2w · commit 3d"),
+            "{second:?}"
+        );
+        let column = |row: &str| row[..row.find("commit").unwrap()].chars().count();
+        assert_eq!(
+            column(&first),
+            column(&second),
+            "last-commit column should line up"
+        );
+    }
+
+    #[test]
+    fn should_render_rows_without_last_commit_as_before() {
+        // given — a forge that does not report a last commit
+        let mut app = app_with_prs(vec![pr_dated(148, "alice", 2, None)]);
+        // when
+        let buffer = draw(&mut app);
+        // then
+        let row = row_containing(&buffer, "#148");
+        let expected = format!("#148   {:<60}  alice        · 2d", "PR number 148");
+        assert_eq!(row.trim_matches(['│', ' ', '▸']), expected);
+    }
+
+    #[test]
+    fn should_keep_fixed_title_width_on_narrow_terminals_without_last_commit() {
+        // given — a forge without last-commit times on an 80-column terminal
+        let mut long = pr_dated(148, "alice", 2, None);
+        long.title =
+            "A very long pull request title that would push the dates off screen".to_string();
+        let mut app = app_with_prs(vec![long.clone()]);
+        // when
+        let buffer = draw_at(&mut app, 80, 24);
+        // then — the title keeps its 60 columns and the tail is cut as on main
+        let row = row_containing(&buffer, "#148");
+        let full = format!(
+            "#148   {}  alice        · 2d",
+            truncate_or_pad(&long.title, 60)
+        );
+        let visible = row
+            .trim_start_matches(['│', ' ', '▸'])
+            .trim_end_matches(['│', ' ']);
+        assert!(full.starts_with(visible), "{visible:?} vs {full:?}");
+        assert!(
+            visible.contains(&truncate_or_pad(&long.title, 60)),
+            "{visible:?}"
+        );
+    }
+
+    #[test]
+    fn should_shrink_pr_title_to_keep_dates_visible_on_narrow_terminals() {
+        // given — a long title on an 80-column terminal
+        let mut long = pr_dated(148, "alice", 2, Some(60));
+        long.title =
+            "A very long pull request title that would push the dates off screen".to_string();
+        let mut app = app_with_prs(vec![long]);
+        // when
+        let buffer = draw_at(&mut app, 80, 24);
+        // then
+        let row = row_containing(&buffer, "#148");
+        assert!(row.contains("A very long"), "{row:?}");
+        assert!(row.contains("alice        · 2d · commit 2mo"), "{row:?}");
     }
 
     #[test]

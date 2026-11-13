@@ -511,6 +511,7 @@ mod tests {
             head_ref_name: head.to_string(),
             base_ref_name: base.to_string(),
             updated_at: Some(Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap()),
+            last_commit_at: None,
             url: format!("https://github.com/agavra/tuicr/pull/{number}"),
             state: "OPEN".to_string(),
             is_draft: false,

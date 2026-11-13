@@ -81,6 +81,7 @@ impl GlabMrSummary {
             head_ref_name: self.source_branch,
             base_ref_name: self.target_branch,
             updated_at: self.updated_at,
+            last_commit_at: None,
             url: self.web_url,
             state: normalize_state(&self.state),
             is_draft: self.draft,

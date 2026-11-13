@@ -135,6 +135,7 @@ impl AzPullRequest {
             head_ref_name: strip_ref(&self.source_ref_name),
             base_ref_name: strip_ref(&self.target_ref_name),
             updated_at: self.creation_date,
+            last_commit_at: None,
             url,
             state: normalize_state(&self.status),
             is_draft: self.is_draft,

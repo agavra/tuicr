@@ -260,7 +260,7 @@ Forge selection is host-driven: `parse_any_remote_url` tries Bitbucket (Bitbucke
 
 `src/forge/traits.rs`. Required methods:
 
-- `list_pull_requests` — paged list for the selector's Pull Requests tab.
+- `list_pull_requests` — paged list for the selector's Pull Requests tab. `PullRequestSummary::last_commit_at` (committer date of the newest commit, shown as `commit 2mo` beside the updated time) is optional: GitHub fills it with one extra GraphQL `commits(last: 1)` query for the page's PRs — never `gh pr list --json commits`, which pulls up to 100 commits per PR — and leaves it `None` if that query fails; other forges leave it `None`.
 - `get_pull_request` — details for a `PullRequestTarget` (resolves to `PullRequestDetails`).
 - `get_pull_request_info` — extended PR metadata for the description panel (`PullRequestInfo`). GitHub fetches `reviewDecision`, `mergeable`, `mergeStateStatus`, `reviewRequests`, `latestReviews`, and `statusCheckRollup` in the same `gh pr view` call; other backends default to `PullRequestInfo::from_details`.
 - `get_pull_request_diff` — cumulative PR changes as structured `FilePatch` values. Each forge obtains path/status metadata from its API and pairs it with patch bodies without decoding display headers.

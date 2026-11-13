@@ -167,6 +167,7 @@ impl GerritChange {
             head_ref_name,
             base_ref_name: self.branch,
             updated_at: at(&self.updated),
+            last_commit_at: None,
             url,
             state: normalize_state(&self.status),
             is_draft: self.work_in_progress,

@@ -445,6 +445,7 @@ fn sample_pr(number: u64, title: &str) -> PullRequestSummary {
         head_ref_name: "feat".to_string(),
         base_ref_name: "main".to_string(),
         updated_at: None,
+        last_commit_at: None,
         url: format!("https://github.com/agavra/tuicr/pull/{number}"),
         state: "OPEN".to_string(),
         is_draft: false,
