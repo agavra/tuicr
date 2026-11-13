@@ -7,7 +7,11 @@ use crate::app::{
 };
 use crate::forge::remote_comments::PrCommentsVisibility;
 use crate::forge::submit::SubmitEvent;
-use crate::input::{Action, map_global_key};
+use crate::input::{
+    Action, map_file_picker_filter_mode, map_file_tree_mode_with_q_quits,
+    map_file_tree_prompt_mode, map_global_key, map_key_to_action_with_q_quits,
+    map_target_filter_mode, map_theme_picker_filter_mode,
+};
 use crate::model::{ClearScope, LineSide};
 use crate::output::{copy_text_to_clipboard, export_to_clipboard, generate_export_content};
 use crate::text_edit::{
@@ -188,6 +192,45 @@ pub fn handle_global_key(app: &mut App, key: KeyEvent) -> bool {
     }
 }
 
+/// Map a key press to an `Action` for the current mode. An open text prompt
+/// (PR filter, file-tree prompt, theme/file picker filter) owns the keys first,
+/// whatever panel has focus; the file tree has its own map otherwise.
+pub fn map_normal_path_key(app: &App, key: KeyEvent) -> Action {
+    if app.input_mode == InputMode::CommitSelect && app.pr_filter_editing() {
+        map_target_filter_mode(key)
+    } else if app.input_mode == InputMode::Normal && app.file_tree_prompt_editing() {
+        map_file_tree_prompt_mode(key)
+    } else if app.input_mode == InputMode::ThemePicker && app.theme_picker_filtering() {
+        map_theme_picker_filter_mode(key)
+    } else if app.input_mode == InputMode::FilePicker && app.file_picker_filtering() {
+        map_file_picker_filter_mode(key)
+    } else if app.input_mode == InputMode::Normal && app.focused_panel == FocusedPanel::FileList {
+        map_file_tree_mode_with_q_quits(key, app.leader_key, app.q_quits)
+    } else {
+        map_key_to_action_with_q_quits(key, app.input_mode, app.leader_key, app.q_quits)
+    }
+}
+
+/// Route an action to the handler for the current input mode.
+pub fn dispatch_action(app: &mut App, action: Action) {
+    match app.input_mode {
+        InputMode::Help | InputMode::MessageDetails => handle_help_action(app, action),
+        InputMode::Summary => handle_summary_action(app, action),
+        InputMode::Command => handle_command_action(app, action),
+        InputMode::Search => handle_search_action(app, action),
+        InputMode::Comment => handle_comment_action(app, action),
+        InputMode::Confirm => handle_confirm_action(app, action),
+        InputMode::CommitSelect => handle_commit_select_action(app, action),
+        InputMode::VisualSelect => handle_visual_action(app, action),
+        InputMode::SubmitResolver => handle_submit_resolver_action(app, action),
+        InputMode::SubmitConfirm => handle_submit_confirm_action(app, action),
+        InputMode::SubmitActionPicker => handle_submit_action_picker_action(app, action),
+        InputMode::ThemePicker => handle_theme_picker_action(app, action),
+        InputMode::FilePicker => handle_file_picker_action(app, action),
+        InputMode::Normal => handle_normal_action(app, action),
+    }
+}
+
 pub fn handle_mouse_event(app: &mut App, event: MouseEvent) {
     let pos = Position::new(event.column, event.row);
     match event.kind {
@@ -275,6 +318,11 @@ pub fn handle_mouse_event(app: &mut App, event: MouseEvent) {
         MouseEventKind::Drag(MouseButton::Left)
             if matches!(app.input_mode, InputMode::Normal | InputMode::VisualSelect) =>
         {
+            // An open file-tree prompt owns input; a drag must not start a
+            // visual selection (it would strand the draft in VisualSelect).
+            if app.file_tree_prompt_editing() {
+                return;
+            }
             let Some(sel) = app.visual_selection else {
                 return;
             };

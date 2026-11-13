@@ -495,3 +495,14 @@ fn should_paste_into_the_filter_draft_as_one_line() {
 
     assert_eq!(app.theme_picker.draft.as_deref(), Some("dark"));
 }
+
+#[test]
+fn should_drop_carriage_returns_when_pasting_into_the_filter_draft() {
+    let mut app = app();
+    app.enter_theme_picker_mode();
+    handle_theme_picker_action(&mut app, Action::ThemePickerFilter);
+
+    crate::handler::handle_paste(&mut app, "da\r\nr\rk".into());
+
+    assert_eq!(app.theme_picker.draft.as_deref(), Some("dark"));
+}
