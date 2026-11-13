@@ -1273,28 +1273,36 @@ impl App {
                                 LineOrigin::Context => {
                                     content_lines += 1;
 
-                                    // Comments for context line
-                                    if let Some(line_comments) = line_comments
-                                        && let Some(new_ln) = diff_line.new_lineno
-                                        && let Some(comments) = line_comments.get(&new_ln)
-                                    {
-                                        for comment in comments {
-                                            if comment.side != Some(LineSide::Old)
-                                                && Self::comment_visible_with(
-                                                    comment,
-                                                    commit_set.as_ref(),
-                                                )
-                                            {
-                                                comment_lines += Self::comment_display_lines(
-                                                    comment,
-                                                    self.diff_state.viewport_width,
-                                                );
+                                    // Comments for context line (both sides)
+                                    for (line_no, side) in [
+                                        (diff_line.old_lineno, LineSide::Old),
+                                        (diff_line.new_lineno, LineSide::New),
+                                    ] {
+                                        let Some(ln) = line_no else { continue };
+                                        if let Some(comments) =
+                                            line_comments.and_then(|lc| lc.get(&ln))
+                                        {
+                                            for comment in comments {
+                                                let matches_side = if side == LineSide::Old {
+                                                    comment.side == Some(LineSide::Old)
+                                                } else {
+                                                    comment.side != Some(LineSide::Old)
+                                                };
+                                                if matches_side
+                                                    && Self::comment_visible_with(
+                                                        comment,
+                                                        commit_set.as_ref(),
+                                                    )
+                                                {
+                                                    comment_lines += Self::comment_display_lines(
+                                                        comment,
+                                                        self.diff_state.viewport_width,
+                                                    );
+                                                }
                                             }
                                         }
-                                    }
-                                    if let Some(new_ln) = diff_line.new_lineno {
                                         comment_lines += remote_thread_rows
-                                            .get(&(new_ln, LineSide::New))
+                                            .get(&(ln, side))
                                             .copied()
                                             .unwrap_or(0);
                                     }

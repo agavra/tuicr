@@ -1948,13 +1948,13 @@ fn should_render_remote_thread_inside_hunk_only_at_its_row() {
 
 #[test]
 fn should_render_old_side_thread_on_context_line_once_in_each_view() {
-    // Unified view anchors old-side threads on context rows; side-by-side
-    // only anchors them on deletions, so there it falls back to the header.
+    // Both views anchor old-side threads on context rows (a context row
+    // exists on both sides), so neither falls back to the file header.
     use crate::forge::remote_comments::RemoteCommentSide;
 
     for (mode, under_header) in [
         (DiffViewMode::Unified, false),
-        (DiffViewMode::SideBySide, true),
+        (DiffViewMode::SideBySide, false),
     ] {
         let file = make_file_with_hunks("a.rs", vec![make_hunk(42, 5)]);
         let mut app = build_app_with_files(vec![file], 60);

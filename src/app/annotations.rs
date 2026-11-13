@@ -508,9 +508,8 @@ impl App {
     ///
     /// The anchor rules must match the per-row lookups in
     /// `build_unified_diff_annotations` / `build_side_by_side_annotations` and
-    /// both renderers, so a thread renders exactly once: unified view anchors
-    /// old-side threads on every row with an old line number, while
-    /// side-by-side only anchors them on deleted lines.
+    /// both renderers, so a thread renders exactly once: both views anchor
+    /// old-side threads on every row with an old line number.
     pub(crate) fn remote_threads_outside_hunks(&self, file: &DiffFile) -> Vec<usize> {
         use crate::forge::remote_comments::{PrCommentsVisibility, RemoteCommentSide};
         let visibility = self.session.remote_comments_visibility;
@@ -519,17 +518,13 @@ impl App {
             return Vec::new();
         }
         let path = file.display_path().to_string_lossy();
-        let side_by_side = self.diff_view_mode == DiffViewMode::SideBySide;
         let has_row = |line: u32, side: RemoteCommentSide| {
             file.hunks
                 .iter()
                 .flat_map(|hunk| hunk.lines.iter())
                 .any(|diff_line| match side {
                     RemoteCommentSide::Right => diff_line.new_lineno == Some(line),
-                    RemoteCommentSide::Left => {
-                        diff_line.old_lineno == Some(line)
-                            && (!side_by_side || diff_line.origin == LineOrigin::Deletion)
-                    }
+                    RemoteCommentSide::Left => diff_line.old_lineno == Some(line),
                 })
         };
         self.forge_review_threads
@@ -674,24 +669,29 @@ impl App {
                         new_lineno: diff_line.new_lineno,
                     });
 
-                    Self::push_comments(
-                        annotations,
-                        file_idx,
-                        diff_line.new_lineno,
-                        line_comments,
-                        LineSide::New,
-                        viewport_width,
-                        commit_set,
-                    );
-                    if let Some(new_ln) = diff_line.new_lineno {
-                        Self::push_remote_threads(
+                    for (line_no, side) in [
+                        (diff_line.old_lineno, LineSide::Old),
+                        (diff_line.new_lineno, LineSide::New),
+                    ] {
+                        Self::push_comments(
                             annotations,
-                            remote_threads,
-                            remote_index,
-                            path,
-                            new_ln,
-                            LineSide::New,
+                            file_idx,
+                            line_no,
+                            line_comments,
+                            side,
+                            viewport_width,
+                            commit_set,
                         );
+                        if let Some(ln) = line_no {
+                            Self::push_remote_threads(
+                                annotations,
+                                remote_threads,
+                                remote_index,
+                                path,
+                                ln,
+                                side,
+                            );
+                        }
                     }
 
                     i += 1
