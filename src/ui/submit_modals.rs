@@ -4,7 +4,7 @@
 use crate::ui::app_layout::centered_rect;
 use ratatui::{
     Frame,
-    layout::{Alignment, Rect},
+    layout::{Alignment, Constraint, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
@@ -107,6 +107,7 @@ pub fn render_submit_resolver(frame: &mut Frame, app: &App) {
             // Wrap by display width so wide (CJK) text is never clipped.
             let lines: Vec<Line> = wrap_spans(&[Span::raw(text)], width)
                 .into_iter()
+                .take(list_area.height.max(1) as usize)
                 .map(Line::from)
                 .collect();
             ListItem::new(lines)
@@ -795,6 +796,20 @@ mod tests {
         let text = buffer_text(&draw_resolver(&app));
         let shown = text.chars().filter(|c| *c == '漢').count();
         assert_eq!(shown, 40, "all CJK chars visible, none clipped: {text}");
+    }
+
+    #[test]
+    fn resolver_clips_item_taller_than_list_instead_of_dropping_it() {
+        let mut app = one_row_app("please handle this file");
+        app.diff_area = Some(Rect::new(40, 1, 80, 21));
+        let path = format!("{0}/{0}/{0}/{0}/{0}/lib.rs", "a".repeat(80));
+        app.submit_state.as_mut().unwrap().unmappable[0].file = PathBuf::from(path);
+        let text = buffer_text(&draw_resolver(&app));
+        assert!(
+            text.contains("> [ ] Omit"),
+            "selected item disappeared: {text}"
+        );
+        assert!(text.contains("Esc: cancel"), "footer: {text}");
     }
 
     #[test]
