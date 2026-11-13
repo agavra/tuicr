@@ -276,6 +276,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                format!("  {leader}p        "),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Pick a file from a popup and jump to it (`/` filters)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 format!("  {leader}n        "),
                 Style::default().add_modifier(Modifier::BOLD),
             ),

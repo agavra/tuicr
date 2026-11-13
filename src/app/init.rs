@@ -545,6 +545,7 @@ impl App {
             summary_state: SummaryState::default(),
             file_filter: FileTreeFilter::default(),
             theme_picker: ThemePickerState::default(),
+            file_picker: FilePickerState::default(),
             command_buffer: String::new(),
             command_completion: None,
             command_return_mode: InputMode::Normal,

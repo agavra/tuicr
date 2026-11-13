@@ -18,6 +18,7 @@ Full reference. Press `?` inside tuicr for an in-app version of this list.
 | `{N}G` | Go to source line N in current file |
 | `{N}{motion}` | Vim-style count prefix — repeats `j` / `k` / `h` / `l` / `{` / `}` / `[` / `]` `N` times |
 | `{` / `}` | Jump to previous / next file |
+| `<leader>p` | Open the file picker (see below) |
 | `[` / `]` | Jump to previous / next hunk |
 | `m` / `M` | Jump to next / previous comment |
 | `/` | Search within diff (case-insensitive regex); matches on diff content are highlighted and the status bar shows the `[current/total]` position (headers, comments, and PR info are searchable but not highlighted) |
@@ -33,6 +34,21 @@ Full reference. Press `?` inside tuicr for an in-app version of this list.
 a search. Use it when the terminal leaves stale text on screen, for example after
 a font size change in a window that wasn't visible. tuicr also redraws in full
 whenever the terminal reports a resize.
+
+## File picker
+
+`<leader>p` opens a popup over the diff that lists the files in the review, so you
+can jump to one without showing the file list. It lists only the files on screen:
+the file tree's `i` / `e` filters and hidden reviewed files (`:set reviewed!`)
+apply. The diff's current file starts selected.
+
+| Key | Action |
+|-----|--------|
+| `j` / `↓` | Select next file |
+| `k` / `↑` | Select previous file |
+| `/` | Filter paths by case-insensitive substring; the list narrows as you type. `↑` / `↓` move the selection, `Enter` jumps to it and closes, `Esc` drops the filter and keeps the popup open |
+| `Enter` | Jump to the selected file, the same as `Enter` in the file tree (single-file view switches to it) |
+| `Esc` | Close without moving |
 
 ## Diff search
 
