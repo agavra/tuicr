@@ -325,6 +325,7 @@ mod tests {
             ))
         }
         fn fetch_file_content(&self, _req: ForgeFileLinesRequest) -> Result<String> {
+            self.calls.lock().unwrap().push("fetch_file_content");
             Ok("one\ntwo\nthree\n".to_string())
         }
         fn list_review_threads(
@@ -548,6 +549,14 @@ rename to new_name.rs
                 .fetch_file_lines(lines_request(3, 2))
                 .unwrap()
                 .is_empty()
+        );
+        assert!(
+            !backend
+                .calls
+                .lock()
+                .unwrap()
+                .contains(&"fetch_file_content"),
+            "an empty range must not fetch the file"
         );
     }
 

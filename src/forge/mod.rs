@@ -337,6 +337,9 @@ mod tests {
         assert_eq!(patches.len(), 1);
         let missing = "0".repeat(40);
         assert!(local_range_diff(dir.path(), &first, &missing).is_none());
+        // An empty endpoint would make `git diff` default it to HEAD and succeed.
+        assert!(local_range_diff(dir.path(), "", &second).is_none());
+        assert!(local_range_diff(dir.path(), &first, "").is_none());
     }
 
     #[test]
