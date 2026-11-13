@@ -11,10 +11,22 @@ use toml::Value;
 ///
 /// Booleans keep the legacy global modes. `"auto"` selects per-extension
 /// comparison using the built-in table plus `[ignore_whitespace_overrides]`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IgnoreWhitespaceConfig {
     Bool(bool),
     Auto,
+}
+
+impl Serialize for IgnoreWhitespaceConfig {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            Self::Bool(value) => serializer.serialize_bool(*value),
+            Self::Auto => serializer.serialize_str("auto"),
+        }
+    }
 }
 
 impl<'de> Deserialize<'de> for IgnoreWhitespaceConfig {
@@ -982,6 +994,26 @@ fn is_supported_color_value(value: &str) -> bool {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn should_round_trip_ignore_whitespace_config() {
+        for value in [
+            IgnoreWhitespaceConfig::Bool(true),
+            IgnoreWhitespaceConfig::Bool(false),
+            IgnoreWhitespaceConfig::Auto,
+        ] {
+            let config = AppConfig {
+                ignore_whitespace: Some(value.clone()),
+                ..AppConfig::default()
+            };
+            let json = serde_json::to_string(&config).expect("serialize json");
+            let back: AppConfig = serde_json::from_str(&json).expect("deserialize json");
+            assert_eq!(back.ignore_whitespace, Some(value.clone()));
+            let toml = toml::to_string(&config).expect("serialize toml");
+            let back: AppConfig = toml::from_str(&toml).expect("deserialize toml");
+            assert_eq!(back.ignore_whitespace, Some(value));
+        }
+    }
 
     /// Helper: write a config file, parse it, and return the outcome.
     fn parse_config(toml_content: &str) -> ConfigLoadOutcome {
