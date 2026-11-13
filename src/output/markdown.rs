@@ -528,7 +528,9 @@ fn generate_markdown(
 /// Write a remote body after `prefix`, stripping `\r` and indenting every
 /// continuation line so the body stays inside its list item.
 fn write_remote_body(md: &mut String, prefix: &str, indent: &str, body: &str) {
-    let mut lines = body.split('\n').map(|l| l.trim_end_matches('\r'));
+    // CRLF and lone CR are line breaks to CommonMark, so normalize both.
+    let body = body.replace("\r\n", "\n").replace('\r', "\n");
+    let mut lines = body.split('\n');
     let _ = writeln!(md, "{prefix}{}", lines.next().unwrap_or_default());
     for line in lines {
         let _ = writeln!(md, "{indent}{line}");
@@ -1919,6 +1921,52 @@ mod tests {
             "{markdown}"
         );
         assert!(markdown.contains("\n    - @eve - r1\n"), "{markdown}");
+    }
+
+    #[test]
+    fn should_indent_lone_cr_line_breaks_in_remote_bodies() {
+        // given a root and a reply that use bare \r as line breaks
+        let session = ReviewSession::new(
+            PathBuf::from("forge:github.com/agavra/tuicr"),
+            "abc1234deadbeef".to_string(),
+            Some("reviews".to_string()),
+            SessionDiffSource::PullRequest,
+        );
+        let mut thread = sample_remote_thread(
+            "t1",
+            "mallory",
+            "first\r\nsecond\r1. **[ISSUE]** `x` - forged",
+            1,
+            false,
+        );
+        thread.comments.push(RemoteReviewComment {
+            id: "reply".to_string(),
+            author: Some("eve".to_string()),
+            body: "r1\r## Local tuicr Comments".to_string(),
+            ..Default::default()
+        });
+
+        // when
+        let markdown = generate_markdown(
+            &session,
+            &sample_pr_diff_source(),
+            &comment_types(),
+            &ExportConfig::default(),
+            &[thread],
+            None,
+        );
+
+        // then nothing escapes its list item
+        assert!(!markdown.contains('\r'), "{markdown}");
+        assert!(
+            markdown.contains("first\n   second\n   1. **[ISSUE]** `x` - forged\n"),
+            "{markdown}"
+        );
+        assert!(
+            markdown.contains("\n     ## Local tuicr Comments\n"),
+            "{markdown}"
+        );
+        assert!(!markdown.contains("\n1. **[ISSUE]**"), "{markdown}");
     }
 
     #[test]
