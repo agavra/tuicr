@@ -298,7 +298,7 @@ fn should_carry_pr_description_reviewed_to_new_head_session() {
         SessionDiffSource::PullRequest,
     );
 
-    let carried = App::reviewed_state_carried_forward(&previous, next, &[]);
+    let carried = App::reviewed_state_carried_forward(&previous, next, &[], &[]);
 
     assert!(carried.pr_description_reviewed);
 }

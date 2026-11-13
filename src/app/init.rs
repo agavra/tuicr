@@ -1,10 +1,11 @@
 use super::*;
 
 #[derive(Clone, Copy)]
-struct PrDisplayOptions {
-    show_checks: bool,
-    show_comments: bool,
-    comments_visibility: Option<crate::forge::remote_comments::PrCommentsVisibility>,
+pub(in crate::app) struct PrDisplayOptions {
+    pub(in crate::app) show_checks: bool,
+    pub(in crate::app) show_comments: bool,
+    pub(in crate::app) comments_visibility:
+        Option<crate::forge::remote_comments::PrCommentsVisibility>,
 }
 
 impl App {
@@ -970,6 +971,42 @@ impl App {
         }
         let opened = Self::opened_pr_with_persisted_session(opened)?;
 
+        // Snapshot the PR details before consuming `opened` so we can kick
+        // off the remote-thread fetch after the app is built.
+        let details_for_threads = opened.details.clone();
+        let mut app = Self::from_opened_pr(
+            opened,
+            backend,
+            target_repo,
+            theme,
+            comment_type_configs,
+            output_to_stdout,
+            repo_url_override,
+            display_options,
+            commit_selection,
+            local_repo_root,
+        )?;
+        // Spawn thread-fetch on startup; the main event loop will drain
+        // the receiver via `poll_pr_threads_events` once it begins.
+        app.spawn_pr_threads_fetch(&details_for_threads, local_checkout_for_target);
+        Ok(app)
+    }
+
+    /// Post-open half of `tuicr pr <target>`: build the app around an
+    /// already-opened PR. Split out so tests can supply the opened PR.
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::app) fn from_opened_pr(
+        opened: crate::forge::pr_open::OpenedPullRequest,
+        backend: Box<dyn ForgeBackend>,
+        target_repo: ForgeRepository,
+        theme: Theme,
+        comment_type_configs: Option<Vec<CommentTypeConfig>>,
+        output_to_stdout: bool,
+        repo_url_override: Option<ForgeRepository>,
+        display_options: PrDisplayOptions,
+        commit_selection: CommitSelectionStart,
+        local_repo_root: Option<PathBuf>,
+    ) -> Result<Self> {
         let pr_source = PullRequestDiffSource::from_details(&opened.details);
         let diff_source = DiffSource::PullRequest(Box::new(pr_source));
         let vcs_info = VcsInfo {
@@ -982,8 +1019,6 @@ impl App {
         // routes through the forge backend, not the VCS box.
         let vcs: Box<dyn VcsBackend> = Box::new(PrNoopVcs::new(vcs_info.clone()));
 
-        // Snapshot the PR details before consuming `opened` so we can kick
-        // off the remote-thread fetch after `Self::build` returns.
         let details_for_threads = opened.details.clone();
         let commits_for_selector = opened.commits.clone();
         let review_metadata = opened.review_metadata.clone();
@@ -1020,10 +1055,11 @@ impl App {
         app.commit_selection_start = commit_selection;
         let since_last_review_message =
             app.apply_pr_commit_selector(commits_for_selector, review_metadata);
-        app.insert_commit_message_if_single();
-        app.sort_files_by_directory(true);
-        app.expand_all_dirs();
-        app.rebuild_annotations();
+        // A strict selection starts a range reload below; keep the message
+        // off the cumulative diff until that range has loaded.
+        let range_reload_pending =
+            Self::is_strict_commit_selection(app.commit_selection_range, app.pr_commits.len());
+        app.rebuild_pr_diff_view(!range_reload_pending);
         if matches!(&app.diff_source, DiffSource::PullRequest(_))
             && let Some(range) = app.commit_selection_range
             && !app.pr_commits.is_empty()
@@ -1039,9 +1075,6 @@ impl App {
         } else if let Some(message) = since_last_review_message {
             app.set_message(message);
         }
-        // Spawn thread-fetch on startup; the main event loop will drain
-        // the receiver via `poll_pr_threads_events` once it begins.
-        app.spawn_pr_threads_fetch(&details_for_threads, local_checkout_for_target);
         Ok(app)
     }
 }
