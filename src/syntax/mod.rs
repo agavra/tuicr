@@ -146,7 +146,12 @@ fn reject_panicking_grammar(text: &str) -> Result<(), String> {
                         {
                             return Err("empty context list in `push`/`set`".to_string());
                         }
-                        Some("escape") if value.as_str().is_none() => {
+                        // Only a rule (a map with a string `match`) has an `escape`
+                        // key; elsewhere it is a context name, whose body is a list.
+                        Some("escape")
+                            if map.keys().any(|k| k.as_str() == Some("match"))
+                                && value.as_str().is_none() =>
+                        {
                             return Err("`escape` must be a string".to_string());
                         }
                         _ => {}
