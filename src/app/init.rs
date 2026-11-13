@@ -539,6 +539,8 @@ impl App {
             relative_line_numbers: false,
             wrap_style: WrapStyle::default(),
             cursor_side: LineSide::New,
+            clipboard_override: None,
+            clipboard_command: None,
             file_list_state: FileListState::default(),
             comment_navigator_state: CommentNavigatorState::default(),
             diff_state: DiffState::default(),

@@ -29,8 +29,12 @@ impl App {
             return Ok(0);
         }
         let count = out.chars().count();
-        crate::output::copy_text_to_clipboard(&out)
-            .map_err(|e| TuicrError::Clipboard(format!("{e}")))?;
+        crate::output::copy_text_to_clipboard_with(
+            &out,
+            self.clipboard_override.as_deref(),
+            self.clipboard_command.as_deref(),
+        )
+        .map_err(|e| TuicrError::Clipboard(format!("{e}")))?;
         Ok(count)
     }
 

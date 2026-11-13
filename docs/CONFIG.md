@@ -58,6 +58,13 @@ diff_watch_interval_ms = 0
 
 backend = "libgit2"
 
+# Clipboard mechanism override. Omit for automatic per-environment detection
+# (the default). When set, it is an ordered list tried in turn.
+# clipboard = ["arboard", "osc52"]
+
+# Command that receives copied text on stdin, tried first.
+# clipboard_command = "tmux load-buffer -"
+
 comment_types = [
   { id = "note", label = "question", definition = "ask for clarification", color = "yellow" },
   { id = "suggestion", definition = "possible improvements" },
@@ -124,6 +131,8 @@ session_header = true
 | `username`                 | `"user"`     | Display name stamped on local comments and used as the viewer identity for local comment coloring.                                                         |
 | `diff_watch_interval_ms`   | `0`          | Poll interval for re-reading the local diff so uncommitted changes show without `:e`. The same tick refreshes the commit pane, including the "Staged changes" and "Unstaged changes" rows. A commit-range review, from `-r` or picked in the commit selector, keeps its range in the pane. With `-w` it refreshes only those two rows. Without it the pane never gains them. `0` (default) disables it. Ignored for PR and `--all-files` reviews. |
 | `backend`                  | `libgit2`    | Git backend: `libgit2` or `cli`. Sparse-checkout repos auto-route to `cli`.                                                                                |
+| `clipboard`                | `auto`       | Ordered list of clipboard mechanisms for `:clip` / visual yank, e.g. `["arboard", "osc52"]`. Values: `arboard`, `pbcopy`, `subprocess` (xclip/wl-copy), `osc52`. Omit the key for automatic per-environment detection. |
+| `clipboard_command`        | (none)       | Shell command that receives copied text on stdin, e.g. `"tmux load-buffer -"`. Tried before any other method. If it fails, tuicr falls back to the normal order. |
 | `comment_types`            | (none)       | Comment categories. Untyped by default. See [Comment types](#comment-types).                                                                               |
 | `export_legend`            | `true`       | Include the `Comment types:` legend in the exported review. Superseded by `legend` under [Export](#export).                                                |
 
