@@ -2956,6 +2956,7 @@ dependencies = [
  "unicode-width",
  "ureq",
  "uuid",
+ "yaml-rust",
  "zip",
 ]
 

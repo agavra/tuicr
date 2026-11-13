@@ -8,7 +8,7 @@ use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin};
 use crate::syntax::SyntaxHighlighter;
 
 use super::traits::{VcsBackend, VcsInfo, VcsType};
-use crate::vcs::slice_context_lines;
+use crate::vcs::{enhance_with_full_file_highlight, slice_context_lines};
 
 /// A backend for reviewing files outside of a VCS repository (`--file`)
 /// and for the whole-repo `--all-files` mode.
@@ -166,10 +166,17 @@ impl FileBackend {
 
     fn build_diff_file_for_path(
         &self,
-        _highlighter: &SyntaxHighlighter,
+        highlighter: &SyntaxHighlighter,
         abs_path: &Path,
-        file_size: u64,
+        discovered_size: u64,
     ) -> Option<DiffFile> {
+        // The file may have grown or shrunk since discovery (`:e` reuses this
+        // backend), so the ceiling applies to the size now; the cached one is
+        // only a fallback when the stat fails.
+        let file_size = std::fs::metadata(abs_path)
+            .map(|m| m.len())
+            .unwrap_or(discovered_size);
+
         // Binary check first so a too-large binary is skipped (not surfaced
         // as a misleading is_too_large text placeholder), and so single-file
         // mode (which never went through `collect_text_files`) is also guarded.
@@ -262,7 +269,7 @@ impl FileBackend {
 
         let hunks = vec![hunk];
         let content_hash = DiffFile::compute_content_hash(&hunks);
-        Some(DiffFile {
+        let mut file = DiffFile {
             old_path: None,
             new_path: Some(rel_path),
             status: file_status,
@@ -271,7 +278,16 @@ impl FileBackend {
             is_too_large: false,
             is_commit_message: false,
             content_hash,
-        })
+        };
+        // Render-time coloring skips container grammars (Vue, Svelte, ...),
+        // so color them here from the content already read.
+        enhance_with_full_file_highlight(
+            std::slice::from_mut(&mut file),
+            highlighter,
+            |_| None,
+            |_| Some(content.clone()),
+        );
+        Some(file)
     }
 }
 
@@ -389,6 +405,54 @@ mod tests {
 
     fn highlighter() -> SyntaxHighlighter {
         SyntaxHighlighter::default()
+    }
+
+    #[test]
+    fn container_grammar_file_is_colored_in_single_file_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("App.vue");
+        fs::write(
+            &path,
+            "<template>\n  <p>hi</p>\n</template>\n<script>\nexport default { name: 'a' }\n</script>\n",
+        )
+        .unwrap();
+
+        let backend = FileBackend::new(path.to_str().unwrap()).unwrap();
+        let diffs = backend.get_working_tree_diff(&highlighter()).unwrap();
+
+        assert!(
+            diffs[0].hunks[0]
+                .lines
+                .iter()
+                .all(|l| l.highlighted_spans.is_some())
+        );
+    }
+
+    #[test]
+    fn file_that_grew_past_the_ceiling_after_discovery_is_too_large() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("grow.txt");
+        fs::write(&path, "small\n").unwrap();
+        let backend = FileBackend::new(path.to_str().unwrap()).unwrap();
+
+        fs::write(&path, "x\n".repeat(MAX_FILE_BYTES as usize / 2 + 1)).unwrap();
+        let diffs = backend.get_working_tree_diff(&highlighter()).unwrap();
+
+        assert!(diffs[0].is_too_large);
+    }
+
+    #[test]
+    fn file_that_shrank_below_the_ceiling_after_discovery_is_loaded() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shrink.txt");
+        fs::write(&path, "x".repeat(MAX_FILE_BYTES as usize + 1)).unwrap();
+        let backend = FileBackend::new(path.to_str().unwrap()).unwrap();
+
+        fs::write(&path, "short\n").unwrap();
+        let diffs = backend.get_working_tree_diff(&highlighter()).unwrap();
+
+        assert!(!diffs[0].is_too_large);
+        assert_eq!(diffs[0].hunks[0].lines.len(), 1);
     }
 
     #[test]
