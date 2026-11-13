@@ -549,6 +549,8 @@ pub(super) fn populate_row_to_annotation(
         let mut logical_lines_visible = 0;
         for (i, &rows_for_line) in row_heights.iter().enumerate() {
             if visual_rows_used + rows_for_line > viewport_height {
+                // The partly visible line is still drawn: map its rows too.
+                out.resize(viewport_height, scroll_offset + i);
                 break;
             }
             for _ in 0..rows_for_line {
@@ -1288,6 +1290,17 @@ pub(super) fn apply_horizontal_scroll(line: Line, scroll_x: usize) -> Line {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn row_map_covers_partly_visible_wrapped_lines() {
+        let mut out = Vec::new();
+        populate_row_to_annotation(&mut out, &[1, 1, 6], 60, 6, true, 0);
+        assert_eq!(out, vec![0, 1, 2, 2, 2, 2]);
+
+        // A first line taller than the viewport still maps every row.
+        populate_row_to_annotation(&mut out, &[10, 1], 60, 6, true, 3);
+        assert_eq!(out, vec![3; 6]);
+    }
 
     fn unwrapped(_line: usize) -> usize {
         1

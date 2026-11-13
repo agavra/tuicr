@@ -193,6 +193,7 @@ fn render_main_content(frame: &mut Frame, app: &mut App, area: Rect) {
         render_content_view(frame, app, diff_area);
     } else {
         app.file_list_area = None;
+        app.file_list_inner_area = None;
         app.comment_navigator_area = None;
         app.comment_navigator_inner_area = None;
         render_content_view(frame, app, content_area);
@@ -380,10 +381,13 @@ mod tests {
     fn hidden_file_list_gives_the_diff_full_width_on_either_side() {
         for position in [FileListPosition::Left, FileListPosition::Right] {
             let mut app = app_with(position);
+            draw(&mut app);
+            assert!(app.file_list_inner_area.is_some(), "{position:?}");
             app.show_file_list = false;
             draw(&mut app);
 
             assert_eq!(app.file_list_area, None, "{position:?}");
+            assert_eq!(app.file_list_inner_area, None, "{position:?}");
             assert_eq!(
                 app.diff_area,
                 Some(Rect::new(0, 1, 100, 22)),
