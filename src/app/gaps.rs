@@ -231,6 +231,9 @@ impl App {
         direction: ExpandDirection,
         limit: Option<usize>,
     ) -> Result<()> {
+        if limit == Some(0) {
+            return Ok(());
+        }
         // Ensure file line count is cached for EOF gaps
         self.ensure_file_line_count_cached(gap_id.file_idx);
 

@@ -67,6 +67,86 @@ fn comment(side: LineSide, state: CommentLifecycleState) -> Comment {
     comment
 }
 
+fn locked_app() -> App {
+    let vcs_info = VcsInfo {
+        root_path: PathBuf::from("/tmp"),
+        head_commit: "head".to_string(),
+        branch_name: Some("main".to_string()),
+        vcs_type: VcsType::Git,
+    };
+    let session = ReviewSession::new(
+        vcs_info.root_path.clone(),
+        vcs_info.head_commit.clone(),
+        vcs_info.branch_name.clone(),
+        SessionDiffSource::WorkingTree,
+    );
+    let mut app = App::build(
+        Box::new(DummyVcs {
+            info: vcs_info.clone(),
+        }),
+        vcs_info,
+        Theme::dark(),
+        None,
+        false,
+        vec![diff_file("src/main.rs")],
+        session,
+        DiffSource::WorkingTree,
+        InputMode::Normal,
+        Vec::new(),
+        None,
+        None,
+    )
+    .expect("failed to build test app");
+    let path = PathBuf::from("src/main.rs");
+    app.session.add_file(path.clone(), FileStatus::Modified, 0);
+    app.session.get_file_mut(&path).unwrap().add_line_comment(
+        42,
+        comment(LineSide::New, CommentLifecycleState::LocalDraft),
+    );
+    app.line_annotations = vec![AnnotatedLine::LineComment {
+        file_idx: 0,
+        line: 42,
+        comment_idx: 0,
+        side: LineSide::New,
+    }];
+    app.diff_state.cursor_line = 0;
+    app.diff_state.current_file_idx = 0;
+    app
+}
+
+fn first_comment(app: &mut App) -> &mut Comment {
+    let path = PathBuf::from("src/main.rs");
+    &mut app
+        .session
+        .get_file_mut(&path)
+        .unwrap()
+        .line_comments
+        .get_mut(&42)
+        .unwrap()[0]
+}
+
+#[test]
+fn should_refuse_to_edit_a_submitted_comment() {
+    let mut app = locked_app();
+    first_comment(&mut app).lifecycle_state = CommentLifecycleState::Submitted;
+
+    assert!(!app.enter_edit_mode(true));
+    assert_eq!(app.input_mode, InputMode::Normal);
+}
+
+#[test]
+fn should_not_save_over_a_comment_submitted_mid_edit() {
+    let mut app = locked_app();
+    assert!(app.enter_edit_mode(true));
+    first_comment(&mut app).lifecycle_state = CommentLifecycleState::Submitted;
+    app.comment_buffer = "mutated after submit".to_string();
+
+    app.save_comment();
+
+    assert_eq!(first_comment(&mut app).content, "a remark");
+    assert_eq!(app.input_mode, InputMode::Normal);
+}
+
 #[test]
 fn should_answer_about_the_comment_the_annotation_points_at() {
     // Line 42 holds a comment on each side. The annotation for the new-side

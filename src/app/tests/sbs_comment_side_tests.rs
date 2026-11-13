@@ -718,3 +718,29 @@ fn visual_suggestion_skips_existing_comment_rows() {
         }
     }
 }
+
+#[test]
+fn visual_comment_rejects_selection_spanning_two_files() {
+    let mut app = build_app();
+    let mut second = sbs_line(None, Some(4));
+    if let AnnotatedLine::SideBySideLine { file_idx, .. } = &mut second {
+        *file_idx = 1;
+    }
+    app.line_annotations = vec![sbs_line(None, Some(41)), second];
+    app.input_mode = InputMode::VisualSelect;
+    let point = |annotation_idx| SelPoint {
+        annotation_idx,
+        char_offset: 0,
+        side: LineSide::New,
+    };
+    app.visual_selection = Some(VisualSelection {
+        anchor: point(0),
+        head: point(1),
+    });
+    assert!(app.visual_selection_line_range().is_none());
+
+    crate::handler::handle_visual_action(&mut app, Action::AddRangeComment);
+
+    assert_ne!(app.input_mode, InputMode::Comment);
+    assert!(app.comment_line_range.is_none());
+}

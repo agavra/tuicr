@@ -1927,3 +1927,24 @@ fn should_render_old_side_thread_on_context_line_once_in_each_view() {
         assert_eq!(app.total_lines(), app.line_annotations.len(), "{mode:?}");
     }
 }
+
+#[test]
+fn should_not_panic_jumping_into_hidden_gap_of_collapsed_reviewed_file() {
+    // The gap's top half is already expanded, so reaching line 10 needs zero
+    // further lines; the reviewed file hides that expansion from the cursor.
+    let file = make_file_with_hunks("test.rs", vec![make_hunk(51, 5)]);
+    let mut app = build_app_with_files(vec![file], 100);
+    let gap_id = GapId {
+        file_idx: 0,
+        hunk_idx: 0,
+    };
+    app.expand_gap(gap_id.clone(), ExpandDirection::Down, Some(20))
+        .unwrap();
+    app.toggle_reviewed();
+    let before = app.expanded_top.get(&gap_id).map_or(0, |v| v.len());
+
+    app.go_to_source_line(10, LineSide::New);
+
+    assert_eq!(app.expanded_top.get(&gap_id).map_or(0, |v| v.len()), before);
+    assert!(!app.expanded_bottom.contains_key(&gap_id));
+}

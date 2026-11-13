@@ -905,6 +905,9 @@ impl App {
     /// line (vim `A` / the default non-vim behavior); otherwise at its start
     /// (vim `i`). Returns true if a comment was found and edit mode entered.
     pub fn enter_edit_mode(&mut self, cursor_at_end: bool) -> bool {
+        if self.cursor_on_locked_comment() {
+            return false;
+        }
         let location = self.find_comment_at_cursor();
         // First annotation row of the comment under the cursor, so we can place
         // the text cursor on the line the diff cursor is actually pointing at.
@@ -1017,6 +1020,19 @@ impl App {
         self.comment_line_range = None;
     }
 
+    /// True when the comment with this id has already been written to the forge.
+    fn comment_is_locked(&self, id: &str) -> bool {
+        self.session
+            .review_comments
+            .iter()
+            .chain(self.session.files.values().flat_map(|f| {
+                f.file_comments
+                    .iter()
+                    .chain(f.line_comments.values().flatten())
+            }))
+            .any(|c| c.id == id && c.is_locked())
+    }
+
     pub fn save_comment(&mut self) {
         if self.comment_buffer.trim().is_empty() {
             self.set_message("Comment cannot be empty");
@@ -1030,6 +1046,11 @@ impl App {
 
         // Check if we're editing an existing comment
         if let Some(editing_id) = &self.editing_comment_id {
+            if self.comment_is_locked(editing_id) {
+                self.exit_comment_mode();
+                self.set_warning("Comment was submitted and is now read-only");
+                return;
+            }
             if let Some(comment) = self
                 .session
                 .review_comments
