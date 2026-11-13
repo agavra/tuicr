@@ -3,7 +3,10 @@ use serde::Deserialize;
 use std::path::PathBuf;
 
 use crate::error::{Result, TuicrError};
-use crate::forge::remote_comments::{RemoteCommentSide, RemoteReviewComment, RemoteReviewThread};
+use crate::forge::remote_comments::{
+    RemoteCommentSide, RemoteReviewComment, RemoteReviewState, RemoteReviewSummary,
+    RemoteReviewThread,
+};
 use crate::forge::traits::{
     ForgeRepository, PullRequestCommit, PullRequestDetails, PullRequestSummary,
 };
@@ -281,29 +284,7 @@ impl GlabDiscussion {
         // Only inline (positional) discussions have a position on the root note.
         let position = root.position.as_ref()?;
 
-        // Skip non-text positions (e.g. image diffs).
-        if position.position_type != "text" {
-            return None;
-        }
-
-        let (path, line, side) = if let Some(new_line) = position.new_line {
-            // Comment on the new (right) side.
-            let path = position.new_path.clone().unwrap_or_default();
-            (path, Some(new_line), RemoteCommentSide::Right)
-        } else {
-            let old_line = position.old_line?;
-            // Comment on the old (left) side only.
-            let path = position
-                .old_path
-                .clone()
-                .or_else(|| position.new_path.clone())
-                .unwrap_or_default();
-            (path, Some(old_line), RemoteCommentSide::Left)
-        };
-
-        if path.is_empty() {
-            return None;
-        }
+        let (path, line, side) = position.anchor()?;
 
         let is_resolved = root.resolved;
         let comments = self
@@ -369,6 +350,100 @@ pub struct GlabNotePosition {
     pub old_line: Option<u32>,
 }
 
+impl GlabNotePosition {
+    /// The diff anchor of a text position: path, line and side. `None` for
+    /// non-text positions (e.g. image diffs) and anchors without a path.
+    fn anchor(&self) -> Option<(String, Option<u32>, RemoteCommentSide)> {
+        if self.position_type != "text" {
+            return None;
+        }
+        let (path, line, side) = if let Some(new_line) = self.new_line {
+            // Comment on the new (right) side.
+            let path = self.new_path.clone().unwrap_or_default();
+            (path, Some(new_line), RemoteCommentSide::Right)
+        } else {
+            let old_line = self.old_line?;
+            // Comment on the old (left) side only.
+            let path = self
+                .old_path
+                .clone()
+                .or_else(|| self.new_path.clone())
+                .unwrap_or_default();
+            (path, Some(old_line), RemoteCommentSide::Left)
+        };
+        if path.is_empty() {
+            return None;
+        }
+        Some((path, line, side))
+    }
+}
+
+/// An unpublished draft note from `/merge_requests/:iid/draft_notes`, which
+/// only its author can read. `:submit draft` posts everything there.
+#[derive(Debug, Deserialize)]
+pub struct GlabDraftNote {
+    pub id: u64,
+    #[serde(default)]
+    pub note: String,
+    #[serde(default)]
+    pub discussion_id: Option<String>,
+    #[serde(default)]
+    pub position: Option<GlabNotePosition>,
+}
+
+/// Split draft notes into inline threads and review-level summaries. A draft
+/// reply attaches to the published thread it answers; one whose thread is
+/// missing is dropped.
+pub fn draft_notes_to_review(
+    notes: Vec<GlabDraftNote>,
+    threads: &mut Vec<RemoteReviewThread>,
+    author: Option<&str>,
+    url: &str,
+) -> Vec<RemoteReviewSummary> {
+    let mut summaries = Vec::new();
+    for note in notes {
+        if note.note.is_empty() {
+            continue;
+        }
+        let comment = RemoteReviewComment {
+            id: format!("draft-{}", note.id),
+            author: author.map(str::to_string),
+            body: note.note.clone(),
+            is_draft: true,
+            ..Default::default()
+        };
+        if let Some(discussion_id) = note.discussion_id.as_deref() {
+            if let Some(thread) = threads.iter_mut().find(|t| t.id == discussion_id) {
+                thread.comments.push(comment);
+            }
+            continue;
+        }
+        // GitLab sends general draft notes with a position object whose
+        // coordinates are all null, so only a resolvable anchor makes a thread.
+        let anchor = note.position.as_ref().and_then(GlabNotePosition::anchor);
+        match anchor {
+            Some((path, line, side)) => threads.push(RemoteReviewThread {
+                id: comment.id.clone(),
+                path,
+                line,
+                side,
+                is_resolved: false,
+                is_outdated: false,
+                comments: vec![comment],
+            }),
+            None => summaries.push(RemoteReviewSummary {
+                id: comment.id,
+                author: author.map(str::to_string),
+                body: note.note,
+                state: RemoteReviewState::Pending,
+                created_at: None,
+                url: url.to_string(),
+            }),
+        }
+    }
+    summaries
+}
+
 fn normalize_state(state: &str) -> String {
     match state.to_ascii_lowercase().as_str() {
         "opened" | "open" => "OPEN".to_string(),
@@ -384,6 +459,41 @@ mod tests {
     use crate::forge::traits::ForgeRepository;
     use crate::syntax::SyntaxHighlighter;
     use crate::vcs::diff_parser::parse_file_patches;
+
+    fn draft(json: &str) -> GlabDraftNote {
+        serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn should_read_general_draft_with_null_position_as_summary() {
+        let notes = vec![draft(
+            r#"{"id":5,"note":"Example title","discussion_id":null,"position":{"old_path":null,"new_path":null,"position_type":"text","old_line":null,"new_line":null}}"#,
+        )];
+        let mut threads = Vec::new();
+        let summaries = draft_notes_to_review(notes, &mut threads, Some("me"), "u");
+        assert!(threads.is_empty());
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].body, "Example title");
+    }
+
+    #[test]
+    fn should_append_draft_reply_to_its_discussion() {
+        let mut threads = vec![RemoteReviewThread {
+            id: "disc1".into(),
+            path: "a.rs".into(),
+            line: Some(1),
+            side: RemoteCommentSide::Right,
+            is_resolved: false,
+            is_outdated: false,
+            comments: vec![RemoteReviewComment::default()],
+        }];
+        let notes = vec![draft(r#"{"id":7,"note":"reply","discussion_id":"disc1"}"#)];
+        let summaries = draft_notes_to_review(notes, &mut threads, None, "u");
+        assert!(summaries.is_empty());
+        assert_eq!(threads[0].comments.len(), 2);
+        assert_eq!(threads[0].comments[1].body, "reply");
+        assert!(threads[0].comments[1].is_draft);
+    }
 
     fn gitlab_repo() -> ForgeRepository {
         ForgeRepository::gitlab("gitlab.com", "owner", "repo")

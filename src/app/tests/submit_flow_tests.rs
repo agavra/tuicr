@@ -1121,6 +1121,45 @@ fn should_keep_locked_line_comments_when_remote_thread_refetch_fails() {
 }
 
 #[test]
+fn should_still_show_draft_submitted_comments_after_refetch_prunes_them() {
+    // `:submit draft` -> refetch -> prune: the local copies are deleted, so the
+    // backend must hand the drafts back or they vanish from the UI.
+    let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
+    let comment = Comment::new(
+        "overall draft".to_string(),
+        CommentType::from_id("note"),
+        None,
+    );
+    let comment_id = comment.id.clone();
+    app.session.review_comments.push(comment);
+    let mut in_flight = make_in_flight(SubmitEvent::Draft, &[], "abcdef0123", 0);
+    in_flight.review_comment_ids = vec![comment_id];
+    app.apply_submit_success(&in_flight, &make_response(42, "u", "PENDING"));
+    assert_eq!(
+        app.session.review_comments[0].lifecycle_state,
+        CommentLifecycleState::PushedDraft
+    );
+
+    deliver_matching_pr_threads_event(
+        &mut app,
+        Ok(Vec::new()),
+        Ok(vec![crate::forge::remote_comments::RemoteReviewSummary {
+            id: "draft-1".to_string(),
+            author: Some("me".to_string()),
+            body: "overall draft".to_string(),
+            state: crate::forge::remote_comments::RemoteReviewState::Pending,
+            created_at: None,
+            url: "u".to_string(),
+        }]),
+    );
+    app.poll_pr_threads_events();
+
+    assert!(app.session.review_comments.is_empty());
+    assert_eq!(app.forge_review_summaries.len(), 1);
+    assert_eq!(app.forge_review_summaries[0].body, "overall draft");
+}
+
+#[test]
 fn should_keep_locked_review_comments_when_remote_summary_refetch_fails() {
     let mut app = make_pr_app_with_single_modified_file("src/lib.rs");
     let mut review_locked = Comment::new("summary".to_string(), CommentType::from_id("note"), None);

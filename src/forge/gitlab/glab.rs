@@ -7,7 +7,7 @@ use sha1::{Digest, Sha1};
 
 use crate::error::{Result, TuicrError};
 use crate::forge::local_git::read_blob;
-use crate::forge::remote_comments::RemoteReviewThread;
+use crate::forge::remote_comments::{RemoteReviewSummary, RemoteReviewThread};
 use crate::forge::traits::{
     ForgeBackend, ForgeFileLinesRequest, ForgeRepository, GhCreateReviewResponse,
     PagedPullRequests, PullRequestCommit, PullRequestDetails, PullRequestListQuery,
@@ -22,8 +22,8 @@ use crate::vcs::slice_context_lines;
 
 use super::instance::{self, SubfolderCache};
 use super::models::{
-    GlabApprovalState, GlabCommit, GlabDiff, GlabDiscussion, GlabMrDetails, GlabMrSummary,
-    GlabMrVersion, GlabUser,
+    GlabApprovalState, GlabCommit, GlabDiff, GlabDiscussion, GlabDraftNote, GlabMrDetails,
+    GlabMrSummary, GlabMrVersion, GlabUser, draft_notes_to_review,
 };
 use crate::forge::submit::{DiffAnchor, GhSide, SubmitEvent};
 use crate::forge::traits::CreateReviewRequest;
@@ -288,6 +288,27 @@ where
         let output = self.run_api(repo, "user".to_string())?;
         let user: GlabUser = serde_json::from_str(&output)?;
         Ok(non_empty(&user.username))
+    }
+
+    /// The viewer's unpublished draft notes on the MR. GitLab hides them from
+    /// `/discussions`, so this is the only way to read `:submit draft` back.
+    fn list_draft_notes(&self, pr: &PullRequestDetails) -> Result<Vec<GlabDraftNote>> {
+        let project = self.api_project(&pr.repository);
+        let mut notes = Vec::new();
+        for page in 1..=100 {
+            let endpoint = format!(
+                "projects/{}/merge_requests/{}/draft_notes?per_page=100&page={}",
+                project, pr.number, page,
+            );
+            let output = self.run_api(&pr.repository, endpoint)?;
+            let rows: Vec<GlabDraftNote> = serde_json::from_str(&output)?;
+            let received = rows.len();
+            notes.extend(rows);
+            if received < 100 {
+                break;
+            }
+        }
+        Ok(notes)
     }
 
     fn list_mr_versions(&self, pr: &PullRequestDetails) -> Result<Vec<GlabMrVersion>> {
@@ -577,7 +598,23 @@ where
                 all.len()
             ));
         }
+        let drafts = self.list_draft_notes(pr)?;
+        draft_notes_to_review(drafts, &mut all, None, &pr.url);
         Ok(all)
+    }
+
+    fn list_review_summaries(&self, pr: &PullRequestDetails) -> Result<Vec<RemoteReviewSummary>> {
+        let drafts = self.list_draft_notes(pr)?;
+        if drafts.is_empty() {
+            return Ok(Vec::new());
+        }
+        let author = self.current_username(&pr.repository).ok().flatten();
+        Ok(draft_notes_to_review(
+            drafts,
+            &mut Vec::new(),
+            author.as_deref(),
+            &pr.url,
+        ))
     }
 
     fn fetch_file_lines(&self, request: ForgeFileLinesRequest) -> Result<Vec<DiffLine>> {
@@ -1352,6 +1389,7 @@ mod tests {
     use std::cell::RefCell;
 
     use super::*;
+    use crate::forge::remote_comments::RemoteReviewState;
     use crate::forge::submit::{DiffAnchor, GhSide, InlineComment, RangeAnchors};
     use crate::forge::traits::{
         CreateReviewRequest, ForgeRepository, PullRequestDetails, PullRequestListQuery,
@@ -1581,7 +1619,7 @@ mod tests {
     fn should_strip_install_subfolder_when_listing_review_threads() {
         let repo = subfolder_repo();
         let pr = make_pr_details(repo.clone());
-        let runner = RecordingRunner::new_with_responses(vec!["[]".to_string()]);
+        let runner = RecordingRunner::new_with_responses(vec!["[]".to_string(), "[]".to_string()]);
         let backend = GitLabGlabBackend::with_runner_and_subfolder(
             Some(repo),
             runner,
@@ -1604,7 +1642,7 @@ mod tests {
     fn should_keep_project_id_when_no_subfolder_is_configured() {
         let repo = subfolder_repo();
         let pr = make_pr_details(repo.clone());
-        let runner = RecordingRunner::new_with_responses(vec!["[]".to_string()]);
+        let runner = RecordingRunner::new_with_responses(vec!["[]".to_string(), "[]".to_string()]);
         // `glab` is unaware of any subfolder, so it prefixes nothing and the
         // whole namespace is the project id — exactly as before this fix.
         let backend = GitLabGlabBackend::with_runner_and_subfolder(
@@ -2472,6 +2510,126 @@ mod tests {
                 "draft path must not publish"
             );
         }
+    }
+
+    /// A GitLab that keeps POSTed draft notes private: they come back only
+    /// from `/draft_notes`, never from `/discussions`.
+    #[derive(Default)]
+    struct DraftStoreRunner {
+        drafts: std::sync::Mutex<Vec<serde_json::Value>>,
+    }
+
+    impl GlabCommandRunner for DraftStoreRunner {
+        fn run(&self, args: &[String]) -> GlabCommandResult<String> {
+            let endpoint = args
+                .iter()
+                .find(|a| a.starts_with("projects/") || *a == "user");
+            let body = match endpoint.map(String::as_str) {
+                Some("user") => r#"{"username":"me"}"#.to_string(),
+                Some(e) if e.contains("/draft_notes") => {
+                    serde_json::to_string(&*self.drafts.lock().unwrap()).unwrap()
+                }
+                _ => "[]".to_string(),
+            };
+            Ok(body)
+        }
+
+        fn run_with_stdin(&self, _args: &[String], stdin: &str) -> GlabCommandResult<String> {
+            let mut drafts = self.drafts.lock().unwrap();
+            let mut note: serde_json::Value = serde_json::from_str(stdin).unwrap();
+            note["id"] = serde_json::json!(drafts.len() + 1);
+            drafts.push(note);
+            Ok(serde_json::json!({"id": drafts.len()}).to_string())
+        }
+    }
+
+    #[test]
+    fn should_read_submitted_drafts_back_from_draft_notes() {
+        // `:submit draft` posts to /draft_notes; the post-submit refetch has to
+        // find them again or `prune_locked_comments` deletes the only copy.
+        let repo = ForgeRepository::gitlab("gitlab.com", "owner", "repo");
+        let pr = make_pr_details(repo.clone());
+        let inline = InlineComment {
+            path: "src/lib.rs".into(),
+            line: 15,
+            side: GhSide::Right,
+            counterpart_line: None,
+            start_line: None,
+            start_side: None,
+            range_anchors: None,
+            old_path: None,
+            body: "inline draft".to_string(),
+            comment_id: "c1".to_string(),
+        };
+        let backend = GitLabGlabBackend::with_runner(Some(repo), DraftStoreRunner::default());
+        backend
+            .create_review(
+                &pr,
+                CreateReviewRequest {
+                    event: crate::forge::submit::SubmitEvent::Draft,
+                    commit_id: "headsha1",
+                    body: "overall draft",
+                    comments: &[inline],
+                },
+            )
+            .unwrap();
+
+        let threads = backend.list_review_threads(&pr).unwrap();
+        let summaries = backend.list_review_summaries(&pr).unwrap();
+
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0].path, "src/lib.rs");
+        assert_eq!(threads[0].line, Some(15));
+        assert!(threads[0].comments[0].is_draft);
+        assert_eq!(threads[0].comments[0].body, "inline draft");
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].body, "overall draft");
+        assert_eq!(summaries[0].state, RemoteReviewState::Pending);
+        assert_eq!(summaries[0].author.as_deref(), Some("me"));
+    }
+
+    /// Serves `/draft_notes` in pages of the requested `per_page`.
+    struct PagedDraftRunner {
+        total: usize,
+    }
+
+    impl GlabCommandRunner for PagedDraftRunner {
+        fn run(&self, args: &[String]) -> GlabCommandResult<String> {
+            let endpoint = args
+                .iter()
+                .find(|a| a.starts_with("projects/") || *a == "user")
+                .unwrap();
+            if endpoint == "user" {
+                return Ok(r#"{"username":"me"}"#.to_string());
+            }
+            if !endpoint.contains("/draft_notes?") {
+                return Ok("[]".to_string());
+            }
+            let page: usize = endpoint.rsplit("page=").next().unwrap().parse().unwrap();
+            let rows: Vec<_> = ((page - 1) * 100..(page * 100).min(self.total))
+                .map(
+                    |i| serde_json::json!({"id": i + 1, "note": format!("n{i}"), "position": null}),
+                )
+                .collect();
+            Ok(serde_json::to_string(&rows).unwrap())
+        }
+
+        fn run_with_stdin(&self, _args: &[String], _stdin: &str) -> GlabCommandResult<String> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn should_read_every_page_of_draft_notes() {
+        let repo = ForgeRepository::gitlab("gitlab.com", "owner", "repo");
+        let pr = make_pr_details(repo.clone());
+        // Exactly two full pages, then an empty third: a reader that stops
+        // after a full page, or after page one, loses drafts.
+        let backend = GitLabGlabBackend::with_runner(Some(repo), PagedDraftRunner { total: 250 });
+        assert_eq!(backend.list_review_summaries(&pr).unwrap().len(), 250);
+        let repo = ForgeRepository::gitlab("gitlab.com", "owner", "repo");
+        let backend = GitLabGlabBackend::with_runner(Some(repo), PagedDraftRunner { total: 200 });
+        assert_eq!(backend.list_review_summaries(&pr).unwrap().len(), 200);
     }
 
     #[test]
