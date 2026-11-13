@@ -1376,25 +1376,16 @@ fn missing_checkout() -> TuicrError {
 /// and no local ref moves. `pr.number` is a `u64`, so the refspec is
 /// digits-only.
 fn fetch_pull_head(root: &Path, pr: &PullRequestDetails) {
-    let Ok(git_repo) = git2::Repository::discover(root) else {
-        return;
-    };
-    let Some(remote) = git_repo.remotes().ok().and_then(|names| {
-        let matches = |name: &&str| {
-            git_repo
-                .find_remote(name)
-                .ok()
-                .and_then(|remote| remote.url().map(str::to_string))
-                .and_then(|url| crate::forge::parse_any_remote_url(&url))
-                .is_some_and(|parsed| parsed == pr.repository)
-        };
-        let mut names: Vec<&str> = names.iter().flatten().collect();
-        names.sort_by_key(|name| *name != "origin");
-        names.into_iter().find(matches).map(str::to_string)
+    // `remotes` falls back to the Git CLI for repositories libgit2 cannot open
+    // (reftable, SHA-256), so the fetch works there too.
+    let Some((remote, _)) = crate::forge::remotes(root).into_iter().find(|(_, url)| {
+        crate::forge::parse_any_remote_url(url).is_some_and(|parsed| parsed == pr.repository)
     }) else {
         return;
     };
     let refspec = format!("refs/pull/{}/head", pr.number);
+    // `--refmap=` stops `remote.<name>.fetch` mappings from also updating
+    // tracking refs: the result must live in FETCH_HEAD only.
     let _ = run_command_output(
         "git",
         Some(root),
@@ -1402,6 +1393,7 @@ fn fetch_pull_head(root: &Path, pr: &PullRequestDetails) {
             "fetch",
             "--quiet",
             "--no-tags",
+            "--refmap=",
             remote.as_str(),
             refspec.as_str(),
         ],
@@ -1953,82 +1945,257 @@ mod tests {
         run_command_output("git", Some(dir), args).expect("git")
     }
 
-    #[test]
-    fn should_take_range_paths_from_git_after_fetching_the_pull_head() {
-        let server = tempfile::tempdir().expect("server");
-        let clone = tempfile::tempdir().expect("clone");
-        for dir in [server.path(), clone.path()] {
-            git(dir, &["init", "--quiet"]);
-            git(dir, &["config", "user.email", "t@example.com"]);
-            git(dir, &["config", "user.name", "t"]);
-            git(dir, &["config", "core.quotepath", "true"]);
-        }
-        std::fs::write(server.path().join("x b"), "one\n").unwrap();
-        std::fs::write(server.path().join("f\u{e4}.rs"), "one\n").unwrap();
-        git(server.path(), &["add", "."]);
-        git(server.path(), &["commit", "--quiet", "-m", "base"]);
-        let start = git(server.path(), &["rev-parse", "HEAD"])
-            .trim()
-            .to_string();
-        git(server.path(), &["config", "core.fileMode", "false"]);
-        git(server.path(), &["update-index", "--chmod=+x", "x b"]);
-        std::fs::write(server.path().join("x b"), "one\ntwo\n").unwrap();
-        std::fs::write(server.path().join("f\u{e4}.rs"), "two\n").unwrap();
-        git(server.path(), &["add", "."]);
-        git(server.path(), &["commit", "--quiet", "-m", "head"]);
-        let end = git(server.path(), &["rev-parse", "HEAD"])
-            .trim()
-            .to_string();
-        git(server.path(), &["update-ref", "refs/pull/42/head", &end]);
-        git(server.path(), &["checkout", "--quiet", "--detach", &start]);
+    /// Restores the process-global SSH transport variables on drop.
+    #[cfg(unix)]
+    struct SshEnv {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        saved: [(&'static str, Option<std::ffi::OsString>); 2],
+    }
 
-        // The remote URL parses as the Gitea repo. Its transport is a stub
-        // that serves the command from the local "server" directory.
-        // (`url.<x>.insteadOf` is no use: libgit2 reports the rewritten URL.)
-        git(
-            clone.path(),
-            &[
-                "remote",
-                "add",
-                "origin",
-                "ssh://git@gitea.example.com/team/service.git",
-            ],
-        );
-        let stub = server.path().join("stub-ssh.sh");
-        std::fs::write(
-            &stub,
-            format!(
-                "#!/bin/sh\nfor last; do :; done\n\
-                 exec sh -c \"$(printf '%s' \"$last\" | sed \"s#/team/service.git#{}/.git#\")\"\n",
-                server.path().display()
-            ),
-        )
-        .unwrap();
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    #[cfg(unix)]
+    impl SshEnv {
+        fn set(stub: &Path) -> Self {
+            let lock = crate::forge::GIT_SSH_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|err| err.into_inner());
+            let saved = ["GIT_SSH_COMMAND", "GIT_SSH_VARIANT"].map(|k| (k, std::env::var_os(k)));
+            unsafe {
+                std::env::set_var("GIT_SSH_COMMAND", stub);
+                std::env::set_var("GIT_SSH_VARIANT", "ssh");
+            }
+            Self { _lock: lock, saved }
         }
-        let _guard = crate::forge::GIT_SSH_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|err| err.into_inner());
-        unsafe {
-            std::env::set_var("GIT_SSH_COMMAND", &stub);
-            std::env::set_var("GIT_SSH_VARIANT", "ssh");
+    }
+
+    #[cfg(unix)]
+    impl Drop for SshEnv {
+        fn drop(&mut self) {
+            self.restore();
+        }
+    }
+
+    #[cfg(unix)]
+    impl SshEnv {
+        fn restore(&self) {
+            for (key, value) in &self.saved {
+                unsafe {
+                    match value {
+                        Some(v) => std::env::set_var(key, v),
+                        None => std::env::remove_var(key),
+                    }
+                }
+            }
+        }
+    }
+
+    /// A "server" repo serving `refs/pull/42/head` over a stub SSH transport,
+    /// and a clone whose `origin` URL parses as the Gitea repo.
+    #[cfg(unix)]
+    struct RangeFixture {
+        server: tempfile::TempDir,
+        clone: tempfile::TempDir,
+        start: String,
+        end: String,
+        _env: SshEnv,
+    }
+
+    #[cfg(unix)]
+    impl RangeFixture {
+        fn new(clone_args: &[&str], origin_url: &str) -> Self {
+            let server = tempfile::tempdir().expect("server");
+            let clone = tempfile::tempdir().expect("clone");
+            git(server.path(), &["init", "--quiet"]);
+            git(clone.path(), &[&["init", "--quiet"], clone_args].concat());
+            for dir in [server.path(), clone.path()] {
+                git(dir, &["config", "user.email", "t@example.com"]);
+                git(dir, &["config", "user.name", "t"]);
+                git(dir, &["config", "core.quotepath", "true"]);
+            }
+            std::fs::write(server.path().join("x b"), "one\n").unwrap();
+            std::fs::write(server.path().join("f\u{e4}.rs"), "one\n").unwrap();
+            git(server.path(), &["add", "."]);
+            git(server.path(), &["commit", "--quiet", "-m", "base"]);
+            let start = git(server.path(), &["rev-parse", "HEAD"])
+                .trim()
+                .to_string();
+            git(server.path(), &["config", "core.fileMode", "false"]);
+            git(server.path(), &["update-index", "--chmod=+x", "x b"]);
+            std::fs::write(server.path().join("x b"), "one\ntwo\n").unwrap();
+            std::fs::write(server.path().join("f\u{e4}.rs"), "two\n").unwrap();
+            git(server.path(), &["add", "."]);
+            git(server.path(), &["commit", "--quiet", "-m", "head"]);
+            let end = git(server.path(), &["rev-parse", "HEAD"])
+                .trim()
+                .to_string();
+            git(server.path(), &["update-ref", "refs/pull/42/head", &end]);
+            git(server.path(), &["checkout", "--quiet", "--detach", &start]);
+
+            // (`url.<x>.insteadOf` is no use: libgit2 reports the rewritten URL.)
+            git(clone.path(), &["remote", "add", "origin", origin_url]);
+            let stub = server.path().join("stub-ssh.sh");
+            std::fs::write(
+                &stub,
+                format!(
+                    "#!/bin/sh\nfor last; do :; done\n\
+                     exec sh -c \"$(printf '%s' \"$last\" | sed \"s#/[^ ']*\\.git#{}/.git#\")\"\n",
+                    server.path().display()
+                ),
+            )
+            .unwrap();
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            let env = SshEnv::set(&stub);
+            Self {
+                server,
+                clone,
+                start,
+                end,
+                _env: env,
+            }
         }
 
-        let backend = GiteaTeaBackend::with_runner(Some(repo()), FakeTeaRunner::default())
-            .with_local_checkout(Some(clone.path().to_path_buf()));
-        let patches = backend
-            .get_pull_request_commit_range_diff(&details(), &start, &end)
-            .expect("range diff");
+        fn standard() -> Self {
+            Self::new(&[], "ssh://git@gitea.example.com/team/service.git")
+        }
 
+        fn range(&self, requested_end: &str) -> Result<Vec<FilePatch>> {
+            GiteaTeaBackend::with_runner(Some(repo()), FakeTeaRunner::default())
+                .with_local_checkout(Some(self.clone.path().to_path_buf()))
+                .get_pull_request_commit_range_diff(&details(), &self.start, requested_end)
+        }
+    }
+
+    #[cfg(unix)]
+    fn sorted_new_paths(patches: &[FilePatch]) -> Vec<PathBuf> {
         let mut paths: Vec<_> = patches
             .iter()
             .map(|p| p.new_path.clone().expect("new path"))
             .collect();
         paths.sort();
-        assert_eq!(paths, [PathBuf::from("f\u{e4}.rs"), PathBuf::from("x b")]);
-        assert!(backend.runner.endpoints().is_empty());
+        paths
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_take_range_paths_from_git_after_fetching_the_pull_head() {
+        let fx = RangeFixture::standard();
+        let patches = fx.range(&fx.end).expect("range diff");
+        assert_eq!(
+            sorted_new_paths(&patches),
+            [PathBuf::from("f\u{e4}.rs"), PathBuf::from("x b")]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_restore_the_ssh_environment_after_a_fetch_test() {
+        let env = SshEnv::set(Path::new("/nonexistent/stub"));
+        assert_eq!(
+            std::env::var_os("GIT_SSH_COMMAND").as_deref(),
+            Some(std::ffi::OsStr::new("/nonexistent/stub"))
+        );
+        env.restore();
+        for (key, value) in &env.saved {
+            assert_eq!(&std::env::var_os(key), value, "{key} leaked");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_not_move_configured_tracking_refs_when_fetching_the_pull_head() {
+        let fx = RangeFixture::standard();
+        git(
+            fx.clone.path(),
+            &[
+                "config",
+                "remote.origin.fetch",
+                "+refs/pull/*/head:refs/remotes/origin/pr/*",
+            ],
+        );
+        git(
+            fx.clone.path(),
+            &["commit", "--quiet", "--allow-empty", "-m", "local"],
+        );
+        let local = git(fx.clone.path(), &["rev-parse", "HEAD"])
+            .trim()
+            .to_string();
+        git(
+            fx.clone.path(),
+            &["update-ref", "refs/remotes/origin/pr/42", &local],
+        );
+        fx.range(&fx.end).expect("range diff");
+        assert_eq!(
+            git(fx.clone.path(), &["rev-parse", "refs/remotes/origin/pr/42"]).trim(),
+            local
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_fail_when_the_requested_end_is_not_the_fetched_head() {
+        let fx = RangeFixture::standard();
+        // A force-pushed PR: the commit the caller asks about is on the
+        // server but not behind refs/pull/42/head.
+        std::fs::write(fx.server.path().join("x b"), "other\n").unwrap();
+        git(fx.server.path(), &["commit", "--quiet", "-am", "stale"]);
+        let stale = git(fx.server.path(), &["rev-parse", "HEAD"])
+            .trim()
+            .to_string();
+        let error = fx.range(&stale).unwrap_err();
+        assert!(
+            error.to_string().contains("not in the local clone"),
+            "{error}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_not_fetch_from_a_remote_for_a_different_repository() {
+        let fx = RangeFixture::new(&[], "ssh://git@gitea.example.com/team/other.git");
+        let error = fx.range(&fx.end).unwrap_err();
+        assert!(
+            error.to_string().contains("not in the local clone"),
+            "{error}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_not_fetch_tags_even_when_the_remote_is_configured_for_them() {
+        let fx = RangeFixture::standard();
+        git(fx.server.path(), &["tag", "unrequested", &fx.end]);
+        git(
+            fx.clone.path(),
+            &["config", "remote.origin.tagOpt", "--tags"],
+        );
+        fx.range(&fx.end).expect("range diff");
+        assert_eq!(git(fx.clone.path(), &["tag"]).trim(), "");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_fetch_the_pull_head_into_a_reftable_clone() {
+        let version = git(Path::new("."), &["--version"]);
+        let supports = version
+            .split_whitespace()
+            .nth(2)
+            .and_then(|v| {
+                let mut it = v.split('.').map(|n| n.parse::<u32>().ok());
+                Some((it.next()??, it.next()??))
+            })
+            .is_some_and(|v| v >= (2, 45));
+        if !supports {
+            return;
+        }
+        let fx = RangeFixture::new(
+            &["--ref-format=reftable"],
+            "ssh://git@gitea.example.com/team/service.git",
+        );
+        assert!(git2::Repository::discover(fx.clone.path()).is_err());
+        let patches = fx.range(&fx.end).expect("range diff");
+        assert_eq!(patches.len(), 2);
     }
 
     // ----- review threads -----
