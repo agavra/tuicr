@@ -713,6 +713,7 @@ mod tests {
             &app.export,
             &app.forge_review_threads,
             None,
+            &app.export_diff(),
         )
         .unwrap();
         assert!(!exported.contains("REVIEW_DELETE_MARKER"));

@@ -81,6 +81,7 @@ comments_header = "## Local tuicr Comments"
 remote_comments_header = "## Existing GitHub Comments"
 legend = true
 session_header = true
+code_context = false
 ```
 
 ## Options
@@ -357,6 +358,7 @@ comments_header = "## Comments"
 | `remote_comments_header` | `## Existing GitHub Comments`                                                | Heading above unresolved forge threads. Appears only in pull request mode. Set to `""` to omit it.                                          |
 | `legend`                 | `true`                                                                       | Emit the `Comment types:` legend. Takes precedence over the top-level `export_legend` key when set.                                         |
 | `session_header`         | `true`                                                                       | Emit the `## Session: <slug>` header naming the session. Set to `false` for agents that treat it as noise.                                  |
+| `code_context`           | `false`                                                                      | Put the commented lines, plus up to two diff lines either side, in a `diff` code block under each line and range comment. See [Code context](#code-context). |
 
 The example above produces an export that opens directly on the comment list:
 
@@ -365,6 +367,29 @@ The example above produces an export that opens directly on the comment list:
 
 1. **[ISSUE]** `src/auth.rs:42` - Magic number should be a named constant
 ```
+
+### Code context
+
+With `code_context = true`, each line and range comment carries the code it is about, so an agent need not open the file to see it:
+
+````markdown
+1. **[ISSUE]** `src/lib.rs:13` - Name this
+   ```diff
+   @@ -12,3 +12,4 @@
+   -    let y = 2;
+   +    let y = 3;
+   +    let z = 4;
+        x + y + z
+    }
+   ```
+````
+
+The lines come from the diff already loaded, so context stops at the edge of the hunk rather than reaching into unchanged code. The two lines of context are diff rows, whether added, removed or unchanged, so they can cover fewer than two lines of the new file. The `@@` header gives the first line number on each side.
+
+File-level and review-level comments stay as they are. A line or range comment also gets no block when:
+
+- its lines are not in the hunks, including lines you revealed by expanding a gap;
+- the diff shown now is not the one it was written against. A comment made on one commit gets code only while exactly that commit is selected, and a comment made on the full diff gets code only while no commit subset is selected.
 
 ### Relationship to `export_legend`
 

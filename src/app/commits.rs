@@ -794,6 +794,19 @@ impl App {
         Some(set)
     }
 
+    /// The loaded diff and the commit scope it shows, for
+    /// `[export] code_context`.
+    pub fn export_diff(&self) -> crate::output::ExportDiff<'_> {
+        crate::output::ExportDiff {
+            files: &self.diff_files,
+            subset_loaded: Self::is_strict_commit_selection(
+                self.commit_selection_range,
+                self.review_commits.len(),
+            ),
+            single_commit: self.commit_id_for_new_comment(),
+        }
+    }
+
     /// Whether a comment should be visible given the current commit
     /// selection. A comment with `commit_id == None` (legacy or made
     /// against the full cumulative diff) is always visible. Otherwise it
