@@ -702,6 +702,11 @@ impl App {
             // cumulative diff behind it is refreshed.
             self.range_diff_files = Some(opened.diff_files);
         } else {
+            // The whole-range cache is what a later widening restores, so it
+            // must not outlive the diff it was taken from.
+            if self.range_diff_files.is_some() {
+                self.range_diff_files = Some(opened.diff_files.clone());
+            }
             self.diff_files = opened.diff_files;
             self.clear_expanded_gaps();
             for file in &self.diff_files {
