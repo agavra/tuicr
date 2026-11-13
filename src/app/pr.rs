@@ -700,7 +700,7 @@ impl App {
     /// session.
     fn apply_same_head_pr_reload(&mut self, opened: crate::forge::pr_open::OpenedPullRequest) {
         // An empty incoming list means membership is unknown (a degraded fetch,
-        // gotcha 23), never "commits removed", so it only skips the membership
+        // gotcha F7 in docs/FORGES.md), never "commits removed", so it only skips the membership
         // comparison; a changed base still counts.
         let identity_changed = matches!(
             &self.diff_source,
