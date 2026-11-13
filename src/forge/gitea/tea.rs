@@ -946,16 +946,21 @@ where
             return Ok(diff);
         }
 
-        // Gitea's compare endpoint returns only commit metadata as JSON, but
-        // `output=diff` switches it to a raw unified diff. There is no
-        // matching structured file list, so metadata is recovered from the
-        // diff text itself.
-        let endpoint = format!(
-            "/repos/{}/{}/compare/{}...{}?output=diff",
-            pr.repository.owner, pr.repository.name, start_sha, end_sha
-        );
-        let patch = self.api(&pr.repository, "GET", &endpoint, None)?.body;
-        parse_unified_diff(&patch)
+        // Gitea's compare endpoint returns only an unstructured patch, and
+        // patch headers are never authoritative for paths. Fetch the PR head
+        // (FETCH_HEAD only) so Git can produce the paths itself.
+        let root = self
+            .local_checkout
+            .as_deref()
+            .ok_or_else(missing_checkout)?;
+        fetch_pull_head(root, pr);
+        local_range_diff(root, start_sha, end_sha).ok_or_else(|| {
+            TuicrError::Forge(format!(
+                "Commits {start_sha}..{end_sha} are not in the local clone, even after fetching \
+                 refs/pull/{}/head. Fetch them and retry.",
+                pr.number
+            ))
+        })
     }
 
     fn list_review_threads(&self, pr: &PullRequestDetails) -> Result<Vec<RemoteReviewThread>> {
@@ -1355,125 +1360,45 @@ fn group_comments_into_threads(comments: Vec<GiteaPullReviewComment>) -> Vec<Rem
     threads
 }
 
-// ----- Raw diff parsing -----
-
-/// Recover `FilePatch`es from unified diff text alone.
-///
-/// The cumulative PR diff gets authoritative metadata from `/pulls/{n}/files`,
-/// but Gitea's compare endpoint has no structured counterpart, so commit-range
-/// diffs have to read status and paths out of the git headers.
-fn parse_unified_diff(patch: &str) -> Result<Vec<FilePatch>> {
-    let blocks = crate::vcs::git::raw::split_patch_blocks(patch.as_bytes());
-    let mut metadata = Vec::with_capacity(blocks.len());
-    for block in &blocks {
-        metadata.push(metadata_from_patch_block(&String::from_utf8_lossy(block))?);
-    }
-    crate::vcs::git::raw::pair_metadata_with_patch(metadata, patch.as_bytes())
-}
-
-fn metadata_from_patch_block(block: &str) -> Result<FileMetadata> {
-    let mut status = FileStatus::Modified;
-    let mut rename_from = None;
-    let mut rename_to = None;
-    let mut minus_path = None;
-    let mut plus_path = None;
-
-    for line in block.lines() {
-        if let Some(rest) = line.strip_prefix("rename from ") {
-            status = FileStatus::Renamed;
-            rename_from = Some(rest.to_string());
-        } else if let Some(rest) = line.strip_prefix("rename to ") {
-            status = FileStatus::Renamed;
-            rename_to = Some(rest.to_string());
-        } else if let Some(rest) = line.strip_prefix("copy from ") {
-            status = FileStatus::Copied;
-            rename_from = Some(rest.to_string());
-        } else if let Some(rest) = line.strip_prefix("copy to ") {
-            status = FileStatus::Copied;
-            rename_to = Some(rest.to_string());
-        } else if line.starts_with("new file mode ") {
-            status = FileStatus::Added;
-        } else if line.starts_with("deleted file mode ") {
-            status = FileStatus::Deleted;
-        } else if let Some(rest) = line.strip_prefix("--- ") {
-            minus_path = strip_diff_prefix(rest);
-        } else if let Some(rest) = line.strip_prefix("+++ ") {
-            plus_path = strip_diff_prefix(rest);
-        } else if line.starts_with("@@") {
-            break;
-        }
-    }
-
-    let header = block.lines().next().unwrap_or_default();
-    let (header_old, header_new) = parse_diff_git_line(header).unzip();
-
-    let old_path = rename_from.or(minus_path).or(header_old).map(PathBuf::from);
-    let new_path = rename_to.or(plus_path).or(header_new).map(PathBuf::from);
-
-    let (old_path, new_path) = match status {
-        FileStatus::Added => (None, new_path.or_else(|| old_path.clone())),
-        FileStatus::Deleted => (old_path.or_else(|| new_path.clone()), None),
-        _ => (old_path, new_path),
-    };
-
-    if old_path.is_none() && new_path.is_none() {
-        return Err(TuicrError::Forge(format!(
-            "could not read a file path from a Gitea diff header: {header}. \
-             Run tuicr from a local clone of the repository so the range diff \
-             can be computed locally."
-        )));
-    }
-
-    Ok(FileMetadata {
-        old_path,
-        new_path,
-        status,
-    })
-}
-
-/// `--- a/path` / `+++ b/path`, minus the side prefix and any trailing tab
-/// metadata. `/dev/null` means the file does not exist on that side.
-fn strip_diff_prefix(value: &str) -> Option<String> {
-    let value = value.split('\t').next().unwrap_or(value).trim_end();
-    if value == "/dev/null" {
-        return None;
-    }
-    let stripped = value
-        .strip_prefix("a/")
-        .or_else(|| value.strip_prefix("b/"))
-        .unwrap_or(value);
-    (!stripped.is_empty()).then(|| stripped.to_string())
-}
-
-/// Split `diff --git a/<old> b/<new>` into its two paths.
-///
-/// Paths are unprefixed but unquoted, and either may contain spaces, so the
-/// split point is found by testing each ` b/` for one that leaves a valid
-/// `a/`-prefixed left half. Git quotes paths containing control characters or
-/// non-ASCII bytes; those are left to the `---`/`+++` fallback.
-fn parse_diff_git_line(line: &str) -> Option<(String, String)> {
-    let rest = line.strip_prefix("diff --git ")?;
-    if rest.starts_with('"') {
-        return None;
-    }
-    let mut search_from = 0;
-    while let Some(offset) = rest[search_from..].find(" b/") {
-        let split_at = search_from + offset;
-        let left = &rest[..split_at];
-        let right = &rest[split_at + 1..];
-        if let Some(old) = left.strip_prefix("a/")
-            && let Some(new) = right.strip_prefix("b/")
-            && !old.is_empty()
-            && !new.is_empty()
-        {
-            return Some((old.to_string(), new.to_string()));
-        }
-        search_from = split_at + 1;
-    }
-    None
-}
-
 // ----- Local checkout helpers -----
+
+fn missing_checkout() -> TuicrError {
+    TuicrError::Forge(
+        "Reviewing a commit range of a Gitea pull request needs a local clone of the \
+         repository (Gitea's compare endpoint cannot supply authoritative file paths). \
+         Run tuicr from inside a clone."
+            .to_string(),
+    )
+}
+
+/// Best-effort `git fetch` of `refs/pull/<n>/head` from the remote matching the
+/// PR's repository. A bare fetch writes FETCH_HEAD only: no branch is created
+/// and no local ref moves. `pr.number` is a `u64`, so the refspec is
+/// digits-only.
+fn fetch_pull_head(root: &Path, pr: &PullRequestDetails) {
+    // `remotes` falls back to the Git CLI for repositories libgit2 cannot open
+    // (reftable, SHA-256), so the fetch works there too.
+    let Some((remote, _)) = crate::forge::remotes(root).into_iter().find(|(_, url)| {
+        crate::forge::parse_any_remote_url(url).is_some_and(|parsed| parsed == pr.repository)
+    }) else {
+        return;
+    };
+    let refspec = format!("refs/pull/{}/head", pr.number);
+    // `--refmap=` stops `remote.<name>.fetch` mappings from also updating
+    // tracking refs: the result must live in FETCH_HEAD only.
+    let _ = run_command_output(
+        "git",
+        Some(root),
+        [
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "--refmap=",
+            remote.as_str(),
+            refspec.as_str(),
+        ],
+    );
+}
 
 /// `Some(diff)` when both SHAs are present locally.
 fn local_range_diff(repo_root: &Path, start_sha: &str, end_sha: &str) -> Option<Vec<FilePatch>> {
@@ -2005,81 +1930,272 @@ mod tests {
     }
 
     #[test]
-    fn should_fetch_a_commit_range_diff_from_the_compare_endpoint() {
+    fn should_refuse_a_commit_range_without_a_local_clone() {
         let runner = FakeTeaRunner::default().route("/compare/", PR_DIFF);
         let backend = GiteaTeaBackend::with_runner(Some(repo()), runner);
-        let patches = backend
+        let error = backend
             .get_pull_request_commit_range_diff(&details(), "start", "end")
-            .expect("range diff");
+            .unwrap_err();
 
-        assert_eq!(patches.len(), 1);
-        assert_eq!(
-            patches[0].new_path.as_deref(),
-            Some(Path::new("src/lib.rs"))
-        );
-        assert!(
-            backend.runner.endpoints().iter().any(
-                |endpoint| endpoint.contains("start...end") && endpoint.contains("output=diff")
-            )
-        );
-    }
-
-    // ----- raw diff metadata recovery -----
-
-    #[test]
-    fn should_recover_metadata_from_raw_diff_headers() {
-        let added = metadata_from_patch_block(
-            "diff --git a/new.rs b/new.rs\nnew file mode 100644\n--- /dev/null\n+++ b/new.rs\n@@\n",
-        )
-        .expect("added");
-        assert_eq!(added.status, FileStatus::Added);
-        assert_eq!(added.old_path, None);
-        assert_eq!(added.new_path.as_deref(), Some(Path::new("new.rs")));
-
-        let deleted = metadata_from_patch_block(
-            "diff --git a/gone.rs b/gone.rs\ndeleted file mode 100644\n--- a/gone.rs\n+++ /dev/null\n@@\n",
-        )
-        .expect("deleted");
-        assert_eq!(deleted.status, FileStatus::Deleted);
-        assert_eq!(deleted.old_path.as_deref(), Some(Path::new("gone.rs")));
-        assert_eq!(deleted.new_path, None);
-
-        let renamed = metadata_from_patch_block(
-            "diff --git a/old.rs b/new.rs\nsimilarity index 98%\nrename from old.rs\nrename to new.rs\n",
-        )
-        .expect("renamed");
-        assert_eq!(renamed.status, FileStatus::Renamed);
-        assert_eq!(renamed.old_path.as_deref(), Some(Path::new("old.rs")));
-        assert_eq!(renamed.new_path.as_deref(), Some(Path::new("new.rs")));
-    }
-
-    #[test]
-    fn should_recover_metadata_for_a_mode_only_change() {
-        // No `---`/`+++` lines at all; the `diff --git` line is the only source.
-        let metadata = metadata_from_patch_block(
-            "diff --git a/script.sh b/script.sh\nold mode 100644\nnew mode 100755\n",
-        )
-        .expect("mode change");
-        assert_eq!(metadata.status, FileStatus::Modified);
-        assert_eq!(metadata.new_path.as_deref(), Some(Path::new("script.sh")));
-    }
-
-    #[test]
-    fn should_split_a_diff_git_line_whose_paths_contain_spaces() {
-        assert_eq!(
-            parse_diff_git_line("diff --git a/my dir/file b.rs b/my dir/file b.rs"),
-            Some((
-                "my dir/file b.rs".to_string(),
-                "my dir/file b.rs".to_string()
-            ))
-        );
-    }
-
-    #[test]
-    fn should_report_an_actionable_error_for_an_unreadable_diff_header() {
-        let error =
-            metadata_from_patch_block("diff --git \"a/we\\.rd\" \"b/we\\.rd\"\n").unwrap_err();
         assert!(error.to_string().contains("local clone"), "{error}");
+        assert!(backend.runner.endpoints().is_empty());
+    }
+
+    fn git(dir: &Path, args: &[&str]) -> String {
+        run_command_output("git", Some(dir), args).expect("git")
+    }
+
+    /// Restores the process-global SSH transport variables on drop.
+    #[cfg(unix)]
+    struct SshEnv {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        saved: [(&'static str, Option<std::ffi::OsString>); 2],
+    }
+
+    #[cfg(unix)]
+    impl SshEnv {
+        fn set(stub: &Path) -> Self {
+            let lock = crate::forge::GIT_SSH_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|err| err.into_inner());
+            let saved = ["GIT_SSH_COMMAND", "GIT_SSH_VARIANT"].map(|k| (k, std::env::var_os(k)));
+            unsafe {
+                std::env::set_var("GIT_SSH_COMMAND", stub);
+                std::env::set_var("GIT_SSH_VARIANT", "ssh");
+            }
+            Self { _lock: lock, saved }
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for SshEnv {
+        fn drop(&mut self) {
+            self.restore();
+        }
+    }
+
+    #[cfg(unix)]
+    impl SshEnv {
+        fn restore(&self) {
+            for (key, value) in &self.saved {
+                unsafe {
+                    match value {
+                        Some(v) => std::env::set_var(key, v),
+                        None => std::env::remove_var(key),
+                    }
+                }
+            }
+        }
+    }
+
+    /// A "server" repo serving `refs/pull/42/head` over a stub SSH transport,
+    /// and a clone whose `origin` URL parses as the Gitea repo.
+    #[cfg(unix)]
+    struct RangeFixture {
+        server: tempfile::TempDir,
+        clone: tempfile::TempDir,
+        start: String,
+        end: String,
+        _env: SshEnv,
+    }
+
+    #[cfg(unix)]
+    impl RangeFixture {
+        fn new(clone_args: &[&str], origin_url: &str) -> Self {
+            let server = tempfile::tempdir().expect("server");
+            let clone = tempfile::tempdir().expect("clone");
+            git(server.path(), &["init", "--quiet"]);
+            git(clone.path(), &[&["init", "--quiet"], clone_args].concat());
+            for dir in [server.path(), clone.path()] {
+                git(dir, &["config", "user.email", "t@example.com"]);
+                git(dir, &["config", "user.name", "t"]);
+                git(dir, &["config", "core.quotepath", "true"]);
+            }
+            std::fs::write(server.path().join("x b"), "one\n").unwrap();
+            std::fs::write(server.path().join("f\u{e4}.rs"), "one\n").unwrap();
+            git(server.path(), &["add", "."]);
+            git(server.path(), &["commit", "--quiet", "-m", "base"]);
+            let start = git(server.path(), &["rev-parse", "HEAD"])
+                .trim()
+                .to_string();
+            git(server.path(), &["config", "core.fileMode", "false"]);
+            git(server.path(), &["update-index", "--chmod=+x", "x b"]);
+            std::fs::write(server.path().join("x b"), "one\ntwo\n").unwrap();
+            std::fs::write(server.path().join("f\u{e4}.rs"), "two\n").unwrap();
+            git(server.path(), &["add", "."]);
+            git(server.path(), &["commit", "--quiet", "-m", "head"]);
+            let end = git(server.path(), &["rev-parse", "HEAD"])
+                .trim()
+                .to_string();
+            git(server.path(), &["update-ref", "refs/pull/42/head", &end]);
+            git(server.path(), &["checkout", "--quiet", "--detach", &start]);
+
+            // (`url.<x>.insteadOf` is no use: libgit2 reports the rewritten URL.)
+            git(clone.path(), &["remote", "add", "origin", origin_url]);
+            let stub = server.path().join("stub-ssh.sh");
+            std::fs::write(
+                &stub,
+                format!(
+                    "#!/bin/sh\nfor last; do :; done\n\
+                     exec sh -c \"$(printf '%s' \"$last\" | sed \"s#/[^ ']*\\.git#{}/.git#\")\"\n",
+                    server.path().display()
+                ),
+            )
+            .unwrap();
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            let env = SshEnv::set(&stub);
+            Self {
+                server,
+                clone,
+                start,
+                end,
+                _env: env,
+            }
+        }
+
+        fn standard() -> Self {
+            Self::new(&[], "ssh://git@gitea.example.com/team/service.git")
+        }
+
+        fn range(&self, requested_end: &str) -> Result<Vec<FilePatch>> {
+            GiteaTeaBackend::with_runner(Some(repo()), FakeTeaRunner::default())
+                .with_local_checkout(Some(self.clone.path().to_path_buf()))
+                .get_pull_request_commit_range_diff(&details(), &self.start, requested_end)
+        }
+    }
+
+    #[cfg(unix)]
+    fn sorted_new_paths(patches: &[FilePatch]) -> Vec<PathBuf> {
+        let mut paths: Vec<_> = patches
+            .iter()
+            .map(|p| p.new_path.clone().expect("new path"))
+            .collect();
+        paths.sort();
+        paths
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_take_range_paths_from_git_after_fetching_the_pull_head() {
+        let fx = RangeFixture::standard();
+        let patches = fx.range(&fx.end).expect("range diff");
+        assert_eq!(
+            sorted_new_paths(&patches),
+            [PathBuf::from("f\u{e4}.rs"), PathBuf::from("x b")]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_restore_the_ssh_environment_after_a_fetch_test() {
+        let env = SshEnv::set(Path::new("/nonexistent/stub"));
+        assert_eq!(
+            std::env::var_os("GIT_SSH_COMMAND").as_deref(),
+            Some(std::ffi::OsStr::new("/nonexistent/stub"))
+        );
+        env.restore();
+        for (key, value) in &env.saved {
+            assert_eq!(&std::env::var_os(key), value, "{key} leaked");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_not_move_configured_tracking_refs_when_fetching_the_pull_head() {
+        let fx = RangeFixture::standard();
+        git(
+            fx.clone.path(),
+            &[
+                "config",
+                "remote.origin.fetch",
+                "+refs/pull/*/head:refs/remotes/origin/pr/*",
+            ],
+        );
+        git(
+            fx.clone.path(),
+            &["commit", "--quiet", "--allow-empty", "-m", "local"],
+        );
+        let local = git(fx.clone.path(), &["rev-parse", "HEAD"])
+            .trim()
+            .to_string();
+        git(
+            fx.clone.path(),
+            &["update-ref", "refs/remotes/origin/pr/42", &local],
+        );
+        fx.range(&fx.end).expect("range diff");
+        assert_eq!(
+            git(fx.clone.path(), &["rev-parse", "refs/remotes/origin/pr/42"]).trim(),
+            local
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_fail_when_the_requested_end_is_not_the_fetched_head() {
+        let fx = RangeFixture::standard();
+        // A force-pushed PR: the commit the caller asks about is on the
+        // server but not behind refs/pull/42/head.
+        std::fs::write(fx.server.path().join("x b"), "other\n").unwrap();
+        git(fx.server.path(), &["commit", "--quiet", "-am", "stale"]);
+        let stale = git(fx.server.path(), &["rev-parse", "HEAD"])
+            .trim()
+            .to_string();
+        let error = fx.range(&stale).unwrap_err();
+        assert!(
+            error.to_string().contains("not in the local clone"),
+            "{error}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_not_fetch_from_a_remote_for_a_different_repository() {
+        let fx = RangeFixture::new(&[], "ssh://git@gitea.example.com/team/other.git");
+        let error = fx.range(&fx.end).unwrap_err();
+        assert!(
+            error.to_string().contains("not in the local clone"),
+            "{error}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_not_fetch_tags_even_when_the_remote_is_configured_for_them() {
+        let fx = RangeFixture::standard();
+        git(fx.server.path(), &["tag", "unrequested", &fx.end]);
+        git(
+            fx.clone.path(),
+            &["config", "remote.origin.tagOpt", "--tags"],
+        );
+        fx.range(&fx.end).expect("range diff");
+        assert_eq!(git(fx.clone.path(), &["tag"]).trim(), "");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_fetch_the_pull_head_into_a_reftable_clone() {
+        let version = git(Path::new("."), &["--version"]);
+        let supports = version
+            .split_whitespace()
+            .nth(2)
+            .and_then(|v| {
+                let mut it = v.split('.').map(|n| n.parse::<u32>().ok());
+                Some((it.next()??, it.next()??))
+            })
+            .is_some_and(|v| v >= (2, 45));
+        if !supports {
+            return;
+        }
+        let fx = RangeFixture::new(
+            &["--ref-format=reftable"],
+            "ssh://git@gitea.example.com/team/service.git",
+        );
+        assert!(git2::Repository::discover(fx.clone.path()).is_err());
+        let patches = fx.range(&fx.end).expect("range diff");
+        assert_eq!(patches.len(), 2);
     }
 
     // ----- review threads -----

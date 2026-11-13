@@ -281,6 +281,10 @@ pub fn local_checkout_for_repo(root: &Path, target_repo: &ForgeRepository) -> Op
         .then(|| root.to_path_buf())
 }
 
+/// Serializes tests that point `GIT_SSH_COMMAND` at a stub transport.
+#[cfg(test)]
+pub(crate) static GIT_SSH_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
