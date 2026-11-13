@@ -15,14 +15,21 @@ use std::sync::{Arc, Mutex};
 
 /// Redirects persisted-session storage to a temp dir for the current thread.
 struct TestReviewsDir {
-    _dir: tempfile::TempDir,
+    dir: tempfile::TempDir,
 }
 
 impl TestReviewsDir {
     fn new() -> Self {
         let dir = tempfile::tempdir().expect("failed to create test reviews dir");
         crate::persistence::storage::set_test_reviews_dir(Some(dir.path().to_path_buf()));
-        Self { _dir: dir }
+        Self { dir }
+    }
+
+    /// Points storage at a regular file, so every session save fails.
+    fn fail_writes(&self) {
+        let path = self.dir.path().join("not-a-directory");
+        std::fs::write(&path, "blocking file").expect("blocking file should be created");
+        crate::persistence::storage::set_test_reviews_dir(Some(path));
     }
 }
 
@@ -737,6 +744,48 @@ fn should_export_to_stdout_on_write_quit_whatever_copy_on_quit_says() {
             assert_eq!(app.pending_confirm, None);
         }
     }
+}
+
+#[test]
+fn should_keep_zz_open_on_a_failed_save_when_copy_on_quit_is_never() {
+    // given — nothing would carry the comments out, and the save fails
+    let reviews = TestReviewsDir::new();
+    let mut app = app_with_review_comment();
+    app.copy_on_quit = CopyOnQuit::Never;
+    reviews.fail_writes();
+
+    // when
+    crate::handler::handle_save_and_quit_key(&mut app);
+
+    // then
+    assert!(!app.should_quit);
+    let message = app
+        .message
+        .as_ref()
+        .expect("save failure should be reported");
+    assert_eq!(message.message_type, MessageType::Error);
+    assert!(
+        message.content.starts_with("Save failed:"),
+        "got: {}",
+        message.content
+    );
+}
+
+#[test]
+fn should_still_quit_zz_on_a_failed_save_when_stdout_carries_the_review() {
+    // given — `--stdout` exports the comments even though the save fails
+    let reviews = TestReviewsDir::new();
+    let mut app = app_with_review_comment();
+    app.copy_on_quit = CopyOnQuit::Never;
+    app.output_to_stdout = true;
+    reviews.fail_writes();
+
+    // when
+    crate::handler::handle_save_and_quit_key(&mut app);
+
+    // then
+    assert!(app.should_quit);
+    assert!(app.pending_stdout_output.is_some());
 }
 
 #[test]
