@@ -1,5 +1,4 @@
 use std::ffi::OsStr;
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
@@ -8,6 +7,9 @@ use sha1::{Digest, Sha1};
 use crate::error::{Result, TuicrError};
 use crate::forge::local_git::read_blob;
 use crate::forge::remote_comments::{RemoteReviewSummary, RemoteReviewThread};
+use crate::forge::remote_url::{
+    parse_scp_like_remote, read_ssh_hostname, strip_port, strip_scheme, trim_url_suffix,
+};
 use crate::forge::traits::{
     ForgeBackend, ForgeFileLinesRequest, ForgeRepository, GhCreateReviewResponse,
     PagedPullRequests, PullRequestCommit, PullRequestDetails, PullRequestListQuery,
@@ -1133,66 +1135,13 @@ fn gitlab_repository_from_path(host: &str, path: &str) -> Option<ForgeRepository
     ))
 }
 
-fn strip_scheme(value: &str) -> Option<&str> {
-    value
-        .strip_prefix("https://")
-        .or_else(|| value.strip_prefix("http://"))
-        .or_else(|| value.strip_prefix("ssh://"))
-}
-
-fn trim_url_suffix(value: &str) -> &str {
-    value
-        .split(['?', '#'])
-        .next()
-        .unwrap_or(value)
-        .trim_end_matches('/')
-}
-
-/// Strip a trailing `:<port>` from a host, e.g. `example.com:2222` ->
-/// `example.com`. `ssh://` remotes commonly carry a non-default SSH port
-/// (self-hosted instances, GitLab's SSH-over-443 setup); that port is
-/// meaningless for the HTTPS API host used to build `--repo` arguments, and
-/// left in place it turns into a broken URL (wrong port, TLS failure).
-pub(super) fn strip_port(host: &str) -> &str {
-    match host.rsplit_once(':') {
-        Some((h, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => h,
-        _ => host,
-    }
-}
-
 fn strip_git_suffix(value: &str) -> &str {
     value.strip_suffix(".git").unwrap_or(value)
-}
-
-fn parse_scp_like_remote(remote_url: &str) -> Option<(&str, &str)> {
-    if remote_url.contains("://") {
-        return None;
-    }
-    let (host_part, path) = remote_url.split_once(':')?;
-    if host_part.contains('/') || path.is_empty() {
-        return None;
-    }
-    let host = host_part
-        .rsplit_once('@')
-        .map(|(_, host)| host)
-        .unwrap_or(host_part);
-    Some((host, path))
 }
 
 fn resolve_ssh_hostname(alias: &str) -> String {
     let resolved = read_ssh_hostname(alias);
     normalize_ssh_transport_host(&resolved).to_string()
-}
-
-fn read_ssh_hostname(alias: &str) -> String {
-    let Ok(home) = std::env::var("HOME") else {
-        return alias.to_string();
-    };
-    let path = PathBuf::from(home).join(".ssh/config");
-    let Ok(content) = fs::read_to_string(path) else {
-        return alias.to_string();
-    };
-    resolve_ssh_hostname_from_config(alias, &content)
 }
 
 /// Map GitLab's SSH-over-443 transport host back to its API host. Users behind
@@ -1205,31 +1154,6 @@ fn normalize_ssh_transport_host(host: &str) -> &str {
     } else {
         host
     }
-}
-
-fn resolve_ssh_hostname_from_config(alias: &str, config: &str) -> String {
-    let mut in_block = false;
-    for raw in config.lines() {
-        let line = raw.split_once('#').map_or(raw, |(before, _)| before).trim();
-        if line.is_empty() {
-            continue;
-        }
-        let (key, value) = line
-            .split_once(|c: char| c.is_whitespace() || c == '=')
-            .unwrap_or((line, ""));
-        let value = value
-            .trim_start_matches(|c: char| c.is_whitespace() || c == '=')
-            .trim();
-
-        if key.eq_ignore_ascii_case("Host") {
-            in_block = value.split_whitespace().any(|pat| pat == alias);
-        } else if key.eq_ignore_ascii_case("Match") {
-            in_block = false;
-        } else if in_block && key.eq_ignore_ascii_case("HostName") {
-            return value.to_string();
-        }
-    }
-    alias.to_string()
 }
 
 /// `glab` builds its API base URL from its own `subfolder` setting, so an

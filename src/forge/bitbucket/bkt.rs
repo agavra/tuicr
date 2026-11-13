@@ -14,13 +14,15 @@
 //!   the opposite of `git diff old..new`. Verified against the live API.
 
 use std::ffi::OsStr;
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Result, TuicrError};
 use crate::forge::local_git::read_blob;
 use crate::forge::local_merge_base;
 use crate::forge::remote_comments::{RemoteReviewSummary, RemoteReviewThread};
+use crate::forge::remote_url::{
+    parse_scp_like_remote, read_ssh_hostname, strip_scheme, trim_url_suffix,
+};
 use crate::forge::submit::{GhSide, SubmitEvent};
 use crate::forge::traits::{
     CreateReviewRequest, ForgeBackend, ForgeFileLinesRequest, ForgeRepository,
@@ -668,7 +670,7 @@ pub fn parse_bitbucket_remote_url(remote_url: &str) -> Option<ForgeRepository> {
     }
 
     if let Some((host, path)) = parse_scp_like_remote(trimmed) {
-        let resolved = resolve_ssh_hostname(host);
+        let resolved = read_ssh_hostname(host);
         if !is_bitbucket_cloud_host(&resolved) {
             return None;
         }
@@ -764,74 +766,8 @@ fn parse_numeric_target(target: &str) -> Option<PullRequestTarget> {
     Some(PullRequestTarget::number(number, target))
 }
 
-fn strip_scheme(value: &str) -> Option<&str> {
-    value
-        .strip_prefix("https://")
-        .or_else(|| value.strip_prefix("http://"))
-        .or_else(|| value.strip_prefix("ssh://"))
-}
-
-fn trim_url_suffix(value: &str) -> &str {
-    value
-        .split(['?', '#'])
-        .next()
-        .unwrap_or(value)
-        .trim_end_matches('/')
-}
-
 fn strip_git_suffix(value: &str) -> &str {
     value.strip_suffix(".git").unwrap_or(value)
-}
-
-fn parse_scp_like_remote(remote_url: &str) -> Option<(&str, &str)> {
-    if remote_url.contains("://") {
-        return None;
-    }
-    let (host_part, path) = remote_url.split_once(':')?;
-    if host_part.contains('/') || path.is_empty() {
-        return None;
-    }
-    let host = host_part
-        .rsplit_once('@')
-        .map(|(_, host)| host)
-        .unwrap_or(host_part);
-    Some((host, path))
-}
-
-fn resolve_ssh_hostname(alias: &str) -> String {
-    let Ok(home) = std::env::var("HOME") else {
-        return alias.to_string();
-    };
-    let path = PathBuf::from(home).join(".ssh/config");
-    let Ok(content) = fs::read_to_string(path) else {
-        return alias.to_string();
-    };
-    resolve_ssh_hostname_from_config(alias, &content)
-}
-
-fn resolve_ssh_hostname_from_config(alias: &str, config: &str) -> String {
-    let mut in_block = false;
-    for raw in config.lines() {
-        let line = raw.split_once('#').map_or(raw, |(before, _)| before).trim();
-        if line.is_empty() {
-            continue;
-        }
-        let (key, value) = line
-            .split_once(|c: char| c.is_whitespace() || c == '=')
-            .unwrap_or((line, ""));
-        let value = value
-            .trim_start_matches(|c: char| c.is_whitespace() || c == '=')
-            .trim();
-
-        if key.eq_ignore_ascii_case("Host") {
-            in_block = value.split_whitespace().any(|pat| pat == alias);
-        } else if key.eq_ignore_ascii_case("Match") {
-            in_block = false;
-        } else if in_block && key.eq_ignore_ascii_case("HostName") {
-            return value.to_string();
-        }
-    }
-    alias.to_string()
 }
 
 fn map_bkt_error(error: BktCommandError) -> TuicrError {
