@@ -301,3 +301,24 @@ fn legacy_session_json_deserializes_comment_without_commit_id() {
         "legacy JSON without commit_id must deserialize as None"
     );
 }
+
+#[test]
+fn export_diff_reports_the_loaded_commit_scope() {
+    let mut app = build_app_with_review_commits(vec![commit("aaa"), commit("bbb"), commit("ccc")]);
+    let scope = |app: &App| {
+        let diff = app.export_diff();
+        (diff.subset_loaded, diff.single_commit)
+    };
+
+    assert_eq!(scope(&app), (false, None), "no selector");
+    app.commit_selection_range = Some((0, 2));
+    assert_eq!(scope(&app), (false, None), "full range");
+    app.commit_selection_range = Some((0, 1));
+    assert_eq!(scope(&app), (true, None), "multi-commit subset");
+    app.commit_selection_range = Some((1, 1));
+    assert_eq!(
+        scope(&app),
+        (true, Some("bbb".to_string())),
+        "exactly one commit"
+    );
+}

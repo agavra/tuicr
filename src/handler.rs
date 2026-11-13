@@ -426,6 +426,7 @@ fn handle_export(app: &mut App) {
             &app.export,
             &app.forge_review_threads,
             slug.as_deref(),
+            &app.export_diff(),
         ) {
             Ok(content) => {
                 app.pending_stdout_output = Some(content);
@@ -441,6 +442,7 @@ fn handle_export(app: &mut App) {
             &app.export,
             &app.forge_review_threads,
             slug.as_deref(),
+            &app.export_diff(),
         ) {
             Ok(msg) => app.set_message(msg),
             Err(e) => app.set_warning(format!("{e}")),
@@ -1284,6 +1286,7 @@ pub fn handle_confirm_action(app: &mut App, action: Action) {
                         &app.export,
                         &app.forge_review_threads,
                         slug.as_deref(),
+                        &app.export_diff(),
                     ) {
                         Ok(content) => app.pending_stdout_output = Some(content),
                         Err(e) => app.set_warning(format!("{e}")),
@@ -1296,6 +1299,7 @@ pub fn handle_confirm_action(app: &mut App, action: Action) {
                         &app.export,
                         &app.forge_review_threads,
                         slug.as_deref(),
+                        &app.export_diff(),
                     ) {
                         Ok(msg) => app.set_message(msg),
                         Err(e) => app.set_warning(format!("{e}")),
