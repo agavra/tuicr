@@ -6,6 +6,8 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
 };
 
+use unicode_width::UnicodeWidthStr;
+
 use crate::app::{App, TargetTab, sessions_tab};
 use crate::forge::selector::{PrTabStatus, PrTabView};
 use crate::forge::traits::PullRequestListScope;
@@ -190,7 +192,7 @@ fn pr_status_hint_span(app: &App, strip_bg: ratatui::style::Color) -> (Span<'sta
             (s, base)
         }
     };
-    let width = content.len();
+    let width = content.width();
     (Span::styled(content, style), width)
 }
 
@@ -581,15 +583,15 @@ fn render_target_selector_footer(frame: &mut Frame, app: &App, area: Rect) {
         )];
         let (message_span, message_width) =
             status_bar::build_message_span(app.message.as_ref(), theme);
-        let right_span = if message_width > 0 {
-            message_span
+        let (right_span, right_width) = if message_width > 0 {
+            (message_span, message_width)
         } else {
-            Span::styled(
-                " enter apply \u{00b7} esc cancel ",
-                Style::default().fg(theme.fg_secondary),
+            let hint = " enter apply \u{00b7} esc cancel ";
+            (
+                Span::styled(hint, Style::default().fg(theme.fg_secondary)),
+                hint.width(),
             )
         };
-        let right_width = right_span.content.len();
         let spans = status_bar::build_right_aligned_spans(
             left,
             right_span,
@@ -601,7 +603,10 @@ fn render_target_selector_footer(frame: &mut Frame, app: &App, area: Rect) {
 
         // Set the terminal cursor at the end of the filter buffer so users
         // see where typing will land.
-        let cursor_x = area.x + 2 + draft.len() as u16;
+        let cursor_x = area
+            .x
+            .saturating_add(2)
+            .saturating_add(u16::try_from(draft.width()).unwrap_or(u16::MAX));
         let cursor_y = area.y;
         frame.set_cursor_position(ratatui::layout::Position {
             x: cursor_x.min(area.x + area.width.saturating_sub(1)),
@@ -687,6 +692,7 @@ mod selector_render_snapshot_tests {
     //! real `render` against ratatui's `TestBackend` and assert on the
     //! resulting character grid (plus a few style checks for the active
     //! tab highlight).
+    use super::pr_status_hint_span;
     use crate::app::{App, DiffSource, InputMode};
     use crate::error::Result as TuicrResult;
     use crate::error::TuicrError;
@@ -706,6 +712,7 @@ mod selector_render_snapshot_tests {
     use ratatui::buffer::Buffer;
     use ratatui::style::Modifier;
     use std::path::{Path, PathBuf};
+    use unicode_width::UnicodeWidthStr;
 
     struct SnapshotVcs {
         info: VcsInfo,
@@ -1414,6 +1421,62 @@ mod selector_render_snapshot_tests {
             footer.contains("apply") && footer.contains("cancel"),
             "expected apply/cancel hint in footer, got: {footer:?}"
         );
+    }
+
+    fn pr_filter_app() -> App {
+        let mut app = make_app(vec![commit(0)]);
+        app.forge_repository = Some(repo());
+        let mut tab = PullRequestsTab::new(Some(repo()));
+        tab.start_initial_load();
+        tab.apply_initial_load(Ok((vec![pr(1, "alpha", "a")], false)));
+        app.pr_tab = tab;
+        app.target_tab = crate::app::TargetTab::PullRequests;
+        app
+    }
+
+    #[test]
+    fn should_place_filter_cursor_and_right_hint_by_display_width() {
+        // given - "é" is two bytes and "界" is two cells
+        let mut app = pr_filter_app();
+        app.pr_filter_draft = Some("é界".to_string());
+        // when
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render(frame, &mut app))
+            .expect("draw frame");
+        let cursor = terminal.get_cursor_position().unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        // then - cursor sits after ` /` plus three cells of draft
+        assert_eq!(cursor.x, 5);
+        let footer = row_text(&buffer, buffer.area.height - 1);
+        assert!(footer.ends_with("esc cancel "), "{footer:?}");
+    }
+
+    #[test]
+    fn should_clamp_filter_cursor_when_draft_width_exceeds_u16() {
+        // given - 65,536 cells would wrap to 0 if narrowed with `as u16`
+        let mut app = pr_filter_app();
+        app.pr_filter_draft = Some("a".repeat(usize::from(u16::MAX) + 1));
+        // when
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render(frame, &mut app))
+            .expect("draw frame");
+        // then - cursor is pinned to the last column
+        assert_eq!(terminal.get_cursor_position().unwrap().x, 119);
+    }
+
+    #[test]
+    fn should_measure_committed_pr_filter_hint_by_display_width() {
+        // given
+        let mut app = pr_filter_app();
+        app.pr_tab.set_filter("界界".to_string());
+        // when
+        let (span, width) = pr_status_hint_span(&app, ratatui::style::Color::Black);
+        // then
+        assert_eq!(width, UnicodeWidthStr::width(span.content.as_ref()));
     }
 
     #[test]

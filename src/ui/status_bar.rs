@@ -114,13 +114,13 @@ pub fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         format!(" {} ", chunks.join(" \u{00b7} "))
     };
-    let source_width = source_text.chars().count();
+    let source_width = source_text.width();
     let source_span = Span::styled(source_text, Style::default().fg(theme.fg_secondary));
 
     let (update_span, update_width) = match app.update_info.as_ref() {
         Some(info) if info.update_available => {
             let text = format!(" v{} available ", info.latest_version);
-            let width = text.chars().count();
+            let width = text.width();
             (
                 Span::styled(
                     text,
@@ -134,7 +134,7 @@ pub fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         }
         Some(info) if info.is_ahead => {
             let text = format!(" unreleased v{} ", info.current_version);
-            let width = text.chars().count();
+            let width = text.width();
             (
                 Span::styled(
                     text,
@@ -150,7 +150,7 @@ pub fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let total_width = area.width as usize;
-    let brand_width = brand.content.chars().count();
+    let brand_width = brand.content.width();
 
     // When the diff is the only pane it has no frame/title row, so fold the
     // current file name (left, after the brand) and its diff stats (right,
@@ -158,11 +158,7 @@ pub fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     let sole = app.is_diff_sole_pane();
     let (stat_spans, stat_width): (Vec<Span>, usize) = if sole {
         let line = crate::ui::diff_view::diff_stat_title(app);
-        let w = line
-            .spans
-            .iter()
-            .map(|s| s.content.chars().count())
-            .sum::<usize>();
+        let w = line.spans.iter().map(|s| s.content.width()).sum::<usize>();
         (line.spans, w)
     } else {
         (Vec::new(), 0)
@@ -183,7 +179,7 @@ pub fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         let avail = total_width.saturating_sub(brand_width + right_width + 2);
         let label = crate::ui::diff_view::truncate_path_smart(&label, avail);
         let text = format!(" {label} ");
-        let width = text.chars().count();
+        let width = text.width();
         (
             Some(Span::styled(
                 text,
@@ -225,7 +221,7 @@ fn head_commit_label(app: &App) -> Option<String> {
         return None;
     }
     let head = app.vcs_info.head_commit.as_str();
-    (!head.is_empty()).then(|| head[..7.min(head.len())].to_string())
+    (!head.is_empty()).then(|| crate::slug::short_sha(head))
 }
 
 /// Suffix a working-tree label with the commit being diffed against.
@@ -250,7 +246,7 @@ fn header_source_chunk(app: &App) -> Option<String> {
         DiffSource::StagedAndUnstaged => Some(with_head_commit("staged + unstaged", app)),
         DiffSource::CommitRange(commits) => {
             if commits.len() == 1 {
-                Some(format!("commit {}", &commits[0][..7.min(commits[0].len())]))
+                Some(format!("commit {}", crate::slug::short_sha(&commits[0])))
             } else {
                 Some(
                     app.commit_selection_summary()
@@ -262,7 +258,7 @@ fn header_source_chunk(app: &App) -> Option<String> {
             if commits.len() == 1 {
                 Some(format!(
                     "staged + unstaged + commit {}",
-                    &commits[0][..7.min(commits[0].len())]
+                    crate::slug::short_sha(&commits[0])
                 ))
             } else {
                 Some(format!("staged + unstaged + {} commits", commits.len()))
@@ -270,8 +266,8 @@ fn header_source_chunk(app: &App) -> Option<String> {
         }
         DiffSource::PullRequest(pr) => {
             let slug = pr.key.repository.display_name();
-            let trimmed_title = if pr.title.chars().count() > 60 {
-                let truncated: String = pr.title.chars().take(59).collect();
+            let trimmed_title = if pr.title.width() > 60 {
+                let truncated = crate::ui::text_utils::prefix_within_width(&pr.title, 59);
                 format!("{truncated}\u{2026}")
             } else {
                 pr.title.clone()
@@ -669,6 +665,7 @@ mod header_snapshot_tests {
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
     use std::path::{Path, PathBuf};
+    use unicode_width::UnicodeWidthStr;
 
     struct NoopVcs {
         info: VcsInfo,
@@ -1115,6 +1112,47 @@ mod header_snapshot_tests {
         let line = row_text(&buffer, 0);
         assert!(line.contains("agavra/tuicr#125"), "got: {line:?}");
     }
+    #[test]
+    fn should_not_clip_header_slug_when_title_is_wide() {
+        // given - a 12-character CJK title occupies 24 cells
+        let mut pr = pr_source(false, false);
+        pr.title = "\u{754c}".repeat(12);
+        let app = build_pr_app(pr);
+        let slug = app.session_slug().expect("pr session slug");
+        // when
+        let line = row_text(&draw_header(&app), 0);
+        // then - padding is computed in cells, so the right cluster survives
+        assert!(line.contains(&slug), "got: {line:?}");
+    }
+
+    #[test]
+    fn should_truncate_long_title_to_sixty_cells() {
+        // given - 40 wide characters are 80 cells but under 60 chars
+        let mut pr = pr_source(false, false);
+        pr.title = "\u{754c}".repeat(40);
+        let app = build_pr_app(pr);
+        // when
+        let chunk = super::header_source_chunk(&app).expect("pr chunk");
+        // then
+        assert!(chunk.contains('\u{2026}'));
+        let title = chunk.rsplit(" \u{00b7} ").next().unwrap();
+        assert!(title.width() <= 60, "{title:?}");
+    }
+
+    #[test]
+    fn should_truncate_vs16_title_to_sixty_cells() {
+        // given - each warning sign + VS16 is two cells; 40 of them are 80
+        let mut pr = pr_source(false, false);
+        pr.title = "\u{26a0}\u{fe0f}".repeat(40);
+        let app = build_pr_app(pr);
+        // when
+        let chunk = super::header_source_chunk(&app).expect("pr chunk");
+        // then
+        let title = chunk.rsplit(" \u{00b7} ").next().unwrap();
+        assert!(title.width() <= 60, "{title:?} is {} cells", title.width());
+        assert!(title.ends_with('\u{2026}'));
+    }
+
     fn build_local_app(diff_source: DiffSource, head_commit: &str) -> App {
         let vcs_info = VcsInfo {
             root_path: PathBuf::from("/repo"),

@@ -2,19 +2,29 @@ use ratatui::{buffer::CellWidth, style::Style, text::Span};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-pub(super) fn truncate_str(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        s.to_string()
-    } else {
-        let truncate_at = max_len.saturating_sub(3);
-        let end = s
-            .char_indices()
-            .map(|(i, _)| i)
-            .take_while(|&i| i <= truncate_at)
-            .last()
-            .unwrap_or(0);
-        format!("{}...", &s[..end])
+/// Longest prefix of `s` whose display width is at most `budget`, cut on
+/// grapheme boundaries. Per-char widths would count a VS16 emoji as one cell
+/// although terminals draw two.
+pub(super) fn prefix_within_width(s: &str, budget: usize) -> &str {
+    let mut used = 0;
+    let mut end = 0;
+    for g in s.graphemes(true) {
+        let w = g.width();
+        if used + w > budget {
+            break;
+        }
+        used += w;
+        end += g.len();
     }
+    &s[..end]
+}
+
+pub(super) fn truncate_str(s: &str, max_width: usize) -> String {
+    if s.width() <= max_width {
+        return s.to_string();
+    }
+    let kept = prefix_within_width(s, max_width.saturating_sub(3));
+    format!("{kept}...")
 }
 
 /// Truncate or pad a string to a specific width
@@ -662,6 +672,17 @@ mod tests {
     }
 
     #[test]
+    fn should_truncate_vs16_clusters_by_display_width() {
+        // given - 20 clusters of two cells each
+        let s = "\u{26a0}\u{fe0f}".repeat(20);
+        // when
+        let out = truncate_str(&s, 10);
+        // then
+        assert!(out.width() <= 10, "{out:?}");
+        assert!(out.ends_with("..."));
+    }
+
+    #[test]
     fn should_truncate_without_panicking_on_multibyte_chars() {
         // given - the exact string from the bug report
         let s = "Resolve \"SD : Envoi en validation manuelle après 3 rejet de la fiche employé\"";
@@ -669,7 +690,7 @@ mod tests {
         let result = truncate_str(s, 47);
         // then - should not panic and should end with "..."
         assert!(result.ends_with("..."));
-        assert!(result.len() <= 47);
+        assert!(unicode_width::UnicodeWidthStr::width(result.as_str()) <= 47);
     }
 
     #[test]

@@ -309,7 +309,7 @@ pub(super) fn diff_title(app: &App, area_width: u16) -> String {
 /// back to suffix-truncating the basename only when the basename alone is
 /// wider than `max_width`.
 pub(super) fn truncate_path_smart(path: &str, max_width: usize) -> String {
-    if path.chars().count() <= max_width {
+    if path.width() <= max_width {
         return path.to_string();
     }
     let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
@@ -320,19 +320,19 @@ pub(super) fn truncate_path_smart(path: &str, max_width: usize) -> String {
     for n in (1..segments.len()).rev() {
         let tail = segments[segments.len() - n..].join("/");
         let candidate = format!("\u{2026}/{tail}");
-        if candidate.chars().count() <= max_width {
+        if candidate.width() <= max_width {
             return candidate;
         }
     }
 
     let basename = *segments.last().unwrap();
-    let basename_w = basename.chars().count();
+    let basename_w = basename.width();
     if basename_w <= max_width {
         return basename.to_string();
     }
     // Basename alone is too wide: keep the leading chars + `…`.
     let kept = max_width.saturating_sub(1);
-    let mut s: String = basename.chars().take(kept).collect();
+    let mut s = crate::ui::text_utils::prefix_within_width(basename, kept).to_string();
     s.push('\u{2026}');
     s
 }
@@ -1286,6 +1286,16 @@ pub(super) fn scroll_spans_by_width(line: Line<'_>, mut columns: usize) -> Line<
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn should_fit_vs16_basename_within_path_budget() {
+        // given - each warning sign + VS16 is two cells
+        let path = format!("dir/{}", "\u{26a0}\u{fe0f}".repeat(40));
+        // when
+        let out = truncate_path_smart(&path, 20);
+        // then
+        assert!(out.width() <= 20, "{out:?} is {} cells", out.width());
+    }
+
     use super::*;
 
     #[test]
