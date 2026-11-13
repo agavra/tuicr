@@ -3031,6 +3031,8 @@ struct ThreadAwareForgeBackend {
     patch: String,
     threads: Vec<RemoteReviewThread>,
     calls: std::sync::atomic::AtomicU32,
+    /// Fail `list_review_threads` with a pagination bound.
+    hit_page_limit: bool,
 }
 
 impl ThreadAwareForgeBackend {
@@ -3044,6 +3046,7 @@ impl ThreadAwareForgeBackend {
             patch,
             threads,
             calls: std::sync::atomic::AtomicU32::new(0),
+            hit_page_limit: false,
         }
     }
 }
@@ -3079,6 +3082,11 @@ impl crate::forge::traits::ForgeBackend for ThreadAwareForgeBackend {
     ) -> Result<Vec<RemoteReviewThread>> {
         self.calls
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if self.hit_page_limit {
+            return Err(crate::error::TuicrError::ForgeLimit(
+                "too many pages".to_string(),
+            ));
+        }
         Ok(self.threads.clone())
     }
     fn list_pull_request_commits(
@@ -3142,6 +3150,45 @@ fn should_populate_remote_threads_when_opening_pr_through_test_seam() {
         app.session.remote_comments_visibility,
         PrCommentsVisibility::Unresolved
     );
+}
+
+#[test]
+fn should_keep_locked_comments_when_the_sync_thread_fetch_hits_the_page_limit() {
+    // given a persisted PR session holding a locked (submitted) comment
+    let _reviews = TestReviewsDir::new();
+    let summary = sample_pr(42, "answer");
+    let patch = crate::forge::github::gh::tests_fixture::SIMPLE_PATCH.to_string();
+    let backend = |limit: bool| {
+        let mut b =
+            ThreadAwareForgeBackend::new(test_pr_details(42, "answer"), patch.clone(), Vec::new());
+        b.hit_page_limit = limit;
+        Box::new(b)
+    };
+    let mut first = build_app();
+    first
+        .open_pr_with_backend(&summary, backend(false), None)
+        .unwrap();
+    let mut locked = Comment::new("posted".to_string(), CommentType::from_id("note"), None);
+    locked.lifecycle_state = crate::model::comment::CommentLifecycleState::Submitted;
+    first.session.review_comments.push(locked);
+    first.save_current_session_merging_external().unwrap();
+
+    // when the reopen's thread fetch fails with the page bound
+    let mut app = build_app();
+    app.open_pr_with_backend(&summary, backend(true), None)
+        .unwrap();
+
+    // then the locked comment is not pruned and the failure is shown
+    assert_eq!(app.session.review_comments.len(), 1);
+    assert!(app.forge_review_threads.is_empty());
+    let message = app.message.as_ref().expect("warning").content.clone();
+    assert!(message.contains("too many pages"), "{message}");
+
+    // and a successful fetch still prunes it
+    let mut ok = build_app();
+    ok.open_pr_with_backend(&summary, backend(false), None)
+        .unwrap();
+    assert!(ok.session.review_comments.is_empty());
 }
 
 #[test]

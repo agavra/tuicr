@@ -681,6 +681,15 @@ where
         )
     }
 
+    /// Keep an optional fetch best-effort, except that hitting the page bound
+    /// is surfaced: a partial list must not pass as a complete one.
+    fn best_effort<T: Default>(result: Result<T>) -> Result<T> {
+        match result {
+            Err(e @ TuicrError::ForgeLimit(_)) => Err(e),
+            other => Ok(other.unwrap_or_default()),
+        }
+    }
+
     fn reviews(&self, pr: &PullRequestDetails) -> Result<Vec<GiteaPullReview>> {
         self.get_all_pages(
             &pr.repository,
@@ -807,7 +816,7 @@ where
         // own unsubmitted drafts and review-requests are not responses, so
         // neither belongs in the summary row.
         let mut latest: BTreeMap<String, PullRequestReviewStatus> = BTreeMap::new();
-        for review in self.reviews(&details).unwrap_or_default() {
+        for review in Self::best_effort(self.reviews(&details))? {
             let state = match review.state.to_ascii_uppercase().as_str() {
                 "APPROVED" => "APPROVED",
                 "REQUEST_CHANGES" => "CHANGES_REQUESTED",
@@ -887,14 +896,13 @@ where
         };
 
         let issue_comments = if self.show_comments {
-            self.get_all_pages::<GiteaIssueComment>(
+            Self::best_effort(self.get_all_pages::<GiteaIssueComment>(
                 &repository,
                 &format!(
                     "/repos/{}/{}/issues/{}/comments",
                     repository.owner, repository.name, details.number
                 ),
-            )
-            .unwrap_or_default()
+            ))?
             .into_iter()
             .map(|comment| PullRequestIssueComment {
                 author: GiteaUser::login(comment.user),
@@ -2409,6 +2417,49 @@ mod tests {
         assert!(threads[0].is_resolved);
         // Gitea exposes no invalidation flag, so nothing can be called outdated.
         assert!(!threads[0].is_outdated);
+    }
+
+    const ONE_REVIEW: &str = r#"[{"id":1,"state":"APPROVED","body":"","user":{"login":"a"},"comments_count":0,"commit_id":"","html_url":"u"}]"#;
+    const ONE_ISSUE_COMMENT: &str = r#"[{"id":1,"body":"hi","user":{"login":"a"},"html_url":"u","created_at":"2026-08-20T10:00:00Z"}]"#;
+
+    #[test]
+    fn should_surface_the_page_bound_from_reviews_in_pull_request_info() {
+        // 1 row/page and a total past MAX_PAGES: the reviews list is partial.
+        let runner = FakeTeaRunner::default()
+            .route("/pulls/42", PR_JSON)
+            .route_counted("/pulls/42/reviews", ONE_REVIEW, 201)
+            .route("/issues/42/comments", "[]");
+        let backend = GiteaTeaBackend::with_runner(Some(repo()), runner);
+        let result = backend.get_pull_request_info(PullRequestTarget::number(42, "42"));
+        assert!(
+            matches!(result, Err(TuicrError::ForgeLimit(_))),
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn should_surface_the_page_bound_from_issue_comments_in_pull_request_info() {
+        let runner = FakeTeaRunner::default()
+            .route("/pulls/42", PR_JSON)
+            .route("/pulls/42/reviews", "[]")
+            .route_counted("/issues/42/comments", ONE_ISSUE_COMMENT, 201);
+        let backend = GiteaTeaBackend::with_runner(Some(repo()), runner);
+        let result = backend.get_pull_request_info(PullRequestTarget::number(42, "42"));
+        assert!(
+            matches!(result, Err(TuicrError::ForgeLimit(_))),
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn should_keep_pull_request_info_best_effort_for_other_fetch_errors() {
+        // No reviews/comments routes: 404s degrade to empty lists.
+        let runner = FakeTeaRunner::default().route("/pulls/42", PR_JSON);
+        let backend = GiteaTeaBackend::with_runner(Some(repo()), runner);
+        let info = backend
+            .get_pull_request_info(PullRequestTarget::number(42, "42"))
+            .expect("info");
+        assert!(info.issue_comments.is_empty());
     }
 
     #[test]
